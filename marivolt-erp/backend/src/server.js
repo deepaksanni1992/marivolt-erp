@@ -2,13 +2,6 @@ import purchaseRoutes from "./routes/purchaseRoutes.js";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-dotenv.config({ path: path.join(__dirname, "../.env") });
-
-
 import express from "express";
 import cors from "cors";
 import morgan from "morgan";
@@ -18,38 +11,48 @@ import stockTxnRoutes from "./routes/stockTxnRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import { requireAuth, requireRole } from "./middleware/auth.js";
 
-console.log("Loaded MONGO_URI:", process.env.MONGO_URI);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB Connected"))
-  .catch(err => console.log("❌ Mongo Error:", err));
+dotenv.config({ path: path.join(__dirname, "../.env") });
+const PORT = process.env.PORT || 5000;
 
+async function startServer() {
+  try {
+    console.log("Loaded MONGO_URI:", process.env.MONGO_URI);
 
+    mongoose.set("strictQuery", true);
 
-const app = express();
-app.use(cors({ origin: true, credentials: true }));
-app.use(express.json());
-app.use(morgan("dev"));
-app.use("/api/auth", authRoutes);
-app.use("/api/items", itemRoutes);
-app.use("/api/stock-txns", stockTxnRoutes);
-app.use("/api/purchase", purchaseRoutes);
+    await mongoose.connect(process.env.MONGO_URI, {
+      serverSelectionTimeoutMS: 15000,
+    });
 
+    console.log("✅ MongoDB connected");
 
+    const app = express();
 
-app.get("/api/health", (req, res) => {
-  res.json({ ok: true, message: "Marivoltz API running" });
-});
+    app.use(cors({ origin: true, credentials: true }));
+    app.use(express.json());
+    app.use(morgan("dev"));
 
-async function start() {
-  await mongoose.connect(process.env.MONGO_URI);
-  console.log("✅ MongoDB connected");
+    app.use("/api/auth", authRoutes);
+    app.use("/api/items", itemRoutes);
+    app.use("/api/stock-txns", stockTxnRoutes);
+    app.use("/api/purchase", purchaseRoutes);
 
-  const port = process.env.PORT || 5000;
-  app.listen(port, () => console.log(`✅ API listening on ${port}`));
+    app.get("/api/health", (req, res) => {
+      res.json({ ok: true, message: "Marivoltz API running" });
+    });
+
+    app.listen(PORT, () => {
+      console.log(`✅ API listening on ${PORT}`);
+    });
+
+  } catch (error) {
+    console.error("❌ Failed to start server:", error);
+    process.exit(1);
+  }
 }
 
-start().catch((err) => {
-  console.error("❌ Failed to start:", err);
-  process.exit(1);
-});
+startServer();
+
