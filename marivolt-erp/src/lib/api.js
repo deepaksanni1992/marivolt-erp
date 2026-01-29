@@ -1,4 +1,5 @@
-export const API_BASE = "http://localhost:5000/api";
+export const API_BASE =
+  import.meta.env.VITE_API_BASE || "https://marivolt-erp.onrender.com";
 const AUTH_KEY = "marivoltz_auth_v1";
 
 function getToken() {
