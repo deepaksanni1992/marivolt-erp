@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 const AUTH_KEY = "marivoltz_auth_v1";
-const API_BASE = "http://localhost:5000/api";
+const API_BASE = "https://marivolt-erp.onrender.com";
 
 export default function Login() {
   const nav = useNavigate();
@@ -20,7 +20,7 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_BASE}/auth/login`, {
+      const res = await fetch(`${API_BASE}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
