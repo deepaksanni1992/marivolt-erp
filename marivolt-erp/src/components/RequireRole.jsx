@@ -35,6 +35,7 @@ export default function RequireRole({ allow = [], children }) {
       </div>
     );
   }
+  
 
   // 3) Allowed → show page
   return children;
