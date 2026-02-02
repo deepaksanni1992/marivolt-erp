@@ -28,6 +28,37 @@ async function startServer() {
     console.log("✅ MongoDB connected");
 
     const app = express();
+    const allowedExactOrigins = [
+      "http://localhost:5173",
+      "https://marivolt-erp.vercel.app",
+    ];
+    
+    // allow ALL vercel preview domains
+    function isAllowedOrigin(origin) {
+      if (!origin) return true; // allow Postman / server-to-server
+      if (allowedExactOrigins.includes(origin)) return true;
+      if (origin.endsWith(".vercel.app")) return true; // 🔥 important
+      return false;
+    }
+    
+    app.use(
+      cors({
+        origin: (origin, callback) => {
+          if (isAllowedOrigin(origin)) {
+            callback(null, true);
+          } else {
+            callback(new Error("Not allowed by CORS: " + origin));
+          }
+        },
+        credentials: true,
+        methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allowedHeaders: ["Content-Type", "Authorization"],
+      })
+    );
+    
+    // handle preflight requests
+    app.options("*", cors());
+    
 
     const allowedOrigin =
       process.env.FRONTEND_URL || "http://localhost:5173";
