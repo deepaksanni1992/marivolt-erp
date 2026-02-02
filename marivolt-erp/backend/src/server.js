@@ -57,7 +57,7 @@ async function startServer() {
     );
     
     // handle preflight requests
-    app.options("*", cors());
+  
     
 
     const allowedOrigin =
