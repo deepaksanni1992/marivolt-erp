@@ -8,7 +8,7 @@ router.use(requireAuth);
 // Create a txn (IN/OUT)
 router.post("/", async (req, res) => {
     try {
-      const { sku, type, qty, ref, note } = req.body;
+  const { sku, type, qty, ref, note, supplier } = req.body;
   
       if (!sku || !type || !qty) {
         return res.status(400).json({ message: "sku, type, qty are required" });
@@ -59,6 +59,7 @@ router.post("/", async (req, res) => {
         type: cleanType,
         qty: cleanQty,
         ref: (ref || "").trim(),
+        supplier: (supplier || "").trim(),
         note: (note || "").trim(),
       });
   
@@ -71,8 +72,43 @@ router.post("/", async (req, res) => {
 
 // Get txns (latest first). Optional filter by sku
 router.get("/", async (req, res) => {
-  const { sku } = req.query;
-  const filter = sku ? { sku: String(sku).trim() } : {};
+  const { sku, type, from, to, supplier } = req.query;
+  const filter = {};
+
+  if (sku) {
+    filter.sku = String(sku).trim();
+  }
+
+  if (type) {
+    const cleanType = String(type).toUpperCase().trim();
+    if (["IN", "OUT"].includes(cleanType)) {
+      filter.type = cleanType;
+    }
+  }
+
+  if (supplier) {
+    filter.supplier = String(supplier).trim();
+  }
+
+  if (from || to) {
+    filter.createdAt = {};
+    if (from) {
+      const fromDate = new Date(from);
+      if (!Number.isNaN(fromDate.getTime())) {
+        filter.createdAt.$gte = fromDate;
+      }
+    }
+    if (to) {
+      const toDate = new Date(to);
+      if (!Number.isNaN(toDate.getTime())) {
+        filter.createdAt.$lte = toDate;
+      }
+    }
+    if (Object.keys(filter.createdAt).length === 0) {
+      delete filter.createdAt;
+    }
+  }
+
   const txns = await StockTxn.find(filter).sort({ createdAt: -1 }).limit(500);
   res.json(txns);
 });

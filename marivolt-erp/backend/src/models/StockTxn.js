@@ -6,6 +6,7 @@ const stockTxnSchema = new mongoose.Schema(
     type: { type: String, enum: ["IN", "OUT"], required: true },
     qty: { type: Number, required: true, min: 1 },
     ref: { type: String, default: "" },   // e.g. PO:PO-001 or INV:INV-001
+    supplier: { type: String, default: "", index: true },
     note: { type: String, default: "" },
   },
   { timestamps: true }
