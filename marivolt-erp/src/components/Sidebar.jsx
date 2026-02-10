@@ -40,7 +40,11 @@ export default function Sidebar({ open, onClose }) {
     >
       <div className="flex h-16 items-center justify-between px-4 border-b">
         <div className="flex items-center gap-2">
-          <div className="h-9 w-9 rounded-xl bg-gray-900" />
+          <img
+            src="/marivolt-logo.png"
+            alt="Marivolt logo"
+            className="h-9 w-9 rounded-lg object-contain"
+          />
           <div>
             <div className="text-sm font-semibold leading-4">Marivoltz</div>
             <div className="text-xs text-gray-500">

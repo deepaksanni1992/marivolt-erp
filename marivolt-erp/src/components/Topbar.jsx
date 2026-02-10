@@ -20,6 +20,11 @@ export default function Topbar({ onMenuClick }) {
           >
             ☰
           </button>
+          <img
+            src="/marivolt-logo.png"
+            alt="Marivolt logo"
+            className="h-7 w-7 rounded-md object-contain"
+          />
           <div className="font-semibold">Marivoltz ERP</div>
         </div>
 
