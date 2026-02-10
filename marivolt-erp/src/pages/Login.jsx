@@ -62,7 +62,27 @@ export default function Login() {
           </div>
         )}
 
-        <form onSubmit={onSubmit} className="mt-4 space-y-3">
+        <form
+          onSubmit={onSubmit}
+          className="mt-4 space-y-3"
+          autoComplete="new-password"
+        >
+          <input
+            type="text"
+            name="fakeEmail"
+            autoComplete="username"
+            className="hidden"
+            tabIndex={-1}
+            aria-hidden="true"
+          />
+          <input
+            type="password"
+            name="fakePassword"
+            autoComplete="current-password"
+            className="hidden"
+            tabIndex={-1}
+            aria-hidden="true"
+          />
           <div>
             <label className="text-sm text-gray-600">Email</label>
             <input
@@ -71,6 +91,9 @@ export default function Login() {
               onChange={onChange}
               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
               placeholder="admin@marivoltz.com"
+              autoComplete="new-password"
+              autoCapitalize="none"
+              spellCheck="false"
             />
           </div>
 
@@ -83,6 +106,7 @@ export default function Login() {
               onChange={onChange}
               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
               placeholder="admin123"
+              autoComplete="new-password"
             />
           </div>
 
@@ -93,11 +117,6 @@ export default function Login() {
             {loading ? "Logging in..." : "Login"}
           </button>
 
-          <div className="text-xs text-gray-500">
-            Demo:
-            <div>Admin: admin@marivoltz.com / admin123</div>
-            <div>Staff: staff@marivoltz.com / staff123</div>
-          </div>
         </form>
       </div>
     </div>
