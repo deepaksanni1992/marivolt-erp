@@ -1,28 +1,49 @@
 import jwt from "jsonwebtoken";
 
+/**
+ * requireAuth:
+ * - reads Authorization: Bearer <token>
+ * - verifies JWT
+ * - sets req.user = decoded payload
+ */
 export function requireAuth(req, res, next) {
-  const header = req.headers.authorization || "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
-
-  if (!token) return res.status(401).json({ message: "Missing token" });
-
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = payload; // { id, role, email }
+    const header = req.headers.authorization || "";
+    const [type, token] = header.split(" ");
+
+    if (type !== "Bearer" || !token) {
+      return res.status(401).json({ message: "Missing token" });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded; // must include role in token payload
     next();
-  } catch {
+  } catch (err) {
     return res.status(401).json({ message: "Invalid token" });
   }
 }
 
-export function requireRole(roles = []) {
+/**
+ * requireRole:
+ * - accepts requireRole("admin") OR requireRole(["admin","manager"]) OR requireRole("admin","manager")
+ * - compares case-insensitively
+ */
+export function requireRole(...roles) {
+  const allowed = roles
+    .flat()
+    .map((r) => String(r).toLowerCase().trim())
+    .filter(Boolean);
+
   return (req, res, next) => {
-    if (!req.user) return res.status(401).json({ message: "Unauthorized" });
+    const userRole = String(req.user?.role || "")
+      .toLowerCase()
+      .trim();
 
-    const userRole = String(req.user.role || "").toLowerCase();
-    const allowedRoles = roles.map((r) => String(r).toLowerCase());
+    if (!userRole) {
+      return res.status(403).json({ message: "Forbidden (no role)" });
+    }
 
-    if (allowedRoles.length && !allowedRoles.includes(userRole)) {
+    if (!allowed.includes(userRole)) {
       return res.status(403).json({ message: "Forbidden" });
     }
 

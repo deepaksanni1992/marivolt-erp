@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { API_BASE } from "../lib/api.js";
 
 const AUTH_KEY = "marivoltz_auth_v1";
-const API_BASE = "https://marivolt-erp.onrender.com";
 
 export default function Login() {
   const nav = useNavigate();
@@ -20,12 +20,18 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_BASE}/api/auth/login`, {
+      const formData = new FormData(e.currentTarget);
+      const emailInput = String(formData.get("email") || "").trim();
+      const passwordInput = String(formData.get("password") || "");
+      const email = emailInput || form.email.trim();
+      const password = passwordInput || form.password;
+
+      const res = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: form.email.trim(),
-          password: form.password,
+          email,
+          password,
         }),
       });
 

@@ -1,5 +1,8 @@
-export const API_BASE =
-  import.meta.env.VITE_API_BASE || "https://marivolt-erp.onrender.com/api";
+const rawBase =
+  import.meta.env.VITE_API_BASE || "https://marivolt-erp.onrender.com";
+export const API_BASE = rawBase.endsWith("/api")
+  ? rawBase
+  : `${rawBase.replace(/\/$/, "")}/api`;
 const AUTH_KEY = "marivoltz_auth_v1";
 
 function getToken() {
