@@ -8,14 +8,28 @@ dotenv.config();
 async function run() {
   await mongoose.connect(process.env.MONGO_URI);
 
-  await User.deleteMany({ email: { $in: ["admin@marivoltz.com", "staff@marivoltz.com"] } });
+  await User.deleteMany({
+    email: { $in: ["admin@marivoltz.com", "staff@marivoltz.com"] },
+  });
 
   const adminHash = await bcrypt.hash("admin123", 10);
   const staffHash = await bcrypt.hash("staff123", 10);
 
   await User.create([
-    { name: "Admin", email: "admin@marivoltz.com", passwordHash: adminHash, role: "admin" },
-    { name: "Staff", email: "staff@marivoltz.com", passwordHash: staffHash, role: "staff" },
+    {
+      name: "Admin",
+      email: "admin@marivoltz.com",
+      username: "deepak007",
+      passwordHash: adminHash,
+      role: "admin",
+    },
+    {
+      name: "Staff",
+      email: "staff@marivoltz.com",
+      username: "staff001",
+      passwordHash: staffHash,
+      role: "staff",
+    },
   ]);
 
   console.log("✅ Seeded users");

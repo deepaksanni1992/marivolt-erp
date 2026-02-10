@@ -84,13 +84,13 @@ export default function Login() {
             aria-hidden="true"
           />
           <div>
-            <label className="text-sm text-gray-600">Email</label>
+            <label className="text-sm text-gray-600">Username or Email</label>
             <input
               name="email"
               value={form.email}
               onChange={onChange}
               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-              placeholder="admin@marivoltz.com"
+              placeholder="deepak007"
               autoComplete="new-password"
               autoCapitalize="none"
               spellCheck="false"

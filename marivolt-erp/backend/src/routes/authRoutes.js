@@ -16,8 +16,10 @@ function signToken(user) {
 // POST /api/auth/register (optional - for now)
 router.post("/register", async (req, res) => {
   try {
-    const { name, email, password, role } = req.body;
-    if (!email || !password) return res.status(400).json({ message: "email & password required" });
+    const { name, email, password, role, username } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ message: "email & password required" });
+    }
 
     const exists = await User.findOne({ email: email.toLowerCase().trim() });
     if (exists) return res.status(400).json({ message: "Email already exists" });
@@ -27,6 +29,7 @@ router.post("/register", async (req, res) => {
     const user = await User.create({
       name: name || "",
       email: email.toLowerCase().trim(),
+      username: username ? String(username).toLowerCase().trim() : undefined,
       passwordHash,
       role: role === "admin" ? "admin" : "staff",
     });
@@ -46,9 +49,24 @@ router.post("/register", async (req, res) => {
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ message: "email & password required" });
+    const identifier = String(email || "").trim();
+    if (!identifier || !password) {
+      return res
+        .status(400)
+        .json({ message: "username/email & password required" });
+    }
 
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    const isEmail = identifier.includes("@");
+    let user = null;
+    if (isEmail) {
+      user = await User.findOne({ email: identifier.toLowerCase() });
+    } else {
+      user = await User.findOne({ username: identifier.toLowerCase() });
+    }
+
+    if (!user) {
+      user = await User.findOne({ email: identifier.toLowerCase() });
+    }
     if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
     const ok = await bcrypt.compare(password, user.passwordHash);
