@@ -10,7 +10,25 @@ router.use(requireAuth);
 /* CREATE PO */
 router.post("/po", async (req, res) => {
   try {
-    const po = await PurchaseOrder.create(req.body);
+    const body = req.body || {};
+
+    if (!body.supplierName || !String(body.supplierName).trim()) {
+      return res.status(400).json({ message: "Supplier name is required" });
+    }
+    if (!Array.isArray(body.items) || body.items.length === 0) {
+      return res.status(400).json({ message: "At least one item is required" });
+    }
+
+    const poNo =
+      body.poNo && String(body.poNo).trim()
+        ? String(body.poNo).trim()
+        : `PO-${Date.now()}`;
+
+    const po = await PurchaseOrder.create({
+      ...body,
+      poNo,
+      supplierName: String(body.supplierName).trim(),
+    });
     res.json(po);
   } catch (err) {
     res.status(400).json({ message: err.message });

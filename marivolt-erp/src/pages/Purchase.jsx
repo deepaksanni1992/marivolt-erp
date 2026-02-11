@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
 import { apiDelete, apiGet, apiGetWithQuery, apiPost } from "../lib/api.js";
 
 export default function Purchase() {
@@ -22,6 +23,45 @@ export default function Purchase() {
     panNo: "",
     notes: "",
   });
+  const [poForm, setPoForm] = useState({
+    supplierId: "",
+    supplierName: "",
+    supplierAddress: "",
+    supplierPhone: "",
+    supplierEmail: "",
+    contactPerson: "",
+    ref: "",
+    intRef: "",
+    offerDate: "",
+    orderDate: "",
+    currency: "USD",
+    delivery: "Ex-Works",
+    insurance: "On buyers account",
+    packing: "Inclusive",
+    freight: "On buyers account",
+    taxes: "N.A.",
+    payment: "100% against delivery",
+    specialRemarks: "",
+    termsAndConditions:
+      "Terms & Conditions- The Supplier’s terms of business shall not apply. By accepting this Purchase Order, the Supplier agrees that only the Buyer’s (Marivolt FZE) terms and conditions govern this transaction. All documents, data, drawings, and information shared by the Buyer with the Supplier, including this Purchase Order, are strictly confidential. The Supplier shall not disclose such information to any third party without the prior written consent of the Buyer or any unauthorized party. Any unauthorized disclosure shall be deemed a breach of contract and may result in legal action, including claims for damages and recovery of costs. Breach of contract will trigger UAE legal action and Middle East supplier ban. The customer also reserves the right to take legal action in supplier's respective country of operation. The Supplier warrants that all goods supplied shall be free from defects in material, workmanship, and design, and shall conform to agreed specifications. The warranty period shall be on minimum 18 months from the date of supply. During this period, the Supplier shall, at its own cost and without delay, repair or replace any defective goods and pay for all damages caused as a result of the failure. This warranty is in addition to, and does not limit, any other rights or remedies available to the Buyer under applicable law. The Supplier shall deliver the goods strictly within the agreed timelines. Any failure to supply on time may result in cancellation of the order or the imposition of penalties for delay, at the discretion of the Buyer, without prejudice to any other rights or remedies available under law. Any reference to engine manufacturers' product codes, part numbers, or IMO numbers is strictly for descriptive or reference purposes only. Such references do not imply that the parts originate from the engine manufacturer. If required, confirmation of origin will be provided separately.",
+    closingNote:
+      "Kindly send us the Order Acknowledgement and Proforma Invoice, with current status of delivery.",
+  });
+  const [poItems, setPoItems] = useState([
+    {
+      articleNo: "",
+      description: "",
+      partNo: "",
+      qty: 1,
+      uom: "PCS",
+      unitRate: "",
+      remark: "",
+    },
+  ]);
+  const [poList, setPoList] = useState([]);
+  const [poLoading, setPoLoading] = useState(false);
+  const [poErr, setPoErr] = useState("");
+  const [selectedPoId, setSelectedPoId] = useState("");
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyErr, setHistoryErr] = useState("");
@@ -62,6 +102,15 @@ export default function Purchase() {
     if (activeSub === "Supplier") {
       loadSuppliers();
     }
+    if (activeSub === "Purchase Order") {
+      loadSuppliers();
+      loadItems();
+      loadPurchaseOrders();
+      setPoForm((p) => ({
+        ...p,
+        orderDate: p.orderDate || getTodayDisplay(),
+      }));
+    }
   }, [activeSub]);
 
   const selectedItem = useMemo(
@@ -77,6 +126,47 @@ export default function Purchase() {
   function onSupplierChange(e) {
     const { name, value } = e.target;
     setSupplierForm((p) => ({ ...p, [name]: value }));
+  }
+
+  function onPoChange(e) {
+    const { name, value } = e.target;
+    setPoForm((p) => ({ ...p, [name]: value }));
+  }
+
+  function getTodayDisplay() {
+    const d = new Date();
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    return `${dd}/${mm}/${yyyy}`;
+  }
+
+  function onPoItemChange(index, field, value) {
+    setPoItems((prev) =>
+      prev.map((row, i) => {
+        if (i !== index) return row;
+        return { ...row, [field]: value };
+      })
+    );
+  }
+
+  function addPoItem() {
+    setPoItems((prev) => [
+      ...prev,
+      {
+        articleNo: "",
+        description: "",
+        partNo: "",
+        qty: 1,
+        uom: "PCS",
+        unitRate: "",
+        remark: "",
+      },
+    ]);
+  }
+
+  function removePoItem(index) {
+    setPoItems((prev) => prev.filter((_, i) => i !== index));
   }
 
   function onHistoryChange(e) {
@@ -113,6 +203,101 @@ export default function Purchase() {
       setSupplierErr(e.message || "Failed to load suppliers");
     } finally {
       setSupplierLoading(false);
+    }
+  }
+
+  async function loadPurchaseOrders() {
+    setPoErr("");
+    setPoLoading(true);
+    try {
+      const data = await apiGet("/purchase/po");
+      setPoList(data);
+    } catch (e) {
+      setPoErr(e.message || "Failed to load purchase orders");
+    } finally {
+      setPoLoading(false);
+    }
+  }
+
+  function applyPurchaseOrder(po) {
+    if (!po) return;
+    setSelectedPoId(po._id);
+    setPoForm({
+      supplierId: po.supplierId || "",
+      supplierName: po.supplierName || "",
+      supplierAddress: po.supplierAddress || "",
+      supplierPhone: po.supplierPhone || "",
+      supplierEmail: po.supplierEmail || "",
+      contactPerson: po.contactPerson || "",
+      ref: po.ref || "",
+      intRef: po.intRef || "",
+      offerDate: po.offerDate || "",
+      orderDate: po.orderDate || "",
+      currency: po.currency || "USD",
+      delivery: po.delivery || "",
+      insurance: po.insurance || "",
+      packing: po.packing || "",
+      freight: po.freight || "",
+      taxes: po.taxes || "",
+      payment: po.payment || "",
+      specialRemarks: po.specialRemarks || "",
+      termsAndConditions: po.termsAndConditions || "",
+      closingNote: po.closingNote || "",
+    });
+    setPoItems(
+      (po.items || []).map((row) => ({
+        articleNo: row.articleNo || "",
+        description: row.description || "",
+        partNo: row.partNo || "",
+        qty: row.qty || 0,
+        uom: row.uom || "",
+        unitRate: row.unitRate || 0,
+        remark: row.remark || "",
+      }))
+    );
+  }
+
+  async function savePurchaseOrder() {
+    setPoErr("");
+    if (!poForm.supplierName.trim()) {
+      setPoErr("Supplier name is required.");
+      return;
+    }
+    if (!poItems.length) {
+      setPoErr("At least one item is required.");
+      return;
+    }
+
+    const itemsPayload = poItems.map((row) => {
+      const qty = Number(row.qty) || 0;
+      const unitRate = Number(row.unitRate) || 0;
+      return {
+        sku: "",
+        articleNo: row.articleNo || "",
+        description: row.description || "",
+        partNo: row.partNo || "",
+        qty,
+        uom: row.uom || "",
+        unitRate,
+        remark: row.remark || "",
+        total: qty * unitRate,
+      };
+    });
+
+    const payload = {
+      ...poForm,
+      items: itemsPayload,
+      subTotal: poTotals.subTotal,
+      grandTotal: poTotals.grandTotal,
+    };
+
+    try {
+      const created = await apiPost("/purchase/po", payload);
+      setPoList((prev) => [created, ...prev]);
+      setSelectedPoId(created._id);
+      alert("Purchase Order saved ✅");
+    } catch (e) {
+      setPoErr(e.message || "Failed to save purchase order");
     }
   }
 
@@ -238,6 +423,18 @@ export default function Purchase() {
     );
   }, [suppliers, supplierQuery]);
 
+  const poTotals = useMemo(() => {
+    const subTotal = poItems.reduce((sum, row) => {
+      const qty = Number(row.qty) || 0;
+      const rate = Number(row.unitRate) || 0;
+      return sum + qty * rate;
+    }, 0);
+    return {
+      subTotal,
+      grandTotal: subTotal,
+    };
+  }, [poItems]);
+
   function downloadCsv(filename, rows) {
     const csv = rows
       .map((row) =>
@@ -325,6 +522,277 @@ export default function Purchase() {
       ["Supplier", "Total Qty", "Entries"],
       body,
       "purchase-report-supplier.pdf"
+    );
+  }
+
+  function applySupplierToPo(supplierId) {
+    if (!supplierId) {
+      setPoForm((p) => ({
+        ...p,
+        supplierId: "",
+        supplierName: "",
+        supplierAddress: "",
+        supplierPhone: "",
+        supplierEmail: "",
+        contactPerson: "",
+      }));
+      return;
+    }
+    const supplier = suppliers.find((s) => s._id === supplierId);
+    if (!supplier) return;
+    setPoForm((p) => ({
+      ...p,
+      supplierId,
+      supplierName: supplier.name || "",
+      supplierAddress: supplier.address || "",
+      supplierPhone: supplier.phone || "",
+      supplierEmail: supplier.email || "",
+      contactPerson: supplier.contactName || "",
+    }));
+  }
+
+  function exportPurchaseOrderCsv() {
+    if (!poForm.supplierName.trim()) {
+      alert("Supplier name is required for Purchase Order.");
+      return;
+    }
+    const rows = [
+      [
+        "Pos",
+        "Article Nr",
+        "Description",
+        "Part Nr",
+        "Qty",
+        "UOM",
+        "Unit Rate",
+        "Total Amount",
+        "Remark",
+      ],
+      ...poItems.map((row, idx) => {
+        const qty = Number(row.qty) || 0;
+        const rate = Number(row.unitRate) || 0;
+        return [
+          String(idx + 1),
+          row.articleNo || "",
+          row.description || "",
+          row.partNo || "",
+          String(qty || 0),
+          row.uom || "",
+          rate ? rate.toFixed(2) : "0.00",
+          (qty * rate).toFixed(2),
+          row.remark || "",
+        ];
+      }),
+      ["", "", "", "", "", "", "Sub Total", poTotals.subTotal.toFixed(2)],
+      [
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "Grand Total",
+        poTotals.grandTotal.toFixed(2),
+      ],
+    ];
+    downloadCsv(
+      `purchase-order-${poForm.supplierName
+        .trim()
+        .replace(/\s+/g, "-")
+        .toLowerCase()}.csv`,
+      rows
+    );
+  }
+
+  async function handlePoExcelImport(file) {
+    if (!file) return;
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+    const normalized = rows.map((row) => {
+        const entry = {};
+        Object.entries(row).forEach(([k, v]) => {
+          const key = String(k).toLowerCase().replace(/\s+/g, "");
+          entry[key] = v;
+        });
+        return entry;
+      });
+
+      const itemsFromExcel = normalized.map((row) => {
+        const articleNo =
+          row.articlenr || row.article || row.articleno || row.articlenumber || "";
+        const description =
+          row.description || row.desc || row.name || row.itemname || "";
+        const partNo =
+          row.partnr || row.partno || row.part || row.partnumber || "";
+        const qty = row.qty || row.quantity || row.q || 0;
+        const uom = row.uom || row.unit || row.units || "PCS";
+        const unitRate = row.unitrate || row.rate || row.price || row.unitprice || 0;
+        const remark = row.remark || row.remarks || row.note || "";
+
+      return {
+          articleNo: String(articleNo || "").trim(),
+          description: String(description || "").trim(),
+          partNo: String(partNo || "").trim(),
+          qty: Number(qty) || 0,
+          uom: String(uom || "").trim(),
+          unitRate: Number(unitRate) || 0,
+          remark: String(remark || "").trim(),
+        };
+      });
+
+      const filtered = itemsFromExcel.filter(
+        (row) =>
+          row.articleNo ||
+          row.description ||
+          row.partNo ||
+          row.qty
+      );
+      if (!filtered.length) {
+        setPoErr("Excel import has no valid rows.");
+        return;
+      }
+      setPoItems(filtered);
+    } catch (e) {
+      setPoErr(e.message || "Failed to import Excel file.");
+    }
+  }
+
+  function exportPurchaseOrderPdf() {
+    if (!poForm.supplierName.trim()) {
+      alert("Supplier name is required for Purchase Order.");
+      return;
+    }
+
+    const doc = new jsPDF();
+    doc.setFontSize(16);
+    doc.text("Purchase Order", 150, 14, { align: "right" });
+
+    const supplierInfo = [
+      [poForm.supplierName],
+      [poForm.supplierAddress || "-"],
+      [`Tel: ${poForm.supplierPhone || "-"}`],
+      [`E-mail: ${poForm.supplierEmail || "-"}`],
+    ];
+    autoTable(doc, {
+      startY: 20,
+      theme: "plain",
+      body: supplierInfo,
+      styles: { fontSize: 9, cellPadding: 1 },
+      tableWidth: 90,
+    });
+
+    const orderInfo = [
+      ["Ref", poForm.ref || "-"],
+      ["Date", poForm.orderDate || "-"],
+      ["Int Ref", poForm.intRef || "-"],
+      ["Contact Person", poForm.contactPerson || "-"],
+      ["Supplier Ref", poForm.supplierEmail || "-"],
+      ["Offer Date", poForm.offerDate || "-"],
+      ["Currency", poForm.currency || "-"],
+      ["Order Value", poTotals.grandTotal.toFixed(2)],
+      ["Nr of Pages", "1"],
+    ];
+    autoTable(doc, {
+      startY: 20,
+      margin: { left: 110 },
+      body: orderInfo,
+      styles: { fontSize: 9, cellPadding: 1 },
+      tableWidth: 90,
+    });
+
+    doc.setFontSize(10);
+    doc.text(
+      "Ref your above mentioned Quotation, we are pleased to confirm the order for following spares.",
+      14,
+      60
+    );
+
+    const itemRows = poItems.map((row, idx) => {
+      const qty = Number(row.qty) || 0;
+      const rate = Number(row.unitRate) || 0;
+      const total = qty * rate;
+      return [
+        String(idx + 1),
+        row.articleNo || "-",
+        row.description || "-",
+        row.partNo || "-",
+        String(qty || 0),
+        row.uom || "-",
+        rate ? rate.toFixed(2) : "0.00",
+        total.toFixed(2),
+        row.remark || "",
+      ];
+    });
+    autoTable(doc, {
+      startY: 65,
+      head: [
+        [
+          "Pos",
+          "Article Nr",
+          "Description",
+          "Part Nr",
+          "Qty",
+          "UOM",
+          "Unit Rate",
+          "Total Amount",
+          "Remark",
+        ],
+      ],
+      body: itemRows,
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [230, 230, 230], textColor: 20 },
+    });
+
+    const afterTableY = doc.lastAutoTable.finalY + 4;
+    autoTable(doc, {
+      startY: afterTableY,
+      margin: { left: 130 },
+      body: [
+        ["Sub Total", poTotals.subTotal.toFixed(2)],
+        ["Grand Total", poTotals.grandTotal.toFixed(2)],
+      ],
+      styles: { fontSize: 9 },
+      tableWidth: 60,
+    });
+
+    const terms = [
+      ["Delivery", poForm.delivery || "-"],
+      ["Insurance", poForm.insurance || "-"],
+      ["Packing", poForm.packing || "-"],
+      ["Freight", poForm.freight || "-"],
+      ["Taxes", poForm.taxes || "-"],
+      ["Payment", poForm.payment || "-"],
+      ["Special Remarks", poForm.specialRemarks || "-"],
+    ];
+    autoTable(doc, {
+      startY: doc.lastAutoTable.finalY + 6,
+      body: terms,
+      styles: { fontSize: 9, cellPadding: 1 },
+      tableWidth: 120,
+    });
+
+    const termsText = poForm.termsAndConditions || "";
+    if (termsText) {
+      doc.setFontSize(8);
+      const wrapped = doc.splitTextToSize(termsText, 180);
+      doc.text(wrapped, 14, doc.lastAutoTable.finalY + 8);
+    }
+
+    if (poForm.closingNote) {
+      doc.setFontSize(9);
+      const y = doc.lastAutoTable.finalY + (termsText ? 28 : 10);
+      doc.text(poForm.closingNote || "", 14, y);
+    }
+
+    doc.save(
+      `purchase-order-${poForm.supplierName
+        .trim()
+        .replace(/\s+/g, "-")
+        .toLowerCase()}.pdf`
     );
   }
 
@@ -551,6 +1019,620 @@ export default function Purchase() {
 
       {activeSub === "Purchase Order" && (
         <>
+      <div className="rounded-2xl border bg-white p-6">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h1 className="text-xl font-semibold">Purchase Order</h1>
+            <p className="mt-1 text-gray-600">
+              Create, save, and export PO in the required format.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={savePurchaseOrder}
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+            >
+              Save PO
+            </button>
+            <button
+              onClick={exportPurchaseOrderPdf}
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+            >
+              Download PDF
+            </button>
+            <button
+              onClick={exportPurchaseOrderCsv}
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+            >
+              Download CSV
+            </button>
+          </div>
+        </div>
+        {poErr && (
+          <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            {poErr}
+          </div>
+        )}
+
+        <div className="mt-4 grid gap-4 lg:grid-cols-3">
+          <div className="lg:col-span-2 space-y-4">
+            <div className="rounded-xl border p-4">
+              <h3 className="text-sm font-semibold text-gray-700">
+                Supplier Details
+              </h3>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <div>
+                  <label className="text-sm text-gray-600">
+                    Supplier (from master)
+                  </label>
+                  <select
+                    value={poForm.supplierId}
+                    onChange={(e) => applySupplierToPo(e.target.value)}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  >
+                    <option value="">Select supplier...</option>
+                    {suppliers.map((s) => (
+                      <option key={s._id} value={s._id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600">Supplier Name *</label>
+                  <input
+                    name="supplierName"
+                    value={poForm.supplierName}
+                    onChange={onPoChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600">Address</label>
+                  <input
+                    name="supplierAddress"
+                    value={poForm.supplierAddress}
+                    onChange={onPoChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600">Contact Person</label>
+                  <input
+                    name="contactPerson"
+                    value={poForm.contactPerson}
+                    onChange={onPoChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600">Phone</label>
+                  <input
+                    name="supplierPhone"
+                    value={poForm.supplierPhone}
+                    onChange={onPoChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600">Email</label>
+                  <input
+                    name="supplierEmail"
+                    value={poForm.supplierEmail}
+                    onChange={onPoChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-700">
+                  PO Line Items
+                </h3>
+                <button
+                  onClick={addPoItem}
+                  className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
+                >
+                  + Add Line
+                </button>
+              </div>
+              <div className="mt-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <label className="text-xs text-gray-600">
+                  Import Excel (Article Nr, Description, Part Nr, Qty, UOM,
+                  Unit Rate, Remark)
+                </label>
+                <input
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  onChange={(e) => handlePoExcelImport(e.target.files?.[0])}
+                  className="text-xs"
+                />
+              </div>
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="border-b text-gray-600">
+                    <tr>
+                      <th className="py-2 pr-3">Article Nr</th>
+                      <th className="py-2 pr-3">Description</th>
+                      <th className="py-2 pr-3">Part Nr</th>
+                      <th className="py-2 pr-3">Qty</th>
+                      <th className="py-2 pr-3">UOM</th>
+                      <th className="py-2 pr-3">Unit Rate</th>
+                      <th className="py-2 pr-3">Remark</th>
+                      <th className="py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {poItems.map((row, idx) => (
+                      <tr key={idx} className="border-b last:border-b-0">
+                        <td className="py-2 pr-3">
+                          <input
+                            value={row.articleNo}
+                            onChange={(e) =>
+                              onPoItemChange(idx, "articleNo", e.target.value)
+                            }
+                            className="w-28 rounded-lg border px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="py-2 pr-3">
+                          <input
+                            value={row.description}
+                            onChange={(e) =>
+                              onPoItemChange(idx, "description", e.target.value)
+                            }
+                            className="w-40 rounded-lg border px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="py-2 pr-3">
+                          <input
+                            value={row.partNo}
+                            onChange={(e) =>
+                              onPoItemChange(idx, "partNo", e.target.value)
+                            }
+                            className="w-32 rounded-lg border px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="py-2 pr-3">
+                          <input
+                            type="number"
+                            min="0"
+                            value={row.qty}
+                            onChange={(e) =>
+                              onPoItemChange(idx, "qty", e.target.value)
+                            }
+                            className="w-20 rounded-lg border px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="py-2 pr-3">
+                          <input
+                            value={row.uom}
+                            onChange={(e) =>
+                              onPoItemChange(idx, "uom", e.target.value)
+                            }
+                            className="w-20 rounded-lg border px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="py-2 pr-3">
+                          <input
+                            type="number"
+                            min="0"
+                            value={row.unitRate}
+                            onChange={(e) =>
+                              onPoItemChange(idx, "unitRate", e.target.value)
+                            }
+                            className="w-24 rounded-lg border px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="py-2 pr-3">
+                          <input
+                            value={row.remark}
+                            onChange={(e) =>
+                              onPoItemChange(idx, "remark", e.target.value)
+                            }
+                            className="w-28 rounded-lg border px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="py-2 text-right">
+                          {poItems.length > 1 && (
+                            <button
+                              onClick={() => removePoItem(idx)}
+                              className="rounded-lg border px-2 py-1 text-[11px] hover:bg-gray-50"
+                            >
+                              Remove
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="mt-3 text-xs text-gray-600">
+                Sub Total: {poTotals.subTotal.toFixed(2)} • Grand Total:{" "}
+                {poTotals.grandTotal.toFixed(2)}
+              </div>
+            </div>
+
+            <div className="rounded-xl border bg-white p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-700">
+                  PO Preview
+                </h3>
+                <span className="text-[11px] text-gray-500">
+                  Layout aligned with the PDF format
+                </span>
+              </div>
+
+              <div className="mt-4 flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <img
+                    src="/marivolt-logo.png"
+                    alt="Marivolt logo"
+                    className="h-10 w-auto"
+                  />
+                  <div className="text-sm font-semibold">Marivoltz ERP</div>
+                </div>
+                <div className="text-base font-semibold tracking-wide">
+                  Purchase Order
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                <div className="text-xs leading-5">
+                  <div className="text-sm font-semibold">
+                    {poForm.supplierName || "-"}
+                  </div>
+                  <div className="text-xs text-gray-600">
+                    {poForm.supplierAddress || "-"}
+                  </div>
+                  <div className="mt-2 text-xs text-gray-600">
+                    Tel: {poForm.supplierPhone || "-"}
+                  </div>
+                  <div className="text-xs text-gray-600">
+                    E-mail: {poForm.supplierEmail || "-"}
+                  </div>
+                </div>
+
+                <div className="text-[11px]">
+                  <div className="grid grid-cols-2 border border-gray-300">
+                    <div className="border-b border-r border-gray-300 p-2 font-semibold">
+                      Ref
+                    </div>
+                    <div className="border-b border-gray-300 p-2">
+                      {poForm.ref || "-"}
+                    </div>
+                    <div className="border-b border-r border-gray-300 p-2 font-semibold">
+                      Date
+                    </div>
+                    <div className="border-b border-gray-300 p-2">
+                      {poForm.orderDate || "-"}
+                    </div>
+                    <div className="border-b border-r border-gray-300 p-2 font-semibold">
+                      Int Ref
+                    </div>
+                    <div className="border-b border-gray-300 p-2">
+                      {poForm.intRef || "-"}
+                    </div>
+                    <div className="border-b border-r border-gray-300 p-2 font-semibold">
+                      Contact Person
+                    </div>
+                    <div className="border-b border-gray-300 p-2">
+                      {poForm.contactPerson || "-"}
+                    </div>
+                    <div className="border-b border-r border-gray-300 p-2 font-semibold">
+                      Supplier Ref
+                    </div>
+                    <div className="border-b border-gray-300 p-2">
+                      {poForm.supplierEmail || "-"}
+                    </div>
+                    <div className="border-b border-r border-gray-300 p-2 font-semibold">
+                      Offer Date
+                    </div>
+                    <div className="border-b border-gray-300 p-2">
+                      {poForm.offerDate || "-"}
+                    </div>
+                    <div className="border-b border-r border-gray-300 p-2 font-semibold">
+                      Currency
+                    </div>
+                    <div className="border-b border-gray-300 p-2">
+                      {poForm.currency || "-"}
+                    </div>
+                    <div className="border-b border-r border-gray-300 p-2 font-semibold">
+                      Order Value
+                    </div>
+                    <div className="border-b border-gray-300 p-2">
+                      {poTotals.grandTotal.toFixed(2)}
+                    </div>
+                    <div className="border-r border-gray-300 p-2 font-semibold">
+                      Nr of Pages
+                    </div>
+                    <div className="p-2">1</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 text-xs text-gray-700">
+                Ref your above mentioned Quotation, we are pleased to confirm the
+                order for following spares.
+              </div>
+
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full text-left text-xs border border-gray-300">
+                  <thead className="border-b border-gray-300 text-gray-700">
+                    <tr className="bg-gray-100">
+                      <th className="py-2 pr-3">Pos</th>
+                      <th className="py-2 pr-3">Article Nr</th>
+                      <th className="py-2 pr-3">Description</th>
+                      <th className="py-2 pr-3">Part Nr</th>
+                      <th className="py-2 pr-3">Qty</th>
+                      <th className="py-2 pr-3">UOM</th>
+                      <th className="py-2 pr-3">Unit Rate</th>
+                      <th className="py-2 pr-3">Total Amount</th>
+                      <th className="py-2 pr-3">Remark</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {poItems.length === 0 ? (
+                      <tr>
+                        <td className="py-3 text-gray-500" colSpan={9}>
+                          No items.
+                        </td>
+                      </tr>
+                    ) : (
+                      poItems.map((row, idx) => {
+                        const qty = Number(row.qty) || 0;
+                        const rate = Number(row.unitRate) || 0;
+                        return (
+                          <tr
+                            key={idx}
+                            className="border-b border-gray-200 last:border-b-0"
+                          >
+                            <td className="py-2 pr-3">{idx + 1}</td>
+                            <td className="py-2 pr-3">{row.articleNo || "-"}</td>
+                            <td className="py-2 pr-3">{row.description || "-"}</td>
+                            <td className="py-2 pr-3">{row.partNo || "-"}</td>
+                            <td className="py-2 pr-3">{qty || 0}</td>
+                            <td className="py-2 pr-3">{row.uom || "-"}</td>
+                            <td className="py-2 pr-3">
+                              {rate ? rate.toFixed(2) : "0.00"}
+                            </td>
+                            <td className="py-2 pr-3">
+                              {(qty * rate).toFixed(2)}
+                            </td>
+                            <td className="py-2 pr-3">{row.remark || ""}</td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-3 flex justify-end text-xs">
+                <div className="w-48">
+                  <div className="flex justify-between border-b py-1">
+                    <span>Sub Total</span>
+                    <span>{poTotals.subTotal.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between py-1 font-semibold">
+                    <span>Grand Total</span>
+                    <span>{poTotals.grandTotal.toFixed(2)}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-2 text-xs">
+                <div>
+                  <span className="font-semibold">Delivery:</span>{" "}
+                  {poForm.delivery || "-"}
+                </div>
+                <div>
+                  <span className="font-semibold">Insurance:</span>{" "}
+                  {poForm.insurance || "-"}
+                </div>
+                <div>
+                  <span className="font-semibold">Packing:</span>{" "}
+                  {poForm.packing || "-"}
+                </div>
+                <div>
+                  <span className="font-semibold">Freight:</span>{" "}
+                  {poForm.freight || "-"}
+                </div>
+                <div>
+                  <span className="font-semibold">Taxes:</span>{" "}
+                  {poForm.taxes || "-"}
+                </div>
+                <div>
+                  <span className="font-semibold">Payment:</span>{" "}
+                  {poForm.payment || "-"}
+                </div>
+                <div>
+                  <span className="font-semibold">Special Remarks:</span>{" "}
+                  {poForm.specialRemarks || "-"}
+                </div>
+              </div>
+
+              {poForm.termsAndConditions && (
+                <div className="mt-4 text-[11px] leading-5 text-gray-700">
+                  {poForm.termsAndConditions}
+                </div>
+              )}
+
+              {poForm.closingNote && (
+                <div className="mt-3 text-xs text-gray-700">
+                  {poForm.closingNote}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className="rounded-xl border p-4">
+              <h3 className="text-sm font-semibold text-gray-700">
+                Order Details
+              </h3>
+              <div className="mt-3 space-y-3">
+                <input
+                  name="ref"
+                  value={poForm.ref}
+                  onChange={onPoChange}
+                  placeholder="Ref"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                />
+                <input
+                  name="orderDate"
+                  value={poForm.orderDate}
+                  readOnly
+                  placeholder="Date (auto)"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                />
+                <input
+                  name="intRef"
+                  value={poForm.intRef}
+                  onChange={onPoChange}
+                  placeholder="Int Ref"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                />
+                <input
+                  name="offerDate"
+                  value={poForm.offerDate}
+                  onChange={onPoChange}
+                  placeholder="Offer Date"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                />
+                <select
+                  name="currency"
+                  value={poForm.currency}
+                  onChange={onPoChange}
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                >
+                  <option value="USD">USD</option>
+                  <option value="EUR">EUR</option>
+                  <option value="INR">INR</option>
+                  <option value="GBP">GBP</option>
+                  <option value="JPY">JPY</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="rounded-xl border p-4">
+              <h3 className="text-sm font-semibold text-gray-700">Terms</h3>
+              <div className="mt-3 space-y-3">
+                <input
+                  name="delivery"
+                  value={poForm.delivery}
+                  onChange={onPoChange}
+                  placeholder="Delivery"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                />
+                <input
+                  name="insurance"
+                  value={poForm.insurance}
+                  onChange={onPoChange}
+                  placeholder="Insurance"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                />
+                <input
+                  name="packing"
+                  value={poForm.packing}
+                  onChange={onPoChange}
+                  placeholder="Packing"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                />
+                <input
+                  name="freight"
+                  value={poForm.freight}
+                  onChange={onPoChange}
+                  placeholder="Freight"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                />
+                <input
+                  name="taxes"
+                  value={poForm.taxes}
+                  onChange={onPoChange}
+                  placeholder="Taxes"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                />
+                <input
+                  name="payment"
+                  value={poForm.payment}
+                  onChange={onPoChange}
+                  placeholder="Payment"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                />
+                <input
+                  name="specialRemarks"
+                  value={poForm.specialRemarks}
+                  onChange={onPoChange}
+                  placeholder="Special Remarks"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                />
+                <textarea
+                  name="termsAndConditions"
+                  value={poForm.termsAndConditions}
+                  onChange={onPoChange}
+                  rows={6}
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                />
+                <textarea
+                  name="closingNote"
+                  value={poForm.closingNote}
+                  onChange={onPoChange}
+                  rows={3}
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-xl border p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-700">
+                  Saved Purchase Orders
+                </h3>
+                <button
+                  onClick={loadPurchaseOrders}
+                  className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50"
+                >
+                  Refresh
+                </button>
+              </div>
+              <div className="mt-3">
+                {poLoading ? (
+                  <div className="text-xs text-gray-600">Loading...</div>
+                ) : poList.length === 0 ? (
+                  <div className="text-xs text-gray-500">No POs yet.</div>
+                ) : (
+                  <div className="space-y-2 max-h-56 overflow-y-auto">
+                    {poList.map((po) => (
+                      <button
+                        key={po._id}
+                        onClick={() => applyPurchaseOrder(po)}
+                        className={[
+                          "w-full text-left rounded-lg border px-3 py-2 text-xs hover:bg-gray-50",
+                          selectedPoId === po._id
+                            ? "border-gray-900 bg-gray-50"
+                            : "border-gray-200",
+                        ].join(" ")}
+                      >
+                        <div className="font-semibold">
+                          {po.supplierName} • {po.poNo}
+                        </div>
+                        <div className="text-[11px] text-gray-600">
+                          {po.orderDate || "-"} • {po.currency || "USD"} •{" "}
+                          {Number(po.grandTotal || 0).toFixed(2)}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="rounded-2xl border bg-white p-6">
         <h1 className="text-xl font-semibold">Purchase</h1>
         <p className="mt-1 text-gray-600">
