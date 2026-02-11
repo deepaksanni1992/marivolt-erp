@@ -34,6 +34,11 @@ function addPdfFooter(doc) {
     "Web: www.marivolt.co",
   ];
   doc.setFontSize(8);
+  const maxLines = Math.max(
+    leftLines.length,
+    centerLines.length,
+    rightLines.length
+  );
   for (let i = 1; i <= pageCount; i += 1) {
     doc.setPage(i);
     const pageHeight = doc.internal.pageSize.getHeight();
@@ -41,7 +46,13 @@ function addPdfFooter(doc) {
     const leftX = 14;
     const centerX = pageWidth / 2;
     const rightX = pageWidth - 14;
-    const baseY = pageHeight - 18;
+    const bottomMargin = 5.08;
+    const baseY = pageHeight - bottomMargin - (maxLines - 1) * 4;
+    const lineY = baseY - 2.5;
+    doc.setDrawColor(255, 173, 20);
+    doc.setLineWidth(1.2);
+    doc.line(leftX, lineY, rightX, lineY);
+    doc.setTextColor(255, 173, 20);
     leftLines.forEach((line, idx) => {
       doc.text(line, leftX, baseY + idx * 4, { align: "left" });
     });
@@ -51,6 +62,7 @@ function addPdfFooter(doc) {
     rightLines.forEach((line, idx) => {
       doc.text(line, rightX, baseY + idx * 4, { align: "right" });
     });
+    doc.setTextColor(0, 0, 0);
   }
 }
 
@@ -620,6 +632,7 @@ export default function Purchase() {
 
   async function exportPdf(title, headers, body, filename) {
     const doc = new jsPDF();
+    doc.setTextColor(0, 0, 0);
     const logo = await getLogoDataUrl();
     if (logo) {
       doc.addImage(logo, "PNG", 14, 8, 30, 15);
@@ -809,6 +822,7 @@ export default function Purchase() {
     }
 
     const doc = new jsPDF();
+    doc.setTextColor(0, 0, 0);
     const logo = await getLogoDataUrl();
     if (logo) {
       doc.addImage(logo, "PNG", 14, 8, 30, 15);
@@ -824,9 +838,9 @@ export default function Purchase() {
     ];
     autoTable(doc, {
       startY: 24,
-      theme: "plain",
+      theme: "grid",
       body: supplierInfo,
-      styles: { fontSize: 9, cellPadding: 1 },
+      styles: { fontSize: 10, cellPadding: 1 },
       tableWidth: 90,
     });
 
@@ -846,7 +860,7 @@ export default function Purchase() {
       startY: 24,
       margin: { left: 110 },
       body: orderInfo,
-      styles: { fontSize: 9, cellPadding: 1 },
+      styles: { fontSize: 10, cellPadding: 1 },
       tableWidth: 90,
       didDrawCell: (data) => {
         if (
@@ -866,12 +880,6 @@ export default function Purchase() {
     });
 
     doc.setFontSize(10);
-    const quoteY = doc.lastAutoTable.finalY + 6;
-    doc.text(
-      "Ref your above mentioned Quotation, we are pleased to confirm the order for following spares.",
-      14,
-      quoteY
-    );
 
     const itemRows = poItems.map((row, idx) => {
       const qty = Number(row.qty) || 0;
@@ -890,7 +898,8 @@ export default function Purchase() {
       ];
     });
     autoTable(doc, {
-      startY: quoteY + 6,
+      startY: doc.lastAutoTable.finalY + 6,
+      theme: "grid",
       head: [
         [
           "Pos",
@@ -905,7 +914,7 @@ export default function Purchase() {
         ],
       ],
       body: itemRows,
-      styles: { fontSize: 8 },
+      styles: { fontSize: 10 },
       headStyles: { fillColor: [230, 230, 230], textColor: 20 },
     });
 
@@ -913,11 +922,12 @@ export default function Purchase() {
     autoTable(doc, {
       startY: afterTableY,
       margin: { left: 130 },
+      theme: "grid",
       body: [
         ["Sub Total", poTotals.subTotal.toFixed(2)],
         ["Grand Total", poTotals.grandTotal.toFixed(2)],
       ],
-      styles: { fontSize: 9 },
+      styles: { fontSize: 10 },
       tableWidth: 60,
     });
 
@@ -932,8 +942,9 @@ export default function Purchase() {
     ];
     autoTable(doc, {
       startY: doc.lastAutoTable.finalY + 6,
+      theme: "grid",
       body: terms,
-      styles: { fontSize: 9, cellPadding: 1 },
+      styles: { fontSize: 10, cellPadding: 1 },
       tableWidth: 120,
     });
 
@@ -1594,7 +1605,7 @@ export default function Purchase() {
               </div>
             </div>
 
-            <div className="rounded-xl border bg-white p-4">
+            <div className="rounded-xl border bg-white p-4 font-[Calibri,Arial,sans-serif] text-[10px] text-black">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-gray-700">
                   PO Preview
@@ -1690,11 +1701,6 @@ export default function Purchase() {
                     <div className="p-2">{poPreviewPages}</div>
                   </div>
                 </div>
-              </div>
-
-              <div className="mt-8 text-xs text-gray-700">
-                Ref your above mentioned Quotation, we are pleased to confirm the
-                order for following spares.
               </div>
 
               <div className="mt-3 overflow-x-auto">
