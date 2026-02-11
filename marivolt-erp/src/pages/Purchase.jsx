@@ -1,12 +1,27 @@
 import { useEffect, useMemo, useState } from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import { apiGet, apiGetWithQuery, apiPost } from "../lib/api.js";
+import { apiDelete, apiGet, apiGetWithQuery, apiPost } from "../lib/api.js";
 
 export default function Purchase() {
+  const [activeSub, setActiveSub] = useState("Purchase Order");
   const [items, setItems] = useState([]);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
+  const [suppliers, setSuppliers] = useState([]);
+  const [supplierErr, setSupplierErr] = useState("");
+  const [supplierLoading, setSupplierLoading] = useState(false);
+  const [supplierQuery, setSupplierQuery] = useState("");
+  const [supplierForm, setSupplierForm] = useState({
+    name: "",
+    contactName: "",
+    phone: "",
+    email: "",
+    address: "",
+    gstNo: "",
+    panNo: "",
+    notes: "",
+  });
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyErr, setHistoryErr] = useState("");
@@ -43,6 +58,12 @@ export default function Purchase() {
     loadItems();
   }, []);
 
+  useEffect(() => {
+    if (activeSub === "Supplier") {
+      loadSuppliers();
+    }
+  }, [activeSub]);
+
   const selectedItem = useMemo(
     () => items.find((x) => x.sku === form.sku) || null,
     [items, form.sku]
@@ -51,6 +72,11 @@ export default function Purchase() {
   function onChange(e) {
     const { name, value } = e.target;
     setForm((p) => ({ ...p, [name]: value }));
+  }
+
+  function onSupplierChange(e) {
+    const { name, value } = e.target;
+    setSupplierForm((p) => ({ ...p, [name]: value }));
   }
 
   function onHistoryChange(e) {
@@ -74,6 +100,61 @@ export default function Purchase() {
       setHistoryErr(e.message || "Failed to load purchase history");
     } finally {
       setHistoryLoading(false);
+    }
+  }
+
+  async function loadSuppliers() {
+    setSupplierErr("");
+    setSupplierLoading(true);
+    try {
+      const data = await apiGet("/suppliers");
+      setSuppliers(data);
+    } catch (e) {
+      setSupplierErr(e.message || "Failed to load suppliers");
+    } finally {
+      setSupplierLoading(false);
+    }
+  }
+
+  async function addSupplier(e) {
+    e.preventDefault();
+    setSupplierErr("");
+
+    if (!supplierForm.name.trim()) {
+      setSupplierErr("Supplier name is required.");
+      return;
+    }
+
+    try {
+      const created = await apiPost("/suppliers", {
+        ...supplierForm,
+        name: supplierForm.name.trim(),
+      });
+      setSuppliers((prev) => [created, ...prev]);
+      setSupplierForm({
+        name: "",
+        contactName: "",
+        phone: "",
+        email: "",
+        address: "",
+        gstNo: "",
+        panNo: "",
+        notes: "",
+      });
+    } catch (e2) {
+      setSupplierErr(e2.message || "Failed to add supplier");
+    }
+  }
+
+  async function deleteSupplier(id) {
+    const ok = confirm("Delete this supplier?");
+    if (!ok) return;
+    setSupplierErr("");
+    try {
+      await apiDelete(`/suppliers/${id}`);
+      setSuppliers((prev) => prev.filter((s) => s._id !== id));
+    } catch (e) {
+      setSupplierErr(e.message || "Failed to delete supplier");
     }
   }
 
@@ -146,6 +227,16 @@ export default function Purchase() {
       ),
     };
   }, [historyFiltered]);
+
+  const filteredSuppliers = useMemo(() => {
+    const q = supplierQuery.trim().toLowerCase();
+    if (!q) return suppliers;
+    return suppliers.filter((s) =>
+      [s.name, s.contactName, s.phone, s.email, s.gstNo, s.panNo, s.address]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(q))
+    );
+  }, [suppliers, supplierQuery]);
 
   function downloadCsv(filename, rows) {
     const csv = rows
@@ -237,8 +328,229 @@ export default function Purchase() {
     );
   }
 
+  const subModules = [
+    "Supplier",
+    "Purchase Order",
+    "Purchase Return",
+    "Purchase Order Statement",
+  ];
+
   return (
     <div className="space-y-6">
+      <div className="rounded-2xl border bg-white p-3">
+        <div className="flex flex-wrap gap-2">
+          {subModules.map((label) => (
+            <button
+              key={label}
+              onClick={() => setActiveSub(label)}
+              className={[
+                "rounded-xl px-3 py-2 text-sm border",
+                activeSub === label
+                  ? "bg-gray-900 text-white border-gray-900"
+                  : "bg-white text-gray-700 hover:bg-gray-50",
+              ].join(" ")}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {activeSub === "Supplier" && (
+        <div className="space-y-6">
+          <div className="rounded-2xl border bg-white p-6">
+            <h2 className="text-base font-semibold">Supplier Master</h2>
+            <p className="mt-1 text-sm text-gray-600">
+              Manage suppliers used in purchase transactions.
+            </p>
+            {supplierErr && (
+              <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                {supplierErr}
+              </div>
+            )}
+          </div>
+
+          <div className="grid gap-6 lg:grid-cols-3">
+            <div className="rounded-2xl border bg-white p-6">
+              <h3 className="text-base font-semibold">Add Supplier</h3>
+              <form onSubmit={addSupplier} className="mt-4 space-y-3">
+                <div>
+                  <label className="text-sm text-gray-600">Name *</label>
+                  <input
+                    name="name"
+                    value={supplierForm.name}
+                    onChange={onSupplierChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600">Contact Name</label>
+                  <input
+                    name="contactName"
+                    value={supplierForm.contactName}
+                    onChange={onSupplierChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600">Phone</label>
+                  <input
+                    name="phone"
+                    value={supplierForm.phone}
+                    onChange={onSupplierChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600">Email</label>
+                  <input
+                    name="email"
+                    value={supplierForm.email}
+                    onChange={onSupplierChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600">GST No</label>
+                  <input
+                    name="gstNo"
+                    value={supplierForm.gstNo}
+                    onChange={onSupplierChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600">PAN No</label>
+                  <input
+                    name="panNo"
+                    value={supplierForm.panNo}
+                    onChange={onSupplierChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600">Address</label>
+                  <input
+                    name="address"
+                    value={supplierForm.address}
+                    onChange={onSupplierChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600">Notes</label>
+                  <input
+                    name="notes"
+                    value={supplierForm.notes}
+                    onChange={onSupplierChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <button className="w-full rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white">
+                  + Add Supplier
+                </button>
+              </form>
+            </div>
+
+            <div className="rounded-2xl border bg-white p-6 lg:col-span-2">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <h3 className="text-base font-semibold">Suppliers</h3>
+                <div className="flex gap-2">
+                  <input
+                    value={supplierQuery}
+                    onChange={(e) => setSupplierQuery(e.target.value)}
+                    className="w-full md:w-80 rounded-xl border px-3 py-2 text-sm"
+                    placeholder="Search suppliers..."
+                  />
+                  <button
+                    onClick={loadSuppliers}
+                    className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                  >
+                    Refresh
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                {supplierLoading ? (
+                  <div className="text-sm text-gray-600">Loading...</div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead className="border-b text-gray-600">
+                        <tr>
+                          <th className="py-2 pr-3">Name</th>
+                          <th className="py-2 pr-3">Contact</th>
+                          <th className="py-2 pr-3">Phone</th>
+                          <th className="py-2 pr-3">Email</th>
+                          <th className="py-2 pr-3">GST</th>
+                          <th className="py-2 pr-3">PAN</th>
+                          <th className="py-2 pr-3">Address</th>
+                          <th className="py-2"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredSuppliers.length === 0 ? (
+                          <tr>
+                            <td className="py-6 text-gray-500" colSpan={8}>
+                              No suppliers yet.
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredSuppliers.map((s) => (
+                            <tr key={s._id} className="border-b last:border-b-0">
+                              <td className="py-2 pr-3 font-medium">
+                                {s.name}
+                              </td>
+                              <td className="py-2 pr-3">
+                                {s.contactName || "-"}
+                              </td>
+                              <td className="py-2 pr-3">{s.phone || "-"}</td>
+                              <td className="py-2 pr-3">{s.email || "-"}</td>
+                              <td className="py-2 pr-3">{s.gstNo || "-"}</td>
+                              <td className="py-2 pr-3">{s.panNo || "-"}</td>
+                              <td className="py-2 pr-3">{s.address || "-"}</td>
+                              <td className="py-2 text-right">
+                                <button
+                                  onClick={() => deleteSupplier(s._id)}
+                                  className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
+                                >
+                                  Delete
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeSub === "Purchase Return" && (
+        <div className="rounded-2xl border bg-white p-6">
+          <h2 className="text-base font-semibold">Purchase Return</h2>
+          <p className="mt-1 text-sm text-gray-600">
+            Purchase return workflow will be added here.
+          </p>
+        </div>
+      )}
+
+      {activeSub === "Purchase Order Statement" && (
+        <div className="rounded-2xl border bg-white p-6">
+          <h2 className="text-base font-semibold">Purchase Order Statement</h2>
+          <p className="mt-1 text-sm text-gray-600">
+            Statement report will be added here.
+          </p>
+        </div>
+      )}
+
+      {activeSub === "Purchase Order" && (
+        <>
       <div className="rounded-2xl border bg-white p-6">
         <h1 className="text-xl font-semibold">Purchase</h1>
         <p className="mt-1 text-gray-600">
@@ -540,6 +852,8 @@ export default function Purchase() {
           </table>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

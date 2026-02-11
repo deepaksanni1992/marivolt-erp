@@ -11,6 +11,7 @@ import itemRoutes from "./routes/itemRoutes.js";
 import stockTxnRoutes from "./routes/stockTxnRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import purchaseRoutes from "./routes/purchaseRoutes.js";
+import supplierRoutes from "./routes/supplierRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -112,6 +113,7 @@ async function startServer() {
     app.use("/api/items", itemRoutes);
     app.use("/api/stock-txns", stockTxnRoutes);
     app.use("/api/purchase", purchaseRoutes);
+    app.use("/api/suppliers", supplierRoutes);
 
     // ---- HEALTH ----
     app.get("/api/health", (req, res) => {
