@@ -27,13 +27,9 @@ async function getLogoDataUrl() {
 function addPdfHeader(doc, logo) {
   if (!logo) return;
   const pageCount = doc.internal.getNumberOfPages();
-  const x = -16.002;
-  const y = -5.08;
-  const w = 39.116;
-  const h = 35.052;
   for (let i = 1; i <= pageCount; i += 1) {
     doc.setPage(i);
-    doc.addImage(logo, "PNG", x, y, w, h);
+    doc.addImage(logo, "PNG", 14, 8, 45, 18);
   }
 }
 
@@ -644,15 +640,17 @@ export default function Purchase() {
   }
 
   async function exportPdf(title, headers, body, filename) {
-    const doc = new jsPDF();
+    const doc = new jsPDF({ format: "a4", unit: "mm" });
     doc.setTextColor(0, 0, 0);
+    const logo = await getLogoDataUrl();
     doc.text(title, 14, 16);
     autoTable(doc, {
-      startY: 26,
+      startY: 38.1,
       head: [headers],
       body,
       styles: { fontSize: 9 },
     });
+    addPdfHeader(doc, logo);
     addPdfFooter(doc);
     doc.save(filename);
   }
@@ -830,8 +828,9 @@ export default function Purchase() {
       return;
     }
 
-    const doc = new jsPDF();
+    const doc = new jsPDF({ format: "a4", unit: "mm" });
     doc.setTextColor(0, 0, 0);
+    const logo = await getLogoDataUrl();
     doc.setFontSize(16);
     doc.text("Purchase Order", 150, 14, { align: "right" });
 
@@ -842,7 +841,7 @@ export default function Purchase() {
       [`E-mail: ${poForm.supplierEmail || "-"}`],
     ];
     autoTable(doc, {
-      startY: 24,
+      startY: 38.1,
       theme: "grid",
       body: supplierInfo,
       styles: { fontSize: 10, cellPadding: 1 },
@@ -862,7 +861,7 @@ export default function Purchase() {
     ];
     let nrPagesCell = null;
     autoTable(doc, {
-      startY: 24,
+      startY: 38.1,
       margin: { left: 110 },
       body: orderInfo,
       styles: { fontSize: 10, cellPadding: 1 },
@@ -976,6 +975,7 @@ export default function Purchase() {
         nrPagesCell.y + nrPagesCell.h - 2
       );
     }
+    addPdfHeader(doc, logo);
     addPdfFooter(doc);
     doc.save(
       `purchase-order-${poForm.supplierName
