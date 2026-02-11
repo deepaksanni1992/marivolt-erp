@@ -566,6 +566,11 @@ export default function Purchase() {
     return `${dateKey}.${nextSeq}`;
   }, [poList]);
 
+  const poPreviewPages = useMemo(() => {
+    const rowsPerPage = 20;
+    return Math.max(1, Math.ceil(poItems.length / rowsPerPage));
+  }, [poItems.length]);
+
   function downloadCsv(filename, rows) {
     const csv = rows
       .map((row) =>
@@ -834,21 +839,38 @@ export default function Purchase() {
       ["Offer Date", poForm.offerDate || "-"],
       ["Currency", poForm.currency || "-"],
       ["Order Value", poTotals.grandTotal.toFixed(2)],
-      ["Nr of Pages", "1"],
+      ["Nr of Pages", "auto"],
     ];
+    let nrPagesCell = null;
     autoTable(doc, {
       startY: 24,
       margin: { left: 110 },
       body: orderInfo,
       styles: { fontSize: 9, cellPadding: 1 },
       tableWidth: 90,
+      didDrawCell: (data) => {
+        if (
+          data.section === "body" &&
+          data.row.index === 8 &&
+          data.column.index === 1
+        ) {
+          nrPagesCell = {
+            x: data.cell.x,
+            y: data.cell.y,
+            w: data.cell.width,
+            h: data.cell.height,
+            pageNumber: doc.internal.getCurrentPageInfo().pageNumber,
+          };
+        }
+      },
     });
 
     doc.setFontSize(10);
+    const quoteY = doc.lastAutoTable.finalY + 6;
     doc.text(
       "Ref your above mentioned Quotation, we are pleased to confirm the order for following spares.",
       14,
-      68
+      quoteY
     );
 
     const itemRows = poItems.map((row, idx) => {
@@ -868,7 +890,7 @@ export default function Purchase() {
       ];
     });
     autoTable(doc, {
-      startY: 74,
+      startY: quoteY + 6,
       head: [
         [
           "Pos",
@@ -928,6 +950,16 @@ export default function Purchase() {
       doc.text(poForm.closingNote || "", 14, y);
     }
 
+    const pageCount = doc.internal.getNumberOfPages();
+    if (nrPagesCell) {
+      doc.setPage(nrPagesCell.pageNumber);
+      doc.setFontSize(9);
+      doc.text(
+        String(pageCount),
+        nrPagesCell.x + 1,
+        nrPagesCell.y + nrPagesCell.h - 2
+      );
+    }
     addPdfFooter(doc);
     doc.save(
       `purchase-order-${poForm.supplierName
@@ -1655,12 +1687,12 @@ export default function Purchase() {
                     <div className="border-r border-gray-300 p-2 font-semibold">
                       Nr of Pages
                     </div>
-                    <div className="p-2">1</div>
+                    <div className="p-2">{poPreviewPages}</div>
                   </div>
                 </div>
               </div>
 
-              <div className="mt-6 text-xs text-gray-700">
+              <div className="mt-8 text-xs text-gray-700">
                 Ref your above mentioned Quotation, we are pleased to confirm the
                 order for following spares.
               </div>
