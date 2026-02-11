@@ -39,36 +39,69 @@ async function startServer() {
     // ---- APP ----
     const app = express();
 
-    // ---- CORS (ONLY ONCE) ----
-    const allowedExactOrigins = [
-      "http://localhost:5173",
-      "http://127.0.0.1:5173",
-      "http://localhost:5174",
-      "http://127.0.0.1:5174",
-      "https://marivolt-erp.vercel.app",
-    ];
+    // ---- CORS (global fallback for dev) ----
+    app.use((req, res, next) => {
+      const origin = req.headers.origin || "*";
+      res.header("Access-Control-Allow-Origin", origin);
+      res.header("Vary", "Origin");
+      res.header(
+        "Access-Control-Allow-Methods",
+        "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+      );
+      res.header(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization"
+      );
+      res.header("Access-Control-Allow-Credentials", "true");
+      if (req.method === "OPTIONS") return res.sendStatus(204);
+      next();
+    });
 
-    function isAllowedOrigin(origin) {
-      if (!origin) return true; // Postman / server-to-server
-      if (allowedExactOrigins.includes(origin)) return true;
-      if (origin.endsWith(".vercel.app")) return true; // allow Vercel previews
-      return false;
+    // ---- CORS ----
+    if (process.env.NODE_ENV !== "production") {
+      // Dev: allow any localhost origin and tools like Postman
+      app.use(
+        cors({
+          origin: true,
+          credentials: true,
+        })
+      );
+      app.options(/.*/, cors());
+    } else {
+      const allowedExactOrigins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "https://marivolt-erp.vercel.app",
+      ];
+
+      function isAllowedOrigin(origin) {
+        if (!origin) return true; // Postman / server-to-server
+        if (allowedExactOrigins.includes(origin)) return true;
+        if (origin.endsWith(".vercel.app")) return true; // allow Vercel previews
+        if (
+          origin.startsWith("http://localhost:") ||
+          origin.startsWith("http://127.0.0.1:")
+        ) {
+          return true;
+        }
+        return false;
+      }
+
+      const corsOptions = {
+        origin: (origin, callback) => {
+          if (isAllowedOrigin(origin)) return callback(null, true);
+          return callback(new Error("Not allowed by CORS: " + origin));
+        },
+        credentials: true,
+        methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allowedHeaders: ["Content-Type", "Authorization"],
+      };
+
+      app.use(cors(corsOptions));
+      app.options(/.*/, cors(corsOptions));
     }
-
-    const corsOptions = {
-      origin: (origin, callback) => {
-        if (isAllowedOrigin(origin)) return callback(null, true);
-        return callback(new Error("Not allowed by CORS: " + origin));
-      },
-      credentials: true,
-      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization"],
-    };
-
-    app.use(cors(corsOptions));
-
-    // ✅ Preflight for ALL routes (fixes your crash vs app.options("*", ...))
-    app.options(/.*/, cors(corsOptions));
 
     // ---- MIDDLEWARE ----
     app.use(express.json({ limit: "2mb" }));
