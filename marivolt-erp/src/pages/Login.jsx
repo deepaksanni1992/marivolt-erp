@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { API_BASE } from "../lib/api.js";
 
@@ -9,6 +9,10 @@ export default function Login() {
   const [form, setForm] = useState({ email: "", password: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setForm({ email: "", password: "" });
+  }, []);
 
   function onChange(e) {
     setForm((p) => ({ ...p, [e.target.name]: e.target.value }));
@@ -90,7 +94,7 @@ export default function Login() {
               value={form.email}
               onChange={onChange}
               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-              placeholder="deepak007"
+              placeholder="Enter username or email"
               autoComplete="new-password"
               autoCapitalize="none"
               spellCheck="false"
@@ -105,7 +109,7 @@ export default function Login() {
               value={form.password}
               onChange={onChange}
               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-              placeholder="admin123"
+              placeholder="Enter password"
               autoComplete="new-password"
             />
           </div>
