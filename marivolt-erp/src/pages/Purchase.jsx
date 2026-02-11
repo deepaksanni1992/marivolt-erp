@@ -708,7 +708,7 @@ export default function Purchase() {
     doc.text(
       "Ref your above mentioned Quotation, we are pleased to confirm the order for following spares.",
       14,
-      60
+      64
     );
 
     const itemRows = poItems.map((row, idx) => {
@@ -728,7 +728,7 @@ export default function Purchase() {
       ];
     });
     autoTable(doc, {
-      startY: 65,
+      startY: 70,
       head: [
         [
           "Pos",
@@ -1353,7 +1353,7 @@ export default function Purchase() {
                 </div>
               </div>
 
-              <div className="mt-4 text-xs text-gray-700">
+              <div className="mt-6 text-xs text-gray-700">
                 Ref your above mentioned Quotation, we are pleased to confirm the
                 order for following spares.
               </div>
