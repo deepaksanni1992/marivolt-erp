@@ -644,17 +644,15 @@ export default function Purchase() {
   }
 
   async function exportPdf(title, headers, body, filename) {
-    const doc = new jsPDF({ format: "a4", unit: "mm" });
+    const doc = new jsPDF();
     doc.setTextColor(0, 0, 0);
-    const logo = await getLogoDataUrl();
     doc.text(title, 14, 16);
     autoTable(doc, {
-      startY: 38.1,
+      startY: 26,
       head: [headers],
       body,
       styles: { fontSize: 9 },
     });
-    addPdfHeader(doc, logo);
     addPdfFooter(doc);
     doc.save(filename);
   }
@@ -832,9 +830,8 @@ export default function Purchase() {
       return;
     }
 
-    const doc = new jsPDF({ format: "a4", unit: "mm" });
+    const doc = new jsPDF();
     doc.setTextColor(0, 0, 0);
-    const logo = await getLogoDataUrl();
     doc.setFontSize(16);
     doc.text("Purchase Order", 150, 14, { align: "right" });
 
@@ -845,7 +842,7 @@ export default function Purchase() {
       [`E-mail: ${poForm.supplierEmail || "-"}`],
     ];
     autoTable(doc, {
-      startY: 38.1,
+      startY: 24,
       theme: "grid",
       body: supplierInfo,
       styles: { fontSize: 10, cellPadding: 1 },
@@ -865,7 +862,7 @@ export default function Purchase() {
     ];
     let nrPagesCell = null;
     autoTable(doc, {
-      startY: 38.1,
+      startY: 24,
       margin: { left: 110 },
       body: orderInfo,
       styles: { fontSize: 10, cellPadding: 1 },
@@ -979,7 +976,6 @@ export default function Purchase() {
         nrPagesCell.y + nrPagesCell.h - 2
       );
     }
-    addPdfHeader(doc, logo);
     addPdfFooter(doc);
     doc.save(
       `purchase-order-${poForm.supplierName
@@ -1625,14 +1621,7 @@ export default function Purchase() {
               </div>
 
               <div className="mt-4 flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <img
-                    src="/marivolt-logo.png"
-                    alt="Marivolt logo"
-                    className="h-10 w-auto"
-                  />
-                  <div className="text-sm font-semibold">Marivoltz ERP</div>
-                </div>
+                <div className="text-sm font-semibold">Marivoltz ERP</div>
                 <div className="text-base font-semibold tracking-wide">
                   Purchase Order
                 </div>
