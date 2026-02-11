@@ -24,9 +24,31 @@ router.post("/po", async (req, res) => {
         ? String(body.poNo).trim()
         : `PO-${Date.now()}`;
 
+    let intRef = body.intRef && String(body.intRef).trim();
+    if (!intRef) {
+      const now = new Date();
+      const yy = String(now.getFullYear()).slice(-2);
+      const mm = String(now.getMonth() + 1).padStart(2, "0");
+      const dd = String(now.getDate()).padStart(2, "0");
+      const dateKey = `${yy}${mm}${dd}`;
+
+      const lastForDate = await PurchaseOrder.findOne({
+        intRef: new RegExp(`^${dateKey}\\.`, "i"),
+      }).sort({ intRef: -1 });
+
+      let nextSeq = 1;
+      if (lastForDate?.intRef) {
+        const parts = String(lastForDate.intRef).split(".");
+        const seq = Number(parts[1]);
+        if (!Number.isNaN(seq)) nextSeq = seq + 1;
+      }
+      intRef = `${dateKey}.${String(nextSeq).padStart(2, "0")}`;
+    }
+
     const po = await PurchaseOrder.create({
       ...body,
       poNo,
+      intRef,
       supplierName: String(body.supplierName).trim(),
     });
     res.json(po);

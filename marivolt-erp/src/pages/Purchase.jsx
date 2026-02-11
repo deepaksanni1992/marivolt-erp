@@ -4,6 +4,56 @@ import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import { apiDelete, apiGet, apiGetWithQuery, apiPost } from "../lib/api.js";
 
+let logoDataUrlPromise;
+
+async function getLogoDataUrl() {
+  if (!logoDataUrlPromise) {
+    logoDataUrlPromise = fetch("/marivolt-logo.png")
+      .then((res) => res.blob())
+      .then(
+        (blob) =>
+          new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob);
+          })
+      )
+      .catch(() => null);
+  }
+  return logoDataUrlPromise;
+}
+
+function addPdfFooter(doc) {
+  const pageCount = doc.internal.getNumberOfPages();
+  const leftLines = ["Marivolt FZE", "LV09B"];
+  const centerLines = ["Hamriyah freezone phase 2, Sharjah, UAE"];
+  const rightLines = [
+    "Mob: +971-543053047",
+    "Email: sales@marivolt.co",
+    "Web: www.marivolt.co",
+  ];
+  doc.setFontSize(8);
+  for (let i = 1; i <= pageCount; i += 1) {
+    doc.setPage(i);
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const leftX = 14;
+    const centerX = pageWidth / 2;
+    const rightX = pageWidth - 14;
+    const baseY = pageHeight - 18;
+    leftLines.forEach((line, idx) => {
+      doc.text(line, leftX, baseY + idx * 4, { align: "left" });
+    });
+    centerLines.forEach((line, idx) => {
+      doc.text(line, centerX, baseY + idx * 4, { align: "center" });
+    });
+    rightLines.forEach((line, idx) => {
+      doc.text(line, rightX, baseY + idx * 4, { align: "right" });
+    });
+  }
+}
+
 export default function Purchase() {
   const [activeSub, setActiveSub] = useState("Purchase Order");
   const [items, setItems] = useState([]);
@@ -62,6 +112,13 @@ export default function Purchase() {
   const [poLoading, setPoLoading] = useState(false);
   const [poErr, setPoErr] = useState("");
   const [selectedPoId, setSelectedPoId] = useState("");
+  const [poStatementFilters, setPoStatementFilters] = useState({
+    from: "",
+    to: "",
+    supplier: "",
+    status: "ALL",
+    q: "",
+  });
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyErr, setHistoryErr] = useState("");
@@ -111,6 +168,9 @@ export default function Purchase() {
         orderDate: p.orderDate || getTodayDisplay(),
       }));
     }
+    if (activeSub === "Purchase Order Statement") {
+      loadPurchaseOrders();
+    }
   }, [activeSub]);
 
   const selectedItem = useMemo(
@@ -131,6 +191,11 @@ export default function Purchase() {
   function onPoChange(e) {
     const { name, value } = e.target;
     setPoForm((p) => ({ ...p, [name]: value }));
+  }
+
+  function onPoStatementChange(e) {
+    const { name, value } = e.target;
+    setPoStatementFilters((p) => ({ ...p, [name]: value }));
   }
 
   function getTodayDisplay() {
@@ -286,6 +351,7 @@ export default function Purchase() {
 
     const payload = {
       ...poForm,
+      intRef: poForm.intRef || intRefPreview,
       items: itemsPayload,
       subTotal: poTotals.subTotal,
       grandTotal: poTotals.grandTotal,
@@ -435,6 +501,71 @@ export default function Purchase() {
     };
   }, [poItems]);
 
+  function parseOrderDate(value) {
+    if (!value) return null;
+    const parts = String(value).split("/");
+    if (parts.length === 3) {
+      const [dd, mm, yyyy] = parts.map((v) => Number(v));
+      if (dd && mm && yyyy) return new Date(yyyy, mm - 1, dd);
+    }
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const filteredPoList = useMemo(() => {
+    const from = poStatementFilters.from
+      ? new Date(poStatementFilters.from)
+      : null;
+    const to = poStatementFilters.to
+      ? new Date(poStatementFilters.to)
+      : null;
+    const supplierQ = poStatementFilters.supplier.trim().toLowerCase();
+    const q = poStatementFilters.q.trim().toLowerCase();
+
+    return poList.filter((po) => {
+      const poDate = parseOrderDate(po.orderDate);
+      if (from && poDate && poDate < from) return false;
+      if (to && poDate && poDate > to) return false;
+      if (
+        supplierQ &&
+        !String(po.supplierName || "").toLowerCase().includes(supplierQ)
+      ) {
+        return false;
+      }
+      if (poStatementFilters.status !== "ALL") {
+        if (String(po.status || "DRAFT") !== poStatementFilters.status) {
+          return false;
+        }
+      }
+      if (q) {
+        const hay = [
+          po.poNo,
+          po.intRef,
+          po.supplierName,
+          po.currency,
+          po.status,
+        ]
+          .filter(Boolean)
+          .map((v) => String(v).toLowerCase());
+        if (!hay.some((v) => v.includes(q))) return false;
+      }
+      return true;
+    });
+  }, [poList, poStatementFilters]);
+
+  const intRefPreview = useMemo(() => {
+    const d = new Date();
+    const yy = String(d.getFullYear()).slice(-2);
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const dateKey = `${yy}${mm}${dd}`;
+    const forDate = poList.filter(
+      (po) => String(po.intRef || "").startsWith(`${dateKey}.`)
+    );
+    const nextSeq = String(forDate.length + 1).padStart(2, "0");
+    return `${dateKey}.${nextSeq}`;
+  }, [poList]);
+
   function downloadCsv(filename, rows) {
     const csv = rows
       .map((row) =>
@@ -482,19 +613,24 @@ export default function Purchase() {
     downloadCsv("purchase-report-supplier.csv", rows);
   }
 
-  function exportPdf(title, headers, body, filename) {
+  async function exportPdf(title, headers, body, filename) {
     const doc = new jsPDF();
-    doc.text(title, 14, 16);
+    const logo = await getLogoDataUrl();
+    if (logo) {
+      doc.addImage(logo, "PNG", 14, 8, 30, 15);
+    }
+    doc.text(title, logo ? 48 : 14, 16);
     autoTable(doc, {
-      startY: 22,
+      startY: 26,
       head: [headers],
       body,
       styles: { fontSize: 9 },
     });
+    addPdfFooter(doc);
     doc.save(filename);
   }
 
-  function exportHistoryPdf() {
+  async function exportHistoryPdf() {
     const body = historyFiltered.map((tx) => [
       new Date(tx.createdAt).toLocaleDateString(),
       getSupplier(tx) || "-",
@@ -503,7 +639,7 @@ export default function Purchase() {
       tx.ref || "",
       tx.note || "",
     ]);
-    exportPdf(
+    await exportPdf(
       "Purchase History",
       ["Date", "Supplier", "SKU", "Qty", "Ref", "Note"],
       body,
@@ -511,13 +647,13 @@ export default function Purchase() {
     );
   }
 
-  function exportReportPdf() {
+  async function exportReportPdf() {
     const body = historySummary.rows.map((row) => [
       row.supplier,
       String(row.qty),
       String(row.count),
     ]);
-    exportPdf(
+    await exportPdf(
       "Purchase Report (Supplier)",
       ["Supplier", "Total Qty", "Entries"],
       body,
@@ -661,13 +797,17 @@ export default function Purchase() {
     }
   }
 
-  function exportPurchaseOrderPdf() {
+  async function exportPurchaseOrderPdf() {
     if (!poForm.supplierName.trim()) {
       alert("Supplier name is required for Purchase Order.");
       return;
     }
 
     const doc = new jsPDF();
+    const logo = await getLogoDataUrl();
+    if (logo) {
+      doc.addImage(logo, "PNG", 14, 8, 30, 15);
+    }
     doc.setFontSize(16);
     doc.text("Purchase Order", 150, 14, { align: "right" });
 
@@ -678,7 +818,7 @@ export default function Purchase() {
       [`E-mail: ${poForm.supplierEmail || "-"}`],
     ];
     autoTable(doc, {
-      startY: 20,
+      startY: 24,
       theme: "plain",
       body: supplierInfo,
       styles: { fontSize: 9, cellPadding: 1 },
@@ -697,7 +837,7 @@ export default function Purchase() {
       ["Nr of Pages", "1"],
     ];
     autoTable(doc, {
-      startY: 20,
+      startY: 24,
       margin: { left: 110 },
       body: orderInfo,
       styles: { fontSize: 9, cellPadding: 1 },
@@ -708,7 +848,7 @@ export default function Purchase() {
     doc.text(
       "Ref your above mentioned Quotation, we are pleased to confirm the order for following spares.",
       14,
-      64
+      68
     );
 
     const itemRows = poItems.map((row, idx) => {
@@ -728,7 +868,7 @@ export default function Purchase() {
       ];
     });
     autoTable(doc, {
-      startY: 70,
+      startY: 74,
       head: [
         [
           "Pos",
@@ -788,11 +928,46 @@ export default function Purchase() {
       doc.text(poForm.closingNote || "", 14, y);
     }
 
+    addPdfFooter(doc);
     doc.save(
       `purchase-order-${poForm.supplierName
         .trim()
         .replace(/\s+/g, "-")
         .toLowerCase()}.pdf`
+    );
+  }
+
+  function exportStatementCsv() {
+    const rows = [
+      ["PO No", "Int Ref", "Date", "Supplier", "Currency", "Total", "Status"],
+      ...filteredPoList.map((po) => [
+        po.poNo || "",
+        po.intRef || "",
+        po.orderDate || "",
+        po.supplierName || "",
+        po.currency || "",
+        Number(po.grandTotal || 0).toFixed(2),
+        po.status || "DRAFT",
+      ]),
+    ];
+    downloadCsv("purchase-order-statement.csv", rows);
+  }
+
+  async function exportStatementPdf() {
+    const body = filteredPoList.map((po) => [
+      po.poNo || "",
+      po.intRef || "",
+      po.orderDate || "",
+      po.supplierName || "",
+      po.currency || "",
+      Number(po.grandTotal || 0).toFixed(2),
+      po.status || "DRAFT",
+    ]);
+    await exportPdf(
+      "Purchase Order Statement",
+      ["PO No", "Int Ref", "Date", "Supplier", "Currency", "Total", "Status"],
+      body,
+      "purchase-order-statement.pdf"
     );
   }
 
@@ -1010,10 +1185,142 @@ export default function Purchase() {
 
       {activeSub === "Purchase Order Statement" && (
         <div className="rounded-2xl border bg-white p-6">
-          <h2 className="text-base font-semibold">Purchase Order Statement</h2>
-          <p className="mt-1 text-sm text-gray-600">
-            Statement report will be added here.
-          </p>
+          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-base font-semibold">
+                Purchase Order Statement
+              </h2>
+              <p className="mt-1 text-sm text-gray-600">
+                All saved purchase orders.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={loadPurchaseOrders}
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+              >
+                Refresh
+              </button>
+              <button
+                onClick={exportStatementCsv}
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+              >
+                Export CSV
+              </button>
+              <button
+                onClick={exportStatementPdf}
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+              >
+                Export PDF
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-5">
+            <div>
+              <label className="text-sm text-gray-600">From</label>
+              <input
+                type="date"
+                name="from"
+                value={poStatementFilters.from}
+                onChange={onPoStatementChange}
+                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-sm text-gray-600">To</label>
+              <input
+                type="date"
+                name="to"
+                value={poStatementFilters.to}
+                onChange={onPoStatementChange}
+                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-sm text-gray-600">Supplier</label>
+              <input
+                name="supplier"
+                value={poStatementFilters.supplier}
+                onChange={onPoStatementChange}
+                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                placeholder="Supplier name"
+              />
+            </div>
+            <div>
+              <label className="text-sm text-gray-600">Status</label>
+              <select
+                name="status"
+                value={poStatementFilters.status}
+                onChange={onPoStatementChange}
+                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+              >
+                <option value="ALL">All</option>
+                <option value="DRAFT">DRAFT</option>
+                <option value="SENT">SENT</option>
+                <option value="PARTIAL">PARTIAL</option>
+                <option value="CLOSED">CLOSED</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-sm text-gray-600">Search</label>
+              <input
+                name="q"
+                value={poStatementFilters.q}
+                onChange={onPoStatementChange}
+                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                placeholder="po / int ref / status"
+              />
+            </div>
+          </div>
+
+          <div className="mt-4">
+            {poLoading ? (
+              <div className="text-sm text-gray-600">Loading...</div>
+            ) : filteredPoList.length === 0 ? (
+              <div className="text-sm text-gray-500">No purchase orders.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b text-gray-600">
+                    <tr>
+                      <th className="py-2 pr-3">PO No</th>
+                      <th className="py-2 pr-3">Int Ref</th>
+                      <th className="py-2 pr-3">Date</th>
+                      <th className="py-2 pr-3">Supplier</th>
+                      <th className="py-2 pr-3">Currency</th>
+                      <th className="py-2 pr-3">Total</th>
+                      <th className="py-2 pr-3">Status</th>
+                      <th className="py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredPoList.map((po) => (
+                      <tr key={po._id} className="border-b last:border-b-0">
+                        <td className="py-2 pr-3 font-medium">{po.poNo}</td>
+                        <td className="py-2 pr-3">{po.intRef || "-"}</td>
+                        <td className="py-2 pr-3">{po.orderDate || "-"}</td>
+                        <td className="py-2 pr-3">{po.supplierName}</td>
+                        <td className="py-2 pr-3">{po.currency || "USD"}</td>
+                        <td className="py-2 pr-3">
+                          {Number(po.grandTotal || 0).toFixed(2)}
+                        </td>
+                        <td className="py-2 pr-3">{po.status || "DRAFT"}</td>
+                        <td className="py-2 text-right">
+                          <button
+                            onClick={() => applyPurchaseOrder(po)}
+                            className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
+                          >
+                            View
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -1490,9 +1797,9 @@ export default function Purchase() {
                 />
                 <input
                   name="intRef"
-                  value={poForm.intRef}
-                  onChange={onPoChange}
-                  placeholder="Int Ref"
+                  value={poForm.intRef || intRefPreview}
+                  readOnly
+                  placeholder="Int Ref (auto)"
                   className="w-full rounded-xl border px-3 py-2 text-sm"
                 />
                 <input
