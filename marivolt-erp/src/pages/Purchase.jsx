@@ -448,6 +448,11 @@ export default function Purchase() {
       return;
     }
 
+    const saveAsDraft = window.confirm(
+      "Save as Draft? Click OK for Draft, Cancel for Saved."
+    );
+    const status = saveAsDraft ? "DRAFT" : "SAVED";
+
     const itemsPayload = poItems.map((row) => {
       const qty = Number(row.qty) || 0;
       const unitRate = Number(row.unitRate) || 0;
@@ -467,6 +472,7 @@ export default function Purchase() {
     const payload = {
       ...poForm,
       intRef: poForm.intRef || intRefPreview,
+      status,
       items: itemsPayload,
       subTotal: poTotals.subTotal,
       grandTotal: poTotals.grandTotal,
@@ -1519,6 +1525,7 @@ export default function Purchase() {
               >
                 <option value="ALL">All</option>
                 <option value="DRAFT">DRAFT</option>
+                <option value="SAVED">SAVED</option>
                 <option value="SENT">SENT</option>
                 <option value="PARTIAL">PARTIAL</option>
                 <option value="CLOSED">CLOSED</option>
