@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 import { apiDelete, apiGet, apiPost } from "../lib/api.js";
 
 export default function Sales() {
@@ -36,6 +37,26 @@ export default function Sales() {
   const [ptgList, setPtgList] = useState([]);
   const [invoiceList, setInvoiceList] = useState([]);
   const [ciplList, setCiplList] = useState([]);
+
+  function downloadCsv(filename, rows) {
+    const csv = rows
+      .map((row) =>
+        row
+          .map((cell) =>
+            `"${String(cell ?? "")
+              .replace(/"/g, '""')
+              .replace(/\r?\n/g, " ")}"`
+          )
+          .join(",")
+      )
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
 
   async function loadCustomers() {
     setCustomerErr("");
@@ -259,6 +280,95 @@ export default function Sales() {
     );
   }, [customers, customerQuery]);
 
+  function exportCustomersCsv() {
+    const rows = [
+      [
+        "Name",
+        "Contact Name",
+        "Phone",
+        "Email",
+        "Address",
+        "Payment Terms",
+        "Notes",
+      ],
+      ...filteredCustomers.map((c) => [
+        c.name || "",
+        c.contactName || "",
+        c.phone || "",
+        c.email || "",
+        c.address || "",
+        c.paymentTerms || "",
+        c.notes || "",
+      ]),
+    ];
+    downloadCsv("customers.csv", rows);
+  }
+
+  async function handleCustomerImport(file) {
+    if (!file) return;
+    setCustomerErr("");
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+      const normalized = rows.map((row) => {
+        const entry = {};
+        Object.entries(row).forEach(([k, v]) => {
+          const key = String(k).toLowerCase().replace(/\s+/g, "");
+          entry[key] = v;
+        });
+        return entry;
+      });
+
+      const customersFromExcel = normalized.map((row) => {
+        const name =
+          row.name || row.customer || row.customername || row.company || "";
+        const contactName =
+          row.contactname || row.contactperson || row.contact || "";
+        const phone = row.phone || row.mobile || row.tel || "";
+        const email = row.email || "";
+        const address = row.address || "";
+        const rawTerms = String(row.paymentterms || row.terms || "").toUpperCase();
+        const paymentTerms = rawTerms.includes("ADV") ? "ADVANCE" : "CREDIT";
+        const notes = row.notes || row.note || "";
+
+        return {
+          name: String(name || "").trim(),
+          contactName: String(contactName || "").trim(),
+          phone: String(phone || "").trim(),
+          email: String(email || "").trim(),
+          address: String(address || "").trim(),
+          paymentTerms,
+          notes: String(notes || "").trim(),
+        };
+      });
+
+      const filtered = customersFromExcel.filter((row) => row.name);
+      if (!filtered.length) {
+        setCustomerErr("Excel import has no valid customer rows.");
+        return;
+      }
+
+      const results = await Promise.allSettled(
+        filtered.map((row) => apiPost("/sales/customers", row))
+      );
+      const created = results.filter((r) => r.status === "fulfilled").length;
+      const failed = results.length - created;
+      if (failed) {
+        setCustomerErr(
+          `Imported ${created} customers. ${failed} failed (duplicates or invalid).`
+        );
+      } else {
+        setCustomerErr(`Imported ${created} customers successfully.`);
+      }
+      await loadCustomers();
+    } catch (e) {
+      setCustomerErr(e.message || "Failed to import customers.");
+    }
+  }
+
   const subModules = [
     "Customer Master",
     "Quotation",
@@ -426,19 +536,38 @@ export default function Sales() {
           <div className="rounded-2xl border bg-white p-6 lg:col-span-2">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <h3 className="text-base font-semibold">Customers</h3>
-              <div className="flex gap-2">
-                <input
-                  value={customerQuery}
-                  onChange={(e) => setCustomerQuery(e.target.value)}
-                  className="w-full md:w-80 rounded-xl border px-3 py-2 text-sm"
-                  placeholder="Search customers..."
-                />
-                <button
-                  onClick={loadCustomers}
-                  className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-                >
-                  Refresh
-                </button>
+              <div className="flex flex-col gap-2 md:flex-row md:items-center">
+                <div className="flex gap-2">
+                  <input
+                    value={customerQuery}
+                    onChange={(e) => setCustomerQuery(e.target.value)}
+                    className="w-full md:w-80 rounded-xl border px-3 py-2 text-sm"
+                    placeholder="Search customers..."
+                  />
+                  <button
+                    onClick={loadCustomers}
+                    className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                <div className="flex gap-2 md:ml-2">
+                  <button
+                    onClick={exportCustomersCsv}
+                    className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                  >
+                    Export
+                  </button>
+                  <label className="inline-flex cursor-pointer items-center rounded-xl border px-3 py-2 text-sm hover:bg-gray-50">
+                    <span>Import Excel</span>
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls,.csv"
+                      onChange={(e) => handleCustomerImport(e.target.files?.[0])}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
               </div>
             </div>
             <div className="mt-4">
