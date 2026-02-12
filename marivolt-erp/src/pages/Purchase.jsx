@@ -945,7 +945,7 @@ export default function Purchase() {
       ["Offer Date", poForm.offerDate || "-"],
       ["Currency", poForm.currency || "-"],
       ["Order Value", poTotals.grandTotal.toFixed(2)],
-      ["Nr of Pages", "auto"],
+      ["Nr of Pages", ""],
     ];
     let nrPagesCell = null;
     autoTable(doc, {
