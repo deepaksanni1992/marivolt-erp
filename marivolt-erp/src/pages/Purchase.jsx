@@ -2,7 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
-import { apiDelete, apiGet, apiGetWithQuery, apiPost } from "../lib/api.js";
+import {
+  apiDelete,
+  apiGet,
+  apiGetWithQuery,
+  apiPost,
+  apiPut,
+} from "../lib/api.js";
 
 let headerImagePromise;
 
@@ -499,9 +505,17 @@ export default function Purchase() {
     };
 
     try {
-      const created = await apiPost("/purchase/po", payload);
-      setPoList((prev) => [created, ...prev]);
-      setSelectedPoId(created._id);
+      if (selectedPoId) {
+        const updated = await apiPut(`/purchase/po/${selectedPoId}`, payload);
+        setPoList((prev) =>
+          prev.map((po) => (po._id === updated._id ? updated : po))
+        );
+        setSelectedPoId(updated._id);
+      } else {
+        const created = await apiPost("/purchase/po", payload);
+        setPoList((prev) => [created, ...prev]);
+        setSelectedPoId(created._id);
+      }
       alert("Purchase Order saved ✅");
     } catch (e) {
       setPoErr(e.message || "Failed to save purchase order");

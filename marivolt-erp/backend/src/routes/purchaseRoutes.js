@@ -59,6 +59,75 @@ router.get("/po", async (req, res) => {
   res.json(pos);
 });
 
+function getNextIntRef(baseIntRef) {
+  const match = String(baseIntRef || "").match(/^(.*)R(\d+)$/);
+  if (match) {
+    const base = match[1];
+    const next = Number(match[2]) + 1;
+    return `${base}R${next}`;
+  }
+  return `${String(baseIntRef || "").trim()}R1`;
+}
+
+/* UPDATE PO (REVISION) */
+router.put("/po/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const body = req.body || {};
+
+    if (!body.supplierName || !String(body.supplierName).trim()) {
+      return res.status(400).json({ message: "Supplier name is required" });
+    }
+    if (!Array.isArray(body.items) || body.items.length === 0) {
+      return res.status(400).json({ message: "At least one item is required" });
+    }
+
+    const existing = await PurchaseOrder.findById(id);
+    if (!existing) {
+      return res.status(404).json({ message: "Purchase order not found" });
+    }
+
+    let baseIntRef = existing.intRef;
+    if (!baseIntRef) {
+      baseIntRef = body.intRef && String(body.intRef).trim();
+    }
+    if (!baseIntRef) {
+      const now = new Date();
+      const yy = String(now.getFullYear()).slice(-2);
+      const mm = String(now.getMonth() + 1).padStart(2, "0");
+      const dd = String(now.getDate()).padStart(2, "0");
+      const dateKey = `${yy}${mm}${dd}`;
+
+      const lastForDate = await PurchaseOrder.findOne({
+        intRef: new RegExp(`^${dateKey}\\.`, "i"),
+      }).sort({ intRef: -1 });
+
+      let nextSeq = 1;
+      if (lastForDate?.intRef) {
+        const parts = String(lastForDate.intRef).split(".");
+        const seq = Number(parts[1]);
+        if (!Number.isNaN(seq)) nextSeq = seq + 1;
+      }
+      baseIntRef = `${dateKey}.${String(nextSeq).padStart(2, "0")}`;
+    }
+
+    const revisedIntRef = getNextIntRef(baseIntRef);
+    const updated = await PurchaseOrder.findByIdAndUpdate(
+      id,
+      {
+        ...body,
+        intRef: revisedIntRef,
+        poNo: revisedIntRef,
+        supplierName: String(body.supplierName).trim(),
+      },
+      { new: true }
+    );
+    res.json(updated);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
 /* DELETE PO (DRAFT/SAVED ONLY) */
 router.delete("/po/:id", async (req, res) => {
   try {
