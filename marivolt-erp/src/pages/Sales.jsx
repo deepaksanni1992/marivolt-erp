@@ -906,7 +906,7 @@ export default function Sales() {
               </div>
 
               <div className="lg:col-span-2">
-                <div className="mb-3 grid gap-2 md:grid-cols-5">
+                <div className="mb-3 grid gap-2 md:grid-cols-4">
                   <div>
                     <label className="text-xs text-gray-600">Vertical</label>
                     <select
@@ -963,21 +963,6 @@ export default function Sales() {
                     >
                       <option value="">All</option>
                       {configOptions.map((v) => (
-                        <option key={v} value={v}>
-                          {v}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-600">Article</label>
-                    <select
-                      value={itemFilters.article}
-                      onChange={(e) => onItemFilterChange("article", e.target.value)}
-                      className="mt-1 w-full rounded-lg border px-2 py-1 text-xs"
-                    >
-                      <option value="">All</option>
-                      {articleOptions.map((v) => (
                         <option key={v} value={v}>
                           {v}
                         </option>
