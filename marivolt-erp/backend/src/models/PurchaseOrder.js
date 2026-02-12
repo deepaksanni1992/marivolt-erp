@@ -11,6 +11,7 @@ const poItemSchema = new mongoose.Schema(
     unitRate: { type: Number, default: 0 },
     remark: { type: String, default: "" },
     total: { type: Number, default: 0 },
+    receivedQty: { type: Number, default: 0 },
   },
   { _id: false }
 );

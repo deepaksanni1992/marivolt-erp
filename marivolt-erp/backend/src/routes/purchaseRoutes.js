@@ -43,6 +43,10 @@ router.post("/po", async (req, res) => {
 
     const po = await PurchaseOrder.create({
       ...body,
+      items: (body.items || []).map((item) => ({
+        ...item,
+        receivedQty: Number(item.receivedQty) || 0,
+      })),
       poNo,
       intRef,
       supplierName: String(body.supplierName).trim(),
@@ -87,6 +91,28 @@ router.put("/po/:id", async (req, res) => {
       return res.status(404).json({ message: "Purchase order not found" });
     }
 
+    const incomingItems = Array.isArray(body.items) ? body.items : [];
+    const incomingByArticle = new Map(
+      incomingItems.map((it) => [String(it.articleNo || "").trim(), it])
+    );
+    for (const item of existing.items || []) {
+      const receivedQty = Number(item.receivedQty) || 0;
+      if (receivedQty <= 0) continue;
+      const key = String(item.articleNo || "").trim();
+      const incoming = incomingByArticle.get(key);
+      if (!incoming) {
+        return res.status(400).json({
+          message: `Cannot remove item ${key || "with received qty"} because GRN exists`,
+        });
+      }
+      const nextQty = Number(incoming.qty) || 0;
+      if (nextQty < receivedQty) {
+        return res.status(400).json({
+          message: `Item ${key || "with received qty"} cannot be less than received qty`,
+        });
+      }
+    }
+
     let baseIntRef = existing.intRef;
     if (!baseIntRef) {
       baseIntRef = body.intRef && String(body.intRef).trim();
@@ -116,6 +142,10 @@ router.put("/po/:id", async (req, res) => {
       id,
       {
         ...body,
+        items: incomingItems.map((item) => ({
+          ...item,
+          receivedQty: Number(item.receivedQty) || 0,
+        })),
         intRef: revisedIntRef,
         poNo: revisedIntRef,
         supplierName: String(body.supplierName).trim(),
@@ -151,7 +181,66 @@ router.delete("/po/:id", async (req, res) => {
 /* CREATE GRN + AUTO STOCK IN */
 router.post("/grn", async (req, res) => {
   try {
-    const grn = await GRN.create(req.body);
+    const body = req.body || {};
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!body.poNo && !body.poId) {
+      return res.status(400).json({ message: "PO is required for GRN" });
+    }
+    if (!items.length) {
+      return res.status(400).json({ message: "At least one GRN item is required" });
+    }
+
+    const po =
+      (body.poId && (await PurchaseOrder.findById(body.poId))) ||
+      (body.poNo && (await PurchaseOrder.findOne({ poNo: body.poNo })));
+    if (!po) {
+      return res.status(404).json({ message: "Purchase order not found" });
+    }
+    if (!["SAVED", "PARTIAL"].includes(po.status)) {
+      return res
+        .status(400)
+        .json({ message: "Only SAVED/PARTIAL purchase orders can receive GRN" });
+    }
+
+    const poItemsByArticle = new Map(
+      (po.items || []).map((it) => [String(it.articleNo || "").trim(), it])
+    );
+
+    const grnItems = items.map((it) => ({
+      sku: String(it.sku || it.articleNo || "").trim(),
+      name: String(it.name || it.description || "").trim(),
+      qty: Number(it.qty) || 0,
+      uom: String(it.uom || "").trim(),
+      poNo: po.poNo,
+    }));
+
+    for (const grnItem of grnItems) {
+      if (!grnItem.sku || grnItem.qty <= 0) {
+        return res.status(400).json({ message: "Invalid GRN item data" });
+      }
+      const poItem = poItemsByArticle.get(grnItem.sku);
+      if (!poItem) {
+        return res
+          .status(400)
+          .json({ message: `Item ${grnItem.sku} not found in PO` });
+      }
+      const receivedQty = Number(poItem.receivedQty) || 0;
+      const orderedQty = Number(poItem.qty) || 0;
+      if (receivedQty + grnItem.qty > orderedQty) {
+        return res.status(400).json({
+          message: `GRN qty exceeds ordered qty for ${grnItem.sku}`,
+        });
+      }
+    }
+
+    const grn = await GRN.create({
+      grnNo: body.grnNo || `GRN-${Date.now()}`,
+      supplier: body.supplier || po.supplierName || "",
+      poNo: po.poNo,
+      items: grnItems,
+      note: body.note || "",
+      createdBy: body.createdBy || "",
+    });
 
     // ✅ Create stock transactions
     const txns = [];
@@ -169,13 +258,23 @@ router.post("/grn", async (req, res) => {
       await StockTxn.insertMany(txns);
     }
 
-    // Update PO status
-    if (grn.poNo) {
-      await PurchaseOrder.updateOne(
-        { poNo: grn.poNo },
-        { status: "CLOSED" }
-      );
-    }
+    // Update PO received qty + status
+    const updatedItems = (po.items || []).map((it) => {
+      const match = grnItems.find((g) => g.sku === String(it.articleNo || "").trim());
+      if (!match) return it;
+      const nextReceived = (Number(it.receivedQty) || 0) + match.qty;
+      return { ...it.toObject(), receivedQty: nextReceived };
+    });
+    const allReceived = updatedItems.every(
+      (it) => (Number(it.receivedQty) || 0) >= (Number(it.qty) || 0)
+    );
+    await PurchaseOrder.updateOne(
+      { _id: po._id },
+      {
+        items: updatedItems,
+        status: allReceived ? "CLOSED" : "PARTIAL",
+      }
+    );
 
     res.json(grn);
   } catch (err) {

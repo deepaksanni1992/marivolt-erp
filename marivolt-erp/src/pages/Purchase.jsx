@@ -216,6 +216,7 @@ export default function Purchase() {
       uom: "PCS",
       unitRate: "",
       remark: "",
+      receivedQty: 0,
     },
   ]);
   const [poList, setPoList] = useState([]);
@@ -320,6 +321,11 @@ export default function Purchase() {
     setPoItems((prev) =>
       prev.map((row, i) => {
         if (i !== index) return row;
+        if (field === "qty") {
+          const nextQty = Number(value) || 0;
+          const minQty = Number(row.receivedQty) || 0;
+          return { ...row, qty: nextQty < minQty ? minQty : nextQty };
+        }
         return { ...row, [field]: value };
       })
     );
@@ -336,6 +342,7 @@ export default function Purchase() {
         uom: "PCS",
         unitRate: "",
         remark: "",
+        receivedQty: 0,
       },
     ]);
   }
@@ -428,6 +435,7 @@ export default function Purchase() {
         uom: row.uom || "",
         unitRate: row.unitRate || 0,
         remark: row.remark || "",
+        receivedQty: row.receivedQty || 0,
       }))
     );
   }
@@ -492,6 +500,7 @@ export default function Purchase() {
         unitRate,
         remark: row.remark || "",
         total: qty * unitRate,
+        receivedQty: Number(row.receivedQty) || 0,
       };
     });
 
@@ -1028,6 +1037,7 @@ export default function Purchase() {
           uom: String(uom || "").trim(),
           unitRate: Number(unitRate) || 0,
           remark: String(remark || "").trim(),
+          receivedQty: 0,
         };
       });
 
@@ -1805,7 +1815,8 @@ export default function Purchase() {
                             onChange={(e) =>
                               onPoItemChange(idx, "articleNo", e.target.value)
                             }
-                            className="w-28 rounded-lg border px-2 py-1 text-xs"
+                            readOnly={(Number(row.receivedQty) || 0) > 0}
+                            className="w-28 rounded-lg border px-2 py-1 text-xs read-only:bg-gray-50"
                           />
                         </td>
                         <td className="py-2 pr-3">
@@ -1829,13 +1840,18 @@ export default function Purchase() {
                         <td className="py-2 pr-3">
                           <input
                             type="number"
-                            min="0"
+                            min={Number(row.receivedQty) || 0}
                             value={row.qty}
                             onChange={(e) =>
                               onPoItemChange(idx, "qty", e.target.value)
                             }
                             className="w-20 rounded-lg border px-2 py-1 text-xs"
                           />
+                          {(Number(row.receivedQty) || 0) > 0 && (
+                            <div className="mt-1 text-[10px] text-gray-500">
+                              Received: {row.receivedQty}
+                            </div>
+                          )}
                         </td>
                         <td className="py-2 pr-3">
                           <input
@@ -1870,7 +1886,8 @@ export default function Purchase() {
                           {poItems.length > 1 && (
                             <button
                               onClick={() => removePoItem(idx)}
-                              className="rounded-lg border px-2 py-1 text-[11px] hover:bg-gray-50"
+                              disabled={(Number(row.receivedQty) || 0) > 0}
+                              className="rounded-lg border px-2 py-1 text-[11px] hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               Remove
                             </button>
