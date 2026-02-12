@@ -6,6 +6,13 @@ import { apiDelete, apiGet, apiGetWithQuery, apiPost } from "../lib/api.js";
 
 let headerImagePromise;
 
+const TOP_MARGIN_MM = 38.1; // 1.5"
+const TOP_LINE_HEIGHT_MM = 4;
+const TOP_LINE_COUNT = 3;
+const EXTRA_TOP_SPACE_MM = TOP_LINE_HEIGHT_MM * TOP_LINE_COUNT;
+const HEADER_MARGIN_X = 14;
+const HEADER_TOP_Y = 6;
+
 async function getHeaderImage() {
   if (!headerImagePromise) {
     headerImagePromise = fetch("/marivolt-header.png")
@@ -39,16 +46,41 @@ async function getHeaderImage() {
   return headerImagePromise;
 }
 
+function getHeaderLayout(header, pageWidth) {
+  if (!header) return null;
+  const targetW = pageWidth - HEADER_MARGIN_X * 2;
+  const targetH = (targetW * header.height) / header.width;
+  return {
+    x: HEADER_MARGIN_X,
+    y: HEADER_TOP_Y,
+    w: targetW,
+    h: targetH,
+  };
+}
+
+function getContentStartY(doc, header) {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const layout = getHeaderLayout(header, pageWidth);
+  const headerBottom = layout ? layout.y + layout.h : 0;
+  return Math.max(TOP_MARGIN_MM, headerBottom) + EXTRA_TOP_SPACE_MM;
+}
+
 function addPdfHeader(doc, header) {
   if (!header) return;
   const pageCount = doc.internal.getNumberOfPages();
   const pageWidth = doc.internal.pageSize.getWidth();
-  const margin = 14;
-  const targetW = pageWidth - margin * 2;
-  const targetH = (targetW * header.height) / header.width;
+  const layout = getHeaderLayout(header, pageWidth);
+  if (!layout) return;
   for (let i = 1; i <= pageCount; i += 1) {
     doc.setPage(i);
-    doc.addImage(header.dataUrl, "PNG", margin, 6, targetW, targetH);
+    doc.addImage(
+      header.dataUrl,
+      "PNG",
+      layout.x,
+      layout.y,
+      layout.w,
+      layout.h
+    );
   }
 }
 
@@ -74,7 +106,7 @@ function addPdfFooter(doc) {
     const leftX = 14;
     const centerX = pageWidth / 2;
     const rightX = pageWidth - 14;
-    const bottomMargin = 5.08;
+    const bottomMargin = 38.1; // 1.5"
     const baseY = pageHeight - bottomMargin - (maxLines - 1) * 4;
     const lineY = baseY + maxLines * 4 + 1.5;
     doc.setDrawColor(255, 173, 20);
@@ -662,9 +694,10 @@ export default function Purchase() {
     const doc = new jsPDF({ format: "a4", unit: "mm" });
     doc.setTextColor(0, 0, 0);
     const header = await getHeaderImage();
-    doc.text(title, 14, 16);
+    const contentStartY = getContentStartY(doc, header);
+    doc.text(title, 14, contentStartY);
     autoTable(doc, {
-      startY: 38.1,
+      startY: contentStartY + 6,
       head: [headers],
       body,
       styles: { fontSize: 9 },
@@ -850,8 +883,9 @@ export default function Purchase() {
     const doc = new jsPDF({ format: "a4", unit: "mm" });
     doc.setTextColor(0, 0, 0);
     const header = await getHeaderImage();
+    const contentStartY = getContentStartY(doc, header);
     doc.setFontSize(16);
-    doc.text("Purchase Order", 150, 14, { align: "right" });
+    doc.text("Purchase Order", 150, contentStartY, { align: "right" });
 
     const supplierInfo = [
       [poForm.supplierName],
@@ -860,7 +894,7 @@ export default function Purchase() {
       [`E-mail: ${poForm.supplierEmail || "-"}`],
     ];
     autoTable(doc, {
-      startY: 38.1,
+      startY: contentStartY + 6,
       theme: "grid",
       body: supplierInfo,
       styles: { fontSize: 10, cellPadding: 1 },
@@ -880,7 +914,7 @@ export default function Purchase() {
     ];
     let nrPagesCell = null;
     autoTable(doc, {
-      startY: 38.1,
+      startY: contentStartY + 6,
       margin: { left: 110 },
       body: orderInfo,
       styles: { fontSize: 10, cellPadding: 1 },
