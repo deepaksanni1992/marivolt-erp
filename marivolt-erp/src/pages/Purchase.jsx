@@ -4,11 +4,11 @@ import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import { apiDelete, apiGet, apiGetWithQuery, apiPost } from "../lib/api.js";
 
-let logoDataUrlPromise;
+let headerImagePromise;
 
-async function getLogoDataUrl() {
-  if (!logoDataUrlPromise) {
-    logoDataUrlPromise = fetch("/marivolt-logo.png")
+async function getHeaderImage() {
+  if (!headerImagePromise) {
+    headerImagePromise = fetch("/marivolt-header.png")
       .then((res) => res.blob())
       .then(
         (blob) =>
@@ -19,17 +19,36 @@ async function getLogoDataUrl() {
             reader.readAsDataURL(blob);
           })
       )
+      .then(
+        (dataUrl) =>
+          new Promise((resolve) => {
+            if (!dataUrl) return resolve(null);
+            const img = new Image();
+            img.onload = () =>
+              resolve({
+                dataUrl,
+                width: img.naturalWidth,
+                height: img.naturalHeight,
+              });
+            img.onerror = () => resolve(null);
+            img.src = dataUrl;
+          })
+      )
       .catch(() => null);
   }
-  return logoDataUrlPromise;
+  return headerImagePromise;
 }
 
-function addPdfHeader(doc, logo) {
-  if (!logo) return;
+function addPdfHeader(doc, header) {
+  if (!header) return;
   const pageCount = doc.internal.getNumberOfPages();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 14;
+  const targetW = pageWidth - margin * 2;
+  const targetH = (targetW * header.height) / header.width;
   for (let i = 1; i <= pageCount; i += 1) {
     doc.setPage(i);
-    doc.addImage(logo, "PNG", 14, 8, 45, 18);
+    doc.addImage(header.dataUrl, "PNG", margin, 6, targetW, targetH);
   }
 }
 
@@ -642,7 +661,7 @@ export default function Purchase() {
   async function exportPdf(title, headers, body, filename) {
     const doc = new jsPDF({ format: "a4", unit: "mm" });
     doc.setTextColor(0, 0, 0);
-    const logo = await getLogoDataUrl();
+    const header = await getHeaderImage();
     doc.text(title, 14, 16);
     autoTable(doc, {
       startY: 38.1,
@@ -650,7 +669,7 @@ export default function Purchase() {
       body,
       styles: { fontSize: 9 },
     });
-    addPdfHeader(doc, logo);
+    addPdfHeader(doc, header);
     addPdfFooter(doc);
     doc.save(filename);
   }
@@ -830,7 +849,7 @@ export default function Purchase() {
 
     const doc = new jsPDF({ format: "a4", unit: "mm" });
     doc.setTextColor(0, 0, 0);
-    const logo = await getLogoDataUrl();
+    const header = await getHeaderImage();
     doc.setFontSize(16);
     doc.text("Purchase Order", 150, 14, { align: "right" });
 
@@ -975,7 +994,7 @@ export default function Purchase() {
         nrPagesCell.y + nrPagesCell.h - 2
       );
     }
-    addPdfHeader(doc, logo);
+    addPdfHeader(doc, header);
     addPdfFooter(doc);
     doc.save(
       `purchase-order-${poForm.supplierName
