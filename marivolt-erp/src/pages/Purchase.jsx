@@ -12,6 +12,8 @@ const TOP_LINE_COUNT = 3;
 const EXTRA_TOP_SPACE_MM = TOP_LINE_HEIGHT_MM * TOP_LINE_COUNT;
 const HEADER_MARGIN_X = 14;
 const HEADER_TOP_Y = 6;
+const FOOTER_MARGIN_MM = 38.1; // 1.5"
+const FOOTER_SAFE_GAP_MM = 6;
 
 async function getHeaderImage() {
   if (!headerImagePromise) {
@@ -106,7 +108,7 @@ function addPdfFooter(doc) {
     const leftX = 14;
     const centerX = pageWidth / 2;
     const rightX = pageWidth - 14;
-    const bottomMargin = 38.1; // 1.5"
+    const bottomMargin = FOOTER_MARGIN_MM;
     const baseY = pageHeight - bottomMargin - (maxLines - 1) * 4;
     const lineY = baseY + maxLines * 4 + 1.5;
     doc.setDrawColor(255, 173, 20);
@@ -698,6 +700,7 @@ export default function Purchase() {
     doc.text(title, 14, contentStartY);
     autoTable(doc, {
       startY: contentStartY + 6,
+      margin: { bottom: FOOTER_MARGIN_MM + FOOTER_SAFE_GAP_MM },
       head: [headers],
       body,
       styles: { fontSize: 9 },
@@ -956,6 +959,7 @@ export default function Purchase() {
     });
     autoTable(doc, {
       startY: doc.lastAutoTable.finalY + 6,
+      margin: { bottom: FOOTER_MARGIN_MM + FOOTER_SAFE_GAP_MM },
       theme: "grid",
       head: [
         [
@@ -978,7 +982,10 @@ export default function Purchase() {
     const afterTableY = doc.lastAutoTable.finalY + 4;
     autoTable(doc, {
       startY: afterTableY,
-      margin: { left: 130 },
+      margin: {
+        left: 130,
+        bottom: FOOTER_MARGIN_MM + FOOTER_SAFE_GAP_MM,
+      },
       theme: "grid",
       body: [
         ["Sub Total", poTotals.subTotal.toFixed(2)],
@@ -999,6 +1006,7 @@ export default function Purchase() {
     ];
     autoTable(doc, {
       startY: doc.lastAutoTable.finalY + 6,
+      margin: { bottom: FOOTER_MARGIN_MM + FOOTER_SAFE_GAP_MM },
       theme: "grid",
       body: terms,
       styles: { fontSize: 10, cellPadding: 1 },
