@@ -698,9 +698,13 @@ export default function Purchase() {
     const header = await getHeaderImage();
     const contentStartY = getContentStartY(doc, header);
     doc.text(title, 14, contentStartY);
+    const tableTopMargin = contentStartY + 6;
     autoTable(doc, {
-      startY: contentStartY + 6,
-      margin: { bottom: FOOTER_MARGIN_MM + FOOTER_SAFE_GAP_MM },
+      startY: tableTopMargin,
+      margin: {
+        top: tableTopMargin,
+        bottom: FOOTER_MARGIN_MM + FOOTER_SAFE_GAP_MM,
+      },
       head: [headers],
       body,
       styles: { fontSize: 9 },
@@ -957,9 +961,13 @@ export default function Purchase() {
         row.remark || "",
       ];
     });
+    const poTableTopMargin = contentStartY + 6;
     autoTable(doc, {
       startY: doc.lastAutoTable.finalY + 6,
-      margin: { bottom: FOOTER_MARGIN_MM + FOOTER_SAFE_GAP_MM },
+      margin: {
+        top: poTableTopMargin,
+        bottom: FOOTER_MARGIN_MM + FOOTER_SAFE_GAP_MM,
+      },
       theme: "grid",
       head: [
         [
