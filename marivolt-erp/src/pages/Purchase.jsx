@@ -14,6 +14,12 @@ const HEADER_MARGIN_X = 14;
 const HEADER_TOP_Y = 6;
 const FOOTER_MARGIN_MM = 38.1; // 1.5"
 const FOOTER_SAFE_GAP_MM = 6;
+const FOOTER_MAX_LINES = 3; // Update if footer text lines change
+const FOOTER_TEXT_LINE_HEIGHT_MM = 4;
+const FOOTER_TEXT_HEIGHT_MM =
+  (FOOTER_MAX_LINES - 1) * FOOTER_TEXT_LINE_HEIGHT_MM;
+const FOOTER_RESERVED_MM =
+  FOOTER_MARGIN_MM + FOOTER_TEXT_HEIGHT_MM + FOOTER_SAFE_GAP_MM;
 
 async function getHeaderImage() {
   if (!headerImagePromise) {
@@ -96,11 +102,7 @@ function addPdfFooter(doc) {
     "Web: www.marivolt.co",
   ];
   doc.setFontSize(8);
-  const maxLines = Math.max(
-    leftLines.length,
-    centerLines.length,
-    rightLines.length
-  );
+  const maxLines = FOOTER_MAX_LINES;
   for (let i = 1; i <= pageCount; i += 1) {
     doc.setPage(i);
     const pageHeight = doc.internal.pageSize.getHeight();
@@ -126,6 +128,26 @@ function addPdfFooter(doc) {
     });
     doc.setTextColor(0, 0, 0);
   }
+}
+
+function drawWrappedText(doc, header, text, startY, options) {
+  const { x = 14, maxWidth = 180, fontSize = 9, lineHeight = 4.5 } =
+    options || {};
+  if (!text) return startY;
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const topY = getContentStartY(doc, header);
+  let y = startY;
+  doc.setFontSize(fontSize);
+  const lines = doc.splitTextToSize(text, maxWidth);
+  lines.forEach((line) => {
+    if (y > pageHeight - FOOTER_RESERVED_MM) {
+      doc.addPage();
+      y = topY;
+    }
+    doc.text(line, x, y);
+    y += lineHeight;
+  });
+  return y;
 }
 
 export default function Purchase() {
@@ -703,7 +725,7 @@ export default function Purchase() {
       startY: tableTopMargin,
       margin: {
         top: tableTopMargin,
-        bottom: FOOTER_MARGIN_MM + FOOTER_SAFE_GAP_MM,
+        bottom: FOOTER_RESERVED_MM,
       },
       head: [headers],
       body,
@@ -966,7 +988,7 @@ export default function Purchase() {
       startY: doc.lastAutoTable.finalY + 6,
       margin: {
         top: poTableTopMargin,
-        bottom: FOOTER_MARGIN_MM + FOOTER_SAFE_GAP_MM,
+        bottom: FOOTER_RESERVED_MM,
       },
       theme: "grid",
       head: [
@@ -992,7 +1014,7 @@ export default function Purchase() {
       startY: afterTableY,
       margin: {
         left: 130,
-        bottom: FOOTER_MARGIN_MM + FOOTER_SAFE_GAP_MM,
+        bottom: FOOTER_RESERVED_MM,
       },
       theme: "grid",
       body: [
@@ -1014,7 +1036,7 @@ export default function Purchase() {
     ];
     autoTable(doc, {
       startY: doc.lastAutoTable.finalY + 6,
-      margin: { bottom: FOOTER_MARGIN_MM + FOOTER_SAFE_GAP_MM },
+      margin: { bottom: FOOTER_RESERVED_MM },
       theme: "grid",
       body: terms,
       styles: { fontSize: 10, cellPadding: 1 },
@@ -1022,16 +1044,22 @@ export default function Purchase() {
     });
 
     const termsText = poForm.termsAndConditions || "";
+    let textY = doc.lastAutoTable.finalY + 8;
     if (termsText) {
-      doc.setFontSize(8);
-      const wrapped = doc.splitTextToSize(termsText, 180);
-      doc.text(wrapped, 14, doc.lastAutoTable.finalY + 8);
+      textY = drawWrappedText(doc, header, termsText, textY, {
+        fontSize: 8,
+        lineHeight: 4,
+        maxWidth: 180,
+      });
     }
 
     if (poForm.closingNote) {
-      doc.setFontSize(9);
-      const y = doc.lastAutoTable.finalY + (termsText ? 28 : 10);
-      doc.text(poForm.closingNote || "", 14, y);
+      textY += 6;
+      drawWrappedText(doc, header, poForm.closingNote || "", textY, {
+        fontSize: 9,
+        lineHeight: 4.5,
+        maxWidth: 180,
+      });
     }
 
     const pageCount = doc.internal.getNumberOfPages();
