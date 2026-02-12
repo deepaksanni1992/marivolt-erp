@@ -1039,6 +1039,8 @@ export default function Purchase() {
       margin: getTableMargins(poTableTopMargin),
       theme: "grid",
       body: terms,
+      pageBreak: "avoid",
+      rowPageBreak: "avoid",
       styles: { fontSize: 10, cellPadding: 1 },
       tableWidth: 120,
     });
