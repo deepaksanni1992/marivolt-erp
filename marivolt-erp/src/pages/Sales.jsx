@@ -1017,7 +1017,7 @@ export default function Sales() {
                   <table className="w-full text-left text-xs">
                     <thead className="border-b text-gray-600">
                       <tr>
-                        <th className="py-2 pr-3">SKU</th>
+                        <th className="py-2 pr-3">Article</th>
                         <th className="py-2 pr-3">Description</th>
                         <th className="py-2 pr-3">UOM</th>
                         <th className="py-2 pr-3">Qty</th>
@@ -1040,10 +1040,10 @@ export default function Sales() {
                                 }
                                 className="w-32 rounded-lg border px-2 py-1 text-xs"
                               >
-                                <option value="">Select...</option>
+                                <option value="">Select article...</option>
                                 {filteredItemsForSku.map((it) => (
                                   <option key={it._id} value={it.sku}>
-                                    {it.sku}
+                                    {it.article || it.sku}
                                   </option>
                                 ))}
                               </select>
