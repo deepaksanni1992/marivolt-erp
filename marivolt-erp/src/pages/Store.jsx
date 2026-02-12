@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
 import { apiGet, apiPost } from "../lib/api.js";
 
 export default function Store() {
@@ -12,6 +15,9 @@ export default function Store() {
   const [grnErr, setGrnErr] = useState("");
   const [grnSaving, setGrnSaving] = useState(false);
   const [grnSuccess, setGrnSuccess] = useState("");
+  const [grnList, setGrnList] = useState([]);
+  const [grnLoading, setGrnLoading] = useState(false);
+  const [grnReportErr, setGrnReportErr] = useState("");
 
   async function loadPurchaseOrders() {
     setPoErr("");
@@ -28,7 +34,21 @@ export default function Store() {
 
   useEffect(() => {
     loadPurchaseOrders();
+    loadGrns();
   }, []);
+
+  async function loadGrns() {
+    setGrnReportErr("");
+    setGrnLoading(true);
+    try {
+      const data = await apiGet("/purchase/grn");
+      setGrnList(data);
+    } catch (e) {
+      setGrnReportErr(e.message || "Failed to load GRN report");
+    } finally {
+      setGrnLoading(false);
+    }
+  }
 
   const eligiblePos = useMemo(
     () => poList.filter((po) => ["SAVED", "PARTIAL"].includes(po.status)),
@@ -56,6 +76,132 @@ export default function Store() {
       }))
     );
   }, [selectedPo]);
+
+  function downloadCsv(filename, rows) {
+    const csv = rows
+      .map((row) =>
+        row
+          .map((cell) =>
+            `"${String(cell ?? "")
+              .replace(/"/g, '""')
+              .replace(/\r?\n/g, " ")}"`
+          )
+          .join(",")
+      )
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
+  async function handleGrnImport(file) {
+    if (!file) return;
+    setGrnErr("");
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      const normalized = rows.map((row) => {
+        const entry = {};
+        Object.entries(row).forEach(([k, v]) => {
+          const key = String(k).toLowerCase().replace(/\s+/g, "");
+          entry[key] = v;
+        });
+        return entry;
+      });
+
+      setGrnItems((prev) =>
+        prev.map((row) => {
+          const match = normalized.find((r) => {
+            const article =
+              r.articlenr || r.article || r.articleno || r.articlenumber || "";
+            return String(article || "").trim() === row.articleNo;
+          });
+          if (!match) return row;
+          const qty = match.receivenow || match.receive || match.qty || 0;
+          const maxQty = Math.max(0, row.orderedQty - row.receivedQty);
+          const next = Math.max(0, Math.min(Number(qty) || 0, maxQty));
+          return { ...row, receiveQty: next };
+        })
+      );
+    } catch (e) {
+      setGrnErr(e.message || "Failed to import GRN Excel.");
+    }
+  }
+
+  function exportGrnCsv() {
+    if (!selectedPo) {
+      setGrnErr("Select a purchase order.");
+      return;
+    }
+    const rows = [
+      ["PO No", selectedPo.poNo || ""],
+      ["Supplier", selectedPo.supplierName || ""],
+      [],
+      ["Article", "Description", "UOM", "Ordered", "Received", "Receive Now"],
+      ...grnItems.map((row) => [
+        row.articleNo || "",
+        row.description || "",
+        row.uom || "",
+        row.orderedQty || 0,
+        row.receivedQty || 0,
+        row.receiveQty || 0,
+      ]),
+    ];
+    downloadCsv(`grn-${selectedPo.poNo || "po"}.csv`, rows);
+  }
+
+  async function exportGrnReportCsv() {
+    const rows = [
+      ["GRN No", "Date", "PO No", "Supplier", "Items", "Total Qty"],
+      ...grnList.map((g) => {
+        const totalQty = (g.items || []).reduce(
+          (sum, it) => sum + (Number(it.qty) || 0),
+          0
+        );
+        return [
+          g.grnNo || "",
+          g.createdAt ? new Date(g.createdAt).toLocaleDateString() : "",
+          g.poNo || "",
+          g.supplier || "",
+          (g.items || []).length,
+          totalQty,
+        ];
+      }),
+    ];
+    downloadCsv("grn-report.csv", rows);
+  }
+
+  async function exportGrnReportPdf() {
+    const doc = new jsPDF({ format: "a4", unit: "mm" });
+    doc.setTextColor(0, 0, 0);
+    doc.text("GRN Report", 14, 16);
+    const body = grnList.map((g) => {
+      const totalQty = (g.items || []).reduce(
+        (sum, it) => sum + (Number(it.qty) || 0),
+        0
+      );
+      return [
+        g.grnNo || "",
+        g.createdAt ? new Date(g.createdAt).toLocaleDateString() : "",
+        g.poNo || "",
+        g.supplier || "",
+        String((g.items || []).length),
+        String(totalQty),
+      ];
+    });
+    autoTable(doc, {
+      startY: 22,
+      head: [["GRN No", "Date", "PO No", "Supplier", "Items", "Total Qty"]],
+      body,
+      styles: { fontSize: 9 },
+    });
+    doc.save("grn-report.pdf");
+  }
 
   function onReceiveQtyChange(index, value) {
     setGrnItems((prev) =>
@@ -102,6 +248,7 @@ export default function Store() {
       setGrnNote("");
       setGrnItems([]);
       await loadPurchaseOrders();
+      await loadGrns();
     } catch (e) {
       setGrnErr(e.message || "Failed to save GRN");
     } finally {
@@ -109,7 +256,7 @@ export default function Store() {
     }
   }
 
-  const subModules = ["GRN"];
+  const subModules = ["GRN", "GRN Report"];
 
   return (
     <div className="space-y-6">
@@ -141,12 +288,29 @@ export default function Store() {
                 Create GRN from Saved/Partial purchase orders.
               </p>
             </div>
-            <button
-              onClick={loadPurchaseOrders}
-              className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-            >
-              Refresh POs
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <label className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 cursor-pointer">
+                Import
+                <input
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  onChange={(e) => handleGrnImport(e.target.files?.[0])}
+                  className="hidden"
+                />
+              </label>
+              <button
+                onClick={exportGrnCsv}
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+              >
+                Export
+              </button>
+              <button
+                onClick={loadPurchaseOrders}
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+              >
+                Refresh POs
+              </button>
+            </div>
           </div>
 
           {poErr && (
@@ -263,6 +427,96 @@ export default function Store() {
                 reduced below received quantity.
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {activeSub === "GRN Report" && (
+        <div className="rounded-2xl border bg-white p-6 space-y-4">
+          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h1 className="text-xl font-semibold">GRN Report</h1>
+              <p className="mt-1 text-sm text-gray-600">
+                All saved GRNs.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={loadGrns}
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+              >
+                Refresh
+              </button>
+              <button
+                onClick={exportGrnReportCsv}
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+              >
+                Export CSV
+              </button>
+              <button
+                onClick={exportGrnReportPdf}
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+              >
+                Export PDF
+              </button>
+            </div>
+          </div>
+
+          {grnReportErr && (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              {grnReportErr}
+            </div>
+          )}
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="border-b text-gray-600">
+                <tr>
+                  <th className="py-2 pr-3">GRN No</th>
+                  <th className="py-2 pr-3">Date</th>
+                  <th className="py-2 pr-3">PO No</th>
+                  <th className="py-2 pr-3">Supplier</th>
+                  <th className="py-2 pr-3">Items</th>
+                  <th className="py-2 pr-3">Total Qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                {grnLoading ? (
+                  <tr>
+                    <td className="py-6 text-gray-500" colSpan={6}>
+                      Loading...
+                    </td>
+                  </tr>
+                ) : grnList.length === 0 ? (
+                  <tr>
+                    <td className="py-6 text-gray-500" colSpan={6}>
+                      No GRNs yet.
+                    </td>
+                  </tr>
+                ) : (
+                  grnList.map((g) => {
+                    const totalQty = (g.items || []).reduce(
+                      (sum, it) => sum + (Number(it.qty) || 0),
+                      0
+                    );
+                    return (
+                      <tr key={g._id} className="border-b last:border-b-0">
+                        <td className="py-2 pr-3 font-medium">{g.grnNo}</td>
+                        <td className="py-2 pr-3">
+                          {g.createdAt
+                            ? new Date(g.createdAt).toLocaleDateString()
+                            : "-"}
+                        </td>
+                        <td className="py-2 pr-3">{g.poNo || "-"}</td>
+                        <td className="py-2 pr-3">{g.supplier || "-"}</td>
+                        <td className="py-2 pr-3">{(g.items || []).length}</td>
+                        <td className="py-2 pr-3">{totalQty}</td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
