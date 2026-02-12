@@ -426,6 +426,17 @@ export default function Purchase() {
     );
   }
 
+  function openPurchaseOrder(po, action) {
+    if (!po) return;
+    applyPurchaseOrder(po);
+    setActiveSub("Purchase Order");
+    if (!action) return;
+    window.setTimeout(() => {
+      if (action === "pdf") exportPurchaseOrderPdf();
+      if (action === "csv") exportPurchaseOrderCsv();
+    }, 50);
+  }
+
   async function savePurchaseOrder() {
     setPoErr("");
     if (!poForm.supplierName.trim()) {
@@ -1438,7 +1449,7 @@ export default function Purchase() {
                       <th className="py-2 pr-3">Currency</th>
                       <th className="py-2 pr-3">Total</th>
                       <th className="py-2 pr-3">Status</th>
-                      <th className="py-2"></th>
+                      <th className="py-2 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1454,12 +1465,26 @@ export default function Purchase() {
                         </td>
                         <td className="py-2 pr-3">{po.status || "DRAFT"}</td>
                         <td className="py-2 text-right">
-                          <button
-                            onClick={() => applyPurchaseOrder(po)}
-                            className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
-                          >
-                            View
-                          </button>
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => openPurchaseOrder(po)}
+                              className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
+                            >
+                              View
+                            </button>
+                            <button
+                              onClick={() => openPurchaseOrder(po, "pdf")}
+                              className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
+                            >
+                              PDF
+                            </button>
+                            <button
+                              onClick={() => openPurchaseOrder(po, "csv")}
+                              className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
+                            >
+                              CSV
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
