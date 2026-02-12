@@ -150,6 +150,14 @@ function drawWrappedText(doc, header, text, startY, options) {
   return y;
 }
 
+function getTableMargins(topY, extra) {
+  return {
+    top: topY,
+    bottom: FOOTER_RESERVED_MM,
+    ...(extra || {}),
+  };
+}
+
 export default function Purchase() {
   const [activeSub, setActiveSub] = useState("Purchase Order");
   const [items, setItems] = useState([]);
@@ -723,10 +731,7 @@ export default function Purchase() {
     const tableTopMargin = contentStartY + 6;
     autoTable(doc, {
       startY: tableTopMargin,
-      margin: {
-        top: tableTopMargin,
-        bottom: FOOTER_RESERVED_MM,
-      },
+      margin: getTableMargins(tableTopMargin),
       head: [headers],
       body,
       styles: { fontSize: 9 },
@@ -924,6 +929,7 @@ export default function Purchase() {
     ];
     autoTable(doc, {
       startY: contentStartY + 6,
+      margin: getTableMargins(contentStartY + 6),
       theme: "grid",
       body: supplierInfo,
       styles: { fontSize: 10, cellPadding: 1 },
@@ -944,7 +950,7 @@ export default function Purchase() {
     let nrPagesCell = null;
     autoTable(doc, {
       startY: contentStartY + 6,
-      margin: { left: 110 },
+      margin: getTableMargins(contentStartY + 6, { left: 110 }),
       body: orderInfo,
       styles: { fontSize: 10, cellPadding: 1 },
       tableWidth: 90,
@@ -986,10 +992,7 @@ export default function Purchase() {
     const poTableTopMargin = contentStartY + 6;
     autoTable(doc, {
       startY: doc.lastAutoTable.finalY + 6,
-      margin: {
-        top: poTableTopMargin,
-        bottom: FOOTER_RESERVED_MM,
-      },
+      margin: getTableMargins(poTableTopMargin),
       theme: "grid",
       head: [
         [
@@ -1012,10 +1015,7 @@ export default function Purchase() {
     const afterTableY = doc.lastAutoTable.finalY + 4;
     autoTable(doc, {
       startY: afterTableY,
-      margin: {
-        left: 130,
-        bottom: FOOTER_RESERVED_MM,
-      },
+      margin: getTableMargins(poTableTopMargin, { left: 130 }),
       theme: "grid",
       body: [
         ["Sub Total", poTotals.subTotal.toFixed(2)],
@@ -1036,7 +1036,7 @@ export default function Purchase() {
     ];
     autoTable(doc, {
       startY: doc.lastAutoTable.finalY + 6,
-      margin: { bottom: FOOTER_RESERVED_MM },
+      margin: getTableMargins(poTableTopMargin),
       theme: "grid",
       body: terms,
       styles: { fontSize: 10, cellPadding: 1 },
