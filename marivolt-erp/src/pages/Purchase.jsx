@@ -437,6 +437,26 @@ export default function Purchase() {
     }, 50);
   }
 
+  async function deletePurchaseOrder(po) {
+    if (!po) return;
+    if (!["DRAFT", "SAVED"].includes(po.status)) {
+      alert("Only DRAFT or SAVED purchase orders can be deleted.");
+      return;
+    }
+    const ok = confirm(`Delete purchase order ${po.poNo || ""}?`);
+    if (!ok) return;
+    setPoErr("");
+    try {
+      await apiDelete(`/purchase/po/${po._id}`);
+      setPoList((prev) => prev.filter((p) => p._id !== po._id));
+      if (selectedPoId === po._id) {
+        setSelectedPoId("");
+      }
+    } catch (e) {
+      setPoErr(e.message || "Failed to delete purchase order");
+    }
+  }
+
   async function savePurchaseOrder() {
     setPoErr("");
     if (!poForm.supplierName.trim()) {
@@ -1595,6 +1615,14 @@ export default function Purchase() {
                             >
                               CSV
                             </button>
+                            {["DRAFT", "SAVED"].includes(po.status) && (
+                              <button
+                                onClick={() => deletePurchaseOrder(po)}
+                                className="rounded-lg border px-3 py-1 text-xs text-red-600 hover:bg-red-50"
+                              >
+                                Delete
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>

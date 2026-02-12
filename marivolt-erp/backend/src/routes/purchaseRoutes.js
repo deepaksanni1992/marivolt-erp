@@ -63,6 +63,26 @@ router.get("/po", async (req, res) => {
   res.json(pos);
 });
 
+/* DELETE PO (DRAFT/SAVED ONLY) */
+router.delete("/po/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const po = await PurchaseOrder.findById(id);
+    if (!po) {
+      return res.status(404).json({ message: "Purchase order not found" });
+    }
+    if (!["DRAFT", "SAVED"].includes(po.status)) {
+      return res
+        .status(400)
+        .json({ message: "Only DRAFT or SAVED purchase orders can be deleted" });
+    }
+    await PurchaseOrder.deleteOne({ _id: id });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
 /* CREATE GRN + AUTO STOCK IN */
 router.post("/grn", async (req, res) => {
   try {
