@@ -37,6 +37,13 @@ export default function Sales() {
   const [ptgList, setPtgList] = useState([]);
   const [invoiceList, setInvoiceList] = useState([]);
   const [ciplList, setCiplList] = useState([]);
+  const [itemFilters, setItemFilters] = useState({
+    vertical: "",
+    engine: "",
+    model: "",
+    config: "",
+    article: "",
+  });
 
   function downloadCsv(filename, rows) {
     const csv = rows
@@ -171,6 +178,110 @@ export default function Sales() {
     return { subTotal, grandTotal: subTotal };
   }, [quotationItems]);
 
+  const filteredItemsForFilters = useMemo(() => {
+    return items.filter((it) => {
+      if (itemFilters.vertical && (it.category || "") !== itemFilters.vertical) {
+        return false;
+      }
+      if (itemFilters.engine && (it.engine || "") !== itemFilters.engine) {
+        return false;
+      }
+      if (itemFilters.model && (it.model || "") !== itemFilters.model) {
+        return false;
+      }
+      if (itemFilters.config && (it.config || "") !== itemFilters.config) {
+        return false;
+      }
+      if (itemFilters.article && (it.article || "") !== itemFilters.article) {
+        return false;
+      }
+      return true;
+    });
+  }, [items, itemFilters]);
+
+  function uniqueSorted(values) {
+    return Array.from(new Set(values.filter(Boolean))).sort();
+  }
+
+  const verticalOptions = useMemo(
+    () => uniqueSorted(items.map((it) => it.category)),
+    [items]
+  );
+
+  const engineOptions = useMemo(() => {
+    const base = itemFilters.vertical
+      ? items.filter((it) => (it.category || "") === itemFilters.vertical)
+      : items;
+    return uniqueSorted(base.map((it) => it.engine));
+  }, [items, itemFilters.vertical]);
+
+  const modelOptions = useMemo(() => {
+    const base = items.filter((it) => {
+      if (itemFilters.vertical && (it.category || "") !== itemFilters.vertical) {
+        return false;
+      }
+      if (itemFilters.engine && (it.engine || "") !== itemFilters.engine) {
+        return false;
+      }
+      return true;
+    });
+    return uniqueSorted(base.map((it) => it.model));
+  }, [items, itemFilters.vertical, itemFilters.engine]);
+
+  const configOptions = useMemo(() => {
+    const base = items.filter((it) => {
+      if (itemFilters.vertical && (it.category || "") !== itemFilters.vertical) {
+        return false;
+      }
+      if (itemFilters.engine && (it.engine || "") !== itemFilters.engine) {
+        return false;
+      }
+      if (itemFilters.model && (it.model || "") !== itemFilters.model) {
+        return false;
+      }
+      return true;
+    });
+    return uniqueSorted(base.map((it) => it.config));
+  }, [items, itemFilters.vertical, itemFilters.engine, itemFilters.model]);
+
+  const articleOptions = useMemo(() => {
+    const base = items.filter((it) => {
+      if (itemFilters.vertical && (it.category || "") !== itemFilters.vertical) {
+        return false;
+      }
+      if (itemFilters.engine && (it.engine || "") !== itemFilters.engine) {
+        return false;
+      }
+      if (itemFilters.model && (it.model || "") !== itemFilters.model) {
+        return false;
+      }
+      if (itemFilters.config && (it.config || "") !== itemFilters.config) {
+        return false;
+      }
+      return true;
+    });
+    return uniqueSorted(base.map((it) => it.article));
+  }, [
+    items,
+    itemFilters.vertical,
+    itemFilters.engine,
+    itemFilters.model,
+    itemFilters.config,
+  ]);
+
+  const filteredItemsForSku = useMemo(() => {
+    if (
+      !itemFilters.vertical &&
+      !itemFilters.engine &&
+      !itemFilters.model &&
+      !itemFilters.config &&
+      !itemFilters.article
+    ) {
+      return items;
+    }
+    return filteredItemsForFilters;
+  }, [items, filteredItemsForFilters, itemFilters]);
+
   async function addCustomer(e) {
     e.preventDefault();
     setCustomerErr("");
@@ -279,6 +390,130 @@ export default function Sales() {
         .some((v) => String(v).toLowerCase().includes(q))
     );
   }, [customers, customerQuery]);
+
+  function onItemFilterChange(field, value) {
+    setItemFilters((prev) => {
+      const next = { ...prev, [field]: value };
+      if (field === "vertical") {
+        next.engine = "";
+        next.model = "";
+        next.config = "";
+        next.article = "";
+      } else if (field === "engine") {
+        next.model = "";
+        next.config = "";
+        next.article = "";
+      } else if (field === "model") {
+        next.config = "";
+        next.article = "";
+      } else if (field === "config") {
+        next.article = "";
+      }
+      return next;
+    });
+  }
+
+  function exportQuotationItemsCsv() {
+    const rows = [
+      ["SKU", "Description", "UOM", "Qty", "Unit Price"],
+      ...quotationItems.map((row) => [
+        row.sku || "",
+        row.description || "",
+        row.uom || "",
+        Number(row.qty) || 0,
+        Number(row.unitPrice) || 0,
+      ]),
+    ];
+    downloadCsv("quotation-items.csv", rows);
+  }
+
+  async function handleQuotationExcelImport(file) {
+    if (!file) return;
+    setSalesErr("");
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+      const normalized = rows.map((row) => {
+        const entry = {};
+        Object.entries(row).forEach(([k, v]) => {
+          const key = String(k).toLowerCase().replace(/\s+/g, "");
+          entry[key] = v;
+        });
+        return entry;
+      });
+
+      const itemsFromExcel = normalized.map((row) => {
+        const rawSku =
+          row.sku ||
+          row.partno ||
+          row.partnumber ||
+          row.article ||
+          row.articleno ||
+          "";
+        const matchedItem = items.find((it) => it.sku === String(rawSku || "").trim());
+        const description =
+          row.description ||
+          row.itemname ||
+          row.name ||
+          matchedItem?.description ||
+          matchedItem?.name ||
+          "";
+        const uom = row.uom || row.unit || matchedItem?.uom || "";
+        const qty = row.qty || row.quantity || row.q || 1;
+        const unitPrice = row.unitprice || row.rate || row.price || 0;
+
+        return {
+          sku: String(rawSku || "").trim(),
+          description: String(description || "").trim(),
+          uom: String(uom || "").trim(),
+          qty: Number(qty) || 0,
+          unitPrice: Number(unitPrice) || 0,
+        };
+      });
+
+      const filtered = itemsFromExcel.filter(
+        (row) => row.sku || row.description || row.qty
+      );
+      if (!filtered.length) {
+        setSalesErr("Excel import has no valid quotation item rows.");
+        return;
+      }
+
+      setQuotationItems(filtered);
+    } catch (e) {
+      setSalesErr(e.message || "Failed to import quotation Excel file.");
+    }
+  }
+
+  function exportQuotationsCsv(options = { pendingOnly: false }) {
+    const rows = [
+      ["Doc No", "Date", "Customer", "Terms", "Total", "Status", "Notes"],
+      ...quotationList
+        .filter((doc) => {
+          if (!options.pendingOnly) return true;
+          const status = doc.status || "OPEN";
+          return status === "OPEN";
+        })
+        .map((doc) => [
+          doc.docNo || "",
+          doc.createdAt
+            ? new Date(doc.createdAt).toLocaleDateString()
+            : "",
+          doc.customerName || "",
+          doc.paymentTerms || "",
+          Number(doc.grandTotal || 0).toFixed(2),
+          doc.status || "OPEN",
+          doc.notes || "",
+        ]),
+    ];
+    const filename = options.pendingOnly
+      ? "pending-quotations.csv"
+      : "quotations.csv";
+    downloadCsv(filename, rows);
+  }
 
   function exportCustomersCsv() {
     const rows = [
@@ -671,14 +906,112 @@ export default function Sales() {
               </div>
 
               <div className="lg:col-span-2">
-                <div className="flex items-center justify-between">
+                <div className="mb-3 grid gap-2 md:grid-cols-5">
+                  <div>
+                    <label className="text-xs text-gray-600">Vertical</label>
+                    <select
+                      value={itemFilters.vertical}
+                      onChange={(e) =>
+                        onItemFilterChange("vertical", e.target.value)
+                      }
+                      className="mt-1 w-full rounded-lg border px-2 py-1 text-xs"
+                    >
+                      <option value="">All</option>
+                      {verticalOptions.map((v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-600">Engine</label>
+                    <select
+                      value={itemFilters.engine}
+                      onChange={(e) => onItemFilterChange("engine", e.target.value)}
+                      className="mt-1 w-full rounded-lg border px-2 py-1 text-xs"
+                    >
+                      <option value="">All</option>
+                      {engineOptions.map((v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-600">Model</label>
+                    <select
+                      value={itemFilters.model}
+                      onChange={(e) => onItemFilterChange("model", e.target.value)}
+                      className="mt-1 w-full rounded-lg border px-2 py-1 text-xs"
+                    >
+                      <option value="">All</option>
+                      {modelOptions.map((v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-600">Config</label>
+                    <select
+                      value={itemFilters.config}
+                      onChange={(e) => onItemFilterChange("config", e.target.value)}
+                      className="mt-1 w-full rounded-lg border px-2 py-1 text-xs"
+                    >
+                      <option value="">All</option>
+                      {configOptions.map((v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-600">Article</label>
+                    <select
+                      value={itemFilters.article}
+                      onChange={(e) => onItemFilterChange("article", e.target.value)}
+                      className="mt-1 w-full rounded-lg border px-2 py-1 text-xs"
+                    >
+                      <option value="">All</option>
+                      {articleOptions.map((v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                   <h3 className="text-sm font-semibold text-gray-700">Items</h3>
-                  <button
-                    onClick={addQuotationItem}
-                    className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
-                  >
-                    + Add Line
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={addQuotationItem}
+                      className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
+                    >
+                      + Add Line
+                    </button>
+                    <button
+                      onClick={exportQuotationItemsCsv}
+                      className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
+                    >
+                      Export Items
+                    </button>
+                    <label className="inline-flex cursor-pointer items-center rounded-lg border px-3 py-1 text-xs hover:bg-gray-50">
+                      <span>Import Excel</span>
+                      <input
+                        type="file"
+                        accept=".xlsx,.xls,.csv"
+                        onChange={(e) =>
+                          handleQuotationExcelImport(e.target.files?.[0])
+                        }
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
                 </div>
                 <div className="mt-3 overflow-x-auto">
                   <table className="w-full text-left text-xs">
@@ -708,7 +1041,7 @@ export default function Sales() {
                                 className="w-32 rounded-lg border px-2 py-1 text-xs"
                               >
                                 <option value="">Select...</option>
-                                {items.map((it) => (
+                                {filteredItemsForSku.map((it) => (
                                   <option key={it._id} value={it.sku}>
                                     {it.sku}
                                   </option>
@@ -790,8 +1123,24 @@ export default function Sales() {
             </div>
           </div>
 
-          <div className="rounded-2xl border bg-white p-6">
-            <h2 className="text-base font-semibold">Quotations</h2>
+          <div className="rounded-2xl border bg-white p-6 space-y-3">
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <h2 className="text-base font-semibold">Quotations</h2>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => exportQuotationsCsv({ pendingOnly: false })}
+                  className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
+                >
+                  Quotation Report
+                </button>
+                <button
+                  onClick={() => exportQuotationsCsv({ pendingOnly: true })}
+                  className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
+                >
+                  Pending Quotation Report
+                </button>
+              </div>
+            </div>
             {renderDocTable(quotationList, (doc) => (
               <button
                 onClick={() => convertDoc(doc, "ORDER_CONFIRMATION")}
