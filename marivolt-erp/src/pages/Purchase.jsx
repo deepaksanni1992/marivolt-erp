@@ -76,7 +76,7 @@ function addPdfFooter(doc) {
     const rightX = pageWidth - 14;
     const bottomMargin = 5.08;
     const baseY = pageHeight - bottomMargin - (maxLines - 1) * 4;
-    const lineY = baseY - 2.5;
+    const lineY = baseY + maxLines * 4 + 1.5;
     doc.setDrawColor(255, 173, 20);
     doc.setLineWidth(1.2);
     doc.line(leftX, lineY, rightX, lineY);
