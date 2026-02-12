@@ -87,10 +87,14 @@ router.post("/quotation", async (req, res) => {
     }
     const normalized = normalizeItems(items);
     const totals = calcTotals(normalized);
+    const status =
+      body.status === "FINAL" || body.status === "DRAFT"
+        ? body.status
+        : "DRAFT";
     const doc = await SalesDoc.create({
       type: "QUOTATION",
       docNo: getDocNo("QTN"),
-      status: "OPEN",
+      status,
       customerId: body.customerId || undefined,
       customerName: String(body.customerName).trim(),
       paymentTerms: body.paymentTerms || "CREDIT",
@@ -98,6 +102,26 @@ router.post("/quotation", async (req, res) => {
       notes: body.notes || "",
       ...totals,
     });
+    res.json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+/* UPDATE QUOTATION STATUS (DRAFT / FINAL) */
+router.put("/docs/:id", async (req, res) => {
+  try {
+    const doc = await SalesDoc.findById(req.params.id);
+    if (!doc) return res.status(404).json({ message: "Doc not found" });
+    if (doc.type !== "QUOTATION") {
+      return res.status(400).json({ message: "Only quotation status can be updated" });
+    }
+    const { status } = req.body || {};
+    if (status !== "DRAFT" && status !== "FINAL") {
+      return res.status(400).json({ message: "Status must be DRAFT or FINAL" });
+    }
+    doc.status = status;
+    await doc.save();
     res.json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -127,6 +151,12 @@ router.post("/convert/:id", async (req, res) => {
 
     if (!allowed) {
       return res.status(400).json({ message: "Conversion not allowed" });
+    }
+
+    // If a quotation is converted to Order Confirmation, mark it as converted
+    if (doc.type === "QUOTATION" && targetType === "ORDER_CONFIRMATION") {
+      doc.status = "CONVERTED";
+      await doc.save();
     }
 
     const prefixMap = {

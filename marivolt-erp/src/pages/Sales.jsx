@@ -1,6 +1,117 @@
 import { useEffect, useMemo, useState } from "react";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
-import { apiDelete, apiGet, apiPost } from "../lib/api.js";
+import { apiDelete, apiGet, apiPost, apiPut } from "../lib/api.js";
+
+let headerImagePromise;
+const TOP_MARGIN_MM = 38.1;
+const TOP_LINE_HEIGHT_MM = 4;
+const TOP_LINE_COUNT = 3;
+const EXTRA_TOP_SPACE_MM = TOP_LINE_HEIGHT_MM * TOP_LINE_COUNT;
+const HEADER_MARGIN_X = 14;
+const HEADER_TOP_Y = 6;
+const FOOTER_MARGIN_MM = 38.1;
+const FOOTER_SAFE_GAP_MM = 6;
+const FOOTER_MAX_LINES = 3;
+const FOOTER_TEXT_LINE_HEIGHT_MM = 4;
+const FOOTER_TEXT_HEIGHT_MM = (FOOTER_MAX_LINES - 1) * FOOTER_TEXT_LINE_HEIGHT_MM;
+const FOOTER_RESERVED_MM = FOOTER_MARGIN_MM + FOOTER_TEXT_HEIGHT_MM + FOOTER_SAFE_GAP_MM;
+
+async function getHeaderImage() {
+  if (!headerImagePromise) {
+    headerImagePromise = fetch("/marivolt-header.png")
+      .then((res) => res.blob())
+      .then(
+        (blob) =>
+          new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob);
+          })
+      )
+      .then(
+        (dataUrl) =>
+          new Promise((resolve) => {
+            if (!dataUrl) return resolve(null);
+            const img = new Image();
+            img.onload = () =>
+              resolve({ dataUrl, width: img.naturalWidth, height: img.naturalHeight });
+            img.onerror = () => resolve(null);
+            img.src = dataUrl;
+          })
+      )
+      .catch(() => null);
+  }
+  return headerImagePromise;
+}
+
+function getHeaderLayout(header, pageWidth) {
+  if (!header) return null;
+  const targetW = pageWidth - HEADER_MARGIN_X * 2;
+  const targetH = (targetW * header.height) / header.width;
+  return { x: HEADER_MARGIN_X, y: HEADER_TOP_Y, w: targetW, h: targetH };
+}
+
+function getContentStartY(doc, header) {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const layout = getHeaderLayout(header, pageWidth);
+  const headerBottom = layout ? layout.y + layout.h : 0;
+  return Math.max(TOP_MARGIN_MM, headerBottom) + EXTRA_TOP_SPACE_MM;
+}
+
+function addPdfHeader(doc, header) {
+  if (!header) return;
+  const pageCount = doc.internal.getNumberOfPages();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const layout = getHeaderLayout(header, pageWidth);
+  if (!layout) return;
+  for (let i = 1; i <= pageCount; i += 1) {
+    doc.setPage(i);
+    doc.addImage(header.dataUrl, "PNG", layout.x, layout.y, layout.w, layout.h);
+  }
+}
+
+function addPdfFooter(doc) {
+  const pageCount = doc.internal.getNumberOfPages();
+  const leftLines = ["Marivolt FZE", "LV09B"];
+  const centerLines = ["Hamriyah freezone phase 2, Sharjah, UAE"];
+  const rightLines = ["Mob: +971-543053047", "Email: sales@marivolt.co", "Web: www.marivolt.co"];
+  doc.setFontSize(8);
+  for (let i = 1; i <= pageCount; i += 1) {
+    doc.setPage(i);
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const baseY = pageHeight - FOOTER_MARGIN_MM - (FOOTER_MAX_LINES - 1) * 4;
+    doc.text(leftLines[0], 14, baseY);
+    doc.text(centerLines[0], pageWidth / 2, baseY, { align: "center" });
+    doc.text(rightLines[0], pageWidth - 14, baseY, { align: "right" });
+  }
+}
+
+function getTableMargins(topY, extra) {
+  return { top: topY, bottom: FOOTER_RESERVED_MM, ...(extra || {}) };
+}
+
+function drawWrappedText(doc, header, text, startY, options = {}) {
+  const { fontSize = 9, lineHeight = 4, maxWidth = 180 } = options;
+  doc.setFontSize(fontSize);
+  const topY = getContentStartY(doc, header);
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const bottomY = pageHeight - FOOTER_RESERVED_MM;
+  let y = startY;
+  const lines = doc.splitTextToSize(text || "", maxWidth);
+  for (const line of lines) {
+    if (y + lineHeight > bottomY) {
+      doc.addPage();
+      y = topY;
+    }
+    doc.text(line, 14, y);
+    y += lineHeight;
+  }
+  return y;
+}
 
 export default function Sales() {
   const [activeSub, setActiveSub] = useState("Customer Master");
@@ -321,7 +432,7 @@ export default function Sales() {
     }
   }
 
-  async function createQuotation() {
+  async function createQuotation(saveStatus) {
     setSalesErr("");
     if (!quotationForm.customerName.trim()) {
       setSalesErr("Customer is required.");
@@ -331,6 +442,7 @@ export default function Sales() {
       setSalesErr("At least one item is required.");
       return;
     }
+    const status = saveStatus === "FINAL" ? "FINAL" : "DRAFT";
     const itemsPayload = quotationItems.map((row) => ({
       sku: row.sku || "",
       description: row.description || "",
@@ -341,6 +453,7 @@ export default function Sales() {
     try {
       const created = await apiPost("/sales/quotation", {
         ...quotationForm,
+        status,
         items: itemsPayload,
         subTotal: quotationTotals.subTotal,
         grandTotal: quotationTotals.grandTotal,
@@ -348,10 +461,110 @@ export default function Sales() {
       setQuotationList((prev) => [created, ...prev]);
       setQuotationItems([{ sku: "", description: "", uom: "", qty: 1, unitPrice: 0 }]);
       setQuotationForm((p) => ({ ...p, notes: "" }));
-      alert("Quotation created ✅");
+      alert(`Quotation saved as ${status} ✅`);
     } catch (e) {
       setSalesErr(e.message || "Failed to create quotation");
     }
+  }
+
+  async function updateQuotationStatus(doc, newStatus) {
+    setSalesErr("");
+    try {
+      const updated = await apiPut(`/sales/docs/${doc._id}`, { status: newStatus });
+      setQuotationList((prev) =>
+        prev.map((d) => (d._id === doc._id ? updated : d))
+      );
+      alert(`Quotation marked as ${newStatus} ✅`);
+    } catch (e) {
+      setSalesErr(e.message || "Failed to update status");
+    }
+  }
+
+  async function printQuotationPdf(doc) {
+    const header = await getHeaderImage();
+    const pdf = new jsPDF({ format: "a4", unit: "mm" });
+    pdf.setTextColor(0, 0, 0);
+    const contentStartY = getContentStartY(pdf, header);
+    pdf.setFontSize(16);
+    pdf.text("Quotation", 150, contentStartY, { align: "right" });
+
+    const customerInfo = [
+      [doc.customerName || "-"],
+      [`Payment Terms: ${doc.paymentTerms || "CREDIT"}`],
+    ];
+    autoTable(pdf, {
+      startY: contentStartY + 6,
+      margin: getTableMargins(contentStartY + 6),
+      theme: "grid",
+      body: customerInfo,
+      styles: { fontSize: 10, cellPadding: 1 },
+      tableWidth: 90,
+    });
+
+    const docInfo = [
+      ["Doc No", doc.docNo || "-"],
+      ["Date", doc.createdAt ? new Date(doc.createdAt).toLocaleDateString() : "-"],
+      ["Status", doc.status || "DRAFT"],
+    ];
+    autoTable(pdf, {
+      startY: contentStartY + 6,
+      margin: getTableMargins(contentStartY + 6, { left: 110 }),
+      body: docInfo,
+      styles: { fontSize: 10, cellPadding: 1 },
+      tableWidth: 80,
+    });
+
+    const itemRows = (doc.items || []).map((it, idx) => {
+      const qty = Number(it.qty) || 0;
+      const rate = Number(it.unitPrice) || 0;
+      const total = (it.total != null ? Number(it.total) : qty * rate);
+      return [
+        String(idx + 1),
+        it.sku || "-",
+        it.description || "-",
+        it.uom || "-",
+        String(qty),
+        rate ? rate.toFixed(2) : "0.00",
+        total.toFixed(2),
+      ];
+    });
+    autoTable(pdf, {
+      startY: pdf.lastAutoTable.finalY + 6,
+      margin: getTableMargins(contentStartY + 6),
+      theme: "grid",
+      head: [["Pos", "Article", "Description", "UOM", "Qty", "Unit Price", "Total"]],
+      body: itemRows,
+      styles: { fontSize: 10 },
+      headStyles: { fillColor: [230, 230, 230], textColor: 20 },
+    });
+
+    const subTotal = Number(doc.subTotal) || 0;
+    const grandTotal = Number(doc.grandTotal) || 0;
+    autoTable(pdf, {
+      startY: pdf.lastAutoTable.finalY + 4,
+      margin: getTableMargins(contentStartY + 6, { left: 130 }),
+      theme: "grid",
+      body: [
+        ["Sub Total", subTotal.toFixed(2)],
+        ["Grand Total", grandTotal.toFixed(2)],
+      ],
+      styles: { fontSize: 10 },
+      tableWidth: 60,
+    });
+
+    if (doc.notes && String(doc.notes).trim()) {
+      let notesY = pdf.lastAutoTable.finalY + 8;
+      notesY = drawWrappedText(pdf, header, `Notes: ${doc.notes}`, notesY, {
+        fontSize: 9,
+        lineHeight: 4,
+        maxWidth: 180,
+      });
+    }
+
+    addPdfHeader(pdf, header);
+    addPdfFooter(pdf);
+    const safeName = (doc.customerName || "quotation").trim().replace(/\s+/g, "-").toLowerCase();
+    pdf.save(`quotation-${doc.docNo || safeName}.pdf`);
   }
 
   async function convertDoc(doc, targetType) {
@@ -495,7 +708,9 @@ export default function Sales() {
         .filter((doc) => {
           if (!options.pendingOnly) return true;
           const status = doc.status || "OPEN";
-          return status === "OPEN";
+          // Pending = saved quotations which are not yet converted
+          // Include legacy OPEN and new FINAL, exclude DRAFT and CONVERTED
+          return status === "OPEN" || status === "FINAL";
         })
         .map((doc) => [
           doc.docNo || "",
@@ -897,12 +1112,22 @@ export default function Sales() {
                     className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                   />
                 </div>
-                <button
-                  onClick={createQuotation}
-                  className="w-full rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
-                >
-                  Save Quotation
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => createQuotation("DRAFT")}
+                    className="flex-1 rounded-xl border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                  >
+                    Save as Draft
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => createQuotation("FINAL")}
+                    className="flex-1 rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
+                  >
+                    Save as Final
+                  </button>
+                </div>
               </div>
 
               <div className="lg:col-span-2">
@@ -1127,12 +1352,28 @@ export default function Sales() {
               </div>
             </div>
             {renderDocTable(quotationList, (doc) => (
-              <button
-                onClick={() => convertDoc(doc, "ORDER_CONFIRMATION")}
-                className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
-              >
-                Order Confirmation
-              </button>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  onClick={() => printQuotationPdf(doc)}
+                  className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
+                >
+                  Print
+                </button>
+                {(doc.status || "DRAFT") === "DRAFT" && (
+                  <button
+                    onClick={() => updateQuotationStatus(doc, "FINAL")}
+                    className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
+                  >
+                    Mark as Final
+                  </button>
+                )}
+                <button
+                  onClick={() => convertDoc(doc, "ORDER_CONFIRMATION")}
+                  className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
+                >
+                  Order Confirmation
+                </button>
+              </div>
             ))}
           </div>
         </div>
