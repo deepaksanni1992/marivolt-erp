@@ -512,6 +512,95 @@ export default function Purchase() {
     }
   }
 
+  function exportSuppliersCsv() {
+    const rows = [
+      [
+        "Name",
+        "Contact Name",
+        "Phone",
+        "Email",
+        "GST No",
+        "PAN No",
+        "Address",
+        "Notes",
+      ],
+      ...suppliers.map((s) => [
+        s.name || "",
+        s.contactName || "",
+        s.phone || "",
+        s.email || "",
+        s.gstNo || "",
+        s.panNo || "",
+        s.address || "",
+        s.notes || "",
+      ]),
+    ];
+    downloadCsv("suppliers.csv", rows);
+  }
+
+  async function handleSupplierImport(file) {
+    if (!file) return;
+    setSupplierErr("");
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+      const normalized = rows.map((row) => {
+        const entry = {};
+        Object.entries(row).forEach(([k, v]) => {
+          const key = String(k).toLowerCase().replace(/\s+/g, "");
+          entry[key] = v;
+        });
+        return entry;
+      });
+
+      const suppliersFromExcel = normalized.map((row) => {
+        const name = row.name || row.supplier || row.suppliername || "";
+        const contactName =
+          row.contactname || row.contactperson || row.contact || "";
+        const phone = row.phone || row.mobile || row.tel || "";
+        const email = row.email || "";
+        const address = row.address || "";
+        const gstNo = row.gstno || row.gst || "";
+        const panNo = row.panno || row.pan || "";
+        const notes = row.notes || row.note || "";
+
+        return {
+          name: String(name || "").trim(),
+          contactName: String(contactName || "").trim(),
+          phone: String(phone || "").trim(),
+          email: String(email || "").trim(),
+          address: String(address || "").trim(),
+          gstNo: String(gstNo || "").trim(),
+          panNo: String(panNo || "").trim(),
+          notes: String(notes || "").trim(),
+        };
+      });
+
+      const filtered = suppliersFromExcel.filter((row) => row.name);
+      if (!filtered.length) {
+        setSupplierErr("Excel import has no valid supplier rows.");
+        return;
+      }
+
+      const results = await Promise.allSettled(
+        filtered.map((row) => apiPost("/suppliers", row))
+      );
+      const created = results.filter((r) => r.status === "fulfilled").length;
+      const failed = results.length - created;
+      if (failed) {
+        setSupplierErr(
+          `Imported ${created} suppliers. ${failed} failed (duplicates or invalid).`
+        );
+      }
+      await loadSuppliers();
+    } catch (e) {
+      setSupplierErr(e.message || "Failed to import suppliers.");
+    }
+  }
+
   async function deleteSupplier(id) {
     const ok = confirm("Delete this supplier?");
     if (!ok) return;
@@ -1257,6 +1346,21 @@ export default function Purchase() {
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <h3 className="text-base font-semibold">Suppliers</h3>
                 <div className="flex gap-2">
+                  <label className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 cursor-pointer">
+                    Import
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls,.csv"
+                      onChange={(e) => handleSupplierImport(e.target.files?.[0])}
+                      className="hidden"
+                    />
+                  </label>
+                  <button
+                    onClick={exportSuppliersCsv}
+                    className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                  >
+                    Export
+                  </button>
                   <input
                     value={supplierQuery}
                     onChange={(e) => setSupplierQuery(e.target.value)}
