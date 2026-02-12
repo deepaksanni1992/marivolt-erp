@@ -19,11 +19,6 @@ router.post("/po", async (req, res) => {
       return res.status(400).json({ message: "At least one item is required" });
     }
 
-    const poNo =
-      body.poNo && String(body.poNo).trim()
-        ? String(body.poNo).trim()
-        : `PO-${Date.now()}`;
-
     let intRef = body.intRef && String(body.intRef).trim();
     if (!intRef) {
       const now = new Date();
@@ -44,6 +39,7 @@ router.post("/po", async (req, res) => {
       }
       intRef = `${dateKey}.${String(nextSeq).padStart(2, "0")}`;
     }
+    const poNo = intRef;
 
     const po = await PurchaseOrder.create({
       ...body,
