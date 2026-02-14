@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
 import { apiDelete, apiGet, apiPost } from "../lib/api.js";
 
 export default function ItemMaster() {
@@ -37,6 +38,7 @@ export default function ItemMaster() {
     supplier3Pw: "",
     supplier3OePrice: "",
     uom: "pcs",
+    unitWeight: "",
     category: "General",
     minStock: "",
     location: "",
@@ -90,6 +92,7 @@ export default function ItemMaster() {
         it.supplier3OePrice,
         it.category,
         it.uom,
+        it.unitWeight,
         it.location,
       ]
         .filter(Boolean)
@@ -147,6 +150,7 @@ export default function ItemMaster() {
         "Supplier 3 OE Price",
         "Part No",
         "UOM",
+        "Unit Weight",
         "Category",
         "Min",
         "Location",
@@ -179,6 +183,7 @@ export default function ItemMaster() {
         it.supplier3OePrice || "",
         it.sku || "",
         it.uom || "",
+        it.unitWeight ?? 0,
         it.category || "",
         it.minStock ?? 0,
         it.location || "",
@@ -221,6 +226,7 @@ export default function ItemMaster() {
           "Supplier 3 OE Price",
           "Part No",
           "UOM",
+          "Unit Weight",
           "Category",
           "Min",
           "Location",
@@ -254,6 +260,7 @@ export default function ItemMaster() {
         it.supplier3OePrice || "",
         it.sku || "",
         it.uom || "",
+        String(it.unitWeight ?? 0),
         it.category || "",
         String(it.minStock ?? 0),
         it.location || "",
@@ -273,16 +280,15 @@ export default function ItemMaster() {
     e.preventDefault();
     setErr("");
 
-    const sku = form.sku.trim();
     const name = form.name.trim();
-    if (!sku || !name) {
-      setErr("SKU/Part No and Item Name are required.");
+    if (!name) {
+      setErr("Item Name is required.");
       return;
     }
 
     try {
       const created = await apiPost("/items", {
-        sku,
+        sku: form.sku.trim(),
         name,
         vendor: form.vendor.trim(),
         engine: form.engine.trim(),
@@ -309,6 +315,7 @@ export default function ItemMaster() {
         supplier3Pw: form.supplier3Pw.trim(),
         supplier3OePrice: form.supplier3OePrice.trim(),
         uom: form.uom,
+        unitWeight: form.unitWeight ? Number(form.unitWeight) : 0,
         category: form.category.trim() || "General",
         minStock: form.minStock ? Number(form.minStock) : 0,
         location: form.location.trim(),
@@ -342,6 +349,7 @@ export default function ItemMaster() {
         supplier3Pw: "",
         supplier3OePrice: "",
         uom: "pcs",
+        unitWeight: "",
         category: "General",
         minStock: "",
         location: "",
@@ -361,6 +369,86 @@ export default function ItemMaster() {
       setItems((prev) => prev.filter((x) => x._id !== id));
     } catch (e) {
       setErr(e.message || "Failed to delete item");
+    }
+  }
+
+  async function handleItemImport(file) {
+    if (!file) return;
+    setErr("");
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+      const normalized = rows.map((row) => {
+        const entry = {};
+        Object.entries(row).forEach(([k, v]) => {
+          const key = String(k).toLowerCase().replace(/\s+/g, "");
+          entry[key] = v;
+        });
+        return entry;
+      });
+
+      const itemsFromExcel = normalized.map((row) => {
+        const sku = row.sku || row.partno || row.partnumber || row.articleno || "";
+        const name = row.itemname || row.name || row.description || row.article || "";
+        return {
+          sku: String(sku || "").trim(),
+          name: String(name || "").trim(),
+          vendor: String(row.vendor || "").trim(),
+          engine: String(row.engine || "").trim(),
+          model: String(row.model || "").trim(),
+          config: String(row.config || "").trim(),
+          cCode: String(row.ccode || row.c || "").trim(),
+          article: String(row.article || row.articleno || "").trim(),
+          description: String(row.description || row.desc || "").trim(),
+          spn: String(row.spn || "").trim(),
+          materialCode: String(row.materialcode || row.material || "").trim(),
+          drawingNumber: String(row.drawingnumber || row.drawingno || "").trim(),
+          rev: String(row.rev || row.revision || "").trim(),
+          formula: String(row.formula || "").trim(),
+          qty: Number(row.qty || row.quantity || row.q || 0) || 0,
+          oeRemarks: String(row.oeremarks || row.remarks || "").trim(),
+          internalRemarks: String(row.internalremarks || "").trim(),
+          oeMarking: String(row.oemarking || "").trim(),
+          oeQty: Number(row.oeqty || 0) || 0,
+          supplier1: String(row.supplier1 || "").trim(),
+          supplier1Spn: String(row.supplier1spn || "").trim(),
+          supplier2: String(row.supplier2 || "").trim(),
+          supplier2Spn: String(row.supplier2spn || "").trim(),
+          supplier3: String(row.supplier3 || "").trim(),
+          supplier3Pw: String(row.supplier3pw || "").trim(),
+          supplier3OePrice: String(row.supplier3oeprice || "").trim(),
+          uom: String(row.uom || row.unit || "pcs").trim() || "pcs",
+          unitWeight: Number(row.unitweight || row.weight || row.unitweight || 0) || 0,
+          category: String(row.category || row.vertical || "General").trim() || "General",
+          minStock: Number(row.minstock || row.min || 0) || 0,
+          location: String(row.location || "").trim(),
+        };
+      });
+
+      const filtered = itemsFromExcel.filter((row) => row.name);
+      if (!filtered.length) {
+        setErr("Excel has no valid rows (each row needs Item Name).");
+        return;
+      }
+
+      const results = await Promise.allSettled(
+        filtered.map((row) => apiPost("/items", row))
+      );
+      const created = results.filter((r) => r.status === "fulfilled").length;
+      const failed = results.length - created;
+      if (failed) {
+        setErr(
+          `Imported ${created} items. ${failed} failed (invalid or duplicate).`
+        );
+      } else {
+        setErr(`Imported ${created} items successfully.`);
+      }
+      await load();
+    } catch (e) {
+      setErr(e.message || "Failed to import items from Excel.");
     }
   }
 
@@ -385,7 +473,7 @@ export default function ItemMaster() {
 
           <form onSubmit={addItem} className="mt-4 space-y-3">
             <div>
-              <label className="text-sm text-gray-600">SKU / Part No *</label>
+              <label className="text-sm text-gray-600">SKU / Part No</label>
               <input
                 name="sku"
                 value={form.sku}
@@ -659,6 +747,20 @@ export default function ItemMaster() {
             </div>
 
             <div>
+              <label className="text-sm text-gray-600">Unit Weight</label>
+              <input
+                name="unitWeight"
+                value={form.unitWeight}
+                onChange={onChange}
+                type="number"
+                min="0"
+                step="any"
+                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                placeholder="e.g. 0.5"
+              />
+            </div>
+
+            <div>
               <label className="text-sm text-gray-600">Category</label>
               <input
                 name="category"
@@ -728,6 +830,15 @@ export default function ItemMaster() {
               >
                 Export PDF
               </button>
+              <label className="inline-flex cursor-pointer items-center rounded-xl border px-3 py-2 text-sm hover:bg-gray-50">
+                <span>Import Excel</span>
+                <input
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  onChange={(e) => handleItemImport(e.target.files?.[0])}
+                  className="hidden"
+                />
+              </label>
             </div>
           </div>
 
@@ -762,6 +873,7 @@ export default function ItemMaster() {
                       <th className="py-2 pr-3">Supplier 3 / PW / OE Price</th>
                       <th className="py-2 pr-3">Part No</th>
                       <th className="py-2 pr-3">UOM</th>
+                      <th className="py-2 pr-3">Unit Weight</th>
                       <th className="py-2 pr-3">Category</th>
                       <th className="py-2 pr-3">Min</th>
                       <th className="py-2 pr-3">Location</th>
@@ -772,7 +884,7 @@ export default function ItemMaster() {
                   <tbody>
                     {filtered.length === 0 ? (
                       <tr>
-                        <td className="py-6 text-gray-500" colSpan={27}>
+                        <td className="py-6 text-gray-500" colSpan={28}>
                           No items yet.
                         </td>
                       </tr>
@@ -812,8 +924,9 @@ export default function ItemMaster() {
                                 ? ` / ${it.supplier3OePrice}`
                                 : "")}
                           </td>
-                          <td className="py-2 pr-3 font-medium">{it.sku}</td>
+                          <td className="py-2 pr-3 font-medium">{it.sku || "-"}</td>
                           <td className="py-2 pr-3">{it.uom}</td>
+                          <td className="py-2 pr-3">{it.unitWeight ?? 0}</td>
                           <td className="py-2 pr-3">{it.category}</td>
                           <td className="py-2 pr-3">{it.minStock ?? 0}</td>
                           <td className="py-2 pr-3">{it.location || "-"}</td>

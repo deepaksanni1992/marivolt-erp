@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 
 const itemSchema = new mongoose.Schema(
   {
-    sku: { type: String, required: true, unique: true },
+    sku: { type: String, default: "" },
     name: { type: String, required: true },
     vendor: { type: String, default: "" },
     engine: { type: String, default: "" },
@@ -29,6 +29,7 @@ const itemSchema = new mongoose.Schema(
     supplier3Pw: { type: String, default: "" },
     supplier3OePrice: { type: String, default: "" },
     uom: { type: String, default: "pcs" },
+    unitWeight: { type: Number, default: 0 },
     category: { type: String, default: "General" },
     minStock: { type: Number, default: 0 },
     location: { type: String, default: "" },
