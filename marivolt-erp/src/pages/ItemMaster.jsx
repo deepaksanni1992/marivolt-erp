@@ -9,14 +9,14 @@ export default function ItemMaster() {
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
-  const [filters, setFilters] = useState({
-    vendor: "",
-    engine: "",
-    model: "",
-    config: "",
-    article: "",
-    category: "",
-  });
+  const columnFilterKeys = [
+    "vendor", "engine", "model", "config", "cCode", "article", "description", "name", "spn",
+    "materialCode", "drawingNumber", "rev", "formula", "qty", "oeRemarks", "internalRemarks", "oeMarking", "oeQty",
+    "supplier1", "supplier2", "supplier3", "sku", "uom", "unitWeight", "category", "minStock", "location",
+  ];
+  const [columnFilters, setColumnFilters] = useState(() =>
+    Object.fromEntries(columnFilterKeys.map((k) => [k, ""]))
+  );
 
   const [form, setForm] = useState({
     sku: "",
@@ -69,66 +69,29 @@ export default function ItemMaster() {
     load();
   }, []);
 
-  function uniqueSorted(values) {
-    return Array.from(new Set(values.map((v) => String(v ?? "").trim()).filter(Boolean))).sort();
-  }
-
-  const filterOptions = useMemo(() => ({
-    vendor: uniqueSorted(items.map((it) => it.vendor)),
-    engine: uniqueSorted(items.map((it) => it.engine)),
-    model: uniqueSorted(items.map((it) => it.model)),
-    config: uniqueSorted(items.map((it) => it.config)),
-    article: uniqueSorted(items.map((it) => it.article)),
-    category: uniqueSorted(items.map((it) => it.category)),
-  }), [items]);
+  const getCellValue = (it, key) => {
+    if (key === "supplier1") return `${it.supplier1 || ""} ${it.supplier1Spn || ""}`.trim();
+    if (key === "supplier2") return `${it.supplier2 || ""} ${it.supplier2Spn || ""}`.trim();
+    if (key === "supplier3") return `${it.supplier3 || ""} ${it.supplier3Pw || ""} ${it.supplier3OePrice || ""}`.trim();
+    const v = it[key];
+    return v === undefined || v === null ? "" : String(v);
+  };
 
   const filtered = useMemo(() => {
     let result = items;
     const query = q.trim().toLowerCase();
     if (query) {
       result = result.filter((it) =>
-        [
-          it.sku,
-          it.name,
-          it.vendor,
-          it.engine,
-          it.model,
-          it.config,
-          it.cCode,
-          it.article,
-          it.description,
-          it.spn,
-          it.materialCode,
-          it.drawingNumber,
-          it.rev,
-          it.formula,
-          it.oeRemarks,
-          it.internalRemarks,
-          it.oeMarking,
-          it.supplier1,
-          it.supplier1Spn,
-          it.supplier2,
-          it.supplier2Spn,
-          it.supplier3,
-          it.supplier3Pw,
-          it.supplier3OePrice,
-          it.category,
-          it.uom,
-          it.unitWeight,
-          it.location,
-        ]
-          .filter(Boolean)
-          .some((v) => String(v).toLowerCase().includes(query))
+        columnFilterKeys.some((key) => getCellValue(it, key).toLowerCase().includes(query))
       );
     }
-    if (filters.vendor) result = result.filter((it) => (it.vendor || "").trim() === filters.vendor);
-    if (filters.engine) result = result.filter((it) => (it.engine || "").trim() === filters.engine);
-    if (filters.model) result = result.filter((it) => (it.model || "").trim() === filters.model);
-    if (filters.config) result = result.filter((it) => (it.config || "").trim() === filters.config);
-    if (filters.article) result = result.filter((it) => (it.article || "").trim() === filters.article);
-    if (filters.category) result = result.filter((it) => (it.category || "").trim() === filters.category);
+    columnFilterKeys.forEach((key) => {
+      const f = (columnFilters[key] || "").trim().toLowerCase();
+      if (!f) return;
+      result = result.filter((it) => getCellValue(it, key).toLowerCase().includes(f));
+    });
     return result;
-  }, [items, q, filters]);
+  }, [items, q, columnFilters]);
 
   function downloadCsv(filename, rows) {
     const csv = rows
@@ -872,90 +835,6 @@ export default function ItemMaster() {
             </div>
           </div>
 
-          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-            <div>
-              <label className="text-xs text-gray-600">Vendor</label>
-              <select
-                value={filters.vendor}
-                onChange={(e) => setFilters((p) => ({ ...p, vendor: e.target.value }))}
-                className="mt-0.5 w-full rounded-lg border px-2 py-1.5 text-sm"
-              >
-                <option value="">All</option>
-                {filterOptions.vendor.map((v) => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-xs text-gray-600">Engine</label>
-              <select
-                value={filters.engine}
-                onChange={(e) => setFilters((p) => ({ ...p, engine: e.target.value }))}
-                className="mt-0.5 w-full rounded-lg border px-2 py-1.5 text-sm"
-              >
-                <option value="">All</option>
-                {filterOptions.engine.map((v) => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-xs text-gray-600">Model</label>
-              <select
-                value={filters.model}
-                onChange={(e) => setFilters((p) => ({ ...p, model: e.target.value }))}
-                className="mt-0.5 w-full rounded-lg border px-2 py-1.5 text-sm"
-              >
-                <option value="">All</option>
-                {filterOptions.model.map((v) => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-xs text-gray-600">Config</label>
-              <select
-                value={filters.config}
-                onChange={(e) => setFilters((p) => ({ ...p, config: e.target.value }))}
-                className="mt-0.5 w-full rounded-lg border px-2 py-1.5 text-sm"
-              >
-                <option value="">All</option>
-                {filterOptions.config.map((v) => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-xs text-gray-600">Article</label>
-              <select
-                value={filters.article}
-                onChange={(e) => setFilters((p) => ({ ...p, article: e.target.value }))}
-                className="mt-0.5 w-full rounded-lg border px-2 py-1.5 text-sm"
-              >
-                <option value="">All</option>
-                {filterOptions.article.map((v) => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-xs text-gray-600">Category</label>
-              <select
-                value={filters.category}
-                onChange={(e) => setFilters((p) => ({ ...p, category: e.target.value }))}
-                className="mt-0.5 w-full rounded-lg border px-2 py-1.5 text-sm"
-              >
-                <option value="">All</option>
-                {filterOptions.category.map((v) => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <p className="mt-1 text-xs text-gray-500">
-            {filtered.length} of {items.length} items
-          </p>
-
           <div className="mt-4">
             {loading ? (
               <div className="text-sm text-gray-600">Loading...</div>
@@ -992,6 +871,22 @@ export default function ItemMaster() {
                       <th className="py-2 pr-3">Min</th>
                       <th className="py-2 pr-3">Location</th>
                       <th className="py-2"></th>
+                    </tr>
+                    <tr className="bg-gray-50">
+                      {columnFilterKeys.map((key) => (
+                        <th key={key} className="p-1">
+                          <input
+                            type="text"
+                            value={columnFilters[key]}
+                            onChange={(e) =>
+                              setColumnFilters((p) => ({ ...p, [key]: e.target.value }))
+                            }
+                            placeholder="Filter..."
+                            className="w-full min-w-0 rounded border border-gray-200 px-1.5 py-0.5 text-xs"
+                          />
+                        </th>
+                      ))}
+                      <th className="p-1 w-12"></th>
                     </tr>
                   </thead>
 
@@ -1059,7 +954,7 @@ export default function ItemMaster() {
                 </table>
 
                 <div className="mt-3 text-xs text-gray-500">
-                  Total items: {items.length}
+                  Showing {filtered.length} of {items.length} items
                 </div>
               </div>
             )}
