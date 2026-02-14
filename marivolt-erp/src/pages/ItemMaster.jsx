@@ -116,8 +116,8 @@ export default function ItemMaster() {
   function exportItemsCsv() {
     const rows = [
       [
-        "Vendor",
-        "Engine",
+        "Vertical",
+        "Model",
         "Model",
         "Config",
         "C",
@@ -192,8 +192,8 @@ export default function ItemMaster() {
       startY: 22,
       head: [
         [
-          "Vendor",
-          "Engine",
+          "Vertical",
+          "Model",
           "Model",
           "Config",
           "C",
@@ -487,7 +487,7 @@ export default function ItemMaster() {
               />
             </div>
             <div>
-              <label className="text-sm text-gray-600">Vendor</label>
+              <label className="text-sm text-gray-600">Vertical</label>
               <input
                 name="vendor"
                 value={form.vendor}
@@ -497,7 +497,7 @@ export default function ItemMaster() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-sm text-gray-600">Engine</label>
+                <label className="text-sm text-gray-600">Model</label>
                 <input
                   name="engine"
                   value={form.engine}
@@ -843,8 +843,8 @@ export default function ItemMaster() {
                 <table className="w-full text-left text-sm">
                   <thead className="border-b text-gray-600">
                     <tr>
-                      <th className="py-2 pr-3">Vendor</th>
-                      <th className="py-2 pr-3">Engine</th>
+                      <th className="py-2 pr-3">Vertical</th>
+                      <th className="py-2 pr-3">Model</th>
                       <th className="py-2 pr-3">Model</th>
                       <th className="py-2 pr-3">Config</th>
                       <th className="py-2 pr-3">C</th>
