@@ -13,7 +13,7 @@ export default function ItemMaster() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const columnFilterKeys = [
-    "vendor", "engine", "compatibility", "cCode", "article", "mpn", "description", "name", "spn",
+    "vendor", "engine", "compatibility", "article", "mpn", "description", "name", "spn",
     "materialCode", "drawingNumber", "rev", "qty", "oeRemarks", "internalRemarks", "oeMarking",
     "supplier1", "supplier1UnitPrice", "supplier1Cur", "supplier2", "supplier3", "sku", "uom", "unitWeight", "category", "minStock", "location",
   ];
@@ -27,7 +27,6 @@ export default function ItemMaster() {
     vendor: "",
     engine: "",
     compatibility: [{ engine: "", model: "", config: "" }],
-    cCode: "",
     article: "",
     mpn: "",
     description: "",
@@ -102,7 +101,7 @@ export default function ItemMaster() {
 
   function downloadItemImportTemplate() {
     const headers = [
-      "Item Name", "Vertical", "Brand", "Compatibility", "C", "Article", "MPN", "Description", "SPN",
+      "Item Name", "Vertical", "Brand", "Compatibility", "Article", "MPN", "Description", "SPN",
       "Material Code", "Drawing Number", "Rev", "QTY", "UOM", "Unit Weight", "Category", "Min Stock", "Location", "Supplier 1 Unit Price", "Supplier 1 Cur",
     ];
     const exampleRow1 = [
@@ -171,7 +170,6 @@ export default function ItemMaster() {
         "Vertical",
         "Brand",
         "Compatibility",
-        "C",
         "Article",
         "MPN",
         "Description",
@@ -204,7 +202,6 @@ export default function ItemMaster() {
         it.vendor || "",
         it.engine || "",
         getCellValue(it, "compatibility"),
-        it.cCode || "",
         it.article || "",
         it.mpn || "",
         it.description || "",
@@ -247,7 +244,6 @@ export default function ItemMaster() {
           "Vertical",
           "Brand",
           "Compatibility",
-          "C",
           "Article",
           "MPN",
           "Description",
@@ -281,7 +277,6 @@ export default function ItemMaster() {
         it.vendor || "",
         it.engine || "",
         getCellValue(it, "compatibility"),
-        it.cCode || "",
         it.article || "",
         it.mpn || "",
         it.description || "",
@@ -344,7 +339,6 @@ export default function ItemMaster() {
             model: String(c.model || "").trim(),
             config: String(c.config || "").trim(),
           })),
-        cCode: form.cCode.trim(),
         article: form.article.trim(),
         mpn: form.mpn.trim(),
         description: form.description.trim(),
@@ -378,7 +372,6 @@ export default function ItemMaster() {
         vendor: "",
         engine: "",
         compatibility: [{ engine: "", model: "", config: "" }],
-        cCode: "",
         article: "",
         mpn: "",
         description: "",
@@ -473,7 +466,6 @@ export default function ItemMaster() {
             }
             return out;
           })(),
-          cCode: String(row.ccode || row.c || "").trim(),
           article: String(row.article || row.articleno || "").trim(),
           mpn: String(row.mpn || "").trim(),
           description: String(row.description || row.desc || "").trim(),
@@ -685,15 +677,6 @@ export default function ItemMaster() {
                   </tbody>
                 </table>
               </div>
-            </div>
-            <div>
-              <label className="text-sm text-gray-600">C</label>
-              <input
-                name="cCode"
-                value={form.cCode}
-                onChange={onChange}
-                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-              />
             </div>
             <div>
               <label className="text-sm text-gray-600">Article</label>
@@ -1029,7 +1012,6 @@ export default function ItemMaster() {
                       <th className="py-2 pr-3">Vertical</th>
                       <th className="py-2 pr-3">Brand</th>
                       <th className="py-2 pr-3">Compatibility</th>
-                      <th className="py-2 pr-3">C</th>
                       <th className="py-2 pr-3">Article</th>
                       <th className="py-2 pr-3">MPN</th>
                       <th className="py-2 pr-3">Description</th>
@@ -1076,7 +1058,7 @@ export default function ItemMaster() {
                   <tbody>
                     {filtered.length === 0 ? (
                       <tr>
-                        <td className="py-6 text-gray-500" colSpan={28}>
+                        <td className="py-6 text-gray-500" colSpan={27}>
                           No items yet.
                         </td>
                       </tr>
@@ -1086,7 +1068,6 @@ export default function ItemMaster() {
                           <td className="py-2 pr-3">{it.vendor || "-"}</td>
                           <td className="py-2 pr-3">{it.engine || "-"}</td>
                           <td className="py-2 pr-3 max-w-[200px] truncate" title={getCellValue(it, "compatibility")}>{getCellValue(it, "compatibility") || "-"}</td>
-                          <td className="py-2 pr-3">{it.cCode || "-"}</td>
                           <td className="py-2 pr-3">{it.article || "-"}</td>
                           <td className="py-2 pr-3">{it.mpn || "-"}</td>
                           <td className="py-2 pr-3">{it.description || "-"}</td>

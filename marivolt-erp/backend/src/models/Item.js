@@ -16,7 +16,6 @@ const itemSchema = new mongoose.Schema(
       ],
       default: () => [],
     },
-    cCode: { type: String, default: "" },
     article: { type: String, default: "" },
     mpn: { type: String, default: "" },
     description: { type: String, default: "" },
