@@ -423,13 +423,27 @@ export default function ItemMaster() {
       const buffer = await file.arrayBuffer();
       const wb = XLSX.read(buffer, { type: "array" });
       const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-
-      const normalized = rows.map((row) => {
+      const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+      if (!aoa.length) {
+        setErr("Excel sheet is empty.");
+        return;
+      }
+      const headerRowIndex = aoa.findIndex((row) => {
+        const rowStr = (Array.isArray(row) ? row : []).map((c) => String(c ?? "").toLowerCase()).join(" ");
+        return /article|itemname|item\s*name|vertical|compatibility/.test(rowStr);
+      });
+      const headerRow = headerRowIndex >= 0 ? aoa[headerRowIndex] : aoa[0];
+      const headers = (Array.isArray(headerRow) ? headerRow : []).map((h) =>
+        String(h ?? "")
+          .toLowerCase()
+          .replace(/\s+/g, "")
+      );
+      const dataRows = headerRowIndex >= 0 ? aoa.slice(headerRowIndex + 1) : aoa.slice(1);
+      const normalized = dataRows.map((row) => {
+        const arr = Array.isArray(row) ? row : [];
         const entry = {};
-        Object.entries(row).forEach(([k, v]) => {
-          const key = String(k).toLowerCase().replace(/\s+/g, "");
-          entry[key] = v;
+        headers.forEach((key, i) => {
+          if (key) entry[key] = arr[i] ?? "";
         });
         return entry;
       });
@@ -440,8 +454,8 @@ export default function ItemMaster() {
         return {
           sku: String(sku || "").trim(),
           name: String(name || "").trim(),
-          vendor: String(row.vendor || "").trim(),
-          engine: String(row.engine || "").trim(),
+          vendor: String(row.vendor || row.vertical || "").trim(),
+          engine: String(row.engine || row.brand || "").trim(),
           compatibility: (() => {
             const single = String(row.compatibility || row.compatiblearticle || "").trim();
             if (single) {
