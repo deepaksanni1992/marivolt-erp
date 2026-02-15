@@ -292,7 +292,15 @@ export default function Sales() {
   function getItemCompatibilityStr(it) {
     if (!it) return "";
     const comp = it.compatibility?.length ? it.compatibility : (it.model != null || it.config != null ? [{ engine: it.engine, model: it.model, config: it.config }] : []);
-    return comp.map((c) => [c.engine, c.model, c.config].filter(Boolean).join(" / ")).filter(Boolean).join("; ") || "";
+    if (!comp.length) return "";
+    const engines = [...new Set(comp.map((c) => c.engine).filter(Boolean))];
+    const models = [...new Set(comp.map((c) => c.model).filter(Boolean))];
+    const configs = [...new Set(comp.map((c) => c.config).filter(Boolean))];
+    const parts = [];
+    if (engines.length) parts.push(engines.join(", "));
+    if (models.length) parts.push("Models: " + models.join(", "));
+    if (configs.length) parts.push("Configs: " + configs.join(", "));
+    return parts.join(" | ") || comp.map((c) => [c.engine, c.model, c.config].filter(Boolean).join(" / ")).join("; ");
   }
 
   const itemMatchesCompatibility = (it, model, config) => {

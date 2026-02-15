@@ -76,7 +76,15 @@ export default function ItemMaster() {
     if (key === "supplier3") return `${it.supplier3 || ""} ${it.supplier3Pw || ""} ${it.supplier3OePrice || ""}`.trim();
     if (key === "compatibility") {
       const comp = it.compatibility?.length ? it.compatibility : (it.model || it.config ? [{ engine: it.engine, model: it.model, config: it.config }] : []);
-      return comp.map((c) => [c.engine, c.model, c.config].filter(Boolean).join(" / ")).filter(Boolean).join("; ") || "";
+      if (!comp.length) return "";
+      const engines = [...new Set(comp.map((c) => c.engine).filter(Boolean))];
+      const models = [...new Set(comp.map((c) => c.model).filter(Boolean))];
+      const configs = [...new Set(comp.map((c) => c.config).filter(Boolean))];
+      const parts = [];
+      if (engines.length) parts.push(engines.join(", "));
+      if (models.length) parts.push("Models: " + models.join(", "));
+      if (configs.length) parts.push("Configs: " + configs.join(", "));
+      return parts.join(" | ") || comp.map((c) => [c.engine, c.model, c.config].filter(Boolean).join(" / ")).join("; ");
     }
     const v = it[key];
     return v === undefined || v === null ? "" : String(v);
@@ -449,6 +457,7 @@ export default function ItemMaster() {
             const single = String(row.compatibility || row.compatiblearticle || "").trim();
             let firstVertical = "";
             let firstBrand = "";
+            const looksLikeModel = (s) => /\d/.test(s) || (s && s.length >= 3);
             const compatibility = (() => {
               if (single) {
                 const out = [];
@@ -456,16 +465,26 @@ export default function ItemMaster() {
                   const trimmed = part.trim();
                   if (!trimmed) return;
                   const parts = trimmed.split("/").map((x) => x.trim()).filter(Boolean);
-                  // Format: Vertical/Brand/Config1/Config2/Model1/Model2/... e.g. Engine/Wartisla/L/V/W32/WL32/W34SG/W34DF/W34SGD
                   const vertical = parts[0] || "";
                   const brand = parts[1] || "";
-                  const config = parts.length >= 4 ? `${parts[2]}/${parts[3]}` : (parts[2] || "");
-                  const model = parts.length > 4 ? parts.slice(4).join("/") : "";
-                  if (vertical || brand || config || model) {
-                    out.push({ engine: brand, model, config });
-                    if (!firstVertical) firstVertical = vertical;
-                    if (!firstBrand) firstBrand = brand;
+                  const configs = [];
+                  const models = [];
+                  for (let i = 2; i < parts.length; i++) {
+                    if (looksLikeModel(parts[i])) {
+                      models.push(...parts.slice(i));
+                      break;
+                    }
+                    configs.push(parts[i]);
                   }
+                  if (!firstVertical) firstVertical = vertical;
+                  if (!firstBrand) firstBrand = brand;
+                  const configList = configs.length ? configs : [""];
+                  const modelList = models.length ? models : [""];
+                  configList.forEach((config) => {
+                    modelList.forEach((model) => {
+                      if (brand || config || model) out.push({ engine: brand, model, config });
+                    });
+                  });
                 });
                 if (out.length) return out;
               }
@@ -1016,7 +1035,7 @@ export default function ItemMaster() {
               </label>
             </div>
             <p className="mt-2 text-xs text-gray-500">
-              <strong>Compatibility column format:</strong> Use column name <strong>Compatibility</strong>. One segment per slash: <strong>Vertical / Brand / Config1 / Config2 / Model1 / Model2 / …</strong> — Vertical and Brand also fill the item’s Vertical and Brand. Config = 3rd and 4th segments (e.g. <strong>L/V</strong>). Model = 5th segment onwards (e.g. <strong>W32/WL32/W34SG/W34DF/W34SGD</strong>). Use <strong>;</strong> between multiple mappings. Example: <code className="bg-gray-100 px-1 rounded">Engine/Wartisla/L/V/W32/WL32/W34SG/W34DF/W34SGD</code> → Vertical=Engine, Brand=Wartisla, Config=L/V, Model=W32/WL32/W34SG/W34DF/W34SGD.
+              <strong>Compatibility column format:</strong> Column <strong>Compatibility</strong>. Order: <strong>Vertical/Brand/Config…/Model…</strong> — segments after Brand are Config(s) until one “looks like” a model (has a digit or length ≥3), then the rest are Models. Each Config and each Model is stored separately (e.g. L and V → two configs; W32, WL32, W34SG… → five models). Use <strong>;</strong> between mappings. Example: <code className="bg-gray-100 px-1 rounded">Engine/Wartisla/L/V/W32/WL32/W34SG/W34DF/W34SGD</code> → article common with Config L, Config V, and Models W32, WL32, W34SG, W34DF, W34SGD.
             </p>
           </div>
 
