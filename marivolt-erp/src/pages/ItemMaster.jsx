@@ -121,7 +121,7 @@ export default function ItemMaster() {
     const rows = [
       [
         "Vertical",
-        "Model",
+        "Brand",
         "Model",
         "Config",
         "C",
@@ -526,7 +526,7 @@ export default function ItemMaster() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-sm text-gray-600">Model</label>
+                <label className="text-sm text-gray-600">Brand</label>
                 <input
                   name="engine"
                   value={form.engine}
@@ -883,7 +883,7 @@ export default function ItemMaster() {
                   <thead className="border-b text-gray-600">
                     <tr>
                       <th className="py-2 pr-3">Vertical</th>
-                      <th className="py-2 pr-3">Model</th>
+                      <th className="py-2 pr-3">Brand</th>
                       <th className="py-2 pr-3">Model</th>
                       <th className="py-2 pr-3">Config</th>
                       <th className="py-2 pr-3">C</th>
