@@ -663,7 +663,7 @@ export default function Sales() {
 
   function exportQuotationItemsCsv() {
     const rows = [
-      ["SKU", "Description", "UOM", "Qty", "Unit Price"],
+      ["Article", "Description", "UOM", "Qty", "Unit Price"],
       ...quotationItems.map((row) => [
         row.sku || "",
         row.description || "",
@@ -673,6 +673,31 @@ export default function Sales() {
       ]),
     ];
     downloadCsv("quotation-items.csv", rows);
+  }
+
+  function exportQuotationItemsExcel() {
+    const headers = ["Article", "Description", "UOM", "Qty", "Unit Price"];
+    const rows = quotationItems.map((row) => [
+      row.sku || "",
+      row.description || "",
+      row.uom || "",
+      Number(row.qty) || 0,
+      Number(row.unitPrice) || 0,
+    ]);
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Quotation Items");
+    XLSX.writeFile(wb, "quotation-items.xlsx");
+  }
+
+  function downloadQuotationItemsTemplate() {
+    const headers = ["Article", "Description", "UOM", "Qty", "Unit Price"];
+    const exampleRow = ["10009", "O-ring", "pcs", 1, 0.56];
+    const noteRow = ["Article = Item Master Article number. Use exact value to match item.", "", "", "", ""];
+    const ws = XLSX.utils.aoa_to_sheet([headers, exampleRow, noteRow]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Quotation Items");
+    XLSX.writeFile(wb, "quotation-items-template.xlsx");
   }
 
   async function handleQuotationExcelImport(file) {
@@ -694,14 +719,12 @@ export default function Sales() {
       });
 
       const itemsFromExcel = normalized.map((row) => {
-        const rawSku =
-          row.sku ||
-          row.partno ||
-          row.partnumber ||
-          row.article ||
-          row.articleno ||
-          "";
-        const matchedItem = items.find((it) => it.sku === String(rawSku || "").trim());
+        const rawSku = String(
+          row.sku || row.partno || row.partnumber || row.article || row.articleno || ""
+        ).trim();
+        const matchedItem = items.find(
+          (it) => it.sku === rawSku || String(it.article || "").trim() === rawSku
+        );
         const description =
           row.description ||
           row.itemname ||
@@ -714,7 +737,7 @@ export default function Sales() {
         const unitPrice = row.unitprice || row.rate || row.price || 0;
 
         return {
-          sku: String(rawSku || "").trim(),
+          sku: matchedItem ? matchedItem.sku : rawSku,
           description: String(description || "").trim(),
           uom: String(uom || "").trim(),
           qty: Number(qty) || 0,
@@ -763,6 +786,30 @@ export default function Sales() {
       ? "pending-quotations.csv"
       : "quotations.csv";
     downloadCsv(filename, rows);
+  }
+
+  function exportQuotationsExcel(options = { pendingOnly: false }) {
+    const headers = ["Doc No", "Date", "Customer", "Terms", "Total", "Status", "Notes"];
+    const data = quotationList
+      .filter((doc) => {
+        if (!options.pendingOnly) return true;
+        const status = doc.status || "OPEN";
+        return status === "OPEN" || status === "FINAL";
+      })
+      .map((doc) => [
+        doc.docNo || "",
+        doc.createdAt ? new Date(doc.createdAt).toLocaleDateString() : "",
+        doc.customerName || "",
+        doc.paymentTerms || "",
+        Number(doc.grandTotal || 0).toFixed(2),
+        doc.status || "OPEN",
+        doc.notes || "",
+      ]);
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Quotations");
+    const filename = options.pendingOnly ? "pending-quotations.xlsx" : "quotations.xlsx";
+    XLSX.writeFile(wb, filename);
   }
 
   function exportCustomersCsv() {
@@ -1243,7 +1290,20 @@ export default function Sales() {
                       onClick={exportQuotationItemsCsv}
                       className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
                     >
-                      Export Items
+                      Export CSV
+                    </button>
+                    <button
+                      onClick={exportQuotationItemsExcel}
+                      className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
+                    >
+                      Export Excel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={downloadQuotationItemsTemplate}
+                      className="rounded-lg border px-3 py-1 text-xs hover:bg-gray-50"
+                    >
+                      Download template
                     </button>
                     <label className="inline-flex cursor-pointer items-center rounded-lg border px-3 py-1 text-xs hover:bg-gray-50">
                       <span>Import Excel</span>
@@ -1258,6 +1318,9 @@ export default function Sales() {
                     </label>
                   </div>
                 </div>
+                <p className="mt-2 text-xs text-gray-500">
+                  Import/Export: Use columns <strong>Article</strong>, Description, UOM, Qty, Unit Price. Download template to get the format.
+                </p>
                 <div className="mt-3 overflow-x-auto">
                   <table className="w-full text-left text-xs">
                     <thead className="border-b text-gray-600">
@@ -1380,13 +1443,25 @@ export default function Sales() {
                   onClick={() => exportQuotationsCsv({ pendingOnly: false })}
                   className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
                 >
-                  Quotation Report
+                  Export CSV
+                </button>
+                <button
+                  onClick={() => exportQuotationsExcel({ pendingOnly: false })}
+                  className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
+                >
+                  Export Excel
                 </button>
                 <button
                   onClick={() => exportQuotationsCsv({ pendingOnly: true })}
                   className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
                 >
-                  Pending Quotation Report
+                  Pending (CSV)
+                </button>
+                <button
+                  onClick={() => exportQuotationsExcel({ pendingOnly: true })}
+                  className="rounded-xl border px-3 py-2 text-xs hover:bg-gray-50"
+                >
+                  Pending (Excel)
                 </button>
               </div>
             </div>
