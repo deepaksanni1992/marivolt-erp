@@ -1246,17 +1246,18 @@ export default function Sales() {
       {activeSub === "Quotation" && (
         <div className="space-y-6">
           <div className="rounded-2xl border bg-white p-6">
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-semibold">Create Quotation</h2>
-              <button
-                onClick={() => loadDocs("QUOTATION", setQuotationList)}
-                className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-              >
-                Refresh
-              </button>
-            </div>
-            <div className="mt-4 grid gap-4 lg:grid-cols-3">
-              <div className="lg:col-span-1 space-y-3">
+            <div className="flex flex-col gap-4 xl:flex-row">
+              {/* Top left: customer details, Vertical, Engine, Model, Config, Notes, Save */}
+              <div className="shrink-0 space-y-3 xl:w-72">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-base font-semibold">Create Quotation</h2>
+                  <button
+                    onClick={() => loadDocs("QUOTATION", setQuotationList)}
+                    className="rounded-xl border px-3 py-1.5 text-xs hover:bg-gray-50"
+                  >
+                    Refresh
+                  </button>
+                </div>
                 <div>
                   <label className="text-sm text-gray-600">Customer</label>
                   <select
@@ -1272,50 +1273,17 @@ export default function Sales() {
                     ))}
                   </select>
                 </div>
-                <div>
-                  <label className="text-sm text-gray-600">Notes</label>
-                  <textarea
-                    name="notes"
-                    value={quotationForm.notes}
-                    onChange={onQuotationChange}
-                    rows={3}
-                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => createQuotation("DRAFT")}
-                    className="flex-1 rounded-xl border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
-                  >
-                    Save as Draft
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => createQuotation("FINAL")}
-                    className="flex-1 rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
-                  >
-                    Save as Final
-                  </button>
-                </div>
-              </div>
-
-              <div className="lg:col-span-2">
-                <div className="mb-3 grid gap-2 md:grid-cols-4">
+                <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="text-xs text-gray-600">Vertical</label>
                     <select
                       value={itemFilters.vertical}
-                      onChange={(e) =>
-                        onItemFilterChange("vertical", e.target.value)
-                      }
+                      onChange={(e) => onItemFilterChange("vertical", e.target.value)}
                       className="mt-1 w-full rounded-lg border px-2 py-1 text-xs"
                     >
                       <option value="">All</option>
                       {verticalOptions.map((v) => (
-                        <option key={v} value={v}>
-                          {v}
-                        </option>
+                        <option key={v} value={v}>{v}</option>
                       ))}
                     </select>
                   </div>
@@ -1328,9 +1296,7 @@ export default function Sales() {
                     >
                       <option value="">All</option>
                       {engineOptions.map((v) => (
-                        <option key={v} value={v}>
-                          {v}
-                        </option>
+                        <option key={v} value={v}>{v}</option>
                       ))}
                     </select>
                   </div>
@@ -1343,9 +1309,7 @@ export default function Sales() {
                     >
                       <option value="">All</option>
                       {modelOptions.map((v) => (
-                        <option key={v} value={v}>
-                          {v}
-                        </option>
+                        <option key={v} value={v}>{v}</option>
                       ))}
                     </select>
                   </div>
@@ -1358,13 +1322,41 @@ export default function Sales() {
                     >
                       <option value="">All</option>
                       {configOptions.map((v) => (
-                        <option key={v} value={v}>
-                          {v}
-                        </option>
+                        <option key={v} value={v}>{v}</option>
                       ))}
                     </select>
                   </div>
                 </div>
+                <div>
+                  <label className="text-sm text-gray-600">Notes</label>
+                  <textarea
+                    name="notes"
+                    value={quotationForm.notes}
+                    onChange={onQuotationChange}
+                    rows={2}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => createQuotation("DRAFT")}
+                    className="flex-1 rounded-xl border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    Save as Draft
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => createQuotation("FINAL")}
+                    className="flex-1 rounded-xl bg-gray-900 px-3 py-2 text-sm font-medium text-white"
+                  >
+                    Save as Final
+                  </button>
+                </div>
+              </div>
+
+              {/* Items: full remaining width for table */}
+              <div className="min-w-0 flex-1">
                 <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                   <h3 className="text-sm font-semibold text-gray-700">Items</h3>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1451,7 +1443,7 @@ export default function Sales() {
                                 ))}
                               </select>
                             </td>
-                            <td className="max-w-[280px] py-2 pr-3 text-gray-600" title={getItemCompatibilityStr(items.find((it) => it.sku === row.sku))}>
+                            <td className="max-w-[140px] truncate py-2 pr-3 text-gray-600" title={getItemCompatibilityStr(items.find((it) => it.sku === row.sku))}>
                               {getItemCompatibilityStr(items.find((it) => it.sku === row.sku)) || "-"}
                             </td>
                             <td className="py-2 pr-3">
