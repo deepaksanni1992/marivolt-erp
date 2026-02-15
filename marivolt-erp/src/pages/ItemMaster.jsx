@@ -438,6 +438,11 @@ export default function ItemMaster() {
         return;
       }
 
+      const userConfirmed = window.confirm(
+        `Do you want to save? ${filtered.length} item(s) will be imported.`
+      );
+      if (!userConfirmed) return;
+
       const results = await Promise.allSettled(
         filtered.map((row) => apiPost("/items", row))
       );

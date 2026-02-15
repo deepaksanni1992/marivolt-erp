@@ -28,7 +28,12 @@ async function request(path, options = {}) {
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text);
+    let message = text;
+    try {
+      const body = JSON.parse(text);
+      if (body && typeof body.message === "string") message = body.message;
+    } catch (_) {}
+    throw new Error(message);
   }
   return res.json();
 }
@@ -63,6 +68,14 @@ export async function apiGetWithQuery(path, params = {}) {
     },
   });
 
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const text = await res.text();
+    let message = text;
+    try {
+      const body = JSON.parse(text);
+      if (body && typeof body.message === "string") message = body.message;
+    } catch (_) {}
+    throw new Error(message);
+  }
   return res.json();
 }
