@@ -445,31 +445,44 @@ export default function ItemMaster() {
         const name = (row.itemname ?? row["itemname"] ?? row.name ?? row.description ?? row.article ?? "").toString().trim();
         return {
           name: String(name || "").trim(),
-          vendor: String(row.vendor || row.vertical || "").trim(),
-          engine: String(row.engine || row.brand || "").trim(),
-          compatibility: (() => {
+          ...(function () {
             const single = String(row.compatibility || row.compatiblearticle || "").trim();
-            if (single) {
+            let firstVertical = "";
+            let firstBrand = "";
+            const compatibility = (() => {
+              if (single) {
+                const out = [];
+                single.split(";").forEach((part) => {
+                  const trimmed = part.trim();
+                  if (!trimmed) return;
+                  const parts = trimmed.split("/").map((x) => x.trim()).filter(Boolean);
+                  // Format: Vertical/Brand/Config1/Config2/Model1/Model2/... e.g. Engine/Wartisla/L/V/W32/WL32/W34SG/W34DF/W34SGD
+                  const vertical = parts[0] || "";
+                  const brand = parts[1] || "";
+                  const config = parts.length >= 4 ? `${parts[2]}/${parts[3]}` : (parts[2] || "");
+                  const model = parts.length > 4 ? parts.slice(4).join("/") : "";
+                  if (vertical || brand || config || model) {
+                    out.push({ engine: brand, model, config });
+                    if (!firstVertical) firstVertical = vertical;
+                    if (!firstBrand) firstBrand = brand;
+                  }
+                });
+                if (out.length) return out;
+              }
               const out = [];
-              single.split(";").forEach((part) => {
-                const trimmed = part.trim();
-                if (!trimmed) return;
-                const parts = trimmed.split("/").map((x) => x.trim());
-                const eng = parts[0] || "";
-                const mod = parts[1] || "";
-                const cfg = parts[2] || "";
-                if (eng || mod || cfg) out.push({ engine: eng, model: mod, config: cfg });
-              });
-              if (out.length) return out;
-            }
-            const out = [];
-            for (let i = 1; i <= 20; i++) {
-              const e = String(row[`comp${i}_engine`] || row[`comp${i}engine`] || "").trim();
-              const m = String(row[`comp${i}_model`] || row[`comp${i}model`] || "").trim();
-              const c = String(row[`comp${i}_config`] || row[`comp${i}config`] || "").trim();
-              if (e || m || c) out.push({ engine: e, model: m, config: c });
-            }
-            return out;
+              for (let i = 1; i <= 20; i++) {
+                const e = String(row[`comp${i}_engine`] || row[`comp${i}engine`] || "").trim();
+                const m = String(row[`comp${i}_model`] || row[`comp${i}model`] || "").trim();
+                const c = String(row[`comp${i}_config`] || row[`comp${i}config`] || "").trim();
+                if (e || m || c) out.push({ engine: e, model: m, config: c });
+              }
+              return out;
+            })();
+            return {
+              vendor: String(row.vendor || row.vertical || firstVertical || "").trim(),
+              engine: String(row.engine || row.brand || firstBrand || "").trim(),
+              compatibility,
+            };
           })(),
           article: String(row.article || row.articleno || "").trim(),
           mpn: String(row.mpn || "").trim(),
@@ -666,7 +679,7 @@ export default function ItemMaster() {
                               setForm((p) => ({ ...p, compatibility: next }));
                             }}
                             className="w-full rounded border px-2 py-1 text-sm"
-                            placeholder="Config"
+                            placeholder="Config or full path (e.g. L/V/W32/WL32/W34SG)"
                           />
                         </td>
                         <td className="p-2">
@@ -1003,7 +1016,7 @@ export default function ItemMaster() {
               </label>
             </div>
             <p className="mt-2 text-xs text-gray-500">
-              <strong>Compatibility (Option 1 – single column):</strong> Column name <strong>Compatibility</strong>. Format: <strong>Engine/Model/Config</strong>; use <strong>/</strong> between Engine, Model, Config and <strong>;</strong> between multiple mappings. Examples: <code className="bg-gray-100 px-1 rounded">Cummins/ISX/Std</code> or <code className="bg-gray-100 px-1 rounded">Cummins/ISX/Std; PACCAR/MX13/Premium</code>
+              <strong>Compatibility column format:</strong> Use column name <strong>Compatibility</strong>. One segment per slash: <strong>Vertical / Brand / Config1 / Config2 / Model1 / Model2 / …</strong> — Vertical and Brand also fill the item’s Vertical and Brand. Config = 3rd and 4th segments (e.g. <strong>L/V</strong>). Model = 5th segment onwards (e.g. <strong>W32/WL32/W34SG/W34DF/W34SGD</strong>). Use <strong>;</strong> between multiple mappings. Example: <code className="bg-gray-100 px-1 rounded">Engine/Wartisla/L/V/W32/WL32/W34SG/W34DF/W34SGD</code> → Vertical=Engine, Brand=Wartisla, Config=L/V, Model=W32/WL32/W34SG/W34DF/W34SGD.
             </p>
           </div>
 
@@ -1072,7 +1085,7 @@ export default function ItemMaster() {
                         <tr key={it._id} className="border-b last:border-b-0">
                           <td className="py-2 pr-3">{it.vendor || "-"}</td>
                           <td className="py-2 pr-3">{it.engine || "-"}</td>
-                          <td className="py-2 pr-3 max-w-[200px] truncate" title={getCellValue(it, "compatibility")}>{getCellValue(it, "compatibility") || "-"}</td>
+                          <td className="py-2 pr-3 max-w-[360px] truncate" title={getCellValue(it, "compatibility")}>{getCellValue(it, "compatibility") || "-"}</td>
                           <td className="py-2 pr-3">{it.article || "-"}</td>
                           <td className="py-2 pr-3">{it.mpn || "-"}</td>
                           <td className="py-2 pr-3">{it.description || "-"}</td>

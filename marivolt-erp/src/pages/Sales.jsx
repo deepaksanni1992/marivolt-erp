@@ -289,6 +289,12 @@ export default function Sales() {
     return { subTotal, grandTotal: subTotal };
   }, [quotationItems]);
 
+  function getItemCompatibilityStr(it) {
+    if (!it) return "";
+    const comp = it.compatibility?.length ? it.compatibility : (it.model != null || it.config != null ? [{ engine: it.engine, model: it.model, config: it.config }] : []);
+    return comp.map((c) => [c.engine, c.model, c.config].filter(Boolean).join(" / ")).filter(Boolean).join("; ") || "";
+  }
+
   const itemMatchesCompatibility = (it, model, config) => {
     const comp =
       it.compatibility?.length
@@ -536,9 +542,12 @@ export default function Sales() {
       const qty = Number(it.qty) || 0;
       const rate = Number(it.unitPrice) || 0;
       const total = (it.total != null ? Number(it.total) : qty * rate);
+      const fullItem = items.find((i) => i.sku === it.sku);
+      const compatStr = getItemCompatibilityStr(fullItem);
       return [
         String(idx + 1),
         it.sku || "-",
+        compatStr || "-",
         it.description || "-",
         it.uom || "-",
         String(qty),
@@ -550,7 +559,7 @@ export default function Sales() {
       startY: pdf.lastAutoTable.finalY + 6,
       margin: getTableMargins(contentStartY + 6),
       theme: "grid",
-      head: [["Pos", "Article", "Description", "UOM", "Qty", "Unit Price", "Total"]],
+      head: [["Pos", "Article", "Compatibility", "Description", "UOM", "Qty", "Unit Price", "Total"]],
       body: itemRows,
       styles: { fontSize: 10 },
       headStyles: { fillColor: [230, 230, 230], textColor: 20 },
@@ -1246,6 +1255,7 @@ export default function Sales() {
                     <thead className="border-b text-gray-600">
                       <tr>
                         <th className="py-2 pr-3">Article</th>
+                        <th className="py-2 pr-3">Compatibility</th>
                         <th className="py-2 pr-3">Description</th>
                         <th className="py-2 pr-3">UOM</th>
                         <th className="py-2 pr-3">Qty</th>
@@ -1275,6 +1285,9 @@ export default function Sales() {
                                   </option>
                                 ))}
                               </select>
+                            </td>
+                            <td className="max-w-[280px] py-2 pr-3 text-gray-600" title={getItemCompatibilityStr(items.find((it) => it.sku === row.sku))}>
+                              {getItemCompatibilityStr(items.find((it) => it.sku === row.sku)) || "-"}
                             </td>
                             <td className="py-2 pr-3">
                               <input
