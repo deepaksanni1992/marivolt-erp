@@ -517,6 +517,7 @@ export default function ItemMaster() {
       }
       filtered.forEach((row) => {
         if (!row.name || !row.name.trim()) row.name = String(row.article || "Unnamed").trim();
+        row.name = row.name.trim() || String(row.article || "Unnamed").trim();
       });
 
       const userConfirmed = window.confirm(
@@ -524,18 +525,30 @@ export default function ItemMaster() {
       );
       if (!userConfirmed) return;
 
-      const results = await Promise.allSettled(
-        filtered.map((row) => apiPost("/items", row))
-      );
-      const created = results.filter((r) => r.status === "fulfilled").length;
-      const failed = results.length - created;
-      const firstRejection = results.find((r) => r.status === "rejected");
-      const firstReason = firstRejection?.reason?.message || firstRejection?.reason?.toString?.() || "";
+      let created = 0;
+      let failed = 0;
+      let firstFailureMessage = "";
+      let firstFailureLabel = "";
+      for (const row of filtered) {
+        const label = row.article ? `Article ${row.article}` : (row.name || "unnamed");
+        try {
+          await apiPost("/items", row);
+          created++;
+        } catch (e) {
+          failed++;
+          const msg = e?.message || String(e);
+          if (!firstFailureMessage) {
+            firstFailureMessage = msg;
+            firstFailureLabel = label;
+          }
+        }
+      }
       if (failed) {
         setErr(
-          firstReason
-            ? `Imported ${created} items. ${failed} failed: ${firstReason}`
-            : `Imported ${created} items. ${failed} failed (invalid or duplicate).`
+          `Imported ${created} of ${filtered.length} items. ${failed} failed. ` +
+            (firstFailureLabel
+              ? `First failure (${firstFailureLabel}): ${firstFailureMessage}`
+              : firstFailureMessage)
         );
       } else {
         setErr(`Imported ${created} items successfully.`);
