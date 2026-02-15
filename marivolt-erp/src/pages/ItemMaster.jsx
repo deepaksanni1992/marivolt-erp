@@ -1126,12 +1126,123 @@ function BOMView({ items, loadItems, onError }) {
     }
   }
 
+  function exportBomExcel() {
+    const headers = [
+      "BOM Name", "Parent Vertical", "Parent Model", "Parent Article", "Parent Description", "Parent SPN", "Parent Unit Weight",
+      "Comp Vertical", "Comp Model", "Comp Article", "Comp Description", "Comp SPN", "Comp Unit Wt", "Qty", "Total Wt",
+    ];
+    const rows = [];
+    boms.forEach((bom) => {
+      const parent = bom.parentItemId || {};
+      const pV = parent.vendor ?? "";
+      const pArt = bom.parentArticle || parent.article || "";
+      const pDesc = bom.parentDescription || parent.description || "";
+      const pSpn = bom.parentSpn || parent.spn || "";
+      const pUw = bom.parentUnitWeight ?? parent.unitWeight ?? 0;
+      const pM = parent.model ?? "";
+      if (!bom.lines || bom.lines.length === 0) {
+        rows.push([bom.name || "", pV, pM, pArt, pDesc, pSpn, pUw, "", "", "", "", "", "", "", "", ""]);
+      } else {
+        bom.lines.forEach((l) => {
+          const compItem = l.itemId && typeof l.itemId === "object" ? l.itemId : items.find((i) => i._id === l.itemId);
+          const cV = compItem?.vendor ?? "";
+          const cM = compItem?.model ?? "";
+          const lUw = l.unitWeight ?? 0;
+          const lQty = l.qty ?? 0;
+          rows.push([
+            bom.name || "", pV, pM, pArt, pDesc, pSpn, pUw,
+            cV, cM, l.article || "", l.description || "", l.spn || "", lUw, lQty, (lUw * lQty).toFixed(3),
+          ]);
+        });
+      }
+    });
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "BOM");
+    const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([wbout], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "bom-export.xlsx";
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
+  async function handleBomImport(file) {
+    if (!file) return;
+    onError("");
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      const normalize = (row) => {
+        const e = {};
+        Object.entries(row).forEach(([k, v]) => {
+          e[String(k).toLowerCase().replace(/\s+/g, "")] = v;
+        });
+        return e;
+      };
+      const normalized = rows.map(normalize);
+      const key = (r) => `${(r.bomname || "").trim()}|${(r.parentvertical || "").trim()}|${(r.parentmodel || "").trim()}|${(r.parentarticle || "").trim()}`;
+      const groups = {};
+      normalized.forEach((r) => {
+        const k = key(r);
+        if (!groups[k]) groups[k] = [];
+        groups[k].push(r);
+      });
+      let created = 0;
+      let failed = 0;
+      for (const group of Object.values(groups)) {
+        if (!group.length) continue;
+        const first = group[0];
+        const parentVertical = String(first.parentvertical ?? "").trim();
+        const parentModel = String(first.parentmodel ?? "").trim();
+        const parentArticle = String(first.parentarticle ?? "").trim();
+        const bomName = String(first.bomname ?? "").trim();
+        const parentItem = items.find((i) => i.vendor === parentVertical && i.model === parentModel && (i.article || "").trim() === parentArticle);
+        if (!parentItem) {
+          failed++;
+          continue;
+        }
+        const lineItems = [];
+        for (const r of group) {
+          const cV = String(r.compvertical ?? r.cv ?? "").trim();
+          const cM = String(r.compmodel ?? r.cm ?? "").trim();
+          const cArt = String(r.comparticle ?? r.comp ?? "").trim();
+          const qty = Number(r.qty ?? 1) || 0;
+          if (!cV && !cM && !cArt) continue;
+          const compItem = items.find((i) => i.vendor === cV && i.model === cM && (i.article || "").trim() === cArt);
+          if (compItem && compItem._id !== parentItem._id) lineItems.push({ itemId: compItem._id, qty });
+        }
+        if (lineItems.length === 0) continue;
+        try {
+          await apiPost("/bom", { parentItemId: parentItem._id, name: bomName, lines: lineItems });
+          created++;
+        } catch {
+          failed++;
+        }
+      }
+      onError(created ? `Imported ${created} BOM(s). ${failed} failed.` : failed ? `Import failed for all rows (check Vertical/Model/Article).` : "No valid BOM rows.");
+      await loadBoms();
+    } catch (e) {
+      onError(e.message || "Failed to import BOM from Excel.");
+    }
+  }
+
   return (
     <div className="rounded-2xl border bg-white p-6">
       <h2 className="text-base font-semibold">Bill of Materials (BOM)</h2>
       <p className="mt-1 text-sm text-gray-600">
         Define parent item and component lines by Article. Parent and components need Article for Kitting/De-Kitting.
       </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" onClick={exportBomExcel} className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm hover:bg-gray-50">Export Excel</button>
+        <label className="inline-flex cursor-pointer items-center rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm hover:bg-gray-50">
+          <span>Import Excel</span>
+          <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => handleBomImport(e.target.files?.[0])} />
+        </label>
+      </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <div className="space-y-4">
@@ -1460,12 +1571,83 @@ function KittingView({ items, onError }) {
   const parentUw = selectedBom?.parentUnitWeight ?? parent.unitWeight ?? 0;
   const kitTotalWt = selectedBom ? (parentUw * (Number(qty) || 0)) : 0;
 
+  function exportKittingExcel() {
+    const headers = ["Parent Article", "BOM Name", "Quantity"];
+    const rows = boms.map((bom) => {
+      const p = bom.parentItemId || {};
+      const art = bom.parentArticle || p.article || "—";
+      return [art, bom.name || "", 0];
+    });
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Kitting");
+    const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([wbout], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "kitting-template.xlsx";
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
+  async function handleKittingImport(file) {
+    if (!file) return;
+    onError("");
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      const normalize = (row) => {
+        const e = {};
+        Object.entries(row).forEach(([k, v]) => {
+          e[String(k).toLowerCase().replace(/\s+/g, "")] = v;
+        });
+        return e;
+      };
+      let done = 0;
+      let failed = 0;
+      for (const r of rows.map(normalize)) {
+        const qty = Number(r.quantity ?? r.qty ?? 0) || 0;
+        if (qty <= 0) continue;
+        const parentArticle = String(r.parentarticle ?? r.article ?? "").trim();
+        const bomName = String(r.bomname ?? r.bom ?? "").trim();
+        const bom = boms.find((b) => {
+          const p = b.parentItemId || {};
+          const art = (b.parentArticle || p.article || "").trim();
+          const name = (b.name || "").trim();
+          return (parentArticle && art === parentArticle) || (bomName && name === bomName);
+        });
+        if (!bom) {
+          failed++;
+          continue;
+        }
+        try {
+          await apiPost(`/bom/${bom._id}/kit`, { qty });
+          done++;
+        } catch {
+          failed++;
+        }
+      }
+      onError(done ? `Kitting: ${done} run(s) completed. ${failed} failed.` : failed ? "All rows failed (check Parent Article/BOM Name and Quantity)." : "No valid rows with quantity > 0.");
+    } catch (e) {
+      onError(e.message || "Failed to import kitting from Excel.");
+    }
+  }
+
   return (
     <div className="rounded-2xl border bg-white p-6">
       <h2 className="text-base font-semibold">Kitting</h2>
       <p className="mt-1 text-sm text-gray-600">
         Consume component stock (OUT) and add parent/kit stock (IN) by Article per selected BOM.
       </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" onClick={exportKittingExcel} className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm hover:bg-gray-50">Export Excel</button>
+        <label className="inline-flex cursor-pointer items-center rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm hover:bg-gray-50">
+          <span>Import Excel</span>
+          <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => handleKittingImport(e.target.files?.[0])} />
+        </label>
+      </div>
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <div className="space-y-4">
           <div>
@@ -1596,12 +1778,83 @@ function DeKittingView({ items, onError }) {
   const parentUw = selectedBom?.parentUnitWeight ?? parent.unitWeight ?? 0;
   const dekitTotalWt = selectedBom ? (parentUw * (Number(qty) || 0)) : 0;
 
+  function exportDeKittingExcel() {
+    const headers = ["Parent Article", "BOM Name", "Quantity"];
+    const rows = boms.map((bom) => {
+      const p = bom.parentItemId || {};
+      const art = bom.parentArticle || p.article || "—";
+      return [art, bom.name || "", 0];
+    });
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "De-Kitting");
+    const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([wbout], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "dekitting-template.xlsx";
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
+  async function handleDeKittingImport(file) {
+    if (!file) return;
+    onError("");
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      const normalize = (row) => {
+        const e = {};
+        Object.entries(row).forEach(([k, v]) => {
+          e[String(k).toLowerCase().replace(/\s+/g, "")] = v;
+        });
+        return e;
+      };
+      let done = 0;
+      let failed = 0;
+      for (const r of rows.map(normalize)) {
+        const qty = Number(r.quantity ?? r.qty ?? 0) || 0;
+        if (qty <= 0) continue;
+        const parentArticle = String(r.parentarticle ?? r.article ?? "").trim();
+        const bomName = String(r.bomname ?? r.bom ?? "").trim();
+        const bom = boms.find((b) => {
+          const p = b.parentItemId || {};
+          const art = (b.parentArticle || p.article || "").trim();
+          const name = (b.name || "").trim();
+          return (parentArticle && art === parentArticle) || (bomName && name === bomName);
+        });
+        if (!bom) {
+          failed++;
+          continue;
+        }
+        try {
+          await apiPost(`/bom/${bom._id}/dekit`, { qty });
+          done++;
+        } catch {
+          failed++;
+        }
+      }
+      onError(done ? `De-kitting: ${done} run(s) completed. ${failed} failed.` : failed ? "All rows failed (check Parent Article/BOM Name and Quantity)." : "No valid rows with quantity > 0.");
+    } catch (e) {
+      onError(e.message || "Failed to import de-kitting from Excel.");
+    }
+  }
+
   return (
     <div className="rounded-2xl border bg-white p-6">
       <h2 className="text-base font-semibold">De-Kitting</h2>
       <p className="mt-1 text-sm text-gray-600">
         Reduce parent/kit stock (OUT) and add component stock (IN) by Article per selected BOM.
       </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" onClick={exportDeKittingExcel} className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm hover:bg-gray-50">Export Excel</button>
+        <label className="inline-flex cursor-pointer items-center rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm hover:bg-gray-50">
+          <span>Import Excel</span>
+          <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => handleDeKittingImport(e.target.files?.[0])} />
+        </label>
+      </div>
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <div className="space-y-4">
           <div>
