@@ -100,6 +100,51 @@ export default function ItemMaster() {
     return result;
   }, [items, q, columnFilters]);
 
+  function downloadItemImportTemplate() {
+    const headers = [
+      "Item Name", "Vertical", "Brand", "Compatibility", "C", "Article", "MPN", "Description", "SPN",
+      "Material Code", "Drawing Number", "Rev", "Formula", "QTY", "UOM", "Unit Weight", "Category", "Min Stock", "Location",
+    ];
+    const exampleRow1 = [
+      "Piston Pin",
+      "MyVertical",
+      "MyBrand",
+      "Cummins/ISX/Std; PACCAR/MX13/Premium",
+      "",
+      "ART-001",
+      "",
+      "Example description",
+      "",
+      "", "", "", "", 0, "pcs", 0, "General", 0, "",
+    ];
+    const exampleRow2 = [
+      "Valve Seal",
+      "Vertical2",
+      "Brand2",
+      "Volvo/D13/Base",
+      "",
+      "ART-002",
+      "",
+      "One mapping only",
+      "",
+      "", "", "", "", 0, "pcs", 0, "General", 0, "",
+    ];
+    const noteRow = [
+      "Compatibility = Engine/Model/Config. Use / inside each mapping, ; between mappings. Examples: Cummins/ISX/Std  or  E1/M1/C1; E2/M2/C2",
+      "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    ];
+    const ws = XLSX.utils.aoa_to_sheet([headers, exampleRow1, exampleRow2, noteRow]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Items");
+    const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([wbout], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "item-master-import-template.xlsx";
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
   function downloadCsv(filename, rows) {
     const csv = rows
       .map((row) =>
@@ -405,19 +450,26 @@ export default function ItemMaster() {
           vendor: String(row.vendor || "").trim(),
           engine: String(row.engine || "").trim(),
           compatibility: (() => {
+            const single = String(row.compatibility || "").trim();
+            if (single) {
+              const out = [];
+              single.split(";").forEach((part) => {
+                const trimmed = part.trim();
+                if (!trimmed) return;
+                const parts = trimmed.split("/").map((x) => x.trim());
+                const eng = parts[0] || "";
+                const mod = parts[1] || "";
+                const cfg = parts[2] || "";
+                if (eng || mod || cfg) out.push({ engine: eng, model: mod, config: cfg });
+              });
+              if (out.length) return out;
+            }
             const out = [];
             for (let i = 1; i <= 20; i++) {
               const e = String(row[`comp${i}_engine`] || row[`comp${i}engine`] || "").trim();
               const m = String(row[`comp${i}_model`] || row[`comp${i}model`] || "").trim();
               const c = String(row[`comp${i}_config`] || row[`comp${i}config`] || "").trim();
               if (e || m || c) out.push({ engine: e, model: m, config: c });
-            }
-            const single = String(row.compatibility || "").trim();
-            if (single && out.length === 0) {
-              single.split(";").forEach((part) => {
-                const [eng, mod, cfg] = part.split("/").map((x) => x.trim());
-                if (eng || mod || cfg) out.push({ engine: eng || "", model: mod || "", config: cfg || "" });
-              });
             }
             return out;
           })(),
@@ -941,6 +993,13 @@ export default function ItemMaster() {
               >
                 Export PDF
               </button>
+              <button
+                type="button"
+                onClick={downloadItemImportTemplate}
+                className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+              >
+                Download template
+              </button>
               <label className="inline-flex cursor-pointer items-center rounded-xl border px-3 py-2 text-sm hover:bg-gray-50">
                 <span>Import Excel</span>
                 <input
@@ -951,6 +1010,9 @@ export default function ItemMaster() {
                 />
               </label>
             </div>
+            <p className="mt-2 text-xs text-gray-500">
+              <strong>Compatibility (Option 1 – single column):</strong> Column name <strong>Compatibility</strong>. Format: <strong>Engine/Model/Config</strong>; use <strong>/</strong> between Engine, Model, Config and <strong>;</strong> between multiple mappings. Examples: <code className="bg-gray-100 px-1 rounded">Cummins/ISX/Std</code> or <code className="bg-gray-100 px-1 rounded">Cummins/ISX/Std; PACCAR/MX13/Premium</code>
+            </p>
           </div>
 
           <div className="mt-4">
