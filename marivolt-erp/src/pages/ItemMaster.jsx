@@ -525,30 +525,21 @@ export default function ItemMaster() {
       );
       if (!userConfirmed) return;
 
-      let created = 0;
-      let failed = 0;
-      let firstFailureMessage = "";
-      let firstFailureLabel = "";
-      for (const row of filtered) {
-        const label = row.article ? `Article ${row.article}` : (row.name || "unnamed");
-        try {
-          await apiPost("/items", row);
-          created++;
-        } catch (e) {
-          failed++;
-          const msg = e?.message || String(e);
-          if (!firstFailureMessage) {
-            firstFailureMessage = msg;
-            firstFailureLabel = label;
-          }
-        }
-      }
+      const payload = filtered.map((row) => ({
+        ...row,
+        name: (row.name && row.name.trim()) || String(row.article || "Unnamed").trim(),
+      }));
+      const result = await apiPost("/items/bulk", { items: payload });
+      const created = result.created ?? 0;
+      const failed = result.failed ?? 0;
+      const errors = result.errors ?? [];
+      const firstErr = errors[0];
       if (failed) {
         setErr(
           `Imported ${created} of ${filtered.length} items. ${failed} failed. ` +
-            (firstFailureLabel
-              ? `First failure (${firstFailureLabel}): ${firstFailureMessage}`
-              : firstFailureMessage)
+            (firstErr
+              ? `${firstErr.label || "Item"}: ${firstErr.message}`
+              : "Check server logs.")
         );
       } else {
         setErr(`Imported ${created} items successfully.`);

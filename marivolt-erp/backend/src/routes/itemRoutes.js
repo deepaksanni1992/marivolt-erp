@@ -67,6 +67,43 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
 });
 
 /**
+ * BULK CREATE items (ADMIN only). Creates each item in sequence; returns created count and per-item errors.
+ * POST /api/items/bulk
+ * Body: { items: [ { name, article, ... }, ... ] }
+ */
+router.post("/bulk", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    const results = { created: 0, failed: 0, errors: [] };
+    for (let i = 0; i < items.length; i++) {
+      const row = items[i];
+      const label = row?.article ? `Article ${row.article}` : (row?.name || `row ${i + 1}`);
+      try {
+        const name = String(row?.name ?? "").trim() || String(row?.article ?? "Unnamed").trim();
+        if (!name) {
+          results.failed++;
+          results.errors.push({ index: i, article: row?.article, label, message: "Item name is required" });
+          continue;
+        }
+        await Item.create({ ...row, name });
+        results.created++;
+      } catch (err) {
+        results.failed++;
+        results.errors.push({
+          index: i,
+          article: row?.article,
+          label,
+          message: err.message || String(err),
+        });
+      }
+    }
+    return res.status(200).json(results);
+  } catch (err) {
+    return res.status(400).json({ message: err.message });
+  }
+});
+
+/**
  * GET all items (any logged-in user)
  * GET /api/items
  */
