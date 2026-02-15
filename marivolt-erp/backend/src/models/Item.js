@@ -6,8 +6,16 @@ const itemSchema = new mongoose.Schema(
     name: { type: String, required: true },
     vendor: { type: String, default: "" },
     engine: { type: String, default: "" },
-    model: { type: String, default: "" },
-    config: { type: String, default: "" },
+    compatibility: {
+      type: [
+        {
+          engine: { type: String, default: "" },
+          model: { type: String, default: "" },
+          config: { type: String, default: "" },
+        },
+      ],
+      default: () => [],
+    },
     cCode: { type: String, default: "" },
     article: { type: String, default: "" },
     mpn: { type: String, default: "" },

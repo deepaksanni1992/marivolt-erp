@@ -13,7 +13,7 @@ export default function ItemMaster() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const columnFilterKeys = [
-    "vendor", "engine", "model", "config", "cCode", "article", "mpn", "description", "name", "spn",
+    "vendor", "engine", "compatibility", "cCode", "article", "mpn", "description", "name", "spn",
     "materialCode", "drawingNumber", "rev", "formula", "qty", "oeRemarks", "internalRemarks", "oeMarking", "oeQty",
     "supplier1", "supplier2", "supplier3", "sku", "uom", "unitWeight", "category", "minStock", "location",
   ];
@@ -26,8 +26,7 @@ export default function ItemMaster() {
     name: "",
     vendor: "",
     engine: "",
-    model: "",
-    config: "",
+    compatibility: [{ engine: "", model: "", config: "" }],
     cCode: "",
     article: "",
     mpn: "",
@@ -77,6 +76,10 @@ export default function ItemMaster() {
     if (key === "supplier1") return `${it.supplier1 || ""} ${it.supplier1Spn || ""}`.trim();
     if (key === "supplier2") return `${it.supplier2 || ""} ${it.supplier2Spn || ""}`.trim();
     if (key === "supplier3") return `${it.supplier3 || ""} ${it.supplier3Pw || ""} ${it.supplier3OePrice || ""}`.trim();
+    if (key === "compatibility") {
+      const comp = it.compatibility?.length ? it.compatibility : (it.model || it.config ? [{ engine: it.engine, model: it.model, config: it.config }] : []);
+      return comp.map((c) => [c.engine, c.model, c.config].filter(Boolean).join(" / ")).filter(Boolean).join("; ") || "";
+    }
     const v = it[key];
     return v === undefined || v === null ? "" : String(v);
   };
@@ -122,8 +125,7 @@ export default function ItemMaster() {
       [
         "Vertical",
         "Brand",
-        "Model",
-        "Config",
+        "Compatibility",
         "C",
         "Article",
         "MPN",
@@ -156,8 +158,7 @@ export default function ItemMaster() {
       ...filtered.map((it) => [
         it.vendor || "",
         it.engine || "",
-        it.model || "",
-        it.config || "",
+        getCellValue(it, "compatibility"),
         it.cCode || "",
         it.article || "",
         it.mpn || "",
@@ -199,9 +200,8 @@ export default function ItemMaster() {
       head: [
         [
           "Vertical",
-          "Model",
-          "Model",
-          "Config",
+          "Brand",
+          "Compatibility",
           "C",
           "Article",
           "MPN",
@@ -235,8 +235,7 @@ export default function ItemMaster() {
       body: filtered.map((it) => [
         it.vendor || "",
         it.engine || "",
-        it.model || "",
-        it.config || "",
+        getCellValue(it, "compatibility"),
         it.cCode || "",
         it.article || "",
         it.mpn || "",
@@ -293,8 +292,13 @@ export default function ItemMaster() {
         name,
         vendor: form.vendor.trim(),
         engine: form.engine.trim(),
-        model: form.model.trim(),
-        config: form.config.trim(),
+        compatibility: (form.compatibility || [])
+          .filter((c) => (c.engine || c.model || c.config || "").trim())
+          .map((c) => ({
+            engine: String(c.engine || "").trim(),
+            model: String(c.model || "").trim(),
+            config: String(c.config || "").trim(),
+          })),
         cCode: form.cCode.trim(),
         article: form.article.trim(),
         mpn: form.mpn.trim(),
@@ -328,8 +332,7 @@ export default function ItemMaster() {
         name: "",
         vendor: "",
         engine: "",
-        model: "",
-        config: "",
+        compatibility: [{ engine: "", model: "", config: "" }],
         cCode: "",
         article: "",
         mpn: "",
@@ -401,8 +404,23 @@ export default function ItemMaster() {
           name: String(name || "").trim(),
           vendor: String(row.vendor || "").trim(),
           engine: String(row.engine || "").trim(),
-          model: String(row.model || "").trim(),
-          config: String(row.config || "").trim(),
+          compatibility: (() => {
+            const out = [];
+            for (let i = 1; i <= 20; i++) {
+              const e = String(row[`comp${i}_engine`] || row[`comp${i}engine`] || "").trim();
+              const m = String(row[`comp${i}_model`] || row[`comp${i}model`] || "").trim();
+              const c = String(row[`comp${i}_config`] || row[`comp${i}config`] || "").trim();
+              if (e || m || c) out.push({ engine: e, model: m, config: c });
+            }
+            const single = String(row.compatibility || "").trim();
+            if (single && out.length === 0) {
+              single.split(";").forEach((part) => {
+                const [eng, mod, cfg] = part.split("/").map((x) => x.trim());
+                if (eng || mod || cfg) out.push({ engine: eng || "", model: mod || "", config: cfg || "" });
+              });
+            }
+            return out;
+          })(),
           cCode: String(row.ccode || row.c || "").trim(),
           article: String(row.article || row.articleno || "").trim(),
           mpn: String(row.mpn || "").trim(),
@@ -529,45 +547,101 @@ export default function ItemMaster() {
                 className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
               />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-sm text-gray-600">Brand</label>
-                <input
-                  name="engine"
-                  value={form.engine}
-                  onChange={onChange}
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                />
+            <div>
+              <label className="text-sm text-gray-600">Brand</label>
+              <input
+                name="engine"
+                value={form.engine}
+                onChange={onChange}
+                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <div className="flex items-center justify-between">
+                <label className="text-sm text-gray-600">Item Compatibility (Engine / Model / Config)</label>
+                <button
+                  type="button"
+                  onClick={() => setForm((p) => ({ ...p, compatibility: [...(p.compatibility || []), { engine: "", model: "", config: "" }] }))}
+                  className="text-sm text-gray-600 hover:underline"
+                >
+                  + Add
+                </button>
               </div>
-              <div>
-                <label className="text-sm text-gray-600">Model</label>
-                <input
-                  name="model"
-                  value={form.model}
-                  onChange={onChange}
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                />
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full border rounded-lg text-sm">
+                  <thead className="bg-gray-50 border-b">
+                    <tr>
+                      <th className="p-2 text-left">Engine</th>
+                      <th className="p-2 text-left">Model</th>
+                      <th className="p-2 text-left">Config</th>
+                      <th className="p-2 w-20"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {((form.compatibility && form.compatibility.length) ? form.compatibility : [{ engine: "", model: "", config: "" }]).map((row, i) => (
+                      <tr key={i} className="border-b last:border-b-0">
+                        <td className="p-2">
+                          <input
+                            value={row.engine || ""}
+                            onChange={(e) => {
+                              const next = [...(form.compatibility || [])];
+                              if (!next[i]) next[i] = { engine: "", model: "", config: "" };
+                              next[i] = { ...next[i], engine: e.target.value };
+                              setForm((p) => ({ ...p, compatibility: next }));
+                            }}
+                            className="w-full rounded border px-2 py-1 text-sm"
+                            placeholder="Engine"
+                          />
+                        </td>
+                        <td className="p-2">
+                          <input
+                            value={row.model || ""}
+                            onChange={(e) => {
+                              const next = [...(form.compatibility || [])];
+                              if (!next[i]) next[i] = { engine: "", model: "", config: "" };
+                              next[i] = { ...next[i], model: e.target.value };
+                              setForm((p) => ({ ...p, compatibility: next }));
+                            }}
+                            className="w-full rounded border px-2 py-1 text-sm"
+                            placeholder="Model"
+                          />
+                        </td>
+                        <td className="p-2">
+                          <input
+                            value={row.config || ""}
+                            onChange={(e) => {
+                              const next = [...(form.compatibility || [])];
+                              if (!next[i]) next[i] = { engine: "", model: "", config: "" };
+                              next[i] = { ...next[i], config: e.target.value };
+                              setForm((p) => ({ ...p, compatibility: next }));
+                            }}
+                            className="w-full rounded border px-2 py-1 text-sm"
+                            placeholder="Config"
+                          />
+                        </td>
+                        <td className="p-2">
+                          <button
+                            type="button"
+                            onClick={() => setForm((p) => ({ ...p, compatibility: (p.compatibility || []).filter((_, idx) => idx !== i) }))}
+                            className="rounded border px-2 py-0.5 text-xs hover:bg-gray-50"
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-sm text-gray-600">Config</label>
-                <input
-                  name="config"
-                  value={form.config}
-                  onChange={onChange}
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="text-sm text-gray-600">C</label>
-                <input
-                  name="cCode"
-                  value={form.cCode}
-                  onChange={onChange}
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                />
-              </div>
+            <div>
+              <label className="text-sm text-gray-600">C</label>
+              <input
+                name="cCode"
+                value={form.cCode}
+                onChange={onChange}
+                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+              />
             </div>
             <div>
               <label className="text-sm text-gray-600">Article</label>
@@ -889,8 +963,7 @@ export default function ItemMaster() {
                     <tr>
                       <th className="py-2 pr-3">Vertical</th>
                       <th className="py-2 pr-3">Brand</th>
-                      <th className="py-2 pr-3">Model</th>
-                      <th className="py-2 pr-3">Config</th>
+                      <th className="py-2 pr-3">Compatibility</th>
                       <th className="py-2 pr-3">C</th>
                       <th className="py-2 pr-3">Article</th>
                       <th className="py-2 pr-3">MPN</th>
@@ -938,7 +1011,7 @@ export default function ItemMaster() {
                   <tbody>
                     {filtered.length === 0 ? (
                       <tr>
-                        <td className="py-6 text-gray-500" colSpan={29}>
+                        <td className="py-6 text-gray-500" colSpan={28}>
                           No items yet.
                         </td>
                       </tr>
@@ -947,8 +1020,7 @@ export default function ItemMaster() {
                         <tr key={it._id} className="border-b last:border-b-0">
                           <td className="py-2 pr-3">{it.vendor || "-"}</td>
                           <td className="py-2 pr-3">{it.engine || "-"}</td>
-                          <td className="py-2 pr-3">{it.model || "-"}</td>
-                          <td className="py-2 pr-3">{it.config || "-"}</td>
+                          <td className="py-2 pr-3 max-w-[200px] truncate" title={getCellValue(it, "compatibility")}>{getCellValue(it, "compatibility") || "-"}</td>
                           <td className="py-2 pr-3">{it.cCode || "-"}</td>
                           <td className="py-2 pr-3">{it.article || "-"}</td>
                           <td className="py-2 pr-3">{it.mpn || "-"}</td>
@@ -1034,14 +1106,23 @@ function BOMView({ items, loadItems, onError }) {
   const [lines, setLines] = useState([{ vertical: "", model: "", itemId: "", qty: 1 }]);
 
   const verticals = useMemo(() => [...new Set(items.map((i) => i.vendor).filter(Boolean))].sort(), [items]);
-  const parentModels = useMemo(
-    () => (parentVertical ? [...new Set(items.filter((i) => i.vendor === parentVertical).map((i) => i.model).filter(Boolean))].sort() : []),
-    [items, parentVertical]
-  );
+  const getEffectiveCompatibility = (i) =>
+    i.compatibility?.length ? i.compatibility : (i.model != null || i.config != null ? [{ engine: i.engine, model: i.model, config: i.config }] : []);
+  const parentModels = useMemo(() => {
+    if (!parentVertical) return [];
+    const models = items
+      .filter((i) => i.vendor === parentVertical)
+      .flatMap((i) => getEffectiveCompatibility(i).map((c) => c.model).filter(Boolean));
+    return [...new Set(models)].sort();
+  }, [items, parentVertical]);
   const parentArticles = useMemo(
     () =>
       parentVertical && parentModel
-        ? items.filter((i) => i.vendor === parentVertical && i.model === parentModel)
+        ? items.filter(
+            (i) =>
+              i.vendor === parentVertical &&
+              getEffectiveCompatibility(i).some((c) => (c.model || "").trim() === parentModel)
+          )
         : [],
     [items, parentVertical, parentModel]
   );
@@ -1123,16 +1204,17 @@ function BOMView({ items, loadItems, onError }) {
     const parent = bom.parentItemId || {};
     const pItem = typeof parent === "object" ? parent : items.find((i) => i._id === parent);
     setParentVertical(pItem?.vendor ?? "");
-    setParentModel(pItem?.model ?? "");
+    setParentModel(pItem?.compatibility?.[0]?.model ?? pItem?.model ?? "");
     setParentItemId(bom.parentItemId?._id || bom.parentItemId);
     setBomName(bom.name || "");
     setLines(
       (bom.lines && bom.lines.length)
         ? bom.lines.map((l) => {
             const lit = l.itemId && (typeof l.itemId === "object" ? l.itemId : items.find((i) => i._id === l.itemId));
+            const firstModel = (lit?.compatibility || [])[0]?.model ?? lit?.model ?? "";
             return {
               vertical: lit?.vendor ?? "",
-              model: lit?.model ?? "",
+              model: firstModel,
               itemId: (l.itemId && l.itemId._id) || l.itemId,
               qty: l.qty ?? 1,
             };
@@ -1164,14 +1246,14 @@ function BOMView({ items, loadItems, onError }) {
       const pDesc = bom.parentDescription || parent.description || "";
       const pSpn = bom.parentSpn || parent.spn || "";
       const pUw = bom.parentUnitWeight ?? parent.unitWeight ?? 0;
-      const pM = parent.model ?? "";
+      const pM = parent.compatibility?.[0]?.model ?? parent.model ?? "";
       if (!bom.lines || bom.lines.length === 0) {
         rows.push([bom.name || "", pV, pM, pArt, pDesc, pSpn, pUw, "", "", "", "", "", "", "", "", ""]);
       } else {
         bom.lines.forEach((l) => {
           const compItem = l.itemId && typeof l.itemId === "object" ? l.itemId : items.find((i) => i._id === l.itemId);
           const cV = compItem?.vendor ?? "";
-          const cM = compItem?.model ?? "";
+          const cM = compItem?.compatibility?.[0]?.model ?? compItem?.model ?? "";
           const lUw = l.unitWeight ?? 0;
           const lQty = l.qty ?? 0;
           rows.push([
@@ -1225,7 +1307,12 @@ function BOMView({ items, loadItems, onError }) {
         const parentModel = String(first.parentmodel ?? "").trim();
         const parentArticle = String(first.parentarticle ?? "").trim();
         const bomName = String(first.bomname ?? "").trim();
-        const parentItem = items.find((i) => i.vendor === parentVertical && i.model === parentModel && (i.article || "").trim() === parentArticle);
+        const parentItem = items.find(
+          (i) =>
+            i.vendor === parentVertical &&
+            (i.article || "").trim() === parentArticle &&
+            getEffectiveCompatibility(i).some((c) => (c.model || "").trim() === parentModel)
+        );
         if (!parentItem) {
           failed++;
           continue;
@@ -1237,7 +1324,12 @@ function BOMView({ items, loadItems, onError }) {
           const cArt = String(r.comparticle ?? r.comp ?? "").trim();
           const qty = Number(r.qty ?? 1) || 0;
           if (!cV && !cM && !cArt) continue;
-          const compItem = items.find((i) => i.vendor === cV && i.model === cM && (i.article || "").trim() === cArt);
+          const compItem = items.find(
+            (i) =>
+              i.vendor === cV &&
+              (i.article || "").trim() === cArt &&
+              getEffectiveCompatibility(i).some((c) => (c.model || "").trim() === cM)
+          );
           if (compItem && compItem._id !== parentItem._id) lineItems.push({ itemId: compItem._id, qty });
         }
         if (lineItems.length === 0) continue;
@@ -1360,10 +1452,18 @@ function BOMView({ items, loadItems, onError }) {
                 </thead>
                 <tbody>
                   {lines.map((line, i) => {
-                    const lineModels = line.vertical ? [...new Set(items.filter((x) => x.vendor === line.vertical).map((x) => x.model).filter(Boolean))].sort() : [];
-                    const lineArticles = line.vertical && line.model
-                      ? items.filter((x) => x.vendor === line.vertical && x.model === line.model && x._id !== parentItemId)
+                    const lineModels = line.vertical
+                      ? [...new Set(items.filter((x) => x.vendor === line.vertical).flatMap((x) => getEffectiveCompatibility(x).map((c) => c.model).filter(Boolean)))].sort()
                       : [];
+                    const lineArticles =
+                      line.vertical && line.model
+                        ? items.filter(
+                            (x) =>
+                              x.vendor === line.vertical &&
+                              getEffectiveCompatibility(x).some((c) => (c.model || "").trim() === line.model) &&
+                              x._id !== parentItemId
+                          )
+                        : [];
                     const it = items.find((x) => x._id === line.itemId);
                     const uwt = it ? (Number(it.unitWeight) || 0) : 0;
                     const totalWt = uwt * (Number(line.qty) || 0);

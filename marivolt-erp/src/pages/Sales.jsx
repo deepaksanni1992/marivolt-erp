@@ -289,6 +289,17 @@ export default function Sales() {
     return { subTotal, grandTotal: subTotal };
   }, [quotationItems]);
 
+  const itemMatchesCompatibility = (it, model, config) => {
+    const comp =
+      it.compatibility?.length
+        ? it.compatibility
+        : it.model != null || it.config != null
+          ? [{ model: it.model, config: it.config }]
+          : [];
+    if (model && !comp.some((c) => (c.model || "").trim() === model)) return false;
+    if (config && !comp.some((c) => (c.config || "").trim() === config)) return false;
+    return true;
+  };
   const filteredItemsForFilters = useMemo(() => {
     return items.filter((it) => {
       if (itemFilters.vertical && (it.category || "") !== itemFilters.vertical) {
@@ -297,10 +308,10 @@ export default function Sales() {
       if (itemFilters.engine && (it.engine || "") !== itemFilters.engine) {
         return false;
       }
-      if (itemFilters.model && (it.model || "") !== itemFilters.model) {
+      if (itemFilters.model && !itemMatchesCompatibility(it, itemFilters.model, null)) {
         return false;
       }
-      if (itemFilters.config && (it.config || "") !== itemFilters.config) {
+      if (itemFilters.config && !itemMatchesCompatibility(it, itemFilters.model, itemFilters.config)) {
         return false;
       }
       if (itemFilters.article && (it.article || "") !== itemFilters.article) {
@@ -336,7 +347,12 @@ export default function Sales() {
       }
       return true;
     });
-    return uniqueSorted(base.map((it) => it.model));
+    return uniqueSorted(
+      base.flatMap((it) => {
+        const comp = it.compatibility?.length ? it.compatibility : it.model != null || it.config != null ? [{ model: it.model }] : [];
+        return comp.map((c) => c.model);
+      })
+    );
   }, [items, itemFilters.vertical, itemFilters.engine]);
 
   const configOptions = useMemo(() => {
@@ -347,12 +363,17 @@ export default function Sales() {
       if (itemFilters.engine && (it.engine || "") !== itemFilters.engine) {
         return false;
       }
-      if (itemFilters.model && (it.model || "") !== itemFilters.model) {
+      if (itemFilters.model && !itemMatchesCompatibility(it, itemFilters.model, null)) {
         return false;
       }
       return true;
     });
-    return uniqueSorted(base.map((it) => it.config));
+    return uniqueSorted(
+      base.flatMap((it) => {
+        const comp = it.compatibility?.length ? it.compatibility : it.model != null || it.config != null ? [{ model: it.model, config: it.config }] : [];
+        return comp.filter((c) => (c.model || "").trim() === itemFilters.model).map((c) => c.config);
+      })
+    );
   }, [items, itemFilters.vertical, itemFilters.engine, itemFilters.model]);
 
   const articleOptions = useMemo(() => {
@@ -363,10 +384,7 @@ export default function Sales() {
       if (itemFilters.engine && (it.engine || "") !== itemFilters.engine) {
         return false;
       }
-      if (itemFilters.model && (it.model || "") !== itemFilters.model) {
-        return false;
-      }
-      if (itemFilters.config && (it.config || "") !== itemFilters.config) {
+      if (!itemMatchesCompatibility(it, itemFilters.model, itemFilters.config)) {
         return false;
       }
       return true;
