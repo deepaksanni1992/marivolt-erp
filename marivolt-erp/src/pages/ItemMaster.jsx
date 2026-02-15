@@ -4,7 +4,7 @@ import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
 import { apiDelete, apiGet, apiPost, apiPut } from "../lib/api.js";
 
-const SUB_TABS = ["Items", "BOM", "Kitting", "De-Kitting"];
+const SUB_TABS = ["Items", "BOM", "Kitting", "De-Kitting", "Price list"];
 
 export default function ItemMaster() {
   const [activeSub, setActiveSub] = useState("Items");
@@ -1172,7 +1172,277 @@ export default function ItemMaster() {
       {activeSub === "De-Kitting" && (
         <DeKittingView items={items} onError={setErr} />
       )}
+      {activeSub === "Price list" && (
+        <PriceListView items={items} loadItems={load} onError={setErr} />
+      )}
     </div>
+  );
+}
+
+// --- Price list sub-view ---
+function PriceListView({ items, loadItems, onError }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [savingId, setSavingId] = useState(null);
+
+  async function loadPriceList() {
+    setLoading(true);
+    try {
+      const data = await apiGet("/price-list");
+      setRows(data);
+    } catch (e) {
+      onError(e.message || "Failed to load price list");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadPriceList();
+  }, [items?.length]);
+
+  async function saveRow(article, payload) {
+    if (!article) return;
+    setSavingId(article);
+    try {
+      await apiPut("/price-list", { article, ...payload });
+      await loadPriceList();
+      await loadItems();
+    } catch (e) {
+      onError(e.message || "Failed to save");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  function exportPriceListCsv() {
+    const headers = ["Article", "SPN", "Description", "Unit Price", "Minimum price", "Euro 2 Price", "Buy price"];
+    const data = rows.map((r) => [
+      r.article,
+      r.spn ?? "",
+      r.description ?? "",
+      r.unitPrice ?? "",
+      r.minimumPrice ?? "",
+      r.euro2Price ?? "",
+      r.buyPrice ?? "",
+    ]);
+    const csv = [headers, ...data]
+      .map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""').replace(/\r?\n/g, " ")}"`).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "price-list.csv";
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
+  function exportPriceListExcel() {
+    const headers = ["Article", "SPN", "Description", "Unit Price", "Minimum price", "Euro 2 Price", "Buy price"];
+    const data = rows.map((r) => [
+      r.article,
+      r.spn ?? "",
+      r.description ?? "",
+      r.unitPrice ?? "",
+      r.minimumPrice ?? "",
+      r.euro2Price ?? "",
+      r.buyPrice ?? "",
+    ]);
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Price list");
+    XLSX.writeFile(wb, "price-list.xlsx");
+  }
+
+  function downloadPriceListTemplate() {
+    const headers = ["Article", "SPN", "Description", "Unit Price", "Minimum price", "Euro 2 Price", "Buy price"];
+    const example = ["10009", "", "O-ring", 1.25, 1.2, 1.3, 1];
+    const note = ["Article = Item Master Article. Buy price updates Item Master Supplier 1 Unit Price on import.", "", "", "", "", "", ""];
+    const ws = XLSX.utils.aoa_to_sheet([headers, example, note]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Price list");
+    XLSX.writeFile(wb, "price-list-template.xlsx");
+  }
+
+  async function handlePriceListImport(file) {
+    if (!file) return;
+    onError("");
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      const normalized = rawRows.map((row) => {
+        const entry = {};
+        Object.entries(row).forEach(([k, v]) => {
+          const key = String(k).toLowerCase().replace(/\s+/g, "");
+          entry[key] = v;
+        });
+        return entry;
+      });
+      const importRows = normalized.map((row) => ({
+        article: String(row.article ?? row.articleno ?? "").trim(),
+        unitPrice: row.unitprice ?? row.unit,
+        minimumPrice: row.minimumprice ?? row.minprice ?? row.minimum,
+        euro2Price: row.euro2price ?? row.euro2 ?? row.euro,
+        buyPrice: row.buyprice ?? row.buy ?? row.supplier1unitprice ?? row.supplier1,
+      }));
+      const filtered = importRows.filter((r) => r.article);
+      if (!filtered.length) {
+        onError("No rows with Article found in file.");
+        return;
+      }
+      await apiPost("/price-list/import", { rows: filtered });
+      await loadPriceList();
+      await loadItems();
+      onError(""); // clear any previous error
+      alert("Price list import complete. Item Master buy prices updated from import.");
+    } catch (e) {
+      onError(e.message || "Failed to import price list");
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="rounded-2xl border bg-white p-6">
+        <p className="text-sm text-gray-500">Loading price list...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border bg-white p-6">
+      <h2 className="text-base font-semibold">Price list</h2>
+      <p className="mt-1 text-sm text-gray-500">
+        Article, SPN, Description and Buy price are linked to Item Master. Unit price default 25% margin on Buy price; Minimum 20%; Euro 2 price 30%. Import updates Item Master Supplier 1 Unit Price from Buy price.
+      </p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button type="button" onClick={exportPriceListCsv} className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm hover:bg-gray-50">
+          Export CSV
+        </button>
+        <button type="button" onClick={exportPriceListExcel} className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm hover:bg-gray-50">
+          Export Excel
+        </button>
+        <button type="button" onClick={downloadPriceListTemplate} className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm hover:bg-gray-50">
+          Download template
+        </button>
+        <label className="cursor-pointer rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm hover:bg-gray-50">
+          Import Excel
+          <input
+            type="file"
+            accept=".xlsx,.xls,.csv"
+            className="hidden"
+            onChange={(e) => handlePriceListImport(e.target.files?.[0])}
+          />
+        </label>
+      </div>
+      <div className="mt-4 overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead className="border-b text-gray-600">
+            <tr>
+              <th className="py-2 pr-3">Article</th>
+              <th className="py-2 pr-3">SPN</th>
+              <th className="py-2 pr-3">Description</th>
+              <th className="py-2 pr-3">Unit Price</th>
+              <th className="py-2 pr-3">Minimum price</th>
+              <th className="py-2 pr-3">Euro 2 Price</th>
+              <th className="py-2 pr-3">Buy price</th>
+              <th className="py-2 pr-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, idx) => (
+              <PriceListRow
+                key={r.article || idx}
+                row={r}
+                onSave={saveRow}
+                saving={savingId === r.article}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {rows.length === 0 && (
+        <p className="mt-4 text-sm text-gray-500">No items in Item Master. Add items first to see them in the price list.</p>
+      )}
+    </div>
+  );
+}
+
+function PriceListRow({ row, onSave, saving }) {
+  const [unitPrice, setUnitPrice] = useState(row.unitPrice ?? "");
+  const [minimumPrice, setMinimumPrice] = useState(row.minimumPrice ?? "");
+  const [euro2Price, setEuro2Price] = useState(row.euro2Price ?? "");
+  const [buyPrice, setBuyPrice] = useState(row.buyPrice ?? "");
+
+  useEffect(() => {
+    setUnitPrice(row.unitPrice ?? "");
+    setMinimumPrice(row.minimumPrice ?? "");
+    setEuro2Price(row.euro2Price ?? "");
+    setBuyPrice(row.buyPrice ?? "");
+  }, [row.unitPrice, row.minimumPrice, row.euro2Price, row.buyPrice]);
+
+  const handleBlur = () => {
+    const up = unitPrice === "" ? undefined : Number(unitPrice);
+    const min = minimumPrice === "" ? undefined : Number(minimumPrice);
+    const euro2 = euro2Price === "" ? undefined : Number(euro2Price);
+    const buy = buyPrice === "" ? undefined : Number(buyPrice);
+    if (up !== undefined || min !== undefined || euro2 !== undefined || buy !== undefined) {
+      onSave(row.article, { unitPrice: up, minimumPrice: min, euro2Price: euro2, buyPrice: buy });
+    }
+  };
+
+  return (
+    <tr className="border-b last:border-b-0">
+      <td className="py-2 pr-3 text-gray-700">{row.article}</td>
+      <td className="py-2 pr-3 text-gray-600">{row.spn ?? "-"}</td>
+      <td className="max-w-[200px] truncate py-2 pr-3 text-gray-600" title={row.description}>{row.description ?? "-"}</td>
+      <td className="py-2 pr-3">
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={unitPrice}
+          onChange={(e) => setUnitPrice(e.target.value)}
+          onBlur={handleBlur}
+          className="w-24 rounded border px-2 py-1 text-xs"
+        />
+      </td>
+      <td className="py-2 pr-3">
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={minimumPrice}
+          onChange={(e) => setMinimumPrice(e.target.value)}
+          onBlur={handleBlur}
+          className="w-24 rounded border px-2 py-1 text-xs"
+        />
+      </td>
+      <td className="py-2 pr-3">
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={euro2Price}
+          onChange={(e) => setEuro2Price(e.target.value)}
+          onBlur={handleBlur}
+          className="w-24 rounded border px-2 py-1 text-xs"
+        />
+      </td>
+      <td className="py-2 pr-3">
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={buyPrice}
+          onChange={(e) => setBuyPrice(e.target.value)}
+          onBlur={handleBlur}
+          className="w-24 rounded border px-2 py-1 text-xs"
+        />
+      </td>
+      <td className="py-2 pr-3">{saving ? "Saving..." : ""}</td>
+    </tr>
   );
 }
 
