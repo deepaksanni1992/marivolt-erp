@@ -13,7 +13,7 @@ export default function ItemMaster() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const columnFilterKeys = [
-    "vendor", "engine", "model", "config", "cCode", "article", "description", "name", "spn",
+    "vendor", "engine", "model", "config", "cCode", "article", "mpn", "description", "name", "spn",
     "materialCode", "drawingNumber", "rev", "formula", "qty", "oeRemarks", "internalRemarks", "oeMarking", "oeQty",
     "supplier1", "supplier2", "supplier3", "sku", "uom", "unitWeight", "category", "minStock", "location",
   ];
@@ -30,6 +30,7 @@ export default function ItemMaster() {
     config: "",
     cCode: "",
     article: "",
+    mpn: "",
     description: "",
     spn: "",
     materialCode: "",
@@ -125,6 +126,7 @@ export default function ItemMaster() {
         "Config",
         "C",
         "Article",
+        "MPN",
         "Description",
         "Item Name",
         "SPN",
@@ -158,6 +160,7 @@ export default function ItemMaster() {
         it.config || "",
         it.cCode || "",
         it.article || "",
+        it.mpn || "",
         it.description || "",
         it.name || "",
         it.spn || "",
@@ -201,6 +204,7 @@ export default function ItemMaster() {
           "Config",
           "C",
           "Article",
+          "MPN",
           "Description",
           "Item Name",
           "SPN",
@@ -235,6 +239,7 @@ export default function ItemMaster() {
         it.config || "",
         it.cCode || "",
         it.article || "",
+        it.mpn || "",
         it.description || "",
         it.name || "",
         it.spn || "",
@@ -292,6 +297,7 @@ export default function ItemMaster() {
         config: form.config.trim(),
         cCode: form.cCode.trim(),
         article: form.article.trim(),
+        mpn: form.mpn.trim(),
         description: form.description.trim(),
         spn: form.spn.trim(),
         materialCode: form.materialCode.trim(),
@@ -326,6 +332,7 @@ export default function ItemMaster() {
         config: "",
         cCode: "",
         article: "",
+        mpn: "",
         description: "",
         spn: "",
         materialCode: "",
@@ -398,6 +405,7 @@ export default function ItemMaster() {
           config: String(row.config || "").trim(),
           cCode: String(row.ccode || row.c || "").trim(),
           article: String(row.article || row.articleno || "").trim(),
+          mpn: String(row.mpn || "").trim(),
           description: String(row.description || row.desc || "").trim(),
           spn: String(row.spn || "").trim(),
           materialCode: String(row.materialcode || row.material || "").trim(),
@@ -563,6 +571,16 @@ export default function ItemMaster() {
                 value={form.article}
                 onChange={onChange}
                 className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-sm text-gray-600">MPN</label>
+              <input
+                name="mpn"
+                value={form.mpn}
+                onChange={onChange}
+                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                placeholder="Manufacturer Part Number"
               />
             </div>
             <div>
@@ -870,6 +888,7 @@ export default function ItemMaster() {
                       <th className="py-2 pr-3">Config</th>
                       <th className="py-2 pr-3">C</th>
                       <th className="py-2 pr-3">Article</th>
+                      <th className="py-2 pr-3">MPN</th>
                       <th className="py-2 pr-3">Description</th>
                       <th className="py-2 pr-3">Item Name</th>
                       <th className="py-2 pr-3">SPN</th>
@@ -914,7 +933,7 @@ export default function ItemMaster() {
                   <tbody>
                     {filtered.length === 0 ? (
                       <tr>
-                        <td className="py-6 text-gray-500" colSpan={28}>
+                        <td className="py-6 text-gray-500" colSpan={29}>
                           No items yet.
                         </td>
                       </tr>
@@ -927,6 +946,7 @@ export default function ItemMaster() {
                           <td className="py-2 pr-3">{it.config || "-"}</td>
                           <td className="py-2 pr-3">{it.cCode || "-"}</td>
                           <td className="py-2 pr-3">{it.article || "-"}</td>
+                          <td className="py-2 pr-3">{it.mpn || "-"}</td>
                           <td className="py-2 pr-3">{it.description || "-"}</td>
                           <td className="py-2 pr-3">{it.name}</td>
                           <td className="py-2 pr-3">{it.spn || "-"}</td>

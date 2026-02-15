@@ -10,6 +10,7 @@ const itemSchema = new mongoose.Schema(
     config: { type: String, default: "" },
     cCode: { type: String, default: "" },
     article: { type: String, default: "" },
+    mpn: { type: String, default: "" },
     description: { type: String, default: "" },
     spn: { type: String, default: "" },
     materialCode: { type: String, default: "" },
