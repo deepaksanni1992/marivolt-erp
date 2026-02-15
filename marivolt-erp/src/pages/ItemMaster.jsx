@@ -1002,9 +1002,24 @@ function BOMView({ items, loadItems, onError }) {
   const [boms, setBoms] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
+  const [parentVertical, setParentVertical] = useState("");
+  const [parentModel, setParentModel] = useState("");
   const [parentItemId, setParentItemId] = useState("");
   const [bomName, setBomName] = useState("");
-  const [lines, setLines] = useState([{ itemId: "", qty: 1 }]);
+  const [lines, setLines] = useState([{ vertical: "", model: "", itemId: "", qty: 1 }]);
+
+  const verticals = useMemo(() => [...new Set(items.map((i) => i.vendor).filter(Boolean))].sort(), [items]);
+  const parentModels = useMemo(
+    () => (parentVertical ? [...new Set(items.filter((i) => i.vendor === parentVertical).map((i) => i.model).filter(Boolean))].sort() : []),
+    [items, parentVertical]
+  );
+  const parentArticles = useMemo(
+    () =>
+      parentVertical && parentModel
+        ? items.filter((i) => i.vendor === parentVertical && i.model === parentModel)
+        : [],
+    [items, parentVertical, parentModel]
+  );
 
   async function loadBoms() {
     setLoading(true);
@@ -1023,16 +1038,20 @@ function BOMView({ items, loadItems, onError }) {
   }, []);
 
   function addLine() {
-    setLines((p) => [...p, { itemId: "", qty: 1 }]);
+    setLines((p) => [...p, { vertical: "", model: "", itemId: "", qty: 1 }]);
   }
   function removeLine(i) {
     setLines((p) => p.filter((_, idx) => idx !== i));
   }
   function setLine(i, field, value) {
     setLines((p) =>
-      p.map((row, idx) =>
-        idx === i ? { ...row, [field]: value } : row
-      )
+      p.map((row, idx) => {
+        if (idx !== i) return row;
+        const next = { ...row, [field]: value };
+        if (field === "vertical") next.model = "";
+        if (field === "vertical" || field === "model") next.itemId = "";
+        return next;
+      })
     );
   }
 
@@ -1062,9 +1081,11 @@ function BOMView({ items, loadItems, onError }) {
           lines: validLines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty) })),
         });
       }
+      setParentVertical("");
+      setParentModel("");
       setParentItemId("");
       setBomName("");
-      setLines([{ itemId: "", qty: 1 }]);
+      setLines([{ vertical: "", model: "", itemId: "", qty: 1 }]);
       await loadBoms();
       if (items.length === 0) loadItems();
     } catch (e) {
@@ -1074,15 +1095,24 @@ function BOMView({ items, loadItems, onError }) {
 
   function editBom(bom) {
     setEditingId(bom._id);
+    const parent = bom.parentItemId || {};
+    const pItem = typeof parent === "object" ? parent : items.find((i) => i._id === parent);
+    setParentVertical(pItem?.vendor ?? "");
+    setParentModel(pItem?.model ?? "");
     setParentItemId(bom.parentItemId?._id || bom.parentItemId);
     setBomName(bom.name || "");
     setLines(
       (bom.lines && bom.lines.length)
-        ? bom.lines.map((l) => ({
-            itemId: (l.itemId && l.itemId._id) || l.itemId,
-            qty: l.qty ?? 1,
-          }))
-        : [{ itemId: "", qty: 1 }]
+        ? bom.lines.map((l) => {
+            const lit = l.itemId && (typeof l.itemId === "object" ? l.itemId : items.find((i) => i._id === l.itemId));
+            return {
+              vertical: lit?.vendor ?? "",
+              model: lit?.model ?? "",
+              itemId: (l.itemId && l.itemId._id) || l.itemId,
+              qty: l.qty ?? 1,
+            };
+          })
+        : [{ vertical: "", model: "", itemId: "", qty: 1 }]
     );
   }
 
@@ -1105,20 +1135,57 @@ function BOMView({ items, loadItems, onError }) {
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <div className="space-y-4">
-          <div>
-            <label className="text-sm text-gray-600">Parent item (Article) *</label>
-            <select
-              value={parentItemId}
-              onChange={(e) => setParentItemId(e.target.value)}
-              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-            >
-              <option value="">Select parent...</option>
-              {items.map((it) => (
-                <option key={it._id} value={it._id}>
-                  {it.article || "—"} {it.description ? ` – ${it.description}` : ""} {it.spn ? `(${it.spn})` : ""} {it.unitWeight != null ? ` · ${it.unitWeight} kg` : ""}
-                </option>
-              ))}
-            </select>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div>
+              <label className="text-sm text-gray-600">Vertical *</label>
+              <select
+                value={parentVertical}
+                onChange={(e) => {
+                  setParentVertical(e.target.value);
+                  setParentModel("");
+                  setParentItemId("");
+                }}
+                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+              >
+                <option value="">Select Vertical...</option>
+                {verticals.map((v) => (
+                  <option key={v} value={v}>{v}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-sm text-gray-600">Model *</label>
+              <select
+                value={parentModel}
+                onChange={(e) => {
+                  setParentModel(e.target.value);
+                  setParentItemId("");
+                }}
+                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                disabled={!parentVertical}
+              >
+                <option value="">Select Model...</option>
+                {parentModels.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-sm text-gray-600">Article (Parent) *</label>
+              <select
+                value={parentItemId}
+                onChange={(e) => setParentItemId(e.target.value)}
+                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                disabled={!parentVertical || !parentModel}
+              >
+                <option value="">Select Article...</option>
+                {parentArticles.map((it) => (
+                  <option key={it._id} value={it._id}>
+                    {it.article || "—"} {it.description ? ` – ${it.description}` : ""} {it.spn ? ` (${it.spn})` : ""} {it.unitWeight != null ? ` · ${it.unitWeight} kg` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
           <div>
             <label className="text-sm text-gray-600">BOM name (optional)</label>
@@ -1144,6 +1211,8 @@ function BOMView({ items, loadItems, onError }) {
               <table className="w-full text-left text-sm border rounded-lg">
                 <thead className="bg-gray-50 border-b">
                   <tr>
+                    <th className="p-2">Vertical</th>
+                    <th className="p-2">Model</th>
                     <th className="p-2">Article</th>
                     <th className="p-2">Description</th>
                     <th className="p-2">SPN</th>
@@ -1155,6 +1224,10 @@ function BOMView({ items, loadItems, onError }) {
                 </thead>
                 <tbody>
                   {lines.map((line, i) => {
+                    const lineModels = line.vertical ? [...new Set(items.filter((x) => x.vendor === line.vertical).map((x) => x.model).filter(Boolean))].sort() : [];
+                    const lineArticles = line.vertical && line.model
+                      ? items.filter((x) => x.vendor === line.vertical && x.model === line.model && x._id !== parentItemId)
+                      : [];
                     const it = items.find((x) => x._id === line.itemId);
                     const uwt = it ? (Number(it.unitWeight) || 0) : 0;
                     const totalWt = uwt * (Number(line.qty) || 0);
@@ -1162,12 +1235,38 @@ function BOMView({ items, loadItems, onError }) {
                       <tr key={i} className="border-b last:border-b-0">
                         <td className="p-2">
                           <select
+                            value={line.vertical}
+                            onChange={(e) => setLine(i, "vertical", e.target.value)}
+                            className="w-full min-w-[100px] rounded border px-2 py-1 text-sm"
+                          >
+                            <option value="">Vertical...</option>
+                            {verticals.map((v) => (
+                              <option key={v} value={v}>{v}</option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="p-2">
+                          <select
+                            value={line.model}
+                            onChange={(e) => setLine(i, "model", e.target.value)}
+                            className="w-full min-w-[100px] rounded border px-2 py-1 text-sm"
+                            disabled={!line.vertical}
+                          >
+                            <option value="">Model...</option>
+                            {lineModels.map((m) => (
+                              <option key={m} value={m}>{m}</option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="p-2">
+                          <select
                             value={line.itemId}
                             onChange={(e) => setLine(i, "itemId", e.target.value)}
                             className="w-full min-w-[120px] rounded border px-2 py-1 text-sm"
+                            disabled={!line.vertical || !line.model}
                           >
-                            <option value="">Select...</option>
-                            {items.filter((it) => it._id !== parentItemId).map((item) => (
+                            <option value="">Article...</option>
+                            {lineArticles.map((item) => (
                               <option key={item._id} value={item._id}>
                                 {item.article || "—"}
                               </option>
@@ -1217,9 +1316,11 @@ function BOMView({ items, loadItems, onError }) {
                 type="button"
                 onClick={() => {
                   setEditingId(null);
+                  setParentVertical("");
+                  setParentModel("");
                   setParentItemId("");
                   setBomName("");
-                  setLines([{ itemId: "", qty: 1 }]);
+                  setLines([{ vertical: "", model: "", itemId: "", qty: 1 }]);
                 }}
                 className="rounded-xl border px-4 py-2 text-sm"
               >
