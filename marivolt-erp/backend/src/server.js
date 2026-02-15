@@ -13,6 +13,7 @@ import authRoutes from "./routes/authRoutes.js";
 import purchaseRoutes from "./routes/purchaseRoutes.js";
 import supplierRoutes from "./routes/supplierRoutes.js";
 import salesRoutes from "./routes/salesRoutes.js";
+import bomRoutes from "./routes/bomRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -116,6 +117,7 @@ async function startServer() {
     app.use("/api/purchase", purchaseRoutes);
     app.use("/api/suppliers", supplierRoutes);
     app.use("/api/sales", salesRoutes);
+    app.use("/api/bom", bomRoutes);
 
     // ---- HEALTH ----
     app.get("/api/health", (req, res) => {

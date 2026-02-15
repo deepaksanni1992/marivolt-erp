@@ -2,9 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
-import { apiDelete, apiGet, apiPost } from "../lib/api.js";
+import { apiDelete, apiGet, apiPost, apiPut } from "../lib/api.js";
+
+const SUB_TABS = ["Items", "BOM", "Kitting", "De-Kitting"];
 
 export default function ItemMaster() {
+  const [activeSub, setActiveSub] = useState("Items");
   const [items, setItems] = useState([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
@@ -458,8 +461,26 @@ export default function ItemMaster() {
             {err}
           </div>
         )}
+
+        <div className="mt-4 flex gap-2 border-b border-gray-200">
+          {SUB_TABS.map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setActiveSub(tab)}
+              className={`rounded-t-lg border px-4 py-2 text-sm font-medium ${
+                activeSub === tab
+                  ? "border-b-0 border-gray-300 bg-white text-gray-900 -mb-px"
+                  : "border-transparent bg-transparent text-gray-600 hover:bg-gray-100"
+              }`}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
       </div>
 
+      {activeSub === "Items" && (
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="rounded-2xl border bg-white p-6">
           <h2 className="text-base font-semibold">Add Item</h2>
@@ -960,6 +981,597 @@ export default function ItemMaster() {
             )}
           </div>
         </div>
+      </div>
+      )}
+
+      {activeSub === "BOM" && (
+        <BOMView items={items} loadItems={load} onError={setErr} />
+      )}
+      {activeSub === "Kitting" && (
+        <KittingView items={items} onError={setErr} />
+      )}
+      {activeSub === "De-Kitting" && (
+        <DeKittingView items={items} onError={setErr} />
+      )}
+    </div>
+  );
+}
+
+// --- BOM sub-view ---
+function BOMView({ items, loadItems, onError }) {
+  const [boms, setBoms] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState(null);
+  const [parentItemId, setParentItemId] = useState("");
+  const [bomName, setBomName] = useState("");
+  const [lines, setLines] = useState([{ itemId: "", qty: 1 }]);
+
+  async function loadBoms() {
+    setLoading(true);
+    try {
+      const data = await apiGet("/bom");
+      setBoms(data);
+    } catch (e) {
+      onError(e.message || "Failed to load BOMs");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadBoms();
+  }, []);
+
+  function addLine() {
+    setLines((p) => [...p, { itemId: "", qty: 1 }]);
+  }
+  function removeLine(i) {
+    setLines((p) => p.filter((_, idx) => idx !== i));
+  }
+  function setLine(i, field, value) {
+    setLines((p) =>
+      p.map((row, idx) =>
+        idx === i ? { ...row, [field]: value } : row
+      )
+    );
+  }
+
+  async function saveBom() {
+    if (!parentItemId) {
+      onError("Select a parent item");
+      return;
+    }
+    const validLines = lines.filter((l) => l.itemId && Number(l.qty) > 0);
+    if (!validLines.length) {
+      onError("Add at least one component with qty > 0");
+      return;
+    }
+    onError("");
+    try {
+      if (editingId) {
+        await apiPut(`/bom/${editingId}`, {
+          parentItemId,
+          name: bomName,
+          lines: validLines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty) })),
+        });
+        setEditingId(null);
+      } else {
+        await apiPost("/bom", {
+          parentItemId,
+          name: bomName,
+          lines: validLines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty) })),
+        });
+      }
+      setParentItemId("");
+      setBomName("");
+      setLines([{ itemId: "", qty: 1 }]);
+      await loadBoms();
+      if (items.length === 0) loadItems();
+    } catch (e) {
+      onError(e.message || "Failed to save BOM");
+    }
+  }
+
+  function editBom(bom) {
+    setEditingId(bom._id);
+    setParentItemId(bom.parentItemId?._id || bom.parentItemId);
+    setBomName(bom.name || "");
+    setLines(
+      (bom.lines && bom.lines.length)
+        ? bom.lines.map((l) => ({
+            itemId: (l.itemId && l.itemId._id) || l.itemId,
+            qty: l.qty ?? 1,
+          }))
+        : [{ itemId: "", qty: 1 }]
+    );
+  }
+
+  async function deleteBom(id) {
+    if (!confirm("Delete this BOM?")) return;
+    try {
+      await apiDelete(`/bom/${id}`);
+      await loadBoms();
+    } catch (e) {
+      onError(e.message || "Failed to delete BOM");
+    }
+  }
+
+  return (
+    <div className="rounded-2xl border bg-white p-6">
+      <h2 className="text-base font-semibold">Bill of Materials (BOM)</h2>
+      <p className="mt-1 text-sm text-gray-600">
+        Define parent item and component lines by Article. Parent and components need Article for Kitting/De-Kitting.
+      </p>
+
+      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm text-gray-600">Parent item (Article) *</label>
+            <select
+              value={parentItemId}
+              onChange={(e) => setParentItemId(e.target.value)}
+              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+            >
+              <option value="">Select parent...</option>
+              {items.map((it) => (
+                <option key={it._id} value={it._id}>
+                  {it.article || "—"} {it.description ? ` – ${it.description}` : ""} {it.spn ? `(${it.spn})` : ""} {it.unitWeight != null ? ` · ${it.unitWeight} kg` : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-sm text-gray-600">BOM name (optional)</label>
+            <input
+              value={bomName}
+              onChange={(e) => setBomName(e.target.value)}
+              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+              placeholder="e.g. v1"
+            />
+          </div>
+          <div>
+            <div className="flex items-center justify-between">
+              <label className="text-sm text-gray-600">Components (Article, Description, SPN, Unit weight, Qty, Total weight)</label>
+              <button
+                type="button"
+                onClick={addLine}
+                className="text-sm text-gray-600 hover:underline"
+              >
+                + Add line
+              </button>
+            </div>
+            <div className="mt-2 overflow-x-auto">
+              <table className="w-full text-left text-sm border rounded-lg">
+                <thead className="bg-gray-50 border-b">
+                  <tr>
+                    <th className="p-2">Article</th>
+                    <th className="p-2">Description</th>
+                    <th className="p-2">SPN</th>
+                    <th className="p-2">Unit Wt</th>
+                    <th className="p-2">Qty</th>
+                    <th className="p-2">Total Wt</th>
+                    <th className="p-2 w-20"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lines.map((line, i) => {
+                    const it = items.find((x) => x._id === line.itemId);
+                    const uwt = it ? (Number(it.unitWeight) || 0) : 0;
+                    const totalWt = uwt * (Number(line.qty) || 0);
+                    return (
+                      <tr key={i} className="border-b last:border-b-0">
+                        <td className="p-2">
+                          <select
+                            value={line.itemId}
+                            onChange={(e) => setLine(i, "itemId", e.target.value)}
+                            className="w-full min-w-[120px] rounded border px-2 py-1 text-sm"
+                          >
+                            <option value="">Select...</option>
+                            {items.filter((it) => it._id !== parentItemId).map((item) => (
+                              <option key={item._id} value={item._id}>
+                                {item.article || "—"}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="p-2 text-gray-600">{it ? (it.description || "—") : "—"}</td>
+                        <td className="p-2 text-gray-600">{it ? (it.spn || "—") : "—"}</td>
+                        <td className="p-2">{it ? (Number(it.unitWeight) || 0) : "—"}</td>
+                        <td className="p-2">
+                          <input
+                            type="number"
+                            min="0.001"
+                            step="any"
+                            value={line.qty}
+                            onChange={(e) => setLine(i, "qty", e.target.value)}
+                            className="w-20 rounded border px-2 py-1 text-sm"
+                          />
+                        </td>
+                        <td className="p-2 font-medium">{totalWt > 0 ? totalWt.toFixed(3) : "—"}</td>
+                        <td className="p-2">
+                          <button
+                            type="button"
+                            onClick={() => removeLine(i)}
+                            className="rounded border px-2 py-0.5 text-xs hover:bg-gray-50"
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={saveBom}
+              className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
+            >
+              {editingId ? "Update BOM" : "Save BOM"}
+            </button>
+            {editingId && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingId(null);
+                  setParentItemId("");
+                  setBomName("");
+                  setLines([{ itemId: "", qty: 1 }]);
+                }}
+                className="rounded-xl border px-4 py-2 text-sm"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <h3 className="text-sm font-medium text-gray-700">Saved BOMs</h3>
+          {loading ? (
+            <p className="mt-2 text-sm text-gray-500">Loading...</p>
+          ) : boms.length === 0 ? (
+            <p className="mt-2 text-sm text-gray-500">No BOMs yet. Create one on the left.</p>
+          ) : (
+            <ul className="mt-2 space-y-3">
+              {boms.map((bom) => {
+                const parent = bom.parentItemId || {};
+                const parentArticle = bom.parentArticle || parent.article || "—";
+                const parentDesc = bom.parentDescription || parent.description || "";
+                const parentSpn = bom.parentSpn || parent.spn || "";
+                const parentUw = bom.parentUnitWeight ?? parent.unitWeight ?? 0;
+                const linesTotalWt = (bom.lines || []).reduce((s, l) => s + ((l.unitWeight ?? 0) * (l.qty ?? 0)), 0);
+                return (
+                  <li key={bom._id} className="rounded-xl border p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <span className="font-medium">{parentArticle}</span>
+                        {parentDesc && <span className="ml-2 text-gray-600">{parentDesc}</span>}
+                        {parentSpn && <span className="ml-2 text-gray-500">({parentSpn})</span>}
+                        <span className="ml-2 text-gray-400 text-xs">Unit wt: {parentUw} kg</span>
+                        {bom.name && <span className="ml-2 text-gray-500">· {bom.name}</span>}
+                        <span className="ml-2 text-gray-400 text-xs">{bom.lines?.length ?? 0} line(s)</span>
+                      </div>
+                      <div className="flex gap-2">
+                        <button type="button" onClick={() => editBom(bom)} className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50">Edit</button>
+                        <button type="button" onClick={() => deleteBom(bom._id)} className="rounded-lg border px-2 py-1 text-xs text-red-600 hover:bg-red-50">Delete</button>
+                      </div>
+                    </div>
+                    {(bom.lines && bom.lines.length) > 0 && (
+                      <div className="mt-2 overflow-x-auto">
+                        <table className="w-full text-xs border rounded">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="p-1.5 text-left">Article</th>
+                              <th className="p-1.5 text-left">Description</th>
+                              <th className="p-1.5 text-left">SPN</th>
+                              <th className="p-1.5 text-right">Unit Wt</th>
+                              <th className="p-1.5 text-right">Qty</th>
+                              <th className="p-1.5 text-right">Total Wt</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {bom.lines.map((l, idx) => {
+                              const lUw = l.unitWeight ?? 0;
+                              const lQty = l.qty ?? 0;
+                              const lTotal = lUw * lQty;
+                              return (
+                                <tr key={idx} className="border-t">
+                                  <td className="p-1.5">{l.article || "—"}</td>
+                                  <td className="p-1.5 text-gray-600">{l.description || "—"}</td>
+                                  <td className="p-1.5 text-gray-600">{l.spn || "—"}</td>
+                                  <td className="p-1.5 text-right">{lUw}</td>
+                                  <td className="p-1.5 text-right">{lQty}</td>
+                                  <td className="p-1.5 text-right font-medium">{lTotal.toFixed(3)}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                        <p className="mt-1 text-xs text-gray-500">Components total weight: {linesTotalWt.toFixed(3)} kg</p>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- Kitting: consume components, add parent (by Article) ---
+function KittingView({ items, onError }) {
+  const [boms, setBoms] = useState([]);
+  const [selectedBomId, setSelectedBomId] = useState("");
+  const [qty, setQty] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const data = await apiGet("/bom");
+        if (!cancelled) setBoms(data);
+      } catch (e) {
+        if (!cancelled) onError(e.message || "Failed to load BOMs");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  async function performKitting() {
+    if (!selectedBomId) {
+      onError("Select a BOM");
+      return;
+    }
+    const num = Number(qty);
+    if (!num || num <= 0) {
+      onError("Enter a valid quantity");
+      return;
+    }
+    onError("");
+    setBusy(true);
+    try {
+      const res = await apiPost(`/bom/${selectedBomId}/kit`, { qty: num });
+      onError(res.message || "Kitting completed.");
+    } catch (e) {
+      onError(e.message || "Kitting failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const selectedBom = boms.find((b) => b._id === selectedBomId);
+  const parent = selectedBom?.parentItemId || {};
+  const parentArticle = selectedBom?.parentArticle || parent.article || "—";
+  const parentDesc = selectedBom?.parentDescription || parent.description || "";
+  const parentSpn = selectedBom?.parentSpn || parent.spn || "";
+  const parentUw = selectedBom?.parentUnitWeight ?? parent.unitWeight ?? 0;
+  const kitTotalWt = selectedBom ? (parentUw * (Number(qty) || 0)) : 0;
+
+  return (
+    <div className="rounded-2xl border bg-white p-6">
+      <h2 className="text-base font-semibold">Kitting</h2>
+      <p className="mt-1 text-sm text-gray-600">
+        Consume component stock (OUT) and add parent/kit stock (IN) by Article per selected BOM.
+      </p>
+      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm text-gray-600">BOM (Parent Article)</label>
+            <select
+              value={selectedBomId}
+              onChange={(e) => setSelectedBomId(e.target.value)}
+              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+              disabled={loading}
+            >
+              <option value="">Select BOM...</option>
+              {boms.map((bom) => {
+                const p = bom.parentItemId || {};
+                const art = bom.parentArticle || p.article || "—";
+                const desc = bom.parentDescription || p.description || "";
+                const spn = bom.parentSpn || p.spn || "";
+                return (
+                  <option key={bom._id} value={bom._id}>
+                    {art} {desc ? ` – ${desc}` : ""} {spn ? ` (${spn})` : ""} {bom.name ? ` · ${bom.name}` : ""}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+          <div>
+            <label className="text-sm text-gray-600">Quantity</label>
+            <input
+              type="number"
+              min="1"
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={performKitting}
+            disabled={busy || !selectedBomId}
+            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+          >
+            {busy ? "Processing..." : "Perform Kitting"}
+          </button>
+        </div>
+        {selectedBom && (
+          <div className="rounded-xl border p-4 bg-gray-50">
+            <h3 className="text-sm font-medium text-gray-700">Parent (Kit)</h3>
+            <p className="mt-1 text-sm"><span className="font-medium">Article:</span> {parentArticle}</p>
+            {parentDesc && <p className="text-sm text-gray-600">Description: {parentDesc}</p>}
+            {parentSpn && <p className="text-sm text-gray-600">SPN: {parentSpn}</p>}
+            <p className="text-sm">Unit weight: {parentUw} kg · Qty: {qty} → Total weight: {kitTotalWt.toFixed(3)} kg</p>
+            {(selectedBom.lines && selectedBom.lines.length) > 0 && (
+              <>
+                <h3 className="mt-3 text-sm font-medium text-gray-700">Components (consumed)</h3>
+                <div className="mt-1 overflow-x-auto">
+                  <table className="w-full text-xs border rounded">
+                    <thead className="bg-white"><tr><th className="p-1.5 text-left">Article</th><th className="p-1.5 text-left">Description</th><th className="p-1.5 text-left">SPN</th><th className="p-1.5 text-right">Unit Wt</th><th className="p-1.5 text-right">Qty</th><th className="p-1.5 text-right">Total Wt</th></tr></thead>
+                    <tbody>
+                      {selectedBom.lines.map((l, idx) => {
+                        const u = l.unitWeight ?? 0;
+                        const q = (l.qty ?? 0) * (Number(qty) || 0);
+                        return (
+                          <tr key={idx} className="border-t"><td className="p-1.5">{l.article || "—"}</td><td className="p-1.5 text-gray-600">{l.description || "—"}</td><td className="p-1.5">{l.spn || "—"}</td><td className="p-1.5 text-right">{u}</td><td className="p-1.5 text-right">{q}</td><td className="p-1.5 text-right">{(u * q).toFixed(3)}</td></tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --- De-Kitting: reduce parent, add components (by Article) ---
+function DeKittingView({ items, onError }) {
+  const [boms, setBoms] = useState([]);
+  const [selectedBomId, setSelectedBomId] = useState("");
+  const [qty, setQty] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const data = await apiGet("/bom");
+        if (!cancelled) setBoms(data);
+      } catch (e) {
+        if (!cancelled) onError(e.message || "Failed to load BOMs");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  async function performDeKitting() {
+    if (!selectedBomId) {
+      onError("Select a BOM");
+      return;
+    }
+    const num = Number(qty);
+    if (!num || num <= 0) {
+      onError("Enter a valid quantity");
+      return;
+    }
+    onError("");
+    setBusy(true);
+    try {
+      const res = await apiPost(`/bom/${selectedBomId}/dekit`, { qty: num });
+      onError(res.message || "De-kitting completed.");
+    } catch (e) {
+      onError(e.message || "De-kitting failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const selectedBom = boms.find((b) => b._id === selectedBomId);
+  const parent = selectedBom?.parentItemId || {};
+  const parentArticle = selectedBom?.parentArticle || parent.article || "—";
+  const parentDesc = selectedBom?.parentDescription || parent.description || "";
+  const parentSpn = selectedBom?.parentSpn || parent.spn || "";
+  const parentUw = selectedBom?.parentUnitWeight ?? parent.unitWeight ?? 0;
+  const dekitTotalWt = selectedBom ? (parentUw * (Number(qty) || 0)) : 0;
+
+  return (
+    <div className="rounded-2xl border bg-white p-6">
+      <h2 className="text-base font-semibold">De-Kitting</h2>
+      <p className="mt-1 text-sm text-gray-600">
+        Reduce parent/kit stock (OUT) and add component stock (IN) by Article per selected BOM.
+      </p>
+      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm text-gray-600">BOM (Parent Article)</label>
+            <select
+              value={selectedBomId}
+              onChange={(e) => setSelectedBomId(e.target.value)}
+              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+              disabled={loading}
+            >
+              <option value="">Select BOM...</option>
+              {boms.map((bom) => {
+                const p = bom.parentItemId || {};
+                const art = bom.parentArticle || p.article || "—";
+                const desc = bom.parentDescription || p.description || "";
+                const spn = bom.parentSpn || p.spn || "";
+                return (
+                  <option key={bom._id} value={bom._id}>
+                    {art} {desc ? ` – ${desc}` : ""} {spn ? ` (${spn})` : ""} {bom.name ? ` · ${bom.name}` : ""}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+          <div>
+            <label className="text-sm text-gray-600">Quantity</label>
+            <input
+              type="number"
+              min="1"
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={performDeKitting}
+            disabled={busy || !selectedBomId}
+            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+          >
+            {busy ? "Processing..." : "Perform De-Kitting"}
+          </button>
+        </div>
+        {selectedBom && (
+          <div className="rounded-xl border p-4 bg-gray-50">
+            <h3 className="text-sm font-medium text-gray-700">Parent (Kit) – to reduce</h3>
+            <p className="mt-1 text-sm"><span className="font-medium">Article:</span> {parentArticle}</p>
+            {parentDesc && <p className="text-sm text-gray-600">Description: {parentDesc}</p>}
+            {parentSpn && <p className="text-sm text-gray-600">SPN: {parentSpn}</p>}
+            <p className="text-sm">Unit weight: {parentUw} kg · Qty: {qty} → Total weight: {dekitTotalWt.toFixed(3)} kg</p>
+            {(selectedBom.lines && selectedBom.lines.length) > 0 && (
+              <>
+                <h3 className="mt-3 text-sm font-medium text-gray-700">Components (added back)</h3>
+                <div className="mt-1 overflow-x-auto">
+                  <table className="w-full text-xs border rounded">
+                    <thead className="bg-white"><tr><th className="p-1.5 text-left">Article</th><th className="p-1.5 text-left">Description</th><th className="p-1.5 text-left">SPN</th><th className="p-1.5 text-right">Unit Wt</th><th className="p-1.5 text-right">Qty</th><th className="p-1.5 text-right">Total Wt</th></tr></thead>
+                    <tbody>
+                      {selectedBom.lines.map((l, idx) => {
+                        const u = l.unitWeight ?? 0;
+                        const q = (l.qty ?? 0) * (Number(qty) || 0);
+                        return (
+                          <tr key={idx} className="border-t"><td className="p-1.5">{l.article || "—"}</td><td className="p-1.5 text-gray-600">{l.description || "—"}</td><td className="p-1.5">{l.spn || "—"}</td><td className="p-1.5 text-right">{u}</td><td className="p-1.5 text-right">{q}</td><td className="p-1.5 text-right">{(u * q).toFixed(3)}</td></tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -5,16 +5,17 @@ import { requireAuth } from "../middleware/auth.js";
 const router = express.Router();
 router.use(requireAuth);
 
-// Create a txn (IN/OUT)
+// Create a txn (IN/OUT). Use either sku or article (for BOM Kitting/De-Kitting).
 router.post("/", async (req, res) => {
     try {
-  const { sku, type, qty, ref, note, supplier } = req.body;
+  const { sku, article, type, qty, ref, note, supplier } = req.body;
   
-      if (!sku || !type || !qty) {
-        return res.status(400).json({ message: "sku, type, qty are required" });
+      const cleanSku = String(sku ?? "").trim();
+      const cleanArticle = String(article ?? "").trim();
+      if ((!cleanSku && !cleanArticle) || !type || !qty) {
+        return res.status(400).json({ message: "either sku or article, type, and qty are required" });
       }
   
-      const cleanSku = String(sku).trim();
       const cleanType = type;
       const cleanQty = Number(qty);
   
@@ -24,14 +25,16 @@ router.post("/", async (req, res) => {
       if (!cleanQty || cleanQty <= 0) {
         return res.status(400).json({ message: "qty must be > 0" });
       }
+
+      const matchBy = cleanArticle ? { article: cleanArticle } : { sku: cleanSku };
   
       // ✅ SERVER SIDE STOCK CHECK (important)
       if (cleanType === "OUT") {
         const summary = await StockTxn.aggregate([
-          { $match: { sku: cleanSku } },
+          { $match: matchBy },
           {
             $group: {
-              _id: "$sku",
+              _id: null,
               stock: {
                 $sum: {
                   $cond: [
@@ -46,16 +49,17 @@ router.post("/", async (req, res) => {
         ]);
   
         const currentStock = summary.length ? summary[0].stock : 0;
-  
+        const label = cleanArticle || cleanSku;
         if (currentStock - cleanQty < 0) {
           return res.status(400).json({
-            message: `Not enough stock for ${cleanSku}. Current: ${currentStock}`,
+            message: `Not enough stock for ${label}. Current: ${currentStock}`,
           });
         }
       }
   
       const txn = await StockTxn.create({
         sku: cleanSku,
+        article: cleanArticle,
         type: cleanType,
         qty: cleanQty,
         ref: (ref || "").trim(),
@@ -70,14 +74,13 @@ router.post("/", async (req, res) => {
   });
   
 
-// Get txns (latest first). Optional filter by sku
+// Get txns (latest first). Optional filter by sku or article
 router.get("/", async (req, res) => {
-  const { sku, type, from, to, supplier } = req.query;
+  const { sku, article, type, from, to, supplier } = req.query;
   const filter = {};
 
-  if (sku) {
-    filter.sku = String(sku).trim();
-  }
+  if (sku) filter.sku = String(sku).trim();
+  if (article) filter.article = String(article).trim();
 
   if (type) {
     const cleanType = String(type).toUpperCase().trim();
