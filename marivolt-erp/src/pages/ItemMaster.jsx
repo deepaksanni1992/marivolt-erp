@@ -15,14 +15,13 @@ export default function ItemMaster() {
   const columnFilterKeys = [
     "vendor", "engine", "compatibility", "article", "mpn", "description", "name", "spn",
     "materialCode", "drawingNumber", "rev", "qty", "oeRemarks", "internalRemarks", "oeMarking",
-    "supplier1", "supplier1UnitPrice", "supplier1Cur", "supplier2", "supplier3", "sku", "uom", "unitWeight", "category", "minStock", "location",
+    "supplier1", "supplier1UnitPrice", "supplier1Cur", "supplier2", "supplier3", "uom", "unitWeight", "category", "minStock", "location",
   ];
   const [columnFilters, setColumnFilters] = useState(() =>
     Object.fromEntries(columnFilterKeys.map((k) => [k, ""]))
   );
 
   const [form, setForm] = useState({
-    sku: "",
     name: "",
     vendor: "",
     engine: "",
@@ -191,7 +190,6 @@ export default function ItemMaster() {
         "Supplier 3",
         "Supplier 3 PW",
         "Supplier 3 OE Price",
-        "Part No",
         "UOM",
         "Unit Weight",
         "Category",
@@ -223,7 +221,6 @@ export default function ItemMaster() {
         it.supplier3 || "",
         it.supplier3Pw || "",
         it.supplier3OePrice || "",
-        it.sku || "",
         it.uom || "",
         it.unitWeight ?? 0,
         it.category || "",
@@ -265,7 +262,6 @@ export default function ItemMaster() {
           "Supplier 3",
           "Supplier 3 PW",
           "Supplier 3 OE Price",
-          "Part No",
           "UOM",
           "Unit Weight",
           "Category",
@@ -298,7 +294,6 @@ export default function ItemMaster() {
         it.supplier3 || "",
         it.supplier3Pw || "",
         it.supplier3OePrice || "",
-        it.sku || "",
         it.uom || "",
         String(it.unitWeight ?? 0),
         it.category || "",
@@ -328,7 +323,6 @@ export default function ItemMaster() {
 
     try {
       const created = await apiPost("/items", {
-        sku: form.sku.trim(),
         name,
         vendor: form.vendor.trim(),
         engine: form.engine.trim(),
@@ -367,7 +361,6 @@ export default function ItemMaster() {
       });
       setItems((prev) => [created, ...prev]);
       setForm({
-        sku: "",
         name: "",
         vendor: "",
         engine: "",
@@ -449,10 +442,8 @@ export default function ItemMaster() {
       });
 
       const itemsFromExcel = normalized.map((row) => {
-        const sku = row.sku || row.partno || row.partnumber || row.articleno || "";
         const name = (row.itemname ?? row["itemname"] ?? row.name ?? row.description ?? row.article ?? "").toString().trim();
         return {
-          sku: String(sku || "").trim(),
           name: String(name || "").trim(),
           vendor: String(row.vendor || row.vertical || "").trim(),
           engine: String(row.engine || row.brand || "").trim(),
@@ -587,17 +578,6 @@ export default function ItemMaster() {
           <h2 className="text-base font-semibold">Add Item</h2>
 
           <form onSubmit={addItem} className="mt-4 space-y-3">
-            <div>
-              <label className="text-sm text-gray-600">SKU / Part No</label>
-              <input
-                name="sku"
-                value={form.sku}
-                onChange={onChange}
-                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                placeholder="e.g. 034.12.001"
-              />
-            </div>
-
             <div>
               <label className="text-sm text-gray-600">Item Name *</label>
               <input
@@ -1055,7 +1035,6 @@ export default function ItemMaster() {
                       <th className="py-2 pr-3">Supplier 1 Cur</th>
                       <th className="py-2 pr-3">Supplier 2 / SPN</th>
                       <th className="py-2 pr-3">Supplier 3 / PW / OE Price</th>
-                      <th className="py-2 pr-3">Part No</th>
                       <th className="py-2 pr-3">UOM</th>
                       <th className="py-2 pr-3">Unit Weight</th>
                       <th className="py-2 pr-3">Category</th>
@@ -1084,7 +1063,7 @@ export default function ItemMaster() {
                   <tbody>
                     {filtered.length === 0 ? (
                       <tr>
-                        <td className="py-6 text-gray-500" colSpan={27}>
+                        <td className="py-6 text-gray-500" colSpan={26}>
                           No items yet.
                         </td>
                       </tr>
@@ -1123,7 +1102,6 @@ export default function ItemMaster() {
                                 ? ` / ${it.supplier3OePrice}`
                                 : "")}
                           </td>
-                          <td className="py-2 pr-3 font-medium">{it.sku || "-"}</td>
                           <td className="py-2 pr-3">{it.uom}</td>
                           <td className="py-2 pr-3">{it.unitWeight ?? 0}</td>
                           <td className="py-2 pr-3">{it.category}</td>

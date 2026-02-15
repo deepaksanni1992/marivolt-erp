@@ -59,7 +59,10 @@ async function isItemUsedInTransaction(item) {
  */
 router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
   try {
-    const item = await Item.create(req.body);
+    const body = { ...req.body };
+    const article = String(body.article ?? "").trim();
+    if (article && !String(body.sku ?? "").trim()) body.sku = article;
+    const item = await Item.create(body);
     return res.status(201).json(item);
   } catch (err) {
     return res.status(400).json({ message: err.message });
@@ -67,20 +70,22 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
 });
 
 /** Build a plain document for Item from request row (only known schema fields). */
-function sanitizeItemRow(row) {
+function sanitizeItemRow(row, fallbackSku) {
   const comp = Array.isArray(row?.compatibility) ? row.compatibility : [];
   const compatibility = comp.map((c) => ({
     engine: String(c?.engine ?? "").trim(),
     model: String(c?.model ?? "").trim(),
     config: String(c?.config ?? "").trim(),
   }));
+  const article = String(row?.article ?? "").trim();
+  const sku = article || fallbackSku || "";
   return {
-    sku: String(row?.sku ?? "").trim(),
+    sku,
     name: String(row?.name ?? "").trim() || String(row?.article ?? "Unnamed").trim(),
     vendor: String(row?.vendor ?? "").trim(),
     engine: String(row?.engine ?? "").trim(),
     compatibility,
-    article: String(row?.article ?? "").trim(),
+    article,
     mpn: String(row?.mpn ?? "").trim(),
     description: String(row?.description ?? "").trim(),
     spn: String(row?.spn ?? "").trim(),
@@ -121,7 +126,8 @@ router.post("/bulk", requireAuth, requireRole("admin"), async (req, res) => {
       const row = items[i];
       const label = row?.article ? `Article ${row.article}` : (row?.name || `row ${i + 1}`);
       try {
-        const doc = sanitizeItemRow(row);
+        const fallbackSku = String(row?.article ?? "").trim() || `IMP-${Date.now()}-${i}`;
+        const doc = sanitizeItemRow(row, fallbackSku);
         if (!doc.name) {
           results.failed++;
           results.errors.push({ index: i, article: row?.article, label, message: "Item name is required" });
