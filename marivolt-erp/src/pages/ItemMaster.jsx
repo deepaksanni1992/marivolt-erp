@@ -14,8 +14,8 @@ export default function ItemMaster() {
   const [err, setErr] = useState("");
   const columnFilterKeys = [
     "vendor", "engine", "compatibility", "cCode", "article", "mpn", "description", "name", "spn",
-    "materialCode", "drawingNumber", "rev", "formula", "qty", "oeRemarks", "internalRemarks", "oeMarking", "oeQty",
-    "supplier1", "supplier2", "supplier3", "sku", "uom", "unitWeight", "category", "minStock", "location",
+    "materialCode", "drawingNumber", "rev", "qty", "oeRemarks", "internalRemarks", "oeMarking",
+    "supplier1", "supplier1UnitPrice", "supplier1Cur", "supplier2", "supplier3", "sku", "uom", "unitWeight", "category", "minStock", "location",
   ];
   const [columnFilters, setColumnFilters] = useState(() =>
     Object.fromEntries(columnFilterKeys.map((k) => [k, ""]))
@@ -35,14 +35,14 @@ export default function ItemMaster() {
     materialCode: "",
     drawingNumber: "",
     rev: "",
-    formula: "",
     qty: "",
     oeRemarks: "",
     internalRemarks: "",
     oeMarking: "",
-    oeQty: "",
     supplier1: "",
     supplier1Spn: "",
+    supplier1UnitPrice: "",
+    supplier1Cur: "",
     supplier2: "",
     supplier2Spn: "",
     supplier3: "",
@@ -73,7 +73,7 @@ export default function ItemMaster() {
   }, []);
 
   const getCellValue = (it, key) => {
-    if (key === "supplier1") return `${it.supplier1 || ""} ${it.supplier1Spn || ""}`.trim();
+    if (key === "supplier1") return `${it.supplier1 || ""} ${it.supplier1Spn || ""} ${it.supplier1UnitPrice ?? ""} ${it.supplier1Cur || ""}`.trim();
     if (key === "supplier2") return `${it.supplier2 || ""} ${it.supplier2Spn || ""}`.trim();
     if (key === "supplier3") return `${it.supplier3 || ""} ${it.supplier3Pw || ""} ${it.supplier3OePrice || ""}`.trim();
     if (key === "compatibility") {
@@ -103,7 +103,7 @@ export default function ItemMaster() {
   function downloadItemImportTemplate() {
     const headers = [
       "Item Name", "Vertical", "Brand", "Compatibility", "C", "Article", "MPN", "Description", "SPN",
-      "Material Code", "Drawing Number", "Rev", "Formula", "QTY", "UOM", "Unit Weight", "Category", "Min Stock", "Location",
+      "Material Code", "Drawing Number", "Rev", "QTY", "UOM", "Unit Weight", "Category", "Min Stock", "Location", "Supplier 1 Unit Price", "Supplier 1 Cur",
     ];
     const exampleRow1 = [
       "Piston Pin",
@@ -115,7 +115,7 @@ export default function ItemMaster() {
       "",
       "Example description",
       "",
-      "", "", "", "", 0, "pcs", 0, "General", 0, "",
+      "", "", "", 0, "pcs", 0, "General", 0, "", 0, "",
     ];
     const exampleRow2 = [
       "Valve Seal",
@@ -127,11 +127,11 @@ export default function ItemMaster() {
       "",
       "One mapping only",
       "",
-      "", "", "", "", 0, "pcs", 0, "General", 0, "",
+      "", "", "", 0, "pcs", 0, "General", 0, "", 0, "",
     ];
     const noteRow = [
       "Compatibility = Engine/Model/Config. Use / inside each mapping, ; between mappings. Examples: Cummins/ISX/Std  or  E1/M1/C1; E2/M2/C2",
-      "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+      "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
     ];
     const ws = XLSX.utils.aoa_to_sheet([headers, exampleRow1, exampleRow2, noteRow]);
     const wb = XLSX.utils.book_new();
@@ -180,14 +180,14 @@ export default function ItemMaster() {
         "Material Code",
         "Drawing Number",
         "Rev",
-        "Formula",
         "QTY",
         "OE Remarks",
         "Internal Remarks",
         "OE Marking",
-        "OE QTY",
         "Supplier 1",
         "Supplier 1 SPN",
+        "Supplier 1 Unit Price",
+        "Supplier 1 Cur",
         "Supplier 2",
         "Supplier 2 SPN",
         "Supplier 3",
@@ -213,14 +213,14 @@ export default function ItemMaster() {
         it.materialCode || "",
         it.drawingNumber || "",
         it.rev || "",
-        it.formula || "",
         it.qty ?? 0,
         it.oeRemarks || "",
         it.internalRemarks || "",
         it.oeMarking || "",
-        it.oeQty ?? 0,
         it.supplier1 || "",
         it.supplier1Spn || "",
+        it.supplier1UnitPrice ?? "",
+        it.supplier1Cur || "",
         it.supplier2 || "",
         it.supplier2Spn || "",
         it.supplier3 || "",
@@ -256,14 +256,14 @@ export default function ItemMaster() {
           "Material Code",
           "Drawing Number",
           "Rev",
-          "Formula",
           "QTY",
           "OE Remarks",
           "Internal Remarks",
           "OE Marking",
-          "OE QTY",
           "Supplier 1",
           "Supplier 1 SPN",
+          "Supplier 1 Unit Price",
+          "Supplier 1 Cur",
           "Supplier 2",
           "Supplier 2 SPN",
           "Supplier 3",
@@ -290,14 +290,14 @@ export default function ItemMaster() {
         it.materialCode || "",
         it.drawingNumber || "",
         it.rev || "",
-        it.formula || "",
         String(it.qty ?? 0),
         it.oeRemarks || "",
         it.internalRemarks || "",
         it.oeMarking || "",
-        String(it.oeQty ?? 0),
         it.supplier1 || "",
         it.supplier1Spn || "",
+        String(it.supplier1UnitPrice ?? ""),
+        it.supplier1Cur || "",
         it.supplier2 || "",
         it.supplier2Spn || "",
         it.supplier3 || "",
@@ -352,14 +352,14 @@ export default function ItemMaster() {
         materialCode: form.materialCode.trim(),
         drawingNumber: form.drawingNumber.trim(),
         rev: form.rev.trim(),
-        formula: form.formula.trim(),
         qty: form.qty ? Number(form.qty) : 0,
         oeRemarks: form.oeRemarks.trim(),
         internalRemarks: form.internalRemarks.trim(),
         oeMarking: form.oeMarking.trim(),
-        oeQty: form.oeQty ? Number(form.oeQty) : 0,
         supplier1: form.supplier1.trim(),
         supplier1Spn: form.supplier1Spn.trim(),
+        supplier1UnitPrice: form.supplier1UnitPrice ? Number(form.supplier1UnitPrice) : 0,
+        supplier1Cur: form.supplier1Cur.trim(),
         supplier2: form.supplier2.trim(),
         supplier2Spn: form.supplier2Spn.trim(),
         supplier3: form.supplier3.trim(),
@@ -386,14 +386,14 @@ export default function ItemMaster() {
         materialCode: "",
         drawingNumber: "",
         rev: "",
-        formula: "",
         qty: "",
         oeRemarks: "",
         internalRemarks: "",
         oeMarking: "",
-        oeQty: "",
         supplier1: "",
         supplier1Spn: "",
+        supplier1UnitPrice: "",
+        supplier1Cur: "",
         supplier2: "",
         supplier2Spn: "",
         supplier3: "",
@@ -481,14 +481,14 @@ export default function ItemMaster() {
           materialCode: String(row.materialcode || row.material || "").trim(),
           drawingNumber: String(row.drawingnumber || row.drawingno || "").trim(),
           rev: String(row.rev || row.revision || "").trim(),
-          formula: String(row.formula || "").trim(),
           qty: Number(row.qty || row.quantity || row.q || 0) || 0,
           oeRemarks: String(row.oeremarks || row.remarks || "").trim(),
           internalRemarks: String(row.internalremarks || "").trim(),
           oeMarking: String(row.oemarking || "").trim(),
-          oeQty: Number(row.oeqty || 0) || 0,
           supplier1: String(row.supplier1 || "").trim(),
           supplier1Spn: String(row.supplier1spn || "").trim(),
+          supplier1UnitPrice: Number(row.supplier1unitprice ?? row.supplier1unit ?? 0) || 0,
+          supplier1Cur: String(row.supplier1cur ?? row.supplier1currency ?? "").trim(),
           supplier2: String(row.supplier2 || "").trim(),
           supplier2Spn: String(row.supplier2spn || "").trim(),
           supplier3: String(row.supplier3 || "").trim(),
@@ -764,37 +764,15 @@ export default function ItemMaster() {
               </div>
             </div>
             <div>
-              <label className="text-sm text-gray-600">Formula</label>
+              <label className="text-sm text-gray-600">QTY</label>
               <input
-                name="formula"
-                value={form.formula}
+                name="qty"
+                type="number"
+                min="0"
+                value={form.qty}
                 onChange={onChange}
                 className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
               />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-sm text-gray-600">QTY</label>
-                <input
-                  name="qty"
-                  type="number"
-                  min="0"
-                  value={form.qty}
-                  onChange={onChange}
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="text-sm text-gray-600">OE QTY</label>
-                <input
-                  name="oeQty"
-                  type="number"
-                  min="0"
-                  value={form.oeQty}
-                  onChange={onChange}
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                />
-              </div>
             </div>
             <div>
               <label className="text-sm text-gray-600">OE Remarks</label>
@@ -823,24 +801,49 @@ export default function ItemMaster() {
                 className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
               />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-sm text-gray-600">Supplier 1</label>
-                <input
-                  name="supplier1"
-                  value={form.supplier1}
-                  onChange={onChange}
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="text-sm text-gray-600">Supplier 1 SPN</label>
-                <input
-                  name="supplier1Spn"
-                  value={form.supplier1Spn}
-                  onChange={onChange}
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                />
+            <div>
+              <label className="text-sm text-gray-600">Supplier 1 (default)</label>
+              <div className="mt-2 grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-gray-500">Name</label>
+                  <input
+                    name="supplier1"
+                    value={form.supplier1}
+                    onChange={onChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500">SPN</label>
+                  <input
+                    name="supplier1Spn"
+                    value={form.supplier1Spn}
+                    onChange={onChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500">Unit Price</label>
+                  <input
+                    name="supplier1UnitPrice"
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={form.supplier1UnitPrice}
+                    onChange={onChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500">Cur</label>
+                  <input
+                    name="supplier1Cur"
+                    value={form.supplier1Cur}
+                    onChange={onChange}
+                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                    placeholder="e.g. USD"
+                  />
+                </div>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -1035,13 +1038,13 @@ export default function ItemMaster() {
                       <th className="py-2 pr-3">Material Code</th>
                       <th className="py-2 pr-3">Drawing Number</th>
                       <th className="py-2 pr-3">Rev</th>
-                      <th className="py-2 pr-3">Formula</th>
                       <th className="py-2 pr-3">QTY</th>
                       <th className="py-2 pr-3">OE Remarks</th>
                       <th className="py-2 pr-3">Internal Remarks</th>
                       <th className="py-2 pr-3">OE Marking</th>
-                      <th className="py-2 pr-3">OE QTY</th>
-                      <th className="py-2 pr-3">Supplier 1 / SPN</th>
+                      <th className="py-2 pr-3">Supplier 1 (default) / SPN</th>
+                      <th className="py-2 pr-3">Supplier 1 Unit Price</th>
+                      <th className="py-2 pr-3">Supplier 1 Cur</th>
                       <th className="py-2 pr-3">Supplier 2 / SPN</th>
                       <th className="py-2 pr-3">Supplier 3 / PW / OE Price</th>
                       <th className="py-2 pr-3">Part No</th>
@@ -1092,16 +1095,16 @@ export default function ItemMaster() {
                           <td className="py-2 pr-3">{it.materialCode || "-"}</td>
                           <td className="py-2 pr-3">{it.drawingNumber || "-"}</td>
                           <td className="py-2 pr-3">{it.rev || "-"}</td>
-                          <td className="py-2 pr-3">{it.formula || "-"}</td>
                           <td className="py-2 pr-3">{it.qty ?? 0}</td>
                           <td className="py-2 pr-3">{it.oeRemarks || "-"}</td>
                           <td className="py-2 pr-3">{it.internalRemarks || "-"}</td>
                           <td className="py-2 pr-3">{it.oeMarking || "-"}</td>
-                          <td className="py-2 pr-3">{it.oeQty ?? 0}</td>
                           <td className="py-2 pr-3">
                             {(it.supplier1 || "-") +
                               (it.supplier1Spn ? ` / ${it.supplier1Spn}` : "")}
                           </td>
+                          <td className="py-2 pr-3">{it.supplier1UnitPrice != null ? it.supplier1UnitPrice : "-"}</td>
+                          <td className="py-2 pr-3">{it.supplier1Cur || "-"}</td>
                           <td className="py-2 pr-3">
                             {(it.supplier2 || "-") +
                               (it.supplier2Spn ? ` / ${it.supplier2Spn}` : "")}

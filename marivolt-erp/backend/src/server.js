@@ -14,6 +14,7 @@ import purchaseRoutes from "./routes/purchaseRoutes.js";
 import supplierRoutes from "./routes/supplierRoutes.js";
 import salesRoutes from "./routes/salesRoutes.js";
 import bomRoutes from "./routes/bomRoutes.js";
+import dashboardRoutes from "./routes/dashboardRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -118,6 +119,7 @@ async function startServer() {
     app.use("/api/suppliers", supplierRoutes);
     app.use("/api/sales", salesRoutes);
     app.use("/api/bom", bomRoutes);
+    app.use("/api/dashboard", dashboardRoutes);
 
     // ---- HEALTH ----
     app.get("/api/health", (req, res) => {
