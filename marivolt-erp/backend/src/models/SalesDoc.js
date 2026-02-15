@@ -8,6 +8,10 @@ const salesItemSchema = new mongoose.Schema(
     qty: { type: Number, default: 0 },
     unitPrice: { type: Number, default: 0 },
     total: { type: Number, default: 0 },
+    unitWeight: { type: Number, default: 0 },
+    oeRemarks: { type: String, default: "" },
+    availability: { type: String, default: "" },
+    materialCode: { type: String, default: "" },
   },
   { _id: false }
 );

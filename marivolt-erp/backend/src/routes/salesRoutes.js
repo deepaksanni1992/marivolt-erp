@@ -26,6 +26,10 @@ function normalizeItems(items) {
       qty,
       unitPrice,
       total: qty * unitPrice,
+      unitWeight: Number(it.unitWeight) || 0,
+      oeRemarks: String(it.oeRemarks || "").trim(),
+      availability: String(it.availability || "").trim(),
+      materialCode: String(it.materialCode || "").trim(),
     };
   });
 }
