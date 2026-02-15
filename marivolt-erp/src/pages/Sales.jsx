@@ -130,8 +130,9 @@ export default function Sales() {
   });
 
   const [items, setItems] = useState([]);
+  const [priceList, setPriceList] = useState([]);
   const [quotationItems, setQuotationItems] = useState([
-    { sku: "", description: "", spn: "", uom: "", qty: 1, unitPrice: 0, unitWeight: "", oeRemarks: "", availability: "", materialCode: "" },
+    { sku: "", description: "", spn: "", uom: "", qty: 1, unitPrice: 0, currency: "", unitWeight: "", oeRemarks: "", availability: "", materialCode: "" },
   ]);
   const [quotationForm, setQuotationForm] = useState({
     customerId: "",
@@ -198,6 +199,15 @@ export default function Sales() {
     }
   }
 
+  async function loadPriceList() {
+    try {
+      const data = await apiGet("/price-list");
+      setPriceList(data);
+    } catch {
+      // ignore
+    }
+  }
+
   async function loadDocs(type, setState) {
     setSalesErr("");
     setSalesLoading(true);
@@ -214,6 +224,7 @@ export default function Sales() {
   useEffect(() => {
     loadCustomers();
     loadItems();
+    loadPriceList();
     loadDocs("QUOTATION", setQuotationList);
     loadDocs("ORDER_CONFIRMATION", setOcList);
     loadDocs("PROFORMA_INVOICE", setPiList);
@@ -257,12 +268,15 @@ export default function Sales() {
         if (i !== index) return row;
         if (field === "sku") {
           const item = items.find((it) => it.sku === value);
+          const pl = priceList.find((p) => (p.article || "").trim() === (item?.article || value || "").trim());
           return {
             ...row,
             sku: value,
             description: item?.name || row.description,
             spn: item?.spn ?? row.spn ?? "",
             uom: item?.uom || row.uom,
+            unitPrice: pl?.unitPrice != null ? Number(pl.unitPrice) : row.unitPrice,
+            currency: item?.supplier1Cur ?? row.currency ?? "",
             unitWeight: item?.unitWeight ?? row.unitWeight ?? "",
             oeRemarks: item?.oeRemarks ?? row.oeRemarks ?? "",
             materialCode: item?.materialCode ?? row.materialCode ?? "",
@@ -276,7 +290,7 @@ export default function Sales() {
   function addQuotationItem() {
     setQuotationItems((prev) => [
       ...prev,
-      { sku: "", description: "", spn: "", uom: "", qty: 1, unitPrice: 0, unitWeight: "", oeRemarks: "", availability: "", materialCode: "" },
+      { sku: "", description: "", spn: "", uom: "", qty: 1, unitPrice: 0, currency: "", unitWeight: "", oeRemarks: "", availability: "", materialCode: "" },
     ]);
   }
 
@@ -486,6 +500,7 @@ export default function Sales() {
       uom: row.uom || "",
       qty: Number(row.qty) || 0,
       unitPrice: Number(row.unitPrice) || 0,
+      currency: String(row.currency || "").trim(),
       unitWeight: Number(row.unitWeight) || 0,
       oeRemarks: String(row.oeRemarks || "").trim(),
       availability: String(row.availability || "").trim(),
@@ -500,7 +515,7 @@ export default function Sales() {
         grandTotal: quotationTotals.grandTotal,
       });
       setQuotationList((prev) => [created, ...prev]);
-      setQuotationItems([{ sku: "", description: "", spn: "", uom: "", qty: 1, unitPrice: 0, unitWeight: "", oeRemarks: "", availability: "", materialCode: "" }]);
+      setQuotationItems([{ sku: "", description: "", spn: "", uom: "", qty: 1, unitPrice: 0, currency: "", unitWeight: "", oeRemarks: "", availability: "", materialCode: "" }]);
       setQuotationForm((p) => ({ ...p, notes: "" }));
       alert(`Quotation saved as ${status} ✅`);
     } catch (e) {
@@ -677,7 +692,7 @@ export default function Sales() {
 
   function exportQuotationItemsCsv() {
     const rows = [
-      ["Article", "Description", "SPN", "UOM", "Qty", "Unit Price", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"],
+      ["Article", "Description", "SPN", "UOM", "Qty", "Unit Price", "Currency", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"],
       ...quotationItems.map((row) => {
         const qty = Number(row.qty) || 0;
         const up = Number(row.unitPrice) || 0;
@@ -688,6 +703,7 @@ export default function Sales() {
           row.uom || "",
           qty,
           up,
+          row.currency ?? "",
           (qty * up).toFixed(2),
           row.unitWeight ?? "",
           row.oeRemarks ?? "",
@@ -700,7 +716,7 @@ export default function Sales() {
   }
 
   function exportQuotationItemsExcel() {
-    const headers = ["Article", "Description", "SPN", "UOM", "Qty", "Unit Price", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"];
+    const headers = ["Article", "Description", "SPN", "UOM", "Qty", "Unit Price", "Currency", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"];
     const rows = quotationItems.map((row) => {
       const qty = Number(row.qty) || 0;
       const up = Number(row.unitPrice) || 0;
@@ -711,6 +727,7 @@ export default function Sales() {
         row.uom || "",
         qty,
         up,
+        row.currency ?? "",
         (qty * up).toFixed(2),
         row.unitWeight ?? "",
         row.oeRemarks ?? "",
@@ -725,9 +742,9 @@ export default function Sales() {
   }
 
   function downloadQuotationItemsTemplate() {
-    const headers = ["Article", "Description", "SPN", "UOM", "Qty", "Unit Price", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"];
-    const exampleRow = ["10009", "O-ring", "", "pcs", 1, 0.56, "0.56", "", "", "", ""];
-    const noteRow = ["Article = Item Master Article number. Use exact value to match item.", "", "", "", "", "", "", "", "", "", ""];
+    const headers = ["Article", "Description", "SPN", "UOM", "Qty", "Unit Price", "Currency", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"];
+    const exampleRow = ["10009", "O-ring", "", "pcs", 1, 0.56, "USD", "0.56", "", "", "", ""];
+    const noteRow = ["Article = Item Master Article. With Material Code, match by SPN+Material Code; Unit Price and Currency from Price list/Item Master.", "", "", "", "", "", "", "", "", "", "", ""];
     const ws = XLSX.utils.aoa_to_sheet([headers, exampleRow, noteRow]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Quotation Items");
@@ -752,46 +769,73 @@ export default function Sales() {
         return entry;
       });
 
-      const itemsFromExcel = normalized.map((row) => {
-        const rawSku = String(
-          row.sku || row.partno || row.partnumber || row.article || row.articleno || ""
-        ).trim();
-        const matchedItem = items.find(
-          (it) => it.sku === rawSku || String(it.article || "").trim() === rawSku
-        );
-        const description =
-          row.description ||
-          row.itemname ||
-          row.name ||
-          matchedItem?.description ||
-          matchedItem?.name ||
-          "";
-        const spn = row.spn ?? matchedItem?.spn ?? "";
-        const uom = row.uom || row.unit || matchedItem?.uom || "";
-        const qty = row.qty || row.quantity || row.q || 1;
-        const unitPrice = row.unitprice || row.rate || row.price || 0;
-        const unitWeight = row.unitweight ?? matchedItem?.unitWeight ?? "";
-        const oeRemarks = row.oeremarks ?? row.oeremarks ?? "";
+      function buildQuotationLineFromMatch(item, row, skuOrArticle, qty, fileUnitPrice) {
+        const pl = priceList.find((p) => String(p.article || "").trim() === String(item?.article || skuOrArticle || "").trim());
+        const description = row.description || row.itemname || row.name || item?.description || item?.name || "";
+        const spn = row.spn ?? item?.spn ?? "";
+        const uom = row.uom || row.unit || item?.uom || "";
+        const unitPrice = fileUnitPrice !== undefined && fileUnitPrice !== null && String(fileUnitPrice).trim() !== ""
+          ? Number(fileUnitPrice)
+          : (pl?.unitPrice != null ? Number(pl.unitPrice) : 0);
+        const currency = row.currency ?? row.cur ?? item?.supplier1Cur ?? "";
+        const unitWeight = row.unitweight ?? item?.unitWeight ?? "";
+        const oeRemarks = row.oeremarks ?? item?.oeRemarks ?? "";
         const availability = row.availability ?? "";
-        const materialCode = row.materialcode ?? row.materialcode ?? matchedItem?.materialCode ?? "";
-
+        const materialCode = row.materialcode ?? item?.materialCode ?? "";
         return {
-          sku: matchedItem ? matchedItem.sku : rawSku,
+          sku: item ? item.sku : skuOrArticle,
           description: String(description || "").trim(),
           spn: String(spn || "").trim(),
           uom: String(uom || "").trim(),
           qty: Number(qty) || 0,
-          unitPrice: Number(unitPrice) || 0,
+          unitPrice,
+          currency: String(currency || "").trim(),
           unitWeight,
           oeRemarks: String(oeRemarks || "").trim(),
           availability: String(availability || "").trim(),
           materialCode: String(materialCode || "").trim(),
         };
-      });
+      }
 
-      const filtered = itemsFromExcel.filter(
-        (row) => row.sku || row.description || row.qty
-      );
+      const lines = [];
+      for (const row of normalized) {
+        const rawSpn = String(row.spn ?? "").trim();
+        const rawMaterialCode = String(row.materialcode ?? "").trim();
+        const rawArticle = String(row.article || row.sku || row.partno || row.partnumber || row.articleno || "").trim();
+        const qty = row.qty ?? row.quantity ?? row.q ?? 1;
+        const fileUnitPrice = row.unitprice ?? row.rate ?? row.price;
+
+        if (rawMaterialCode) {
+          const matches = items.filter(
+            (it) => String(it.spn || "").trim() === rawSpn && String(it.materialCode || "").trim() === rawMaterialCode
+          );
+          if (matches.length === 0) {
+            const matchedItem = items.find((it) => it.sku === rawArticle || String(it.article || "").trim() === rawArticle);
+            lines.push(buildQuotationLineFromMatch(matchedItem, row, rawArticle, qty, fileUnitPrice));
+          } else {
+            matches.forEach((m) => {
+              lines.push(buildQuotationLineFromMatch(m, row, m.sku, qty, fileUnitPrice));
+            });
+          }
+        } else {
+          if (rawSpn) {
+            const matchesBySpn = items.filter((it) => String(it.spn || "").trim() === rawSpn);
+            if (matchesBySpn.length === 0) {
+              const matchedItem = items.find((it) => it.sku === rawArticle || String(it.article || "").trim() === rawArticle);
+              lines.push(buildQuotationLineFromMatch(matchedItem, row, rawArticle, qty, fileUnitPrice));
+            } else {
+              matchesBySpn.forEach((m) => {
+                lines.push(buildQuotationLineFromMatch(m, row, m.sku, qty, fileUnitPrice));
+              });
+            }
+          } else {
+            const matchedItem = items.find((it) => it.sku === rawArticle || String(it.article || "").trim() === rawArticle);
+            lines.push(buildQuotationLineFromMatch(matchedItem, row, rawArticle, qty, fileUnitPrice));
+          }
+        }
+      }
+
+      const filtered = lines.filter((row) => row.sku || row.description || row.qty);
       if (!filtered.length) {
         setSalesErr("Excel import has no valid quotation item rows.");
         return;
@@ -1363,7 +1407,7 @@ export default function Sales() {
                   </div>
                 </div>
                 <p className="mt-2 text-xs text-gray-500">
-                  Import/Export: Use columns Article, Description, SPN, UOM, Qty, Unit Price, Total Price, Unit Weight, OE Remarks, Availability, Material Code. Download template to get the format.
+                  Import/Export: Use columns Article, Description, SPN, UOM, Qty, Unit Price, Currency, Total Price, Unit Weight, OE Remarks, Availability, Material Code. With Material Code: match by SPN+Material Code. Without Material Code: match by SPN only — all Articles with that SPN appear as separate lines; remove unwanted. Unit Price and Currency from Price list / Item Master. Download template to get the format.
                 </p>
                 <div className="mt-3 overflow-x-auto">
                   <table className="w-full text-left text-xs">
@@ -1376,6 +1420,7 @@ export default function Sales() {
                         <th className="py-2 pr-3">UOM</th>
                         <th className="py-2 pr-3">Qty</th>
                         <th className="py-2 pr-3">Unit Price</th>
+                        <th className="py-2 pr-3">Currency</th>
                         <th className="py-2 pr-3">Total Price</th>
                         <th className="py-2 pr-3">Unit Weight</th>
                         <th className="py-2 pr-3">OE Remarks</th>
@@ -1464,6 +1509,16 @@ export default function Sales() {
                                   )
                                 }
                                 className="w-24 rounded-lg border px-2 py-1 text-xs"
+                              />
+                            </td>
+                            <td className="py-2 pr-3">
+                              <input
+                                value={row.currency ?? ""}
+                                onChange={(e) =>
+                                  onQuotationItemChange(idx, "currency", e.target.value)
+                                }
+                                className="w-16 rounded-lg border px-2 py-1 text-xs"
+                                placeholder="e.g. USD"
                               />
                             </td>
                             <td className="py-2 pr-3">

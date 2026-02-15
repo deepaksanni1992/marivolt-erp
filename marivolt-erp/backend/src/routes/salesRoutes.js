@@ -26,6 +26,7 @@ function normalizeItems(items) {
       uom: String(it.uom || "").trim(),
       qty,
       unitPrice,
+      currency: String(it.currency || "").trim(),
       total: qty * unitPrice,
       unitWeight: Number(it.unitWeight) || 0,
       oeRemarks: String(it.oeRemarks || "").trim(),
