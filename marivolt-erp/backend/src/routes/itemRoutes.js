@@ -66,6 +66,48 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
   }
 });
 
+/** Build a plain document for Item from request row (only known schema fields). */
+function sanitizeItemRow(row) {
+  const comp = Array.isArray(row?.compatibility) ? row.compatibility : [];
+  const compatibility = comp.map((c) => ({
+    engine: String(c?.engine ?? "").trim(),
+    model: String(c?.model ?? "").trim(),
+    config: String(c?.config ?? "").trim(),
+  }));
+  return {
+    sku: String(row?.sku ?? "").trim(),
+    name: String(row?.name ?? "").trim() || String(row?.article ?? "Unnamed").trim(),
+    vendor: String(row?.vendor ?? "").trim(),
+    engine: String(row?.engine ?? "").trim(),
+    compatibility,
+    article: String(row?.article ?? "").trim(),
+    mpn: String(row?.mpn ?? "").trim(),
+    description: String(row?.description ?? "").trim(),
+    spn: String(row?.spn ?? "").trim(),
+    materialCode: String(row?.materialCode ?? "").trim(),
+    drawingNumber: String(row?.drawingNumber ?? "").trim(),
+    rev: String(row?.rev ?? "").trim(),
+    qty: Number(row?.qty) || 0,
+    oeRemarks: String(row?.oeRemarks ?? "").trim(),
+    internalRemarks: String(row?.internalRemarks ?? "").trim(),
+    oeMarking: String(row?.oeMarking ?? "").trim(),
+    supplier1: String(row?.supplier1 ?? "").trim(),
+    supplier1Spn: String(row?.supplier1Spn ?? "").trim(),
+    supplier1UnitPrice: Number(row?.supplier1UnitPrice) || 0,
+    supplier1Cur: String(row?.supplier1Cur ?? "").trim(),
+    supplier2: String(row?.supplier2 ?? "").trim(),
+    supplier2Spn: String(row?.supplier2Spn ?? "").trim(),
+    supplier3: String(row?.supplier3 ?? "").trim(),
+    supplier3Pw: String(row?.supplier3Pw ?? "").trim(),
+    supplier3OePrice: String(row?.supplier3OePrice ?? "").trim(),
+    uom: String(row?.uom ?? "pcs").trim() || "pcs",
+    unitWeight: Number(row?.unitWeight) || 0,
+    category: String(row?.category ?? "General").trim() || "General",
+    minStock: Number(row?.minStock) || 0,
+    location: String(row?.location ?? "").trim(),
+  };
+}
+
 /**
  * BULK CREATE items (ADMIN only). Creates each item in sequence; returns created count and per-item errors.
  * POST /api/items/bulk
@@ -79,21 +121,23 @@ router.post("/bulk", requireAuth, requireRole("admin"), async (req, res) => {
       const row = items[i];
       const label = row?.article ? `Article ${row.article}` : (row?.name || `row ${i + 1}`);
       try {
-        const name = String(row?.name ?? "").trim() || String(row?.article ?? "Unnamed").trim();
-        if (!name) {
+        const doc = sanitizeItemRow(row);
+        if (!doc.name) {
           results.failed++;
           results.errors.push({ index: i, article: row?.article, label, message: "Item name is required" });
           continue;
         }
-        await Item.create({ ...row, name });
+        await Item.create(doc);
         results.created++;
       } catch (err) {
         results.failed++;
+        const msg = err.message || String(err);
+        const validationMsg = err.errors ? Object.values(err.errors).map((e) => e.message).join("; ") : "";
         results.errors.push({
           index: i,
           article: row?.article,
           label,
-          message: err.message || String(err),
+          message: validationMsg || msg,
         });
       }
     }

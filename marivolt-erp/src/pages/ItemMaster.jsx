@@ -535,12 +535,11 @@ export default function ItemMaster() {
       const errors = result.errors ?? [];
       const firstErr = errors[0];
       if (failed) {
-        setErr(
+        const msg =
           `Imported ${created} of ${filtered.length} items. ${failed} failed. ` +
-            (firstErr
-              ? `${firstErr.label || "Item"}: ${firstErr.message}`
-              : "Check server logs.")
-        );
+          (firstErr ? `${firstErr.label || "Item"}: ${firstErr.message}` : "Check server logs.");
+        setErr(msg);
+        alert(msg);
       } else {
         setErr(`Imported ${created} items successfully.`);
       }
