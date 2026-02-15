@@ -436,14 +436,14 @@ export default function ItemMaster() {
 
       const itemsFromExcel = normalized.map((row) => {
         const sku = row.sku || row.partno || row.partnumber || row.articleno || "";
-        const name = row.itemname || row.name || row.description || row.article || "";
+        const name = (row.itemname ?? row["itemname"] ?? row.name ?? row.description ?? row.article ?? "").toString().trim();
         return {
           sku: String(sku || "").trim(),
           name: String(name || "").trim(),
           vendor: String(row.vendor || "").trim(),
           engine: String(row.engine || "").trim(),
           compatibility: (() => {
-            const single = String(row.compatibility || "").trim();
+            const single = String(row.compatibility || row.compatiblearticle || "").trim();
             if (single) {
               const out = [];
               single.split(";").forEach((part) => {
@@ -474,8 +474,8 @@ export default function ItemMaster() {
           drawingNumber: String(row.drawingnumber || row.drawingno || "").trim(),
           rev: String(row.rev || row.revision || "").trim(),
           qty: Number(row.qty || row.quantity || row.q || 0) || 0,
-          oeRemarks: String(row.oeremarks || row.remarks || "").trim(),
-          internalRemarks: String(row.internalremarks || "").trim(),
+          oeRemarks: String(row.oeremarks || row.oeremark || row.remarks || "").trim(),
+          internalRemarks: String(row.internalremarks || row.internalremark || "").trim(),
           oeMarking: String(row.oemarking || "").trim(),
           supplier1: String(row.supplier1 || "").trim(),
           supplier1Spn: String(row.supplier1spn || "").trim(),
@@ -494,11 +494,16 @@ export default function ItemMaster() {
         };
       });
 
-      const filtered = itemsFromExcel.filter((row) => row.name);
+      const filtered = itemsFromExcel.filter(
+        (row) => (row.name && row.name.trim()) || (row.article && String(row.article).trim())
+      );
       if (!filtered.length) {
-        setErr("Excel has no valid rows (each row needs Item Name).");
+        setErr("Excel has no valid rows (each row needs Item Name or Article).");
         return;
       }
+      filtered.forEach((row) => {
+        if (!row.name || !row.name.trim()) row.name = String(row.article || "Unnamed").trim();
+      });
 
       const userConfirmed = window.confirm(
         `Do you want to save? ${filtered.length} item(s) will be imported.`
@@ -510,9 +515,13 @@ export default function ItemMaster() {
       );
       const created = results.filter((r) => r.status === "fulfilled").length;
       const failed = results.length - created;
+      const firstRejection = results.find((r) => r.status === "rejected");
+      const firstReason = firstRejection?.reason?.message || firstRejection?.reason?.toString?.() || "";
       if (failed) {
         setErr(
-          `Imported ${created} items. ${failed} failed (invalid or duplicate).`
+          firstReason
+            ? `Imported ${created} items. ${failed} failed: ${firstReason}`
+            : `Imported ${created} items. ${failed} failed (invalid or duplicate).`
         );
       } else {
         setErr(`Imported ${created} items successfully.`);
