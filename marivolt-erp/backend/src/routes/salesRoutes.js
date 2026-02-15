@@ -22,6 +22,7 @@ function normalizeItems(items) {
     return {
       sku: String(it.sku || "").trim(),
       description: String(it.description || "").trim(),
+      spn: String(it.spn || "").trim(),
       uom: String(it.uom || "").trim(),
       qty,
       unitPrice,

@@ -131,7 +131,7 @@ export default function Sales() {
 
   const [items, setItems] = useState([]);
   const [quotationItems, setQuotationItems] = useState([
-    { sku: "", description: "", uom: "", qty: 1, unitPrice: 0, unitWeight: "", oeRemarks: "", availability: "", materialCode: "" },
+    { sku: "", description: "", spn: "", uom: "", qty: 1, unitPrice: 0, unitWeight: "", oeRemarks: "", availability: "", materialCode: "" },
   ]);
   const [quotationForm, setQuotationForm] = useState({
     customerId: "",
@@ -261,6 +261,7 @@ export default function Sales() {
             ...row,
             sku: value,
             description: item?.name || row.description,
+            spn: item?.spn ?? row.spn ?? "",
             uom: item?.uom || row.uom,
             unitWeight: item?.unitWeight ?? row.unitWeight ?? "",
             oeRemarks: item?.oeRemarks ?? row.oeRemarks ?? "",
@@ -275,7 +276,7 @@ export default function Sales() {
   function addQuotationItem() {
     setQuotationItems((prev) => [
       ...prev,
-      { sku: "", description: "", uom: "", qty: 1, unitPrice: 0, unitWeight: "", oeRemarks: "", availability: "", materialCode: "" },
+      { sku: "", description: "", spn: "", uom: "", qty: 1, unitPrice: 0, unitWeight: "", oeRemarks: "", availability: "", materialCode: "" },
     ]);
   }
 
@@ -481,6 +482,7 @@ export default function Sales() {
     const itemsPayload = quotationItems.map((row) => ({
       sku: row.sku || "",
       description: row.description || "",
+      spn: String(row.spn || "").trim(),
       uom: row.uom || "",
       qty: Number(row.qty) || 0,
       unitPrice: Number(row.unitPrice) || 0,
@@ -498,7 +500,7 @@ export default function Sales() {
         grandTotal: quotationTotals.grandTotal,
       });
       setQuotationList((prev) => [created, ...prev]);
-      setQuotationItems([{ sku: "", description: "", uom: "", qty: 1, unitPrice: 0, unitWeight: "", oeRemarks: "", availability: "", materialCode: "" }]);
+      setQuotationItems([{ sku: "", description: "", spn: "", uom: "", qty: 1, unitPrice: 0, unitWeight: "", oeRemarks: "", availability: "", materialCode: "" }]);
       setQuotationForm((p) => ({ ...p, notes: "" }));
       alert(`Quotation saved as ${status} ✅`);
     } catch (e) {
@@ -564,6 +566,7 @@ export default function Sales() {
         it.sku || "-",
         compatStr || "-",
         it.description || "-",
+        it.spn || "-",
         it.uom || "-",
         String(qty),
         rate ? rate.toFixed(2) : "0.00",
@@ -578,7 +581,7 @@ export default function Sales() {
       startY: pdf.lastAutoTable.finalY + 6,
       margin: getTableMargins(contentStartY + 6),
       theme: "grid",
-      head: [["Pos", "Article", "Compatibility", "Description", "UOM", "Qty", "Unit Price", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"]],
+      head: [["Pos", "Article", "Compatibility", "Description", "SPN", "UOM", "Qty", "Unit Price", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"]],
       body: itemRows,
       styles: { fontSize: 10 },
       headStyles: { fillColor: [230, 230, 230], textColor: 20 },
@@ -674,13 +677,14 @@ export default function Sales() {
 
   function exportQuotationItemsCsv() {
     const rows = [
-      ["Article", "Description", "UOM", "Qty", "Unit Price", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"],
+      ["Article", "Description", "SPN", "UOM", "Qty", "Unit Price", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"],
       ...quotationItems.map((row) => {
         const qty = Number(row.qty) || 0;
         const up = Number(row.unitPrice) || 0;
         return [
           row.sku || "",
           row.description || "",
+          row.spn ?? "",
           row.uom || "",
           qty,
           up,
@@ -696,13 +700,14 @@ export default function Sales() {
   }
 
   function exportQuotationItemsExcel() {
-    const headers = ["Article", "Description", "UOM", "Qty", "Unit Price", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"];
+    const headers = ["Article", "Description", "SPN", "UOM", "Qty", "Unit Price", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"];
     const rows = quotationItems.map((row) => {
       const qty = Number(row.qty) || 0;
       const up = Number(row.unitPrice) || 0;
       return [
         row.sku || "",
         row.description || "",
+        row.spn ?? "",
         row.uom || "",
         qty,
         up,
@@ -720,9 +725,9 @@ export default function Sales() {
   }
 
   function downloadQuotationItemsTemplate() {
-    const headers = ["Article", "Description", "UOM", "Qty", "Unit Price", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"];
-    const exampleRow = ["10009", "O-ring", "pcs", 1, 0.56, "0.56", "", "", "", ""];
-    const noteRow = ["Article = Item Master Article number. Use exact value to match item.", "", "", "", "", "", "", "", "", ""];
+    const headers = ["Article", "Description", "SPN", "UOM", "Qty", "Unit Price", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"];
+    const exampleRow = ["10009", "O-ring", "", "pcs", 1, 0.56, "0.56", "", "", "", ""];
+    const noteRow = ["Article = Item Master Article number. Use exact value to match item.", "", "", "", "", "", "", "", "", "", ""];
     const ws = XLSX.utils.aoa_to_sheet([headers, exampleRow, noteRow]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Quotation Items");
@@ -761,6 +766,7 @@ export default function Sales() {
           matchedItem?.description ||
           matchedItem?.name ||
           "";
+        const spn = row.spn ?? matchedItem?.spn ?? "";
         const uom = row.uom || row.unit || matchedItem?.uom || "";
         const qty = row.qty || row.quantity || row.q || 1;
         const unitPrice = row.unitprice || row.rate || row.price || 0;
@@ -772,6 +778,7 @@ export default function Sales() {
         return {
           sku: matchedItem ? matchedItem.sku : rawSku,
           description: String(description || "").trim(),
+          spn: String(spn || "").trim(),
           uom: String(uom || "").trim(),
           qty: Number(qty) || 0,
           unitPrice: Number(unitPrice) || 0,
@@ -1356,7 +1363,7 @@ export default function Sales() {
                   </div>
                 </div>
                 <p className="mt-2 text-xs text-gray-500">
-                  Import/Export: Use columns Article, Description, UOM, Qty, Unit Price, Total Price, Unit Weight, OE Remarks, Availability, Material Code. Download template to get the format.
+                  Import/Export: Use columns Article, Description, SPN, UOM, Qty, Unit Price, Total Price, Unit Weight, OE Remarks, Availability, Material Code. Download template to get the format.
                 </p>
                 <div className="mt-3 overflow-x-auto">
                   <table className="w-full text-left text-xs">
@@ -1365,6 +1372,7 @@ export default function Sales() {
                         <th className="py-2 pr-3">Article</th>
                         <th className="py-2 pr-3">Compatibility</th>
                         <th className="py-2 pr-3">Description</th>
+                        <th className="py-2 pr-3">SPN</th>
                         <th className="py-2 pr-3">UOM</th>
                         <th className="py-2 pr-3">Qty</th>
                         <th className="py-2 pr-3">Unit Price</th>
@@ -1412,6 +1420,15 @@ export default function Sales() {
                                   )
                                 }
                                 className="w-40 rounded-lg border px-2 py-1 text-xs"
+                              />
+                            </td>
+                            <td className="py-2 pr-3">
+                              <input
+                                value={row.spn ?? ""}
+                                onChange={(e) =>
+                                  onQuotationItemChange(idx, "spn", e.target.value)
+                                }
+                                className="w-24 rounded-lg border px-2 py-1 text-xs"
                               />
                             </td>
                             <td className="py-2 pr-3">

@@ -4,6 +4,7 @@ const salesItemSchema = new mongoose.Schema(
   {
     sku: { type: String, default: "" },
     description: { type: String, default: "" },
+    spn: { type: String, default: "" },
     uom: { type: String, default: "" },
     qty: { type: Number, default: 0 },
     unitPrice: { type: Number, default: 0 },
