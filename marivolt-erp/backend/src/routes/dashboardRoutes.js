@@ -25,8 +25,9 @@ router.get("/stats", async (req, res) => {
     ]);
     const purchaseExpense = purchaseResult[0]?.total ?? 0;
 
-    // Sales order value: sum grandTotal for all sales docs (quotations, orders, invoices)
+    // Sales order value: sum grandTotal for INVOICE documents only
     const salesResult = await SalesDoc.aggregate([
+      { $match: { type: "INVOICE" } },
       { $group: { _id: null, total: { $sum: "$grandTotal" } } },
     ]);
     const salesOrderValue = salesResult[0]?.total ?? 0;
@@ -69,7 +70,7 @@ router.get("/stats", async (req, res) => {
     ]);
 
     const salesByMonth = await SalesDoc.aggregate([
-      { $match: { createdAt: { $gte: sixMonthsAgo } } },
+      { $match: { type: "INVOICE", createdAt: { $gte: sixMonthsAgo } } },
       {
         $group: {
           _id: {
