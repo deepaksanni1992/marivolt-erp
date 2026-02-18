@@ -15,16 +15,14 @@ export default function Sidebar({ open, onClose }) {
   const role = getRole();
 
   const navItems = [
-    { name: "Dashboard", to: "/dashboard", roles: ["admin", "staff"] },
-    { name: "Sales", to: "/sales", roles: ["admin", "staff"] },
-    { name: "Purchase", to: "/purchase", roles: ["admin", "staff"] },
+    { name: "Dashboard", to: "/dashboard", roles: ["admin", "staff", "purchase_sales", "accounts_logistics"] },
+    { name: "Sales", to: "/sales", roles: ["admin", "staff", "purchase_sales"] },
+    { name: "Purchase", to: "/purchase", roles: ["admin", "staff", "purchase_sales"] },
     { name: "Inventory", to: "/inventory", roles: ["admin", "staff"] },
     { name: "Store", to: "/store", roles: ["admin", "staff"] },
-    { name: "Logistics (Import/Export)", to: "/logistics", roles: ["admin", "staff"] },
-
-    // Admin only
-    { name: "Item Master", to: "/items", roles: ["admin"] },
-    { name: "Accounts", to: "/accounts", roles: ["admin"] },
+    { name: "Logistics (Import/Export)", to: "/logistics", roles: ["admin", "staff", "accounts_logistics"] },
+    { name: "Item Master", to: "/items", roles: ["admin", "staff"] },
+    { name: "Accounts", to: "/accounts", roles: ["admin", "staff", "accounts_logistics"] },
   ];
 
   const visibleItems = navItems.filter((x) => x.roles.includes(role));

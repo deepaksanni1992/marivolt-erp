@@ -2,10 +2,11 @@ import express from "express";
 import SalesDoc from "../models/SalesDoc.js";
 import PurchaseOrder from "../models/PurchaseOrder.js";
 import Shipment from "../models/Shipment.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 router.use(requireAuth);
+router.use(requireRole("admin", "staff", "accounts_logistics"));
 
 /**
  * GET /api/accounts/summary

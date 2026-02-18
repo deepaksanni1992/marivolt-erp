@@ -26,19 +26,61 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route
-    path="items"
-    element={
-      <RequireRole allow={["admin"]}>
-        <ItemMaster />
-      </RequireRole>
-    }
-  />
-          <Route path="sales" element={<Sales />} />
-          <Route path="purchase" element={<Purchase />} />
-          <Route path="inventory" element={<Inventory />} />
-          <Route path="store" element={<Store />} />
-          <Route path="accounts" element={<Accounts />} />
-          <Route path="logistics" element={<Logistics />} />
+            path="items"
+            element={
+              <RequireRole allow={["admin", "staff"]}>
+                <ItemMaster />
+              </RequireRole>
+            }
+          />
+          <Route
+            path="sales"
+            element={
+              <RequireRole allow={["admin", "staff", "purchase_sales"]}>
+                <Sales />
+              </RequireRole>
+            }
+          />
+          <Route
+            path="purchase"
+            element={
+              <RequireRole allow={["admin", "staff", "purchase_sales"]}>
+                <Purchase />
+              </RequireRole>
+            }
+          />
+          <Route
+            path="inventory"
+            element={
+              <RequireRole allow={["admin", "staff"]}>
+                <Inventory />
+              </RequireRole>
+            }
+          />
+          <Route
+            path="store"
+            element={
+              <RequireRole allow={["admin", "staff"]}>
+                <Store />
+              </RequireRole>
+            }
+          />
+          <Route
+            path="accounts"
+            element={
+              <RequireRole allow={["admin", "staff", "accounts_logistics"]}>
+                <Accounts />
+              </RequireRole>
+            }
+          />
+          <Route
+            path="logistics"
+            element={
+              <RequireRole allow={["admin", "staff", "accounts_logistics"]}>
+                <Logistics />
+              </RequireRole>
+            }
+          />
         </Route>
       </Route>
 

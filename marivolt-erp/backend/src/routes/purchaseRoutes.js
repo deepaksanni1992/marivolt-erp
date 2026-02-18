@@ -2,10 +2,11 @@ import express from "express";
 import PurchaseOrder from "../models/PurchaseOrder.js";
 import GRN from "../models/GRN.js";
 import StockTxn from "../models/StockTxn.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 router.use(requireAuth);
+router.use(requireRole("admin", "staff", "purchase_sales"));
 
 /* CREATE PO */
 router.post("/po", async (req, res) => {

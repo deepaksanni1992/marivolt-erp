@@ -1,10 +1,11 @@
 import express from "express";
 import Customer from "../models/Customer.js";
 import SalesDoc from "../models/SalesDoc.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 router.use(requireAuth);
+router.use(requireRole("admin", "staff", "purchase_sales"));
 
 function getDocNo(prefix) {
   return `${prefix}-${Date.now()}`;

@@ -2,6 +2,7 @@ import express from "express";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
@@ -31,7 +32,7 @@ router.post("/register", async (req, res) => {
       email: email.toLowerCase().trim(),
       username: username ? String(username).toLowerCase().trim() : undefined,
       passwordHash,
-      role: role === "admin" ? "admin" : "staff",
+      role: ["admin", "purchase_sales", "accounts_logistics"].includes(role) ? role : "staff",
     });
 
     const token = signToken(user);
@@ -78,6 +79,35 @@ router.post("/login", async (req, res) => {
       token,
       user: { id: user._id, name: user.name, email: user.email, role: user.role },
     });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+// GET /api/auth/users — list users (admin only)
+router.get("/users", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const users = await User.find()
+      .select("name email username role createdAt")
+      .sort({ createdAt: -1 });
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// DELETE /api/auth/users/:id — delete user (admin only); cannot delete self
+router.delete("/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const targetId = req.params.id;
+    const currentId = req.user?.id;
+    if (String(targetId) === String(currentId)) {
+      return res.status(400).json({ message: "Cannot delete your own account" });
+    }
+    const user = await User.findById(targetId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    await User.findByIdAndDelete(targetId);
+    res.json({ success: true, message: "User deleted" });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }

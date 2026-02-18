@@ -1,9 +1,10 @@
 import express from "express";
 import Shipment from "../models/Shipment.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 router.use(requireAuth);
+router.use(requireRole("admin", "staff", "accounts_logistics"));
 
 function nextRefNo(prefix = "SHP") {
   const now = new Date();
