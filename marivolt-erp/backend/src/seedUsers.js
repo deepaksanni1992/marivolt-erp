@@ -11,7 +11,11 @@ import bcrypt from "bcrypt";
 import User from "./models/User.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Load .env from backend folder or project root (marivolt-erp)
 dotenv.config({ path: path.join(__dirname, "../.env") });
+if (!process.env.MONGO_URI) {
+  dotenv.config({ path: path.join(__dirname, "../../.env") });
+}
 
 const USERS = [
   { username: "advitya", password: "advitya2026", name: "Advitya", role: "admin" },
