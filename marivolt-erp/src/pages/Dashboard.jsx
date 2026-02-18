@@ -155,6 +155,7 @@ export default function Dashboard() {
                 <Legend />
                 <Line type="monotone" dataKey="purchase" name="Purchase" stroke="#64748b" strokeWidth={2} dot={{ r: 4 }} />
                 <Line type="monotone" dataKey="sales" name="Sales" stroke="#0f766e" strokeWidth={2} dot={{ r: 4 }} />
+                <Line type="monotone" dataKey="logistics" name="Logistics" stroke="#b45309" strokeWidth={2} dot={{ r: 4 }} />
                 <Line type="monotone" dataKey="profit" name="Profit" stroke="#15803d" strokeWidth={2} dot={{ r: 4 }} />
               </LineChart>
             </ResponsiveContainer>
@@ -176,6 +177,7 @@ export default function Dashboard() {
                 <Legend />
                 <Bar dataKey="purchase" name="Purchase" fill="#64748b" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="sales" name="Sales" fill="#0f766e" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="logistics" name="Logistics" fill="#b45309" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="profit" name="Profit" fill="#15803d" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>

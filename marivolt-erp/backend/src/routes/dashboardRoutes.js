@@ -1,6 +1,7 @@
 import express from "express";
 import PurchaseOrder from "../models/PurchaseOrder.js";
 import SalesDoc from "../models/SalesDoc.js";
+import Shipment from "../models/Shipment.js";
 import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -30,8 +31,23 @@ router.get("/stats", async (req, res) => {
     ]);
     const salesOrderValue = salesResult[0]?.total ?? 0;
 
-    // Logistics expense: placeholder until a Logistics model exists
-    const logisticsExpense = 0;
+    // Logistics expense: sum of all shipment costs (freight + insurance + duty + other)
+    const logisticsResult = await Shipment.aggregate([
+      {
+        $project: {
+          total: {
+            $add: [
+              { $ifNull: ["$freightCost", 0] },
+              { $ifNull: ["$insuranceCost", 0] },
+              { $ifNull: ["$dutyCost", 0] },
+              { $ifNull: ["$otherCharges", 0] },
+            ],
+          },
+        },
+      },
+      { $group: { _id: null, total: { $sum: "$total" } } },
+    ]);
+    const logisticsExpense = logisticsResult[0]?.total ?? 0;
 
     const totalProfit = Number(salesOrderValue) - Number(purchaseExpense) - Number(logisticsExpense);
 
@@ -65,11 +81,38 @@ router.get("/stats", async (req, res) => {
       },
     ]);
 
+    const logisticsByMonth = await Shipment.aggregate([
+      { $match: { createdAt: { $gte: sixMonthsAgo } } },
+      {
+        $project: {
+          year: { $year: "$createdAt" },
+          month: { $month: "$createdAt" },
+          total: {
+            $add: [
+              { $ifNull: ["$freightCost", 0] },
+              { $ifNull: ["$insuranceCost", 0] },
+              { $ifNull: ["$dutyCost", 0] },
+              { $ifNull: ["$otherCharges", 0] },
+            ],
+          },
+        },
+      },
+      {
+        $group: {
+          _id: { year: "$year", month: "$month" },
+          total: { $sum: "$total" },
+        },
+      },
+    ]);
+
     const purchaseMap = new Map(
       purchaseByMonth.map((r) => [`${r._id.year}-${r._id.month}`, r.total])
     );
     const salesMap = new Map(
       salesByMonth.map((r) => [`${r._id.year}-${r._id.month}`, r.total])
+    );
+    const logisticsMap = new Map(
+      logisticsByMonth.map((r) => [`${r._id.year}-${r._id.month}`, r.total])
     );
 
     const byMonth = [];
@@ -80,14 +123,15 @@ router.get("/stats", async (req, res) => {
       const key = `${year}-${month}`;
       const purchase = purchaseMap.get(key) ?? 0;
       const sales = salesMap.get(key) ?? 0;
+      const logistics = logisticsMap.get(key) ?? 0;
       byMonth.push({
         year,
         month,
         monthLabel: `${MONTH_NAMES[d.getMonth()]} ${year}`,
         purchase,
         sales,
-        logistics: 0,
-        profit: sales - purchase,
+        logistics,
+        profit: sales - purchase - logistics,
       });
     }
 
