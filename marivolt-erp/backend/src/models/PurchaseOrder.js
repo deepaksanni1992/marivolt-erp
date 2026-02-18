@@ -35,6 +35,8 @@ const purchaseOrderSchema = new mongoose.Schema(
     items: [poItemSchema],
     subTotal: { type: Number, default: 0 },
     grandTotal: { type: Number, default: 0 },
+    paidAmount: { type: Number, default: 0 },
+    paidDate: { type: Date },
 
     delivery: { type: String, default: "" },
     insurance: { type: String, default: "" },

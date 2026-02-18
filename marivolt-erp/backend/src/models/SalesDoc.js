@@ -51,6 +51,8 @@ const salesDocSchema = new mongoose.Schema(
     items: [salesItemSchema],
     subTotal: { type: Number, default: 0 },
     grandTotal: { type: Number, default: 0 },
+    paidAmount: { type: Number, default: 0 },
+    paidDate: { type: Date },
     notes: { type: String, default: "" },
 
     packing: {
