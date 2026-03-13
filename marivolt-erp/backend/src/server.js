@@ -19,6 +19,13 @@ import priceListRoutes from "./routes/priceListRoutes.js";
 import logisticsRoutes from "./routes/logisticsRoutes.js";
 import accountsRoutes from "./routes/accountsRoutes.js";
 import auditRoutes from "./routes/auditRoutes.js";
+import spnRoutes from "./routes/spnRoutes.js";
+import materialRoutes from "./routes/materialRoutes.js";
+import materialCompatibilityRoutes from "./routes/materialCompatibilityRoutes.js";
+import articleRoutes from "./routes/articleRoutes.js";
+import materialSupplierRoutes from "./routes/materialSupplierRoutes.js";
+import importRoutes from "./routes/importRoutes.js";
+import resolveMaterialRoutes from "./routes/resolveMaterialRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,11 +54,8 @@ async function startServer() {
     // ---- APP ----
     const app = express();
 
-    // ---- CORS (global fallback for dev) ----
+    // ---- Basic CORS preflight handling (methods/headers) ----
     app.use((req, res, next) => {
-      const origin = req.headers.origin || "*";
-      res.header("Access-Control-Allow-Origin", origin);
-      res.header("Vary", "Origin");
       res.header(
         "Access-Control-Allow-Methods",
         "GET,POST,PUT,PATCH,DELETE,OPTIONS"
@@ -60,7 +64,7 @@ async function startServer() {
         "Access-Control-Allow-Headers",
         "Content-Type, Authorization"
       );
-      res.header("Access-Control-Allow-Credentials", "true");
+      res.header("Vary", "Origin");
       if (req.method === "OPTIONS") return res.sendStatus(204);
       next();
     });
@@ -77,11 +81,13 @@ async function startServer() {
       app.options(/.*/, cors());
     } else {
       const allowedExactOrigins = [
+        // Local dev frontends (sometimes you call production API from local UI)
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
-        "https://marivolt-erp.vercel.app",
+        // Primary frontend URL from env (e.g. Vercel domain)
+        ...(process.env.CLIENT_URL ? [process.env.CLIENT_URL] : []),
       ];
 
       function isAllowedOrigin(origin) {
@@ -128,6 +134,13 @@ async function startServer() {
     app.use("/api/logistics", logisticsRoutes);
     app.use("/api/accounts", accountsRoutes);
     app.use("/api/audit", auditRoutes);
+    app.use("/api/spn", spnRoutes);
+    app.use("/api/materials", materialRoutes);
+    app.use("/api/material-compat", materialCompatibilityRoutes);
+    app.use("/api/articles", articleRoutes);
+    app.use("/api/material-suppliers", materialSupplierRoutes);
+    app.use("/api/import", importRoutes);
+    app.use("/api/resolve-material", resolveMaterialRoutes);
 
     // ---- HEALTH ----
     app.get("/api/health", (req, res) => {

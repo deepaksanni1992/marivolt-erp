@@ -1,5 +1,14 @@
 const rawBase =
-  import.meta.env.VITE_API_BASE || "https://marivolt-erp.onrender.com";
+  import.meta.env.VITE_API_BASE_URL ||
+  import.meta.env.VITE_API_BASE ||
+  "";
+
+if (!rawBase) {
+  throw new Error(
+    "VITE_API_BASE_URL or VITE_API_BASE is not configured in environment"
+  );
+}
+
 export const API_BASE = rawBase.endsWith("/api")
   ? rawBase
   : `${rawBase.replace(/\/$/, "")}/api`;
