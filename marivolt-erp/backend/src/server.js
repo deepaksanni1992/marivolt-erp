@@ -54,21 +54,6 @@ async function startServer() {
     // ---- APP ----
     const app = express();
 
-    // ---- Basic CORS preflight handling (methods/headers) ----
-    app.use((req, res, next) => {
-      res.header(
-        "Access-Control-Allow-Methods",
-        "GET,POST,PUT,PATCH,DELETE,OPTIONS"
-      );
-      res.header(
-        "Access-Control-Allow-Headers",
-        "Content-Type, Authorization"
-      );
-      res.header("Vary", "Origin");
-      if (req.method === "OPTIONS") return res.sendStatus(204);
-      next();
-    });
-
     // ---- CORS ----
     if (process.env.NODE_ENV !== "production") {
       // Dev: allow any localhost origin and tools like Postman
