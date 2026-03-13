@@ -1,6 +1,7 @@
 import express from "express";
 import Customer from "../models/Customer.js";
 import SalesDoc from "../models/SalesDoc.js";
+import Material from "../models/Material.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -92,6 +93,56 @@ router.post("/quotation", async (req, res) => {
     if (!items.length) {
       return res.status(400).json({ message: "At least one item is required" });
     }
+
+    // Validate Material Master mapping where materialCode/SPN are provided.
+    const requestedMaterialCodes = Array.from(
+      new Set(
+        items
+          .map((it) => String(it.materialCode || "").trim())
+          .filter(Boolean)
+      )
+    );
+
+    if (requestedMaterialCodes.length) {
+      const materials = await Material.find({
+        materialCode: { $in: requestedMaterialCodes },
+      }).lean();
+      const existingByCode = new Map(
+        materials.map((m) => [m.materialCode, m])
+      );
+
+      const missingCodes = requestedMaterialCodes.filter(
+        (code) => !existingByCode.has(code)
+      );
+      if (missingCodes.length) {
+        return res.status(400).json({
+          message: `Material code(s) not found in Material Master: ${missingCodes.join(
+            ", "
+          )}`,
+        });
+      }
+
+      // Where SPN is also sent, ensure it matches Material Master SPN.
+      const mismatched = [];
+      for (const it of items) {
+        const code = String(it.materialCode || "").trim();
+        if (!code) continue;
+        const spn = String(it.spn || "").trim();
+        if (!spn) continue;
+        const mat = existingByCode.get(code);
+        if (mat && String(mat.spn || "").trim() !== spn) {
+          mismatched.push(`${code}↔${spn}`);
+        }
+      }
+      if (mismatched.length) {
+        return res.status(400).json({
+          message:
+            "SPN / Material Code mismatch with Material Master for: " +
+            mismatched.join(", "),
+        });
+      }
+    }
+
     const normalized = normalizeItems(items);
     const totals = calcTotals(normalized);
     const status =

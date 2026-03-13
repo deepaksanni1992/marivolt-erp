@@ -2,6 +2,7 @@ import express from "express";
 import PurchaseOrder from "../models/PurchaseOrder.js";
 import GRN from "../models/GRN.js";
 import StockTxn from "../models/StockTxn.js";
+import Material from "../models/Material.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { logAudit } from "../utils/auditLogger.js";
 
@@ -19,6 +20,57 @@ router.post("/po", async (req, res) => {
     }
     if (!Array.isArray(body.items) || body.items.length === 0) {
       return res.status(400).json({ message: "At least one item is required" });
+    }
+
+    const items = Array.isArray(body.items) ? body.items : [];
+
+    // Validate Material Master mapping where materialCode/SPN are provided.
+    const requestedMaterialCodes = Array.from(
+      new Set(
+        items
+          .map((it) => String(it.materialCode || "").trim())
+          .filter(Boolean)
+      )
+    );
+
+    if (requestedMaterialCodes.length) {
+      const materials = await Material.find({
+        materialCode: { $in: requestedMaterialCodes },
+      }).lean();
+      const existingByCode = new Map(
+        materials.map((m) => [m.materialCode, m])
+      );
+
+      const missingCodes = requestedMaterialCodes.filter(
+        (code) => !existingByCode.has(code)
+      );
+      if (missingCodes.length) {
+        return res.status(400).json({
+          message: `Material code(s) not found in Material Master: ${missingCodes.join(
+            ", "
+          )}`,
+        });
+      }
+
+      // Where SPN is also sent, ensure it matches Material Master SPN.
+      const mismatched = [];
+      for (const it of items) {
+        const code = String(it.materialCode || "").trim();
+        if (!code) continue;
+        const spn = String(it.spn || "").trim();
+        if (!spn) continue;
+        const mat = existingByCode.get(code);
+        if (mat && String(mat.spn || "").trim() !== spn) {
+          mismatched.push(`${code}↔${spn}`);
+        }
+      }
+      if (mismatched.length) {
+        return res.status(400).json({
+          message:
+            "SPN / Material Code mismatch with Material Master for: " +
+            mismatched.join(", "),
+        });
+      }
     }
 
     let intRef = body.intRef && String(body.intRef).trim();
@@ -45,8 +97,10 @@ router.post("/po", async (req, res) => {
 
     const po = await PurchaseOrder.create({
       ...body,
-      items: (body.items || []).map((item) => ({
+      items: items.map((item) => ({
         ...item,
+        materialCode: String(item.materialCode || "").trim(),
+        spn: String(item.spn || "").trim(),
         receivedQty: Number(item.receivedQty) || 0,
       })),
       poNo,
@@ -103,12 +157,62 @@ router.put("/po/:id", async (req, res) => {
       return res.status(400).json({ message: "At least one item is required" });
     }
 
+    const items = Array.isArray(body.items) ? body.items : [];
+
+    // Validate Material Master mapping where materialCode/SPN are provided.
+    const requestedMaterialCodes = Array.from(
+      new Set(
+        items
+          .map((it) => String(it.materialCode || "").trim())
+          .filter(Boolean)
+      )
+    );
+
+    if (requestedMaterialCodes.length) {
+      const materials = await Material.find({
+        materialCode: { $in: requestedMaterialCodes },
+      }).lean();
+      const existingByCode = new Map(
+        materials.map((m) => [m.materialCode, m])
+      );
+
+      const missingCodes = requestedMaterialCodes.filter(
+        (code) => !existingByCode.has(code)
+      );
+      if (missingCodes.length) {
+        return res.status(400).json({
+          message: `Material code(s) not found in Material Master: ${missingCodes.join(
+            ", "
+          )}`,
+        });
+      }
+
+      const mismatched = [];
+      for (const it of items) {
+        const code = String(it.materialCode || "").trim();
+        if (!code) continue;
+        const spn = String(it.spn || "").trim();
+        if (!spn) continue;
+        const mat = existingByCode.get(code);
+        if (mat && String(mat.spn || "").trim() !== spn) {
+          mismatched.push(`${code}↔${spn}`);
+        }
+      }
+      if (mismatched.length) {
+        return res.status(400).json({
+          message:
+            "SPN / Material Code mismatch with Material Master for: " +
+            mismatched.join(", "),
+        });
+      }
+    }
+
     const existing = await PurchaseOrder.findById(id);
     if (!existing) {
       return res.status(404).json({ message: "Purchase order not found" });
     }
 
-    const incomingItems = Array.isArray(body.items) ? body.items : [];
+    const incomingItems = items;
     const incomingByArticle = new Map(
       incomingItems.map((it) => [String(it.articleNo || "").trim(), it])
     );

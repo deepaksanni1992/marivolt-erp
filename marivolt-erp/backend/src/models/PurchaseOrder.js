@@ -2,7 +2,12 @@ import mongoose from "mongoose";
 
 const poItemSchema = new mongoose.Schema(
   {
+    // Legacy SKU field (from old Item master / inventory)
     sku: { type: String, default: "" },
+    // New normalized Item Master linkage (internal identifiers)
+    materialCode: { type: String, default: "", trim: true },
+    spn: { type: String, default: "", trim: true },
+    // Commercial / supplier-facing identifiers
     articleNo: { type: String, default: "" },
     description: { type: String, default: "" },
     partNo: { type: String, default: "" },

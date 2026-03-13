@@ -209,6 +209,8 @@ export default function Purchase() {
   });
   const [poItems, setPoItems] = useState([
     {
+      materialCode: "",
+      spn: "",
       articleNo: "",
       description: "",
       partNo: "",
@@ -335,6 +337,8 @@ export default function Purchase() {
     setPoItems((prev) => [
       ...prev,
       {
+        materialCode: "",
+        spn: "",
         articleNo: "",
         description: "",
         partNo: "",
@@ -428,6 +432,8 @@ export default function Purchase() {
     });
     setPoItems(
       (po.items || []).map((row) => ({
+        materialCode: row.materialCode || "",
+        spn: row.spn || "",
         articleNo: row.articleNo || "",
         description: row.description || "",
         partNo: row.partNo || "",
@@ -492,6 +498,8 @@ export default function Purchase() {
       const unitRate = Number(row.unitRate) || 0;
       return {
         sku: "",
+        materialCode: row.materialCode || "",
+        spn: row.spn || "",
         articleNo: row.articleNo || "",
         description: row.description || "",
         partNo: row.partNo || "",
@@ -955,6 +963,8 @@ export default function Purchase() {
     const rows = [
       [
         "Pos",
+        "Material Code",
+        "SPN",
         "Article Nr",
         "Description",
         "Part Nr",
@@ -969,6 +979,8 @@ export default function Purchase() {
         const rate = Number(row.unitRate) || 0;
         return [
           String(idx + 1),
+          row.materialCode || "",
+          row.spn || "",
           row.articleNo || "",
           row.description || "",
           row.partNo || "",
@@ -1018,6 +1030,9 @@ export default function Purchase() {
       });
 
       const itemsFromExcel = normalized.map((row) => {
+        const materialCode =
+          row.materialcode || row.material || row.matcode || "";
+        const spn = row.spn || row.supplierpartno || "";
         const articleNo =
           row.articlenr || row.article || row.articleno || row.articlenumber || "";
         const description =
@@ -1026,10 +1041,13 @@ export default function Purchase() {
           row.partnr || row.partno || row.part || row.partnumber || "";
         const qty = row.qty || row.quantity || row.q || 0;
         const uom = row.uom || row.unit || row.units || "PCS";
-        const unitRate = row.unitrate || row.rate || row.price || row.unitprice || 0;
+        const unitRate =
+          row.unitrate || row.rate || row.price || row.unitprice || 0;
         const remark = row.remark || row.remarks || row.note || "";
 
-      return {
+        return {
+          materialCode: String(materialCode || "").trim(),
+          spn: String(spn || "").trim(),
           articleNo: String(articleNo || "").trim(),
           description: String(description || "").trim(),
           partNo: String(partNo || "").trim(),
@@ -1043,6 +1061,8 @@ export default function Purchase() {
 
       const filtered = itemsFromExcel.filter(
         (row) =>
+          row.materialCode ||
+          row.spn ||
           row.articleNo ||
           row.description ||
           row.partNo ||
@@ -1796,6 +1816,8 @@ export default function Purchase() {
                 <table className="w-full text-left text-xs">
                   <thead className="border-b text-gray-600">
                     <tr>
+                      <th className="py-2 pr-3">Material Code</th>
+                      <th className="py-2 pr-3">SPN</th>
                       <th className="py-2 pr-3">Article Nr</th>
                       <th className="py-2 pr-3">Description</th>
                       <th className="py-2 pr-3">Part Nr</th>
@@ -1809,6 +1831,24 @@ export default function Purchase() {
                   <tbody>
                     {poItems.map((row, idx) => (
                       <tr key={idx} className="border-b last:border-b-0">
+                        <td className="py-2 pr-3">
+                          <input
+                            value={row.materialCode}
+                            onChange={(e) =>
+                              onPoItemChange(idx, "materialCode", e.target.value)
+                            }
+                            className="w-28 rounded-lg border px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="py-2 pr-3">
+                          <input
+                            value={row.spn}
+                            onChange={(e) =>
+                              onPoItemChange(idx, "spn", e.target.value)
+                            }
+                            className="w-24 rounded-lg border px-2 py-1 text-xs"
+                          />
+                        </td>
                         <td className="py-2 pr-3">
                           <input
                             value={row.articleNo}
@@ -2000,6 +2040,8 @@ export default function Purchase() {
                   <thead className="border-b border-gray-300 text-gray-700">
                     <tr className="bg-gray-100">
                       <th className="py-2 pr-3">Pos</th>
+                      <th className="py-2 pr-3">Material Code</th>
+                      <th className="py-2 pr-3">SPN</th>
                       <th className="py-2 pr-3">Article Nr</th>
                       <th className="py-2 pr-3">Description</th>
                       <th className="py-2 pr-3">Part Nr</th>
@@ -2013,7 +2055,7 @@ export default function Purchase() {
                   <tbody>
                     {poItems.length === 0 ? (
                       <tr>
-                        <td className="py-3 text-gray-500" colSpan={9}>
+                        <td className="py-3 text-gray-500" colSpan={11}>
                           No items.
                         </td>
                       </tr>
@@ -2027,8 +2069,16 @@ export default function Purchase() {
                             className="border-b border-gray-200 last:border-b-0"
                           >
                             <td className="py-2 pr-3">{idx + 1}</td>
-                            <td className="py-2 pr-3">{row.articleNo || "-"}</td>
-                            <td className="py-2 pr-3">{row.description || "-"}</td>
+                            <td className="py-2 pr-3">
+                              {row.materialCode || "-"}
+                            </td>
+                            <td className="py-2 pr-3">{row.spn || "-"}</td>
+                            <td className="py-2 pr-3">
+                              {row.articleNo || "-"}
+                            </td>
+                            <td className="py-2 pr-3">
+                              {row.description || "-"}
+                            </td>
                             <td className="py-2 pr-3">{row.partNo || "-"}</td>
                             <td className="py-2 pr-3">{qty || 0}</td>
                             <td className="py-2 pr-3">{row.uom || "-"}</td>
