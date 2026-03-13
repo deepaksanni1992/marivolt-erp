@@ -3,6 +3,7 @@ import PurchaseOrder from "../models/PurchaseOrder.js";
 import GRN from "../models/GRN.js";
 import StockTxn from "../models/StockTxn.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { logAudit } from "../utils/auditLogger.js";
 
 const router = express.Router();
 router.use(requireAuth);
@@ -52,6 +53,21 @@ router.post("/po", async (req, res) => {
       intRef,
       supplierName: String(body.supplierName).trim(),
     });
+    await logAudit({
+      req,
+      action: "CREATE",
+      entityType: "PURCHASE_ORDER",
+      entityId: po._id,
+      description: `Created PO ${po.poNo} for ${po.supplierName}`,
+      beforeData: null,
+      afterData: {
+        poNo: po.poNo,
+        supplierName: po.supplierName,
+        status: po.status,
+        totalItems: po.items?.length || 0,
+      },
+    });
+
     res.json(po);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -153,6 +169,24 @@ router.put("/po/:id", async (req, res) => {
       },
       { new: true }
     );
+    await logAudit({
+      req,
+      action: "UPDATE",
+      entityType: "PURCHASE_ORDER",
+      entityId: updated._id,
+      description: `Revised PO ${updated.poNo} for ${updated.supplierName}`,
+      beforeData: {
+        poNo: existing.poNo,
+        supplierName: existing.supplierName,
+        status: existing.status,
+      },
+      afterData: {
+        poNo: updated.poNo,
+        supplierName: updated.supplierName,
+        status: updated.status,
+      },
+    });
+
     res.json(updated);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -173,6 +207,21 @@ router.delete("/po/:id", async (req, res) => {
         .json({ message: "Only DRAFT or SAVED purchase orders can be deleted" });
     }
     await PurchaseOrder.deleteOne({ _id: id });
+
+    await logAudit({
+      req,
+      action: "DELETE",
+      entityType: "PURCHASE_ORDER",
+      entityId: po._id,
+      description: `Deleted PO ${po.poNo} (${po.status})`,
+      beforeData: {
+        poNo: po.poNo,
+        supplierName: po.supplierName,
+        status: po.status,
+      },
+      afterData: null,
+    });
+
     res.json({ ok: true });
   } catch (err) {
     res.status(400).json({ message: err.message });

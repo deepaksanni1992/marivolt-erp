@@ -5,6 +5,7 @@ import StockTxn from "../models/StockTxn.js";
 import PurchaseOrder from "../models/PurchaseOrder.js";
 import SalesDoc from "../models/SalesDoc.js";
 import GRN from "../models/GRN.js";
+import { logAudit } from "../utils/auditLogger.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -63,6 +64,22 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
     const article = String(body.article ?? "").trim();
     if (article && !String(body.sku ?? "").trim()) body.sku = article;
     const item = await Item.create(body);
+
+    await logAudit({
+      req,
+      action: "CREATE",
+      entityType: "ITEM",
+      entityId: item._id,
+      description: `Created Item ${item.sku || item.article || item._id}`,
+      beforeData: null,
+      afterData: {
+        sku: item.sku,
+        name: item.name,
+        article: item.article,
+        category: item.category,
+      },
+    });
+
     return res.status(201).json(item);
   } catch (err) {
     return res.status(400).json({ message: err.message });
@@ -172,6 +189,11 @@ router.get("/", requireAuth, async (req, res) => {
  */
 router.put("/:id", requireAuth, requireRole("admin"), async (req, res) => {
   try {
+    const existing = await Item.findById(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ message: "Item not found" });
+    }
+
     const updatedItem = await Item.findByIdAndUpdate(
       req.params.id,
       req.body,
@@ -181,6 +203,26 @@ router.put("/:id", requireAuth, requireRole("admin"), async (req, res) => {
     if (!updatedItem) {
       return res.status(404).json({ message: "Item not found" });
     }
+
+    await logAudit({
+      req,
+      action: "UPDATE",
+      entityType: "ITEM",
+      entityId: updatedItem._id,
+      description: `Updated Item ${updatedItem.sku || updatedItem.article || updatedItem._id}`,
+      beforeData: {
+        sku: existing.sku,
+        name: existing.name,
+        article: existing.article,
+        category: existing.category,
+      },
+      afterData: {
+        sku: updatedItem.sku,
+        name: updatedItem.name,
+        article: updatedItem.article,
+        category: updatedItem.category,
+      },
+    });
 
     return res.json(updatedItem);
   } catch (err) {
@@ -207,6 +249,22 @@ router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
     }
 
     await Item.findByIdAndDelete(req.params.id);
+
+    await logAudit({
+      req,
+      action: "DELETE",
+      entityType: "ITEM",
+      entityId: item._id,
+      description: `Deleted Item ${item.sku || item.article || item._id}`,
+      beforeData: {
+        sku: item.sku,
+        name: item.name,
+        article: item.article,
+        category: item.category,
+      },
+      afterData: null,
+    });
+
     return res.json({ success: true });
   } catch (err) {
     return res.status(400).json({ message: err.message });
