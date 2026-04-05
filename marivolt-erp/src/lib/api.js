@@ -1,11 +1,28 @@
-const rawBase =
-  import.meta.env.VITE_API_BASE_URL ||
-  import.meta.env.VITE_API_BASE ||
-  "";
+function resolveApiBase() {
+  const fromEnv = (
+    import.meta.env.VITE_API_BASE_URL ||
+    import.meta.env.VITE_API_BASE ||
+    ""
+  ).trim();
+  if (fromEnv) return fromEnv;
+
+  // Local dev: avoid a blank app if .env was not copied; backend default is port 5000.
+  if (import.meta.env.DEV) {
+    console.warn(
+      "[api] VITE_API_BASE_URL / VITE_API_BASE not set — using http://localhost:5000. Add them to .env for a different API URL."
+    );
+    return "http://localhost:5000";
+  }
+
+  return "";
+}
+
+const rawBase = resolveApiBase();
 
 if (!rawBase) {
   throw new Error(
-    "VITE_API_BASE_URL or VITE_API_BASE is not configured in environment"
+    "VITE_API_BASE_URL or VITE_API_BASE is not configured. " +
+      "On Vercel, add Environment Variable VITE_API_BASE_URL = your backend origin (no /api suffix), e.g. https://your-api.onrender.com — then redeploy."
   );
 }
 

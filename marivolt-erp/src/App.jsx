@@ -5,13 +5,6 @@ import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import Login from "./pages/Login.jsx";
 
 import Dashboard from "./pages/Dashboard.jsx";
-import ItemMaster from "./pages/ItemMaster.jsx";
-import SPNMaster from "./pages/SPNMaster.jsx";
-import MaterialMaster from "./pages/MaterialMaster.jsx";
-import MaterialCompatibilityPage from "./pages/MaterialCompatibility.jsx";
-import ArticleMaster from "./pages/ArticleMaster.jsx";
-import SupplierMappingPage from "./pages/SupplierMapping.jsx";
-import ResolveMaterialPage from "./pages/ResolveMaterial.jsx";
 import Sales from "./pages/Sales.jsx";
 import Purchase from "./pages/Purchase.jsx";
 import Inventory from "./pages/Inventory.jsx";
@@ -33,59 +26,31 @@ export default function App() {
           <Route path="dashboard" element={<Dashboard />} />
           <Route
             path="spn-master"
-            element={
-              <RequireRole allow={["admin", "staff"]}>
-                <SPNMaster />
-              </RequireRole>
-            }
+            element={<Navigate to="/dashboard" replace />}
           />
           <Route
             path="material-master"
-            element={
-              <RequireRole allow={["admin", "staff"]}>
-                <MaterialMaster />
-              </RequireRole>
-            }
+            element={<Navigate to="/dashboard" replace />}
           />
           <Route
             path="items"
-            element={
-              <RequireRole allow={["admin", "staff"]}>
-                <ItemMaster />
-              </RequireRole>
-            }
+            element={<Navigate to="/dashboard" replace />}
           />
           <Route
             path="material-compat"
-            element={
-              <RequireRole allow={["admin", "staff"]}>
-                <MaterialCompatibilityPage />
-              </RequireRole>
-            }
+            element={<Navigate to="/dashboard" replace />}
           />
           <Route
             path="article-master"
-            element={
-              <RequireRole allow={["admin", "staff"]}>
-                <ArticleMaster />
-              </RequireRole>
-            }
+            element={<Navigate to="/dashboard" replace />}
           />
           <Route
             path="supplier-mapping"
-            element={
-              <RequireRole allow={["admin", "staff", "purchase_sales"]}>
-                <SupplierMappingPage />
-              </RequireRole>
-            }
+            element={<Navigate to="/dashboard" replace />}
           />
           <Route
             path="resolve-material"
-            element={
-              <RequireRole allow={["admin", "staff", "purchase_sales"]}>
-                <ResolveMaterialPage />
-              </RequireRole>
-            }
+            element={<Navigate to="/dashboard" replace />}
           />
           <Route
             path="sales"

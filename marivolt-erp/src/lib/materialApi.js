@@ -105,9 +105,3 @@ export function importArticles(rows) {
 export function importMaterialSuppliers(rows) {
   return apiPost("/import/material-suppliers", { rows });
 }
-
-// Resolve Material
-export function resolveMaterial(payload) {
-  return apiPost("/resolve-material", payload);
-}
-

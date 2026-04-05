@@ -16,18 +16,11 @@ export default function Sidebar({ open, onClose }) {
 
   const navItems = [
     { name: "Dashboard", to: "/dashboard", roles: ["admin", "staff", "purchase_sales", "accounts_logistics"] },
-    { name: "SPN Master", to: "/spn-master", roles: ["admin", "staff"] },
-    { name: "Material Master", to: "/material-master", roles: ["admin", "staff"] },
-    { name: "Material Compatibility", to: "/material-compat", roles: ["admin", "staff"] },
-    { name: "Article Master", to: "/article-master", roles: ["admin", "staff"] },
-    { name: "Supplier Mapping", to: "/supplier-mapping", roles: ["admin", "staff", "purchase_sales"] },
     { name: "Sales", to: "/sales", roles: ["admin", "staff", "purchase_sales"] },
     { name: "Purchase", to: "/purchase", roles: ["admin", "staff", "purchase_sales"] },
     { name: "Inventory", to: "/inventory", roles: ["admin", "staff"] },
     { name: "Store", to: "/store", roles: ["admin", "staff"] },
     { name: "Logistics (Import/Export)", to: "/logistics", roles: ["admin", "staff", "accounts_logistics"] },
-    { name: "Item Master", to: "/items", roles: ["admin", "staff"] },
-    { name: "Resolve Material", to: "/resolve-material", roles: ["admin", "staff", "purchase_sales"] },
     { name: "Accounts", to: "/accounts", roles: ["admin", "staff", "accounts_logistics"] },
   ];
 
