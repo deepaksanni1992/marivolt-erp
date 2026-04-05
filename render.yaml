@@ -1,0 +1,16 @@
+# Render Blueprint — API only (Node). Link repo in Render dashboard → New Blueprint Instance.
+# Frontend is deployed separately on Vercel (see marivolt-erp/DEPLOY.md).
+
+services:
+  - type: web
+    name: marivolt-api
+    runtime: node
+    region: oregon
+    plan: free
+    rootDir: marivolt-erp/backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
