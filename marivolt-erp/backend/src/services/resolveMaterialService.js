@@ -2,15 +2,18 @@ import Material from "../models/Material.js";
 import MaterialCompatibility from "../models/MaterialCompatibility.js";
 import Article from "../models/Article.js";
 import MaterialSupplier from "../models/MaterialSupplier.js";
+import { resolveBrandNameForVertical } from "../utils/brandMaterialVertical.js";
 
 /**
- * Resolve material(s) for given SPN + engine combination.
+ * Resolve material(s) for given SPN + brand + engine combination.
  *
- * @param {{ spn: string, engineMake: string, engineModel: string, configuration: string, cylinderCount: string, esn?: number|null }} params
+ * @param {{ spn: string, brand?: string, engineMake?: string, engineModel: string, configuration: string, cylinderCount: string, esn?: number|null }} params
+ * engineMake is accepted as a legacy alias for brand.
  */
 export async function resolveMaterial(params) {
   const {
     spn,
+    brand,
     engineMake,
     engineModel,
     configuration,
@@ -23,7 +26,12 @@ export async function resolveMaterial(params) {
     throw new Error("SPN is required");
   }
 
-  // 1. Find materials linked to SPN
+  const brandSource = brand ?? engineMake;
+  const brandTrimmed = String(brandSource || "").trim();
+  if (!brandTrimmed) {
+    throw new Error("Brand is required");
+  }
+
   const materials = await Material.find({
     spn: spnTrimmed,
     status: "Active",
@@ -33,12 +41,19 @@ export async function resolveMaterial(params) {
     return [];
   }
 
+  const verticalId = materials[0].vertical;
+  let canonicalBrand;
+  try {
+    canonicalBrand = await resolveBrandNameForVertical(verticalId, brandTrimmed);
+  } catch (e) {
+    throw new Error(e.message);
+  }
+
   const materialCodes = materials.map((m) => m.materialCode);
 
-  // 2. Find compatibility rows matching engine info
   const compatQuery = {
     materialCode: { $in: materialCodes },
-    engineMake: String(engineMake || "").trim(),
+    brand: canonicalBrand,
     engineModel: String(engineModel || "").trim(),
     configuration: String(configuration || "").trim(),
     cylinderCount: String(cylinderCount || "").trim(),
@@ -58,14 +73,12 @@ export async function resolveMaterial(params) {
 
   const filteredCompat = compatRows.filter((row) => {
     if (numericEsn === null || Number.isNaN(numericEsn)) {
-      // No ESN constraint when lookup has no ESN
       return true;
     }
 
     const from = row.esnFrom ?? null;
     const to = row.esnTo ?? null;
 
-    // If both bounds missing, treat as generally applicable
     if (from === null && to === null) return true;
 
     if (from !== null && numericEsn < from) return false;
@@ -81,7 +94,6 @@ export async function resolveMaterial(params) {
     ...new Set(filteredCompat.map((r) => r.materialCode)),
   ];
 
-  // 3. Fetch articles and suppliers
   const [articles, suppliers] = await Promise.all([
     Article.find({
       materialCode: { $in: matchedMaterialCodes },
@@ -136,7 +148,7 @@ export async function resolveMaterial(params) {
         supplierArticleNo: s.supplierArticleNo,
         supplierDescription: s.supplierDescription,
         currency: s.currency,
-        purchasePrice: s.purchasePrice,
+        price: s.price ?? s.purchasePrice,
         leadTimeDays: s.leadTimeDays,
         moq: s.moq,
         supplierCountry: s.supplierCountry,
@@ -147,4 +159,3 @@ export async function resolveMaterial(params) {
     };
   });
 }
-

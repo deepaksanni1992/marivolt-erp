@@ -8,7 +8,7 @@ const materialCompatibilitySchema = new mongoose.Schema(
       trim: true,
       index: true,
     },
-    engineMake: {
+    brand: {
       type: String,
       required: true,
       trim: true,
@@ -34,7 +34,7 @@ const materialCompatibilitySchema = new mongoose.Schema(
     },
     esnFrom: { type: Number, default: null },
     esnTo: { type: Number, default: null },
-    applicabilityRemarks: { type: String, default: "", trim: true },
+    remarks: { type: String, default: "", trim: true },
     status: {
       type: String,
       enum: ["Active", "Inactive"],
@@ -44,11 +44,10 @@ const materialCompatibilitySchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Prevent exact duplicate rules
 materialCompatibilitySchema.index(
   {
     materialCode: 1,
-    engineMake: 1,
+    brand: 1,
     engineModel: 1,
     configuration: 1,
     cylinderCount: 1,
@@ -65,4 +64,3 @@ export default mongoose.model(
   "MaterialCompatibility",
   materialCompatibilitySchema
 );
-

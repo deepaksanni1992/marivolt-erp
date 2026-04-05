@@ -13,6 +13,18 @@ import Accounts from "./pages/Accounts.jsx";
 import Logistics from "./pages/Logistics.jsx";
 import RequireRole from "./components/RequireRole";
 
+import VerticalMaster from "./pages/masters/VerticalMaster.jsx";
+import BrandMaster from "./pages/masters/BrandMaster.jsx";
+import SpnMaster from "./pages/masters/SpnMaster.jsx";
+import MaterialMaster from "./pages/masters/MaterialMaster.jsx";
+import MaterialCompatMaster from "./pages/masters/MaterialCompatMaster.jsx";
+import ArticleMaster from "./pages/masters/ArticleMaster.jsx";
+import SupplierMappingMaster from "./pages/masters/SupplierMappingMaster.jsx";
+import ResolveMaterial from "./pages/masters/ResolveMaterial.jsx";
+
+const masterRole = ["admin"];
+const resolveRole = ["admin", "staff", "purchase_sales"];
+
 export default function App() {
   return (
     <Routes>
@@ -24,32 +36,74 @@ export default function App() {
         <Route path="/" element={<AppLayout />}>
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
+
+          <Route
+            path="vertical-master"
+            element={
+              <RequireRole allow={masterRole}>
+                <VerticalMaster />
+              </RequireRole>
+            }
+          />
+          <Route
+            path="brand-master"
+            element={
+              <RequireRole allow={masterRole}>
+                <BrandMaster />
+              </RequireRole>
+            }
+          />
           <Route
             path="spn-master"
-            element={<Navigate to="/dashboard" replace />}
+            element={
+              <RequireRole allow={masterRole}>
+                <SpnMaster />
+              </RequireRole>
+            }
           />
           <Route
             path="material-master"
-            element={<Navigate to="/dashboard" replace />}
-          />
-          <Route
-            path="items"
-            element={<Navigate to="/dashboard" replace />}
+            element={
+              <RequireRole allow={masterRole}>
+                <MaterialMaster />
+              </RequireRole>
+            }
           />
           <Route
             path="material-compat"
-            element={<Navigate to="/dashboard" replace />}
+            element={
+              <RequireRole allow={masterRole}>
+                <MaterialCompatMaster />
+              </RequireRole>
+            }
           />
           <Route
             path="article-master"
-            element={<Navigate to="/dashboard" replace />}
+            element={
+              <RequireRole allow={masterRole}>
+                <ArticleMaster />
+              </RequireRole>
+            }
           />
           <Route
             path="supplier-mapping"
-            element={<Navigate to="/dashboard" replace />}
+            element={
+              <RequireRole allow={masterRole}>
+                <SupplierMappingMaster />
+              </RequireRole>
+            }
           />
           <Route
             path="resolve-material"
+            element={
+              <RequireRole allow={resolveRole}>
+                <ResolveMaterial />
+              </RequireRole>
+            }
+          />
+
+          <Route
+            path="items"
             element={<Navigate to="/dashboard" replace />}
           />
           <Route

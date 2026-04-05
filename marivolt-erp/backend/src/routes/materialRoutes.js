@@ -1,4 +1,5 @@
 import express from "express";
+import mongoose from "mongoose";
 import Material from "../models/Material.js";
 import SPN from "../models/SPN.js";
 import MaterialCompatibility from "../models/MaterialCompatibility.js";
@@ -25,15 +26,23 @@ router.post("/", requireRole("admin"), async (req, res) => {
         .json({ message: "Duplicate materialCode not allowed" });
     }
 
-    const spnExists = await SPN.exists({ spn: payload.spn });
-    if (!spnExists) {
+    const spnDoc = await SPN.findOne({ spn: payload.spn }).select("vertical").lean();
+    if (!spnDoc) {
       return res
         .status(400)
         .json({ message: "Invalid SPN reference in material master" });
     }
+    if (String(spnDoc.vertical) !== String(payload.vertical)) {
+      return res.status(400).json({
+        message: "Material vertical must match the selected SPN's vertical",
+      });
+    }
 
     const doc = await Material.create(payload);
-    return res.status(201).json(doc);
+    const populated = await Material.findById(doc._id)
+      .populate("vertical", "name status")
+      .lean();
+    return res.status(201).json(populated);
   } catch (err) {
     return res.status(400).json({ message: err.message });
   }
@@ -51,6 +60,7 @@ router.get("/", async (req, res) => {
     const status = String(req.query.status || "").trim();
     const spn = String(req.query.spn || "").trim();
     const itemType = String(req.query.itemType || "").trim();
+    const vertical = String(req.query.vertical || "").trim();
 
     const query = {};
 
@@ -64,9 +74,13 @@ router.get("/", async (req, res) => {
     if (status) query.status = status;
     if (spn) query.spn = spn;
     if (itemType) query.itemType = itemType;
+    if (vertical && mongoose.Types.ObjectId.isValid(vertical)) {
+      query.vertical = vertical;
+    }
 
     const [rows, total, compatCounts, supplierCounts] = await Promise.all([
       Material.find(query)
+        .populate("vertical", "name status")
         .sort({ materialCode: 1 })
         .skip((page - 1) * limit)
         .limit(limit)
@@ -107,7 +121,10 @@ router.get("/", async (req, res) => {
 // Get material by id
 router.get("/:id", async (req, res) => {
   try {
-    const material = await Material.findById(req.params.id);
+    const material = await Material.findById(req.params.id).populate(
+      "vertical",
+      "name status"
+    );
     if (!material) {
       return res.status(404).json({ message: "Material not found" });
     }
@@ -132,11 +149,16 @@ router.put("/:id", requireRole("admin"), async (req, res) => {
         .json({ message: "Duplicate materialCode not allowed" });
     }
 
-    const spnExists = await SPN.exists({ spn: payload.spn });
-    if (!spnExists) {
+    const spnDoc = await SPN.findOne({ spn: payload.spn }).select("vertical").lean();
+    if (!spnDoc) {
       return res
         .status(400)
         .json({ message: "Invalid SPN reference in material master" });
+    }
+    if (String(spnDoc.vertical) !== String(payload.vertical)) {
+      return res.status(400).json({
+        message: "Material vertical must match the selected SPN's vertical",
+      });
     }
 
     const updated = await Material.findByIdAndUpdate(
@@ -147,7 +169,10 @@ router.put("/:id", requireRole("admin"), async (req, res) => {
     if (!updated) {
       return res.status(404).json({ message: "Material not found" });
     }
-    return res.json(updated);
+    const populated = await Material.findById(updated._id)
+      .populate("vertical", "name status")
+      .lean();
+    return res.json(populated);
   } catch (err) {
     return res.status(400).json({ message: err.message });
   }

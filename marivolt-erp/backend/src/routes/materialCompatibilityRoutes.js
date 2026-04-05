@@ -3,6 +3,7 @@ import MaterialCompatibility from "../models/MaterialCompatibility.js";
 import Material from "../models/Material.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { validateCompatibilityPayload } from "../validation/itemMasterValidation.js";
+import { resolveBrandNameForMaterial } from "../utils/brandMaterialVertical.js";
 import {
   DEFAULT_PAGE_SIZE,
 } from "../constants/masterValues.js";
@@ -16,18 +17,20 @@ router.post("/", requireRole("admin"), async (req, res) => {
   try {
     const payload = validateCompatibilityPayload(req.body || {});
 
-    const materialExists = await Material.exists({
-      materialCode: payload.materialCode,
-    });
-    if (!materialExists) {
-      return res.status(400).json({
-        message:
-          "Invalid materialCode reference in compatibility mapping",
-      });
+    let canonicalBrand;
+    try {
+      canonicalBrand = await resolveBrandNameForMaterial(
+        payload.materialCode,
+        payload.brand
+      );
+    } catch (e) {
+      return res.status(400).json({ message: e.message });
     }
 
+    const toSave = { ...payload, brand: canonicalBrand };
+
     try {
-      const doc = await MaterialCompatibility.create(payload);
+      const doc = await MaterialCompatibility.create(toSave);
       return res.status(201).json(doc);
     } catch (err) {
       if (err.code === 11000) {
@@ -52,7 +55,8 @@ router.get("/", async (req, res) => {
     );
 
     const materialCode = String(req.query.materialCode || "").trim();
-    const engineMake = String(req.query.engineMake || "").trim();
+    const brand =
+      String(req.query.brand || req.query.engineMake || "").trim();
     const engineModel = String(req.query.engineModel || "").trim();
     const configuration = String(req.query.configuration || "").trim();
     const cylinderCount = String(req.query.cylinderCount || "").trim();
@@ -60,7 +64,7 @@ router.get("/", async (req, res) => {
 
     const query = {};
     if (materialCode) query.materialCode = materialCode;
-    if (engineMake) query.engineMake = engineMake;
+    if (brand) query.brand = brand;
     if (engineModel) query.engineModel = engineModel;
     if (configuration) query.configuration = configuration;
     if (cylinderCount) query.cylinderCount = cylinderCount;
@@ -70,7 +74,7 @@ router.get("/", async (req, res) => {
       MaterialCompatibility.find(query)
         .sort({
           materialCode: 1,
-          engineMake: 1,
+          brand: 1,
           engineModel: 1,
           configuration: 1,
           cylinderCount: 1,
@@ -109,20 +113,22 @@ router.put("/:id", requireRole("admin"), async (req, res) => {
   try {
     const payload = validateCompatibilityPayload(req.body || {});
 
-    const materialExists = await Material.exists({
-      materialCode: payload.materialCode,
-    });
-    if (!materialExists) {
-      return res.status(400).json({
-        message:
-          "Invalid materialCode reference in compatibility mapping",
-      });
+    let canonicalBrand;
+    try {
+      canonicalBrand = await resolveBrandNameForMaterial(
+        payload.materialCode,
+        payload.brand
+      );
+    } catch (e) {
+      return res.status(400).json({ message: e.message });
     }
+
+    const toSave = { ...payload, brand: canonicalBrand };
 
     try {
       const updated = await MaterialCompatibility.findByIdAndUpdate(
         req.params.id,
-        payload,
+        toSave,
         { new: true, runValidators: true }
       );
       if (!updated) {

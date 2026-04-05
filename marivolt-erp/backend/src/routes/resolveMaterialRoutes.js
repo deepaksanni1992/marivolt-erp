@@ -11,6 +11,7 @@ router.post("/", async (req, res) => {
   try {
     const {
       spn,
+      brand,
       engineMake,
       engineModel,
       configuration,
@@ -20,6 +21,7 @@ router.post("/", async (req, res) => {
 
     const result = await resolveMaterial({
       spn,
+      brand,
       engineMake,
       engineModel,
       configuration,

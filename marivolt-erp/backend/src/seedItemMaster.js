@@ -2,11 +2,13 @@ import mongoose from "mongoose";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
+import Vertical from "./models/Vertical.js";
 import SPN from "./models/SPN.js";
 import Material from "./models/Material.js";
 import MaterialCompatibility from "./models/MaterialCompatibility.js";
 import Article from "./models/Article.js";
 import MaterialSupplier from "./models/MaterialSupplier.js";
+import { ensureDefaultBrandsForEveryVertical } from "./utils/ensureDefaultBrands.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,12 +23,22 @@ async function seed() {
   await mongoose.connect(process.env.MONGO_URI);
 
   try {
-    // Minimal sample data for development / testing
+    const vertical = await Vertical.findOneAndUpdate(
+      { name: "Main engines" },
+      {
+        name: "Main engines",
+        status: "Active",
+      },
+      { upsert: true, new: true }
+    );
+
     const spn = await SPN.findOneAndUpdate(
       { spn: "SPN-1001" },
       {
         spn: "SPN-1001",
+        vertical: vertical._id,
         partName: "Exhaust Valve",
+        description: "Exhaust valve for Wärtsilä W32",
         genericDescription: "Exhaust valve for Wärtsilä W32",
         category: "Valve",
         subCategory: "Exhaust",
@@ -41,6 +53,7 @@ async function seed() {
       {
         materialCode: "MAT-1001",
         spn: spn.spn,
+        vertical: vertical._id,
         shortDescription: "Exhaust valve, W32 inline/Vee",
         itemType: "OEM",
         unit: "pcs",
@@ -52,29 +65,29 @@ async function seed() {
     const compatSamples = [
       {
         materialCode: material.materialCode,
-        engineMake: "Wärtsilä",
+        brand: "Wärtsilä",
         engineModel: "W32",
         configuration: "Inline",
         cylinderCount: "6L",
-        applicabilityRemarks: "Common for inline engines",
+        remarks: "Common for inline engines",
         status: "Active",
       },
       {
         materialCode: material.materialCode,
-        engineMake: "Wärtsilä",
+        brand: "Wärtsilä",
         engineModel: "W32",
         configuration: "Inline",
         cylinderCount: "7L",
-        applicabilityRemarks: "Common for inline engines",
+        remarks: "Common for inline engines",
         status: "Active",
       },
       {
         materialCode: material.materialCode,
-        engineMake: "Wärtsilä",
+        brand: "Wärtsilä",
         engineModel: "W32",
         configuration: "Vee",
         cylinderCount: "12V",
-        applicabilityRemarks: "Common for vee engines",
+        remarks: "Common for vee engines",
         status: "Active",
       },
     ];
@@ -83,7 +96,7 @@ async function seed() {
       await MaterialCompatibility.findOneAndUpdate(
         {
           materialCode: row.materialCode,
-          engineMake: row.engineMake,
+          brand: row.brand,
           engineModel: row.engineModel,
           configuration: row.configuration,
           cylinderCount: row.cylinderCount,
@@ -120,7 +133,7 @@ async function seed() {
         supplierArticleNo: "SUP-ART-1001",
         supplierDescription: "Exhaust valve OEM - W32",
         currency: "EUR",
-        purchasePrice: 500,
+        price: 500,
         leadTimeDays: 30,
         moq: 2,
         supplierCountry: "FI",
@@ -129,6 +142,8 @@ async function seed() {
       },
       { upsert: true, new: true }
     );
+
+    await ensureDefaultBrandsForEveryVertical();
 
     // eslint-disable-next-line no-console
     console.log("Item Master seed completed");
@@ -142,4 +157,3 @@ seed().catch((err) => {
   console.error("Item Master seed failed:", err);
   process.exit(1);
 });
-

@@ -12,7 +12,7 @@ const materialSupplierSchema = new mongoose.Schema(
     supplierArticleNo: { type: String, default: "", trim: true },
     supplierDescription: { type: String, default: "", trim: true },
     currency: { type: String, default: "", trim: true },
-    purchasePrice: { type: Number, default: 0 },
+    price: { type: Number, default: 0 },
     leadTimeDays: { type: Number, default: 0 },
     moq: { type: Number, default: 0 },
     supplierCountry: { type: String, default: "", trim: true },
@@ -32,4 +32,3 @@ materialSupplierSchema.index({ supplierName: 1 });
 materialSupplierSchema.index({ materialCode: 1, preferred: 1 });
 
 export default mongoose.model("MaterialSupplier", materialSupplierSchema);
-

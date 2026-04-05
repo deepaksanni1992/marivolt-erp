@@ -1,0 +1,5 @@
+materialCode,brand,engineModel,configuration,cylinderCount,esnFrom,esnTo,remarks,status
+MAT001,Wärtsilä,W32,Inline,6L,,,common,Active
+MAT001,Wärtsilä,W32,Inline,7L,,,common,Active
+MAT001,Wärtsilä,W32,Vee,16V,,,common,Active
+MAT001,Wärtsilä,W34DF,Vee,16V,,,common,Active

@@ -13,6 +13,12 @@ const materialSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    vertical: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Vertical",
+      required: true,
+      index: true,
+    },
     shortDescription: {
       type: String,
       required: true,
@@ -36,8 +42,8 @@ const materialSchema = new mongoose.Schema(
 
 materialSchema.index({ materialCode: 1 }, { unique: true });
 materialSchema.index({ spn: 1 });
+materialSchema.index({ vertical: 1 });
 materialSchema.index({ itemType: 1 });
 materialSchema.index({ status: 1 });
 
 export default mongoose.model("Material", materialSchema);
-

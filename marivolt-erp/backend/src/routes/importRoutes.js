@@ -1,9 +1,11 @@
 import express from "express";
+import mongoose from "mongoose";
 import SPN from "../models/SPN.js";
 import Material from "../models/Material.js";
 import MaterialCompatibility from "../models/MaterialCompatibility.js";
 import Article from "../models/Article.js";
 import MaterialSupplier from "../models/MaterialSupplier.js";
+import Vertical from "../models/Vertical.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import {
   validateSpnPayload,
@@ -13,6 +15,7 @@ import {
   validateMaterialSupplierPayload,
 } from "../validation/itemMasterValidation.js";
 import { createEmptyImportResult, pushRowError } from "../utils/importResultBuilder.js";
+import { resolveBrandNameForMaterial } from "../utils/brandMaterialVertical.js";
 
 const router = express.Router();
 
@@ -23,7 +26,7 @@ async function handleBulkImport({ rows, validateFn, upsertFn }) {
   const result = createEmptyImportResult();
   result.totalRows = rows.length;
 
-  const seenKeys = new Set();
+  const keyToFirstIndex = new Map();
 
   // First pass: detect duplicates within file
   for (let i = 0; i < rows.length; i++) {
@@ -31,24 +34,26 @@ async function handleBulkImport({ rows, validateFn, upsertFn }) {
     try {
       const validated = validateFn(raw);
       const key = JSON.stringify(validated);
-      if (seenKeys.has(key)) {
+      if (keyToFirstIndex.has(key)) {
         result.duplicateRows += 1;
         pushRowError(result, i, "Duplicate row within uploaded file");
         continue;
       }
-      seenKeys.add(key);
+      keyToFirstIndex.set(key, i);
     } catch (err) {
       pushRowError(result, i, err.message);
     }
   }
 
-  // Second pass: insert valid, non-duplicate rows
+  // Second pass: insert valid, non-duplicate rows (first occurrence only)
   for (let i = 0; i < rows.length; i++) {
     const raw = rows[i];
     try {
       const validated = validateFn(raw);
       const key = JSON.stringify(validated);
-      if (!seenKeys.has(key)) continue; // was error in first pass
+      if (!keyToFirstIndex.has(key) || keyToFirstIndex.get(key) !== i) {
+        continue;
+      }
 
       await upsertFn(validated);
       result.successRows += 1;
@@ -74,9 +79,16 @@ router.post("/spn", async (req, res) => {
       rows,
       validateFn: validateSpnPayload,
       upsertFn: async (payload) => {
+        if (!mongoose.Types.ObjectId.isValid(payload.vertical)) {
+          throw new Error("Invalid vertical id");
+        }
+        const verticalExists = await Vertical.exists({ _id: payload.vertical });
+        if (!verticalExists) {
+          throw new Error("Vertical not found");
+        }
+
         const existing = await SPN.findOne({ spn: payload.spn });
         if (existing) {
-          // Update for idempotency
           await SPN.updateOne({ spn: payload.spn }, payload);
         } else {
           await SPN.create(payload);
@@ -99,9 +111,12 @@ router.post("/materials", async (req, res) => {
       rows,
       validateFn: validateMaterialPayload,
       upsertFn: async (payload) => {
-        const spnExists = await SPN.exists({ spn: payload.spn });
-        if (!spnExists) {
+        const spnDoc = await SPN.findOne({ spn: payload.spn }).select("vertical").lean();
+        if (!spnDoc) {
           throw new Error("Invalid SPN reference in material master");
+        }
+        if (String(spnDoc.vertical) !== String(payload.vertical)) {
+          throw new Error("Material vertical must match the selected SPN's vertical");
         }
 
         const existing = await Material.findOne({
@@ -133,15 +148,14 @@ router.post("/material-compat", async (req, res) => {
       rows,
       validateFn: validateCompatibilityPayload,
       upsertFn: async (payload) => {
-        const materialExists = await Material.exists({
-          materialCode: payload.materialCode,
-        });
-        if (!materialExists) {
-          throw new Error("Invalid materialCode reference");
-        }
+        const canonicalBrand = await resolveBrandNameForMaterial(
+          payload.materialCode,
+          payload.brand
+        );
+        const toSave = { ...payload, brand: canonicalBrand };
 
         try {
-          await MaterialCompatibility.create(payload);
+          await MaterialCompatibility.create(toSave);
         } catch (err) {
           if (err.code === 11000) {
             throw new Error("Duplicate compatibility row");

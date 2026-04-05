@@ -1,4 +1,43 @@
-import { apiGet, apiGetWithQuery, apiPost, apiPut, apiDelete } from "./api.js";
+import { apiGetWithQuery, apiPost, apiPut, apiDelete } from "./api.js";
+
+// Verticals
+export function fetchVerticalList(params) {
+  return apiGetWithQuery("/verticals", params);
+}
+
+export function createVertical(data) {
+  return apiPost("/verticals", data);
+}
+
+export function updateVertical(id, data) {
+  return apiPut(`/verticals/${id}`, data);
+}
+
+export function deleteVertical(id) {
+  return apiDelete(`/verticals/${id}`);
+}
+
+// Brands (scoped to vertical)
+export function fetchBrandList(params) {
+  return apiGetWithQuery("/brands", params);
+}
+
+export function createBrand(data) {
+  return apiPost("/brands", data);
+}
+
+export function updateBrand(id, data) {
+  return apiPut(`/brands/${id}`, data);
+}
+
+export function deleteBrand(id) {
+  return apiDelete(`/brands/${id}`);
+}
+
+// Resolve material (SPN + brand + engine context)
+export function resolveMaterialLookup(body) {
+  return apiPost("/resolve-material", body);
+}
 
 // SPN Master
 export function fetchSpnList(params) {

@@ -26,6 +26,8 @@ import articleRoutes from "./routes/articleRoutes.js";
 import materialSupplierRoutes from "./routes/materialSupplierRoutes.js";
 import importRoutes from "./routes/importRoutes.js";
 import resolveMaterialRoutes from "./routes/resolveMaterialRoutes.js";
+import verticalRoutes from "./routes/verticalRoutes.js";
+import brandRoutes from "./routes/brandRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -119,6 +121,8 @@ async function startServer() {
     app.use("/api/logistics", logisticsRoutes);
     app.use("/api/accounts", accountsRoutes);
     app.use("/api/audit", auditRoutes);
+    app.use("/api/verticals", verticalRoutes);
+    app.use("/api/brands", brandRoutes);
     app.use("/api/spn", spnRoutes);
     app.use("/api/materials", materialRoutes);
     app.use("/api/material-compat", materialCompatibilityRoutes);

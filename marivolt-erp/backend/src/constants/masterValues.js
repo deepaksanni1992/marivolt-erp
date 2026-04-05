@@ -33,6 +33,21 @@ export const CYLINDER_COUNTS = [
 
 export const ITEM_TYPES = ["OEM", "Aftermarket", "Reconditioned"];
 
+/** Seeded under every vertical (migration, new verticals, item master seed). */
+export const DEFAULT_BRANDS_PER_VERTICAL = [
+  "Wärtsilä",
+  "MAN",
+  "Daihatsu",
+  "Hyundai Heavy Industries",
+  "Sulzer",
+  "Bergen",
+  "Caterpillar",
+  "MAK",
+  "Yanmar",
+  "Rolls-Royce",
+  "Himsen",
+];
+
 export const STATUSES = ["Active", "Inactive"];
 
 export const DEFAULT_PAGE_SIZE = 20;

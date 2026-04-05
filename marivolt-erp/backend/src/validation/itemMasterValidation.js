@@ -1,11 +1,5 @@
-import {
-  ENGINE_MAKES,
-  ENGINE_MODELS,
-  CONFIGURATIONS,
-  CYLINDER_COUNTS,
-  ITEM_TYPES,
-  STATUSES,
-} from "../constants/masterValues.js";
+import mongoose from "mongoose";
+import { ITEM_TYPES, STATUSES } from "../constants/masterValues.js";
 
 function reqStr(value, field) {
   const v = String(value ?? "").trim();
@@ -22,18 +16,46 @@ function optStr(value) {
 function reqEnum(value, field, values) {
   const v = reqStr(value, field);
   if (!values.includes(v)) {
-    throw new Error(
-      `${field} must be one of: ${values.join(", ")}`
-    );
+    throw new Error(`${field} must be one of: ${values.join(", ")}`);
   }
   return v;
 }
 
+function reqObjectId(value, field) {
+  const v = String(value ?? "").trim();
+  if (!v) {
+    throw new Error(`${field} is required`);
+  }
+  if (!mongoose.Types.ObjectId.isValid(v)) {
+    throw new Error(`${field} must be a valid id`);
+  }
+  return v;
+}
+
+export function validateVerticalPayload(input) {
+  return {
+    name: reqStr(input.name, "Vertical name"),
+    status: input.status ? reqEnum(input.status, "Status", STATUSES) : "Active",
+  };
+}
+
+export function validateBrandPayload(input) {
+  return {
+    name: reqStr(input.name, "Brand name"),
+    vertical: reqObjectId(input.vertical, "Vertical"),
+    status: input.status ? reqEnum(input.status, "Status", STATUSES) : "Active",
+  };
+}
+
 export function validateSpnPayload(input) {
+  const description = optStr(input.description);
+  const genericDescription = optStr(input.genericDescription);
   return {
     spn: reqStr(input.spn, "SPN"),
+    vertical: reqObjectId(input.vertical, "Vertical"),
     partName: reqStr(input.partName, "Part name"),
-    genericDescription: optStr(input.genericDescription),
+    description: description || genericDescription,
+    genericDescription: genericDescription || description,
     category: optStr(input.category),
     subCategory: optStr(input.subCategory),
     uom: optStr(input.uom),
@@ -46,10 +68,8 @@ export function validateMaterialPayload(input) {
   return {
     materialCode: reqStr(input.materialCode, "Material code"),
     spn: reqStr(input.spn, "SPN"),
-    shortDescription: reqStr(
-      input.shortDescription,
-      "Short description"
-    ),
+    vertical: reqObjectId(input.vertical, "Vertical"),
+    shortDescription: reqStr(input.shortDescription, "Short description"),
     itemType: reqEnum(input.itemType, "Item type", ITEM_TYPES),
     unit: reqStr(input.unit, "Unit"),
     status: input.status ? reqEnum(input.status, "Status", STATUSES) : "Active",
@@ -58,21 +78,14 @@ export function validateMaterialPayload(input) {
 }
 
 export function validateCompatibilityPayload(input) {
+  const brandSource = input.brand ?? input.engineMake;
   const base = {
     materialCode: reqStr(input.materialCode, "Material code"),
-    engineMake: reqEnum(input.engineMake, "Engine make", ENGINE_MAKES),
-    engineModel: reqEnum(input.engineModel, "Engine model", ENGINE_MODELS),
-    configuration: reqEnum(
-      input.configuration,
-      "Configuration",
-      CONFIGURATIONS
-    ),
-    cylinderCount: reqEnum(
-      input.cylinderCount,
-      "Cylinder count",
-      CYLINDER_COUNTS
-    ),
-    applicabilityRemarks: optStr(input.applicabilityRemarks),
+    brand: reqStr(brandSource, "Brand"),
+    engineModel: reqStr(input.engineModel, "Engine model"),
+    configuration: reqStr(input.configuration, "Configuration"),
+    cylinderCount: reqStr(input.cylinderCount, "Cylinder count"),
+    remarks: optStr(input.remarks ?? input.applicabilityRemarks),
     status: input.status ? reqEnum(input.status, "Status", STATUSES) : "Active",
   };
 
@@ -120,18 +133,27 @@ export function validateArticlePayload(input) {
 }
 
 export function validateMaterialSupplierPayload(input) {
+  const priceRaw =
+    input.price !== undefined && input.price !== null && input.price !== ""
+      ? input.price
+      : input.purchasePrice;
+
+  const price =
+    priceRaw === undefined || priceRaw === null || priceRaw === ""
+      ? 0
+      : Number(priceRaw);
+
+  if (Number.isNaN(price)) {
+    throw new Error("Price must be a valid number");
+  }
+
   return {
     materialCode: reqStr(input.materialCode, "Material code"),
     supplierName: reqStr(input.supplierName, "Supplier name"),
     supplierArticleNo: optStr(input.supplierArticleNo),
     supplierDescription: optStr(input.supplierDescription),
     currency: optStr(input.currency),
-    purchasePrice:
-      input.purchasePrice === undefined ||
-      input.purchasePrice === null ||
-      input.purchasePrice === ""
-        ? 0
-        : Number(input.purchasePrice),
+    price,
     leadTimeDays:
       input.leadTimeDays === undefined ||
       input.leadTimeDays === null ||
@@ -148,4 +170,3 @@ export function validateMaterialSupplierPayload(input) {
     remarks: optStr(input.remarks),
   };
 }
-

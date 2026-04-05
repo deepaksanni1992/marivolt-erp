@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "generate:import-templates": "node scripts/generate-import-templates.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.20",

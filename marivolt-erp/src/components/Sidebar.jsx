@@ -15,16 +15,56 @@ export default function Sidebar({ open, onClose }) {
   const role = getRole();
 
   const navItems = [
-    { name: "Dashboard", to: "/dashboard", roles: ["admin", "staff", "purchase_sales", "accounts_logistics"] },
-    { name: "Sales", to: "/sales", roles: ["admin", "staff", "purchase_sales"] },
-    { name: "Purchase", to: "/purchase", roles: ["admin", "staff", "purchase_sales"] },
-    { name: "Inventory", to: "/inventory", roles: ["admin", "staff"] },
+    {
+      name: "Dashboard",
+      to: "/dashboard",
+      roles: ["admin", "staff", "purchase_sales", "accounts_logistics"],
+    },
+    {
+      name: "Sales",
+      to: "/sales",
+      roles: ["admin", "staff", "purchase_sales"],
+    },
+    {
+      name: "Purchase",
+      to: "/purchase",
+      roles: ["admin", "staff", "purchase_sales"],
+    },
+    {
+      name: "Inventory",
+      to: "/inventory",
+      roles: ["admin", "staff"],
+    },
     { name: "Store", to: "/store", roles: ["admin", "staff"] },
-    { name: "Logistics (Import/Export)", to: "/logistics", roles: ["admin", "staff", "accounts_logistics"] },
-    { name: "Accounts", to: "/accounts", roles: ["admin", "staff", "accounts_logistics"] },
+    {
+      name: "Logistics (Import/Export)",
+      to: "/logistics",
+      roles: ["admin", "staff", "accounts_logistics"],
+    },
+    {
+      name: "Accounts",
+      to: "/accounts",
+      roles: ["admin", "staff", "accounts_logistics"],
+    },
+  ];
+
+  const masterItems = [
+    { name: "Verticals", to: "/vertical-master", roles: ["admin"] },
+    { name: "Brands", to: "/brand-master", roles: ["admin"] },
+    { name: "SPN", to: "/spn-master", roles: ["admin"] },
+    { name: "Materials", to: "/material-master", roles: ["admin"] },
+    { name: "Compatibility", to: "/material-compat", roles: ["admin"] },
+    { name: "Articles", to: "/article-master", roles: ["admin"] },
+    { name: "Supplier map", to: "/supplier-mapping", roles: ["admin"] },
+    {
+      name: "Resolve material",
+      to: "/resolve-material",
+      roles: ["admin", "staff", "purchase_sales"],
+    },
   ];
 
   const visibleItems = navItems.filter((x) => x.roles.includes(role));
+  const visibleMaster = masterItems.filter((x) => x.roles.includes(role));
 
   return (
     <aside
@@ -58,7 +98,7 @@ export default function Sidebar({ open, onClose }) {
         </button>
       </div>
 
-      <nav className="p-3">
+      <nav className="max-h-[calc(100vh-4rem)] overflow-y-auto p-3">
         <div className="mb-2 px-2 text-xs font-semibold text-gray-500">
           MODULES
         </div>
@@ -83,6 +123,34 @@ export default function Sidebar({ open, onClose }) {
             </li>
           ))}
         </ul>
+
+        {visibleMaster.length > 0 && (
+          <>
+            <div className="mb-2 mt-5 px-2 text-xs font-semibold text-gray-500">
+              ITEM MASTER
+            </div>
+            <ul className="space-y-1">
+              {visibleMaster.map((item) => (
+                <li key={item.to}>
+                  <NavLink
+                    to={item.to}
+                    className={({ isActive }) =>
+                      [
+                        "block rounded-xl px-3 py-2 text-sm",
+                        isActive
+                          ? "bg-gray-900 text-white"
+                          : "text-gray-700 hover:bg-gray-100",
+                      ].join(" ")
+                    }
+                    onClick={onClose}
+                  >
+                    {item.name}
+                  </NavLink>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
       </nav>
     </aside>
   );
