@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import SPN from "../models/SPN.js";
 import Vertical from "../models/Vertical.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { validateSpnPayload } from "../validation/itemMasterValidation.js";
+import { validateSpnPayload } from "../validation/masterDataValidation.js";
 import { DEFAULT_PAGE_SIZE } from "../constants/masterValues.js";
 
 const router = express.Router();

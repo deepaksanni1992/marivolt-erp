@@ -1,7 +1,7 @@
 import express from "express";
 import Vertical from "../models/Vertical.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { validateVerticalPayload } from "../validation/itemMasterValidation.js";
+import { validateVerticalPayload } from "../validation/masterDataValidation.js";
 import { DEFAULT_PAGE_SIZE } from "../constants/masterValues.js";
 import { ensureDefaultBrandsForVertical } from "../utils/ensureDefaultBrands.js";
 

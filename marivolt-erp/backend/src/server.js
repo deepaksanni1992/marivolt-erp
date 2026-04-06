@@ -7,7 +7,6 @@ import cors from "cors";
 import morgan from "morgan";
 import mongoose from "mongoose";
 
-import itemRoutes from "./routes/itemRoutes.js";
 import stockTxnRoutes from "./routes/stockTxnRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import purchaseRoutes from "./routes/purchaseRoutes.js";
@@ -111,7 +110,6 @@ async function startServer() {
 
     // ---- ROUTES ----
     app.use("/api/auth", authRoutes);
-    app.use("/api/items", itemRoutes);
     app.use("/api/stock-txns", stockTxnRoutes);
     app.use("/api/purchase", purchaseRoutes);
     app.use("/api/suppliers", supplierRoutes);

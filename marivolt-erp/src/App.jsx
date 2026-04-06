@@ -113,7 +113,7 @@ export default function App() {
 
           <Route
             path="items"
-            element={<Navigate to="/dashboard" replace />}
+            element={<Navigate to="/article-master" replace />}
           />
           <Route
             path="sales"

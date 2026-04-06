@@ -1,6 +1,6 @@
 # Import templates (Excel)
 
-Use these workbooks with **Item Master → Bulk import** in the app (first worksheet **Data** is read).
+Use these workbooks from **Masters** in the app (or call the import APIs below). Each Excel file uses the first worksheet **Data**.
 
 | File | API |
 |------|-----|

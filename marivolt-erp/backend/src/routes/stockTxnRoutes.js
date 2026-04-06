@@ -5,82 +5,89 @@ import { requireAuth } from "../middleware/auth.js";
 const router = express.Router();
 router.use(requireAuth);
 
-// Create a txn (IN/OUT). Use either sku or article (for BOM Kitting/De-Kitting).
 router.post("/", async (req, res) => {
-    try {
-  const { sku, article, type, qty, ref, note, supplier } = req.body;
-  
-      const cleanSku = String(sku ?? "").trim();
-      const cleanArticle = String(article ?? "").trim();
-      if ((!cleanSku && !cleanArticle) || !type || !qty) {
-        return res.status(400).json({ message: "either sku or article, type, and qty are required" });
-      }
-  
-      const cleanType = type;
-      const cleanQty = Number(qty);
-  
-      if (!["IN", "OUT"].includes(cleanType)) {
-        return res.status(400).json({ message: "type must be IN or OUT" });
-      }
-      if (!cleanQty || cleanQty <= 0) {
-        return res.status(400).json({ message: "qty must be > 0" });
-      }
+  try {
+    const { sku, article, materialCode, type, qty, ref, note, supplier } = req.body;
 
-      const matchBy = cleanArticle ? { article: cleanArticle } : { sku: cleanSku };
-  
-      // ✅ SERVER SIDE STOCK CHECK (important)
-      if (cleanType === "OUT") {
-        const summary = await StockTxn.aggregate([
-          { $match: matchBy },
-          {
-            $group: {
-              _id: null,
-              stock: {
-                $sum: {
-                  $cond: [
-                    { $eq: ["$type", "IN"] },
-                    "$qty",
-                    { $multiply: ["$qty", -1] },
-                  ],
-                },
+    const cleanSku = String(sku ?? "").trim();
+    const cleanArticle = String(article ?? "").trim();
+    const cleanMaterialCode = String(materialCode ?? "").trim();
+
+    if ((!cleanSku && !cleanArticle) || !type || !qty) {
+      return res.status(400).json({ message: "either sku or article, type, and qty are required" });
+    }
+
+    const cleanType = type;
+    const cleanQty = Number(qty);
+
+    if (!["IN", "OUT"].includes(cleanType)) {
+      return res.status(400).json({ message: "type must be IN or OUT" });
+    }
+    if (!cleanQty || cleanQty <= 0) {
+      return res.status(400).json({ message: "qty must be > 0" });
+    }
+
+    const matchBy = cleanArticle
+      ? { article: cleanArticle }
+      : { sku: cleanSku };
+
+    if (cleanType === "OUT") {
+      const summary = await StockTxn.aggregate([
+        { $match: matchBy },
+        {
+          $group: {
+            _id: null,
+            stock: {
+              $sum: {
+                $cond: [
+                  { $eq: ["$type", "IN"] },
+                  "$qty",
+                  { $multiply: ["$qty", -1] },
+                ],
               },
             },
           },
-        ]);
-  
-        const currentStock = summary.length ? summary[0].stock : 0;
-        const label = cleanArticle || cleanSku;
-        if (currentStock - cleanQty < 0) {
-          return res.status(400).json({
-            message: `Not enough stock for ${label}. Current: ${currentStock}`,
-          });
-        }
-      }
-  
-      const txn = await StockTxn.create({
-        sku: cleanSku,
-        article: cleanArticle,
-        type: cleanType,
-        qty: cleanQty,
-        ref: (ref || "").trim(),
-        supplier: (supplier || "").trim(),
-        note: (note || "").trim(),
-      });
-  
-      res.json(txn);
-    } catch (err) {
-      res.status(400).json({ message: err.message });
-    }
-  });
-  
+        },
+      ]);
 
-// Get txns (latest first). Optional filter by sku or article
+      const currentStock = summary.length ? summary[0].stock : 0;
+      const label = cleanArticle || cleanSku;
+      if (currentStock - cleanQty < 0) {
+        return res.status(400).json({
+          message: `Not enough stock for ${label}. Current: ${currentStock}`,
+        });
+      }
+    }
+
+    const txn = await StockTxn.create({
+      sku: cleanSku,
+      article: cleanArticle,
+      materialCode: cleanMaterialCode,
+      type: cleanType,
+      qty: cleanQty,
+      ref: (ref || "").trim(),
+      supplier: (supplier || "").trim(),
+      note: (note || "").trim(),
+    });
+
+    res.json(txn);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
 router.get("/", async (req, res) => {
-  const { sku, article, type, from, to, supplier } = req.query;
+  const { sku, article, materialCode, partKey, type, from, to, supplier } = req.query;
   const filter = {};
 
-  if (sku) filter.sku = String(sku).trim();
-  if (article) filter.article = String(article).trim();
+  const pk = String(partKey || "").trim();
+  if (pk) {
+    filter.$or = [{ sku: pk }, { article: pk }];
+  } else {
+    if (sku) filter.sku = String(sku).trim();
+    if (article) filter.article = String(article).trim();
+  }
+  if (materialCode) filter.materialCode = String(materialCode).trim();
 
   if (type) {
     const cleanType = String(type).toUpperCase().trim();
@@ -116,12 +123,51 @@ router.get("/", async (req, res) => {
   res.json(txns);
 });
 
-// Inventory summary (stock per sku)
+/**
+ * Stock summary. Query groupBy=invKey (default): one row per non-empty article, else sku (legacy).
+ * Legacy groupBy=sku keeps old behaviour (group only by sku field).
+ */
 router.get("/summary", async (req, res) => {
+  const groupBy = String(req.query.groupBy || "invKey").trim();
+
+  if (groupBy === "sku") {
+    const summary = await StockTxn.aggregate([
+      {
+        $group: {
+          _id: "$sku",
+          stock: {
+            $sum: {
+              $cond: [{ $eq: ["$type", "IN"] }, "$qty", { $multiply: ["$qty", -1] }],
+            },
+          },
+        },
+      },
+      { $match: { _id: { $nin: [null, ""] } } },
+      { $sort: { _id: 1 } },
+    ]);
+    return res.json(summary.map((x) => ({ sku: x._id, stock: x.stock })));
+  }
+
   const summary = await StockTxn.aggregate([
     {
+      $addFields: {
+        invKey: {
+          $cond: [
+            { $gt: [{ $strLenCP: { $ifNull: ["$article", ""] } }, 0] },
+            "$article",
+            "$sku",
+          ],
+        },
+      },
+    },
+    {
+      $match: {
+        invKey: { $nin: [null, ""] },
+      },
+    },
+    {
       $group: {
-        _id: "$sku",
+        _id: "$invKey",
         stock: {
           $sum: {
             $cond: [{ $eq: ["$type", "IN"] }, "$qty", { $multiply: ["$qty", -1] }],
@@ -132,8 +178,7 @@ router.get("/summary", async (req, res) => {
     { $sort: { _id: 1 } },
   ]);
 
-  // output: [{ sku, stock }]
-  res.json(summary.map((x) => ({ sku: x._id, stock: x.stock })));
+  res.json(summary.map((x) => ({ articleOrSku: x._id, stock: x.stock })));
 });
 
 export default router;

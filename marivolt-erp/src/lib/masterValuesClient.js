@@ -31,6 +31,7 @@ export const CYLINDER_COUNTS = [
   "20V",
 ];
 
+/** Values for Material Master `itemType` (OEM / Aftermarket / Reconditioned). */
 export const ITEM_TYPES = ["OEM", "Aftermarket", "Reconditioned"];
 
 export const STATUSES = ["Active", "Inactive"];

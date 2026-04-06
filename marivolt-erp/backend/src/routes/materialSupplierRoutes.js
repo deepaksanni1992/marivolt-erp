@@ -2,7 +2,7 @@ import express from "express";
 import MaterialSupplier from "../models/MaterialSupplier.js";
 import Material from "../models/Material.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { validateMaterialSupplierPayload } from "../validation/itemMasterValidation.js";
+import { validateMaterialSupplierPayload } from "../validation/masterDataValidation.js";
 import { DEFAULT_PAGE_SIZE } from "../constants/masterValues.js";
 
 const router = express.Router();

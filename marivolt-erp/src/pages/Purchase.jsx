@@ -166,7 +166,7 @@ function getTableMargins(topY, extra) {
 
 export default function Purchase() {
   const [activeSub, setActiveSub] = useState("Purchase Order");
-  const [items, setItems] = useState([]);
+  const [quickArticles, setQuickArticles] = useState([]);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
   const [suppliers, setSuppliers] = useState([]);
@@ -244,28 +244,33 @@ export default function Purchase() {
   });
 
   const [form, setForm] = useState({
-    sku: "",
+    articleNo: "",
     qty: 1,
     supplier: "",
     poNo: "",
     note: "",
   });
 
-  async function loadItems() {
+  async function loadQuickArticles() {
     setErr("");
     setLoading(true);
     try {
-      const data = await apiGet("/items");
-      setItems(data);
+      const data = await apiGetWithQuery("/articles", {
+        forSelect: "1",
+        limit: 5000,
+        page: 1,
+        status: "Active",
+      });
+      setQuickArticles(data.items || []);
     } catch (e) {
-      setErr(e.message || "Failed to load items");
+      setErr(e.message || "Failed to load articles");
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    loadItems();
+    loadQuickArticles();
   }, []);
 
   useEffect(() => {
@@ -274,7 +279,7 @@ export default function Purchase() {
     }
     if (activeSub === "Purchase Order") {
       loadSuppliers();
-      loadItems();
+      loadQuickArticles();
       loadPurchaseOrders();
       setPoForm((p) => ({
         ...p,
@@ -286,9 +291,9 @@ export default function Purchase() {
     }
   }, [activeSub]);
 
-  const selectedItem = useMemo(
-    () => items.find((x) => x.sku === form.sku) || null,
-    [items, form.sku]
+  const selectedQuickArticle = useMemo(
+    () => quickArticles.find((x) => x.articleNo === form.articleNo) || null,
+    [quickArticles, form.articleNo]
   );
 
   function onChange(e) {
@@ -366,7 +371,7 @@ export default function Purchase() {
     try {
       const data = await apiGetWithQuery("/stock-txns", {
         type: "IN",
-        sku: historyFilters.sku.trim() || undefined,
+        partKey: historyFilters.sku.trim() || undefined,
         supplier: historyFilters.supplier.trim() || undefined,
         from: historyFilters.from || undefined,
         to: historyFilters.to || undefined,
@@ -674,7 +679,7 @@ export default function Purchase() {
     e.preventDefault();
     setErr("");
 
-    if (!form.sku) return setErr("Select an item.");
+    if (!form.articleNo) return setErr("Select an article.");
     const qty = Number(form.qty);
     if (!qty || qty <= 0) return setErr("Qty must be > 0.");
 
@@ -683,7 +688,9 @@ export default function Purchase() {
 
     try {
       await apiPost("/stock-txns", {
-        sku: form.sku,
+        sku: "",
+        article: form.articleNo,
+        materialCode: selectedQuickArticle?.materialCode || "",
         type: "IN",
         qty,
         ref,
@@ -691,7 +698,7 @@ export default function Purchase() {
         note: `${form.supplier ? `Supplier: ${form.supplier}. ` : ""}${form.note}`.trim(),
       });
 
-      setForm({ sku: "", qty: 1, supplier: "", poNo: "", note: "" });
+      setForm({ articleNo: "", qty: 1, supplier: "", poNo: "", note: "" });
       alert("Purchase saved → Stock IN added to DB ✅");
       loadHistory();
     } catch (e2) {
@@ -703,7 +710,7 @@ export default function Purchase() {
     const query = historyFilters.q.trim().toLowerCase();
     if (!query) return history;
     return history.filter((tx) => {
-      const parts = [tx.sku, tx.ref, tx.note, tx.supplier]
+      const parts = [tx.article, tx.sku, tx.ref, tx.note, tx.supplier]
         .filter(Boolean)
         .map((v) => String(v).toLowerCase());
       return parts.some((v) => v.includes(query));
@@ -854,11 +861,11 @@ export default function Purchase() {
 
   function exportHistoryCsv() {
     const rows = [
-      ["Date", "Supplier", "SKU", "Qty", "Ref", "Note"],
+      ["Date", "Supplier", "Article", "Qty", "Ref", "Note"],
       ...historyFiltered.map((tx) => [
         new Date(tx.createdAt).toLocaleDateString(),
         getSupplier(tx) || "-",
-        tx.sku,
+        tx.article || tx.sku || "",
         tx.qty,
         tx.ref || "",
         tx.note || "",
@@ -902,14 +909,14 @@ export default function Purchase() {
     const body = historyFiltered.map((tx) => [
       new Date(tx.createdAt).toLocaleDateString(),
       getSupplier(tx) || "-",
-      tx.sku,
+      tx.article || tx.sku || "",
       String(tx.qty),
       tx.ref || "",
       tx.note || "",
     ]);
     await exportPdf(
       "Purchase History",
-      ["Date", "Supplier", "SKU", "Qty", "Ref", "Note"],
+      ["Date", "Supplier", "Article", "Qty", "Ref", "Note"],
       body,
       "purchase-history.pdf"
     );
@@ -2056,7 +2063,7 @@ export default function Purchase() {
                     {poItems.length === 0 ? (
                       <tr>
                         <td className="py-3 text-gray-500" colSpan={11}>
-                          No items.
+                          No PO lines yet.
                         </td>
                       </tr>
                     ) : (
@@ -2337,36 +2344,42 @@ export default function Purchase() {
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold">New Purchase</h2>
           <button
-            onClick={loadItems}
+            onClick={loadQuickArticles}
             className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
           >
-            Refresh Items
+            Refresh Articles
           </button>
         </div>
 
         {loading ? (
-          <div className="mt-4 text-sm text-gray-600">Loading items...</div>
+          <div className="mt-4 text-sm text-gray-600">Loading articles...</div>
         ) : (
           <form onSubmit={addPurchase} className="mt-4 space-y-3">
             <div>
-              <label className="text-sm text-gray-600">Item *</label>
+              <label className="text-sm text-gray-600">Article *</label>
               <select
-                name="sku"
-                value={form.sku}
+                name="articleNo"
+                value={form.articleNo}
                 onChange={onChange}
                 className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
               >
-                <option value="">Select item...</option>
-                {items.map((it) => (
-                  <option key={it._id} value={it.sku}>
-                    {it.sku} — {it.name}
+                <option value="">Select article...</option>
+                {quickArticles.map((it) => (
+                  <option key={it._id} value={it.articleNo}>
+                    {it.articleNo} — {it.description}
                   </option>
                 ))}
               </select>
 
-              {selectedItem && (
+              {selectedQuickArticle && (
                 <div className="mt-2 text-xs text-gray-600">
-                  Selected: <b>{selectedItem.name}</b>
+                  Selected: <b>{selectedQuickArticle.description}</b>
+                  {selectedQuickArticle.materialCode ? (
+                    <>
+                      {" "}
+                      (material: {selectedQuickArticle.materialCode})
+                    </>
+                  ) : null}
                 </div>
               )}
             </div>
@@ -2480,13 +2493,13 @@ export default function Purchase() {
             />
           </div>
           <div>
-            <label className="text-sm text-gray-600">SKU</label>
+            <label className="text-sm text-gray-600">Article or SKU</label>
             <input
               name="sku"
               value={historyFilters.sku}
               onChange={onHistoryChange}
               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-              placeholder="e.g. 034.12.001"
+              placeholder="Article no. or old SKU"
             />
           </div>
           <div>
@@ -2506,7 +2519,7 @@ export default function Purchase() {
               value={historyFilters.q}
               onChange={onHistoryChange}
               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-              placeholder="ref / note / sku"
+              placeholder="ref / note / article"
             />
           </div>
         </div>
@@ -2527,7 +2540,7 @@ export default function Purchase() {
                   <tr>
                     <th className="py-2 pr-3">Date</th>
                     <th className="py-2 pr-3">Supplier</th>
-                    <th className="py-2 pr-3">SKU</th>
+                    <th className="py-2 pr-3">Article</th>
                     <th className="py-2 pr-3">Qty</th>
                     <th className="py-2 pr-3">Ref</th>
                     <th className="py-2 pr-3">Note</th>
@@ -2547,7 +2560,9 @@ export default function Purchase() {
                           {new Date(tx.createdAt).toLocaleDateString()}
                         </td>
                         <td className="py-2 pr-3">{getSupplier(tx) || "-"}</td>
-                        <td className="py-2 pr-3 font-medium">{tx.sku}</td>
+                        <td className="py-2 pr-3 font-medium">
+                          {tx.article || tx.sku || "—"}
+                        </td>
                         <td className="py-2 pr-3">{tx.qty}</td>
                         <td className="py-2 pr-3">{tx.ref || "-"}</td>
                         <td className="py-2 pr-3">{tx.note || "-"}</td>

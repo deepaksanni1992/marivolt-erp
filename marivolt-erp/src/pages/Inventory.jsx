@@ -2,14 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { apiGet, apiGetWithQuery, apiPost } from "../lib/api.js";
 
 export default function Inventory() {
-  const [items, setItems] = useState([]);
+  const [articles, setArticles] = useState([]);
   const [summary, setSummary] = useState([]);
   const [txns, setTxns] = useState([]);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
 
   const [form, setForm] = useState({
-    sku: "",
+    articleNo: "",
     type: "IN",
     qty: 1,
     ref: "",
@@ -20,12 +20,17 @@ export default function Inventory() {
     setErr("");
     setLoading(true);
     try {
-      const [itemsData, summaryData, txnsData] = await Promise.all([
-        apiGet("/items"),
-        apiGet("/stock-txns/summary"),
+      const [articlesRes, summaryData, txnsData] = await Promise.all([
+        apiGetWithQuery("/articles", {
+          forSelect: "1",
+          limit: 5000,
+          page: 1,
+          status: "Active",
+        }),
+        apiGetWithQuery("/stock-txns/summary", { groupBy: "invKey" }),
         apiGet("/stock-txns"),
       ]);
-      setItems(itemsData);
+      setArticles(articlesRes.items || []);
       setSummary(summaryData);
       setTxns(txnsData);
     } catch (e) {
@@ -39,23 +44,33 @@ export default function Inventory() {
     loadAll();
   }, []);
 
-  const stockBySku = useMemo(() => {
+  const stockByKey = useMemo(() => {
     const map = new Map();
-    for (const s of summary) map.set(s.sku, s.stock);
+    for (const s of summary) map.set(s.articleOrSku, s.stock);
     return map;
   }, [summary]);
 
   const rows = useMemo(() => {
-    return items.map((it) => {
-      const stock = stockBySku.get(it.sku) ?? 0;
-      const min = it.minStock ?? 0;
-      return { ...it, stock, low: stock <= min };
+    return articles.map((art) => {
+      const key = art.articleNo;
+      const stock = stockByKey.get(key) ?? 0;
+      const min = 0;
+      return {
+        _id: art._id,
+        partKey: key,
+        name: art.description,
+        uom: art.unit || "",
+        minStock: min,
+        stock,
+        materialCode: art.materialCode || "",
+        low: stock <= min && min > 0,
+      };
     });
-  }, [items, stockBySku]);
+  }, [articles, stockByKey]);
 
-  const selectedItem = useMemo(
-    () => items.find((x) => x.sku === form.sku) || null,
-    [items, form.sku]
+  const selectedArticle = useMemo(
+    () => articles.find((x) => x.articleNo === form.articleNo) || null,
+    [articles, form.articleNo]
   );
 
   function onChange(e) {
@@ -67,19 +82,20 @@ export default function Inventory() {
     e.preventDefault();
     setErr("");
 
-    if (!form.sku) return setErr("Select an item.");
+    if (!form.articleNo) return setErr("Select an article.");
     const qty = Number(form.qty);
     if (!qty || qty <= 0) return setErr("Qty must be > 0.");
 
-    // Prevent negative stock for OUT
-    const current = stockBySku.get(form.sku) ?? 0;
+    const current = stockByKey.get(form.articleNo) ?? 0;
     if (form.type === "OUT" && current - qty < 0) {
       return setErr(`Not enough stock. Current: ${current}`);
     }
 
     try {
       await apiPost("/stock-txns", {
-        sku: form.sku,
+        sku: "",
+        article: form.articleNo,
+        materialCode: selectedArticle?.materialCode || "",
         type: form.type,
         qty,
         ref: form.ref,
@@ -93,13 +109,13 @@ export default function Inventory() {
     }
   }
 
-  async function filterTxnsBySku(sku) {
+  async function filterTxnsByArticle(articleNo) {
     setErr("");
     try {
-      const data = await apiGetWithQuery("/stock-txns", { sku });
+      const data = await apiGetWithQuery("/stock-txns", { article: articleNo });
       setTxns(data);
     } catch (e) {
-      setErr(e.message || "Failed to filter txns");
+      setErr(e.message || "Failed to filter transactions");
     }
   }
 
@@ -108,7 +124,7 @@ export default function Inventory() {
       <div className="rounded-2xl border bg-white p-6">
         <h1 className="text-xl font-semibold">Inventory</h1>
         <p className="mt-1 text-gray-600">
-          Now connected to MongoDB ✅ (Stock IN/OUT is stored in DB)
+          Now connected to MongoDB ✅ (Stock IN/OUT is stored in DB; keyed by article number)
         </p>
 
         {err && (
@@ -119,7 +135,6 @@ export default function Inventory() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* Movement */}
         <div className="rounded-2xl border bg-white p-6">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold">Stock Movement</h2>
@@ -133,27 +148,29 @@ export default function Inventory() {
 
           <form onSubmit={addTxn} className="mt-4 space-y-3">
             <div>
-              <label className="text-sm text-gray-600">Item *</label>
+              <label className="text-sm text-gray-600">Article *</label>
               <select
-                name="sku"
-                value={form.sku}
+                name="articleNo"
+                value={form.articleNo}
                 onChange={(e) => {
                   onChange(e);
-                  if (e.target.value) filterTxnsBySku(e.target.value);
+                  if (e.target.value) filterTxnsByArticle(e.target.value);
                 }}
                 className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
               >
-                <option value="">Select item...</option>
-                {items.map((it) => (
-                  <option key={it._id} value={it.sku}>
-                    {it.sku} — {it.name}
+                <option value="">Select article...</option>
+                {articles.map((it) => (
+                  <option key={it._id} value={it.articleNo}>
+                    {it.articleNo} — {it.description}
                   </option>
                 ))}
               </select>
 
-              {selectedItem && (
+              {selectedArticle && (
                 <div className="mt-2 text-xs text-gray-600">
-                  Current stock: <b>{stockBySku.get(selectedItem.sku) ?? 0}</b>
+                  Material: <b>{selectedArticle.materialCode || "—"}</b>
+                  <br />
+                  Current stock: <b>{stockByKey.get(selectedArticle.articleNo) ?? 0}</b>
                 </div>
               )}
             </div>
@@ -212,7 +229,6 @@ export default function Inventory() {
           </form>
         </div>
 
-        {/* Summary + Recent */}
         <div className="rounded-2xl border bg-white p-6 lg:col-span-2">
           <h2 className="text-base font-semibold">Stock Summary</h2>
 
@@ -224,10 +240,9 @@ export default function Inventory() {
                 <table className="w-full text-left text-sm">
                   <thead className="border-b text-gray-600">
                     <tr>
-                      <th className="py-2 pr-3">Part No</th>
-                      <th className="py-2 pr-3">Name</th>
+                      <th className="py-2 pr-3">Article</th>
+                      <th className="py-2 pr-3">Description</th>
                       <th className="py-2 pr-3">UOM</th>
-                      <th className="py-2 pr-3">Min</th>
                       <th className="py-2 pr-3">Stock</th>
                       <th className="py-2 pr-3">Status</th>
                     </tr>
@@ -235,17 +250,16 @@ export default function Inventory() {
                   <tbody>
                     {rows.length === 0 ? (
                       <tr>
-                        <td className="py-6 text-gray-500" colSpan={6}>
-                          No items.
+                        <td className="py-6 text-gray-500" colSpan={5}>
+                          No active articles.
                         </td>
                       </tr>
                     ) : (
                       rows.map((it) => (
                         <tr key={it._id} className="border-b last:border-b-0">
-                          <td className="py-2 pr-3 font-medium">{it.sku}</td>
+                          <td className="py-2 pr-3 font-medium">{it.partKey}</td>
                           <td className="py-2 pr-3">{it.name}</td>
                           <td className="py-2 pr-3">{it.uom}</td>
-                          <td className="py-2 pr-3">{it.minStock ?? 0}</td>
                           <td className="py-2 pr-3 font-semibold">{it.stock}</td>
                           <td className="py-2 pr-3">
                             {it.low ? (
@@ -287,7 +301,7 @@ export default function Inventory() {
                       >
                         <div>
                           <div className="font-medium">
-                            {t.type} • {t.sku} • Qty {t.qty}
+                            {t.type} • {t.article || t.sku || "—"} • Qty {t.qty}
                           </div>
                           <div className="text-xs text-gray-600">
                             {t.ref ? `Ref: ${t.ref} • ` : ""}

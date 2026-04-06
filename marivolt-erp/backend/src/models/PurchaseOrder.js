@@ -2,9 +2,9 @@ import mongoose from "mongoose";
 
 const poItemSchema = new mongoose.Schema(
   {
-    // Legacy SKU field (from old Item master / inventory)
+    // Optional legacy part key (some GRN payloads still use `sku` as article key)
     sku: { type: String, default: "" },
-    // New normalized Item Master linkage (internal identifiers)
+    // Material Master
     materialCode: { type: String, default: "", trim: true },
     spn: { type: String, default: "", trim: true },
     // Commercial / supplier-facing identifiers

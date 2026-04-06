@@ -78,7 +78,7 @@ export function validateMaterialPayload(input) {
     spn: reqStr(input.spn, "SPN"),
     vertical: reqObjectId(input.vertical, "Vertical"),
     shortDescription: reqStr(input.shortDescription, "Short description"),
-    itemType: reqEnum(input.itemType, "Item type", ITEM_TYPES),
+    itemType: reqEnum(input.itemType, "Material type", ITEM_TYPES),
     unit: reqStr(input.unit, "Unit"),
     status: input.status ? reqEnum(input.status, "Status", STATUSES) : "Active",
     remarks: optStr(input.remarks),

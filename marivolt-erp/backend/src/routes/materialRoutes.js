@@ -5,7 +5,7 @@ import SPN from "../models/SPN.js";
 import MaterialCompatibility from "../models/MaterialCompatibility.js";
 import MaterialSupplier from "../models/MaterialSupplier.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { validateMaterialPayload } from "../validation/itemMasterValidation.js";
+import { validateMaterialPayload } from "../validation/masterDataValidation.js";
 import { DEFAULT_PAGE_SIZE } from "../constants/masterValues.js";
 
 const router = express.Router();

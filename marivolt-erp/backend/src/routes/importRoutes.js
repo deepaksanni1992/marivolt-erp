@@ -13,7 +13,7 @@ import {
   validateCompatibilityPayload,
   validateArticlePayload,
   validateMaterialSupplierPayload,
-} from "../validation/itemMasterValidation.js";
+} from "../validation/masterDataValidation.js";
 import { createEmptyImportResult, pushRowError } from "../utils/importResultBuilder.js";
 import { canonicalizeCompatibilityPayload } from "../utils/compatibilityCanonical.js";
 

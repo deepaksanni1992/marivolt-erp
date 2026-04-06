@@ -19,7 +19,7 @@ router.post("/po", async (req, res) => {
       return res.status(400).json({ message: "Supplier name is required" });
     }
     if (!Array.isArray(body.items) || body.items.length === 0) {
-      return res.status(400).json({ message: "At least one item is required" });
+      return res.status(400).json({ message: "At least one PO line is required" });
     }
 
     const items = Array.isArray(body.items) ? body.items : [];
@@ -154,7 +154,7 @@ router.put("/po/:id", async (req, res) => {
       return res.status(400).json({ message: "Supplier name is required" });
     }
     if (!Array.isArray(body.items) || body.items.length === 0) {
-      return res.status(400).json({ message: "At least one item is required" });
+      return res.status(400).json({ message: "At least one PO line is required" });
     }
 
     const items = Array.isArray(body.items) ? body.items : [];
@@ -223,13 +223,13 @@ router.put("/po/:id", async (req, res) => {
       const incoming = incomingByArticle.get(key);
       if (!incoming) {
         return res.status(400).json({
-          message: `Cannot remove item ${key || "with received qty"} because GRN exists`,
+          message: `Cannot remove PO line ${key || "with received qty"} because GRN exists`,
         });
       }
       const nextQty = Number(incoming.qty) || 0;
       if (nextQty < receivedQty) {
         return res.status(400).json({
-          message: `Item ${key || "with received qty"} cannot be less than received qty`,
+          message: `PO line ${key || "with received qty"} cannot be less than received qty`,
         });
       }
     }
@@ -341,7 +341,7 @@ router.post("/grn", async (req, res) => {
       return res.status(400).json({ message: "PO is required for GRN" });
     }
     if (!items.length) {
-      return res.status(400).json({ message: "At least one GRN item is required" });
+      return res.status(400).json({ message: "At least one GRN line is required" });
     }
 
     const po =
@@ -370,19 +370,19 @@ router.post("/grn", async (req, res) => {
 
     for (const grnItem of grnItems) {
       if (!grnItem.sku || grnItem.qty <= 0) {
-        return res.status(400).json({ message: "Invalid GRN item data" });
+        return res.status(400).json({ message: "Invalid GRN line (article and qty required)" });
       }
       const poItem = poItemsByArticle.get(grnItem.sku);
       if (!poItem) {
         return res
           .status(400)
-          .json({ message: `Item ${grnItem.sku} not found in PO` });
+          .json({ message: `Article ${grnItem.sku} not found on PO` });
       }
       const receivedQty = Number(poItem.receivedQty) || 0;
       const orderedQty = Number(poItem.qty) || 0;
       if (receivedQty + grnItem.qty > orderedQty) {
         return res.status(400).json({
-          message: `GRN qty exceeds ordered qty for ${grnItem.sku}`,
+          message: `GRN qty exceeds ordered qty for article ${grnItem.sku}`,
         });
       }
     }
@@ -396,11 +396,16 @@ router.post("/grn", async (req, res) => {
       createdBy: body.createdBy || "",
     });
 
-    // ✅ Create stock transactions
     const txns = [];
     for (const it of grn.items) {
+      const articleNo = String(it.sku || "").trim();
+      const poLine = (po.items || []).find(
+        (p) => String(p.articleNo || "").trim() === articleNo
+      );
       txns.push({
-        sku: it.sku,
+        sku: "",
+        article: articleNo,
+        materialCode: String(poLine?.materialCode || "").trim(),
         type: "IN",
         qty: it.qty,
         ref: `GRN:${grn.grnNo}`,

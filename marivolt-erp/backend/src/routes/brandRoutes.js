@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import Brand from "../models/Brand.js";
 import Vertical from "../models/Vertical.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { validateBrandPayload } from "../validation/itemMasterValidation.js";
+import { validateBrandPayload } from "../validation/masterDataValidation.js";
 import { DEFAULT_PAGE_SIZE } from "../constants/masterValues.js";
 
 const router = express.Router();

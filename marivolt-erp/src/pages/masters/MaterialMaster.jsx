@@ -360,7 +360,7 @@ export default function MaterialMaster() {
               className="w-full rounded-xl border px-3 py-2 text-sm"
             />
           </Field>
-          <Field label="Item type *">
+          <Field label="Material type *">
             <select
               required
               value={form.itemType}

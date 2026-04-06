@@ -2,7 +2,7 @@ import express from "express";
 import MaterialCompatibility from "../models/MaterialCompatibility.js";
 import Material from "../models/Material.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { validateCompatibilityPayload } from "../validation/itemMasterValidation.js";
+import { validateCompatibilityPayload } from "../validation/masterDataValidation.js";
 import { canonicalizeCompatibilityPayload } from "../utils/compatibilityCanonical.js";
 import {
   DEFAULT_PAGE_SIZE,

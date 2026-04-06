@@ -4,6 +4,7 @@ const stockTxnSchema = new mongoose.Schema(
   {
     sku: { type: String, default: "", index: true },
     article: { type: String, default: "", index: true }, // used for BOM Kitting/De-Kitting
+    materialCode: { type: String, default: "", index: true },
     type: { type: String, enum: ["IN", "OUT"], required: true },
     qty: { type: Number, required: true, min: 1 },
     ref: { type: String, default: "" },   // e.g. PO:PO-001 or KIT:id

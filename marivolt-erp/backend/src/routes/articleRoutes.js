@@ -2,7 +2,7 @@ import express from "express";
 import Article from "../models/Article.js";
 import Material from "../models/Material.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { validateArticlePayload } from "../validation/itemMasterValidation.js";
+import { validateArticlePayload } from "../validation/masterDataValidation.js";
 import { DEFAULT_PAGE_SIZE } from "../constants/masterValues.js";
 
 const router = express.Router();
@@ -41,9 +41,11 @@ router.post("/", requireRole("admin"), async (req, res) => {
 router.get("/", async (req, res) => {
   try {
     const page = Math.max(parseInt(req.query.page || "1", 10), 1);
+    const forSelect = String(req.query.forSelect || "") === "1";
+    const maxLimit = forSelect ? 5000 : 200;
     const limit = Math.min(
       Math.max(parseInt(req.query.limit || DEFAULT_PAGE_SIZE, 10), 1),
-      200
+      maxLimit
     );
     const search = String(req.query.search || "").trim();
     const materialCode = String(req.query.materialCode || "").trim();

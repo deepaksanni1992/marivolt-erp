@@ -190,10 +190,10 @@ export default function Sales() {
     }
   }
 
-  async function loadItems() {
+  async function loadQuotationCatalog() {
     try {
-      const data = await apiGet("/items");
-      setItems(data);
+      const data = await apiGet("/sales/quotation-catalog");
+      setItems(Array.isArray(data) ? data : []);
     } catch {
       // ignore
     }
@@ -223,7 +223,7 @@ export default function Sales() {
 
   useEffect(() => {
     loadCustomers();
-    loadItems();
+    loadQuotationCatalog();
     loadPriceList();
     loadDocs("QUOTATION", setQuotationList);
     loadDocs("ORDER_CONFIRMATION", setOcList);
@@ -744,7 +744,20 @@ export default function Sales() {
   function downloadQuotationItemsTemplate() {
     const headers = ["Article", "Description", "SPN", "UOM", "Qty", "Unit Price", "Currency", "Total Price", "Unit Weight", "OE Remarks", "Availability", "Material Code"];
     const exampleRow = ["10009", "O-ring", "", "pcs", 1, 0.56, "USD", "0.56", "", "", "", ""];
-    const noteRow = ["Article = Item Master Article. With Material Code, match by SPN+Material Code; Unit Price and Currency from Price list/Item Master.", "", "", "", "", "", "", "", "", "", "", ""];
+    const noteRow = [
+      "Article = Article Master article number. With Material Code, match by SPN + Material Code. Unit price and currency from the price list (and supplier mapping buy price where set).",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+    ];
     const ws = XLSX.utils.aoa_to_sheet([headers, exampleRow, noteRow]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Quotation Items");
@@ -1358,7 +1371,7 @@ export default function Sales() {
               {/* Items: full remaining width for table */}
               <div className="min-w-0 flex-1">
                 <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                  <h3 className="text-sm font-semibold text-gray-700">Items</h3>
+                  <h3 className="text-sm font-semibold text-gray-700">Quotation lines</h3>
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       onClick={addQuotationItem}
@@ -1399,7 +1412,7 @@ export default function Sales() {
                   </div>
                 </div>
                 <p className="mt-2 text-xs text-gray-500">
-                  Import/Export: Use columns Article, Description, SPN, UOM, Qty, Unit Price, Currency, Total Price, Unit Weight, OE Remarks, Availability, Material Code. With Material Code: match by SPN+Material Code. Without Material Code: match by SPN only — all Articles with that SPN appear as separate lines; remove unwanted. Unit Price and Currency from Price list / Item Master. Download template to get the format.
+                  Import/Export: Use columns Article, Description, SPN, UOM, Qty, Unit Price, Currency, Total Price, Unit Weight, OE Remarks, Availability, Material Code. With Material Code: match by SPN + Material Code. Without Material Code: match by SPN only — all articles with that SPN appear as separate lines; remove unwanted. Unit price and currency come from the price list (Article + Material + supplier pricing). Download the template for the exact format.
                 </p>
                 <div className="mt-3 overflow-x-auto">
                   <table className="w-full text-left text-xs">

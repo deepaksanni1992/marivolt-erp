@@ -2,6 +2,9 @@ import express from "express";
 import Customer from "../models/Customer.js";
 import SalesDoc from "../models/SalesDoc.js";
 import Material from "../models/Material.js";
+import Article from "../models/Article.js";
+import MaterialCompatibility from "../models/MaterialCompatibility.js";
+import Vertical from "../models/Vertical.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -63,6 +66,70 @@ router.post("/customers", async (req, res) => {
 router.get("/customers", async (req, res) => {
   const customers = await Customer.find().sort({ createdAt: -1 });
   res.json(customers);
+});
+
+/**
+ * Denormalized catalog for quotation UI (Article + Material + compatibility).
+ */
+router.get("/quotation-catalog", async (req, res) => {
+  try {
+    const articles = await Article.find({ status: "Active" }).sort({ articleNo: 1 }).lean();
+    const codes = [
+      ...new Set(articles.map((a) => String(a.materialCode || "").trim()).filter(Boolean)),
+    ];
+    const [materials, compats] = await Promise.all([
+      Material.find({ materialCode: { $in: codes } }).lean(),
+      MaterialCompatibility.find({
+        materialCode: { $in: codes },
+        status: "Active",
+      }).lean(),
+    ]);
+    const matByCode = new Map(materials.map((m) => [m.materialCode, m]));
+    const vertIds = [...new Set(materials.map((m) => m.vertical).filter(Boolean))];
+    const verts = await Vertical.find({ _id: { $in: vertIds } }).lean();
+    const vertById = new Map(verts.map((v) => [String(v._id), v]));
+    const compatByCode = new Map();
+    for (const c of compats) {
+      const k = c.materialCode;
+      if (!compatByCode.has(k)) compatByCode.set(k, []);
+      compatByCode.get(k).push(c);
+    }
+
+    const catalog = articles.map((a) => {
+      const mat = matByCode.get(a.materialCode);
+      const vName = mat?.vertical
+        ? vertById.get(String(mat.vertical))?.name ?? "General"
+        : "General";
+      const comps = compatByCode.get(a.materialCode) || [];
+      const compatibility = comps.map((c) => ({
+        engine: c.brand || "",
+        model: c.engineModel || "",
+        config: c.configuration || "",
+      }));
+      const engineFirst = comps[0]?.brand || "";
+      return {
+        _id: a._id,
+        sku: a.articleNo,
+        article: a.articleNo,
+        name: a.description,
+        description: a.description,
+        spn: mat?.spn ?? "",
+        materialCode: a.materialCode,
+        uom: (a.unit || mat?.unit || "pcs").trim() || "pcs",
+        unitWeight: Number(a.weight) || 0,
+        oeRemarks: a.remarks || "",
+        supplier1Cur: "",
+        category: vName,
+        engine: engineFirst,
+        model: "",
+        config: "",
+        compatibility,
+      };
+    });
+    res.json(catalog);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
 router.delete("/customers/:id", async (req, res) => {
