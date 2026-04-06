@@ -2,34 +2,23 @@ import mongoose from "mongoose";
 
 const bomLineSchema = new mongoose.Schema(
   {
-    /** Internal material identifier (Material Master) */
-    materialCode: { type: String, default: "", trim: true },
-    /** Article / part number used for stock (StockTxn.article) and kitting */
-    article: { type: String, default: "" },
-    description: { type: String, default: "" },
-    spn: { type: String, default: "" },
-    name: { type: String, default: "" },
-    unitWeight: { type: Number, default: 0 },
+    componentItemCode: { type: String, required: true, trim: true, uppercase: true },
     qty: { type: Number, required: true, min: 0.0001 },
+    description: { type: String, default: "" },
   },
   { _id: true }
 );
 
 const bomSchema = new mongoose.Schema(
   {
-    /** Parent finished good (Material Master) */
-    parentMaterialCode: { type: String, default: "", trim: true },
-    parentArticle: { type: String, default: "" },
-    parentDescription: { type: String, default: "" },
-    parentSpn: { type: String, default: "" },
-    parentName: { type: String, default: "" },
-    parentUnitWeight: { type: Number, default: 0 },
+    parentItemCode: { type: String, required: true, unique: true, trim: true, uppercase: true },
     name: { type: String, default: "" },
-    lines: [bomLineSchema],
+    description: { type: String, default: "" },
+    lines: { type: [bomLineSchema], default: [] },
+    isActive: { type: Boolean, default: true },
+    createdBy: { type: String, default: "" },
   },
   { timestamps: true }
 );
-
-bomSchema.index({ parentMaterialCode: 1 });
 
 export default mongoose.model("BOM", bomSchema);

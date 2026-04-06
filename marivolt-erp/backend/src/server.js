@@ -8,6 +8,15 @@ import morgan from "morgan";
 import mongoose from "mongoose";
 
 import authRoutes from "./routes/authRoutes.js";
+import itemRoutes from "./routes/itemRoutes.js";
+import purchaseRoutes from "./routes/purchaseRoutes.js";
+import quotationRoutes from "./routes/quotationRoutes.js";
+import inventoryRoutes from "./routes/inventoryRoutes.js";
+import logisticsRoutes from "./routes/logisticsRoutes.js";
+import accountsRoutes from "./routes/accountsRoutes.js";
+import bomRoutes from "./routes/bomRoutes.js";
+import kittingRoutes from "./routes/kittingRoutes.js";
+import dekittingRoutes from "./routes/dekittingRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -80,9 +89,18 @@ async function startServer() {
     app.use(morgan("dev"));
 
     app.use("/api/auth", authRoutes);
+    app.use("/api/items", itemRoutes);
+    app.use("/api/purchase-orders", purchaseRoutes);
+    app.use("/api/quotations", quotationRoutes);
+    app.use("/api/inventory", inventoryRoutes);
+    app.use("/api/shipments", logisticsRoutes);
+    app.use("/api/accounts", accountsRoutes);
+    app.use("/api/boms", bomRoutes);
+    app.use("/api/kitting", kittingRoutes);
+    app.use("/api/dekitting", dekittingRoutes);
 
     app.get("/api/health", (req, res) => {
-      res.json({ ok: true, message: "Marivoltz API running (auth shell)" });
+      res.json({ ok: true, message: "Marivoltz API running" });
     });
 
     app.use((req, res) => {

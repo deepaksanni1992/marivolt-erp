@@ -1,0 +1,154 @@
+import mongoose from "mongoose";
+import Item from "../models/Item.js";
+
+function pagination(req) {
+  const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
+  return { page, limit, skip: (page - 1) * limit };
+}
+
+export async function listItems(req, res) {
+  try {
+    const { page, limit, skip } = pagination(req);
+    const filter = {};
+    if (req.query.isActive !== undefined) {
+      filter.isActive = String(req.query.isActive) === "true";
+    }
+    if (req.query.search) {
+      const s = String(req.query.search).trim();
+      filter.$or = [
+        { itemCode: new RegExp(s, "i") },
+        { description: new RegExp(s, "i") },
+        { makerPartNo: new RegExp(s, "i") },
+        { supplierPartNo: new RegExp(s, "i") },
+      ];
+    }
+    if (req.query.category) filter.category = new RegExp(String(req.query.category).trim(), "i");
+    const [items, total] = await Promise.all([
+      Item.find(filter).sort({ itemCode: 1 }).skip(skip).limit(limit).lean(),
+      Item.countDocuments(filter),
+    ]);
+    res.json({ items, total, page, limit });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getItem(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid id" });
+    }
+    const item = await Item.findById(id).lean();
+    if (!item) return res.status(404).json({ message: "Not found" });
+    res.json(item);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getItemByCode(req, res) {
+  try {
+    const code = String(req.params.code || "").trim().toUpperCase();
+    const item = await Item.findOne({ itemCode: code }).lean();
+    if (!item) return res.status(404).json({ message: "Not found" });
+    res.json(item);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function createItem(req, res) {
+  try {
+    const payload = { ...req.body };
+    if (payload.itemCode) payload.itemCode = String(payload.itemCode).trim().toUpperCase();
+    const item = await Item.create(payload);
+    res.status(201).json(item);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function updateItem(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid id" });
+    }
+    const payload = { ...req.body };
+    if (payload.itemCode) payload.itemCode = String(payload.itemCode).trim().toUpperCase();
+    delete payload._id;
+    const item = await Item.findByIdAndUpdate(id, payload, { new: true, runValidators: true });
+    if (!item) return res.status(404).json({ message: "Not found" });
+    res.json(item);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function deleteItem(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid id" });
+    }
+    const item = await Item.findByIdAndDelete(id);
+    if (!item) return res.status(404).json({ message: "Not found" });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function importItems(req, res) {
+  try {
+    const { items } = req.body;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: "Body must include non-empty items array" });
+    }
+    if (items.length > 2000) {
+      return res.status(400).json({ message: "Maximum 2000 rows per import" });
+    }
+    let upserted = 0;
+    let errors = [];
+    for (let i = 0; i < items.length; i++) {
+      const row = items[i];
+      try {
+        const itemCode = String(row.itemCode || "").trim().toUpperCase();
+        if (!itemCode) throw new Error("itemCode required");
+        await Item.findOneAndUpdate(
+          { itemCode },
+          {
+            $set: {
+              itemCode,
+              description: row.description ?? "",
+              uom: row.uom ?? "PCS",
+              brand: row.brand ?? "",
+              makerPartNo: row.makerPartNo ?? "",
+              hsnCode: row.hsnCode ?? "",
+              category: row.category ?? "",
+              supplierName: row.supplierName ?? "",
+              supplierPartNo: row.supplierPartNo ?? "",
+              supplierLeadTimeDays: Number(row.supplierLeadTimeDays) || 0,
+              purchasePrice: Number(row.purchasePrice) || 0,
+              salePrice: Number(row.salePrice) || 0,
+              currency: row.currency ?? "USD",
+              weightKg: Number(row.weightKg) || 0,
+              reorderLevel: Number(row.reorderLevel) || 0,
+              remarks: row.remarks ?? "",
+              isActive: row.isActive !== false,
+            },
+          },
+          { upsert: true, new: true, runValidators: true }
+        );
+        upserted += 1;
+      } catch (e) {
+        errors.push({ index: i, message: e.message });
+      }
+    }
+    res.json({ upserted, errors, errorCount: errors.length });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}

@@ -1,6 +1,5 @@
 import { useNavigate } from "react-router-dom";
-
-const AUTH_KEY = "marivoltz_auth_v1";
+import { AUTH_KEY } from "../lib/api.js";
 
 export default function Topbar({ onMenuClick }) {
   const nav = useNavigate();

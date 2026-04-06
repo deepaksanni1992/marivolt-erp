@@ -1,5 +1,18 @@
 import { NavLink } from "react-router-dom";
 
+const links = [
+  { to: "/dashboard", label: "Dashboard" },
+  { to: "/items", label: "Item Master" },
+  { to: "/purchase", label: "Purchase" },
+  { to: "/sales", label: "Sales" },
+  { to: "/inventory", label: "Inventory" },
+  { to: "/logistics", label: "Logistics" },
+  { to: "/accounts", label: "Accounts" },
+  { to: "/bom", label: "BOM" },
+  { to: "/kitting", label: "Kitting" },
+  { to: "/dekitting", label: "De-Kitting" },
+];
+
 export default function Sidebar({ open, onClose }) {
   return (
     <aside
@@ -34,22 +47,25 @@ export default function Sidebar({ open, onClose }) {
       <nav className="max-h-[calc(100vh-4rem)] overflow-y-auto p-3">
         <div className="mb-2 px-2 text-xs font-semibold text-gray-500">Menu</div>
         <ul className="space-y-1">
-          <li>
-            <NavLink
-              to="/dashboard"
-              className={({ isActive }) =>
-                [
-                  "block rounded-xl px-3 py-2 text-sm",
-                  isActive
-                    ? "bg-gray-900 text-white"
-                    : "text-gray-700 hover:bg-gray-100",
-                ].join(" ")
-              }
-              onClick={onClose}
-            >
-              Dashboard
-            </NavLink>
-          </li>
+          {links.map(({ to, label }) => (
+            <li key={to}>
+              <NavLink
+                to={to}
+                className={({ isActive }) =>
+                  [
+                    "block rounded-xl px-3 py-2 text-sm",
+                    isActive
+                      ? "bg-gray-900 text-white"
+                      : "text-gray-700 hover:bg-gray-100",
+                  ].join(" ")
+                }
+                onClick={onClose}
+                end={to === "/dashboard"}
+              >
+                {label}
+              </NavLink>
+            </li>
+          ))}
         </ul>
       </nav>
     </aside>

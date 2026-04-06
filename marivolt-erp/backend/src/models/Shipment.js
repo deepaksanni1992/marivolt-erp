@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 
 const shipmentSchema = new mongoose.Schema(
   {
-    refNo: { type: String, required: true, unique: true },
+    shipmentRef: { type: String, required: true, unique: true, trim: true },
     direction: {
       type: String,
       enum: ["IMPORT", "EXPORT", "LOCAL"],
@@ -21,8 +21,13 @@ const shipmentSchema = new mongoose.Schema(
 
     customerName: { type: String, default: "" },
     supplierName: { type: String, default: "" },
-    docType: { type: String, default: "" }, // e.g. QUOTATION / OC / PI / INVOICE / PO
+    docType: { type: String, default: "" },
     docNo: { type: String, default: "" },
+
+    linkedPoNumber: { type: String, default: "" },
+    linkedQuotationNumber: { type: String, default: "" },
+    linkedSalesInvoiceNumber: { type: String, default: "" },
+    linkedPurchaseInvoiceNumber: { type: String, default: "" },
 
     incoterm: { type: String, default: "" },
     vesselOrFlight: { type: String, default: "" },
@@ -34,6 +39,7 @@ const shipmentSchema = new mongoose.Schema(
     etd: { type: Date },
     eta: { type: Date },
 
+    weightKg: { type: Number, default: 0 },
     freightCost: { type: Number, default: 0 },
     insuranceCost: { type: Number, default: 0 },
     dutyCost: { type: Number, default: 0 },
@@ -46,4 +52,3 @@ const shipmentSchema = new mongoose.Schema(
 );
 
 export default mongoose.model("Shipment", shipmentSchema);
-

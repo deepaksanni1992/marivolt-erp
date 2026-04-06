@@ -1,6 +1,5 @@
 import { Navigate, Outlet } from "react-router-dom";
-
-const AUTH_KEY = "marivoltz_auth_v1";
+import { AUTH_KEY } from "../lib/api.js";
 
 export default function ProtectedRoute() {
   let auth = null;
