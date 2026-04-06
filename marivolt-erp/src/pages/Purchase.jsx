@@ -1,9 +1,16 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Papa from "papaparse";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
+import {
+  BUYER_DEFAULTS,
+  COMMERCIAL_DEFAULTS,
+  DEFAULT_CLOSING_NOTE,
+  DEFAULT_PURCHASE_TERMS,
+  DEFAULT_SPECIAL_REMARKS,
+} from "../constants/purchaseOrderDefaults.js";
 import {
   apiDelete,
   apiGet,
@@ -22,13 +29,106 @@ const TABS = [
 ];
 
 const defaultLine = () => ({
+  articleNo: "",
   itemCode: "",
+  partNo: "",
   description: "",
   qty: 1,
+  uom: "PCS",
   unitPrice: 0,
-  currency: "USD",
   remarks: "",
 });
+
+function todayDateInput() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function initialPoForm() {
+  return {
+    ...BUYER_DEFAULTS,
+    ...COMMERCIAL_DEFAULTS,
+    supplierName: "",
+    supplierAddress: "",
+    supplierPhone: "",
+    supplierEmail: "",
+    ref: "",
+    intRef: "",
+    contactPerson: "",
+    supplierReference: "",
+    offerDate: "",
+    currency: "USD",
+    orderDate: todayDateInput(),
+    remarks: "",
+    specialRemarks: DEFAULT_SPECIAL_REMARKS,
+    termsAndConditions: DEFAULT_PURCHASE_TERMS,
+    closingNote: DEFAULT_CLOSING_NOTE,
+    lines: [defaultLine()],
+  };
+}
+
+function buildPoPayload(form) {
+  const cur = form.currency || "USD";
+  const lines = form.lines
+    .map((l) => {
+      const articleNo = String(l.articleNo || "").trim();
+      const partNo = String(l.partNo || "").trim();
+      const itemCode = String(l.itemCode || articleNo || partNo).trim().toUpperCase();
+      return {
+        articleNo: articleNo || itemCode,
+        itemCode,
+        partNo,
+        description: String(l.description || "").trim(),
+        qty: Number(l.qty) || 0,
+        uom: String(l.uom || "PCS").trim(),
+        unitPrice: Number(l.unitPrice) || 0,
+        remarks: String(l.remarks || "").trim(),
+        currency: cur,
+      };
+    })
+    .filter((l) => l.itemCode && l.qty > 0);
+
+  const orderDate =
+    form.orderDate && String(form.orderDate).trim()
+      ? new Date(`${form.orderDate}T12:00:00`).toISOString()
+      : undefined;
+
+  return {
+    buyerLegalName: form.buyerLegalName,
+    buyerAddressLine: form.buyerAddressLine,
+    buyerPhone: form.buyerPhone,
+    buyerEmail: form.buyerEmail,
+    buyerWeb: form.buyerWeb,
+    supplierName: String(form.supplierName || "").trim(),
+    supplierAddress: form.supplierAddress ?? "",
+    supplierPhone: form.supplierPhone ?? "",
+    supplierEmail: form.supplierEmail ?? "",
+    ref: form.ref ?? "",
+    intRef: form.intRef ?? "",
+    contactPerson: form.contactPerson ?? "",
+    supplierReference: form.supplierReference ?? "",
+    offerDate: form.offerDate ?? "",
+    currency: cur,
+    orderDate,
+    remarks: form.remarks ?? "",
+    delivery: form.delivery,
+    insurance: form.insurance,
+    packing: form.packing,
+    freight: form.freight,
+    taxes: form.taxes,
+    payment: form.payment,
+    specialRemarks: form.specialRemarks ?? "",
+    termsAndConditions: form.termsAndConditions ?? "",
+    closingNote: form.closingNote ?? "",
+    lines,
+  };
+}
+
+function formatPoDate(val) {
+  if (!val) return "—";
+  const d = typeof val === "string" || typeof val === "number" ? new Date(val) : val;
+  if (Number.isNaN(d.getTime())) return String(val);
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
 
 const defaultPrLine = () => ({
   itemCode: "",
@@ -74,7 +174,9 @@ function csvRowsToPurchaseOrders(rows) {
   const byKey = new Map();
   for (const r of rows) {
     const supplierName = String(r.supplierName || r.Supplier || "").trim();
-    const itemCode = String(r.itemCode || r.ItemCode || "").trim();
+    const articleNo = String(r.articleNo || r.ArticleNr || r.ArticleNo || "").trim();
+    const partNo = String(r.partNo || r.PartNr || r.PartNo || "").trim();
+    const itemCode = String(r.itemCode || r.ItemCode || articleNo || partNo || "").trim();
     if (!supplierName || !itemCode) continue;
 
     const poNumber = String(r.poNumber || r.PONumber || "").trim();
@@ -92,6 +194,9 @@ function csvRowsToPurchaseOrders(rows) {
     const po = byKey.get(key);
     po.lines.push({
       itemCode,
+      articleNo: articleNo || itemCode,
+      partNo,
+      uom: String(r.uom || r.UOM || "PCS").trim() || "PCS",
       description: String(r.description || r.Description || "").trim(),
       qty: Number(r.qty || r.Qty) || 0,
       unitPrice: Number(r.unitPrice || r.UnitPrice || r.Rate) || 0,
@@ -116,12 +221,7 @@ export default function Purchase() {
   const [createOpen, setCreateOpen] = useState(false);
   const [detailId, setDetailId] = useState(null);
   const [receiveOpen, setReceiveOpen] = useState(false);
-  const [form, setForm] = useState({
-    supplierName: "",
-    currency: "USD",
-    remarks: "",
-    lines: [defaultLine()],
-  });
+  const [form, setForm] = useState(() => initialPoForm());
   const [receiveWarehouse, setReceiveWarehouse] = useState("MAIN");
   const [receiveLines, setReceiveLines] = useState([]);
   const [err, setErr] = useState("");
@@ -190,16 +290,39 @@ export default function Purchase() {
   });
 
   const createMutation = useMutation({
-    mutationFn: () => apiPost("/purchase-orders", form),
+    mutationFn: (body) => apiPost("/purchase-orders", body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
       qc.invalidateQueries({ queryKey: ["purchaseSummary"] });
       qc.invalidateQueries({ queryKey: ["pendingPoReport"] });
+      setErr("");
       setCreateOpen(false);
-      setForm({ supplierName: "", currency: "USD", remarks: "", lines: [defaultLine()] });
+      setForm(initialPoForm());
     },
-    onError: (e) => setErr(e.message),
+    onError: (e) => setErr(e.message || "Could not create purchase order"),
   });
+
+  const poPreviewTotals = useMemo(() => {
+    const sub = form.lines.reduce(
+      (s, l) => s + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0),
+      0
+    );
+    return { subTotal: sub, grandTotal: sub };
+  }, [form.lines]);
+
+  function applySupplierMasterDefaults(name) {
+    const n = name.trim().toLowerCase();
+    if (!n) return;
+    const s = (suppliersAll?.items ?? []).find((x) => String(x.name || "").trim().toLowerCase() === n);
+    if (!s) return;
+    setForm((f) => ({
+      ...f,
+      supplierAddress: f.supplierAddress || s.address || "",
+      supplierPhone: f.supplierPhone || s.phone || "",
+      supplierEmail: f.supplierEmail || s.email || "",
+      contactPerson: f.contactPerson || s.contactName || "",
+    }));
+  }
 
   const poImportMutation = useMutation({
     mutationFn: (orders) => apiPost("/purchase-orders/import", { orders }),
@@ -594,6 +717,8 @@ export default function Purchase() {
                 className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-gray-800"
                 onClick={() => {
                   setErr("");
+                  createMutation.reset();
+                  setForm(initialPoForm());
                   setCreateOpen(true);
                 }}
               >
@@ -1204,56 +1329,184 @@ export default function Purchase() {
         </section>
       )}
 
-      <Modal open={!!detailId} onClose={() => setDetailId(null)} title="Purchase order detail" wide>
+      <Modal
+        open={!!detailId}
+        onClose={() => setDetailId(null)}
+        title={detail?.poNumber ? `Purchase order ${detail.poNumber}` : "Purchase order"}
+        document
+      >
         {!detail ? (
           <p className="text-sm text-gray-500">Loading…</p>
         ) : (
-          <div className="space-y-4 text-sm">
-            <div className="grid gap-3 rounded-xl border border-gray-100 bg-slate-50/50 p-4 sm:grid-cols-2 lg:grid-cols-4">
-              <div>
-                <div className="text-xs font-semibold uppercase text-gray-500">PO number</div>
-                <div className="font-mono text-lg font-bold">{detail.poNumber}</div>
-              </div>
-              <div>
-                <div className="text-xs font-semibold uppercase text-gray-500">Supplier</div>
-                <div className="font-medium">{detail.supplierName}</div>
-              </div>
-              <div>
-                <div className="text-xs font-semibold uppercase text-gray-500">Status</div>
-                <StatusBadge status={detail.status} />
-              </div>
-              <div>
-                <div className="text-xs font-semibold uppercase text-gray-500">Total</div>
-                <div className="text-lg font-semibold tabular-nums">
-                  {detail.currency} {Number(detail.grandTotal || 0).toFixed(2)}
+          <div className="space-y-5 text-sm text-gray-800">
+            <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
+              <div className="flex flex-wrap items-start justify-between gap-4 border-b border-gray-100 pb-4">
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                    Purchase order
+                  </div>
+                  <div className="mt-1 font-mono text-xl font-bold text-gray-900">{detail.poNumber}</div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                    <StatusBadge status={detail.status} />
+                    <span className="text-gray-400">·</span>
+                    <span className="text-gray-600">{formatPoDate(detail.orderDate)}</span>
+                    <span className="text-gray-400">·</span>
+                    <span className="font-semibold tabular-nums text-gray-900">
+                      {detail.currency} {Number(detail.grandTotal || 0).toFixed(2)}
+                    </span>
+                  </div>
                 </div>
               </div>
+
+              <div className="mt-4 grid gap-6 md:grid-cols-2">
+                <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-3">
+                  <div className="text-[10px] font-bold uppercase text-gray-500">Buyer</div>
+                  <div className="mt-1 font-semibold text-gray-900">
+                    {detail.buyerLegalName || BUYER_DEFAULTS.buyerLegalName}
+                  </div>
+                  <div className="mt-1 whitespace-pre-line text-xs leading-relaxed text-gray-600">
+                    {detail.buyerAddressLine || BUYER_DEFAULTS.buyerAddressLine}
+                  </div>
+                  <div className="mt-2 space-y-0.5 text-xs text-gray-600">
+                    <div>Tel: {detail.buyerPhone || BUYER_DEFAULTS.buyerPhone}</div>
+                    <div>{detail.buyerEmail || BUYER_DEFAULTS.buyerEmail}</div>
+                    <div>{detail.buyerWeb || BUYER_DEFAULTS.buyerWeb}</div>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-3">
+                  <div className="text-[10px] font-bold uppercase text-gray-500">Supplier</div>
+                  <div className="mt-1 font-semibold text-gray-900">{detail.supplierName}</div>
+                  {detail.supplierAddress ? (
+                    <div className="mt-1 whitespace-pre-line text-xs leading-relaxed text-gray-600">
+                      {detail.supplierAddress}
+                    </div>
+                  ) : null}
+                  <div className="mt-2 space-y-0.5 text-xs text-gray-600">
+                    {detail.supplierPhone ? <div>Tel: {detail.supplierPhone}</div> : null}
+                    {detail.supplierEmail ? <div>{detail.supplierEmail}</div> : null}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {[
+                  ["Ref", detail.ref],
+                  ["Int. ref", detail.intRef],
+                  ["Contact person", detail.contactPerson],
+                  ["Supplier reference", detail.supplierReference],
+                  ["Offer date", detail.offerDate],
+                  ["Currency", detail.currency],
+                ].map(([lab, val]) => (
+                  <div key={lab} className="text-xs">
+                    <div className="font-semibold uppercase tracking-wide text-gray-500">{lab}</div>
+                    <div className="mt-0.5 text-gray-900">{val ? String(val) : "—"}</div>
+                  </div>
+                ))}
+              </div>
+
+              {detail.remarks ? (
+                <div className="mt-4 rounded-lg border border-dashed border-gray-200 bg-white p-3 text-xs">
+                  <span className="font-semibold text-gray-500">Remarks: </span>
+                  {detail.remarks}
+                </div>
+              ) : null}
             </div>
+
             <div className="overflow-x-auto rounded-xl border border-gray-200">
-              <table className="min-w-full text-xs">
-                <thead className="bg-gray-100">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-bold">Item</th>
-                    <th className="px-3 py-2 text-right">Qty</th>
-                    <th className="px-3 py-2 text-right">Received</th>
-                    <th className="px-3 py-2 text-right">Rate</th>
-                    <th className="px-3 py-2 text-right">Line</th>
+              <table className="min-w-[920px] w-full border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-gray-200 bg-gray-100 text-left">
+                    <th className="px-2 py-2 font-bold text-gray-700">Pos</th>
+                    <th className="px-2 py-2 font-bold text-gray-700">Article Nr.</th>
+                    <th className="px-2 py-2 font-bold text-gray-700">Description</th>
+                    <th className="px-2 py-2 font-bold text-gray-700">Part Nr.</th>
+                    <th className="px-2 py-2 text-right font-bold text-gray-700">Qty</th>
+                    <th className="px-2 py-2 font-bold text-gray-700">UOM</th>
+                    <th className="px-2 py-2 text-right font-bold text-gray-700">Unit rate</th>
+                    <th className="px-2 py-2 text-right font-bold text-gray-700">Total</th>
+                    <th className="px-2 py-2 text-right font-bold text-gray-700">Rcvd</th>
+                    <th className="px-2 py-2 font-bold text-gray-700">Remark</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {detail.lines?.map((l) => (
-                    <tr key={l._id} className="border-t border-gray-100">
-                      <td className="px-3 py-2 font-mono">{l.itemCode}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{l.qty}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{l.receivedQty ?? 0}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{l.unitPrice}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{l.lineTotal}</td>
+                  {detail.lines?.map((l, i) => (
+                    <tr key={l._id} className="border-b border-gray-100">
+                      <td className="px-2 py-2 text-gray-500">{i + 1}</td>
+                      <td className="px-2 py-2 font-mono text-[11px]">{l.articleNo || l.itemCode}</td>
+                      <td className="px-2 py-2">{l.description || "—"}</td>
+                      <td className="px-2 py-2 font-mono text-[11px]">{l.partNo || "—"}</td>
+                      <td className="px-2 py-2 text-right tabular-nums">{l.qty}</td>
+                      <td className="px-2 py-2">{l.uom || "PCS"}</td>
+                      <td className="px-2 py-2 text-right tabular-nums">
+                        {Number(l.unitPrice || 0).toFixed(2)}
+                      </td>
+                      <td className="px-2 py-2 text-right tabular-nums font-medium">
+                        {Number(l.lineTotal || 0).toFixed(2)}
+                      </td>
+                      <td className="px-2 py-2 text-right tabular-nums text-gray-600">
+                        {l.receivedQty ?? 0}
+                      </td>
+                      <td className="px-2 py-2 text-gray-600">{l.remarks || "—"}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <div className="flex flex-wrap gap-2">
+
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {[
+                ["Delivery", detail.delivery],
+                ["Insurance", detail.insurance],
+                ["Packing", detail.packing],
+                ["Freight", detail.freight],
+                ["Taxes", detail.taxes],
+                ["Payment", detail.payment],
+              ].map(([k, v]) => (
+                <div key={k} className="rounded-lg border border-gray-100 p-3 text-xs">
+                  <div className="font-bold uppercase text-gray-500">{k}</div>
+                  <div className="mt-1 text-gray-800">{v || "—"}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex flex-col items-end gap-1 border-t border-gray-100 pt-4 text-sm">
+              <div className="flex w-full max-w-xs justify-between tabular-nums">
+                <span className="text-gray-500">Sub total</span>
+                <span className="font-medium">
+                  {detail.currency} {Number(detail.subTotal ?? detail.grandTotal ?? 0).toFixed(2)}
+                </span>
+              </div>
+              <div className="flex w-full max-w-xs justify-between border-t border-gray-200 pt-1 text-base font-bold tabular-nums">
+                <span>Grand total</span>
+                <span>
+                  {detail.currency} {Number(detail.grandTotal || 0).toFixed(2)}
+                </span>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-gray-100 bg-amber-50/30 p-3 text-xs">
+              <div className="font-bold uppercase text-gray-600">Special remarks</div>
+              <div className="mt-1 whitespace-pre-wrap text-gray-800">
+                {detail.specialRemarks != null && detail.specialRemarks !== ""
+                  ? detail.specialRemarks
+                  : "—"}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[10px] font-bold uppercase text-gray-500">Terms &amp; conditions</div>
+              <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-gray-100 bg-gray-50 p-3 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap">
+                {detail.termsAndConditions?.trim()
+                  ? detail.termsAndConditions
+                  : "No terms text stored on this PO (older records may predate this field)."}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs italic text-gray-600">
+              {detail.closingNote || DEFAULT_CLOSING_NOTE}
+            </div>
+
+            <div className="flex flex-wrap gap-2 border-t border-gray-100 pt-4">
               <button
                 type="button"
                 className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
@@ -1356,100 +1609,354 @@ export default function Purchase() {
 
       <Modal
         open={createOpen}
-        onClose={() => setCreateOpen(false)}
+        onClose={() => {
+          setCreateOpen(false);
+          setErr("");
+          createMutation.reset();
+        }}
         title="New purchase order"
-        wide
+        document
       >
-        {createMutation.isError && (
-          <div className="mb-2 text-sm text-red-600">{createMutation.error.message}</div>
-        )}
-        <div className="grid gap-3 sm:grid-cols-2">
-          <FormField label="Supplier *">
-            <TextInput
-              list="supplier-pick"
-              value={form.supplierName}
-              onChange={(e) => setForm((f) => ({ ...f, supplierName: e.target.value }))}
-            />
-            <datalist id="supplier-pick">
-              {(suppliersAll?.items ?? []).map((s) => (
-                <option key={s._id} value={s.name} />
-              ))}
-            </datalist>
-          </FormField>
-          <FormField label="Currency">
-            <TextInput
-              value={form.currency}
-              onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value }))}
-            />
-          </FormField>
-          <FormField label="Remarks" className="sm:col-span-2">
-            <TextInput
-              value={form.remarks}
-              onChange={(e) => setForm((f) => ({ ...f, remarks: e.target.value }))}
-            />
-          </FormField>
-        </div>
-        <div className="mt-4">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm font-semibold">Line items</span>
-            <button
-              type="button"
-              className="text-sm font-semibold text-gray-700 underline"
-              onClick={() => setForm((f) => ({ ...f, lines: [...f.lines, defaultLine()] }))}
-            >
-              + Add line
-            </button>
-          </div>
-          <div className="space-y-2">
-            {form.lines.map((line, idx) => (
-              <div
-                key={idx}
-                className="grid grid-cols-2 gap-2 rounded-xl border border-gray-200 p-2 sm:grid-cols-5"
-              >
+        {err ? <div className="mb-3 text-sm text-red-600">{err}</div> : null}
+        <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm sm:p-5">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+            Document preview — saved as draft PO
+          </p>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <div className="rounded-lg border border-gray-100 bg-gray-50/90 p-3">
+              <div className="text-[10px] font-bold uppercase text-gray-500">Buyer</div>
+              <FormField label="Legal name">
                 <TextInput
-                  placeholder="Item code"
-                  value={line.itemCode}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...lines[idx], itemCode: e.target.value };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
+                  value={form.buyerLegalName}
+                  onChange={(e) => setForm((f) => ({ ...f, buyerLegalName: e.target.value }))}
                 />
-                <TextInput
-                  type="number"
-                  placeholder="Qty"
-                  value={line.qty}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...lines[idx], qty: Number(e.target.value) };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
+              </FormField>
+              <FormField label="Address" className="mt-2">
+                <textarea
+                  rows={2}
+                  className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+                  value={form.buyerAddressLine}
+                  onChange={(e) => setForm((f) => ({ ...f, buyerAddressLine: e.target.value }))}
                 />
-                <TextInput
-                  type="number"
-                  step="0.01"
-                  placeholder="Unit price"
-                  value={line.unitPrice}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...lines[idx], unitPrice: Number(e.target.value) };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  placeholder="Description"
-                  className="sm:col-span-2"
-                  value={line.description}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...lines[idx], description: e.target.value };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
-                />
+              </FormField>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <FormField label="Phone">
+                  <TextInput
+                    value={form.buyerPhone}
+                    onChange={(e) => setForm((f) => ({ ...f, buyerPhone: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Email">
+                  <TextInput
+                    value={form.buyerEmail}
+                    onChange={(e) => setForm((f) => ({ ...f, buyerEmail: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Web" className="sm:col-span-2">
+                  <TextInput
+                    value={form.buyerWeb}
+                    onChange={(e) => setForm((f) => ({ ...f, buyerWeb: e.target.value }))}
+                  />
+                </FormField>
               </div>
-            ))}
+            </div>
+            <div className="rounded-lg border border-gray-100 bg-gray-50/90 p-3">
+              <div className="text-[10px] font-bold uppercase text-gray-500">Supplier</div>
+              <FormField label="Supplier name *">
+                <TextInput
+                  list="supplier-pick"
+                  value={form.supplierName}
+                  onChange={(e) => setForm((f) => ({ ...f, supplierName: e.target.value }))}
+                  onBlur={(e) => applySupplierMasterDefaults(e.target.value)}
+                />
+                <datalist id="supplier-pick">
+                  {(suppliersAll?.items ?? []).map((s) => (
+                    <option key={s._id} value={s.name} />
+                  ))}
+                </datalist>
+              </FormField>
+              <FormField label="Address" className="mt-2">
+                <textarea
+                  rows={2}
+                  className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+                  value={form.supplierAddress}
+                  onChange={(e) => setForm((f) => ({ ...f, supplierAddress: e.target.value }))}
+                />
+              </FormField>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <FormField label="Phone">
+                  <TextInput
+                    value={form.supplierPhone}
+                    onChange={(e) => setForm((f) => ({ ...f, supplierPhone: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Email">
+                  <TextInput
+                    value={form.supplierEmail}
+                    onChange={(e) => setForm((f) => ({ ...f, supplierEmail: e.target.value }))}
+                  />
+                </FormField>
+              </div>
+            </div>
           </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <FormField label="Ref">
+              <TextInput value={form.ref} onChange={(e) => setForm((f) => ({ ...f, ref: e.target.value }))} />
+            </FormField>
+            <FormField label="Int. ref">
+              <TextInput
+                value={form.intRef}
+                onChange={(e) => setForm((f) => ({ ...f, intRef: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="Contact person">
+              <TextInput
+                value={form.contactPerson}
+                onChange={(e) => setForm((f) => ({ ...f, contactPerson: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="Supplier reference">
+              <TextInput
+                value={form.supplierReference}
+                onChange={(e) => setForm((f) => ({ ...f, supplierReference: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="Offer date">
+              <TextInput
+                value={form.offerDate}
+                onChange={(e) => setForm((f) => ({ ...f, offerDate: e.target.value }))}
+                placeholder="e.g. 12-Feb-26"
+              />
+            </FormField>
+            <FormField label="PO date">
+              <TextInput
+                type="date"
+                value={form.orderDate}
+                onChange={(e) => setForm((f) => ({ ...f, orderDate: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="Currency">
+              <TextInput
+                value={form.currency}
+                onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="Header remarks">
+              <TextInput
+                value={form.remarks}
+                onChange={(e) => setForm((f) => ({ ...f, remarks: e.target.value }))}
+                placeholder="Optional notes on the PO"
+              />
+            </FormField>
+          </div>
+
+          <div className="mt-5">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wide text-gray-600">Line items</span>
+              <button
+                type="button"
+                className="text-xs font-semibold text-gray-800 underline"
+                onClick={() => setForm((f) => ({ ...f, lines: [...f.lines, defaultLine()] }))}
+              >
+                + Add line
+              </button>
+            </div>
+            <div className="overflow-x-auto rounded-lg border border-gray-200">
+              <table className="min-w-[920px] w-full border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-gray-200 bg-gray-100 text-left">
+                    <th className="px-1.5 py-2 font-bold text-gray-700">Pos</th>
+                    <th className="px-1.5 py-2 font-bold text-gray-700">Article Nr.</th>
+                    <th className="min-w-[120px] px-1.5 py-2 font-bold text-gray-700">Description</th>
+                    <th className="px-1.5 py-2 font-bold text-gray-700">Part Nr.</th>
+                    <th className="px-1.5 py-2 font-bold text-gray-700">Qty</th>
+                    <th className="px-1.5 py-2 font-bold text-gray-700">UOM</th>
+                    <th className="px-1.5 py-2 font-bold text-gray-700">Unit rate</th>
+                    <th className="px-1.5 py-2 text-right font-bold text-gray-700">Total</th>
+                    <th className="min-w-[72px] px-1.5 py-2 font-bold text-gray-700">Remark</th>
+                    <th className="w-8 px-1 py-2" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {form.lines.map((line, idx) => {
+                    const lineTot = (Number(line.qty) || 0) * (Number(line.unitPrice) || 0);
+                    const setLine = (patch) => {
+                      const lines = [...form.lines];
+                      lines[idx] = { ...lines[idx], ...patch };
+                      setForm((f) => ({ ...f, lines }));
+                    };
+                    return (
+                      <tr key={idx} className="border-b border-gray-100 align-top">
+                        <td className="px-1.5 py-1.5 text-gray-500">{idx + 1}</td>
+                        <td className="px-1.5 py-1.5">
+                          <TextInput
+                            className="py-1.5 text-[11px]"
+                            placeholder="Article"
+                            value={line.articleNo}
+                            onChange={(e) => setLine({ articleNo: e.target.value })}
+                          />
+                        </td>
+                        <td className="px-1.5 py-1.5">
+                          <TextInput
+                            className="py-1.5 text-[11px]"
+                            placeholder="Description"
+                            value={line.description}
+                            onChange={(e) => setLine({ description: e.target.value })}
+                          />
+                        </td>
+                        <td className="px-1.5 py-1.5">
+                          <TextInput
+                            className="py-1.5 text-[11px]"
+                            placeholder="Part"
+                            value={line.partNo}
+                            onChange={(e) => setLine({ partNo: e.target.value })}
+                          />
+                        </td>
+                        <td className="px-1.5 py-1.5">
+                          <TextInput
+                            className="py-1.5 text-[11px]"
+                            type="number"
+                            min={0}
+                            value={line.qty}
+                            onChange={(e) => setLine({ qty: Number(e.target.value) })}
+                          />
+                        </td>
+                        <td className="px-1.5 py-1.5">
+                          <TextInput
+                            className="py-1.5 text-[11px]"
+                            value={line.uom}
+                            onChange={(e) => setLine({ uom: e.target.value })}
+                          />
+                        </td>
+                        <td className="px-1.5 py-1.5">
+                          <TextInput
+                            className="py-1.5 text-[11px]"
+                            type="number"
+                            step="0.01"
+                            min={0}
+                            value={line.unitPrice}
+                            onChange={(e) => setLine({ unitPrice: Number(e.target.value) })}
+                          />
+                        </td>
+                        <td className="px-1.5 py-1.5 text-right tabular-nums font-medium text-gray-800">
+                          {lineTot.toFixed(2)}
+                        </td>
+                        <td className="px-1.5 py-1.5">
+                          <TextInput
+                            className="py-1.5 text-[11px]"
+                            value={line.remarks}
+                            onChange={(e) => setLine({ remarks: e.target.value })}
+                          />
+                        </td>
+                        <td className="px-0.5 py-1.5">
+                          <button
+                            type="button"
+                            className="rounded border border-gray-200 px-1.5 py-0.5 text-gray-500 hover:bg-gray-50 disabled:opacity-30"
+                            disabled={form.lines.length <= 1}
+                            title="Remove line"
+                            onClick={() =>
+                              setForm((f) => ({
+                                ...f,
+                                lines: f.lines.filter((_, i) => i !== idx),
+                              }))
+                            }
+                          >
+                            ×
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-1 text-[10px] text-gray-500">
+              Inventory uses Article Nr., internal code, or Part Nr. (at least one required per line).
+            </p>
+          </div>
+
+          <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <FormField label="Delivery">
+              <TextInput
+                value={form.delivery}
+                onChange={(e) => setForm((f) => ({ ...f, delivery: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="Insurance">
+              <TextInput
+                value={form.insurance}
+                onChange={(e) => setForm((f) => ({ ...f, insurance: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="Packing">
+              <TextInput
+                value={form.packing}
+                onChange={(e) => setForm((f) => ({ ...f, packing: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="Freight">
+              <TextInput
+                value={form.freight}
+                onChange={(e) => setForm((f) => ({ ...f, freight: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="Taxes">
+              <TextInput
+                value={form.taxes}
+                onChange={(e) => setForm((f) => ({ ...f, taxes: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="Payment">
+              <TextInput
+                value={form.payment}
+                onChange={(e) => setForm((f) => ({ ...f, payment: e.target.value }))}
+              />
+            </FormField>
+          </div>
+
+          <div className="mt-4 flex flex-col items-end gap-1 border-t border-gray-100 pt-4 text-sm">
+            <div className="flex w-full max-w-xs justify-between tabular-nums">
+              <span className="text-gray-500">Sub total</span>
+              <span className="font-medium">
+                {form.currency} {poPreviewTotals.subTotal.toFixed(2)}
+              </span>
+            </div>
+            <div className="flex w-full max-w-xs justify-between border-t border-gray-200 pt-1 text-base font-bold tabular-nums">
+              <span>Grand total</span>
+              <span>
+                {form.currency} {poPreviewTotals.grandTotal.toFixed(2)}
+              </span>
+            </div>
+          </div>
+
+          <FormField label="Special remarks" className="mt-4">
+            <TextInput
+              value={form.specialRemarks}
+              onChange={(e) => setForm((f) => ({ ...f, specialRemarks: e.target.value }))}
+            />
+          </FormField>
+
+          <FormField label="Terms & conditions" className="mt-3">
+            <textarea
+              rows={8}
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-xs leading-relaxed focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+              value={form.termsAndConditions}
+              onChange={(e) => setForm((f) => ({ ...f, termsAndConditions: e.target.value }))}
+            />
+          </FormField>
+
+          <FormField label="Closing note" className="mt-3">
+            <textarea
+              rows={2}
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm italic focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+              value={form.closingNote}
+              onChange={(e) => setForm((f) => ({ ...f, closingNote: e.target.value }))}
+            />
+          </FormField>
         </div>
+
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"
@@ -1464,7 +1971,16 @@ export default function Purchase() {
             disabled={createMutation.isPending}
             onClick={() => {
               setErr("");
-              createMutation.mutate();
+              const body = buildPoPayload(form);
+              if (!body.supplierName) {
+                setErr("Supplier name is required.");
+                return;
+              }
+              if (!body.lines.length) {
+                setErr("Add at least one line with Article Nr., code, or Part Nr. and quantity.");
+                return;
+              }
+              createMutation.mutate(body);
             }}
           >
             {createMutation.isPending ? "Saving…" : "Create"}

@@ -2,6 +2,30 @@ import mongoose from "mongoose";
 import PurchaseOrder from "../models/PurchaseOrder.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 import { applyStockIn } from "../services/stockService.js";
+import { applyPurchaseOrderDefaults } from "../constants/purchaseOrderDefaults.js";
+
+function normalizePoLines(lines = []) {
+  return lines
+    .map((l) => {
+      const itemCode = String(l.itemCode || l.articleNo || l.partNo || "").trim().toUpperCase();
+      const articleNo =
+        l.articleNo != null && String(l.articleNo).trim() !== ""
+          ? String(l.articleNo).trim()
+          : itemCode;
+      return {
+        ...l,
+        itemCode,
+        articleNo,
+        partNo: l.partNo != null ? String(l.partNo).trim() : "",
+        uom: l.uom || "PCS",
+        qty: Number(l.qty) || 0,
+        unitPrice: Number(l.unitPrice) || 0,
+        description: l.description ?? "",
+        remarks: l.remarks ?? "",
+      };
+    })
+    .filter((l) => l.itemCode && l.qty > 0);
+}
 
 function recalcPoTotals(doc) {
   let sub = 0;
@@ -51,7 +75,14 @@ export async function getPurchaseOrder(req, res) {
 
 export async function createPurchaseOrder(req, res) {
   try {
-    const body = { ...req.body };
+    let body = { ...req.body };
+    body.lines = normalizePoLines(body.lines);
+    if (!body.lines.length) {
+      return res.status(400).json({
+        message: "At least one line with Article Nr. (or item / part code) and quantity is required",
+      });
+    }
+    body = applyPurchaseOrderDefaults(body);
     if (!body.poNumber) {
       body.poNumber = await nextSequentialNumber(PurchaseOrder, "poNumber", "PO");
     }
@@ -75,16 +106,43 @@ export async function updatePurchaseOrder(req, res) {
     if (!doc) return res.status(404).json({ message: "Not found" });
 
     const allowed = [
+      "buyerLegalName",
+      "buyerAddressLine",
+      "buyerPhone",
+      "buyerEmail",
+      "buyerWeb",
       "supplierName",
+      "supplierAddress",
+      "supplierPhone",
+      "supplierEmail",
       "supplierReference",
+      "ref",
+      "intRef",
+      "contactPerson",
+      "offerDate",
       "currency",
       "lines",
       "status",
       "remarks",
       "orderDate",
+      "delivery",
+      "insurance",
+      "packing",
+      "freight",
+      "taxes",
+      "payment",
+      "specialRemarks",
+      "termsAndConditions",
+      "closingNote",
     ];
     for (const k of allowed) {
       if (req.body[k] !== undefined) doc[k] = req.body[k];
+    }
+    if (req.body.lines) {
+      doc.lines = normalizePoLines(doc.lines);
+      if (!doc.lines.length) {
+        return res.status(400).json({ message: "At least one valid line is required" });
+      }
     }
     recalcPoTotals(doc);
     await doc.save();
@@ -308,12 +366,15 @@ export async function importPurchaseOrders(req, res) {
         const poNumber =
           row.poNumber ||
           (await nextSequentialNumber(PurchaseOrder, "poNumber", "PO"));
-        const doc = new PurchaseOrder({
+        let payload = applyPurchaseOrderDefaults({
           ...row,
           poNumber,
           createdBy: userEmail,
           status: row.status || "DRAFT",
+          lines: normalizePoLines(row.lines),
         });
+        if (!payload.lines.length) throw new Error("no valid lines after normalize");
+        const doc = new PurchaseOrder(payload);
         recalcPoTotals(doc);
         await doc.save();
         created.push(doc);
