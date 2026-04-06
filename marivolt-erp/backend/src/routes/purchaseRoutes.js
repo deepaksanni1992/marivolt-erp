@@ -6,6 +6,9 @@ const router = express.Router();
 
 router.use(...requireErpAccess);
 
+router.get("/reports/summary", c.purchaseSummaryReport);
+router.get("/reports/pending", c.pendingPurchaseReport);
+router.post("/import", c.importPurchaseOrders);
 router.get("/", c.listPurchaseOrders);
 router.get("/:id", c.getPurchaseOrder);
 router.post("/", c.createPurchaseOrder);

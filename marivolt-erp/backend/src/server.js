@@ -17,6 +17,8 @@ import accountsRoutes from "./routes/accountsRoutes.js";
 import bomRoutes from "./routes/bomRoutes.js";
 import kittingRoutes from "./routes/kittingRoutes.js";
 import dekittingRoutes from "./routes/dekittingRoutes.js";
+import supplierRoutes from "./routes/supplierRoutes.js";
+import purchaseReturnRoutes from "./routes/purchaseReturnRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -91,6 +93,8 @@ async function startServer() {
     app.use("/api/auth", authRoutes);
     app.use("/api/items", itemRoutes);
     app.use("/api/purchase-orders", purchaseRoutes);
+    app.use("/api/suppliers", supplierRoutes);
+    app.use("/api/purchase-returns", purchaseReturnRoutes);
     app.use("/api/quotations", quotationRoutes);
     app.use("/api/inventory", inventoryRoutes);
     app.use("/api/shipments", logisticsRoutes);

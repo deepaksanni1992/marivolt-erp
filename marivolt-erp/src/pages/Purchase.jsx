@@ -1,9 +1,25 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import PageHeader from "../components/erp/PageHeader.jsx";
+import Papa from "papaparse";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
-import { apiGet, apiGetWithQuery, apiPatch, apiPost } from "../lib/api.js";
+import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
+import {
+  apiDelete,
+  apiGet,
+  apiGetWithQuery,
+  apiPatch,
+  apiPost,
+  apiPut,
+} from "../lib/api.js";
+
+const TABS = [
+  { id: "orders", label: "Purchase order" },
+  { id: "suppliers", label: "Supplier master" },
+  { id: "summary", label: "PO summary" },
+  { id: "returns", label: "Purchase return" },
+  { id: "pending", label: "Pending PO report" },
+];
 
 const defaultLine = () => ({
   itemCode: "",
@@ -14,10 +30,89 @@ const defaultLine = () => ({
   remarks: "",
 });
 
+const defaultPrLine = () => ({
+  itemCode: "",
+  description: "",
+  qty: 1,
+  unitPrice: 0,
+  reason: "",
+});
+
+function StatusBadge({ status }) {
+  const map = {
+    DRAFT: "bg-slate-100 text-slate-800 ring-slate-200",
+    SAVED: "bg-zinc-100 text-zinc-800 ring-zinc-200",
+    SENT: "bg-sky-50 text-sky-900 ring-sky-200",
+    PARTIAL_RECEIVED: "bg-amber-50 text-amber-900 ring-amber-200",
+    RECEIVED: "bg-emerald-50 text-emerald-900 ring-emerald-200",
+    CANCELLED: "bg-red-50 text-red-800 ring-red-200",
+    APPROVED: "bg-indigo-50 text-indigo-900 ring-indigo-200",
+    POSTED: "bg-emerald-50 text-emerald-900 ring-emerald-200",
+  };
+  const cls = map[status] || "bg-gray-100 text-gray-800 ring-gray-200";
+  return (
+    <span
+      className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset ${cls}`}
+    >
+      {status}
+    </span>
+  );
+}
+
+function KpiCard({ label, value, hint }) {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">{label}</div>
+      <div className="mt-1 text-2xl font-semibold tabular-nums text-gray-900">{value}</div>
+      {hint ? <div className="mt-1 text-xs text-gray-500">{hint}</div> : null}
+    </div>
+  );
+}
+
+/** Group CSV rows by poNumber, or merge lines for the same supplier when poNumber is blank. */
+function csvRowsToPurchaseOrders(rows) {
+  const byKey = new Map();
+  for (const r of rows) {
+    const supplierName = String(r.supplierName || r.Supplier || "").trim();
+    const itemCode = String(r.itemCode || r.ItemCode || "").trim();
+    if (!supplierName || !itemCode) continue;
+
+    const poNumber = String(r.poNumber || r.PONumber || "").trim();
+    const key = poNumber || `__SUP__${supplierName.toUpperCase()}`;
+
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        poNumber: poNumber || undefined,
+        supplierName,
+        currency: String(r.currency || r.Currency || "USD").trim() || "USD",
+        remarks: String(r.remarks || r.Remarks || "").trim(),
+        lines: [],
+      });
+    }
+    const po = byKey.get(key);
+    po.lines.push({
+      itemCode,
+      description: String(r.description || r.Description || "").trim(),
+      qty: Number(r.qty || r.Qty) || 0,
+      unitPrice: Number(r.unitPrice || r.UnitPrice || r.Rate) || 0,
+    });
+  }
+  return [...byKey.values()].filter((p) => p.lines.length > 0);
+}
+
 export default function Purchase() {
   const qc = useQueryClient();
+  const [tab, setTab] = useState("orders");
   const [page, setPage] = useState(1);
+  const [supPage, setSupPage] = useState(1);
+  const [retPage, setRetPage] = useState(1);
+  const [pendPage, setPendPage] = useState(1);
   const limit = 20;
+
+  const [poFilterSupplier, setPoFilterSupplier] = useState("");
+  const [poFilterStatus, setPoFilterStatus] = useState("");
+  const [supSearch, setSupSearch] = useState("");
+
   const [createOpen, setCreateOpen] = useState(false);
   const [detailId, setDetailId] = useState(null);
   const [receiveOpen, setReceiveOpen] = useState(false);
@@ -31,9 +126,54 @@ export default function Purchase() {
   const [receiveLines, setReceiveLines] = useState([]);
   const [err, setErr] = useState("");
 
+  const poImportRef = useRef(null);
+  const supImportRef = useRef(null);
+
   const { data, isLoading, error } = useQuery({
-    queryKey: ["purchaseOrders", page],
-    queryFn: () => apiGetWithQuery("/purchase-orders", { page, limit }),
+    queryKey: ["purchaseOrders", page, poFilterSupplier, poFilterStatus],
+    queryFn: () =>
+      apiGetWithQuery("/purchase-orders", {
+        page,
+        limit,
+        supplierName: poFilterSupplier.trim() || undefined,
+        status: poFilterStatus || undefined,
+      }),
+  });
+
+  const { data: summary } = useQuery({
+    queryKey: ["purchaseSummary"],
+    queryFn: () => apiGet("/purchase-orders/reports/summary"),
+    staleTime: 20_000,
+  });
+
+  const { data: suppliersAll } = useQuery({
+    queryKey: ["suppliersAll"],
+    queryFn: () => apiGet("/suppliers/all"),
+    staleTime: 60_000,
+  });
+
+  const { data: supList, isLoading: supLoading } = useQuery({
+    queryKey: ["suppliers", supPage, supSearch],
+    queryFn: () =>
+      apiGetWithQuery("/suppliers", {
+        page: supPage,
+        limit: 25,
+        search: supSearch.trim() || undefined,
+      }),
+    enabled: tab === "suppliers",
+  });
+
+  const { data: pendingData, isLoading: pendLoading } = useQuery({
+    queryKey: ["pendingPoReport", pendPage],
+    queryFn: () =>
+      apiGetWithQuery("/purchase-orders/reports/pending", { page: pendPage, limit: 25 }),
+    enabled: tab === "pending",
+  });
+
+  const { data: returnsData, isLoading: retLoading } = useQuery({
+    queryKey: ["purchaseReturns", retPage],
+    queryFn: () => apiGetWithQuery("/purchase-returns", { page: retPage, limit: 25 }),
+    enabled: tab === "returns",
   });
 
   const { data: detail } = useQuery({
@@ -42,12 +182,31 @@ export default function Purchase() {
     enabled: !!detailId,
   });
 
+  const [retDetailId, setRetDetailId] = useState(null);
+  const { data: retDetail } = useQuery({
+    queryKey: ["purchaseReturn", retDetailId],
+    queryFn: () => apiGet(`/purchase-returns/${retDetailId}`),
+    enabled: !!retDetailId,
+  });
+
   const createMutation = useMutation({
     mutationFn: () => apiPost("/purchase-orders", form),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
+      qc.invalidateQueries({ queryKey: ["purchaseSummary"] });
+      qc.invalidateQueries({ queryKey: ["pendingPoReport"] });
       setCreateOpen(false);
       setForm({ supplierName: "", currency: "USD", remarks: "", lines: [defaultLine()] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const poImportMutation = useMutation({
+    mutationFn: (orders) => apiPost("/purchase-orders/import", { orders }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
+      qc.invalidateQueries({ queryKey: ["purchaseSummary"] });
+      qc.invalidateQueries({ queryKey: ["pendingPoReport"] });
     },
     onError: (e) => setErr(e.message),
   });
@@ -57,9 +216,94 @@ export default function Purchase() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
       qc.invalidateQueries({ queryKey: ["purchaseOrder", detailId] });
+      qc.invalidateQueries({ queryKey: ["purchaseSummary"] });
       qc.invalidateQueries({ queryKey: ["stockBalances"] });
       qc.invalidateQueries({ queryKey: ["inventoryLedger"] });
+      qc.invalidateQueries({ queryKey: ["pendingPoReport"] });
       setReceiveOpen(false);
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const [supModal, setSupModal] = useState(false);
+  const [supEditing, setSupEditing] = useState(null);
+  const [supForm, setSupForm] = useState({
+    supplierCode: "",
+    name: "",
+    contactName: "",
+    phone: "",
+    email: "",
+    address: "",
+    gstNo: "",
+    panNo: "",
+    notes: "",
+  });
+
+  const saveSupMutation = useMutation({
+    mutationFn: () =>
+      supEditing
+        ? apiPut(`/suppliers/${supEditing}`, supForm)
+        : apiPost("/suppliers", supForm),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["suppliers"] });
+      qc.invalidateQueries({ queryKey: ["suppliersAll"] });
+      setSupModal(false);
+      setSupEditing(null);
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const delSupMutation = useMutation({
+    mutationFn: (id) => apiDelete(`/suppliers/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["suppliers"] });
+      qc.invalidateQueries({ queryKey: ["suppliersAll"] });
+    },
+  });
+
+  const supImportMutation = useMutation({
+    mutationFn: (suppliers) => apiPost("/suppliers/import", { suppliers }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["suppliers"] });
+      qc.invalidateQueries({ queryKey: ["suppliersAll"] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const [retOpen, setRetOpen] = useState(false);
+  const [retForm, setRetForm] = useState({
+    supplierName: "",
+    linkedPoNumber: "",
+    warehouse: "MAIN",
+    currency: "USD",
+    remarks: "",
+    lines: [defaultPrLine()],
+  });
+
+  const createRetMutation = useMutation({
+    mutationFn: () => apiPost("/purchase-returns", retForm),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["purchaseReturns"] });
+      setRetOpen(false);
+      setRetForm({
+        supplierName: "",
+        linkedPoNumber: "",
+        warehouse: "MAIN",
+        currency: "USD",
+        remarks: "",
+        lines: [defaultPrLine()],
+      });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const postRetMutation = useMutation({
+    mutationFn: (id) => apiPost(`/purchase-returns/${id}/post`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["purchaseReturns"] });
+      qc.invalidateQueries({ queryKey: ["purchaseReturn", retDetailId] });
+      qc.invalidateQueries({ queryKey: ["stockBalances"] });
+      qc.invalidateQueries({ queryKey: ["inventoryLedger"] });
     },
     onError: (e) => setErr(e.message),
   });
@@ -83,144 +327,927 @@ export default function Purchase() {
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
+  const supplierCount = suppliersAll?.items?.length ?? "—";
+
+  function exportPoCsv() {
+    const cols = [
+      { key: "poNumber", header: "PO #" },
+      { key: "supplierName", header: "Supplier" },
+      { key: "orderDate", header: "Date" },
+      { key: "status", header: "Status" },
+      { key: "currency", header: "CCY" },
+      { key: "grandTotal", header: "Total" },
+    ];
+    const out = rows.map((r) => ({
+      ...r,
+      orderDate: r.orderDate ? new Date(r.orderDate).toLocaleDateString() : "",
+      grandTotal: Number(r.grandTotal || 0).toFixed(2),
+    }));
+    downloadCsv(`purchase-orders-${Date.now()}.csv`, cols, out);
+  }
+
+  function exportPoPdf() {
+    const cols = [
+      { key: "poNumber", header: "PO #" },
+      { key: "supplierName", header: "Supplier" },
+      { key: "orderDate", header: "Date" },
+      { key: "status", header: "Status" },
+      { key: "grandTotal", header: "Total" },
+    ];
+    const out = rows.map((r) => ({
+      ...r,
+      orderDate: r.orderDate ? new Date(r.orderDate).toLocaleDateString() : "",
+      grandTotal: `${r.currency || ""} ${Number(r.grandTotal || 0).toFixed(2)}`,
+    }));
+    downloadPdfTable(
+      "Purchase orders",
+      "Marivoltz ERP — procurement register",
+      cols,
+      out,
+      "purchase-orders"
+    );
+  }
+
+  function onPoCsvFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (res) => {
+        try {
+          const orders = csvRowsToPurchaseOrders(res.data);
+          if (!orders.length) {
+            setErr("No valid rows: need supplierName and itemCode at minimum.");
+            return;
+          }
+          setErr("");
+          poImportMutation.mutate(orders);
+        } catch (ex) {
+          setErr(ex.message || "CSV parse failed");
+        }
+      },
+      error: (ex) => setErr(ex.message),
+    });
+  }
+
+  function exportSuppliersCsv() {
+    const items = supList?.items ?? [];
+    const cols = [
+      { key: "supplierCode", header: "Code" },
+      { key: "name", header: "Name" },
+      { key: "contactName", header: "Contact" },
+      { key: "phone", header: "Phone" },
+      { key: "email", header: "Email" },
+      { key: "gstNo", header: "GST" },
+    ];
+    downloadCsv(`suppliers-${Date.now()}.csv`, cols, items);
+  }
+
+  function exportSuppliersPdf() {
+    const items = supList?.items ?? [];
+    const cols = [
+      { key: "supplierCode", header: "Code" },
+      { key: "name", header: "Name" },
+      { key: "phone", header: "Phone" },
+      { key: "email", header: "Email" },
+    ];
+    downloadPdfTable(
+      "Supplier master",
+      "Registered vendors",
+      cols,
+      items,
+      "suppliers"
+    );
+  }
+
+  function onSupCsvFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (res) => {
+        const suppliers = res.data
+          .map((r) => ({
+            name: String(r.name || r.Name || "").trim(),
+            supplierCode: String(r.supplierCode || r.Code || "").trim(),
+            contactName: r.contactName || "",
+            phone: r.phone || "",
+            email: r.email || "",
+            address: r.address || "",
+            gstNo: r.gstNo || "",
+            panNo: r.panNo || "",
+            notes: r.notes || "",
+          }))
+          .filter((r) => r.name);
+        if (!suppliers.length) {
+          setErr("No rows with a name column.");
+          return;
+        }
+        setErr("");
+        supImportMutation.mutate(suppliers);
+      },
+    });
+  }
+
+  function exportPendingPdf() {
+    const items = pendingData?.items ?? [];
+    const cols = [
+      { key: "poNumber", header: "PO #" },
+      { key: "supplierName", header: "Supplier" },
+      { key: "status", header: "Status" },
+      { key: "pct", header: "Receipt %" },
+      { key: "pendingQty", header: "Pending qty" },
+    ];
+    const out = items.map((r) => ({
+      poNumber: r.poNumber,
+      supplierName: r.supplierName,
+      status: r.status,
+      pct: `${r._report?.receiptPercent ?? 0}%`,
+      pendingQty: r._report?.pendingQty ?? "",
+    }));
+    downloadPdfTable(
+      "Pending purchase orders",
+      "Open and partially received POs",
+      cols,
+      out,
+      "pending-po"
+    );
+  }
+
   return (
-    <div>
-      <PageHeader title="Purchase" subtitle="Purchase orders and goods receipt.">
-        <button
-          type="button"
-          onClick={() => {
-            setErr("");
-            setCreateOpen(true);
-          }}
-          className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white"
-        >
-          New PO
-        </button>
-      </PageHeader>
+    <div className="space-y-6">
+      <div className="rounded-2xl border border-gray-200 bg-gradient-to-br from-slate-50 to-white px-6 py-5 shadow-sm">
+        <div className="flex flex-col gap-2 border-b border-gray-200/80 pb-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">
+              Procurement
+            </p>
+            <h1 className="text-2xl font-bold tracking-tight text-gray-900">Purchase</h1>
+            <p className="mt-1 max-w-2xl text-sm text-gray-600">
+              Supplier master, purchase orders, goods receipt, returns, and operational reports.
+              Data below refreshes from your authorised API.
+            </p>
+          </div>
+          <div className="text-right text-xs text-gray-500">
+            <div className="font-medium text-gray-700">Marivoltz ERP</div>
+            <div>Module version · live register</div>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiCard
+            label="Total POs"
+            value={summary?.totalPurchaseOrders ?? "—"}
+            hint="All recorded orders"
+          />
+          <KpiCard
+            label="Pending orders"
+            value={summary?.pendingOrderCount ?? "—"}
+            hint="Not received / cancelled"
+          />
+          <KpiCard
+            label="Order value (sum)"
+            value={
+              summary?.totalOrderValue != null
+                ? `USD ${Number(summary.totalOrderValue).toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}`
+                : "—"
+            }
+            hint="Grand total, all POs"
+          />
+          <KpiCard
+            label="Suppliers on file"
+            value={supplierCount}
+            hint="Master records"
+          />
+        </div>
+      </div>
 
       {(error || err) && (
-        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
           {error?.message || err}
         </div>
       )}
 
-      <div className="overflow-hidden rounded-2xl border bg-white">
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
-              <tr>
-                <th className="px-3 py-2">PO #</th>
-                <th className="px-3 py-2">Supplier</th>
-                <th className="px-3 py-2">Date</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2 text-right">Total</th>
-                <th className="px-3 py-2 w-24" />
-              </tr>
-            </thead>
-            <tbody>
-              {isLoading ? (
-                <tr>
-                  <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
-                    Loading…
-                  </td>
-                </tr>
-              ) : rows.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
-                    No purchase orders.
-                  </td>
-                </tr>
-              ) : (
-                rows.map((r) => (
-                  <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
-                    <td className="px-3 py-2 font-mono text-xs">{r.poNumber}</td>
-                    <td className="px-3 py-2">{r.supplierName}</td>
-                    <td className="px-3 py-2 text-gray-600">
-                      {r.orderDate ? new Date(r.orderDate).toLocaleDateString() : "—"}
-                    </td>
-                    <td className="px-3 py-2">{r.status}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {r.currency} {Number(r.grandTotal || 0).toFixed(2)}
-                    </td>
-                    <td className="px-3 py-2">
-                      <button
-                        type="button"
-                        className="rounded-lg border px-2 py-1 text-xs"
-                        onClick={() => {
-                          setDetailId(r._id);
-                          setErr("");
-                        }}
-                      >
-                        Open
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-        <div className="flex items-center justify-between border-t px-3 py-2 text-sm text-gray-600">
-          <span>
-            Page {page}/{totalPages} · {total} POs
-          </span>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              className="rounded-lg border px-2 py-1 disabled:opacity-40"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => p - 1)}
-            >
-              Prev
-            </button>
-            <button
-              type="button"
-              className="rounded-lg border px-2 py-1 disabled:opacity-40"
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              Next
-            </button>
-          </div>
-        </div>
+      <div className="flex flex-wrap gap-2 rounded-xl border border-gray-200 bg-white p-2 shadow-sm">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => {
+              setTab(t.id);
+              setErr("");
+            }}
+            className={[
+              "rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors",
+              tab === t.id
+                ? "bg-gray-900 text-white shadow"
+                : "text-gray-700 hover:bg-gray-100",
+            ].join(" ")}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
-      <Modal open={!!detailId} onClose={() => setDetailId(null)} title="Purchase order" wide>
+      {tab === "orders" && (
+        <section className="rounded-2xl border border-gray-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900">Purchase order register</h2>
+              <p className="text-xs text-gray-500">Filter, export, and open lines for receipt.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <input ref={poImportRef} type="file" accept=".csv" className="hidden" onChange={onPoCsvFile} />
+              <button
+                type="button"
+                className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+                onClick={() => poImportRef.current?.click()}
+                disabled={poImportMutation.isPending}
+              >
+                {poImportMutation.isPending ? "Importing…" : "Import CSV"}
+              </button>
+              <button
+                type="button"
+                className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+                onClick={exportPoCsv}
+                disabled={!rows.length}
+              >
+                Export CSV
+              </button>
+              <button
+                type="button"
+                className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+                onClick={exportPoPdf}
+                disabled={!rows.length}
+              >
+                Export PDF
+              </button>
+              <button
+                type="button"
+                className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-gray-800"
+                onClick={() => {
+                  setErr("");
+                  setCreateOpen(true);
+                }}
+              >
+                New PO
+              </button>
+            </div>
+          </div>
+
+          <div className="grid gap-3 border-b border-gray-100 px-4 py-3 sm:grid-cols-3">
+            <FormField label="Filter supplier">
+              <TextInput
+                value={poFilterSupplier}
+                onChange={(e) => setPoFilterSupplier(e.target.value)}
+                placeholder="Name contains…"
+              />
+            </FormField>
+            <FormField label="Status">
+              <select
+                className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm"
+                value={poFilterStatus}
+                onChange={(e) => setPoFilterStatus(e.target.value)}
+              >
+                <option value="">All</option>
+                <option value="DRAFT">DRAFT</option>
+                <option value="SAVED">SAVED</option>
+                <option value="SENT">SENT</option>
+                <option value="PARTIAL_RECEIVED">PARTIAL_RECEIVED</option>
+                <option value="RECEIVED">RECEIVED</option>
+                <option value="CANCELLED">CANCELLED</option>
+              </select>
+            </FormField>
+            <div className="flex items-end">
+              <button
+                type="button"
+                className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-medium"
+                onClick={() => {
+                  setPage(1);
+                  qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
+                }}
+              >
+                Apply filters
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="border-b border-gray-200 bg-gray-50/90 text-xs font-bold uppercase tracking-wide text-gray-600">
+                <tr>
+                  <th className="px-4 py-3">PO #</th>
+                  <th className="px-4 py-3">Supplier</th>
+                  <th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3 text-right">Total</th>
+                  <th className="px-4 py-3 w-28" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {isLoading ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-10 text-center text-gray-500">
+                      Loading…
+                    </td>
+                  </tr>
+                ) : rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-10 text-center text-gray-500">
+                      No purchase orders.
+                    </td>
+                  </tr>
+                ) : (
+                  rows.map((r) => (
+                    <tr key={r._id} className="hover:bg-slate-50/80">
+                      <td className="px-4 py-2.5 font-mono text-xs font-semibold text-gray-900">
+                        {r.poNumber}
+                      </td>
+                      <td className="px-4 py-2.5 text-gray-800">{r.supplierName}</td>
+                      <td className="px-4 py-2.5 text-gray-600">
+                        {r.orderDate ? new Date(r.orderDate).toLocaleDateString() : "—"}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <StatusBadge status={r.status} />
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-medium tabular-nums text-gray-900">
+                        {r.currency} {Number(r.grandTotal || 0).toFixed(2)}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <button
+                          type="button"
+                          className="rounded-md border border-gray-300 bg-white px-2.5 py-1 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+                          onClick={() => {
+                            setDetailId(r._id);
+                            setErr("");
+                          }}
+                        >
+                          Open
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex items-center justify-between border-t border-gray-100 px-4 py-2 text-xs text-gray-600">
+            <span>
+              Page {page}/{totalPages} · {total} POs
+            </span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="rounded-md border px-2 py-1 disabled:opacity-40"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => p - 1)}
+              >
+                Prev
+              </button>
+              <button
+                type="button"
+                className="rounded-md border px-2 py-1 disabled:opacity-40"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {tab === "suppliers" && (
+        <section className="rounded-2xl border border-gray-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900">Supplier master</h2>
+              <p className="text-xs text-gray-500">Legal and contact details for approved vendors.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <input ref={supImportRef} type="file" accept=".csv" className="hidden" onChange={onSupCsvFile} />
+              <button
+                type="button"
+                className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold"
+                onClick={() => supImportRef.current?.click()}
+                disabled={supImportMutation.isPending}
+              >
+                {supImportMutation.isPending ? "Importing…" : "Import CSV"}
+              </button>
+              <button type="button" className="rounded-lg border px-3 py-1.5 text-xs font-semibold" onClick={exportSuppliersCsv}>
+                Export CSV
+              </button>
+              <button type="button" className="rounded-lg border px-3 py-1.5 text-xs font-semibold" onClick={exportSuppliersPdf}>
+                Export PDF
+              </button>
+              <button
+                type="button"
+                className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white"
+                onClick={() => {
+                  setSupEditing(null);
+                  setSupForm({
+                    supplierCode: "",
+                    name: "",
+                    contactName: "",
+                    phone: "",
+                    email: "",
+                    address: "",
+                    gstNo: "",
+                    panNo: "",
+                    notes: "",
+                  });
+                  setErr("");
+                  setSupModal(true);
+                }}
+              >
+                New supplier
+              </button>
+            </div>
+          </div>
+          <div className="border-b border-gray-100 px-4 py-3 sm:max-w-md">
+            <FormField label="Search">
+              <TextInput
+                value={supSearch}
+                onChange={(e) => setSupSearch(e.target.value)}
+                placeholder="Name, code, email…"
+              />
+            </FormField>
+            <button
+              type="button"
+              className="mt-2 rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-semibold"
+              onClick={() => setSupPage(1)}
+            >
+              Search
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="border-b border-gray-200 bg-gray-50/90 text-xs font-bold uppercase text-gray-600">
+                <tr>
+                  <th className="px-4 py-3">Code</th>
+                  <th className="px-4 py-3">Name</th>
+                  <th className="px-4 py-3">Contact</th>
+                  <th className="px-4 py-3">Phone</th>
+                  <th className="px-4 py-3">Email</th>
+                  <th className="px-4 py-3 w-32" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {supLoading ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-10 text-center text-gray-500">
+                      Loading…
+                    </td>
+                  </tr>
+                ) : (supList?.items ?? []).length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-10 text-center text-gray-500">
+                      No suppliers.
+                    </td>
+                  </tr>
+                ) : (
+                  (supList?.items ?? []).map((s) => (
+                    <tr key={s._id} className="hover:bg-slate-50/80">
+                      <td className="px-4 py-2 font-mono text-xs">{s.supplierCode}</td>
+                      <td className="px-4 py-2 font-medium">{s.name}</td>
+                      <td className="px-4 py-2 text-gray-600">{s.contactName}</td>
+                      <td className="px-4 py-2">{s.phone}</td>
+                      <td className="px-4 py-2 text-xs text-gray-600">{s.email}</td>
+                      <td className="px-4 py-2">
+                        <button
+                          type="button"
+                          className="mr-1 rounded border px-2 py-0.5 text-xs"
+                          onClick={() => {
+                            setSupEditing(s._id);
+                            setSupForm({
+                              supplierCode: s.supplierCode || "",
+                              name: s.name || "",
+                              contactName: s.contactName || "",
+                              phone: s.phone || "",
+                              email: s.email || "",
+                              address: s.address || "",
+                              gstNo: s.gstNo || "",
+                              panNo: s.panNo || "",
+                              notes: s.notes || "",
+                            });
+                            setSupModal(true);
+                          }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded border border-red-200 px-2 py-0.5 text-xs text-red-700"
+                          onClick={() => {
+                            if (confirm("Delete this supplier?")) delSupMutation.mutate(s._id);
+                          }}
+                        >
+                          Del
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex justify-between border-t px-4 py-2 text-xs text-gray-600">
+            <span>
+              Page {supPage} / {Math.max(1, Math.ceil((supList?.total || 0) / 25))} · {supList?.total ?? 0}{" "}
+              suppliers
+            </span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="rounded border px-2 py-0.5 disabled:opacity-40"
+                disabled={supPage <= 1}
+                onClick={() => setSupPage((p) => p - 1)}
+              >
+                Prev
+              </button>
+              <button
+                type="button"
+                className="rounded border px-2 py-0.5 disabled:opacity-40"
+                disabled={supPage >= Math.max(1, Math.ceil((supList?.total || 0) / 25))}
+                onClick={() => setSupPage((p) => p + 1)}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {tab === "summary" && summary && (
+        <section className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+            <h3 className="text-sm font-semibold text-gray-900">Orders by status</h3>
+            <div className="mt-3 overflow-hidden rounded-lg border border-gray-100">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50 text-xs font-bold uppercase text-gray-600">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Status</th>
+                    <th className="px-3 py-2 text-right">Count</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {Object.entries(summary.byStatus || {}).map(([k, v]) => (
+                    <tr key={k}>
+                      <td className="px-3 py-2">
+                        <StatusBadge status={k} />
+                      </td>
+                      <td className="px-3 py-2 text-right font-semibold tabular-nums">{v}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+            <h3 className="text-sm font-semibold text-gray-900">Top suppliers by order value</h3>
+            <div className="mt-3 overflow-hidden rounded-lg border border-gray-100">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50 text-xs font-bold uppercase text-gray-600">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Supplier</th>
+                    <th className="px-3 py-2 text-right">Value (sum)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {(summary.topSuppliersByValue || []).map((r) => (
+                    <tr key={r.supplierName}>
+                      <td className="px-3 py-2">{r.supplierName}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {Number(r.value).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                className="rounded-lg border px-3 py-1.5 text-xs font-semibold"
+                onClick={() => {
+                  const cols = [
+                    { key: "supplierName", header: "Supplier" },
+                    { key: "value", header: "Value" },
+                  ];
+                  downloadCsv(`po-summary-suppliers-${Date.now()}.csv`, cols, summary.topSuppliersByValue || []);
+                }}
+              >
+                Export summary CSV
+              </button>
+              <button
+                type="button"
+                className="rounded-lg border px-3 py-1.5 text-xs font-semibold"
+                onClick={() =>
+                  downloadPdfTable(
+                    "PO summary — suppliers",
+                    "By total order value",
+                    [
+                      { key: "supplierName", header: "Supplier" },
+                      { key: "value", header: "Value" },
+                    ],
+                    (summary.topSuppliersByValue || []).map((r) => ({
+                      ...r,
+                      value: Number(r.value).toFixed(2),
+                    })),
+                    "po-summary"
+                  )
+                }
+              >
+                Export PDF
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {tab === "returns" && (
+        <section className="rounded-2xl border border-gray-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900">Purchase returns</h2>
+              <p className="text-xs text-gray-500">
+                Draft a return, then post to remove stock (supplier return).
+              </p>
+            </div>
+            <button
+              type="button"
+              className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white"
+              onClick={() => {
+                setErr("");
+                setRetOpen(true);
+              }}
+            >
+              New return
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="border-b border-gray-200 bg-gray-50 text-xs font-bold uppercase text-gray-600">
+                <tr>
+                  <th className="px-4 py-3">Return #</th>
+                  <th className="px-4 py-3">Supplier</th>
+                  <th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3 text-right">Total</th>
+                  <th className="px-4 py-3 w-24" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {retLoading ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-10 text-center">
+                      Loading…
+                    </td>
+                  </tr>
+                ) : (returnsData?.items ?? []).length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-10 text-center text-gray-500">
+                      No returns.
+                    </td>
+                  </tr>
+                ) : (
+                  (returnsData?.items ?? []).map((r) => (
+                    <tr key={r._id} className="hover:bg-slate-50/80">
+                      <td className="px-4 py-2 font-mono text-xs">{r.returnNumber}</td>
+                      <td className="px-4 py-2">{r.supplierName}</td>
+                      <td className="px-4 py-2 text-gray-600">
+                        {r.returnDate ? new Date(r.returnDate).toLocaleDateString() : "—"}
+                      </td>
+                      <td className="px-4 py-2">
+                        <StatusBadge status={r.status} />
+                      </td>
+                      <td className="px-4 py-2 text-right tabular-nums">
+                        {r.currency} {Number(r.grandTotal || 0).toFixed(2)}
+                      </td>
+                      <td className="px-4 py-2">
+                        <button
+                          type="button"
+                          className="rounded border px-2 py-0.5 text-xs"
+                          onClick={() => {
+                            setRetDetailId(r._id);
+                            setErr("");
+                          }}
+                        >
+                          Open
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex justify-between border-t px-4 py-2 text-xs text-gray-600">
+            <span>
+              Page {retPage} / {Math.max(1, Math.ceil((returnsData?.total || 0) / 25))}
+            </span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="rounded border px-2 py-0.5 disabled:opacity-40"
+                disabled={retPage <= 1}
+                onClick={() => setRetPage((p) => p - 1)}
+              >
+                Prev
+              </button>
+              <button
+                type="button"
+                className="rounded border px-2 py-0.5 disabled:opacity-40"
+                disabled={retPage >= Math.max(1, Math.ceil((returnsData?.total || 0) / 25))}
+                onClick={() => setRetPage((p) => p + 1)}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {tab === "pending" && (
+        <section className="rounded-2xl border border-gray-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900">Pending purchase orders</h2>
+              <p className="text-xs text-gray-500">
+                Open and partially received — receipt progress per order.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="rounded-lg border px-3 py-1.5 text-xs font-semibold"
+                onClick={() => {
+                  const items = pendingData?.items ?? [];
+                  const cols = [
+                    { key: "poNumber", header: "PO #" },
+                    { key: "supplierName", header: "Supplier" },
+                    { key: "status", header: "Status" },
+                    { key: "receiptPercent", header: "Receipt %" },
+                    { key: "pendingQty", header: "Pending qty" },
+                  ];
+                  const out = items.map((r) => ({
+                    poNumber: r.poNumber,
+                    supplierName: r.supplierName,
+                    status: r.status,
+                    receiptPercent: r._report?.receiptPercent,
+                    pendingQty: r._report?.pendingQty,
+                  }));
+                  downloadCsv(`pending-po-${Date.now()}.csv`, cols, out);
+                }}
+                disabled={!(pendingData?.items?.length > 0)}
+              >
+                Export CSV
+              </button>
+              <button
+                type="button"
+                className="rounded-lg border px-3 py-1.5 text-xs font-semibold"
+                onClick={exportPendingPdf}
+                disabled={!(pendingData?.items?.length > 0)}
+              >
+                Export PDF
+              </button>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="border-b border-gray-200 bg-gray-50 text-xs font-bold uppercase text-gray-600">
+                <tr>
+                  <th className="px-4 py-3">PO #</th>
+                  <th className="px-4 py-3">Supplier</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3 text-right">Receipt %</th>
+                  <th className="px-4 py-3 text-right">Pending qty</th>
+                  <th className="px-4 py-3 w-24" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {pendLoading ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-10 text-center">
+                      Loading…
+                    </td>
+                  </tr>
+                ) : (pendingData?.items ?? []).length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-10 text-center text-gray-500">
+                      No pending purchase orders.
+                    </td>
+                  </tr>
+                ) : (
+                  (pendingData?.items ?? []).map((r) => (
+                    <tr key={r._id} className="hover:bg-slate-50/80">
+                      <td className="px-4 py-2 font-mono text-xs font-semibold">{r.poNumber}</td>
+                      <td className="px-4 py-2">{r.supplierName}</td>
+                      <td className="px-4 py-2">
+                        <StatusBadge status={r.status} />
+                      </td>
+                      <td className="px-4 py-2 text-right tabular-nums">
+                        {r._report?.receiptPercent ?? 0}%
+                      </td>
+                      <td className="px-4 py-2 text-right tabular-nums text-amber-800">
+                        {r._report?.pendingQty ?? 0}
+                      </td>
+                      <td className="px-4 py-2">
+                        <button
+                          type="button"
+                          className="rounded border px-2 py-0.5 text-xs"
+                          onClick={() => {
+                            setDetailId(r._id);
+                            setTab("orders");
+                          }}
+                        >
+                          Open PO
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex justify-between border-t px-4 py-2 text-xs text-gray-600">
+            <span>
+              Page {pendPage} / {Math.max(1, Math.ceil((pendingData?.total || 0) / 25))} ·{" "}
+              {pendingData?.total ?? 0} rows
+            </span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="rounded border px-2 py-0.5 disabled:opacity-40"
+                disabled={pendPage <= 1}
+                onClick={() => setPendPage((p) => p - 1)}
+              >
+                Prev
+              </button>
+              <button
+                type="button"
+                className="rounded border px-2 py-0.5 disabled:opacity-40"
+                disabled={pendPage >= Math.max(1, Math.ceil((pendingData?.total || 0) / 25))}
+                onClick={() => setPendPage((p) => p + 1)}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      <Modal open={!!detailId} onClose={() => setDetailId(null)} title="Purchase order detail" wide>
         {!detail ? (
           <p className="text-sm text-gray-500">Loading…</p>
         ) : (
-          <div className="space-y-3 text-sm">
-            <div className="flex flex-wrap gap-4">
+          <div className="space-y-4 text-sm">
+            <div className="grid gap-3 rounded-xl border border-gray-100 bg-slate-50/50 p-4 sm:grid-cols-2 lg:grid-cols-4">
               <div>
-                <span className="text-gray-500">PO</span>{" "}
-                <span className="font-mono font-semibold">{detail.poNumber}</span>
+                <div className="text-xs font-semibold uppercase text-gray-500">PO number</div>
+                <div className="font-mono text-lg font-bold">{detail.poNumber}</div>
               </div>
               <div>
-                <span className="text-gray-500">Supplier</span> {detail.supplierName}
+                <div className="text-xs font-semibold uppercase text-gray-500">Supplier</div>
+                <div className="font-medium">{detail.supplierName}</div>
               </div>
               <div>
-                <span className="text-gray-500">Status</span> {detail.status}
+                <div className="text-xs font-semibold uppercase text-gray-500">Status</div>
+                <StatusBadge status={detail.status} />
+              </div>
+              <div>
+                <div className="text-xs font-semibold uppercase text-gray-500">Total</div>
+                <div className="text-lg font-semibold tabular-nums">
+                  {detail.currency} {Number(detail.grandTotal || 0).toFixed(2)}
+                </div>
               </div>
             </div>
-            <div className="overflow-x-auto rounded-xl border">
+            <div className="overflow-x-auto rounded-xl border border-gray-200">
               <table className="min-w-full text-xs">
-                <thead className="bg-gray-50">
+                <thead className="bg-gray-100">
                   <tr>
-                    <th className="px-2 py-1 text-left">Item</th>
-                    <th className="px-2 py-1 text-right">Qty</th>
-                    <th className="px-2 py-1 text-right">Rcvd</th>
-                    <th className="px-2 py-1 text-right">Rate</th>
-                    <th className="px-2 py-1 text-right">Line</th>
+                    <th className="px-3 py-2 text-left font-bold">Item</th>
+                    <th className="px-3 py-2 text-right">Qty</th>
+                    <th className="px-3 py-2 text-right">Received</th>
+                    <th className="px-3 py-2 text-right">Rate</th>
+                    <th className="px-3 py-2 text-right">Line</th>
                   </tr>
                 </thead>
                 <tbody>
                   {detail.lines?.map((l) => (
-                    <tr key={l._id} className="border-t">
-                      <td className="px-2 py-1 font-mono">{l.itemCode}</td>
-                      <td className="px-2 py-1 text-right">{l.qty}</td>
-                      <td className="px-2 py-1 text-right">{l.receivedQty ?? 0}</td>
-                      <td className="px-2 py-1 text-right">{l.unitPrice}</td>
-                      <td className="px-2 py-1 text-right">{l.lineTotal}</td>
+                    <tr key={l._id} className="border-t border-gray-100">
+                      <td className="px-3 py-2 font-mono">{l.itemCode}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{l.qty}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{l.receivedQty ?? 0}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{l.unitPrice}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{l.lineTotal}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -229,146 +1256,53 @@ export default function Purchase() {
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white"
+                className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
                 onClick={openReceive}
               >
                 Receive stock
               </button>
               {detail.status === "DRAFT" && (
-                <button
-                  type="button"
-                  className="rounded-xl border px-3 py-2 text-sm"
-                  onClick={() => {
-                    setErr("");
-                    apiPatch(`/purchase-orders/${detail._id}/status`, { status: "SENT" })
-                      .then(() => {
-                        qc.invalidateQueries({ queryKey: ["purchaseOrder", detailId] });
-                        qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
-                      })
-                      .catch((e) => setErr(e.message));
-                  }}
-                >
-                  Mark sent
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold"
+                    onClick={() => {
+                      setErr("");
+                      apiPatch(`/purchase-orders/${detail._id}/status`, { status: "SAVED" })
+                        .then(() => {
+                          qc.invalidateQueries({ queryKey: ["purchaseOrder", detailId] });
+                          qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
+                          qc.invalidateQueries({ queryKey: ["purchaseSummary"] });
+                        })
+                        .catch((e) => setErr(e.message));
+                    }}
+                  >
+                    Mark saved
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold"
+                    onClick={() => {
+                      setErr("");
+                      apiPatch(`/purchase-orders/${detail._id}/status`, { status: "SENT" })
+                        .then(() => {
+                          qc.invalidateQueries({ queryKey: ["purchaseOrder", detailId] });
+                          qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
+                          qc.invalidateQueries({ queryKey: ["purchaseSummary"] });
+                        })
+                        .catch((e) => setErr(e.message));
+                    }}
+                  >
+                    Mark sent
+                  </button>
+                </>
               )}
             </div>
           </div>
         )}
       </Modal>
 
-      <Modal
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        title="New purchase order"
-        wide
-      >
-        {createMutation.isError && (
-          <div className="mb-2 text-sm text-red-600">{createMutation.error.message}</div>
-        )}
-        <div className="grid gap-3 sm:grid-cols-2">
-          <FormField label="Supplier *">
-            <TextInput
-              value={form.supplierName}
-              onChange={(e) => setForm((f) => ({ ...f, supplierName: e.target.value }))}
-            />
-          </FormField>
-          <FormField label="Currency">
-            <TextInput
-              value={form.currency}
-              onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value }))}
-            />
-          </FormField>
-          <FormField label="Remarks" className="sm:col-span-2">
-            <TextInput
-              value={form.remarks}
-              onChange={(e) => setForm((f) => ({ ...f, remarks: e.target.value }))}
-            />
-          </FormField>
-        </div>
-        <div className="mt-4">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm font-medium">Lines</span>
-            <button
-              type="button"
-              className="text-sm text-gray-700 underline"
-              onClick={() => setForm((f) => ({ ...f, lines: [...f.lines, defaultLine()] }))}
-            >
-              + Add line
-            </button>
-          </div>
-          <div className="space-y-2">
-            {form.lines.map((line, idx) => (
-              <div
-                key={idx}
-                className="grid grid-cols-2 gap-2 rounded-xl border p-2 sm:grid-cols-5"
-              >
-                <TextInput
-                  placeholder="Item code"
-                  value={line.itemCode}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...lines[idx], itemCode: e.target.value };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  type="number"
-                  placeholder="Qty"
-                  value={line.qty}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...lines[idx], qty: Number(e.target.value) };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  type="number"
-                  step="0.01"
-                  placeholder="Unit price"
-                  value={line.unitPrice}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...lines[idx], unitPrice: Number(e.target.value) };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  placeholder="Desc"
-                  className="sm:col-span-2"
-                  value={line.description}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...lines[idx], description: e.target.value };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
-            className="rounded-xl border px-4 py-2 text-sm"
-            onClick={() => setCreateOpen(false)}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-            disabled={createMutation.isPending}
-            onClick={() => {
-              setErr("");
-              createMutation.mutate();
-            }}
-          >
-            {createMutation.isPending ? "Saving…" : "Create"}
-          </button>
-        </div>
-      </Modal>
-
-      <Modal open={receiveOpen} onClose={() => setReceiveOpen(false)} title="Receive against PO" wide>
+      <Modal open={receiveOpen} onClose={() => setReceiveOpen(false)} title="Goods receipt" wide>
         <FormField label="Warehouse">
           <TextInput
             value={receiveWarehouse}
@@ -378,7 +1312,7 @@ export default function Purchase() {
         <div className="mt-3 max-h-64 space-y-2 overflow-y-auto">
           {receiveLines.map((rl, i) => (
             <div key={rl.lineId} className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="font-mono w-24">{rl.itemCode}</span>
+              <span className="w-28 font-mono text-xs">{rl.itemCode}</span>
               <span className="text-gray-500">max {rl.max}</span>
               <TextInput
                 className="w-24"
@@ -418,6 +1352,366 @@ export default function Purchase() {
             {receiveMutation.isPending ? "Posting…" : "Post receipt"}
           </button>
         </div>
+      </Modal>
+
+      <Modal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        title="New purchase order"
+        wide
+      >
+        {createMutation.isError && (
+          <div className="mb-2 text-sm text-red-600">{createMutation.error.message}</div>
+        )}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <FormField label="Supplier *">
+            <TextInput
+              list="supplier-pick"
+              value={form.supplierName}
+              onChange={(e) => setForm((f) => ({ ...f, supplierName: e.target.value }))}
+            />
+            <datalist id="supplier-pick">
+              {(suppliersAll?.items ?? []).map((s) => (
+                <option key={s._id} value={s.name} />
+              ))}
+            </datalist>
+          </FormField>
+          <FormField label="Currency">
+            <TextInput
+              value={form.currency}
+              onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Remarks" className="sm:col-span-2">
+            <TextInput
+              value={form.remarks}
+              onChange={(e) => setForm((f) => ({ ...f, remarks: e.target.value }))}
+            />
+          </FormField>
+        </div>
+        <div className="mt-4">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-sm font-semibold">Line items</span>
+            <button
+              type="button"
+              className="text-sm font-semibold text-gray-700 underline"
+              onClick={() => setForm((f) => ({ ...f, lines: [...f.lines, defaultLine()] }))}
+            >
+              + Add line
+            </button>
+          </div>
+          <div className="space-y-2">
+            {form.lines.map((line, idx) => (
+              <div
+                key={idx}
+                className="grid grid-cols-2 gap-2 rounded-xl border border-gray-200 p-2 sm:grid-cols-5"
+              >
+                <TextInput
+                  placeholder="Item code"
+                  value={line.itemCode}
+                  onChange={(e) => {
+                    const lines = [...form.lines];
+                    lines[idx] = { ...lines[idx], itemCode: e.target.value };
+                    setForm((f) => ({ ...f, lines }));
+                  }}
+                />
+                <TextInput
+                  type="number"
+                  placeholder="Qty"
+                  value={line.qty}
+                  onChange={(e) => {
+                    const lines = [...form.lines];
+                    lines[idx] = { ...lines[idx], qty: Number(e.target.value) };
+                    setForm((f) => ({ ...f, lines }));
+                  }}
+                />
+                <TextInput
+                  type="number"
+                  step="0.01"
+                  placeholder="Unit price"
+                  value={line.unitPrice}
+                  onChange={(e) => {
+                    const lines = [...form.lines];
+                    lines[idx] = { ...lines[idx], unitPrice: Number(e.target.value) };
+                    setForm((f) => ({ ...f, lines }));
+                  }}
+                />
+                <TextInput
+                  placeholder="Description"
+                  className="sm:col-span-2"
+                  value={line.description}
+                  onChange={(e) => {
+                    const lines = [...form.lines];
+                    lines[idx] = { ...lines[idx], description: e.target.value };
+                    setForm((f) => ({ ...f, lines }));
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            className="rounded-xl border px-4 py-2 text-sm"
+            onClick={() => setCreateOpen(false)}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            disabled={createMutation.isPending}
+            onClick={() => {
+              setErr("");
+              createMutation.mutate();
+            }}
+          >
+            {createMutation.isPending ? "Saving…" : "Create"}
+          </button>
+        </div>
+      </Modal>
+
+      <Modal open={supModal} onClose={() => setSupModal(false)} title={supEditing ? "Edit supplier" : "New supplier"} wide>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <FormField label="Supplier code (optional)">
+            <TextInput
+              value={supForm.supplierCode}
+              onChange={(e) => setSupForm((f) => ({ ...f, supplierCode: e.target.value }))}
+              disabled={!supEditing}
+            />
+          </FormField>
+          <FormField label="Name *">
+            <TextInput
+              value={supForm.name}
+              onChange={(e) => setSupForm((f) => ({ ...f, name: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Contact">
+            <TextInput
+              value={supForm.contactName}
+              onChange={(e) => setSupForm((f) => ({ ...f, contactName: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Phone">
+            <TextInput
+              value={supForm.phone}
+              onChange={(e) => setSupForm((f) => ({ ...f, phone: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Email" className="sm:col-span-2">
+            <TextInput
+              value={supForm.email}
+              onChange={(e) => setSupForm((f) => ({ ...f, email: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Address" className="sm:col-span-2">
+            <TextInput
+              value={supForm.address}
+              onChange={(e) => setSupForm((f) => ({ ...f, address: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="GST #">
+            <TextInput
+              value={supForm.gstNo}
+              onChange={(e) => setSupForm((f) => ({ ...f, gstNo: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="PAN #">
+            <TextInput
+              value={supForm.panNo}
+              onChange={(e) => setSupForm((f) => ({ ...f, panNo: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Notes" className="sm:col-span-2">
+            <TextInput
+              value={supForm.notes}
+              onChange={(e) => setSupForm((f) => ({ ...f, notes: e.target.value }))}
+            />
+          </FormField>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={() => setSupModal(false)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
+            disabled={saveSupMutation.isPending}
+            onClick={() => saveSupMutation.mutate()}
+          >
+            Save
+          </button>
+        </div>
+      </Modal>
+
+      <Modal open={retOpen} onClose={() => setRetOpen(false)} title="New purchase return" wide>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <FormField label="Supplier *">
+            <TextInput
+              list="supplier-pick-ret"
+              value={retForm.supplierName}
+              onChange={(e) => setRetForm((f) => ({ ...f, supplierName: e.target.value }))}
+            />
+            <datalist id="supplier-pick-ret">
+              {(suppliersAll?.items ?? []).map((s) => (
+                <option key={s._id} value={s.name} />
+              ))}
+            </datalist>
+          </FormField>
+          <FormField label="Linked PO #">
+            <TextInput
+              value={retForm.linkedPoNumber}
+              onChange={(e) => setRetForm((f) => ({ ...f, linkedPoNumber: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Warehouse">
+            <TextInput
+              value={retForm.warehouse}
+              onChange={(e) => setRetForm((f) => ({ ...f, warehouse: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Currency">
+            <TextInput
+              value={retForm.currency}
+              onChange={(e) => setRetForm((f) => ({ ...f, currency: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Remarks" className="sm:col-span-2">
+            <TextInput
+              value={retForm.remarks}
+              onChange={(e) => setRetForm((f) => ({ ...f, remarks: e.target.value }))}
+            />
+          </FormField>
+        </div>
+        <div className="mt-3 space-y-2">
+          <div className="flex justify-between">
+            <span className="text-sm font-semibold">Lines</span>
+            <button
+              type="button"
+              className="text-sm underline"
+              onClick={() =>
+                setRetForm((f) => ({ ...f, lines: [...f.lines, defaultPrLine()] }))
+              }
+            >
+              + Line
+            </button>
+          </div>
+          {retForm.lines.map((line, idx) => (
+            <div key={idx} className="grid grid-cols-2 gap-2 rounded-lg border p-2 sm:grid-cols-5">
+              <TextInput
+                placeholder="Item"
+                value={line.itemCode}
+                onChange={(e) => {
+                  const lines = [...retForm.lines];
+                  lines[idx] = { ...lines[idx], itemCode: e.target.value };
+                  setRetForm((f) => ({ ...f, lines }));
+                }}
+              />
+              <TextInput
+                type="number"
+                placeholder="Qty"
+                value={line.qty}
+                onChange={(e) => {
+                  const lines = [...retForm.lines];
+                  lines[idx] = { ...lines[idx], qty: Number(e.target.value) };
+                  setRetForm((f) => ({ ...f, lines }));
+                }}
+              />
+              <TextInput
+                type="number"
+                step="0.01"
+                placeholder="Rate"
+                value={line.unitPrice}
+                onChange={(e) => {
+                  const lines = [...retForm.lines];
+                  lines[idx] = { ...lines[idx], unitPrice: Number(e.target.value) };
+                  setRetForm((f) => ({ ...f, lines }));
+                }}
+              />
+              <TextInput
+                placeholder="Reason"
+                className="sm:col-span-2"
+                value={line.reason}
+                onChange={(e) => {
+                  const lines = [...retForm.lines];
+                  lines[idx] = { ...lines[idx], reason: e.target.value };
+                  setRetForm((f) => ({ ...f, lines }));
+                }}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={() => setRetOpen(false)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
+            disabled={createRetMutation.isPending}
+            onClick={() => {
+              setErr("");
+              createRetMutation.mutate();
+            }}
+          >
+            Create draft
+          </button>
+        </div>
+      </Modal>
+
+      <Modal open={!!retDetailId} onClose={() => setRetDetailId(null)} title="Purchase return" wide>
+        {!retDetail ? (
+          <p className="text-sm text-gray-500">Loading…</p>
+        ) : (
+          <div className="space-y-3 text-sm">
+            <div className="flex flex-wrap gap-4 rounded-lg border bg-slate-50 p-3">
+              <div>
+                <span className="text-xs font-semibold text-gray-500">Return</span>
+                <div className="font-mono font-bold">{retDetail.returnNumber}</div>
+              </div>
+              <div>
+                <span className="text-xs font-semibold text-gray-500">Supplier</span>
+                <div>{retDetail.supplierName}</div>
+              </div>
+              <div>
+                <StatusBadge status={retDetail.status} />
+              </div>
+            </div>
+            <div className="overflow-x-auto rounded border">
+              <table className="min-w-full text-xs">
+                <thead className="bg-gray-100">
+                  <tr>
+                    <th className="px-2 py-1 text-left">Item</th>
+                    <th className="px-2 py-1 text-right">Qty</th>
+                    <th className="px-2 py-1 text-right">Rate</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {retDetail.lines?.map((l) => (
+                    <tr key={l._id} className="border-t">
+                      <td className="px-2 py-1 font-mono">{l.itemCode}</td>
+                      <td className="px-2 py-1 text-right">{l.qty}</td>
+                      <td className="px-2 py-1 text-right">{l.unitPrice}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {retDetail.status === "DRAFT" && (
+              <button
+                type="button"
+                className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                disabled={postRetMutation.isPending}
+                onClick={() => {
+                  if (confirm("Post return and deduct stock?")) postRetMutation.mutate(retDetail._id);
+                }}
+              >
+                Post to inventory
+              </button>
+            )}
+          </div>
+        )}
       </Modal>
     </div>
   );

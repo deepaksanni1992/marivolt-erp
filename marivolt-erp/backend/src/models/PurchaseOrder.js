@@ -27,7 +27,7 @@ const purchaseOrderSchema = new mongoose.Schema(
     grandTotal: { type: Number, default: 0 },
     status: {
       type: String,
-      enum: ["DRAFT", "SENT", "PARTIAL_RECEIVED", "RECEIVED", "CANCELLED"],
+      enum: ["DRAFT", "SAVED", "SENT", "PARTIAL_RECEIVED", "RECEIVED", "CANCELLED"],
       default: "DRAFT",
     },
     remarks: { type: String, default: "" },

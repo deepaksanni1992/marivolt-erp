@@ -184,3 +184,145 @@ export async function deletePurchaseOrder(req, res) {
     res.status(400).json({ message: err.message });
   }
 }
+
+/** Dashboard-style aggregates for purchase module. */
+export async function purchaseSummaryReport(req, res) {
+  try {
+    const pos = await PurchaseOrder.find({}).lean();
+    const byStatus = {};
+    let totalGrand = 0;
+    let pendingCount = 0;
+    const supplierTotals = {};
+
+    for (const po of pos) {
+      const st = po.status || "DRAFT";
+      byStatus[st] = (byStatus[st] || 0) + 1;
+      const gt = Number(po.grandTotal) || 0;
+      totalGrand += gt;
+      const sup = (po.supplierName || "").trim() || "—";
+      supplierTotals[sup] = (supplierTotals[sup] || 0) + gt;
+
+      if (!["RECEIVED", "CANCELLED"].includes(st)) pendingCount += 1;
+    }
+
+    const supplierRanking = Object.entries(supplierTotals)
+      .map(([supplierName, value]) => ({ supplierName, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 15);
+
+    res.json({
+      totalPurchaseOrders: pos.length,
+      totalOrderValue: totalGrand,
+      pendingOrderCount: pendingCount,
+      byStatus,
+      topSuppliersByValue: supplierRanking,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+function linePendingQty(line) {
+  const q = Number(line.qty) || 0;
+  const r = Number(line.receivedQty) || 0;
+  return Math.max(0, q - r);
+}
+
+function poHasPendingLines(po) {
+  if (po.status === "CANCELLED") return false;
+  if (po.status === "RECEIVED") return false;
+  if (!po.lines?.length) return true;
+  return po.lines.some((l) => linePendingQty(l) > 0);
+}
+
+/** POs awaiting full receipt (excludes cancelled and fully received). */
+export async function pendingPurchaseReport(req, res) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
+    const skip = (page - 1) * limit;
+
+    const filter = {
+      status: { $nin: ["RECEIVED", "CANCELLED"] },
+    };
+    if (req.query.supplierName) {
+      filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
+    }
+
+    const raw = await PurchaseOrder.find(filter).sort({ orderDate: -1 }).lean();
+    const enriched = raw
+      .filter(poHasPendingLines)
+      .map((po) => {
+        let pendingLines = 0;
+        let ordered = 0;
+        let received = 0;
+        for (const l of po.lines || []) {
+          ordered += Number(l.qty) || 0;
+          received += Number(l.receivedQty) || 0;
+          if (linePendingQty(l) > 0) pendingLines += 1;
+        }
+        const pendingQty = ordered - received;
+        const pct =
+          ordered > 0 ? Math.round((received / ordered) * 1000) / 10 : 0;
+        return {
+          ...po,
+          _report: {
+            pendingLineCount: pendingLines,
+            totalOrderedQty: ordered,
+            totalReceivedQty: received,
+            pendingQty,
+            receiptPercent: pct,
+          },
+        };
+      });
+
+    const total = enriched.length;
+    const items = enriched.slice(skip, skip + limit);
+    res.json({ items, total, page, limit });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+/** Bulk create POs from array of documents (minimal validation). */
+export async function importPurchaseOrders(req, res) {
+  try {
+    const { orders } = req.body;
+    if (!Array.isArray(orders) || orders.length === 0) {
+      return res.status(400).json({ message: "orders array required" });
+    }
+    if (orders.length > 100) {
+      return res.status(400).json({ message: "Maximum 100 purchase orders per import" });
+    }
+    const created = [];
+    const errors = [];
+    const userEmail = req.user?.email || "";
+
+    for (let i = 0; i < orders.length; i++) {
+      const row = orders[i];
+      try {
+        if (!row.supplierName) throw new Error("supplierName required");
+        if (!Array.isArray(row.lines) || row.lines.length === 0) {
+          throw new Error("lines required");
+        }
+        const poNumber =
+          row.poNumber ||
+          (await nextSequentialNumber(PurchaseOrder, "poNumber", "PO"));
+        const doc = new PurchaseOrder({
+          ...row,
+          poNumber,
+          createdBy: userEmail,
+          status: row.status || "DRAFT",
+        });
+        recalcPoTotals(doc);
+        await doc.save();
+        created.push(doc);
+      } catch (e) {
+        errors.push({ index: i, message: e.message });
+      }
+    }
+    res.json({ createdCount: created.length, errors, errorCount: errors.length });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
