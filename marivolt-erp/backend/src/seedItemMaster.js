@@ -3,6 +3,8 @@ import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
 import Vertical from "./models/Vertical.js";
+import Brand from "./models/Brand.js";
+import EngineModel from "./models/EngineModel.js";
 import SPN from "./models/SPN.js";
 import Material from "./models/Material.js";
 import MaterialCompatibility from "./models/MaterialCompatibility.js";
@@ -31,6 +33,31 @@ async function seed() {
       },
       { upsert: true, new: true }
     );
+
+    await ensureDefaultBrandsForEveryVertical();
+
+    const wartsila = await Brand.findOne({
+      vertical: vertical._id,
+      name: new RegExp("^Wärtsilä$", "i"),
+    });
+
+    if (wartsila) {
+      const demoModels = [
+        "W20",
+        "W26",
+        "W32",
+        "W34DF",
+        "W50DF",
+        "W50SG",
+      ];
+      for (const nm of demoModels) {
+        await EngineModel.findOneAndUpdate(
+          { brand: wartsila._id, name: nm },
+          { brand: wartsila._id, name: nm, status: "Active" },
+          { upsert: true, new: true }
+        );
+      }
+    }
 
     const spn = await SPN.findOneAndUpdate(
       { spn: "SPN-1001" },
@@ -142,8 +169,6 @@ async function seed() {
       },
       { upsert: true, new: true }
     );
-
-    await ensureDefaultBrandsForEveryVertical();
 
     // eslint-disable-next-line no-console
     console.log("Item Master seed completed");

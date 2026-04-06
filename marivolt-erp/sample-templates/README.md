@@ -12,9 +12,9 @@ Use these workbooks with **Item Master → Bulk import** in the app (first works
 
 ## Before you import
 
-1. Create **Verticals** and **Brands** in the app (there is no bulk import for those).
+1. Create **Verticals**, **Brands**, and **Engine models** (per brand) in the app — there is no bulk import for those.
 2. Replace placeholder **`PASTE_VERTICAL_OBJECT_ID_24_HEX_CHARS`** with a real Vertical `_id` (24-character hex string from the API or MongoDB).
-3. Import in a sensible order: **SPN → Material → Compatibility / Article / Supplier** (later sheets reference earlier masters).
+3. Import in a sensible order: **SPN → Material → Compatibility / Article / Supplier** (compatibility rows require `engineModel` values that exist under **Engine models** for that brand).
 
 ## Regenerate `.xlsx` files
 

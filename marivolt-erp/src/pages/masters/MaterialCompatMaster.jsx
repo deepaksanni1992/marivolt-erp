@@ -3,6 +3,7 @@ import {
   createMaterialCompat,
   deleteMaterialCompat,
   fetchBrandList,
+  fetchEngineModelList,
   fetchMaterialCompatList,
   fetchMaterialList,
   importMaterialCompat,
@@ -11,7 +12,6 @@ import {
 import {
   CONFIGURATIONS,
   CYLINDER_COUNTS,
-  ENGINE_MODELS,
   STATUSES,
 } from "../../lib/masterValuesClient.js";
 import {
@@ -28,6 +28,7 @@ const LIMIT = 30;
 export default function MaterialCompatMaster() {
   const [materials, setMaterials] = useState([]);
   const [brandOptions, setBrandOptions] = useState([]);
+  const [engineModelOptions, setEngineModelOptions] = useState([]);
   const [matVertical, setMatVertical] = useState("");
   const [items, setItems] = useState([]);
   const [pagination, setPagination] = useState({ page: 1, limit: LIMIT, total: 0 });
@@ -41,6 +42,7 @@ export default function MaterialCompatMaster() {
   const [saveErr, setSaveErr] = useState("");
   const [form, setForm] = useState({
     materialCode: "",
+    brandId: "",
     brand: "",
     engineModel: "",
     configuration: "",
@@ -99,6 +101,31 @@ export default function MaterialCompatMaster() {
     }
   }, [modalOpen, matVertical, loadBrands]);
 
+  useEffect(() => {
+    if (!modalOpen) {
+      setEngineModelOptions([]);
+      return;
+    }
+    if (!form.brandId) {
+      setEngineModelOptions([]);
+      return;
+    }
+    fetchEngineModelList({ brand: form.brandId, limit: 500 })
+      .then((r) => setEngineModelOptions(r.items || []))
+      .catch(() => setEngineModelOptions([]));
+  }, [modalOpen, form.brandId]);
+
+  useEffect(() => {
+    if (!modalOpen || !editing || !form.brand || !brandOptions.length) return;
+    const match = brandOptions.find(
+      (b) => b.name.toLowerCase() === String(form.brand).toLowerCase()
+    );
+    if (match) {
+      const id = String(match._id);
+      setForm((f) => (f.brandId === id ? f : { ...f, brandId: id }));
+    }
+  }, [modalOpen, editing, form.brand, brandOptions]);
+
   function syncVerticalForMaterial(code) {
     const m = materials.find((x) => x.materialCode === code);
     const vid = m ? refId(m.vertical) : "";
@@ -113,6 +140,7 @@ export default function MaterialCompatMaster() {
     setBrandOptions([]);
     setForm({
       materialCode: filterMaterial || "",
+      brandId: "",
       brand: "",
       engineModel: "",
       configuration: "",
@@ -131,6 +159,7 @@ export default function MaterialCompatMaster() {
     setSaveErr("");
     setForm({
       materialCode: row.materialCode || "",
+      brandId: "",
       brand: row.brand || "",
       engineModel: row.engineModel || "",
       configuration: row.configuration || "",
@@ -147,8 +176,9 @@ export default function MaterialCompatMaster() {
   async function save(e) {
     e.preventDefault();
     setSaveErr("");
+    const { brandId: _bid, ...rest } = form;
     const payload = {
-      ...form,
+      ...rest,
       esnFrom: form.esnFrom === "" ? null : Number(form.esnFrom),
       esnTo: form.esnTo === "" ? null : Number(form.esnTo),
     };
@@ -181,7 +211,8 @@ export default function MaterialCompatMaster() {
       <div className="rounded-2xl border bg-white p-6">
         <h1 className="text-xl font-semibold">Material compatibility</h1>
         <p className="mt-1 text-gray-600">
-          Maps a material to brand + engine context. Brand must exist under the material’s vertical.
+          Maps a material to brand + engine model + configuration. Brand and engine model must exist
+          under Brand / Engine models masters for that vertical.
         </p>
         <ErrorBanner message={err} />
       </div>
@@ -284,7 +315,7 @@ export default function MaterialCompatMaster() {
       </div>
 
       <ImportPanel
-        hint="Use columns: materialCode, brand, engineModel, configuration, cylinderCount, esnFrom, esnTo, remarks, status. (Same shape as MATERIAL_COMPATIBILITY template.)"
+        hint="Columns: materialCode, brand, engineModel, configuration, cylinderCount, esnFrom, esnTo, remarks, status. Each engineModel must exist under Engine models for that brand."
         onImport={(rows) => importMaterialCompat(rows)}
       />
 
@@ -305,7 +336,13 @@ export default function MaterialCompatMaster() {
                 const vid = m ? refId(m.vertical) : "";
                 setMatVertical(vid);
                 loadBrands(vid);
-                setForm((f) => ({ ...f, materialCode: code, brand: "" }));
+                setForm((f) => ({
+                  ...f,
+                  materialCode: code,
+                  brandId: "",
+                  brand: "",
+                  engineModel: "",
+                }));
               }}
               className="w-full rounded-xl border px-3 py-2 text-sm font-mono"
             >
@@ -325,33 +362,51 @@ export default function MaterialCompatMaster() {
           <Field label="Brand *" className="sm:col-span-2">
             <select
               required
-              value={form.brand}
-              onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))}
+              value={form.brandId}
+              onChange={(e) => {
+                const id = e.target.value;
+                const b = brandOptions.find((x) => String(x._id) === id);
+                setForm((f) => ({
+                  ...f,
+                  brandId: id,
+                  brand: b?.name || "",
+                  engineModel: "",
+                }));
+              }}
               className="w-full rounded-xl border px-3 py-2 text-sm"
             >
               <option value="">
                 {brandOptions.length ? "Select brand…" : "Choose material first"}
               </option>
               {brandOptions.map((b) => (
-                <option key={b._id} value={b.name}>
+                <option key={b._id} value={b._id}>
                   {b.name}
                 </option>
               ))}
             </select>
           </Field>
-          <Field label="Engine model *">
-            <input
+          <Field label="Engine model *" className="sm:col-span-2">
+            <select
               required
-              list="dl-engine-models"
               value={form.engineModel}
-              onChange={(e) => setForm((f) => ({ ...f, engineModel: e.target.value }))}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, engineModel: e.target.value }))
+              }
               className="w-full rounded-xl border px-3 py-2 text-sm"
-            />
-            <datalist id="dl-engine-models">
-              {ENGINE_MODELS.map((x) => (
-                <option key={x} value={x} />
+            >
+              <option value="">
+                {form.brandId
+                  ? engineModelOptions.length
+                    ? "Select model…"
+                    : "No models — add under Engine models master"
+                  : "Select brand first"}
+              </option>
+              {engineModelOptions.map((m) => (
+                <option key={m._id} value={m.name}>
+                  {m.name}
+                </option>
               ))}
-            </datalist>
+            </select>
           </Field>
           <Field label="Configuration *">
             <input

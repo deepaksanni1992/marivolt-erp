@@ -15,7 +15,7 @@ import {
   validateMaterialSupplierPayload,
 } from "../validation/itemMasterValidation.js";
 import { createEmptyImportResult, pushRowError } from "../utils/importResultBuilder.js";
-import { resolveBrandNameForMaterial } from "../utils/brandMaterialVertical.js";
+import { canonicalizeCompatibilityPayload } from "../utils/compatibilityCanonical.js";
 
 const router = express.Router();
 
@@ -148,11 +148,7 @@ router.post("/material-compat", async (req, res) => {
       rows,
       validateFn: validateCompatibilityPayload,
       upsertFn: async (payload) => {
-        const canonicalBrand = await resolveBrandNameForMaterial(
-          payload.materialCode,
-          payload.brand
-        );
-        const toSave = { ...payload, brand: canonicalBrand };
+        const toSave = await canonicalizeCompatibilityPayload(payload);
 
         try {
           await MaterialCompatibility.create(toSave);

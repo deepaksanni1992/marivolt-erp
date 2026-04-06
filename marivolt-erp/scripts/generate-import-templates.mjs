@@ -154,6 +154,7 @@ writeTemplate(
     "Required: materialCode, brand, engineModel, configuration, cylinderCount",
     "materialCode must exist in Material master.",
     "brand: name must match an Active Brand under that material’s vertical (Brand master).",
+    "engineModel: must match an Active Engine model under that brand (Engine models master).",
     "Legacy column engineMake is accepted by the API as an alias for brand.",
     "remarks: optional. Legacy applicabilityRemarks is also accepted.",
     "",

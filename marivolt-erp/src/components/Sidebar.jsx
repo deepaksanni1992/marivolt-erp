@@ -51,6 +51,7 @@ export default function Sidebar({ open, onClose }) {
   const masterItems = [
     { name: "Verticals", to: "/vertical-master", roles: ["admin"] },
     { name: "Brands", to: "/brand-master", roles: ["admin"] },
+    { name: "Engine models", to: "/engine-models-master", roles: ["admin"] },
     { name: "SPN", to: "/spn-master", roles: ["admin"] },
     { name: "Materials", to: "/material-master", roles: ["admin"] },
     { name: "Compatibility", to: "/material-compat", roles: ["admin"] },

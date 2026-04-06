@@ -34,6 +34,23 @@ export function deleteBrand(id) {
   return apiDelete(`/brands/${id}`);
 }
 
+// Engine models (scoped to brand)
+export function fetchEngineModelList(params) {
+  return apiGetWithQuery("/engine-models", params);
+}
+
+export function createEngineModel(data) {
+  return apiPost("/engine-models", data);
+}
+
+export function updateEngineModel(id, data) {
+  return apiPut(`/engine-models/${id}`, data);
+}
+
+export function deleteEngineModel(id) {
+  return apiDelete(`/engine-models/${id}`);
+}
+
 // Resolve material (SPN + brand + engine context)
 export function resolveMaterialLookup(body) {
   return apiPost("/resolve-material", body);

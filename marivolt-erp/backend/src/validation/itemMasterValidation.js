@@ -47,6 +47,14 @@ export function validateBrandPayload(input) {
   };
 }
 
+export function validateEngineModelPayload(input) {
+  return {
+    name: reqStr(input.name, "Model name"),
+    brand: reqObjectId(input.brand, "Brand"),
+    status: input.status ? reqEnum(input.status, "Status", STATUSES) : "Active",
+  };
+}
+
 export function validateSpnPayload(input) {
   const description = optStr(input.description);
   const genericDescription = optStr(input.genericDescription);

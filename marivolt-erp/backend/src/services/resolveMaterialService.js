@@ -2,7 +2,13 @@ import Material from "../models/Material.js";
 import MaterialCompatibility from "../models/MaterialCompatibility.js";
 import Article from "../models/Article.js";
 import MaterialSupplier from "../models/MaterialSupplier.js";
+import Brand from "../models/Brand.js";
 import { resolveBrandNameForVertical } from "../utils/brandMaterialVertical.js";
+import { resolveEngineModelNameForBrandId } from "../utils/compatibilityCanonical.js";
+
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 /**
  * Resolve material(s) for given SPN + brand + engine combination.
@@ -49,12 +55,34 @@ export async function resolveMaterial(params) {
     throw new Error(e.message);
   }
 
+  const brandDoc = await Brand.findOne({
+    vertical: verticalId,
+    status: "Active",
+    name: new RegExp(`^${escapeRegex(canonicalBrand)}$`, "i"),
+  })
+    .select("_id")
+    .lean();
+
+  if (!brandDoc) {
+    throw new Error("Brand not found for this vertical");
+  }
+
+  let canonicalEngineModel;
+  try {
+    canonicalEngineModel = await resolveEngineModelNameForBrandId(
+      brandDoc._id,
+      engineModel
+    );
+  } catch (e) {
+    throw new Error(e.message);
+  }
+
   const materialCodes = materials.map((m) => m.materialCode);
 
   const compatQuery = {
     materialCode: { $in: materialCodes },
     brand: canonicalBrand,
-    engineModel: String(engineModel || "").trim(),
+    engineModel: canonicalEngineModel,
     configuration: String(configuration || "").trim(),
     cylinderCount: String(cylinderCount || "").trim(),
     status: "Active",

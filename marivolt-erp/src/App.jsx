@@ -15,6 +15,7 @@ import RequireRole from "./components/RequireRole";
 
 import VerticalMaster from "./pages/masters/VerticalMaster.jsx";
 import BrandMaster from "./pages/masters/BrandMaster.jsx";
+import EngineModelMaster from "./pages/masters/EngineModelMaster.jsx";
 import SpnMaster from "./pages/masters/SpnMaster.jsx";
 import MaterialMaster from "./pages/masters/MaterialMaster.jsx";
 import MaterialCompatMaster from "./pages/masters/MaterialCompatMaster.jsx";
@@ -50,6 +51,14 @@ export default function App() {
             element={
               <RequireRole allow={masterRole}>
                 <BrandMaster />
+              </RequireRole>
+            }
+          />
+          <Route
+            path="engine-models-master"
+            element={
+              <RequireRole allow={masterRole}>
+                <EngineModelMaster />
               </RequireRole>
             }
           />

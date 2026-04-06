@@ -3,7 +3,7 @@ import MaterialCompatibility from "../models/MaterialCompatibility.js";
 import Material from "../models/Material.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { validateCompatibilityPayload } from "../validation/itemMasterValidation.js";
-import { resolveBrandNameForMaterial } from "../utils/brandMaterialVertical.js";
+import { canonicalizeCompatibilityPayload } from "../utils/compatibilityCanonical.js";
 import {
   DEFAULT_PAGE_SIZE,
 } from "../constants/masterValues.js";
@@ -17,17 +17,12 @@ router.post("/", requireRole("admin"), async (req, res) => {
   try {
     const payload = validateCompatibilityPayload(req.body || {});
 
-    let canonicalBrand;
+    let toSave;
     try {
-      canonicalBrand = await resolveBrandNameForMaterial(
-        payload.materialCode,
-        payload.brand
-      );
+      toSave = await canonicalizeCompatibilityPayload(payload);
     } catch (e) {
       return res.status(400).json({ message: e.message });
     }
-
-    const toSave = { ...payload, brand: canonicalBrand };
 
     try {
       const doc = await MaterialCompatibility.create(toSave);
@@ -113,17 +108,12 @@ router.put("/:id", requireRole("admin"), async (req, res) => {
   try {
     const payload = validateCompatibilityPayload(req.body || {});
 
-    let canonicalBrand;
+    let toSave;
     try {
-      canonicalBrand = await resolveBrandNameForMaterial(
-        payload.materialCode,
-        payload.brand
-      );
+      toSave = await canonicalizeCompatibilityPayload(payload);
     } catch (e) {
       return res.status(400).json({ message: e.message });
     }
-
-    const toSave = { ...payload, brand: canonicalBrand };
 
     try {
       const updated = await MaterialCompatibility.findByIdAndUpdate(
