@@ -9,6 +9,7 @@ import mongoose from "mongoose";
 
 import authRoutes from "./routes/authRoutes.js";
 import itemRoutes from "./routes/itemRoutes.js";
+import importRoutes from "./routes/importRoutes.js";
 import purchaseRoutes from "./routes/purchaseRoutes.js";
 import quotationRoutes from "./routes/quotationRoutes.js";
 import inventoryRoutes from "./routes/inventoryRoutes.js";
@@ -92,6 +93,7 @@ async function startServer() {
 
     app.use("/api/auth", authRoutes);
     app.use("/api/items", itemRoutes);
+    app.use("/api/import", importRoutes);
     app.use("/api/purchase-orders", purchaseRoutes);
     app.use("/api/suppliers", supplierRoutes);
     app.use("/api/purchase-returns", purchaseReturnRoutes);

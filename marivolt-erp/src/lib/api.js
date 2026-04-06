@@ -74,6 +74,32 @@ export function apiPost(path, body) {
   return api.post(path, body).then((r) => r.data);
 }
 
+/** Multipart upload (e.g. Excel). Do not set Content-Type — browser sets boundary. */
+export async function apiPostFormData(path, formData) {
+  const p = path.startsWith("/") ? path : `/${path}`;
+  const url = `${API_BASE}${p}`;
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(url, { method: "POST", headers, body: formData });
+  const text = await res.text();
+  let body;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { message: text || "Invalid response" };
+  }
+  if (!res.ok) {
+    const msg =
+      (typeof body.message === "string" && body.message) ||
+      (typeof body.error === "string" && body.error) ||
+      `Request failed (${res.status})`;
+    throw new Error(msg);
+  }
+  return body;
+}
+
 export function apiPut(path, body) {
   return api.put(path, body).then((r) => r.data);
 }

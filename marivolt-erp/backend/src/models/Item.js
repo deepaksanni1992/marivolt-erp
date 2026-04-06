@@ -21,6 +21,8 @@ const itemSchema = new mongoose.Schema(
     currency: { type: String, default: "USD", trim: true },
 
     weightKg: { type: Number, default: 0 },
+    /** Country of origin (Excel COO column on item master import). */
+    coo: { type: String, default: "", trim: true },
     reorderLevel: { type: Number, default: 0 },
     remarks: { type: String, default: "" },
     isActive: { type: Boolean, default: true },

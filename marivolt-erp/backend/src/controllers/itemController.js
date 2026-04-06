@@ -1,5 +1,7 @@
 import mongoose from "mongoose";
 import Item from "../models/Item.js";
+import ItemMapping from "../models/itemMappingModel.js";
+import ItemSupplierOffer from "../models/supplierModel.js";
 
 function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -94,6 +96,27 @@ export async function getItemByCode(req, res) {
   }
 }
 
+/** GET /api/items/full/:article — item + mapping rows + supplier offer rows */
+export async function getItemFullByArticle(req, res) {
+  try {
+    const raw = req.params.article ?? "";
+    const code = decodeURIComponent(String(raw).trim()).toUpperCase();
+    if (!code) return res.status(400).json({ message: "Article is required" });
+
+    const item = await Item.findOne({ itemCode: code }).lean();
+    if (!item) return res.status(404).json({ message: "Item not found" });
+
+    const [mappings, suppliers] = await Promise.all([
+      ItemMapping.find({ article: code }).sort({ createdAt: -1 }).lean(),
+      ItemSupplierOffer.find({ article: code }).sort({ createdAt: -1 }).lean(),
+    ]);
+
+    res.json({ item, mappings, suppliers });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
 export async function createItem(req, res) {
   try {
     const payload = { ...req.body };
@@ -172,6 +195,7 @@ export async function importItems(req, res) {
               salePrice: Number(row.salePrice) || 0,
               currency: row.currency ?? "USD",
               weightKg: Number(row.weightKg) || 0,
+              coo: row.coo ?? row.COO ?? "",
               reorderLevel: Number(row.reorderLevel) || 0,
               remarks: row.remarks ?? "",
               isActive: row.isActive !== false,

@@ -4,7 +4,7 @@ import Papa from "papaparse";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
-import { apiDelete, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
+import { apiDelete, apiGetWithQuery, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 
 const emptyItem = {
@@ -24,6 +24,7 @@ const emptyItem = {
   salePrice: 0,
   currency: "USD",
   weightKg: 0,
+  coo: "",
   reorderLevel: 0,
   remarks: "",
   isActive: true,
@@ -98,9 +99,18 @@ function mapItemToExportRow(r) {
   };
 }
 
+const EXCEL_KIND = {
+  items: { path: "/import/items", label: "Item master (Excel)" },
+  mappings: { path: "/import/mappings", label: "Item mappings (Excel)" },
+  suppliers: { path: "/import/suppliers", label: "Item suppliers (Excel)" },
+};
+
 export default function ItemMaster() {
   const qc = useQueryClient();
   const csvInputRef = useRef(null);
+  const excelItemsRef = useRef(null);
+  const excelMappingsRef = useRef(null);
+  const excelSuppliersRef = useRef(null);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [filterVertical, setFilterVertical] = useState("");
@@ -113,6 +123,8 @@ export default function ItemMaster() {
   const [editingId, setEditingId] = useState(null);
   const [formError, setFormError] = useState("");
   const [exportBusy, setExportBusy] = useState(false);
+  /** @type {null | { label: string; total: number; inserted: number; failed: { row: number; reason: string }[] }} */
+  const [excelImportResult, setExcelImportResult] = useState(null);
 
   const limit = 25;
   const listParams = {
@@ -190,6 +202,35 @@ export default function ItemMaster() {
     onError: (e) => setFormError(e.message),
   });
 
+  const excelImportMutation = useMutation({
+    mutationFn: async ({ path, file, label }) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      const data = await apiPostFormData(path, fd);
+      return { label, ...data };
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["items"] });
+      qc.invalidateQueries({ queryKey: ["itemFacets"] });
+      setFormError("");
+      setExcelImportResult({
+        label: data.label,
+        total: data.total ?? 0,
+        inserted: data.inserted ?? 0,
+        failed: Array.isArray(data.failed) ? data.failed : [],
+      });
+    },
+    onError: (e) => setFormError(e.message || "Excel import failed"),
+  });
+
+  function onExcelFile(kind, e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const cfg = EXCEL_KIND[kind];
+    excelImportMutation.mutate({ path: cfg.path, file, label: cfg.label });
+  }
+
   function openCreate() {
     setEditingId(null);
     setForm(emptyItem);
@@ -199,9 +240,10 @@ export default function ItemMaster() {
 
   function openEdit(row) {
     setEditingId(row._id);
-    setForm({
+      setForm({
       ...emptyItem,
       ...row,
+      coo: row.coo ?? "",
       supplierLeadTimeDays: row.supplierLeadTimeDays ?? 0,
       purchasePrice: row.purchasePrice ?? 0,
       salePrice: row.salePrice ?? 0,
@@ -285,6 +327,51 @@ export default function ItemMaster() {
           className="hidden"
           onChange={onCsvFileChange}
         />
+        <input
+          ref={excelItemsRef}
+          type="file"
+          accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+          className="hidden"
+          onChange={(e) => onExcelFile("items", e)}
+        />
+        <input
+          ref={excelMappingsRef}
+          type="file"
+          accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+          className="hidden"
+          onChange={(e) => onExcelFile("mappings", e)}
+        />
+        <input
+          ref={excelSuppliersRef}
+          type="file"
+          accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+          className="hidden"
+          onChange={(e) => onExcelFile("suppliers", e)}
+        />
+        <button
+          type="button"
+          onClick={() => excelItemsRef.current?.click()}
+          disabled={excelImportMutation.isPending}
+          className="rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-900 hover:bg-indigo-100 disabled:opacity-50"
+        >
+          {excelImportMutation.isPending ? "Excel…" : "Excel: Items"}
+        </button>
+        <button
+          type="button"
+          onClick={() => excelMappingsRef.current?.click()}
+          disabled={excelImportMutation.isPending}
+          className="rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-900 hover:bg-indigo-100 disabled:opacity-50"
+        >
+          Excel: Mappings
+        </button>
+        <button
+          type="button"
+          onClick={() => excelSuppliersRef.current?.click()}
+          disabled={excelImportMutation.isPending}
+          className="rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-900 hover:bg-indigo-100 disabled:opacity-50"
+        >
+          Excel: Suppliers
+        </button>
         <button
           type="button"
           onClick={() => csvInputRef.current?.click()}
@@ -330,7 +417,7 @@ export default function ItemMaster() {
           {error.message}
         </div>
       ) : null}
-      {formError && !modalOpen && !importOpen ? (
+      {formError && !modalOpen && !importOpen && !excelImportResult ? (
         <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
           {formError}
         </div>
@@ -626,6 +713,12 @@ export default function ItemMaster() {
               onChange={(e) => setForm((f) => ({ ...f, weightKg: Number(e.target.value) }))}
             />
           </FormField>
+          <FormField label="COO (country of origin)">
+            <TextInput
+              value={form.coo}
+              onChange={(e) => setForm((f) => ({ ...f, coo: e.target.value }))}
+            />
+          </FormField>
           <FormField label="Reorder level">
             <TextInput
               type="number"
@@ -710,6 +803,67 @@ export default function ItemMaster() {
             {importMutation.isPending ? "Importing…" : "Import"}
           </button>
         </div>
+      </Modal>
+
+      <Modal
+        open={!!excelImportResult}
+        onClose={() => setExcelImportResult(null)}
+        title={excelImportResult?.label ?? "Excel import result"}
+        wide
+      >
+        {excelImportResult ? (
+          <div className="space-y-3 text-sm text-gray-800">
+            <p className="text-xs text-gray-600">
+              Column layouts follow the three Excel templates (items / mappings / suppliers). Use the first
+              worksheet; headers are matched case-insensitively.
+            </p>
+            <div className="rounded-lg bg-gray-50 px-3 py-2 text-sm tabular-nums">
+              <span className="font-semibold">Total rows:</span> {excelImportResult.total}
+              <span className="mx-2 text-gray-400">·</span>
+              <span className="font-semibold text-emerald-800">Inserted:</span>{" "}
+              {excelImportResult.inserted}
+              <span className="mx-2 text-gray-400">·</span>
+              <span className="font-semibold text-amber-900">Row issues:</span>{" "}
+              {excelImportResult.failed.length}
+            </div>
+            {excelImportResult.failed.length > 0 ? (
+              <div>
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Failed / skipped rows
+                </p>
+                <div className="max-h-72 overflow-auto rounded-lg border border-gray-200">
+                  <table className="w-full border-collapse text-xs">
+                    <thead className="sticky top-0 bg-gray-100">
+                      <tr>
+                        <th className="border-b px-2 py-1.5 text-left">Row</th>
+                        <th className="border-b px-2 py-1.5 text-left">Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {excelImportResult.failed.map((f, i) => (
+                        <tr key={i} className="border-b border-gray-100">
+                          <td className="px-2 py-1.5 font-mono tabular-nums">{f.row}</td>
+                          <td className="px-2 py-1.5 text-gray-700">{f.reason}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <p className="text-emerald-800">No failed or skipped rows reported for this file.</p>
+            )}
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
+                onClick={() => setExcelImportResult(null)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        ) : null}
       </Modal>
     </div>
   );
