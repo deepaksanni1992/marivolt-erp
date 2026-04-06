@@ -6,6 +6,7 @@ const router = express.Router();
 
 router.use(...requireErpAccess);
 
+router.get("/facets", c.listItemFacets);
 router.get("/", c.listItems);
 router.post("/import", c.importItems);
 router.get("/by-code/:code", c.getItemByCode);

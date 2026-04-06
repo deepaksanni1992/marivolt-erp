@@ -1,15 +1,19 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import Papa from "papaparse";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
-import { FormField, TextInput } from "../components/erp/FormField.jsx";
+import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
 import { apiDelete, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
+import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 
 const emptyItem = {
   itemCode: "",
   description: "",
   uom: "PCS",
+  vertical: "",
   brand: "",
+  modelName: "",
   makerPartNo: "",
   hsnCode: "",
   category: "",
@@ -25,22 +29,110 @@ const emptyItem = {
   isActive: true,
 };
 
+function csvRowToItem(row) {
+  const r = row || {};
+  const itemCode = String(
+    r.itemCode || r.article || r.Article || r.ARTICLE || r.code || r.Code || ""
+  )
+    .trim()
+    .toUpperCase();
+  if (!itemCode) return null;
+  return {
+    itemCode,
+    description: String(r.description || r.Description || "").trim(),
+    uom: String(r.uom || r.UOM || r.unit || "PCS").trim() || "PCS",
+    vertical: String(r.vertical || r.Vertical || "").trim(),
+    brand: String(r.brand || r.Brand || "").trim(),
+    modelName: String(r.modelName || r.model || r.Model || "").trim(),
+    makerPartNo: String(r.makerPartNo || r.mpn || r.MPN || "").trim(),
+    hsnCode: String(r.hsnCode || r.HSN || "").trim(),
+    category: String(r.category || r.Category || "").trim(),
+    supplierName: String(r.supplierName || r.supplier || r.Supplier || "").trim(),
+    supplierPartNo: String(
+      r.supplierPartNo || r.partNumber || r.part_no || r["Part number"] || r["Part Number"] || ""
+    ).trim(),
+    supplierLeadTimeDays: Number(r.supplierLeadTimeDays || r.leadTimeDays) || 0,
+    purchasePrice: Number(r.purchasePrice || r.purchase) || 0,
+    salePrice: Number(r.salePrice || r.sale) || 0,
+    currency: String(r.currency || r.Currency || "USD").trim() || "USD",
+    weightKg: Number(r.weightKg || r.weight) || 0,
+    reorderLevel: Number(r.reorderLevel) || 0,
+    remarks: String(r.remarks || r.Remarks || "").trim(),
+    isActive: String(r.isActive || r.active || "")
+      .toLowerCase()
+      .match(/^(0|false|no|n)$/)
+      ? false
+      : true,
+  };
+}
+
+const EXPORT_COLUMNS = [
+  { key: "article", header: "Article" },
+  { key: "mpn", header: "MPN" },
+  { key: "description", header: "Description" },
+  { key: "partNumber", header: "Part number" },
+  { key: "vertical", header: "Vertical" },
+  { key: "brand", header: "Brand" },
+  { key: "model", header: "Model" },
+  { key: "uom", header: "UOM" },
+  { key: "supplier", header: "Supplier" },
+  { key: "sale", header: "Sale price" },
+  { key: "currency", header: "Currency" },
+  { key: "active", header: "Active" },
+];
+
+function mapItemToExportRow(r) {
+  return {
+    article: r.itemCode ?? "",
+    mpn: r.makerPartNo ?? "",
+    description: r.description ?? "",
+    partNumber: r.supplierPartNo ?? "",
+    vertical: r.vertical ?? "",
+    brand: r.brand ?? "",
+    model: r.modelName ?? "",
+    uom: r.uom ?? "",
+    supplier: r.supplierName ?? "",
+    sale: r.salePrice != null ? Number(r.salePrice).toFixed(2) : "",
+    currency: r.currency ?? "",
+    active: r.isActive ? "Yes" : "No",
+  };
+}
+
 export default function ItemMaster() {
   const qc = useQueryClient();
+  const csvInputRef = useRef(null);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
+  const [filterVertical, setFilterVertical] = useState("");
+  const [filterBrand, setFilterBrand] = useState("");
+  const [filterModel, setFilterModel] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
   const [form, setForm] = useState(emptyItem);
   const [editingId, setEditingId] = useState(null);
   const [formError, setFormError] = useState("");
+  const [exportBusy, setExportBusy] = useState(false);
 
   const limit = 25;
+  const listParams = {
+    page,
+    limit,
+    search: search.trim() || undefined,
+    vertical: filterVertical || undefined,
+    brand: filterBrand || undefined,
+    model: filterModel || undefined,
+  };
+
   const { data, isLoading, error } = useQuery({
-    queryKey: ["items", page, search],
-    queryFn: () =>
-      apiGetWithQuery("/items", { page, limit, search: search.trim() || undefined }),
+    queryKey: ["items", page, search, filterVertical, filterBrand, filterModel],
+    queryFn: () => apiGetWithQuery("/items", listParams),
+  });
+
+  const { data: facets } = useQuery({
+    queryKey: ["itemFacets"],
+    queryFn: () => apiGetWithQuery("/items/facets", {}),
+    staleTime: 30_000,
   });
 
   const saveMutation = useMutation({
@@ -53,6 +145,7 @@ export default function ItemMaster() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["items"] });
+      qc.invalidateQueries({ queryKey: ["itemFacets"] });
       setModalOpen(false);
       setForm(emptyItem);
       setEditingId(null);
@@ -62,7 +155,10 @@ export default function ItemMaster() {
 
   const deleteMutation = useMutation({
     mutationFn: (id) => apiDelete(`/items/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["items"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["items"] });
+      qc.invalidateQueries({ queryKey: ["itemFacets"] });
+    },
   });
 
   const importMutation = useMutation({
@@ -78,9 +174,20 @@ export default function ItemMaster() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["items"] });
+      qc.invalidateQueries({ queryKey: ["itemFacets"] });
       setImportOpen(false);
       setImportText("");
     },
+  });
+
+  const importCsvMutation = useMutation({
+    mutationFn: (items) => apiPost("/items/import", { items }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["items"] });
+      qc.invalidateQueries({ queryKey: ["itemFacets"] });
+      setFormError("");
+    },
+    onError: (e) => setFormError(e.message),
   });
 
   function openCreate() {
@@ -105,6 +212,62 @@ export default function ItemMaster() {
     setModalOpen(true);
   }
 
+  async function runExport(kind) {
+    setExportBusy(true);
+    setFormError("");
+    try {
+      const data = await apiGetWithQuery("/items", {
+        export: "1",
+        limit: 10000,
+        search: search.trim() || undefined,
+        vertical: filterVertical || undefined,
+        brand: filterBrand || undefined,
+        model: filterModel || undefined,
+      });
+      const rows = (data.items ?? []).map(mapItemToExportRow);
+      if (data.total != null && rows.length < data.total) {
+        window.alert(
+          `Exported ${rows.length} of ${data.total} matching items. Narrow filters or raise the export limit in the API if needed.`
+        );
+      }
+      const parts = [];
+      if (filterVertical) parts.push(`Vertical: ${filterVertical}`);
+      if (filterBrand) parts.push(`Brand: ${filterBrand}`);
+      if (filterModel) parts.push(`Model: ${filterModel}`);
+      if (search.trim()) parts.push(`Search: ${search.trim()}`);
+      const subtitle = parts.length ? parts.join(" · ") : "All items (current filter)";
+      if (kind === "csv") {
+        downloadCsv("item-master.csv", EXPORT_COLUMNS, rows);
+      } else {
+        downloadPdfTable("Item master", subtitle, EXPORT_COLUMNS, rows, "item-master");
+      }
+    } catch (e) {
+      setFormError(e.message || "Export failed");
+    } finally {
+      setExportBusy(false);
+    }
+  }
+
+  function onCsvFileChange(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFormError("");
+    Papa.parse(f, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => {
+        const items = (results.data || []).map(csvRowToItem).filter(Boolean);
+        e.target.value = "";
+        if (!items.length) {
+          setFormError('No valid rows. Each row needs an article code (column itemCode, article, or code).');
+          return;
+        }
+        importCsvMutation.mutate(items);
+      },
+      error: (err) => setFormError(err.message || "CSV parse error"),
+    });
+  }
+
   const items = data?.items ?? [];
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -113,14 +276,45 @@ export default function ItemMaster() {
     <div>
       <PageHeader
         title="Item Master"
-        subtitle="Single spare-parts catalogue (codes, supplier fields, pricing)."
+        subtitle="Spare-parts catalogue with vertical, brand, and model filters; article, MPN, and part numbers."
       >
+        <input
+          ref={csvInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          className="hidden"
+          onChange={onCsvFileChange}
+        />
+        <button
+          type="button"
+          onClick={() => csvInputRef.current?.click()}
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+          disabled={importCsvMutation.isPending}
+        >
+          {importCsvMutation.isPending ? "Importing CSV…" : "Import CSV"}
+        </button>
         <button
           type="button"
           onClick={() => setImportOpen(true)}
           className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium hover:bg-gray-50"
         >
           Import JSON
+        </button>
+        <button
+          type="button"
+          onClick={() => runExport("csv")}
+          disabled={exportBusy || total === 0}
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+        >
+          Export CSV
+        </button>
+        <button
+          type="button"
+          onClick={() => runExport("pdf")}
+          disabled={exportBusy || total === 0}
+          className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+        >
+          Export PDF
         </button>
         <button
           type="button"
@@ -136,38 +330,86 @@ export default function ItemMaster() {
           {error.message}
         </div>
       ) : null}
-
-      <div className="mb-4 flex flex-wrap items-end gap-3 rounded-2xl border bg-white p-4">
-        <div className="min-w-[200px] flex-1">
-          <label className="text-xs font-medium text-gray-600">Search</label>
-          <TextInput
-            className="mt-1"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Code, description, part no…"
-          />
+      {formError && !modalOpen && !importOpen ? (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          {formError}
         </div>
-        <button
-          type="button"
-          className="rounded-xl bg-gray-100 px-3 py-2 text-sm"
-          onClick={() => {
-            setPage(1);
-            qc.invalidateQueries({ queryKey: ["items"] });
-          }}
-        >
-          Apply
-        </button>
+      ) : null}
+
+      <div className="mb-4 space-y-3 rounded-2xl border bg-white p-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <FormField label="Vertical">
+            <SelectInput
+              value={filterVertical}
+              onChange={(e) => setFilterVertical(e.target.value)}
+            >
+              <option value="">All verticals</option>
+              {(facets?.verticals ?? []).map((x) => (
+                <option key={x} value={x}>
+                  {x}
+                </option>
+              ))}
+            </SelectInput>
+          </FormField>
+          <FormField label="Brand">
+            <SelectInput value={filterBrand} onChange={(e) => setFilterBrand(e.target.value)}>
+              <option value="">All brands</option>
+              {(facets?.brands ?? []).map((x) => (
+                <option key={x} value={x}>
+                  {x}
+                </option>
+              ))}
+            </SelectInput>
+          </FormField>
+          <FormField label="Model">
+            <SelectInput value={filterModel} onChange={(e) => setFilterModel(e.target.value)}>
+              <option value="">All models</option>
+              {(facets?.models ?? []).map((x) => (
+                <option key={x} value={x}>
+                  {x}
+                </option>
+              ))}
+            </SelectInput>
+          </FormField>
+          <FormField label="Search">
+            <TextInput
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Article, description, MPN, part no…"
+            />
+          </FormField>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-800"
+            onClick={() => {
+              setPage(1);
+              qc.invalidateQueries({ queryKey: ["items"] });
+              qc.invalidateQueries({ queryKey: ["itemFacets"] });
+            }}
+          >
+            Apply filters
+          </button>
+          <p className="text-xs text-gray-500">
+            Dropdowns list values from your items (updates when you save new verticals, brands, or models).
+          </p>
+        </div>
       </div>
 
       <div className="overflow-hidden rounded-2xl border bg-white">
         <div className="overflow-x-auto">
-          <table className="min-w-full text-left text-sm">
+          <table className="min-w-[1100px] w-full text-left text-sm">
             <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
               <tr>
-                <th className="px-3 py-2">Code</th>
-                <th className="px-3 py-2">Description</th>
+                <th className="px-3 py-2 whitespace-nowrap">Article</th>
+                <th className="px-3 py-2 whitespace-nowrap">MPN</th>
+                <th className="px-3 py-2 min-w-[160px]">Description</th>
+                <th className="px-3 py-2 whitespace-nowrap">Part number</th>
+                <th className="px-3 py-2 whitespace-nowrap">Vertical</th>
+                <th className="px-3 py-2 whitespace-nowrap">Brand</th>
+                <th className="px-3 py-2 whitespace-nowrap">Model</th>
                 <th className="px-3 py-2">UOM</th>
-                <th className="px-3 py-2">Supplier</th>
                 <th className="px-3 py-2 text-right">Sale</th>
                 <th className="px-3 py-2">Active</th>
                 <th className="px-3 py-2 w-28" />
@@ -176,24 +418,36 @@ export default function ItemMaster() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                  <td colSpan={11} className="px-3 py-8 text-center text-gray-500">
                     Loading…
                   </td>
                 </tr>
               ) : items.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
-                    No items yet.
+                  <td colSpan={11} className="px-3 py-8 text-center text-gray-500">
+                    No items match these filters.
                   </td>
                 </tr>
               ) : (
                 items.map((row) => (
                   <tr key={row._id} className="border-b border-gray-100 hover:bg-gray-50/80">
-                    <td className="px-3 py-2 font-mono text-xs">{row.itemCode}</td>
-                    <td className="px-3 py-2 max-w-[220px] truncate">{row.description}</td>
+                    <td className="px-3 py-2 font-mono text-xs font-medium">{row.itemCode}</td>
+                    <td className="px-3 py-2 font-mono text-xs max-w-[120px] truncate" title={row.makerPartNo}>
+                      {row.makerPartNo || "—"}
+                    </td>
+                    <td className="px-3 py-2 max-w-[220px] truncate" title={row.description}>
+                      {row.description}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs max-w-[120px] truncate" title={row.supplierPartNo}>
+                      {row.supplierPartNo || "—"}
+                    </td>
+                    <td className="px-3 py-2 text-xs">{row.vertical || "—"}</td>
+                    <td className="px-3 py-2 text-xs">{row.brand || "—"}</td>
+                    <td className="px-3 py-2 text-xs max-w-[100px] truncate" title={row.modelName}>
+                      {row.modelName || "—"}
+                    </td>
                     <td className="px-3 py-2">{row.uom}</td>
-                    <td className="px-3 py-2 max-w-[160px] truncate">{row.supplierName}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">
+                    <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">
                       {row.currency} {Number(row.salePrice).toFixed(2)}
                     </td>
                     <td className="px-3 py-2">{row.isActive ? "Yes" : "No"}</td>
@@ -263,7 +517,7 @@ export default function ItemMaster() {
           </div>
         ) : null}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <FormField label="Item code *">
+          <FormField label="Article (item code) *">
             <TextInput
               value={form.itemCode}
               onChange={(e) => setForm((f) => ({ ...f, itemCode: e.target.value }))}
@@ -282,16 +536,35 @@ export default function ItemMaster() {
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
             />
           </FormField>
-          <FormField label="Brand">
+          <FormField label="Vertical (e.g. Engine, Turbocharger)">
+            <TextInput
+              value={form.vertical}
+              onChange={(e) => setForm((f) => ({ ...f, vertical: e.target.value }))}
+              placeholder="Engine"
+            />
+          </FormField>
+          <FormField label="Brand (e.g. Wärtsilä, MAN)">
             <TextInput
               value={form.brand}
               onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))}
             />
           </FormField>
-          <FormField label="Maker part no">
+          <FormField label="Model (e.g. W34DF, 32/40 CD)" className="sm:col-span-2">
+            <TextInput
+              value={form.modelName}
+              onChange={(e) => setForm((f) => ({ ...f, modelName: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="MPN (maker part no)">
             <TextInput
               value={form.makerPartNo}
               onChange={(e) => setForm((f) => ({ ...f, makerPartNo: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Part number (supplier)">
+            <TextInput
+              value={form.supplierPartNo}
+              onChange={(e) => setForm((f) => ({ ...f, supplierPartNo: e.target.value }))}
             />
           </FormField>
           <FormField label="HSN">
@@ -300,7 +573,7 @@ export default function ItemMaster() {
               onChange={(e) => setForm((f) => ({ ...f, hsnCode: e.target.value }))}
             />
           </FormField>
-          <FormField label="Category">
+          <FormField label="Category (legacy)">
             <TextInput
               value={form.category}
               onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
@@ -310,12 +583,6 @@ export default function ItemMaster() {
             <TextInput
               value={form.supplierName}
               onChange={(e) => setForm((f) => ({ ...f, supplierName: e.target.value }))}
-            />
-          </FormField>
-          <FormField label="Supplier part no">
-            <TextInput
-              value={form.supplierPartNo}
-              onChange={(e) => setForm((f) => ({ ...f, supplierPartNo: e.target.value }))}
             />
           </FormField>
           <FormField label="Lead time (days)">
@@ -411,6 +678,9 @@ export default function ItemMaster() {
         <p className="mb-2 text-sm text-gray-600">
           POST body shape: <code className="rounded bg-gray-100 px-1">{"{ items: [...] }"}</code>.
           Each object should include at least <code className="rounded bg-gray-100 px-1">itemCode</code>.
+          Optional fields: <code className="rounded bg-gray-100 px-1">vertical</code>,{" "}
+          <code className="rounded bg-gray-100 px-1">brand</code>,{" "}
+          <code className="rounded bg-gray-100 px-1">modelName</code>.
         </p>
         {importMutation.isError ? (
           <div className="mb-2 rounded-lg border border-red-200 bg-red-50 p-2 text-sm text-red-700">
@@ -421,7 +691,7 @@ export default function ItemMaster() {
           className="h-48 w-full rounded-xl border p-3 font-mono text-xs"
           value={importText}
           onChange={(e) => setImportText(e.target.value)}
-          placeholder='[ { "itemCode": "ABC", "description": "..." } ]'
+          placeholder='[ { "itemCode": "ABC", "vertical": "Engine", "brand": "MAN", "modelName": "32/40 CD" } ]'
         />
         <div className="mt-3 flex justify-end gap-2">
           <button

@@ -1,15 +1,44 @@
 import mongoose from "mongoose";
 import Item from "../models/Item.js";
 
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function pagination(req) {
-  const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
-  const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
-  return { page, limit, skip: (page - 1) * limit };
+  const exportMode = String(req.query.export || "") === "1";
+  const page = exportMode ? 1 : Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+  const limit = exportMode
+    ? Math.min(10_000, Math.max(1, parseInt(String(req.query.limit || "5000"), 10) || 5000))
+    : Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
+  const skip = exportMode ? 0 : (page - 1) * limit;
+  return { page, limit, skip, exportMode };
+}
+
+export async function listItemFacets(req, res) {
+  try {
+    const [verticals, brands, models] = await Promise.all([
+      Item.distinct("vertical", { vertical: { $nin: [null, ""] } }),
+      Item.distinct("brand", { brand: { $nin: [null, ""] } }),
+      Item.distinct("modelName", { modelName: { $nin: [null, ""] } }),
+    ]);
+    const norm = (arr) =>
+      [...new Set(arr.map((x) => String(x || "").trim()).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b, undefined, { sensitivity: "base" })
+      );
+    res.json({
+      verticals: norm(verticals),
+      brands: norm(brands),
+      models: norm(models),
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 }
 
 export async function listItems(req, res) {
   try {
-    const { page, limit, skip } = pagination(req);
+    const { page, limit, skip, exportMode } = pagination(req);
     const filter = {};
     if (req.query.isActive !== undefined) {
       filter.isActive = String(req.query.isActive) === "true";
@@ -24,11 +53,17 @@ export async function listItems(req, res) {
       ];
     }
     if (req.query.category) filter.category = new RegExp(String(req.query.category).trim(), "i");
+    const v = String(req.query.vertical || "").trim();
+    if (v) filter.vertical = new RegExp(`^${escapeRegex(v)}$`, "i");
+    const b = String(req.query.brand || "").trim();
+    if (b) filter.brand = new RegExp(`^${escapeRegex(b)}$`, "i");
+    const m = String(req.query.model || "").trim();
+    if (m) filter.modelName = new RegExp(`^${escapeRegex(m)}$`, "i");
     const [items, total] = await Promise.all([
       Item.find(filter).sort({ itemCode: 1 }).skip(skip).limit(limit).lean(),
       Item.countDocuments(filter),
     ]);
-    res.json({ items, total, page, limit });
+    res.json({ items, total, page, limit, exportMode });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -124,7 +159,9 @@ export async function importItems(req, res) {
               itemCode,
               description: row.description ?? "",
               uom: row.uom ?? "PCS",
+              vertical: row.vertical ?? "",
               brand: row.brand ?? "",
+              modelName: row.modelName ?? row.model ?? "",
               makerPartNo: row.makerPartNo ?? "",
               hsnCode: row.hsnCode ?? "",
               category: row.category ?? "",

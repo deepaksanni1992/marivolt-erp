@@ -5,7 +5,9 @@ const itemSchema = new mongoose.Schema(
     itemCode: { type: String, required: true, unique: true, trim: true, uppercase: true },
     description: { type: String, default: "", trim: true },
     uom: { type: String, default: "PCS", trim: true },
+    vertical: { type: String, default: "", trim: true },
     brand: { type: String, default: "", trim: true },
+    modelName: { type: String, default: "", trim: true },
     makerPartNo: { type: String, default: "", trim: true },
     hsnCode: { type: String, default: "", trim: true },
     category: { type: String, default: "", trim: true },
@@ -27,5 +29,6 @@ const itemSchema = new mongoose.Schema(
 );
 
 itemSchema.index({ description: "text", makerPartNo: "text", supplierPartNo: "text" });
+itemSchema.index({ vertical: 1, brand: 1, modelName: 1 });
 
 export default mongoose.model("Item", itemSchema);
