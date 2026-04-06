@@ -11,15 +11,9 @@
     "generate:import-templates": "node scripts/generate-import-templates.mjs"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.90.20",
-    "axios": "^1.13.3",
-    "jspdf": "^4.1.0",
-    "jspdf-autotable": "^5.0.7",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-router-dom": "^7.13.0",
-    "recharts": "^3.7.0",
-    "xlsx": "^0.18.5"
+    "react-router-dom": "^7.13.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

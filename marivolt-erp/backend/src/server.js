@@ -7,40 +7,17 @@ import cors from "cors";
 import morgan from "morgan";
 import mongoose from "mongoose";
 
-import stockTxnRoutes from "./routes/stockTxnRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
-import purchaseRoutes from "./routes/purchaseRoutes.js";
-import supplierRoutes from "./routes/supplierRoutes.js";
-import salesRoutes from "./routes/salesRoutes.js";
-import bomRoutes from "./routes/bomRoutes.js";
-import dashboardRoutes from "./routes/dashboardRoutes.js";
-import priceListRoutes from "./routes/priceListRoutes.js";
-import logisticsRoutes from "./routes/logisticsRoutes.js";
-import accountsRoutes from "./routes/accountsRoutes.js";
-import auditRoutes from "./routes/auditRoutes.js";
-import spnRoutes from "./routes/spnRoutes.js";
-import materialRoutes from "./routes/materialRoutes.js";
-import materialCompatibilityRoutes from "./routes/materialCompatibilityRoutes.js";
-import articleRoutes from "./routes/articleRoutes.js";
-import materialSupplierRoutes from "./routes/materialSupplierRoutes.js";
-import importRoutes from "./routes/importRoutes.js";
-import resolveMaterialRoutes from "./routes/resolveMaterialRoutes.js";
-import verticalRoutes from "./routes/verticalRoutes.js";
-import brandRoutes from "./routes/brandRoutes.js";
-import engineModelRoutes from "./routes/engineModelRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load .env from backend/.env OR project root .env depending on your structure.
-// You were using ../.env from backend/src (keep same):
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
 const PORT = process.env.PORT || 5000;
 
 async function startServer() {
   try {
-    // ---- DB ----
     mongoose.set("strictQuery", true);
 
     if (!process.env.MONGO_URI) {
@@ -53,12 +30,9 @@ async function startServer() {
 
     console.log("✅ MongoDB connected");
 
-    // ---- APP ----
     const app = express();
 
-    // ---- CORS ----
     if (process.env.NODE_ENV !== "production") {
-      // Dev: allow any localhost origin and tools like Postman
       app.use(
         cors({
           origin: true,
@@ -68,19 +42,17 @@ async function startServer() {
       app.options(/.*/, cors());
     } else {
       const allowedExactOrigins = [
-        // Local dev frontends (sometimes you call production API from local UI)
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
-        // Primary frontend URL from env (e.g. Vercel domain)
         ...(process.env.CLIENT_URL ? [process.env.CLIENT_URL] : []),
       ];
 
       function isAllowedOrigin(origin) {
-        if (!origin) return true; // Postman / server-to-server
+        if (!origin) return true;
         if (allowedExactOrigins.includes(origin)) return true;
-        if (origin.endsWith(".vercel.app")) return true; // allow Vercel previews
+        if (origin.endsWith(".vercel.app")) return true;
         if (
           origin.startsWith("http://localhost:") ||
           origin.startsWith("http://127.0.0.1:")
@@ -104,56 +76,24 @@ async function startServer() {
       app.options(/.*/, cors(corsOptions));
     }
 
-    // ---- MIDDLEWARE ----
     app.use(express.json({ limit: "2mb" }));
     app.use(morgan("dev"));
 
-    // ---- ROUTES ----
     app.use("/api/auth", authRoutes);
-    app.use("/api/stock-txns", stockTxnRoutes);
-    app.use("/api/purchase", purchaseRoutes);
-    app.use("/api/suppliers", supplierRoutes);
-    app.use("/api/sales", salesRoutes);
-    app.use("/api/bom", bomRoutes);
-    app.use("/api/dashboard", dashboardRoutes);
-    app.use("/api/price-list", priceListRoutes);
-    app.use("/api/logistics", logisticsRoutes);
-    app.use("/api/accounts", accountsRoutes);
-    app.use("/api/audit", auditRoutes);
-    app.use("/api/verticals", verticalRoutes);
-    app.use("/api/brands", brandRoutes);
-    app.use("/api/engine-models", engineModelRoutes);
-    app.use("/api/spn", spnRoutes);
-    app.use("/api/materials", materialRoutes);
-    app.use("/api/material-compat", materialCompatibilityRoutes);
-    app.use("/api/articles", articleRoutes);
-    app.use("/api/material-suppliers", materialSupplierRoutes);
-    app.use("/api/import", importRoutes);
-    app.use("/api/resolve-material", resolveMaterialRoutes);
 
-    // ---- HEALTH ----
     app.get("/api/health", (req, res) => {
-      res.json({ ok: true, message: "Marivoltz API running" });
+      res.json({ ok: true, message: "Marivoltz API running (auth shell)" });
     });
 
-    // ---- 404 ----
     app.use((req, res) => {
-      res.status(404).json({ message: "Route not found" });
+      res.status(404).json({ message: "Not found" });
     });
 
-    // ---- ERROR HANDLER ----
-    // eslint-disable-next-line no-unused-vars
-    app.use((err, req, res, next) => {
-      console.error("❌ Server error:", err);
-      res.status(500).json({ message: err.message || "Internal Server Error" });
-    });
-
-    // ---- LISTEN ----
     app.listen(PORT, () => {
-      console.log(`✅ API listening on ${PORT}`);
+      console.log(`✅ API listening on port ${PORT}`);
     });
-  } catch (error) {
-    console.error("❌ Failed to start server:", error);
+  } catch (err) {
+    console.error("❌ Failed to start server:", err);
     process.exit(1);
   }
 }

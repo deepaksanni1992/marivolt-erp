@@ -58,7 +58,9 @@ async function request(path, options = {}) {
     try {
       const body = JSON.parse(text);
       if (body && typeof body.message === "string") message = body.message;
-    } catch (_) {}
+    } catch {
+      /* non-JSON error body */
+    }
     throw new Error(message);
   }
   return res.json();
@@ -100,7 +102,9 @@ export async function apiGetWithQuery(path, params = {}) {
     try {
       const body = JSON.parse(text);
       if (body && typeof body.message === "string") message = body.message;
-    } catch (_) {}
+    } catch {
+      /* non-JSON error body */
+    }
     throw new Error(message);
   }
   return res.json();
