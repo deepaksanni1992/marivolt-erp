@@ -145,6 +145,18 @@ function MasterStatusBadge({ active }) {
   );
 }
 
+/** List API returns Mongo fields; master grid uses identity-only labels. */
+function masterRowFromListItem(row) {
+  return {
+    article: row.itemCode ?? "",
+    productName: row.description ?? "",
+    brand: row.brand ?? "",
+    vertical: row.vertical ?? "",
+    uom: row.uom ?? "",
+    active: !!row.isActive,
+  };
+}
+
 export default function ItemMaster() {
   const qc = useQueryClient();
   const csvInputRef = useRef(null);
@@ -192,10 +204,11 @@ export default function ItemMaster() {
     staleTime: 30_000,
   });
 
-  const { data: fullDetail, isLoading: fullLoading } = useQuery({
+  const { data: fullDetail, isLoading: fullLoading, isFetching: fullFetching } = useQuery({
     queryKey: ["itemFull", expandedArticle],
     queryFn: () => apiGet(`/items/full/${encodeURIComponent(expandedArticle)}`),
     enabled: !!expandedArticle,
+    staleTime: 0,
   });
 
   const saveMutation = useMutation({
@@ -396,9 +409,6 @@ export default function ItemMaster() {
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
-  const mappings = fullDetail?.mappings ?? [];
-  const suppliers = fullDetail?.suppliers ?? [];
-
   return (
     <div className="min-h-[60vh]">
       <PageHeader
@@ -561,12 +571,11 @@ export default function ItemMaster() {
 
       <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
         <div className="overflow-x-auto">
-          <table className="min-w-[900px] w-full text-left text-sm">
+          <table className="min-w-[860px] w-full text-left text-sm">
             <thead className="border-b border-slate-100 bg-slate-50/90 text-xs font-semibold uppercase tracking-wide text-slate-600">
               <tr>
-                <th className="w-8 px-2 py-3" aria-hidden />
                 <th className="px-3 py-3">Article</th>
-                <th className="px-3 py-3">Product name</th>
+                <th className="px-3 py-3">ProductName</th>
                 <th className="px-3 py-3">Brand</th>
                 <th className="px-3 py-3">Vertical</th>
                 <th className="px-3 py-3">UOM</th>
@@ -577,19 +586,20 @@ export default function ItemMaster() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={8} className="px-3 py-12 text-center text-slate-500">
+                  <td colSpan={7} className="px-3 py-12 text-center text-slate-500">
                     Loading…
                   </td>
                 </tr>
               ) : items.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-3 py-12 text-center text-slate-500">
+                  <td colSpan={7} className="px-3 py-12 text-center text-slate-500">
                     No items match these filters.
                   </td>
                 </tr>
               ) : (
                 items.flatMap((row) => {
-                  const open = expandedArticle === row.itemCode;
+                  const m = masterRowFromListItem(row);
+                  const open = expandedArticle === m.article;
                   const mainRow = (
                     <tr
                       key={row._id}
@@ -598,43 +608,45 @@ export default function ItemMaster() {
                         open ? "bg-slate-50/90" : "hover:bg-slate-50/50",
                       ].join(" ")}
                     >
-                      <td className="px-2 py-2.5 align-middle">
-                        <button
-                          type="button"
-                          className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-white hover:text-slate-900"
-                          aria-expanded={open}
-                          aria-label={open ? "Collapse row" : "Expand row"}
-                          onClick={() => toggleRow(row.itemCode)}
-                        >
-                          <span className="text-xs">{open ? "▼" : "▶"}</span>
-                        </button>
-                      </td>
                       <td className="px-3 py-2.5 align-middle">
-                        <button
-                          type="button"
-                          className="text-left font-mono text-xs font-semibold text-slate-900 hover:underline"
-                          onClick={() => toggleRow(row.itemCode)}
-                        >
-                          {row.itemCode}
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200/80 bg-white text-slate-600 shadow-sm hover:bg-slate-100"
+                            aria-expanded={open}
+                            aria-label={open ? "Collapse details" : "Expand details"}
+                            onClick={() => toggleRow(m.article)}
+                          >
+                            <span className="text-xs">{open ? "▼" : "▶"}</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="text-left font-mono text-xs font-semibold text-slate-900 hover:underline"
+                            onClick={() => toggleRow(m.article)}
+                          >
+                            {m.article}
+                          </button>
+                        </div>
                       </td>
-                      <td className="max-w-[220px] px-3 py-2.5 align-middle">
-                        <span className="line-clamp-2 text-slate-700">{row.description || "—"}</span>
+                      <td className="max-w-[240px] px-3 py-2.5 align-middle">
+                        <span className="line-clamp-2 text-slate-700" title={m.productName}>
+                          {m.productName || "—"}
+                        </span>
                       </td>
-                      <td className="px-3 py-2.5 align-middle text-slate-700">{row.brand || "—"}</td>
-                      <td className="px-3 py-2.5 align-middle text-slate-700">{row.vertical || "—"}</td>
-                      <td className="px-3 py-2.5 align-middle text-slate-700">{row.uom || "—"}</td>
+                      <td className="px-3 py-2.5 align-middle text-slate-700">{m.brand || "—"}</td>
+                      <td className="px-3 py-2.5 align-middle text-slate-700">{m.vertical || "—"}</td>
+                      <td className="px-3 py-2.5 align-middle text-slate-700">{m.uom || "—"}</td>
                       <td className="px-3 py-2.5 align-middle">
-                        <MasterStatusBadge active={row.isActive} />
+                        <MasterStatusBadge active={m.active} />
                       </td>
                       <td className="px-3 py-2.5 align-middle text-right">
                         <div className="flex flex-wrap justify-end gap-1.5">
                           <Link
-                            to={`/items/item/${encodeURIComponent(row.itemCode)}`}
+                            to={`/items/item/${encodeURIComponent(m.article)}`}
                             className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            View full
+                            View
                           </Link>
                           <button
                             type="button"
@@ -651,7 +663,7 @@ export default function ItemMaster() {
                             className="rounded-lg border border-red-200 bg-white px-2 py-1 text-xs text-red-700 hover:bg-red-50"
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (confirm(`Delete ${row.itemCode}?`)) deleteMutation.mutate(row._id);
+                              if (confirm(`Delete ${m.article}?`)) deleteMutation.mutate(row._id);
                             }}
                           >
                             Del
@@ -663,150 +675,151 @@ export default function ItemMaster() {
 
                   if (!open) return [mainRow];
 
+                  const item = fullDetail?.item;
+                  const mappings = fullDetail?.mappings ?? [];
+                  const suppliers = fullDetail?.suppliers ?? [];
+
                   const detailRow = (
-                    <tr key={`${row._id}-detail`} className="bg-slate-50/50">
-                      <td colSpan={8} className="border-b border-slate-100 p-0">
-                        <div className="border-t border-slate-200/80 px-4 py-4 sm:px-6">
-                          {fullLoading ? (
-                            <p className="text-sm text-slate-500">Loading…</p>
-                          ) : (
-                            <>
-                              <div className="mb-4 flex flex-wrap gap-1 border-b border-slate-200/80 pb-3">
-                                {[
-                                  { id: "technical", label: "Technical (mapping)" },
-                                  { id: "suppliers", label: "Suppliers" },
-                                  { id: "stock", label: "Stock" },
-                                ].map((t) => (
-                                  <button
-                                    key={t.id}
-                                    type="button"
-                                    className={[
-                                      "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
-                                      detailTab === t.id
-                                        ? "bg-slate-900 text-white"
-                                        : "text-slate-600 hover:bg-white",
-                                    ].join(" ")}
-                                    onClick={() => setDetailTab(t.id)}
-                                  >
-                                    {t.label}
-                                  </button>
-                                ))}
-                              </div>
-
-                              {detailTab === "technical" && (
-                                <div className="space-y-4">
-                                  <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <p className="text-xs text-slate-500">
-                                      Mapping rows for this article (model, ESN, MPN, etc.)
-                                    </p>
+                    <tr key={`${row._id}-detail`} className="bg-slate-50/80">
+                      <td colSpan={7} className="border-b border-slate-100 p-0">
+                        <div className="border-t border-slate-200 px-4 py-5 sm:px-6">
+                          <div className="rounded-2xl border border-slate-200/90 bg-slate-50/95 p-4 shadow-sm sm:p-5">
+                            {(fullLoading || fullFetching) && !item ? (
+                              <p className="text-sm text-slate-500">Loading article details…</p>
+                            ) : (
+                              <>
+                                <p className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-500">
+                                  {item?.description || m.productName || m.article}
+                                </p>
+                                <div className="mb-4 flex flex-wrap gap-2 border-b border-slate-200/80 pb-3">
+                                  {[
+                                    { id: "technical", label: "Technical (Mapping)" },
+                                    { id: "suppliers", label: "Suppliers" },
+                                  ].map((t) => (
                                     <button
+                                      key={t.id}
                                       type="button"
-                                      className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
-                                      onClick={() => {
-                                        setDetailFormError("");
-                                        setMappingForm(emptyMapping);
-                                        setMapModalOpen(true);
-                                      }}
+                                      className={[
+                                        "rounded-lg px-4 py-2 text-sm font-medium transition-colors",
+                                        detailTab === t.id
+                                          ? "bg-slate-900 text-white shadow-sm"
+                                          : "bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-100",
+                                      ].join(" ")}
+                                      onClick={() => setDetailTab(t.id)}
                                     >
-                                      Add mapping
+                                      {t.label}
                                     </button>
-                                  </div>
-                                  <div className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-sm">
-                                    {mappings.length === 0 ? (
-                                      <p className="text-sm text-slate-500">No mapping lines yet.</p>
-                                    ) : (
-                                      <div className="overflow-x-auto">
-                                        <table className="min-w-full text-xs">
-                                          <thead className="text-slate-500">
-                                            <tr>
-                                              <th className="pb-2 pr-3 text-left font-medium">Model</th>
-                                              <th className="pb-2 pr-3 text-left font-medium">ESN</th>
-                                              <th className="pb-2 pr-3 text-left font-medium">MPN</th>
-                                              <th className="pb-2 pr-3 text-left font-medium">Part #</th>
-                                              <th className="pb-2 text-left font-medium">Drawing</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {mappings.map((m) => (
-                                              <tr key={m._id} className="border-t border-slate-100">
-                                                <td className="py-2 pr-3">{m.model || "—"}</td>
-                                                <td className="py-2 pr-3 font-mono">{m.esn || "—"}</td>
-                                                <td className="py-2 pr-3 font-mono">{m.mpn || "—"}</td>
-                                                <td className="py-2 pr-3 font-mono">{m.partNumber || "—"}</td>
-                                                <td className="py-2 font-mono">{m.drawingNumber || "—"}</td>
-                                              </tr>
-                                            ))}
-                                          </tbody>
-                                        </table>
-                                      </div>
-                                    )}
-                                  </div>
+                                  ))}
                                 </div>
-                              )}
 
-                              {detailTab === "suppliers" && (
-                                <div className="space-y-4">
-                                  <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <p className="text-xs text-slate-500">
-                                      Supplier offers linked to this article
-                                    </p>
-                                    <button
-                                      type="button"
-                                      className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
-                                      onClick={() => {
-                                        setDetailFormError("");
-                                        setSupplierForm(emptySupplier);
-                                        setSupModalOpen(true);
-                                      }}
-                                    >
-                                      Add supplier
-                                    </button>
-                                  </div>
-                                  <div className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-sm">
-                                    {suppliers.length === 0 ? (
-                                      <p className="text-sm text-slate-500">No supplier offers yet.</p>
-                                    ) : (
-                                      <div className="overflow-x-auto">
-                                        <table className="min-w-full text-xs">
-                                          <thead className="text-slate-500">
-                                            <tr>
-                                              <th className="pb-2 pr-3 text-left font-medium">Supplier</th>
-                                              <th className="pb-2 pr-3 text-left font-medium">Part #</th>
-                                              <th className="pb-2 pr-3 text-right font-medium">Unit price</th>
-                                              <th className="pb-2 text-left font-medium">Currency</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {suppliers.map((s) => (
-                                              <tr key={s._id} className="border-t border-slate-100">
-                                                <td className="py-2 pr-3 font-medium">{s.supplierName}</td>
-                                                <td className="py-2 pr-3 font-mono">
-                                                  {s.supplierPartNumber || "—"}
-                                                </td>
-                                                <td className="py-2 pr-3 text-right tabular-nums">
-                                                  {Number(s.unitPrice || 0).toFixed(2)}
-                                                </td>
-                                                <td className="py-2">{s.currency || "—"}</td>
+                                {detailTab === "technical" && (
+                                  <div className="space-y-4">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <p className="text-xs text-slate-500">
+                                        Technical mapping lines (model, ESN, MPN, part no., drawing)
+                                      </p>
+                                      <button
+                                        type="button"
+                                        className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+                                        onClick={() => {
+                                          setDetailFormError("");
+                                          setMappingForm(emptyMapping);
+                                          setMapModalOpen(true);
+                                        }}
+                                      >
+                                        Add mapping
+                                      </button>
+                                    </div>
+                                    <div className="rounded-xl border border-white bg-white p-4 shadow-sm ring-1 ring-slate-100">
+                                      {mappings.length === 0 ? (
+                                        <p className="text-sm text-slate-500">No mapping lines yet.</p>
+                                      ) : (
+                                        <div className="overflow-x-auto">
+                                          <table className="min-w-full text-xs">
+                                            <thead className="text-slate-500">
+                                              <tr>
+                                                <th className="pb-2 pr-3 text-left font-medium">Model</th>
+                                                <th className="pb-2 pr-3 text-left font-medium">ESN</th>
+                                                <th className="pb-2 pr-3 text-left font-medium">MPN</th>
+                                                <th className="pb-2 pr-3 text-left font-medium">Part Number</th>
+                                                <th className="pb-2 text-left font-medium">Drawing Number</th>
                                               </tr>
-                                            ))}
-                                          </tbody>
-                                        </table>
-                                      </div>
-                                    )}
+                                            </thead>
+                                            <tbody>
+                                              {mappings.map((mapRow) => (
+                                                <tr key={mapRow._id} className="border-t border-slate-100">
+                                                  <td className="py-2 pr-3">{mapRow.model || "—"}</td>
+                                                  <td className="py-2 pr-3 font-mono">{mapRow.esn || "—"}</td>
+                                                  <td className="py-2 pr-3 font-mono">{mapRow.mpn || "—"}</td>
+                                                  <td className="py-2 pr-3 font-mono">{mapRow.partNumber || "—"}</td>
+                                                  <td className="py-2 font-mono">{mapRow.drawingNumber || "—"}</td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
-                                </div>
-                              )}
+                                )}
 
-                              {detailTab === "stock" && (
-                                <div className="rounded-xl border border-dashed border-slate-200 bg-white p-6 text-center">
-                                  <p className="text-sm font-medium text-slate-700">Stock / inventory</p>
-                                  <p className="mt-1 text-xs text-slate-500">
-                                    Location and quantity will be connected in a future release.
-                                  </p>
-                                </div>
-                              )}
-                            </>
-                          )}
+                                {detailTab === "suppliers" && (
+                                  <div className="space-y-4">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <p className="text-xs text-slate-500">
+                                        Supplier comparison for this article
+                                      </p>
+                                      <button
+                                        type="button"
+                                        className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+                                        onClick={() => {
+                                          setDetailFormError("");
+                                          setSupplierForm(emptySupplier);
+                                          setSupModalOpen(true);
+                                        }}
+                                      >
+                                        Add supplier
+                                      </button>
+                                    </div>
+                                    <div className="rounded-xl border border-white bg-white p-4 shadow-sm ring-1 ring-slate-100">
+                                      {suppliers.length === 0 ? (
+                                        <p className="text-sm text-slate-500">No supplier offers yet.</p>
+                                      ) : (
+                                        <div className="overflow-x-auto">
+                                          <table className="min-w-full text-xs">
+                                            <thead className="text-slate-500">
+                                              <tr>
+                                                <th className="pb-2 pr-3 text-left font-medium">Supplier Name</th>
+                                                <th className="pb-2 pr-3 text-left font-medium">
+                                                  Supplier Part Number
+                                                </th>
+                                                <th className="pb-2 pr-3 text-right font-medium">Unit Price</th>
+                                                <th className="pb-2 text-left font-medium">Currency</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {suppliers.map((sup) => (
+                                                <tr key={sup._id} className="border-t border-slate-100">
+                                                  <td className="py-2 pr-3 font-medium">{sup.supplierName}</td>
+                                                  <td className="py-2 pr-3 font-mono">
+                                                    {sup.supplierPartNumber || "—"}
+                                                  </td>
+                                                  <td className="py-2 pr-3 text-right tabular-nums">
+                                                    {Number(sup.unitPrice || 0).toFixed(2)}
+                                                  </td>
+                                                  <td className="py-2">{sup.currency || "—"}</td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
                         </div>
                       </td>
                     </tr>
