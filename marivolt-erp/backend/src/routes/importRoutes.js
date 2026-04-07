@@ -40,8 +40,8 @@ function excelUpload(handler) {
 const router = express.Router();
 router.use(...requireErpAccess);
 
-router.post("/items", excelUpload(c.importItemsExcel));
-router.post("/mappings", excelUpload(c.importMappingsExcel));
-router.post("/suppliers", excelUpload(c.importSuppliersExcel));
+router.post("/items", excelUpload(c.importItems));
+router.post("/mappings", excelUpload(c.importMappings));
+router.post("/suppliers", excelUpload(c.importSuppliers));
 
 export default router;

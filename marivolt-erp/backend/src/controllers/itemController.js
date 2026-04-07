@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import Item from "../models/Item.js";
+import Item from "../models/itemModel.js";
 import ItemMapping from "../models/itemMappingModel.js";
 import ItemSupplierOffer from "../models/supplierModel.js";
 

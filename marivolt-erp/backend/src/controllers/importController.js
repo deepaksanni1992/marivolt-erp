@@ -1,4 +1,4 @@
-import Item from "../models/Item.js";
+import Item from "../models/itemModel.js";
 import ItemMapping from "../models/itemMappingModel.js";
 import ItemSupplierOffer from "../models/supplierModel.js";
 import { parseExcelBufferToRows, rowGet } from "../utils/excelParser.js";
@@ -20,7 +20,7 @@ function parsePositiveNumber(raw, fieldLabel) {
  * @param {import("express").Request} req
  * @param {import("express").Response} res
  */
-export async function importItemsExcel(req, res) {
+export async function importItems(req, res) {
   /** @type {ImportSummary} */
   const summary = { total: 0, inserted: 0, failed: [] };
   try {
@@ -94,7 +94,7 @@ export async function importItemsExcel(req, res) {
  * @param {import("express").Request} req
  * @param {import("express").Response} res
  */
-export async function importMappingsExcel(req, res) {
+export async function importMappings(req, res) {
   /** @type {ImportSummary} */
   const summary = { total: 0, inserted: 0, failed: [] };
   try {
@@ -156,7 +156,7 @@ export async function importMappingsExcel(req, res) {
  * @param {import("express").Request} req
  * @param {import("express").Response} res
  */
-export async function importSuppliersExcel(req, res) {
+export async function importSuppliers(req, res) {
   /** @type {ImportSummary} */
   const summary = { total: 0, inserted: 0, failed: [] };
   try {
