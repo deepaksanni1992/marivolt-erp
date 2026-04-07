@@ -47,11 +47,22 @@ export async function listItems(req, res) {
     }
     if (req.query.search) {
       const s = String(req.query.search).trim();
+      const re = new RegExp(escapeRegex(s), "i");
+      const [mappingArticles, supplierArticles] = await Promise.all([
+        ItemMapping.find({
+          $or: [{ mpn: re }, { partNumber: re }, { materialCode: re }, { drawingNumber: re }],
+        })
+          .distinct("article")
+          .exec(),
+        ItemSupplierOffer.find({ supplierPartNumber: re }).distinct("article").exec(),
+      ]);
+      const fromRelated = [...new Set([...mappingArticles, ...supplierArticles])];
       filter.$or = [
-        { itemCode: new RegExp(s, "i") },
-        { description: new RegExp(s, "i") },
-        { makerPartNo: new RegExp(s, "i") },
-        { supplierPartNo: new RegExp(s, "i") },
+        { itemCode: re },
+        { description: re },
+        { makerPartNo: re },
+        { supplierPartNo: re },
+        ...(fromRelated.length ? [{ itemCode: { $in: fromRelated } }] : []),
       ];
     }
     if (req.query.category) filter.category = new RegExp(String(req.query.category).trim(), "i");
@@ -93,6 +104,62 @@ export async function getItemByCode(req, res) {
     res.json(item);
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+}
+
+/** POST /api/items/mappings — add one mapping row (Article must exist) */
+export async function createItemMapping(req, res) {
+  try {
+    const b = req.body || {};
+    const article = String(b.article || "").trim().toUpperCase();
+    if (!article) return res.status(400).json({ message: "article is required" });
+
+    const exists = await Item.findOne({ itemCode: article }).select("_id").lean();
+    if (!exists) return res.status(404).json({ message: "Article not found in Item Master" });
+
+    const doc = await ItemMapping.create({
+      article,
+      model: b.model ?? "",
+      esn: b.esn ?? "",
+      mpn: b.mpn ?? "",
+      partNumber: b.partNumber ?? "",
+      materialCode: b.materialCode ?? "",
+      drawingNumber: b.drawingNumber ?? "",
+      description: b.description ?? "",
+    });
+    res.status(201).json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+/** POST /api/items/supplier-offers — add one supplier offer row (Article must exist) */
+export async function createItemSupplierOffer(req, res) {
+  try {
+    const b = req.body || {};
+    const article = String(b.article || "").trim().toUpperCase();
+    if (!article) return res.status(400).json({ message: "article is required" });
+    const supplierName = String(b.supplierName || "").trim();
+    if (!supplierName) return res.status(400).json({ message: "supplierName is required" });
+
+    const exists = await Item.findOne({ itemCode: article }).select("_id").lean();
+    if (!exists) return res.status(404).json({ message: "Article not found in Item Master" });
+
+    const unitPrice = Number(b.unitPrice);
+    if (Number.isNaN(unitPrice) || unitPrice < 0) {
+      return res.status(400).json({ message: "Invalid unitPrice" });
+    }
+
+    const doc = await ItemSupplierOffer.create({
+      article,
+      supplierName,
+      supplierPartNumber: b.supplierPartNumber != null ? String(b.supplierPartNumber) : "",
+      unitPrice,
+      currency: String(b.currency || "USD").trim() || "USD",
+    });
+    res.status(201).json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
   }
 }
 

@@ -9,6 +9,8 @@ router.use(...requireErpAccess);
 router.get("/facets", c.listItemFacets);
 router.get("/", c.listItems);
 router.post("/import", c.importItems);
+router.post("/mappings", c.createItemMapping);
+router.post("/supplier-offers", c.createItemSupplierOffer);
 router.get("/full/:article", c.getItemFullByArticle);
 router.get("/by-code/:code", c.getItemByCode);
 router.get("/:id", c.getItem);

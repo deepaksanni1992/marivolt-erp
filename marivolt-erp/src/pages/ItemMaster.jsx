@@ -1,10 +1,18 @@
 import { useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Papa from "papaparse";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
-import { apiDelete, apiGetWithQuery, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
+import {
+  apiDelete,
+  apiGet,
+  apiGetWithQuery,
+  apiPost,
+  apiPostFormData,
+  apiPut,
+} from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 
 const emptyItem = {
@@ -28,6 +36,23 @@ const emptyItem = {
   reorderLevel: 0,
   remarks: "",
   isActive: true,
+};
+
+const emptyMapping = {
+  model: "",
+  esn: "",
+  mpn: "",
+  partNumber: "",
+  materialCode: "",
+  drawingNumber: "",
+  description: "",
+};
+
+const emptySupplier = {
+  supplierName: "",
+  supplierPartNumber: "",
+  unitPrice: 0,
+  currency: "USD",
 };
 
 function csvRowToItem(row) {
@@ -105,6 +130,21 @@ const EXCEL_KIND = {
   suppliers: { path: "/import/suppliers", label: "Item suppliers (Excel)" },
 };
 
+function MasterStatusBadge({ active }) {
+  return (
+    <span
+      className={[
+        "inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset",
+        active
+          ? "bg-emerald-50 text-emerald-900 ring-emerald-200"
+          : "bg-slate-100 text-slate-600 ring-slate-200",
+      ].join(" ")}
+    >
+      {active ? "Active" : "Inactive"}
+    </span>
+  );
+}
+
 export default function ItemMaster() {
   const qc = useQueryClient();
   const csvInputRef = useRef(null);
@@ -115,7 +155,6 @@ export default function ItemMaster() {
   const [search, setSearch] = useState("");
   const [filterVertical, setFilterVertical] = useState("");
   const [filterBrand, setFilterBrand] = useState("");
-  const [filterModel, setFilterModel] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
@@ -123,8 +162,15 @@ export default function ItemMaster() {
   const [editingId, setEditingId] = useState(null);
   const [formError, setFormError] = useState("");
   const [exportBusy, setExportBusy] = useState(false);
-  /** @type {null | { label: string; total: number; inserted: number; failed: { row: number; reason: string }[] }} */
   const [excelImportResult, setExcelImportResult] = useState(null);
+
+  const [expandedArticle, setExpandedArticle] = useState(null);
+  const [detailTab, setDetailTab] = useState("technical");
+  const [mapModalOpen, setMapModalOpen] = useState(false);
+  const [supModalOpen, setSupModalOpen] = useState(false);
+  const [mappingForm, setMappingForm] = useState(emptyMapping);
+  const [supplierForm, setSupplierForm] = useState(emptySupplier);
+  const [detailFormError, setDetailFormError] = useState("");
 
   const limit = 25;
   const listParams = {
@@ -133,11 +179,10 @@ export default function ItemMaster() {
     search: search.trim() || undefined,
     vertical: filterVertical || undefined,
     brand: filterBrand || undefined,
-    model: filterModel || undefined,
   };
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["items", page, search, filterVertical, filterBrand, filterModel],
+    queryKey: ["items", page, search, filterVertical, filterBrand],
     queryFn: () => apiGetWithQuery("/items", listParams),
   });
 
@@ -145,6 +190,12 @@ export default function ItemMaster() {
     queryKey: ["itemFacets"],
     queryFn: () => apiGetWithQuery("/items/facets", {}),
     staleTime: 30_000,
+  });
+
+  const { data: fullDetail, isLoading: fullLoading } = useQuery({
+    queryKey: ["itemFull", expandedArticle],
+    queryFn: () => apiGet(`/items/full/${encodeURIComponent(expandedArticle)}`),
+    enabled: !!expandedArticle,
   });
 
   const saveMutation = useMutation({
@@ -170,6 +221,7 @@ export default function ItemMaster() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["items"] });
       qc.invalidateQueries({ queryKey: ["itemFacets"] });
+      setExpandedArticle(null);
     },
   });
 
@@ -223,6 +275,28 @@ export default function ItemMaster() {
     onError: (e) => setFormError(e.message || "Excel import failed"),
   });
 
+  const addMappingMutation = useMutation({
+    mutationFn: (body) => apiPost("/items/mappings", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["itemFull", expandedArticle] });
+      setMapModalOpen(false);
+      setMappingForm(emptyMapping);
+      setDetailFormError("");
+    },
+    onError: (e) => setDetailFormError(e.message),
+  });
+
+  const addSupplierMutation = useMutation({
+    mutationFn: (body) => apiPost("/items/supplier-offers", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["itemFull", expandedArticle] });
+      setSupModalOpen(false);
+      setSupplierForm(emptySupplier);
+      setDetailFormError("");
+    },
+    onError: (e) => setDetailFormError(e.message),
+  });
+
   function onExcelFile(kind, e) {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -240,7 +314,7 @@ export default function ItemMaster() {
 
   function openEdit(row) {
     setEditingId(row._id);
-      setForm({
+    setForm({
       ...emptyItem,
       ...row,
       coo: row.coo ?? "",
@@ -254,28 +328,34 @@ export default function ItemMaster() {
     setModalOpen(true);
   }
 
+  function toggleRow(articleCode) {
+    setExpandedArticle((prev) => {
+      const next = prev === articleCode ? null : articleCode;
+      if (next) setDetailTab("technical");
+      return next;
+    });
+  }
+
   async function runExport(kind) {
     setExportBusy(true);
     setFormError("");
     try {
-      const data = await apiGetWithQuery("/items", {
+      const exportData = await apiGetWithQuery("/items", {
         export: "1",
         limit: 10000,
         search: search.trim() || undefined,
         vertical: filterVertical || undefined,
         brand: filterBrand || undefined,
-        model: filterModel || undefined,
       });
-      const rows = (data.items ?? []).map(mapItemToExportRow);
-      if (data.total != null && rows.length < data.total) {
+      const rows = (exportData.items ?? []).map(mapItemToExportRow);
+      if (exportData.total != null && rows.length < exportData.total) {
         window.alert(
-          `Exported ${rows.length} of ${data.total} matching items. Narrow filters or raise the export limit in the API if needed.`
+          `Exported ${rows.length} of ${exportData.total} matching items. Narrow filters or raise the export limit in the API if needed.`
         );
       }
       const parts = [];
       if (filterVertical) parts.push(`Vertical: ${filterVertical}`);
       if (filterBrand) parts.push(`Brand: ${filterBrand}`);
-      if (filterModel) parts.push(`Model: ${filterModel}`);
       if (search.trim()) parts.push(`Search: ${search.trim()}`);
       const subtitle = parts.length ? parts.join(" · ") : "All items (current filter)";
       if (kind === "csv") {
@@ -301,7 +381,9 @@ export default function ItemMaster() {
         const items = (results.data || []).map(csvRowToItem).filter(Boolean);
         e.target.value = "";
         if (!items.length) {
-          setFormError('No valid rows. Each row needs an article code (column itemCode, article, or code).');
+          setFormError(
+            "No valid rows. Each row needs an article code (column itemCode, article, or code)."
+          );
           return;
         }
         importCsvMutation.mutate(items);
@@ -314,11 +396,14 @@ export default function ItemMaster() {
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
+  const mappings = fullDetail?.mappings ?? [];
+  const suppliers = fullDetail?.suppliers ?? [];
+
   return (
-    <div>
+    <div className="min-h-[60vh]">
       <PageHeader
         title="Item Master"
-        subtitle="Spare-parts catalogue with vertical, brand, and model filters; article, MPN, and part numbers."
+        subtitle="Master list — open a row for technical mappings and supplier offers."
       >
         <input
           ref={csvInputRef}
@@ -423,7 +508,7 @@ export default function ItemMaster() {
         </div>
       ) : null}
 
-      <div className="mb-4 space-y-3 rounded-2xl border bg-white p-4">
+      <div className="mb-4 space-y-3 rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <FormField label="Vertical">
             <SelectInput
@@ -448,28 +533,18 @@ export default function ItemMaster() {
               ))}
             </SelectInput>
           </FormField>
-          <FormField label="Model">
-            <SelectInput value={filterModel} onChange={(e) => setFilterModel(e.target.value)}>
-              <option value="">All models</option>
-              {(facets?.models ?? []).map((x) => (
-                <option key={x} value={x}>
-                  {x}
-                </option>
-              ))}
-            </SelectInput>
-          </FormField>
-          <FormField label="Search">
+          <FormField label="Search" className="sm:col-span-2 lg:col-span-2">
             <TextInput
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Article, description, MPN, part no…"
+              placeholder="Article, description, MPN, part number (includes mapping & supplier data)"
             />
           </FormField>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-800"
+            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
             onClick={() => {
               setPage(1);
               qc.invalidateQueries({ queryKey: ["items"] });
@@ -478,100 +553,279 @@ export default function ItemMaster() {
           >
             Apply filters
           </button>
-          <p className="text-xs text-gray-500">
-            Dropdowns list values from your items (updates when you save new verticals, brands, or models).
+          <p className="text-xs text-slate-500">
+            Search matches item fields and linked mapping / supplier-part numbers.
           </p>
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-2xl border bg-white">
+      <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
         <div className="overflow-x-auto">
-          <table className="min-w-[1100px] w-full text-left text-sm">
-            <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
+          <table className="min-w-[900px] w-full text-left text-sm">
+            <thead className="border-b border-slate-100 bg-slate-50/90 text-xs font-semibold uppercase tracking-wide text-slate-600">
               <tr>
-                <th className="px-3 py-2 whitespace-nowrap">Article</th>
-                <th className="px-3 py-2 whitespace-nowrap">MPN</th>
-                <th className="px-3 py-2 min-w-[160px]">Description</th>
-                <th className="px-3 py-2 whitespace-nowrap">Part number</th>
-                <th className="px-3 py-2 whitespace-nowrap">Vertical</th>
-                <th className="px-3 py-2 whitespace-nowrap">Brand</th>
-                <th className="px-3 py-2 whitespace-nowrap">Model</th>
-                <th className="px-3 py-2">UOM</th>
-                <th className="px-3 py-2 text-right">Sale</th>
-                <th className="px-3 py-2">Active</th>
-                <th className="px-3 py-2 w-28" />
+                <th className="w-8 px-2 py-3" aria-hidden />
+                <th className="px-3 py-3">Article</th>
+                <th className="px-3 py-3">Product name</th>
+                <th className="px-3 py-3">Brand</th>
+                <th className="px-3 py-3">Vertical</th>
+                <th className="px-3 py-3">UOM</th>
+                <th className="px-3 py-3">Status</th>
+                <th className="px-3 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={11} className="px-3 py-8 text-center text-gray-500">
+                  <td colSpan={8} className="px-3 py-12 text-center text-slate-500">
                     Loading…
                   </td>
                 </tr>
               ) : items.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-3 py-8 text-center text-gray-500">
+                  <td colSpan={8} className="px-3 py-12 text-center text-slate-500">
                     No items match these filters.
                   </td>
                 </tr>
               ) : (
-                items.map((row) => (
-                  <tr key={row._id} className="border-b border-gray-100 hover:bg-gray-50/80">
-                    <td className="px-3 py-2 font-mono text-xs font-medium">{row.itemCode}</td>
-                    <td className="px-3 py-2 font-mono text-xs max-w-[120px] truncate" title={row.makerPartNo}>
-                      {row.makerPartNo || "—"}
-                    </td>
-                    <td className="px-3 py-2 max-w-[220px] truncate" title={row.description}>
-                      {row.description}
-                    </td>
-                    <td className="px-3 py-2 font-mono text-xs max-w-[120px] truncate" title={row.supplierPartNo}>
-                      {row.supplierPartNo || "—"}
-                    </td>
-                    <td className="px-3 py-2 text-xs">{row.vertical || "—"}</td>
-                    <td className="px-3 py-2 text-xs">{row.brand || "—"}</td>
-                    <td className="px-3 py-2 text-xs max-w-[100px] truncate" title={row.modelName}>
-                      {row.modelName || "—"}
-                    </td>
-                    <td className="px-3 py-2">{row.uom}</td>
-                    <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">
-                      {row.currency} {Number(row.salePrice).toFixed(2)}
-                    </td>
-                    <td className="px-3 py-2">{row.isActive ? "Yes" : "No"}</td>
-                    <td className="px-3 py-2">
-                      <div className="flex gap-1">
+                items.flatMap((row) => {
+                  const open = expandedArticle === row.itemCode;
+                  const mainRow = (
+                    <tr
+                      key={row._id}
+                      className={[
+                        "border-b border-slate-100 transition-colors",
+                        open ? "bg-slate-50/90" : "hover:bg-slate-50/50",
+                      ].join(" ")}
+                    >
+                      <td className="px-2 py-2.5 align-middle">
                         <button
                           type="button"
-                          className="rounded-lg border px-2 py-1 text-xs"
-                          onClick={() => openEdit(row)}
+                          className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-white hover:text-slate-900"
+                          aria-expanded={open}
+                          aria-label={open ? "Collapse row" : "Expand row"}
+                          onClick={() => toggleRow(row.itemCode)}
                         >
-                          Edit
+                          <span className="text-xs">{open ? "▼" : "▶"}</span>
                         </button>
+                      </td>
+                      <td className="px-3 py-2.5 align-middle">
                         <button
                           type="button"
-                          className="rounded-lg border border-red-200 px-2 py-1 text-xs text-red-700"
-                          onClick={() => {
-                            if (confirm(`Delete ${row.itemCode}?`)) deleteMutation.mutate(row._id);
-                          }}
+                          className="text-left font-mono text-xs font-semibold text-slate-900 hover:underline"
+                          onClick={() => toggleRow(row.itemCode)}
                         >
-                          Del
+                          {row.itemCode}
                         </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                      </td>
+                      <td className="max-w-[220px] px-3 py-2.5 align-middle">
+                        <span className="line-clamp-2 text-slate-700">{row.description || "—"}</span>
+                      </td>
+                      <td className="px-3 py-2.5 align-middle text-slate-700">{row.brand || "—"}</td>
+                      <td className="px-3 py-2.5 align-middle text-slate-700">{row.vertical || "—"}</td>
+                      <td className="px-3 py-2.5 align-middle text-slate-700">{row.uom || "—"}</td>
+                      <td className="px-3 py-2.5 align-middle">
+                        <MasterStatusBadge active={row.isActive} />
+                      </td>
+                      <td className="px-3 py-2.5 align-middle text-right">
+                        <div className="flex flex-wrap justify-end gap-1.5">
+                          <Link
+                            to={`/items/item/${encodeURIComponent(row.itemCode)}`}
+                            className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            View full
+                          </Link>
+                          <button
+                            type="button"
+                            className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium hover:bg-slate-50"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openEdit(row);
+                            }}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-lg border border-red-200 bg-white px-2 py-1 text-xs text-red-700 hover:bg-red-50"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (confirm(`Delete ${row.itemCode}?`)) deleteMutation.mutate(row._id);
+                            }}
+                          >
+                            Del
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+
+                  if (!open) return [mainRow];
+
+                  const detailRow = (
+                    <tr key={`${row._id}-detail`} className="bg-slate-50/50">
+                      <td colSpan={8} className="border-b border-slate-100 p-0">
+                        <div className="border-t border-slate-200/80 px-4 py-4 sm:px-6">
+                          {fullLoading ? (
+                            <p className="text-sm text-slate-500">Loading…</p>
+                          ) : (
+                            <>
+                              <div className="mb-4 flex flex-wrap gap-1 border-b border-slate-200/80 pb-3">
+                                {[
+                                  { id: "technical", label: "Technical (mapping)" },
+                                  { id: "suppliers", label: "Suppliers" },
+                                  { id: "stock", label: "Stock" },
+                                ].map((t) => (
+                                  <button
+                                    key={t.id}
+                                    type="button"
+                                    className={[
+                                      "rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
+                                      detailTab === t.id
+                                        ? "bg-slate-900 text-white"
+                                        : "text-slate-600 hover:bg-white",
+                                    ].join(" ")}
+                                    onClick={() => setDetailTab(t.id)}
+                                  >
+                                    {t.label}
+                                  </button>
+                                ))}
+                              </div>
+
+                              {detailTab === "technical" && (
+                                <div className="space-y-4">
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <p className="text-xs text-slate-500">
+                                      Mapping rows for this article (model, ESN, MPN, etc.)
+                                    </p>
+                                    <button
+                                      type="button"
+                                      className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+                                      onClick={() => {
+                                        setDetailFormError("");
+                                        setMappingForm(emptyMapping);
+                                        setMapModalOpen(true);
+                                      }}
+                                    >
+                                      Add mapping
+                                    </button>
+                                  </div>
+                                  <div className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-sm">
+                                    {mappings.length === 0 ? (
+                                      <p className="text-sm text-slate-500">No mapping lines yet.</p>
+                                    ) : (
+                                      <div className="overflow-x-auto">
+                                        <table className="min-w-full text-xs">
+                                          <thead className="text-slate-500">
+                                            <tr>
+                                              <th className="pb-2 pr-3 text-left font-medium">Model</th>
+                                              <th className="pb-2 pr-3 text-left font-medium">ESN</th>
+                                              <th className="pb-2 pr-3 text-left font-medium">MPN</th>
+                                              <th className="pb-2 pr-3 text-left font-medium">Part #</th>
+                                              <th className="pb-2 text-left font-medium">Drawing</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {mappings.map((m) => (
+                                              <tr key={m._id} className="border-t border-slate-100">
+                                                <td className="py-2 pr-3">{m.model || "—"}</td>
+                                                <td className="py-2 pr-3 font-mono">{m.esn || "—"}</td>
+                                                <td className="py-2 pr-3 font-mono">{m.mpn || "—"}</td>
+                                                <td className="py-2 pr-3 font-mono">{m.partNumber || "—"}</td>
+                                                <td className="py-2 font-mono">{m.drawingNumber || "—"}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              {detailTab === "suppliers" && (
+                                <div className="space-y-4">
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <p className="text-xs text-slate-500">
+                                      Supplier offers linked to this article
+                                    </p>
+                                    <button
+                                      type="button"
+                                      className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+                                      onClick={() => {
+                                        setDetailFormError("");
+                                        setSupplierForm(emptySupplier);
+                                        setSupModalOpen(true);
+                                      }}
+                                    >
+                                      Add supplier
+                                    </button>
+                                  </div>
+                                  <div className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-sm">
+                                    {suppliers.length === 0 ? (
+                                      <p className="text-sm text-slate-500">No supplier offers yet.</p>
+                                    ) : (
+                                      <div className="overflow-x-auto">
+                                        <table className="min-w-full text-xs">
+                                          <thead className="text-slate-500">
+                                            <tr>
+                                              <th className="pb-2 pr-3 text-left font-medium">Supplier</th>
+                                              <th className="pb-2 pr-3 text-left font-medium">Part #</th>
+                                              <th className="pb-2 pr-3 text-right font-medium">Unit price</th>
+                                              <th className="pb-2 text-left font-medium">Currency</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {suppliers.map((s) => (
+                                              <tr key={s._id} className="border-t border-slate-100">
+                                                <td className="py-2 pr-3 font-medium">{s.supplierName}</td>
+                                                <td className="py-2 pr-3 font-mono">
+                                                  {s.supplierPartNumber || "—"}
+                                                </td>
+                                                <td className="py-2 pr-3 text-right tabular-nums">
+                                                  {Number(s.unitPrice || 0).toFixed(2)}
+                                                </td>
+                                                <td className="py-2">{s.currency || "—"}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              {detailTab === "stock" && (
+                                <div className="rounded-xl border border-dashed border-slate-200 bg-white p-6 text-center">
+                                  <p className="text-sm font-medium text-slate-700">Stock / inventory</p>
+                                  <p className="mt-1 text-xs text-slate-500">
+                                    Location and quantity will be connected in a future release.
+                                  </p>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+
+                  return [mainRow, detailRow];
+                })
               )}
             </tbody>
           </table>
         </div>
-        <div className="flex items-center justify-between border-t px-3 py-2 text-sm text-gray-600">
+        <div className="flex items-center justify-between border-t border-slate-100 px-4 py-3 text-sm text-slate-600">
           <span>
             Page {page} / {totalPages} · {total} items
           </span>
           <div className="flex gap-2">
             <button
               type="button"
-              className="rounded-lg border px-2 py-1 disabled:opacity-40"
+              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm disabled:opacity-40"
               disabled={page <= 1}
               onClick={() => setPage((p) => Math.max(1, p - 1))}
             >
@@ -579,7 +833,7 @@ export default function ItemMaster() {
             </button>
             <button
               type="button"
-              className="rounded-lg border px-2 py-1 disabled:opacity-40"
+              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm disabled:opacity-40"
               disabled={page >= totalPages}
               onClick={() => setPage((p) => p + 1)}
             >
@@ -617,7 +871,7 @@ export default function ItemMaster() {
               onChange={(e) => setForm((f) => ({ ...f, uom: e.target.value }))}
             />
           </FormField>
-          <FormField label="Description" className="sm:col-span-2">
+          <FormField label="Product name / description" className="sm:col-span-2">
             <TextInput
               value={form.description}
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
@@ -758,6 +1012,164 @@ export default function ItemMaster() {
             onClick={() => saveMutation.mutate()}
           >
             {saveMutation.isPending ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={mapModalOpen}
+        onClose={() => {
+          setMapModalOpen(false);
+          setDetailFormError("");
+        }}
+        title="Add mapping"
+        wide
+      >
+        {detailFormError ? (
+          <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-2 text-sm text-red-700">
+            {detailFormError}
+          </div>
+        ) : null}
+        <p className="mb-3 text-xs text-slate-500">
+          Article <span className="font-mono font-semibold">{expandedArticle}</span>
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <FormField label="Model">
+            <TextInput
+              value={mappingForm.model}
+              onChange={(e) => setMappingForm((f) => ({ ...f, model: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="ESN">
+            <TextInput
+              value={mappingForm.esn}
+              onChange={(e) => setMappingForm((f) => ({ ...f, esn: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="MPN">
+            <TextInput
+              value={mappingForm.mpn}
+              onChange={(e) => setMappingForm((f) => ({ ...f, mpn: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Part number">
+            <TextInput
+              value={mappingForm.partNumber}
+              onChange={(e) => setMappingForm((f) => ({ ...f, partNumber: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Material code">
+            <TextInput
+              value={mappingForm.materialCode}
+              onChange={(e) => setMappingForm((f) => ({ ...f, materialCode: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Drawing number">
+            <TextInput
+              value={mappingForm.drawingNumber}
+              onChange={(e) => setMappingForm((f) => ({ ...f, drawingNumber: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Description" className="sm:col-span-2">
+            <TextInput
+              value={mappingForm.description}
+              onChange={(e) => setMappingForm((f) => ({ ...f, description: e.target.value }))}
+            />
+          </FormField>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            className="rounded-xl border px-4 py-2 text-sm"
+            onClick={() => setMapModalOpen(false)}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            disabled={addMappingMutation.isPending || !expandedArticle}
+            onClick={() =>
+              addMappingMutation.mutate({
+                article: expandedArticle,
+                ...mappingForm,
+              })
+            }
+          >
+            {addMappingMutation.isPending ? "Saving…" : "Save mapping"}
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={supModalOpen}
+        onClose={() => {
+          setSupModalOpen(false);
+          setDetailFormError("");
+        }}
+        title="Add supplier offer"
+      >
+        {detailFormError ? (
+          <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-2 text-sm text-red-700">
+            {detailFormError}
+          </div>
+        ) : null}
+        <p className="mb-3 text-xs text-slate-500">
+          Article <span className="font-mono font-semibold">{expandedArticle}</span>
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <FormField label="Supplier name *" className="sm:col-span-2">
+            <TextInput
+              value={supplierForm.supplierName}
+              onChange={(e) => setSupplierForm((f) => ({ ...f, supplierName: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Supplier part number" className="sm:col-span-2">
+            <TextInput
+              value={supplierForm.supplierPartNumber}
+              onChange={(e) =>
+                setSupplierForm((f) => ({ ...f, supplierPartNumber: e.target.value }))
+              }
+            />
+          </FormField>
+          <FormField label="Unit price">
+            <TextInput
+              type="number"
+              step="0.01"
+              min={0}
+              value={supplierForm.unitPrice}
+              onChange={(e) =>
+                setSupplierForm((f) => ({ ...f, unitPrice: Number(e.target.value) }))
+              }
+            />
+          </FormField>
+          <FormField label="Currency">
+            <TextInput
+              value={supplierForm.currency}
+              onChange={(e) => setSupplierForm((f) => ({ ...f, currency: e.target.value }))}
+            />
+          </FormField>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            className="rounded-xl border px-4 py-2 text-sm"
+            onClick={() => setSupModalOpen(false)}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            disabled={addSupplierMutation.isPending || !expandedArticle}
+            onClick={() =>
+              addSupplierMutation.mutate({
+                article: expandedArticle,
+                ...supplierForm,
+              })
+            }
+          >
+            {addSupplierMutation.isPending ? "Saving…" : "Save supplier"}
           </button>
         </div>
       </Modal>

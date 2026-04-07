@@ -5,6 +5,7 @@ import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import Login from "./pages/Login.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import ItemMaster from "./pages/ItemMaster.jsx";
+import ItemFullView from "./pages/ItemFullView.jsx";
 import Purchase from "./pages/Purchase.jsx";
 import Sales from "./pages/Sales.jsx";
 import Inventory from "./pages/Inventory.jsx";
@@ -24,6 +25,7 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="items" element={<ItemMaster />} />
+          <Route path="items/item/:article" element={<ItemFullView />} />
           <Route path="purchase" element={<Purchase />} />
           <Route path="sales" element={<Sales />} />
           <Route path="inventory" element={<Inventory />} />
