@@ -301,6 +301,29 @@ function renderPrintWindow(data) {
             border-radius: 2px;
           }
           @media print {
+            html, body {
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+              color-adjust: exact !important;
+            }
+            * {
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+              color-adjust: exact !important;
+            }
+            .brand-title { color: #ef6b53 !important; }
+            .brand-subtitle { color: #1f5a96 !important; }
+            .brand-fallback { color: #1f5a96 !important; }
+            .page-footer { color: #d6a327 !important; }
+            .page-footer-line { background: #e1aa24 !important; }
+            th { background: #f5f5f5 !important; color: #111 !important; }
+            .info-box {
+              background: #fafafa !important;
+              border-color: #e5e7eb !important;
+            }
+            table, th, td {
+              border-color: #d6d6d6 !important;
+            }
             .page-footer { position: fixed; bottom: 8px; }
           }
         </style>
