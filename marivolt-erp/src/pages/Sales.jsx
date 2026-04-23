@@ -211,7 +211,7 @@ function renderPrintWindow(data) {
   const hasCompanyLogo = String(company.logo || "").trim().length > 0;
   const companyName = String(company.companyName || "").toLowerCase();
   const isMarivolt = companyName.includes("marivolt");
-  const marivoltPrintLogo = "/brand/marivolt-icon.png";
+  const marivoltPrintLogo = "/marivolt-logo.png";
   const html = `
     <html>
       <head>
@@ -237,8 +237,8 @@ function renderPrintWindow(data) {
             align-items: center;
           }
           .logo {
-            max-height: 80px;
-            max-width: 140px;
+            max-height: 120px;
+            max-width: 210px;
             object-fit: contain;
             image-rendering: auto;
             image-rendering: -webkit-optimize-contrast;
