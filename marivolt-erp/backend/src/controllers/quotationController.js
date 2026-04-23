@@ -60,6 +60,7 @@ async function autoCreateItemsFromQuotation({ req, quotation }) {
       materialCode: line.materialCode || "",
       engine: quotation.engine || "",
       modelName: quotation.model || "",
+      config: quotation.config || "",
       esn: quotation.esn || "",
       source: "quotation",
       sourceDocumentType: "quotation",
@@ -87,6 +88,7 @@ export async function listQuotations(req, res) {
         { customerReference: new RegExp(q, "i") },
         { engine: new RegExp(q, "i") },
         { model: new RegExp(q, "i") },
+        { config: new RegExp(q, "i") },
         { esn: new RegExp(q, "i") },
       ];
     }
@@ -174,6 +176,7 @@ export async function updateQuotation(req, res) {
       "attention",
       "engine",
       "model",
+      "config",
       "esn",
       "paymentTerms",
       "deliveryTerms",

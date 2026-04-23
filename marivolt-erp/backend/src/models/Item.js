@@ -9,6 +9,7 @@ const itemSchema = new mongoose.Schema(
     vertical: { type: String, default: "", trim: true },
     brand: { type: String, default: "", trim: true },
     modelName: { type: String, default: "", trim: true },
+    config: { type: String, default: "", trim: true },
     makerPartNo: { type: String, default: "", trim: true },
     materialCode: { type: String, default: "", trim: true },
     engine: { type: String, default: "", trim: true },

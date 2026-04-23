@@ -83,6 +83,7 @@ function renderPrintWindow(data) {
           <div><b>Attention:</b> ${q.attention || "-"}</div>
           <div><b>Engine:</b> ${q.engine || "-"}</div>
           <div><b>Model:</b> ${q.model || "-"}</div>
+          <div><b>Config:</b> ${q.config || "-"}</div>
           <div><b>ESN:</b> ${q.esn || "-"}</div>
           <div><b>Billing:</b> ${customer.billingAddress || "-"}</div>
           <div><b>Shipping:</b> ${customer.shippingAddress || "-"}</div>
@@ -157,6 +158,7 @@ export default function Sales() {
     attention: "",
     engine: "",
     model: "",
+    config: "",
     esn: "",
     paymentTerms: "",
     deliveryTerms: "",
@@ -277,6 +279,7 @@ export default function Sales() {
         attention: "",
         engine: "",
         model: "",
+        config: "",
         esn: "",
         paymentTerms: "",
         deliveryTerms: "",
@@ -1310,7 +1313,7 @@ export default function Sales() {
         wide
         className="w-[92vw] max-w-[1700px]"
       >
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-4">
           <FormField label="Quotation Date">
             <TextInput
               type="date"
@@ -1354,6 +1357,9 @@ export default function Sales() {
           </FormField>
           <FormField label="Model">
             <TextInput value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))} />
+          </FormField>
+          <FormField label="Config">
+            <TextInput value={form.config || ""} onChange={(e) => setForm((f) => ({ ...f, config: e.target.value }))} />
           </FormField>
           <FormField label="ESN">
             <TextInput value={form.esn} onChange={(e) => setForm((f) => ({ ...f, esn: e.target.value }))} />
