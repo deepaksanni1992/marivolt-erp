@@ -211,6 +211,7 @@ function renderPrintWindow(data) {
   const hasCompanyLogo = String(company.logo || "").trim().length > 0;
   const companyName = String(company.companyName || "").toLowerCase();
   const isMarivolt = companyName.includes("marivolt");
+  const marivoltPrintLogo = "/brand/marivolt-icon.png";
   const html = `
     <html>
       <head>
@@ -234,6 +235,13 @@ function renderPrintWindow(data) {
             max-width: 96px;
             max-height: 96px;
             object-fit: contain;
+          }
+          .brand-logo-wrap img.marivolt-icon-only {
+            width: 130px;
+            max-width: 130px;
+            max-height: 96px;
+            object-fit: cover;
+            object-position: left center;
           }
           .brand-fallback {
             font-weight: 800;
@@ -333,7 +341,9 @@ function renderPrintWindow(data) {
           <div class="brand-left">
             <div class="brand-logo-wrap">
               ${
-                hasCompanyLogo
+                isMarivolt
+                  ? `<img src="${marivoltPrintLogo}" alt="Marivolt icon" class="marivolt-icon-only" />`
+                  : hasCompanyLogo
                   ? `<img src="${company.logo}" alt="${company.companyName || "Company"} logo" />`
                   : `<div class="brand-fallback">MV</div>`
               }
