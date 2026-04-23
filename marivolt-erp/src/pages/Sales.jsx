@@ -218,7 +218,13 @@ function renderPrintWindow(data) {
         <title>${q.quotationNo || "Quotation"}</title>
         <style>
           body { font-family: Arial, sans-serif; margin: 24px; color: #111; padding-bottom: 90px; }
-          .header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px; gap: 18px; }
+          .header {
+            display: grid;
+            grid-template-columns: auto 1fr auto;
+            align-items: start;
+            margin-bottom: 20px;
+            gap: 20px;
+          }
           .brand-left { min-width: 230px; }
           .brand-logo-wrap {
             width: 215px;
@@ -247,8 +253,7 @@ function renderPrintWindow(data) {
             color: #1f5a96;
             letter-spacing: 0.5px;
           }
-          .header-main { flex: 1; }
-          .top-row { display: flex; justify-content: space-between; align-items: start; gap: 20px; }
+          .quote-block { min-width: 220px; }
           .brand-right { text-align: right; min-width: 260px; }
           .brand-title {
             margin: 0;
@@ -347,31 +352,27 @@ function renderPrintWindow(data) {
               }
             </div>
           </div>
-          <div class="header-main">
-            <div class="top-row">
-              <div>
-                <div class="title">Quotation</div>
-                <div class="muted">
-                  <div><b>No:</b> ${q.quotationNo || "-"}</div>
-                  <div><b>Date:</b> ${q.quotationDate ? new Date(q.quotationDate).toLocaleDateString() : "-"}</div>
-                  <div><b>Validity:</b> ${q.validityDate ? new Date(q.validityDate).toLocaleDateString() : "-"}</div>
-                </div>
-              </div>
-              ${
-                isMarivolt
-                  ? `<div class="brand-right">
+          <div class="quote-block">
+            <div class="title">Quotation</div>
+            <div class="muted">
+              <div><b>No:</b> ${q.quotationNo || "-"}</div>
+              <div><b>Date:</b> ${q.quotationDate ? new Date(q.quotationDate).toLocaleDateString() : "-"}</div>
+              <div><b>Validity:</b> ${q.validityDate ? new Date(q.validityDate).toLocaleDateString() : "-"}</div>
+            </div>
+          </div>
+          ${
+            isMarivolt
+              ? `<div class="brand-right">
                 <h1 class="brand-title">MariVolt</h1>
                 <div class="brand-subtitle">Marine Engine Spares</div>
               </div>`
-                  : `<div class="muted" style="text-align:right;">
+              : `<div class="muted" style="text-align:right;">
                 <div><b>${company.companyName || ""}</b></div>
                 <div>${company.address || ""}</div>
                 <div>${company.email || ""}</div>
                 <div>${company.phone || ""}</div>
               </div>`
-              }
-            </div>
-          </div>
+          }
         </div>
         <div class="info-grid">
           <div class="info-box muted">
