@@ -208,15 +208,61 @@ function renderPrintWindow(data) {
   const company = q.companySnapshot || {};
   const customer = q.customer || {};
   const rows = q.lines || [];
+  const hasCompanyLogo = String(company.logo || "").trim().length > 0;
+  const companyName = String(company.companyName || "").toLowerCase();
+  const isMarivolt = companyName.includes("marivolt");
   const html = `
     <html>
       <head>
         <title>${q.quotationNo || "Quotation"}</title>
         <style>
-          body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
-          .header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px; }
+          body { font-family: Arial, sans-serif; margin: 24px; color: #111; padding-bottom: 90px; }
+          .header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px; gap: 18px; }
+          .brand-left { min-width: 120px; }
+          .brand-logo-wrap {
+            width: 110px;
+            height: 110px;
+            border-radius: 14px;
+            border: 1px solid #dbe5ef;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            background: #ffffff;
+          }
+          .brand-logo-wrap img {
+            max-width: 96px;
+            max-height: 96px;
+            object-fit: contain;
+          }
+          .brand-fallback {
+            font-weight: 800;
+            font-size: 28px;
+            color: #1f5a96;
+            letter-spacing: 0.5px;
+          }
+          .header-main { flex: 1; }
+          .top-row { display: flex; justify-content: space-between; align-items: start; gap: 20px; }
+          .brand-right { text-align: right; min-width: 260px; }
+          .brand-title {
+            margin: 0;
+            line-height: 1;
+            font-size: 56px;
+            font-weight: 800;
+            color: #ef6b53;
+          }
+          .brand-subtitle {
+            margin-top: 4px;
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+            color: #1f5a96;
+          }
           .title { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
           .muted { color: #555; font-size: 12px; line-height: 1.5; }
+          .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 10px 0 6px; }
+          .info-box { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; background: #fafafa; }
+          .info-box-title { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #6b7280; margin-bottom: 6px; letter-spacing: 0.3px; }
           table { width: 100%; border-collapse: collapse; margin-top: 12px; }
           th, td { border: 1px solid #ddd; padding: 8px; font-size: 12px; }
           th { background: #f5f5f5; text-align: left; }
@@ -224,35 +270,100 @@ function renderPrintWindow(data) {
           .totals { margin-top: 12px; width: 320px; margin-left: auto; }
           .totals div { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
           .footer { margin-top: 30px; font-size: 12px; color: #444; }
+          .doc-note {
+            margin-top: 30px;
+            text-align: center;
+            font-size: 11px;
+            color: #4b5563;
+            border-top: 1px dashed #cfd8e3;
+            padding-top: 10px;
+          }
+          .page-footer {
+            position: fixed;
+            left: 24px;
+            right: 24px;
+            bottom: 16px;
+            color: #d6a327;
+            font-size: 12px;
+          }
+          .page-footer-top {
+            display: grid;
+            grid-template-columns: 1fr 1.2fr 1fr;
+            gap: 12px;
+            align-items: start;
+          }
+          .page-footer-center { text-align: center; }
+          .page-footer-right { text-align: right; }
+          .page-footer-line {
+            margin-top: 8px;
+            height: 5px;
+            background: #e1aa24;
+            border-radius: 2px;
+          }
+          @media print {
+            .page-footer { position: fixed; bottom: 8px; }
+          }
         </style>
       </head>
       <body>
         <div class="header">
-          <div>
-            <div class="title">Quotation</div>
-            <div class="muted">
-              <div><b>No:</b> ${q.quotationNo || "-"}</div>
-              <div><b>Date:</b> ${q.quotationDate ? new Date(q.quotationDate).toLocaleDateString() : "-"}</div>
-              <div><b>Validity:</b> ${q.validityDate ? new Date(q.validityDate).toLocaleDateString() : "-"}</div>
+          <div class="brand-left">
+            <div class="brand-logo-wrap">
+              ${
+                hasCompanyLogo
+                  ? `<img src="${company.logo}" alt="${company.companyName || "Company"} logo" />`
+                  : `<div class="brand-fallback">MV</div>`
+              }
             </div>
           </div>
-          <div class="muted" style="text-align:right;">
-            <div><b>${company.companyName || ""}</b></div>
-            <div>${company.address || ""}</div>
-            <div>${company.email || ""}</div>
-            <div>${company.phone || ""}</div>
+          <div class="header-main">
+            <div class="top-row">
+              <div>
+                <div class="title">Quotation</div>
+                <div class="muted">
+                  <div><b>No:</b> ${q.quotationNo || "-"}</div>
+                  <div><b>Date:</b> ${q.quotationDate ? new Date(q.quotationDate).toLocaleDateString() : "-"}</div>
+                  <div><b>Validity:</b> ${q.validityDate ? new Date(q.validityDate).toLocaleDateString() : "-"}</div>
+                </div>
+              </div>
+              ${
+                isMarivolt
+                  ? `<div class="brand-right">
+                <h1 class="brand-title">MariVolt</h1>
+                <div class="brand-subtitle">Marine Engine Spares</div>
+                <div class="muted" style="margin-top:8px;">
+                  <div><b>${company.companyName || ""}</b></div>
+                  <div>${company.address || ""}</div>
+                  <div>${company.email || ""}</div>
+                  <div>${company.phone || ""}</div>
+                </div>
+              </div>`
+                  : `<div class="muted" style="text-align:right;">
+                <div><b>${company.companyName || ""}</b></div>
+                <div>${company.address || ""}</div>
+                <div>${company.email || ""}</div>
+                <div>${company.phone || ""}</div>
+              </div>`
+              }
+            </div>
           </div>
         </div>
-        <div class="muted">
-          <div><b>Customer:</b> ${q.customerName || "-"}</div>
-          <div><b>Customer Ref:</b> ${q.customerReference || "-"}</div>
-          <div><b>Attention:</b> ${q.attention || "-"}</div>
-          <div><b>Engine:</b> ${q.engine || "-"}</div>
-          <div><b>Model:</b> ${q.model || "-"}</div>
-          <div><b>Config:</b> ${q.config || "-"}</div>
-          <div><b>ESN:</b> ${q.esn || "-"}</div>
-          <div><b>Billing:</b> ${customer.billingAddress || "-"}</div>
-          <div><b>Shipping:</b> ${customer.shippingAddress || "-"}</div>
+        <div class="info-grid">
+          <div class="info-box muted">
+            <div class="info-box-title">Customer Info</div>
+            <div><b>Customer:</b> ${q.customerName || "-"}</div>
+            <div><b>Customer Ref:</b> ${q.customerReference || "-"}</div>
+            <div><b>Attention:</b> ${q.attention || "-"}</div>
+            <div><b>Engine:</b> ${q.engine || "-"}</div>
+            <div><b>Model:</b> ${q.model || "-"}</div>
+            <div><b>Config:</b> ${q.config || "-"}</div>
+            <div><b>ESN:</b> ${q.esn || "-"}</div>
+          </div>
+          <div class="info-box muted">
+            <div class="info-box-title">Address Info</div>
+            <div><b>Billing:</b> ${customer.billingAddress || "-"}</div>
+            <div><b>Shipping:</b> ${customer.shippingAddress || "-"}</div>
+          </div>
         </div>
         <table>
           <thead>
@@ -288,9 +399,27 @@ function renderPrintWindow(data) {
           <div><b>Grand Total</b><b>${money(q.grandTotal)} ${q.currency || ""}</b></div>
         </div>
         <div class="footer">
-          <div><b>Remarks:</b> ${q.remarks || "-"}</div>
-          <div style="margin-top:18px;">Authorized Signature: _______________________</div>
+          <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
         </div>
+        ${
+          isMarivolt
+            ? `<div class="page-footer">
+          <div class="page-footer-top">
+            <div>
+              <div>Marivolt FZE</div>
+              <div>LV09B</div>
+            </div>
+            <div class="page-footer-center">Hamriyah freezone phase 2, Sharjah, UAE</div>
+            <div class="page-footer-right">
+              <div>Mob: +971-543053047</div>
+              <div>Email: sales@marivolt.co</div>
+              <div>Web: www.marivolt.co</div>
+            </div>
+          </div>
+          <div class="page-footer-line"></div>
+        </div>`
+            : ""
+        }
       </body>
     </html>
   `;
