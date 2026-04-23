@@ -280,6 +280,7 @@ function renderPrintWindow(data) {
           table { width: 100%; border-collapse: collapse; margin-top: 12px; }
           th, td { border: 1px solid #ddd; padding: 8px; font-size: 12px; }
           th { background: #f5f5f5; text-align: left; }
+          th.remarks-col, td.remarks-col { width: 22%; min-width: 180px; }
           .right { text-align: right; }
           .totals { margin-top: 12px; width: 320px; margin-left: auto; }
           .totals div { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
@@ -401,7 +402,7 @@ function renderPrintWindow(data) {
         <table>
           <thead>
             <tr>
-              <th>Serial number</th><th>Article</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Price</th><th class="right">Total price</th><th>Remarks</th><th>Material code</th><th>Availability</th>
+              <th>Serial number</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Price</th><th class="right">Total price</th><th class="remarks-col">Remarks</th><th>Availability</th>
             </tr>
           </thead>
           <tbody>
@@ -410,15 +411,13 @@ function renderPrintWindow(data) {
                 (line) => `
               <tr>
                 <td>${line.serialNo || ""}</td>
-                <td>${line.article || ""}</td>
                 <td>${line.partNumber || ""}</td>
                 <td>${line.description || ""}</td>
                 <td>${line.uom || ""}</td>
                 <td class="right">${line.qty || 0}</td>
                 <td class="right">${money(line.price)}</td>
                 <td class="right">${money(line.totalPrice)}</td>
-                <td>${line.remarks || ""}</td>
-                <td>${line.materialCode || ""}</td>
+                <td class="remarks-col">${line.remarks || ""}</td>
                 <td>${line.availability || ""}</td>
               </tr>`
               )
