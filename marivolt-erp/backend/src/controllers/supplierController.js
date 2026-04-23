@@ -7,10 +7,14 @@ function pagination(req) {
   return { page, limit, skip: (page - 1) * limit };
 }
 
+function withCompany(req, filter = {}) {
+  return { ...filter, companyId: req.companyId };
+}
+
 export async function listSuppliers(req, res) {
   try {
     const { page, limit, skip } = pagination(req);
-    const filter = {};
+    const filter = withCompany(req);
     if (req.query.search) {
       const s = String(req.query.search).trim();
       filter.$or = [
@@ -31,7 +35,7 @@ export async function listSuppliers(req, res) {
 
 export async function listSuppliersAll(req, res) {
   try {
-    const items = await Supplier.find({})
+    const items = await Supplier.find(withCompany(req))
       .sort({ name: 1 })
       .select("supplierCode name contactName phone email address gstNo panNo")
       .lean();
@@ -47,7 +51,7 @@ export async function getSupplier(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await Supplier.findById(id).lean();
+    const row = await Supplier.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json(row);
   } catch (err) {
@@ -55,9 +59,9 @@ export async function getSupplier(req, res) {
   }
 }
 
-async function nextSupplierCode() {
-  const n = await Supplier.countDocuments({});
-  return `SUP-${String(n + 1).padStart(4, "0")}`;
+async function nextSupplierCode(req) {
+  const n = await Supplier.countDocuments(withCompany(req));
+  return `${req.companyCode || "CMP"}-SUP-${String(n + 1).padStart(4, "0")}`;
 }
 
 export async function createSupplier(req, res) {
@@ -66,9 +70,9 @@ export async function createSupplier(req, res) {
     if (body.supplierCode) {
       body.supplierCode = String(body.supplierCode).trim().toUpperCase();
     } else {
-      body.supplierCode = await nextSupplierCode();
+      body.supplierCode = await nextSupplierCode(req);
     }
-    const doc = await Supplier.create(body);
+    const doc = await Supplier.create({ ...body, companyId: req.companyId });
     res.status(201).json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -86,7 +90,10 @@ export async function updateSupplier(req, res) {
     if (payload.supplierCode) {
       payload.supplierCode = String(payload.supplierCode).trim().toUpperCase();
     }
-    const doc = await Supplier.findByIdAndUpdate(id, payload, { new: true, runValidators: true });
+    const doc = await Supplier.findOneAndUpdate(withCompany(req, { _id: id }), payload, {
+      new: true,
+      runValidators: true,
+    });
     if (!doc) return res.status(404).json({ message: "Not found" });
     res.json(doc);
   } catch (err) {
@@ -100,7 +107,7 @@ export async function deleteSupplier(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await Supplier.findByIdAndDelete(id);
+    const row = await Supplier.findOneAndDelete(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json({ success: true });
   } catch (err) {
@@ -119,7 +126,7 @@ export async function importSuppliers(req, res) {
     }
     let upserted = 0;
     const errors = [];
-    let codeSeq = await Supplier.countDocuments({});
+    let codeSeq = await Supplier.countDocuments(withCompany(req));
     for (let i = 0; i < suppliers.length; i++) {
       const row = suppliers[i];
       try {
@@ -131,10 +138,11 @@ export async function importSuppliers(req, res) {
           supplierCode = `SUP-${String(codeSeq).padStart(4, "0")}`;
         }
         await Supplier.findOneAndUpdate(
-          { name },
+          withCompany(req, { name }),
           {
             $set: {
               supplierCode,
+              companyId: req.companyId,
               name,
               contactName: row.contactName ?? "",
               phone: row.phone ?? "",

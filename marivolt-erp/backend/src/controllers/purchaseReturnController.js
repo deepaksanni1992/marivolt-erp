@@ -3,6 +3,10 @@ import PurchaseReturn from "../models/PurchaseReturn.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 import { applyStockOut } from "../services/stockService.js";
 
+function withCompany(req, filter = {}) {
+  return { ...filter, companyId: req.companyId };
+}
+
 function recalcTotals(doc) {
   let sub = 0;
   for (const line of doc.lines) {
@@ -22,7 +26,7 @@ function pagination(req) {
 export async function listPurchaseReturns(req, res) {
   try {
     const { page, limit, skip } = pagination(req);
-    const filter = {};
+    const filter = withCompany(req);
     if (req.query.status) filter.status = req.query.status;
     if (req.query.supplierName) {
       filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
@@ -43,7 +47,7 @@ export async function getPurchaseReturn(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await PurchaseReturn.findById(id).lean();
+    const row = await PurchaseReturn.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json(row);
   } catch (err) {
@@ -55,9 +59,15 @@ export async function createPurchaseReturn(req, res) {
   try {
     const body = { ...req.body };
     if (!body.returnNumber) {
-      body.returnNumber = await nextSequentialNumber(PurchaseReturn, "returnNumber", "PR");
+      body.returnNumber = await nextSequentialNumber(
+        PurchaseReturn,
+        "returnNumber",
+        `${req.companyCode || "CMP"}-PR`,
+        { companyId: req.companyId }
+      );
     }
     body.createdBy = req.user?.email || "";
+    body.companyId = req.companyId;
     if (body.warehouse) {
       body.warehouse = String(body.warehouse).trim().toUpperCase() || "MAIN";
     }
@@ -76,7 +86,7 @@ export async function updatePurchaseReturn(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const doc = await PurchaseReturn.findById(id);
+    const doc = await PurchaseReturn.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
     if (doc.status === "POSTED") {
       return res.status(400).json({ message: "Posted returns cannot be edited" });
@@ -110,7 +120,7 @@ export async function postPurchaseReturn(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const pr = await PurchaseReturn.findById(id);
+    const pr = await PurchaseReturn.findOne(withCompany(req, { _id: id }));
     if (!pr) return res.status(404).json({ message: "Not found" });
     if (pr.status === "POSTED") {
       return res.status(400).json({ message: "Already posted" });
@@ -130,6 +140,7 @@ export async function postPurchaseReturn(req, res) {
       const q = Number(line.qty) || 0;
       if (q <= 0) continue;
       await applyStockOut({
+        companyId: req.companyId,
         itemCode: line.itemCode,
         warehouse: wh,
         qty: q,
@@ -156,12 +167,12 @@ export async function deletePurchaseReturn(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await PurchaseReturn.findById(id);
+    const row = await PurchaseReturn.findOne(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
     if (row.status === "POSTED") {
       return res.status(400).json({ message: "Cannot delete posted return" });
     }
-    await PurchaseReturn.findByIdAndDelete(id);
+    await PurchaseReturn.findOneAndDelete(withCompany(req, { _id: id }));
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ message: err.message });

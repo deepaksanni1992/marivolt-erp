@@ -14,7 +14,8 @@ const prLineSchema = new mongoose.Schema(
 
 const purchaseReturnSchema = new mongoose.Schema(
   {
-    returnNumber: { type: String, required: true, unique: true, trim: true },
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
+    returnNumber: { type: String, required: true, trim: true },
     returnDate: { type: Date, default: () => new Date() },
     supplierName: { type: String, required: true, trim: true },
     linkedPoNumber: { type: String, default: "", trim: true },
@@ -35,7 +36,8 @@ const purchaseReturnSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-purchaseReturnSchema.index({ supplierName: 1, returnDate: -1 });
+purchaseReturnSchema.index({ companyId: 1, returnNumber: 1 }, { unique: true });
+purchaseReturnSchema.index({ companyId: 1, supplierName: 1, returnDate: -1 });
 purchaseReturnSchema.index({ status: 1 });
 
 export default mongoose.model("PurchaseReturn", purchaseReturnSchema);

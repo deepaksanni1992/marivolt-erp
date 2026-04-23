@@ -10,10 +10,14 @@ function pagination(req) {
   return { page, limit, skip: (page - 1) * limit };
 }
 
+function withCompany(req, filter = {}) {
+  return { ...filter, companyId: req.companyId };
+}
+
 export async function listDeKittingOrders(req, res) {
   try {
     const { page, limit, skip } = pagination(req);
-    const filter = {};
+    const filter = withCompany(req);
     if (req.query.status) filter.status = req.query.status;
     if (req.query.parentItemCode) {
       filter.parentItemCode = String(req.query.parentItemCode).trim().toUpperCase();
@@ -34,7 +38,7 @@ export async function getDeKittingOrder(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await DeKittingOrder.findById(id).lean();
+    const row = await DeKittingOrder.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json(row);
   } catch (err) {
@@ -47,7 +51,7 @@ export async function createDeKittingOrder(req, res) {
     const parentItemCode = String(req.body.parentItemCode || "").trim().toUpperCase();
     if (!parentItemCode) return res.status(400).json({ message: "parentItemCode required" });
 
-    const bom = await BOM.findOne({ parentItemCode, isActive: true });
+    const bom = await BOM.findOne(withCompany(req, { parentItemCode, isActive: true }));
     if (!bom) {
       return res.status(400).json({ message: "No active BOM for this parent item" });
     }
@@ -57,10 +61,16 @@ export async function createDeKittingOrder(req, res) {
       return res.status(400).json({ message: "quantity must be a positive number" });
     }
 
-    const dekitNumber = await nextSequentialNumber(DeKittingOrder, "dekitNumber", "DK");
+    const dekitNumber = await nextSequentialNumber(
+      DeKittingOrder,
+      "dekitNumber",
+      `${req.companyCode || "CMP"}-DK`,
+      { companyId: req.companyId }
+    );
     const warehouse = String(req.body.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
 
     const doc = await DeKittingOrder.create({
+      companyId: req.companyId,
       dekitNumber,
       parentItemCode,
       warehouse,
@@ -82,14 +92,14 @@ export async function executeDeKittingOrder(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const order = await DeKittingOrder.findById(id);
+    const order = await DeKittingOrder.findOne(withCompany(req, { _id: id }));
     if (!order) return res.status(404).json({ message: "Not found" });
     if (order.status !== "DRAFT") {
       return res.status(400).json({ message: "Only DRAFT orders can be executed" });
     }
 
     const userEmail = req.user?.email || "";
-    await runDeKit(order, userEmail);
+    await runDeKit(order, userEmail, req.companyId);
     order.status = "COMPLETED";
     await order.save();
     res.json(order);
@@ -104,7 +114,7 @@ export async function cancelDeKittingOrder(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const order = await DeKittingOrder.findById(id);
+    const order = await DeKittingOrder.findOne(withCompany(req, { _id: id }));
     if (!order) return res.status(404).json({ message: "Not found" });
     if (order.status !== "DRAFT") {
       return res.status(400).json({ message: "Only DRAFT orders can be cancelled" });

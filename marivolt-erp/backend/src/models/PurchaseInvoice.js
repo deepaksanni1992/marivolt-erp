@@ -13,7 +13,8 @@ const purchaseInvoiceLineSchema = new mongoose.Schema(
 
 const purchaseInvoiceSchema = new mongoose.Schema(
   {
-    invoiceNumber: { type: String, required: true, unique: true, trim: true },
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
+    invoiceNumber: { type: String, required: true, trim: true },
     invoiceDate: { type: Date, default: () => new Date() },
     supplierName: { type: String, required: true, trim: true },
     linkedPoNumber: { type: String, default: "" },
@@ -32,5 +33,7 @@ const purchaseInvoiceSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+purchaseInvoiceSchema.index({ companyId: 1, invoiceNumber: 1 }, { unique: true });
 
 export default mongoose.model("PurchaseInvoice", purchaseInvoiceSchema);

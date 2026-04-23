@@ -15,6 +15,7 @@ import quotationRoutes from "./routes/quotationRoutes.js";
 import inventoryRoutes from "./routes/inventoryRoutes.js";
 import logisticsRoutes from "./routes/logisticsRoutes.js";
 import accountsRoutes from "./routes/accountsRoutes.js";
+import salesRoutes from "./routes/salesRoutes.js";
 import bomRoutes from "./routes/bomRoutes.js";
 import kittingRoutes from "./routes/kittingRoutes.js";
 import dekittingRoutes from "./routes/dekittingRoutes.js";
@@ -101,6 +102,7 @@ async function startServer() {
     app.use("/api/inventory", inventoryRoutes);
     app.use("/api/shipments", logisticsRoutes);
     app.use("/api/accounts", accountsRoutes);
+    app.use("/api/sales", salesRoutes);
     app.use("/api/boms", bomRoutes);
     app.use("/api/kitting", kittingRoutes);
     app.use("/api/dekitting", dekittingRoutes);

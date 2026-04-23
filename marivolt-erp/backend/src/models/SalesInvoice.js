@@ -13,7 +13,8 @@ const salesInvoiceLineSchema = new mongoose.Schema(
 
 const salesInvoiceSchema = new mongoose.Schema(
   {
-    invoiceNumber: { type: String, required: true, unique: true, trim: true },
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
+    invoiceNumber: { type: String, required: true, trim: true },
     invoiceDate: { type: Date, default: () => new Date() },
     customerName: { type: String, required: true, trim: true },
     linkedQuotationNumber: { type: String, default: "" },
@@ -32,5 +33,7 @@ const salesInvoiceSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+salesInvoiceSchema.index({ companyId: 1, invoiceNumber: 1 }, { unique: true });
 
 export default mongoose.model("SalesInvoice", salesInvoiceSchema);

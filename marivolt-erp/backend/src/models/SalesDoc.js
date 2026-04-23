@@ -28,6 +28,7 @@ const packedItemSchema = new mongoose.Schema(
 
 const salesDocSchema = new mongoose.Schema(
   {
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
     type: {
       type: String,
       enum: [
@@ -40,7 +41,7 @@ const salesDocSchema = new mongoose.Schema(
       ],
       required: true,
     },
-    docNo: { type: String, required: true, unique: true },
+    docNo: { type: String, required: true },
     status: { type: String, default: "OPEN" },
     refDocId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesDoc" },
 
@@ -64,5 +65,7 @@ const salesDocSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+salesDocSchema.index({ companyId: 1, docNo: 1 }, { unique: true });
 
 export default mongoose.model("SalesDoc", salesDocSchema);

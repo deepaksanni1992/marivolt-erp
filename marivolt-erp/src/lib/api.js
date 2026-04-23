@@ -42,6 +42,15 @@ function getToken() {
   }
 }
 
+function getActiveCompanyId() {
+  try {
+    const auth = JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
+    return auth?.company?.id || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Shared axios instance: base URL includes `/api`, Bearer token on each request. */
 export const api = axios.create({
   baseURL: API_BASE,
@@ -51,6 +60,8 @@ export const api = axios.create({
 api.interceptors.request.use((config) => {
   const token = getToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
+  const companyId = getActiveCompanyId();
+  if (companyId) config.headers["x-company-id"] = companyId;
   return config;
 });
 

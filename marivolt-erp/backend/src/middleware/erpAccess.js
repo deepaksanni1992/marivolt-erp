@@ -1,7 +1,8 @@
-import { requireAuth, requireRole } from "./auth.js";
+import { requireAuth, requireCompanyContext, requireRole } from "./auth.js";
 
 /** Any logged-in ERP user (matches User.role enum). */
 export const requireErpAccess = [
   requireAuth,
-  requireRole("admin", "staff", "purchase_sales", "accounts_logistics"),
+  requireCompanyContext,
+  requireRole("super_admin", "company_admin", "admin", "staff", "purchase_sales", "accounts_logistics"),
 ];

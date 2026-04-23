@@ -23,6 +23,27 @@ export function requireAuth(req, res, next) {
   }
 }
 
+/** Ensure request has validated company context from token/header. */
+export function requireCompanyContext(req, res, next) {
+  const tokenCompanyId = String(req.user?.companyId || "").trim();
+  if (!tokenCompanyId) {
+    return res.status(403).json({ message: "Company context missing in token" });
+  }
+
+  const headerCompanyId = String(req.headers["x-company-id"] || "").trim();
+  if (headerCompanyId && headerCompanyId !== tokenCompanyId) {
+    return res.status(403).json({ message: "Company mismatch" });
+  }
+
+  req.companyId = tokenCompanyId;
+  req.companyCode = String(req.user?.companyCode || "").trim().toUpperCase();
+  next();
+}
+
+export function scopeToCompany(req, extra = {}) {
+  return { ...extra, companyId: req.companyId };
+}
+
 /**
  * requireRole:
  * - accepts requireRole("admin") OR requireRole(["admin","manager"]) OR requireRole("admin","manager")

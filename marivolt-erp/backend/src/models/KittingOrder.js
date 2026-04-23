@@ -11,7 +11,8 @@ const kitLineSnapshotSchema = new mongoose.Schema(
 
 const kittingOrderSchema = new mongoose.Schema(
   {
-    kitNumber: { type: String, required: true, unique: true, trim: true },
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
+    kitNumber: { type: String, required: true, trim: true },
     parentItemCode: { type: String, required: true, trim: true, uppercase: true },
     warehouse: { type: String, required: true, trim: true, default: "MAIN" },
     quantity: { type: Number, required: true, min: 0.0001 },
@@ -29,7 +30,8 @@ const kittingOrderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-kittingOrderSchema.index({ parentItemCode: 1, createdAt: -1 });
+kittingOrderSchema.index({ companyId: 1, kitNumber: 1 }, { unique: true });
+kittingOrderSchema.index({ companyId: 1, parentItemCode: 1, createdAt: -1 });
 kittingOrderSchema.index({ status: 1 });
 
 export default mongoose.model("KittingOrder", kittingOrderSchema);

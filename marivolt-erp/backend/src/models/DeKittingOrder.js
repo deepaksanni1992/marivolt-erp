@@ -11,7 +11,8 @@ const dekitLineSnapshotSchema = new mongoose.Schema(
 
 const deKittingOrderSchema = new mongoose.Schema(
   {
-    dekitNumber: { type: String, required: true, unique: true, trim: true },
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
+    dekitNumber: { type: String, required: true, trim: true },
     parentItemCode: { type: String, required: true, trim: true, uppercase: true },
     warehouse: { type: String, required: true, trim: true, default: "MAIN" },
     quantity: { type: Number, required: true, min: 0.0001 },
@@ -28,7 +29,8 @@ const deKittingOrderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-deKittingOrderSchema.index({ parentItemCode: 1, createdAt: -1 });
+deKittingOrderSchema.index({ companyId: 1, dekitNumber: 1 }, { unique: true });
+deKittingOrderSchema.index({ companyId: 1, parentItemCode: 1, createdAt: -1 });
 deKittingOrderSchema.index({ status: 1 });
 
 export default mongoose.model("DeKittingOrder", deKittingOrderSchema);

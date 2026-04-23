@@ -2,7 +2,8 @@ import mongoose from "mongoose";
 
 const itemSchema = new mongoose.Schema(
   {
-    itemCode: { type: String, required: true, unique: true, trim: true, uppercase: true },
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
+    itemCode: { type: String, required: true, trim: true, uppercase: true },
     description: { type: String, default: "", trim: true },
     uom: { type: String, default: "PCS", trim: true },
     vertical: { type: String, default: "", trim: true },
@@ -32,5 +33,6 @@ const itemSchema = new mongoose.Schema(
 
 itemSchema.index({ description: "text", makerPartNo: "text", supplierPartNo: "text" });
 itemSchema.index({ vertical: 1, brand: 1, modelName: 1 });
+itemSchema.index({ companyId: 1, itemCode: 1 }, { unique: true });
 
 export default mongoose.model("Item", itemSchema);

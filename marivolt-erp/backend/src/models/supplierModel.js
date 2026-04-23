@@ -6,6 +6,7 @@ import mongoose from "mongoose";
 
 const itemSupplierOfferSchema = new mongoose.Schema(
   {
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
     article: { type: String, required: true, trim: true, uppercase: true, index: true },
     supplierName: { type: String, required: true, trim: true },
     supplierPartNumber: { type: String, default: "", trim: true },
@@ -15,6 +16,6 @@ const itemSupplierOfferSchema = new mongoose.Schema(
   { timestamps: { createdAt: true, updatedAt: false } }
 );
 
-itemSupplierOfferSchema.index({ article: 1, supplierName: 1 });
+itemSupplierOfferSchema.index({ companyId: 1, article: 1, supplierName: 1 });
 
 export default mongoose.model("ItemSupplierOffer", itemSupplierOfferSchema);

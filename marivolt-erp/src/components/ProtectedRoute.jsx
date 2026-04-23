@@ -1,15 +1,12 @@
 import { Navigate, Outlet } from "react-router-dom";
-import { AUTH_KEY } from "../lib/api.js";
+import { useAuth } from "../context/AuthContext.jsx";
 
 export default function ProtectedRoute() {
-  let auth = null;
-  try {
-    auth = JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
-  } catch {
-    auth = null;
+  const { isLoggedIn, requiresCompanySelection } = useAuth();
+  if (requiresCompanySelection) {
+    return <Navigate to="/select-company" replace />;
   }
-
-  if (!auth?.user) {
+  if (!isLoggedIn) {
     return <Navigate to="/login" replace />;
   }
 

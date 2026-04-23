@@ -2,7 +2,8 @@ import mongoose from "mongoose";
 
 const shipmentSchema = new mongoose.Schema(
   {
-    shipmentRef: { type: String, required: true, unique: true, trim: true },
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
+    shipmentRef: { type: String, required: true, trim: true },
     direction: {
       type: String,
       enum: ["IMPORT", "EXPORT", "LOCAL"],
@@ -50,5 +51,7 @@ const shipmentSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+shipmentSchema.index({ companyId: 1, shipmentRef: 1 }, { unique: true });
 
 export default mongoose.model("Shipment", shipmentSchema);

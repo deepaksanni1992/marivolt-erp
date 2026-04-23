@@ -10,6 +10,7 @@ function normWh(warehouse) {
 }
 
 export async function applyStockIn({
+  companyId,
   itemCode,
   warehouse,
   qty,
@@ -26,8 +27,11 @@ export async function applyStockIn({
   const code = normCode(itemCode);
   const w = normWh(warehouse);
   const u = Number(unitCost) || 0;
+  const cid = String(companyId || "");
+  if (!cid) throw new Error("companyId is required");
 
   await InventoryLedger.create({
+    companyId: cid,
     itemCode: code,
     warehouse: w,
     movementType,
@@ -43,13 +47,14 @@ export async function applyStockIn({
   const update = { $inc: { quantity: q } };
   if (u > 0) update.$set = { unitCost: u };
 
-  await StockBalance.findOneAndUpdate({ itemCode: code, warehouse: w }, update, {
+  await StockBalance.findOneAndUpdate({ companyId: cid, itemCode: code, warehouse: w }, update, {
     upsert: true,
     new: true,
   });
 }
 
 export async function applyStockOut({
+  companyId,
   itemCode,
   warehouse,
   qty,
@@ -64,15 +69,18 @@ export async function applyStockOut({
   if (!Number.isFinite(q) || q <= 0) throw new Error("Quantity must be a positive number");
   const code = normCode(itemCode);
   const w = normWh(warehouse);
+  const cid = String(companyId || "");
+  if (!cid) throw new Error("companyId is required");
 
   const updated = await StockBalance.findOneAndUpdate(
-    { itemCode: code, warehouse: w, quantity: { $gte: q } },
+    { companyId: cid, itemCode: code, warehouse: w, quantity: { $gte: q } },
     { $inc: { quantity: -q } },
     { new: true }
   );
   if (!updated) throw new Error("Insufficient stock");
 
   await InventoryLedger.create({
+    companyId: cid,
     itemCode: code,
     warehouse: w,
     movementType,
@@ -88,6 +96,7 @@ export async function applyStockOut({
 }
 
 export async function applyAdjustment({
+  companyId,
   itemCode,
   warehouse,
   qtyDelta,
@@ -98,24 +107,27 @@ export async function applyAdjustment({
   if (!Number.isFinite(d) || d === 0) throw new Error("qtyDelta must be a non-zero number");
   const code = normCode(itemCode);
   const w = normWh(warehouse);
+  const cid = String(companyId || "");
+  if (!cid) throw new Error("companyId is required");
 
   if (d < 0) {
     const out = -d;
     const updated = await StockBalance.findOneAndUpdate(
-      { itemCode: code, warehouse: w, quantity: { $gte: out } },
+      { companyId: cid, itemCode: code, warehouse: w, quantity: { $gte: out } },
       { $inc: { quantity: d } },
       { new: true }
     );
     if (!updated) throw new Error("Insufficient stock for adjustment");
   } else {
     await StockBalance.findOneAndUpdate(
-      { itemCode: code, warehouse: w },
+      { companyId: cid, itemCode: code, warehouse: w },
       { $inc: { quantity: d } },
       { upsert: true, new: true }
     );
   }
 
   await InventoryLedger.create({
+    companyId: cid,
     itemCode: code,
     warehouse: w,
     movementType: "ADJUSTMENT",

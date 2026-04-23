@@ -17,12 +17,16 @@ function pagination(req) {
   return { page, limit, skip, exportMode };
 }
 
+function withCompany(req, filter = {}) {
+  return { ...filter, companyId: req.companyId };
+}
+
 export async function listItemFacets(req, res) {
   try {
     const [verticals, brands, models] = await Promise.all([
-      Item.distinct("vertical", { vertical: { $nin: [null, ""] } }),
-      Item.distinct("brand", { brand: { $nin: [null, ""] } }),
-      Item.distinct("modelName", { modelName: { $nin: [null, ""] } }),
+      Item.distinct("vertical", withCompany(req, { vertical: { $nin: [null, ""] } })),
+      Item.distinct("brand", withCompany(req, { brand: { $nin: [null, ""] } })),
+      Item.distinct("modelName", withCompany(req, { modelName: { $nin: [null, ""] } })),
     ]);
     const norm = (arr) =>
       [...new Set(arr.map((x) => String(x || "").trim()).filter(Boolean))].sort((a, b) =>
@@ -41,7 +45,7 @@ export async function listItemFacets(req, res) {
 export async function listItems(req, res) {
   try {
     const { page, limit, skip, exportMode } = pagination(req);
-    const filter = {};
+    const filter = withCompany(req);
     if (req.query.isActive !== undefined) {
       filter.isActive = String(req.query.isActive) === "true";
     }
@@ -50,11 +54,12 @@ export async function listItems(req, res) {
       const re = new RegExp(escapeRegex(s), "i");
       const [mappingArticles, supplierArticles] = await Promise.all([
         ItemMapping.find({
+          companyId: req.companyId,
           $or: [{ mpn: re }, { partNumber: re }, { materialCode: re }, { drawingNumber: re }],
         })
           .distinct("article")
           .exec(),
-        ItemSupplierOffer.find({ supplierPartNumber: re }).distinct("article").exec(),
+        ItemSupplierOffer.find(withCompany(req, { supplierPartNumber: re })).distinct("article").exec(),
       ]);
       const fromRelated = [...new Set([...mappingArticles, ...supplierArticles])];
       filter.$or = [
@@ -88,7 +93,7 @@ export async function getItem(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const item = await Item.findById(id).lean();
+    const item = await Item.findOne(withCompany(req, { _id: id })).lean();
     if (!item) return res.status(404).json({ message: "Not found" });
     res.json(item);
   } catch (err) {
@@ -99,7 +104,7 @@ export async function getItem(req, res) {
 export async function getItemByCode(req, res) {
   try {
     const code = String(req.params.code || "").trim().toUpperCase();
-    const item = await Item.findOne({ itemCode: code }).lean();
+    const item = await Item.findOne(withCompany(req, { itemCode: code })).lean();
     if (!item) return res.status(404).json({ message: "Not found" });
     res.json(item);
   } catch (err) {
@@ -114,10 +119,11 @@ export async function createItemMapping(req, res) {
     const article = String(b.article || "").trim().toUpperCase();
     if (!article) return res.status(400).json({ message: "article is required" });
 
-    const exists = await Item.findOne({ itemCode: article }).select("_id").lean();
+    const exists = await Item.findOne(withCompany(req, { itemCode: article })).select("_id").lean();
     if (!exists) return res.status(404).json({ message: "Article not found in Item Master" });
 
     const doc = await ItemMapping.create({
+      companyId: req.companyId,
       article,
       model: b.model ?? "",
       esn: b.esn ?? "",
@@ -142,7 +148,7 @@ export async function createItemSupplierOffer(req, res) {
     const supplierName = String(b.supplierName || "").trim();
     if (!supplierName) return res.status(400).json({ message: "supplierName is required" });
 
-    const exists = await Item.findOne({ itemCode: article }).select("_id").lean();
+    const exists = await Item.findOne(withCompany(req, { itemCode: article })).select("_id").lean();
     if (!exists) return res.status(404).json({ message: "Article not found in Item Master" });
 
     const unitPrice = Number(b.unitPrice);
@@ -151,6 +157,7 @@ export async function createItemSupplierOffer(req, res) {
     }
 
     const doc = await ItemSupplierOffer.create({
+      companyId: req.companyId,
       article,
       supplierName,
       supplierPartNumber: b.supplierPartNumber != null ? String(b.supplierPartNumber) : "",
@@ -170,12 +177,12 @@ export async function getItemFullByArticle(req, res) {
     const code = decodeURIComponent(String(raw).trim()).toUpperCase();
     if (!code) return res.status(400).json({ message: "Article is required" });
 
-    const item = await Item.findOne({ itemCode: code }).lean();
+    const item = await Item.findOne(withCompany(req, { itemCode: code })).lean();
     if (!item) return res.status(404).json({ message: "Item not found" });
 
     const [mappings, suppliers] = await Promise.all([
-      ItemMapping.find({ article: code }).sort({ createdAt: -1 }).lean(),
-      ItemSupplierOffer.find({ article: code }).sort({ createdAt: -1 }).lean(),
+      ItemMapping.find(withCompany(req, { article: code })).sort({ createdAt: -1 }).lean(),
+      ItemSupplierOffer.find(withCompany(req, { article: code })).sort({ createdAt: -1 }).lean(),
     ]);
 
     res.json({ item, mappings, suppliers });
@@ -188,7 +195,7 @@ export async function createItem(req, res) {
   try {
     const payload = { ...req.body };
     if (payload.itemCode) payload.itemCode = String(payload.itemCode).trim().toUpperCase();
-    const item = await Item.create(payload);
+    const item = await Item.create({ ...payload, companyId: req.companyId });
     res.status(201).json(item);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -204,7 +211,10 @@ export async function updateItem(req, res) {
     const payload = { ...req.body };
     if (payload.itemCode) payload.itemCode = String(payload.itemCode).trim().toUpperCase();
     delete payload._id;
-    const item = await Item.findByIdAndUpdate(id, payload, { new: true, runValidators: true });
+    const item = await Item.findOneAndUpdate(withCompany(req, { _id: id }), payload, {
+      new: true,
+      runValidators: true,
+    });
     if (!item) return res.status(404).json({ message: "Not found" });
     res.json(item);
   } catch (err) {
@@ -218,7 +228,7 @@ export async function deleteItem(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const item = await Item.findByIdAndDelete(id);
+    const item = await Item.findOneAndDelete(withCompany(req, { _id: id }));
     if (!item) return res.status(404).json({ message: "Not found" });
     res.json({ success: true });
   } catch (err) {
@@ -243,10 +253,11 @@ export async function importItems(req, res) {
         const itemCode = String(row.itemCode || "").trim().toUpperCase();
         if (!itemCode) throw new Error("itemCode required");
         await Item.findOneAndUpdate(
-          { itemCode },
+          { companyId: req.companyId, itemCode },
           {
             $set: {
               itemCode,
+              companyId: req.companyId,
               description: row.description ?? "",
               uom: row.uom ?? "PCS",
               vertical: row.vertical ?? "",

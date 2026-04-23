@@ -4,6 +4,10 @@ import { nextSequentialNumber } from "../utils/docNumbers.js";
 import { applyStockIn } from "../services/stockService.js";
 import { applyPurchaseOrderDefaults } from "../constants/purchaseOrderDefaults.js";
 
+function withCompany(req, filter = {}) {
+  return { ...filter, companyId: req.companyId };
+}
+
 function normalizePoLines(lines = []) {
   return lines
     .map((l) => {
@@ -44,7 +48,7 @@ export async function listPurchaseOrders(req, res) {
     const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
     const skip = (page - 1) * limit;
-    const filter = {};
+    const filter = withCompany(req);
     if (req.query.status) filter.status = req.query.status;
     if (req.query.supplierName) {
       filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
@@ -65,7 +69,7 @@ export async function getPurchaseOrder(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await PurchaseOrder.findById(id).lean();
+    const row = await PurchaseOrder.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json(row);
   } catch (err) {
@@ -84,9 +88,13 @@ export async function createPurchaseOrder(req, res) {
     }
     body = applyPurchaseOrderDefaults(body);
     if (!body.poNumber) {
-      body.poNumber = await nextSequentialNumber(PurchaseOrder, "poNumber", "PO");
+      const prefix = `${req.companyCode || "CMP"}-PO`;
+      body.poNumber = await nextSequentialNumber(PurchaseOrder, "poNumber", prefix, {
+        companyId: req.companyId,
+      });
     }
     body.createdBy = req.user?.email || "";
+    body.companyId = req.companyId;
     const doc = new PurchaseOrder(body);
     recalcPoTotals(doc);
     await doc.save();
@@ -102,7 +110,7 @@ export async function updatePurchaseOrder(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const doc = await PurchaseOrder.findById(id);
+    const doc = await PurchaseOrder.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
 
     const allowed = [
@@ -160,8 +168,8 @@ export async function patchPurchaseStatus(req, res) {
     }
     const { status } = req.body;
     if (!status) return res.status(400).json({ message: "status required" });
-    const doc = await PurchaseOrder.findByIdAndUpdate(
-      id,
+    const doc = await PurchaseOrder.findOneAndUpdate(
+      withCompany(req, { _id: id }),
       { status },
       { new: true, runValidators: true }
     );
@@ -178,7 +186,7 @@ export async function receivePurchaseOrder(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const po = await PurchaseOrder.findById(id);
+    const po = await PurchaseOrder.findOne(withCompany(req, { _id: id }));
     if (!po) return res.status(404).json({ message: "Not found" });
 
     const { warehouse = "MAIN", lines } = req.body;
@@ -202,6 +210,7 @@ export async function receivePurchaseOrder(req, res) {
       if (take <= 0) continue;
 
       await applyStockIn({
+        companyId: req.companyId,
         itemCode: line.itemCode,
         warehouse,
         qty: take,
@@ -235,7 +244,7 @@ export async function deletePurchaseOrder(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await PurchaseOrder.findByIdAndDelete(id);
+    const row = await PurchaseOrder.findOneAndDelete(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json({ success: true });
   } catch (err) {
@@ -246,7 +255,7 @@ export async function deletePurchaseOrder(req, res) {
 /** Dashboard-style aggregates for purchase module. */
 export async function purchaseSummaryReport(req, res) {
   try {
-    const pos = await PurchaseOrder.find({}).lean();
+    const pos = await PurchaseOrder.find(withCompany(req)).lean();
     const byStatus = {};
     let totalGrand = 0;
     let pendingCount = 0;
@@ -300,9 +309,9 @@ export async function pendingPurchaseReport(req, res) {
     const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
     const skip = (page - 1) * limit;
 
-    const filter = {
+    const filter = withCompany(req, {
       status: { $nin: ["RECEIVED", "CANCELLED"] },
-    };
+    });
     if (req.query.supplierName) {
       filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
     }
@@ -365,9 +374,15 @@ export async function importPurchaseOrders(req, res) {
         }
         const poNumber =
           row.poNumber ||
-          (await nextSequentialNumber(PurchaseOrder, "poNumber", "PO"));
+          (await nextSequentialNumber(
+            PurchaseOrder,
+            "poNumber",
+            `${req.companyCode || "CMP"}-PO`,
+            { companyId: req.companyId }
+          ));
         let payload = applyPurchaseOrderDefaults({
           ...row,
+          companyId: req.companyId,
           poNumber,
           createdBy: userEmail,
           status: row.status || "DRAFT",

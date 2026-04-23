@@ -3,6 +3,7 @@ import AppLayout from "./components/AppLayout.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 
 import Login from "./pages/Login.jsx";
+import CompanySelect from "./pages/CompanySelect.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import ItemMaster from "./pages/ItemMaster.jsx";
 import ItemFullView from "./pages/ItemFullView.jsx";
@@ -19,6 +20,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/select-company" element={<CompanySelect />} />
 
       <Route element={<ProtectedRoute />}>
         <Route path="/" element={<AppLayout />}>

@@ -6,6 +6,10 @@ import SupplierLedgerEntry from "../models/SupplierLedgerEntry.js";
 import CashBankEntry from "../models/CashBankEntry.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 
+function withCompany(req, filter = {}) {
+  return { ...filter, companyId: req.companyId };
+}
+
 function paginate(req) {
   const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
@@ -26,7 +30,7 @@ function sumInvoiceLines(lines, rateField) {
 export async function listSalesInvoices(req, res) {
   try {
     const { page, limit, skip } = paginate(req);
-    const filter = {};
+    const filter = withCompany(req);
     if (req.query.customerName) {
       filter.customerName = new RegExp(String(req.query.customerName).trim(), "i");
     }
@@ -47,7 +51,7 @@ export async function getSalesInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await SalesInvoice.findById(id).lean();
+    const row = await SalesInvoice.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json(row);
   } catch (err) {
@@ -59,9 +63,15 @@ export async function createSalesInvoice(req, res) {
   try {
     const body = { ...req.body };
     if (!body.invoiceNumber) {
-      body.invoiceNumber = await nextSequentialNumber(SalesInvoice, "invoiceNumber", "SI");
+      body.invoiceNumber = await nextSequentialNumber(
+        SalesInvoice,
+        "invoiceNumber",
+        `${req.companyCode || "CMP"}-SI`,
+        { companyId: req.companyId }
+      );
     }
     body.createdBy = req.user?.email || "";
+    body.companyId = req.companyId;
     const doc = new SalesInvoice(body);
     doc.subTotal = sumInvoiceLines(doc.lines, "rate");
     doc.totalAmount = (doc.subTotal || 0) + (Number(doc.taxAmount) || 0);
@@ -78,7 +88,7 @@ export async function updateSalesInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const doc = await SalesInvoice.findById(id);
+    const doc = await SalesInvoice.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
     const allowed = [
       "customerName",
@@ -108,7 +118,7 @@ export async function deleteSalesInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await SalesInvoice.findByIdAndDelete(id);
+    const row = await SalesInvoice.findOneAndDelete(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json({ success: true });
   } catch (err) {
@@ -120,7 +130,7 @@ export async function deleteSalesInvoice(req, res) {
 export async function listPurchaseInvoices(req, res) {
   try {
     const { page, limit, skip } = paginate(req);
-    const filter = {};
+    const filter = withCompany(req);
     if (req.query.supplierName) {
       filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
     }
@@ -141,7 +151,7 @@ export async function getPurchaseInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await PurchaseInvoice.findById(id).lean();
+    const row = await PurchaseInvoice.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json(row);
   } catch (err) {
@@ -153,9 +163,15 @@ export async function createPurchaseInvoice(req, res) {
   try {
     const body = { ...req.body };
     if (!body.invoiceNumber) {
-      body.invoiceNumber = await nextSequentialNumber(PurchaseInvoice, "invoiceNumber", "PI");
+      body.invoiceNumber = await nextSequentialNumber(
+        PurchaseInvoice,
+        "invoiceNumber",
+        `${req.companyCode || "CMP"}-PI`,
+        { companyId: req.companyId }
+      );
     }
     body.createdBy = req.user?.email || "";
+    body.companyId = req.companyId;
     const doc = new PurchaseInvoice(body);
     doc.subTotal = sumInvoiceLines(doc.lines, "rate");
     doc.totalAmount = (doc.subTotal || 0) + (Number(doc.taxAmount) || 0);
@@ -172,7 +188,7 @@ export async function updatePurchaseInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const doc = await PurchaseInvoice.findById(id);
+    const doc = await PurchaseInvoice.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
     const allowed = [
       "supplierName",
@@ -202,7 +218,7 @@ export async function deletePurchaseInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await PurchaseInvoice.findByIdAndDelete(id);
+    const row = await PurchaseInvoice.findOneAndDelete(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json({ success: true });
   } catch (err) {
@@ -218,7 +234,7 @@ export async function listCustomerLedger(req, res) {
     if (!name) {
       return res.status(400).json({ message: "customerName query required" });
     }
-    const prior = await CustomerLedgerEntry.find({ customerName: name })
+    const prior = await CustomerLedgerEntry.find(withCompany(req, { customerName: name }))
       .sort({ entryDate: 1, createdAt: 1 })
       .limit(skip)
       .select("debit credit")
@@ -227,12 +243,12 @@ export async function listCustomerLedger(req, res) {
       (acc, e) => acc + (Number(e.debit) || 0) - (Number(e.credit) || 0),
       0
     );
-    const entries = await CustomerLedgerEntry.find({ customerName: name })
+    const entries = await CustomerLedgerEntry.find(withCompany(req, { customerName: name }))
       .sort({ entryDate: 1, createdAt: 1 })
       .skip(skip)
       .limit(limit)
       .lean();
-    const total = await CustomerLedgerEntry.countDocuments({ customerName: name });
+    const total = await CustomerLedgerEntry.countDocuments(withCompany(req, { customerName: name }));
     const withBal = entries.map((e) => {
       running += (Number(e.debit) || 0) - (Number(e.credit) || 0);
       return { ...e, runningBalance: running };
@@ -245,7 +261,7 @@ export async function listCustomerLedger(req, res) {
 
 export async function createCustomerLedgerEntry(req, res) {
   try {
-    const body = { ...req.body, createdBy: req.user?.email || "" };
+    const body = { ...req.body, companyId: req.companyId, createdBy: req.user?.email || "" };
     const doc = await CustomerLedgerEntry.create(body);
     res.status(201).json(doc);
   } catch (err) {
@@ -259,7 +275,7 @@ export async function deleteCustomerLedgerEntry(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await CustomerLedgerEntry.findByIdAndDelete(id);
+    const row = await CustomerLedgerEntry.findOneAndDelete(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json({ success: true });
   } catch (err) {
@@ -275,7 +291,7 @@ export async function listSupplierLedger(req, res) {
     if (!name) {
       return res.status(400).json({ message: "supplierName query required" });
     }
-    const prior = await SupplierLedgerEntry.find({ supplierName: name })
+    const prior = await SupplierLedgerEntry.find(withCompany(req, { supplierName: name }))
       .sort({ entryDate: 1, createdAt: 1 })
       .limit(skip)
       .select("debit credit")
@@ -284,12 +300,12 @@ export async function listSupplierLedger(req, res) {
       (acc, e) => acc + (Number(e.debit) || 0) - (Number(e.credit) || 0),
       0
     );
-    const entries = await SupplierLedgerEntry.find({ supplierName: name })
+    const entries = await SupplierLedgerEntry.find(withCompany(req, { supplierName: name }))
       .sort({ entryDate: 1, createdAt: 1 })
       .skip(skip)
       .limit(limit)
       .lean();
-    const total = await SupplierLedgerEntry.countDocuments({ supplierName: name });
+    const total = await SupplierLedgerEntry.countDocuments(withCompany(req, { supplierName: name }));
     const withBal = entries.map((e) => {
       running += (Number(e.debit) || 0) - (Number(e.credit) || 0);
       return { ...e, runningBalance: running };
@@ -302,7 +318,7 @@ export async function listSupplierLedger(req, res) {
 
 export async function createSupplierLedgerEntry(req, res) {
   try {
-    const body = { ...req.body, createdBy: req.user?.email || "" };
+    const body = { ...req.body, companyId: req.companyId, createdBy: req.user?.email || "" };
     const doc = await SupplierLedgerEntry.create(body);
     res.status(201).json(doc);
   } catch (err) {
@@ -316,7 +332,7 @@ export async function deleteSupplierLedgerEntry(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await SupplierLedgerEntry.findByIdAndDelete(id);
+    const row = await SupplierLedgerEntry.findOneAndDelete(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json({ success: true });
   } catch (err) {
@@ -328,7 +344,7 @@ export async function deleteSupplierLedgerEntry(req, res) {
 export async function listCashBank(req, res) {
   try {
     const { page, limit, skip } = paginate(req);
-    const filter = {};
+    const filter = withCompany(req);
     if (req.query.accountName) {
       filter.accountName = new RegExp(String(req.query.accountName).trim(), "i");
     }
@@ -345,7 +361,7 @@ export async function listCashBank(req, res) {
 
 export async function createCashBankEntry(req, res) {
   try {
-    const body = { ...req.body, createdBy: req.user?.email || "" };
+    const body = { ...req.body, companyId: req.companyId, createdBy: req.user?.email || "" };
     const doc = await CashBankEntry.create(body);
     res.status(201).json(doc);
   } catch (err) {
@@ -359,7 +375,7 @@ export async function deleteCashBankEntry(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await CashBankEntry.findByIdAndDelete(id);
+    const row = await CashBankEntry.findOneAndDelete(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json({ success: true });
   } catch (err) {

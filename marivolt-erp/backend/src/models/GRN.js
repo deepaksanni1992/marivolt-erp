@@ -13,7 +13,8 @@ const grnItemSchema = new mongoose.Schema(
 
 const grnSchema = new mongoose.Schema(
   {
-    grnNo: { type: String, required: true, unique: true },
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
+    grnNo: { type: String, required: true },
     supplier: String,
     poNo: String,
     items: [grnItemSchema],
@@ -22,5 +23,7 @@ const grnSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+grnSchema.index({ companyId: 1, grnNo: 1 }, { unique: true });
 
 export default mongoose.model("GRN", grnSchema);

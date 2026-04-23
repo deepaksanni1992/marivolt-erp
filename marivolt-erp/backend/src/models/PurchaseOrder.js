@@ -20,7 +20,8 @@ const poLineSchema = new mongoose.Schema(
 
 const purchaseOrderSchema = new mongoose.Schema(
   {
-    poNumber: { type: String, required: true, unique: true, trim: true },
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
+    poNumber: { type: String, required: true, trim: true },
     orderDate: { type: Date, default: () => new Date() },
 
     buyerLegalName: { type: String, default: "Marivolt FZE", trim: true },
@@ -74,5 +75,7 @@ const purchaseOrderSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+purchaseOrderSchema.index({ companyId: 1, poNumber: 1 }, { unique: true });
 
 export default mongoose.model("PurchaseOrder", purchaseOrderSchema);

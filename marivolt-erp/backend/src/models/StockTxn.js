@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 
 const stockTxnSchema = new mongoose.Schema(
   {
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
     sku: { type: String, default: "", index: true },
     article: { type: String, default: "", index: true }, // used for BOM Kitting/De-Kitting
     materialCode: { type: String, default: "", index: true },

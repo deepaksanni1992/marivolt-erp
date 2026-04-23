@@ -10,10 +10,14 @@ function pagination(req) {
   return { page, limit, skip: (page - 1) * limit };
 }
 
+function withCompany(req, filter = {}) {
+  return { ...filter, companyId: req.companyId };
+}
+
 export async function listKittingOrders(req, res) {
   try {
     const { page, limit, skip } = pagination(req);
-    const filter = {};
+    const filter = withCompany(req);
     if (req.query.status) filter.status = req.query.status;
     if (req.query.parentItemCode) {
       filter.parentItemCode = String(req.query.parentItemCode).trim().toUpperCase();
@@ -34,7 +38,7 @@ export async function getKittingOrder(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await KittingOrder.findById(id).lean();
+    const row = await KittingOrder.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json(row);
   } catch (err) {
@@ -47,7 +51,7 @@ export async function createKittingOrder(req, res) {
     const parentItemCode = String(req.body.parentItemCode || "").trim().toUpperCase();
     if (!parentItemCode) return res.status(400).json({ message: "parentItemCode required" });
 
-    const bom = await BOM.findOne({ parentItemCode, isActive: true });
+    const bom = await BOM.findOne(withCompany(req, { parentItemCode, isActive: true }));
     if (!bom) {
       return res.status(400).json({ message: "No active BOM for this parent item" });
     }
@@ -57,10 +61,16 @@ export async function createKittingOrder(req, res) {
       return res.status(400).json({ message: "quantity must be a positive number" });
     }
 
-    const kitNumber = await nextSequentialNumber(KittingOrder, "kitNumber", "KIT");
+    const kitNumber = await nextSequentialNumber(
+      KittingOrder,
+      "kitNumber",
+      `${req.companyCode || "CMP"}-KIT`,
+      { companyId: req.companyId }
+    );
     const warehouse = String(req.body.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
 
     const doc = await KittingOrder.create({
+      companyId: req.companyId,
       kitNumber,
       parentItemCode,
       warehouse,
@@ -82,14 +92,14 @@ export async function executeKittingOrder(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const order = await KittingOrder.findById(id);
+    const order = await KittingOrder.findOne(withCompany(req, { _id: id }));
     if (!order) return res.status(404).json({ message: "Not found" });
     if (order.status !== "DRAFT") {
       return res.status(400).json({ message: "Only DRAFT orders can be executed" });
     }
 
     const userEmail = req.user?.email || "";
-    await runKitAssembly(order, userEmail);
+    await runKitAssembly(order, userEmail, req.companyId);
     order.status = "COMPLETED";
     await order.save();
     res.json(order);
@@ -104,7 +114,7 @@ export async function cancelKittingOrder(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const order = await KittingOrder.findById(id);
+    const order = await KittingOrder.findOne(withCompany(req, { _id: id }));
     if (!order) return res.status(404).json({ message: "Not found" });
     if (order.status !== "DRAFT") {
       return res.status(400).json({ message: "Only DRAFT orders can be cancelled" });

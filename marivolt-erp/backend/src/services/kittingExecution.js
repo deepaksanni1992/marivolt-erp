@@ -12,8 +12,8 @@ function snapshotFromBom(bom) {
 /**
  * Consumes components per BOM, receives parent (assembled kit) qty.
  */
-export async function runKitAssembly(order, createdBy) {
-  const bom = await BOM.findById(order.bomId);
+export async function runKitAssembly(order, createdBy, companyId) {
+  const bom = await BOM.findOne({ _id: order.bomId, companyId });
   if (!bom) throw new Error("BOM not found");
   if (!bom.isActive) throw new Error("BOM is inactive");
   if (String(bom.parentItemCode).toUpperCase() !== String(order.parentItemCode).toUpperCase()) {
@@ -30,6 +30,7 @@ export async function runKitAssembly(order, createdBy) {
     const need = (Number(line.qty) || 0) * kitQty;
     if (need <= 0) continue;
     await applyStockOut({
+      companyId,
       itemCode: line.componentItemCode,
       warehouse: wh,
       qty: need,
@@ -43,6 +44,7 @@ export async function runKitAssembly(order, createdBy) {
   }
 
   await applyStockIn({
+    companyId,
     itemCode: order.parentItemCode,
     warehouse: wh,
     qty: kitQty,
@@ -61,8 +63,8 @@ export async function runKitAssembly(order, createdBy) {
 /**
  * Consumes parent kit qty, returns components per BOM.
  */
-export async function runDeKit(order, createdBy) {
-  const bom = await BOM.findById(order.bomId);
+export async function runDeKit(order, createdBy, companyId) {
+  const bom = await BOM.findOne({ _id: order.bomId, companyId });
   if (!bom) throw new Error("BOM not found");
   if (!bom.isActive) throw new Error("BOM is inactive");
   if (String(bom.parentItemCode).toUpperCase() !== String(order.parentItemCode).toUpperCase()) {
@@ -76,6 +78,7 @@ export async function runDeKit(order, createdBy) {
   const kitQty = Number(order.quantity);
 
   await applyStockOut({
+    companyId,
     itemCode: order.parentItemCode,
     warehouse: wh,
     qty: kitQty,
@@ -91,6 +94,7 @@ export async function runDeKit(order, createdBy) {
     const qtyIn = (Number(line.qty) || 0) * kitQty;
     if (qtyIn <= 0) continue;
     await applyStockIn({
+      companyId,
       itemCode: line.componentItemCode,
       warehouse: wh,
       qty: qtyIn,

@@ -11,7 +11,8 @@ const bomLineSchema = new mongoose.Schema(
 
 const bomSchema = new mongoose.Schema(
   {
-    parentItemCode: { type: String, required: true, unique: true, trim: true, uppercase: true },
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
+    parentItemCode: { type: String, required: true, trim: true, uppercase: true },
     name: { type: String, default: "" },
     description: { type: String, default: "" },
     lines: { type: [bomLineSchema], default: [] },
@@ -20,5 +21,7 @@ const bomSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+bomSchema.index({ companyId: 1, parentItemCode: 1 }, { unique: true });
 
 export default mongoose.model("BOM", bomSchema);

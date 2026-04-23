@@ -9,6 +9,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import bcrypt from "bcrypt";
 import User from "./models/User.js";
+import Company from "./models/Company.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Load .env from backend folder or project root (marivolt-erp)
@@ -29,6 +30,9 @@ async function run() {
     process.exit(1);
   }
   await mongoose.connect(process.env.MONGO_URI);
+  const mar = await Company.findOne({ code: "MAR" }).lean();
+  const oke = await Company.findOne({ code: "OKE" }).lean();
+  const allCompanyIds = [mar?._id, oke?._id].filter(Boolean);
 
   for (const u of USERS) {
     const email = `${u.username}@marivoltz.com`;
@@ -41,6 +45,10 @@ async function run() {
       existing.name = u.name;
       existing.role = u.role;
       existing.email = email;
+      if (allCompanyIds.length) {
+        existing.allowedCompanies = allCompanyIds;
+        if (!existing.defaultCompany) existing.defaultCompany = allCompanyIds[0];
+      }
       await existing.save();
       console.log("Updated:", u.username, "role:", u.role);
     } else {
@@ -50,6 +58,8 @@ async function run() {
         name: u.name,
         passwordHash,
         role: u.role,
+        allowedCompanies: allCompanyIds,
+        defaultCompany: allCompanyIds[0] || null,
       });
       console.log("Created:", u.username, "role:", u.role);
     }

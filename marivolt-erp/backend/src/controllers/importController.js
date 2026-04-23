@@ -45,7 +45,9 @@ export async function importItems(req, res) {
       }
       seenInFile.add(article);
 
-      const existing = await Item.findOne({ itemCode: article }).select("_id").lean();
+      const existing = await Item.findOne({ companyId: req.companyId, itemCode: article })
+        .select("_id")
+        .lean();
       if (existing) {
         summary.failed.push({ row: rowNumber, reason: "Duplicate Article in Item Master — skipped" });
         continue;
@@ -65,6 +67,7 @@ export async function importItems(req, res) {
 
       try {
         await Item.create({
+          companyId: req.companyId,
           itemCode: article,
           description: productName,
           uom,
@@ -111,7 +114,9 @@ export async function importMappings(req, res) {
         continue;
       }
 
-      const item = await Item.findOne({ itemCode: article }).select("_id").lean();
+      const item = await Item.findOne({ companyId: req.companyId, itemCode: article })
+        .select("_id")
+        .lean();
       if (!item) {
         summary.failed.push({ row: rowNumber, reason: "Article not found in Item Master" });
         continue;
@@ -127,6 +132,7 @@ export async function importMappings(req, res) {
 
       try {
         await ItemMapping.create({
+          companyId: req.companyId,
           article,
           model,
           esn,
@@ -173,7 +179,9 @@ export async function importSuppliers(req, res) {
         continue;
       }
 
-      const item = await Item.findOne({ itemCode: article }).select("_id").lean();
+      const item = await Item.findOne({ companyId: req.companyId, itemCode: article })
+        .select("_id")
+        .lean();
       if (!item) {
         summary.failed.push({ row: rowNumber, reason: "Article not found in Item Master" });
         continue;
@@ -202,6 +210,7 @@ export async function importSuppliers(req, res) {
 
       try {
         await ItemSupplierOffer.create({
+          companyId: req.companyId,
           article,
           supplierName,
           supplierPartNumber,

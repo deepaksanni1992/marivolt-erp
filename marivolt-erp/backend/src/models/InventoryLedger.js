@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 
 const inventoryLedgerSchema = new mongoose.Schema(
   {
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
     itemCode: { type: String, required: true, trim: true, uppercase: true },
     warehouse: { type: String, required: true, trim: true, default: "MAIN" },
     movementType: {
@@ -33,7 +34,7 @@ const inventoryLedgerSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-inventoryLedgerSchema.index({ itemCode: 1, warehouse: 1, createdAt: -1 });
-inventoryLedgerSchema.index({ referenceType: 1, referenceId: 1 });
+inventoryLedgerSchema.index({ companyId: 1, itemCode: 1, warehouse: 1, createdAt: -1 });
+inventoryLedgerSchema.index({ companyId: 1, referenceType: 1, referenceId: 1 });
 
 export default mongoose.model("InventoryLedger", inventoryLedgerSchema);

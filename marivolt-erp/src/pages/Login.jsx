@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, AUTH_KEY } from "../lib/api.js";
+import { useAuth } from "../context/AuthContext.jsx";
 
 export default function Login() {
   const nav = useNavigate();
+  const { login } = useAuth();
   const [form, setForm] = useState({ email: "", password: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -28,9 +29,9 @@ export default function Login() {
       const email = emailInput || form.email.trim();
       const password = passwordInput || form.password;
 
-      const { data } = await api.post("/auth/login", { email, password });
-      localStorage.setItem(AUTH_KEY, JSON.stringify({ ...data, ts: Date.now() }));
-      nav("/dashboard");
+      const data = await login(email, password);
+      if (data?.requiresCompanySelection) nav("/select-company");
+      else nav("/dashboard");
     } catch (e2) {
       setError(e2.message || "Login failed");
     } finally {

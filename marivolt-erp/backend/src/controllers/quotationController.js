@@ -3,6 +3,10 @@ import Quotation from "../models/Quotation.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 import { applyStockOut } from "../services/stockService.js";
 
+function withCompany(req, filter = {}) {
+  return { ...filter, companyId: req.companyId };
+}
+
 function recalcQuotationTotals(doc) {
   let sub = 0;
   const cur = doc.currency || "USD";
@@ -20,7 +24,7 @@ export async function listQuotations(req, res) {
     const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
     const skip = (page - 1) * limit;
-    const filter = {};
+    const filter = withCompany(req);
     if (req.query.status) filter.status = req.query.status;
     if (req.query.customerName) {
       filter.customerName = new RegExp(String(req.query.customerName).trim(), "i");
@@ -41,7 +45,7 @@ export async function getQuotation(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await Quotation.findById(id).lean();
+    const row = await Quotation.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json(row);
   } catch (err) {
@@ -53,9 +57,15 @@ export async function createQuotation(req, res) {
   try {
     const body = { ...req.body };
     if (!body.quotationNumber) {
-      body.quotationNumber = await nextSequentialNumber(Quotation, "quotationNumber", "QT");
+      body.quotationNumber = await nextSequentialNumber(
+        Quotation,
+        "quotationNumber",
+        `${req.companyCode || "CMP"}-QT`,
+        { companyId: req.companyId }
+      );
     }
     body.createdBy = req.user?.email || "";
+    body.companyId = req.companyId;
     const doc = new Quotation(body);
     recalcQuotationTotals(doc);
     await doc.save();
@@ -71,7 +81,7 @@ export async function updateQuotation(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const doc = await Quotation.findById(id);
+    const doc = await Quotation.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
 
     const allowed = [
@@ -103,8 +113,8 @@ export async function patchQuotationStatus(req, res) {
     }
     const { status } = req.body;
     if (!status) return res.status(400).json({ message: "status required" });
-    const doc = await Quotation.findByIdAndUpdate(
-      id,
+    const doc = await Quotation.findOneAndUpdate(
+      withCompany(req, { _id: id }),
       { status },
       { new: true, runValidators: true }
     );
@@ -121,7 +131,7 @@ export async function stockOutFromQuotation(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const q = await Quotation.findById(id);
+    const q = await Quotation.findOne(withCompany(req, { _id: id }));
     if (!q) return res.status(404).json({ message: "Not found" });
 
     const { warehouse = "MAIN", lines } = req.body;
@@ -144,6 +154,7 @@ export async function stockOutFromQuotation(req, res) {
       }
 
       await applyStockOut({
+        companyId: req.companyId,
         itemCode: line.itemCode,
         warehouse,
         qty,
@@ -168,7 +179,7 @@ export async function deleteQuotation(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await Quotation.findByIdAndDelete(id);
+    const row = await Quotation.findOneAndDelete(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json({ success: true });
   } catch (err) {

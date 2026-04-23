@@ -7,10 +7,14 @@ function pagination(req) {
   return { page, limit, skip: (page - 1) * limit };
 }
 
+function withCompany(req, filter = {}) {
+  return { ...filter, companyId: req.companyId };
+}
+
 export async function listBoms(req, res) {
   try {
     const { page, limit, skip } = pagination(req);
-    const filter = {};
+    const filter = withCompany(req);
     if (req.query.isActive !== undefined) {
       filter.isActive = String(req.query.isActive) === "true";
     }
@@ -38,7 +42,7 @@ export async function getBom(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await BOM.findById(id).lean();
+    const row = await BOM.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json(row);
   } catch (err) {
@@ -49,7 +53,7 @@ export async function getBom(req, res) {
 export async function getBomByParentCode(req, res) {
   try {
     const code = String(req.params.parentCode || "").trim().toUpperCase();
-    const row = await BOM.findOne({ parentItemCode: code }).lean();
+    const row = await BOM.findOne(withCompany(req, { parentItemCode: code })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json(row);
   } catch (err) {
@@ -59,7 +63,7 @@ export async function getBomByParentCode(req, res) {
 
 export async function createBom(req, res) {
   try {
-    const body = { ...req.body, createdBy: req.user?.email || "" };
+    const body = { ...req.body, companyId: req.companyId, createdBy: req.user?.email || "" };
     if (body.parentItemCode) {
       body.parentItemCode = String(body.parentItemCode).trim().toUpperCase();
     }
@@ -100,7 +104,10 @@ export async function updateBom(req, res) {
         }))
         .filter((l) => l.componentItemCode && l.qty > 0);
     }
-    const doc = await BOM.findByIdAndUpdate(id, payload, { new: true, runValidators: true });
+    const doc = await BOM.findOneAndUpdate(withCompany(req, { _id: id }), payload, {
+      new: true,
+      runValidators: true,
+    });
     if (!doc) return res.status(404).json({ message: "Not found" });
     res.json(doc);
   } catch (err) {
@@ -114,7 +121,7 @@ export async function deleteBom(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await BOM.findByIdAndDelete(id);
+    const row = await BOM.findOneAndDelete(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json({ success: true });
   } catch (err) {

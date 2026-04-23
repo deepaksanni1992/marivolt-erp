@@ -15,7 +15,8 @@ const quotationLineSchema = new mongoose.Schema(
 
 const quotationSchema = new mongoose.Schema(
   {
-    quotationNumber: { type: String, required: true, unique: true, trim: true },
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
+    quotationNumber: { type: String, required: true, trim: true },
     quotationDate: { type: Date, default: () => new Date() },
     customerName: { type: String, required: true, trim: true },
     customerReference: { type: String, default: "", trim: true },
@@ -34,5 +35,7 @@ const quotationSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+quotationSchema.index({ companyId: 1, quotationNumber: 1 }, { unique: true });
 
 export default mongoose.model("Quotation", quotationSchema);
