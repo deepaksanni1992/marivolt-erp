@@ -219,29 +219,25 @@ function renderPrintWindow(data) {
         <style>
           body { font-family: Arial, sans-serif; margin: 24px; color: #111; padding-bottom: 90px; }
           .header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px; gap: 18px; }
-          .brand-left { min-width: 180px; }
+          .brand-left { min-width: 230px; }
           .brand-logo-wrap {
-            width: 165px;
-            height: 165px;
-            border-radius: 14px;
-            border: 1px solid #dbe5ef;
+            width: 215px;
+            height: 215px;
             display: flex;
             align-items: center;
             justify-content: center;
-            overflow: hidden;
-            background: #ffffff;
           }
           .brand-logo-wrap img {
-            max-width: 145px;
-            max-height: 145px;
+            max-width: 188px;
+            max-height: 188px;
             object-fit: contain;
             image-rendering: auto;
             image-rendering: -webkit-optimize-contrast;
           }
           .brand-logo-wrap img.marivolt-icon-only {
-            width: 145px;
-            max-width: 145px;
-            max-height: 145px;
+            width: 188px;
+            max-width: 188px;
+            max-height: 188px;
             object-fit: contain;
             object-position: center center;
           }
@@ -257,13 +253,13 @@ function renderPrintWindow(data) {
           .brand-title {
             margin: 0;
             line-height: 1;
-            font-size: 56px;
+            font-size: 39px;
             font-weight: 800;
             color: #ef6b53;
           }
           .brand-subtitle {
             margin-top: 4px;
-            font-size: 13px;
+            font-size: 9px;
             font-weight: 700;
             letter-spacing: 0.4px;
             color: #1f5a96;
@@ -366,11 +362,6 @@ function renderPrintWindow(data) {
                   ? `<div class="brand-right">
                 <h1 class="brand-title">MariVolt</h1>
                 <div class="brand-subtitle">Marine Engine Spares</div>
-                <div class="muted" style="margin-top:8px;">
-                  <div><b>${company.companyName || ""}</b></div>
-                  <div>${company.email || ""}</div>
-                  <div>${company.phone || ""}</div>
-                </div>
               </div>`
                   : `<div class="muted" style="text-align:right;">
                 <div><b>${company.companyName || ""}</b></div>
