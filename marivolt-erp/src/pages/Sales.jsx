@@ -220,12 +220,16 @@ function renderPrintWindow(data) {
           body { font-family: Arial, sans-serif; margin: 24px; color: #111; padding-bottom: 90px; }
           .header {
             display: grid;
-            grid-template-columns: auto 1fr auto;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
             align-items: start;
             margin-bottom: 20px;
-            gap: 20px;
+            gap: 24px;
           }
-          .brand-left { min-width: 230px; }
+          .brand-left {
+            min-width: 0;
+            display: flex;
+            justify-content: center;
+          }
           .brand-logo-wrap {
             width: 215px;
             height: 215px;
@@ -253,8 +257,17 @@ function renderPrintWindow(data) {
             color: #1f5a96;
             letter-spacing: 0.5px;
           }
-          .quote-block { min-width: 220px; }
-          .brand-right { text-align: right; min-width: 260px; }
+          .quote-block {
+            min-width: 0;
+            width: max-content;
+            justify-self: center;
+          }
+          .brand-right {
+            text-align: center;
+            min-width: 0;
+            width: max-content;
+            justify-self: center;
+          }
           .brand-title {
             margin: 0;
             line-height: 1;
