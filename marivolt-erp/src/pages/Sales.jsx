@@ -218,6 +218,7 @@ function renderPrintWindow(data, autoPrint = false) {
         <title>${q.quotationNo || "Quotation"}</title>
         <style>
           body { font-family: Arial, sans-serif; margin: 24px; color: #111; padding-bottom: 90px; }
+          body.has-quote-terms { padding-bottom: 155px; }
           .header {
             display: flex;
             justify-content: space-between;
@@ -292,6 +293,18 @@ function renderPrintWindow(data, autoPrint = false) {
           .totals { margin-top: 12px; width: 320px; margin-left: auto; }
           .totals div { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
           .footer { margin-top: 30px; font-size: 12px; color: #444; }
+          .quote-terms {
+            margin-top: 28px;
+            margin-bottom: 16px;
+            padding: 12px 14px;
+            font-size: 11px;
+            line-height: 1.55;
+            color: #374151;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            background: #f9fafb;
+          }
+          .quote-terms a { color: #1d4ed8; word-break: break-all; }
           .doc-note {
             margin-top: 30px;
             text-align: center;
@@ -347,11 +360,12 @@ function renderPrintWindow(data, autoPrint = false) {
               border-color: #d6d6d6 !important;
             }
             .header { page-break-inside: avoid; }
+            .quote-terms { page-break-inside: avoid; }
             .page-footer { position: fixed; bottom: 8px; }
           }
         </style>
       </head>
-      <body>
+      <body class="${isMarivolt ? "has-quote-terms" : ""}">
         <div class="header">
           <div class="header-left">
             ${
@@ -438,6 +452,11 @@ function renderPrintWindow(data, autoPrint = false) {
           <div><span>Tax</span><span>${money(q.taxTotal)}</span></div>
           <div><b>Grand Total</b><b>${money(q.grandTotal)} ${q.currency || ""}</b></div>
         </div>
+        ${
+          isMarivolt
+            ? `<div class="quote-terms">Only Marivolt terms and condition applicable, check here-<a href="https://marivolt.co/about-us">https://marivolt.co/about-us</a></div>`
+            : ""
+        }
         <div class="footer">
           <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
         </div>
