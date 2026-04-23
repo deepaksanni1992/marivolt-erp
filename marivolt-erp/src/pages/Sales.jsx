@@ -20,20 +20,17 @@ const salesInvoiceStatusOptions = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", 
 const ciplStatusOptions = ["DRAFT", "ISSUED", "SHIPPED", "CANCELLED"];
 
 const emptyLine = () => ({
-  itemCode: "",
-  description: "",
-  partNo: "",
+  serialNo: 0,
   article: "",
+  partNumber: "",
+  description: "",
   qty: 1,
-  unit: "PCS",
-  salePrice: 0,
-  discountPct: 0,
-  taxPct: 0,
-  deliveryTime: "",
-  origin: "",
-  hsCode: "",
-  weight: 0,
+  uom: "PCS",
+  price: 0,
+  totalPrice: 0,
   remarks: "",
+  materialCode: "",
+  availability: "",
 });
 
 function money(n) {
@@ -82,14 +79,18 @@ function renderPrintWindow(data) {
         </div>
         <div class="muted">
           <div><b>Customer:</b> ${q.customerName || "-"}</div>
+          <div><b>Customer Ref:</b> ${q.customerReference || "-"}</div>
           <div><b>Attention:</b> ${q.attention || "-"}</div>
+          <div><b>Engine:</b> ${q.engine || "-"}</div>
+          <div><b>Model:</b> ${q.model || "-"}</div>
+          <div><b>ESN:</b> ${q.esn || "-"}</div>
           <div><b>Billing:</b> ${customer.billingAddress || "-"}</div>
           <div><b>Shipping:</b> ${customer.shippingAddress || "-"}</div>
         </div>
         <table>
           <thead>
             <tr>
-              <th>Item</th><th>Description</th><th class="right">Qty</th><th>Unit</th><th class="right">Unit Price</th><th class="right">Disc%</th><th class="right">Tax%</th><th class="right">Line Total</th>
+              <th>Serial number</th><th>Article</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Price</th><th class="right">Total price</th><th>Remarks</th><th>Material code</th><th>Availability</th>
             </tr>
           </thead>
           <tbody>
@@ -97,14 +98,17 @@ function renderPrintWindow(data) {
               .map(
                 (line) => `
               <tr>
-                <td>${line.itemCode || ""}</td>
+                <td>${line.serialNo || ""}</td>
+                <td>${line.article || ""}</td>
+                <td>${line.partNumber || ""}</td>
                 <td>${line.description || ""}</td>
+                <td>${line.uom || ""}</td>
                 <td class="right">${line.qty || 0}</td>
-                <td>${line.unit || ""}</td>
-                <td class="right">${money(line.salePrice)}</td>
-                <td class="right">${money(line.discountPct)}</td>
-                <td class="right">${money(line.taxPct)}</td>
-                <td class="right">${money(line.lineTotal)}</td>
+                <td class="right">${money(line.price)}</td>
+                <td class="right">${money(line.totalPrice)}</td>
+                <td>${line.remarks || ""}</td>
+                <td>${line.materialCode || ""}</td>
+                <td>${line.availability || ""}</td>
               </tr>`
               )
               .join("")}
@@ -151,6 +155,9 @@ export default function Sales() {
     customerName: "",
     customerReference: "",
     attention: "",
+    engine: "",
+    model: "",
+    esn: "",
     paymentTerms: "",
     deliveryTerms: "",
     incoterm: "",
@@ -268,6 +275,9 @@ export default function Sales() {
         customerName: "",
         customerReference: "",
         attention: "",
+        engine: "",
+        model: "",
+        esn: "",
         paymentTerms: "",
         deliveryTerms: "",
         incoterm: "",
@@ -591,6 +601,9 @@ export default function Sales() {
                   <tr>
                     <th className="px-3 py-2">Quotation No</th>
                     <th className="px-3 py-2">Customer</th>
+                    <th className="px-3 py-2">Engine</th>
+                    <th className="px-3 py-2">Model</th>
+                    <th className="px-3 py-2">ESN</th>
                     <th className="px-3 py-2">Date</th>
                     <th className="px-3 py-2">Validity</th>
                     <th className="px-3 py-2">Status</th>
@@ -601,13 +614,13 @@ export default function Sales() {
                 <tbody>
                   {isLoading ? (
                     <tr>
-                      <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={10} className="px-3 py-8 text-center text-gray-500">
                         Loading…
                       </td>
                     </tr>
                   ) : rows.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={10} className="px-3 py-8 text-center text-gray-500">
                         No quotations found.
                       </td>
                     </tr>
@@ -616,6 +629,9 @@ export default function Sales() {
                       <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
                         <td className="px-3 py-2 font-mono text-xs">{r.quotationNo}</td>
                         <td className="px-3 py-2">{r.customerName}</td>
+                        <td className="px-3 py-2">{r.engine || "-"}</td>
+                        <td className="px-3 py-2">{r.model || "-"}</td>
+                        <td className="px-3 py-2">{r.esn || "-"}</td>
                         <td className="px-3 py-2">{r.quotationDate ? new Date(r.quotationDate).toLocaleDateString() : "—"}</td>
                         <td className="px-3 py-2">{r.validityDate ? new Date(r.validityDate).toLocaleDateString() : "—"}</td>
                         <td className="px-3 py-2">{r.status}</td>
@@ -1079,23 +1095,27 @@ export default function Sales() {
               <table className="min-w-full text-xs">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th className="px-2 py-1 text-left">Item</th>
+                    <th className="px-2 py-1 text-left">S/N</th>
+                    <th className="px-2 py-1 text-left">Article</th>
+                    <th className="px-2 py-1 text-left">Part no</th>
+                    <th className="px-2 py-1 text-left">Description</th>
+                    <th className="px-2 py-1 text-left">UOM</th>
                     <th className="px-2 py-1 text-right">Qty</th>
                     <th className="px-2 py-1 text-right">Price</th>
-                    <th className="px-2 py-1 text-right">Disc%</th>
-                    <th className="px-2 py-1 text-right">Tax%</th>
-                    <th className="px-2 py-1 text-right">Line</th>
+                    <th className="px-2 py-1 text-right">Total</th>
                   </tr>
                 </thead>
                 <tbody>
                   {detail.lines?.map((line) => (
                     <tr key={line._id} className="border-t">
-                      <td className="px-2 py-1">{line.itemCode}</td>
+                      <td className="px-2 py-1">{line.serialNo}</td>
+                      <td className="px-2 py-1">{line.article}</td>
+                      <td className="px-2 py-1">{line.partNumber}</td>
+                      <td className="px-2 py-1">{line.description}</td>
+                      <td className="px-2 py-1">{line.uom}</td>
                       <td className="px-2 py-1 text-right">{line.qty}</td>
-                      <td className="px-2 py-1 text-right">{money(line.salePrice)}</td>
-                      <td className="px-2 py-1 text-right">{money(line.discountPct)}</td>
-                      <td className="px-2 py-1 text-right">{money(line.taxPct)}</td>
-                      <td className="px-2 py-1 text-right">{money(line.lineTotal)}</td>
+                      <td className="px-2 py-1 text-right">{money(line.price)}</td>
+                      <td className="px-2 py-1 text-right">{money(line.totalPrice)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1323,6 +1343,15 @@ export default function Sales() {
               onChange={(e) => setForm((f) => ({ ...f, attention: e.target.value }))}
             />
           </FormField>
+          <FormField label="Engine">
+            <TextInput value={form.engine} onChange={(e) => setForm((f) => ({ ...f, engine: e.target.value }))} />
+          </FormField>
+          <FormField label="Model">
+            <TextInput value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))} />
+          </FormField>
+          <FormField label="ESN">
+            <TextInput value={form.esn} onChange={(e) => setForm((f) => ({ ...f, esn: e.target.value }))} />
+          </FormField>
         </div>
 
         <div className="mt-4">
@@ -1336,91 +1365,145 @@ export default function Sales() {
               + Add line
             </button>
           </div>
-          <div className="space-y-2">
-            {form.lines.map((line, idx) => (
-              <div key={idx} className="grid gap-2 rounded-xl border p-2 sm:grid-cols-8">
-                <TextInput
-                  placeholder="Item code"
-                  value={line.itemCode}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...line, itemCode: e.target.value };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  placeholder="Description"
-                  value={line.description}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...line, description: e.target.value };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  type="number"
-                  placeholder="Qty"
-                  value={line.qty}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...line, qty: Number(e.target.value) };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  placeholder="Unit"
-                  value={line.unit}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...line, unit: e.target.value };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  type="number"
-                  step="0.01"
-                  placeholder="Price"
-                  value={line.salePrice}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...line, salePrice: Number(e.target.value) };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  type="number"
-                  step="0.01"
-                  placeholder="Disc %"
-                  value={line.discountPct}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...line, discountPct: Number(e.target.value) };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  type="number"
-                  step="0.01"
-                  placeholder="Tax %"
-                  value={line.taxPct}
-                  onChange={(e) => {
-                    const lines = [...form.lines];
-                    lines[idx] = { ...line, taxPct: Number(e.target.value) };
-                    setForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <button
-                  type="button"
-                  className="rounded-xl border px-2 py-1 text-xs"
-                  onClick={() => {
-                    const lines = form.lines.filter((_, i) => i !== idx);
-                    setForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
-                  }}
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
+          <div className="overflow-x-auto rounded-xl border">
+            <table className="min-w-[1400px] w-full text-xs">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-2 py-2 text-left">Serial number</th>
+                  <th className="px-2 py-2 text-left">Article</th>
+                  <th className="px-2 py-2 text-left">Part number</th>
+                  <th className="px-2 py-2 text-left">Description</th>
+                  <th className="px-2 py-2 text-left">UOM</th>
+                  <th className="px-2 py-2 text-right">QTY</th>
+                  <th className="px-2 py-2 text-right">Price</th>
+                  <th className="px-2 py-2 text-right">Total price</th>
+                  <th className="px-2 py-2 text-left">Remarks</th>
+                  <th className="px-2 py-2 text-left">Material code</th>
+                  <th className="px-2 py-2 text-left">Availability</th>
+                  <th className="px-2 py-2 text-left">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {form.lines.map((line, idx) => {
+                  const qty = Number(line.qty || 0);
+                  const price = Number(line.price || 0);
+                  const totalPrice = qty * price;
+                  return (
+                    <tr key={idx} className="border-t">
+                      <td className="px-2 py-1">{idx + 1}</td>
+                      <td className="px-2 py-1">
+                        <TextInput
+                          value={line.article || ""}
+                          onChange={(e) => {
+                            const lines = [...form.lines];
+                            lines[idx] = { ...line, article: e.target.value.toUpperCase(), serialNo: idx + 1, totalPrice };
+                            setForm((f) => ({ ...f, lines }));
+                          }}
+                        />
+                      </td>
+                      <td className="px-2 py-1">
+                        <TextInput
+                          value={line.partNumber || ""}
+                          onChange={(e) => {
+                            const lines = [...form.lines];
+                            lines[idx] = { ...line, partNumber: e.target.value, serialNo: idx + 1, totalPrice };
+                            setForm((f) => ({ ...f, lines }));
+                          }}
+                        />
+                      </td>
+                      <td className="px-2 py-1">
+                        <TextInput
+                          value={line.description || ""}
+                          onChange={(e) => {
+                            const lines = [...form.lines];
+                            lines[idx] = { ...line, description: e.target.value, serialNo: idx + 1, totalPrice };
+                            setForm((f) => ({ ...f, lines }));
+                          }}
+                        />
+                      </td>
+                      <td className="px-2 py-1">
+                        <TextInput
+                          value={line.uom || ""}
+                          onChange={(e) => {
+                            const lines = [...form.lines];
+                            lines[idx] = { ...line, uom: e.target.value, serialNo: idx + 1, totalPrice };
+                            setForm((f) => ({ ...f, lines }));
+                          }}
+                        />
+                      </td>
+                      <td className="px-2 py-1">
+                        <TextInput
+                          type="number"
+                          value={line.qty}
+                          onChange={(e) => {
+                            const nextQty = Number(e.target.value);
+                            const lines = [...form.lines];
+                            lines[idx] = { ...line, qty: nextQty, serialNo: idx + 1, totalPrice: nextQty * price };
+                            setForm((f) => ({ ...f, lines }));
+                          }}
+                        />
+                      </td>
+                      <td className="px-2 py-1">
+                        <TextInput
+                          type="number"
+                          step="0.01"
+                          value={line.price}
+                          onChange={(e) => {
+                            const nextPrice = Number(e.target.value);
+                            const lines = [...form.lines];
+                            lines[idx] = { ...line, price: nextPrice, serialNo: idx + 1, totalPrice: qty * nextPrice };
+                            setForm((f) => ({ ...f, lines }));
+                          }}
+                        />
+                      </td>
+                      <td className="px-2 py-1 text-right">{money(totalPrice)}</td>
+                      <td className="px-2 py-1">
+                        <TextInput
+                          value={line.remarks || ""}
+                          onChange={(e) => {
+                            const lines = [...form.lines];
+                            lines[idx] = { ...line, remarks: e.target.value, serialNo: idx + 1, totalPrice };
+                            setForm((f) => ({ ...f, lines }));
+                          }}
+                        />
+                      </td>
+                      <td className="px-2 py-1">
+                        <TextInput
+                          value={line.materialCode || ""}
+                          onChange={(e) => {
+                            const lines = [...form.lines];
+                            lines[idx] = { ...line, materialCode: e.target.value, serialNo: idx + 1, totalPrice };
+                            setForm((f) => ({ ...f, lines }));
+                          }}
+                        />
+                      </td>
+                      <td className="px-2 py-1">
+                        <TextInput
+                          value={line.availability || ""}
+                          onChange={(e) => {
+                            const lines = [...form.lines];
+                            lines[idx] = { ...line, availability: e.target.value, serialNo: idx + 1, totalPrice };
+                            setForm((f) => ({ ...f, lines }));
+                          }}
+                        />
+                      </td>
+                      <td className="px-2 py-1">
+                        <button
+                          type="button"
+                          className="rounded-xl border px-2 py-1 text-xs"
+                          onClick={() => {
+                            const lines = form.lines.filter((_, i) => i !== idx).map((l, i2) => ({ ...l, serialNo: i2 + 1 }));
+                            setForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
 

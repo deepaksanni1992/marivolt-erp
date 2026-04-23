@@ -10,6 +10,9 @@ const itemSchema = new mongoose.Schema(
     brand: { type: String, default: "", trim: true },
     modelName: { type: String, default: "", trim: true },
     makerPartNo: { type: String, default: "", trim: true },
+    materialCode: { type: String, default: "", trim: true },
+    engine: { type: String, default: "", trim: true },
+    esn: { type: String, default: "", trim: true },
     hsnCode: { type: String, default: "", trim: true },
     category: { type: String, default: "", trim: true },
 
@@ -27,6 +30,10 @@ const itemSchema = new mongoose.Schema(
     reorderLevel: { type: Number, default: 0 },
     remarks: { type: String, default: "" },
     isActive: { type: Boolean, default: true },
+    source: { type: String, default: "", trim: true },
+    sourceDocumentType: { type: String, default: "", trim: true },
+    sourceDocumentId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    sourceDocumentNo: { type: String, default: "", trim: true },
   },
   { timestamps: true }
 );

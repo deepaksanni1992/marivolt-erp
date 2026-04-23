@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import Quotation from "../models/Quotation.js";
 import Company from "../models/Company.js";
+import Item from "../models/itemModel.js";
 import { applyStockOut } from "../services/stockService.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
 
@@ -11,50 +12,61 @@ function withCompany(req, filter = {}) {
 function normalizeLines(lines = []) {
   return (lines || [])
     .map((line) => {
+      const serialNo = Number(line.serialNo) || 0;
       const qty = Number(line.qty) || 0;
-      const unitPrice = Number(line.salePrice ?? line.unitPrice) || 0;
-      const discountPct = Number(line.discountPct) || 0;
-      const taxPct = Number(line.taxPct) || 0;
-      const gross = qty * unitPrice;
-      const discountAmount = (gross * discountPct) / 100;
-      const taxable = gross - discountAmount;
-      const taxAmount = (taxable * taxPct) / 100;
-      const lineTotal = taxable + taxAmount;
+      const price = Number(line.price ?? line.salePrice ?? line.unitPrice) || 0;
+      const totalPrice = qty * price;
       return {
-        ...line,
-        itemCode: String(line.itemCode || "").trim().toUpperCase(),
+        serialNo,
         article: String(line.article || line.itemCode || "").trim().toUpperCase(),
+        partNumber: String(line.partNumber || line.partNo || "").trim(),
         description: String(line.description || ""),
-        unit: String(line.unit || "PCS").trim() || "PCS",
+        uom: String(line.uom || line.unit || "PCS").trim() || "PCS",
         qty,
-        salePrice: unitPrice,
-        currency: String(line.currency || "USD").trim().toUpperCase(),
-        discountPct,
-        taxPct,
-        discountAmount,
-        taxAmount,
-        lineTotal,
-        pendingQty: Math.max(0, qty - (Number(line.deliveredQty) || 0)),
+        price,
+        totalPrice,
+        remarks: String(line.remarks || ""),
+        materialCode: String(line.materialCode || "").trim(),
+        availability: String(line.availability || "").trim(),
       };
     })
-    .filter((line) => line.itemCode && line.qty > 0);
+    .filter((line) => line.article && line.description && line.uom && line.qty > 0 && line.price >= 0)
+    .map((line, idx) => ({
+      ...line,
+      serialNo: idx + 1,
+    }));
 }
 
 function recalcQuotationTotals(doc) {
-  let subTotal = 0;
-  let discountTotal = 0;
-  let taxTotal = 0;
   doc.lines = normalizeLines(doc.lines);
-  for (const line of doc.lines) {
-    const gross = (Number(line.qty) || 0) * (Number(line.salePrice) || 0);
-    subTotal += gross;
-    discountTotal += Number(line.discountAmount) || 0;
-    taxTotal += Number(line.taxAmount) || 0;
+  doc.subTotal = doc.lines.reduce((acc, line) => acc + (Number(line.totalPrice) || 0), 0);
+  doc.discountTotal = 0;
+  doc.taxTotal = 0;
+  doc.grandTotal = doc.subTotal;
+}
+
+async function autoCreateItemsFromQuotation({ req, quotation }) {
+  for (const line of quotation.lines || []) {
+    const article = String(line.article || "").trim().toUpperCase();
+    if (!article) continue;
+    const existing = await Item.findOne({ companyId: req.companyId, itemCode: article }).select("_id").lean();
+    if (existing) continue;
+    await Item.create({
+      companyId: req.companyId,
+      itemCode: article,
+      description: line.description || "",
+      uom: line.uom || "PCS",
+      makerPartNo: line.partNumber || "",
+      materialCode: line.materialCode || "",
+      engine: quotation.engine || "",
+      modelName: quotation.model || "",
+      esn: quotation.esn || "",
+      source: "quotation",
+      sourceDocumentType: "quotation",
+      sourceDocumentId: quotation._id,
+      sourceDocumentNo: quotation.quotationNo,
+    });
   }
-  doc.subTotal = subTotal;
-  doc.discountTotal = discountTotal;
-  doc.taxTotal = taxTotal;
-  doc.grandTotal = subTotal - discountTotal + taxTotal;
 }
 
 export async function listQuotations(req, res) {
@@ -73,6 +85,9 @@ export async function listQuotations(req, res) {
         { quotationNo: new RegExp(q, "i") },
         { customerName: new RegExp(q, "i") },
         { customerReference: new RegExp(q, "i") },
+        { engine: new RegExp(q, "i") },
+        { model: new RegExp(q, "i") },
+        { esn: new RegExp(q, "i") },
       ];
     }
     const [rows, total] = await Promise.all([
@@ -105,6 +120,9 @@ export async function createQuotation(req, res) {
     if (!Array.isArray(body.lines) || body.lines.length === 0) {
       return res.status(400).json({ message: "Quotation must contain at least one line" });
     }
+    if (!String(body.customerName || "").trim()) {
+      return res.status(400).json({ message: "Customer is required" });
+    }
     const company = await Company.findById(req.companyId).lean();
     if (!company || !company.isActive) {
       return res.status(403).json({ message: "Active company context required" });
@@ -129,7 +147,11 @@ export async function createQuotation(req, res) {
     body.validityDate = body.validityDate || body.validUntil || null;
     const doc = new Quotation(body);
     recalcQuotationTotals(doc);
+    if (!doc.lines.length) {
+      return res.status(400).json({ message: "Each line must contain article, description, uom, qty and price" });
+    }
     await doc.save();
+    await autoCreateItemsFromQuotation({ req, quotation: doc });
     res.status(201).json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -150,6 +172,9 @@ export async function updateQuotation(req, res) {
       "customerName",
       "customerReference",
       "attention",
+      "engine",
+      "model",
+      "esn",
       "paymentTerms",
       "deliveryTerms",
       "incoterm",
@@ -172,7 +197,11 @@ export async function updateQuotation(req, res) {
     }
     doc.updatedBy = req.user?.email || "";
     recalcQuotationTotals(doc);
+    if (!doc.lines.length) {
+      return res.status(400).json({ message: "Each line must contain article, description, uom, qty and price" });
+    }
     await doc.save();
+    await autoCreateItemsFromQuotation({ req, quotation: doc });
     res.json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -233,7 +262,7 @@ export async function stockOutFromQuotation(req, res) {
 
       await applyStockOut({
         companyId: req.companyId,
-        itemCode: line.itemCode,
+        itemCode: line.article,
         warehouse,
         qty,
         movementType: "OUT_SALE",

@@ -2,15 +2,17 @@ import mongoose from "mongoose";
 
 const proformaLineSchema = new mongoose.Schema(
   {
-    itemCode: { type: String, required: true, trim: true, uppercase: true },
+    serialNo: { type: Number, default: 0, min: 0 },
+    article: { type: String, required: true, trim: true, uppercase: true },
+    partNumber: { type: String, default: "", trim: true },
     description: { type: String, default: "" },
     qty: { type: Number, required: true, min: 0.0001 },
-    unit: { type: String, default: "PCS", trim: true },
-    salePrice: { type: Number, default: 0, min: 0 },
-    discountPct: { type: Number, default: 0, min: 0 },
-    taxPct: { type: Number, default: 0, min: 0 },
-    lineTotal: { type: Number, default: 0, min: 0 },
+    uom: { type: String, default: "PCS", trim: true },
+    price: { type: Number, default: 0, min: 0 },
+    totalPrice: { type: Number, default: 0, min: 0 },
     remarks: { type: String, default: "" },
+    materialCode: { type: String, default: "", trim: true },
+    availability: { type: String, default: "", trim: true },
   },
   { _id: true }
 );

@@ -11,24 +11,28 @@ function withCompany(req, filter = {}) {
 }
 
 function normalizeLines(lines = []) {
-  return (lines || []).map((line) => {
+  return (lines || [])
+    .map((line) => {
+    const serialNo = Number(line.serialNo) || 0;
     const qty = Number(line.qty) || 0;
-    const price = Number(line.salePrice) || 0;
-    const discountPct = Number(line.discountPct) || 0;
-    const taxPct = Number(line.taxPct) || 0;
-    const gross = qty * price;
-    const discountAmount = (gross * discountPct) / 100;
-    const taxable = gross - discountAmount;
-    const taxAmount = (taxable * taxPct) / 100;
+    const price = Number(line.price ?? line.salePrice) || 0;
+    const totalPrice = qty * price;
     return {
-      ...line,
+      serialNo,
+      article: String(line.article || line.itemCode || "").trim().toUpperCase(),
+      partNumber: String(line.partNumber || line.partNo || "").trim(),
+      description: String(line.description || ""),
+      uom: String(line.uom || line.unit || "PCS").trim() || "PCS",
       qty,
-      salePrice: price,
-      discountPct,
-      taxPct,
-      lineTotal: taxable + taxAmount,
+      price,
+      totalPrice,
+      remarks: String(line.remarks || ""),
+      materialCode: String(line.materialCode || "").trim(),
+      availability: String(line.availability || "").trim(),
     };
-  });
+  })
+    .filter((line) => line.article && line.description && line.uom && line.qty > 0 && line.price >= 0)
+    .map((line, idx) => ({ ...line, serialNo: idx + 1 }));
 }
 
 function computeTotals(lines = []) {
@@ -36,19 +40,13 @@ function computeTotals(lines = []) {
   let discountTotal = 0;
   let taxTotal = 0;
   for (const line of lines) {
-    const gross = (Number(line.qty) || 0) * (Number(line.salePrice) || 0);
-    const discount = (gross * (Number(line.discountPct) || 0)) / 100;
-    const taxable = gross - discount;
-    const tax = (taxable * (Number(line.taxPct) || 0)) / 100;
-    subTotal += gross;
-    discountTotal += discount;
-    taxTotal += tax;
+    subTotal += Number(line.totalPrice) || 0;
   }
   return {
     subTotal,
     discountTotal,
     taxTotal,
-    grandTotal: subTotal - discountTotal + taxTotal,
+    grandTotal: subTotal,
   };
 }
 
