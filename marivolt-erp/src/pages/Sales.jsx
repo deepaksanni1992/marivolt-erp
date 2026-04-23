@@ -219,10 +219,10 @@ function renderPrintWindow(data) {
         <style>
           body { font-family: Arial, sans-serif; margin: 24px; color: #111; padding-bottom: 90px; }
           .header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px; gap: 18px; }
-          .brand-left { min-width: 120px; }
+          .brand-left { min-width: 180px; }
           .brand-logo-wrap {
-            width: 110px;
-            height: 110px;
+            width: 165px;
+            height: 165px;
             border-radius: 14px;
             border: 1px solid #dbe5ef;
             display: flex;
@@ -232,16 +232,18 @@ function renderPrintWindow(data) {
             background: #ffffff;
           }
           .brand-logo-wrap img {
-            max-width: 96px;
-            max-height: 96px;
+            max-width: 145px;
+            max-height: 145px;
             object-fit: contain;
+            image-rendering: auto;
+            image-rendering: -webkit-optimize-contrast;
           }
           .brand-logo-wrap img.marivolt-icon-only {
-            width: 130px;
-            max-width: 130px;
-            max-height: 96px;
-            object-fit: cover;
-            object-position: left center;
+            width: 145px;
+            max-width: 145px;
+            max-height: 145px;
+            object-fit: contain;
+            object-position: center center;
           }
           .brand-fallback {
             font-weight: 800;
@@ -261,7 +263,7 @@ function renderPrintWindow(data) {
           }
           .brand-subtitle {
             margin-top: 4px;
-            font-size: 16px;
+            font-size: 13px;
             font-weight: 700;
             letter-spacing: 0.4px;
             color: #1f5a96;
@@ -366,7 +368,6 @@ function renderPrintWindow(data) {
                 <div class="brand-subtitle">Marine Engine Spares</div>
                 <div class="muted" style="margin-top:8px;">
                   <div><b>${company.companyName || ""}</b></div>
-                  <div>${company.address || ""}</div>
                   <div>${company.email || ""}</div>
                   <div>${company.phone || ""}</div>
                 </div>
