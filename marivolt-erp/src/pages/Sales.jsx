@@ -237,8 +237,8 @@ function renderPrintWindow(data) {
             align-items: center;
           }
           .logo {
-            max-height: 120px;
-            max-width: 210px;
+            height: 129px;
+            width: 146px;
             object-fit: contain;
             image-rendering: auto;
             image-rendering: -webkit-optimize-contrast;
