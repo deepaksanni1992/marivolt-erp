@@ -28,6 +28,8 @@ router.delete("/customers/:id", flow.deleteCustomer);
 router.get("/order-acknowledgements", flow.listOAs);
 router.post("/order-acknowledgements", flow.createOA);
 router.get("/order-acknowledgements/:id", flow.getOA);
+router.get("/order-acknowledgements/:id/print", flow.getOAPrintData);
+router.get("/order-acknowledgements/:id/pdf", flow.getOAPdfData);
 router.put("/order-acknowledgements/:id", flow.updateOA);
 router.patch("/order-acknowledgements/:id/cancel", flow.cancelOA);
 

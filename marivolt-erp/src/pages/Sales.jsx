@@ -203,7 +203,7 @@ function escapeCsvValue(value) {
   return /[",\n]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
-function renderPrintWindow(data) {
+function renderPrintWindow(data, autoPrint = false) {
   const q = data?.quotation || {};
   const company = q.companySnapshot || {};
   const customer = q.customer || {};
@@ -468,6 +468,102 @@ function renderPrintWindow(data) {
   w.document.write(html);
   w.document.close();
   w.focus();
+  if (autoPrint) {
+    setTimeout(() => w.print(), 300);
+  }
+}
+
+function renderFlowDocPrintWindow({
+  title,
+  doc,
+  company,
+  docNoLabel,
+  docNoValue,
+  dateLabel,
+  dateValue,
+  linkedLabel = "",
+  linkedValue = "",
+  autoPrint = false,
+}) {
+  const rows = doc?.lines || [];
+  const html = `
+    <html>
+      <head>
+        <title>${docNoValue || title}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
+          .header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 16px; gap: 16px; }
+          .title { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+          .muted { color: #555; font-size: 12px; line-height: 1.5; }
+          table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+          th, td { border: 1px solid #ddd; padding: 8px; font-size: 12px; }
+          th { background: #f5f5f5; text-align: left; }
+          .right { text-align: right; }
+          .totals { margin-top: 12px; width: 320px; margin-left: auto; }
+          .totals div { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
+          @media print {
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div>
+            <div class="title">${title}</div>
+            <div class="muted">
+              <div><b>${docNoLabel}:</b> ${docNoValue || "-"}</div>
+              <div><b>${dateLabel}:</b> ${dateValue ? new Date(dateValue).toLocaleDateString() : "-"}</div>
+              ${linkedLabel ? `<div><b>${linkedLabel}:</b> ${linkedValue || "-"}</div>` : ""}
+              <div><b>Customer:</b> ${doc?.customerName || "-"}</div>
+            </div>
+          </div>
+          <div class="muted" style="text-align:right;">
+            <div><b>${company?.name || company?.companyName || ""}</b></div>
+            <div>${company?.address || ""}</div>
+            <div>${company?.email || ""}</div>
+            <div>${company?.phone || ""}</div>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>S/N</th><th>Article</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Price</th><th class="right">Total</th><th>Remarks</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows
+              .map(
+                (line) => `
+              <tr>
+                <td>${line.serialNo || ""}</td>
+                <td>${line.article || ""}</td>
+                <td>${line.partNumber || ""}</td>
+                <td>${line.description || ""}</td>
+                <td>${line.uom || ""}</td>
+                <td class="right">${line.qty || 0}</td>
+                <td class="right">${money(line.price)}</td>
+                <td class="right">${money(line.totalPrice)}</td>
+                <td>${line.remarks || ""}</td>
+              </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>
+        <div class="totals">
+          <div><span>Subtotal</span><span>${money(doc?.subTotal)}</span></div>
+          <div><span>Discount</span><span>${money(doc?.discountTotal)}</span></div>
+          <div><span>Tax</span><span>${money(doc?.taxTotal)}</span></div>
+          <div><b>Grand Total</b><b>${money(doc?.grandTotal)} ${doc?.currency || ""}</b></div>
+        </div>
+      </body>
+    </html>
+  `;
+  const win = window.open("", "_blank", "width=1200,height=900");
+  if (!win) return;
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  if (autoPrint) setTimeout(() => win.print(), 300);
 }
 
 export default function Sales() {
@@ -720,6 +816,86 @@ export default function Sales() {
       setTimeout(() => {
         win.print();
       }, 300);
+    }
+  }
+
+  function exportListCsv(filename, rows, columns) {
+    if (!rows?.length) return;
+    const header = columns.map((c) => escapeCsvValue(c.label)).join(",");
+    const body = rows.map((row) => columns.map((c) => escapeCsvValue(c.value(row))).join(","));
+    const csv = [header, ...body].join("\n");
+    downloadBlobFile(`${filename}-${new Date().toISOString().slice(0, 10)}.csv`, `\ufeff${csv}`, "text/csv;charset=utf-8;");
+  }
+
+  async function openFlowDocumentPrint(type, id, autoPrint = false) {
+    try {
+      const company = activeCompany || {};
+      if (type === "oa") {
+        const payload = await apiGet(`/sales/order-acknowledgements/${id}/print`);
+        const doc = payload?.orderAcknowledgement;
+        renderFlowDocPrintWindow({
+          title: "Order Acknowledgement",
+          doc,
+          company: payload?.company || company,
+          docNoLabel: "OA No",
+          docNoValue: doc?.oaNo,
+          dateLabel: "OA Date",
+          dateValue: doc?.oaDate,
+          linkedLabel: "Linked Quotation",
+          linkedValue: doc?.linkedQuotationNo,
+          autoPrint,
+        });
+        return;
+      }
+      if (type === "proforma") {
+        const doc = await apiGet(`/sales/proforma-invoices/${id}`);
+        renderFlowDocPrintWindow({
+          title: "Proforma Invoice",
+          doc,
+          company,
+          docNoLabel: "Proforma No",
+          docNoValue: doc?.proformaNo,
+          dateLabel: "Date",
+          dateValue: doc?.proformaDate,
+          linkedLabel: "Linked OA",
+          linkedValue: doc?.linkedOANo || doc?.linkedQuotationNo,
+          autoPrint,
+        });
+        return;
+      }
+      if (type === "sales-invoice") {
+        const doc = await apiGet(`/sales/sales-invoices/${id}`);
+        renderFlowDocPrintWindow({
+          title: "Sales Invoice",
+          doc,
+          company,
+          docNoLabel: "Invoice No",
+          docNoValue: doc?.invoiceNo,
+          dateLabel: "Date",
+          dateValue: doc?.invoiceDate,
+          linkedLabel: "Linked Proforma",
+          linkedValue: doc?.linkedProformaNo || doc?.linkedOANo,
+          autoPrint,
+        });
+        return;
+      }
+      if (type === "cipl") {
+        const doc = await apiGet(`/sales/cipls/${id}`);
+        renderFlowDocPrintWindow({
+          title: "CIPL",
+          doc,
+          company,
+          docNoLabel: "CIPL No",
+          docNoValue: doc?.ciplNo,
+          dateLabel: "Date",
+          dateValue: doc?.ciplDate,
+          linkedLabel: "Linked Reference",
+          linkedValue: doc?.linkedSalesInvoiceNo || doc?.linkedQuotationNo || doc?.linkedOANo,
+          autoPrint,
+        });
+      }
+    } catch (e) {
+      setErr(e.message);
     }
   }
 
@@ -1688,6 +1864,22 @@ export default function Sales() {
                 </option>
               ))}
             </select>
+            <button
+              type="button"
+              className="rounded-xl border px-3 py-2 text-sm"
+              onClick={() =>
+                exportListCsv("quotation-list", rows, [
+                  { label: "Quotation No", value: (r) => r.quotationNo },
+                  { label: "Customer", value: (r) => r.customerName },
+                  { label: "Date", value: (r) => (r.quotationDate ? new Date(r.quotationDate).toLocaleDateString() : "") },
+                  { label: "Status", value: (r) => r.status },
+                  { label: "Currency", value: (r) => r.currency || "USD" },
+                  { label: "Grand Total", value: (r) => money(r.grandTotal) },
+                ])
+              }
+            >
+              Export CSV
+            </button>
           </div>
 
           <div className="overflow-hidden rounded-2xl border bg-white">
@@ -1765,6 +1957,17 @@ export default function Sales() {
                             >
                               Print
                             </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              onClick={() => {
+                                apiGet(`/quotations/${r._id}/print-data`)
+                                  .then((data) => renderPrintWindow(data, true))
+                                  .catch((e) => setErr(e.message));
+                              }}
+                            >
+                              Export PDF
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -1810,6 +2013,23 @@ export default function Sales() {
               }}
               className="w-64"
             />
+            <button
+              type="button"
+              className="rounded-xl border px-3 py-2 text-sm"
+              onClick={() =>
+                exportListCsv("oa-list", oaRows, [
+                  { label: "OA No", value: (r) => r.oaNo },
+                  { label: "OA Date", value: (r) => (r.oaDate ? new Date(r.oaDate).toLocaleDateString() : "") },
+                  { label: "Customer", value: (r) => r.customerName },
+                  { label: "Linked Quotation", value: (r) => r.linkedQuotationNo || "" },
+                  { label: "Status", value: (r) => r.status },
+                  { label: "Currency", value: (r) => r.currency || "USD" },
+                  { label: "Total", value: (r) => money(r.grandTotal) },
+                ])
+              }
+            >
+              Export CSV
+            </button>
           </div>
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
@@ -1856,12 +2076,25 @@ export default function Sales() {
                             <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => setDetailId(r._id)}>
                               Open
                             </button>
+                            <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("oa", r._id)}>
+                              Print
+                            </button>
+                            <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("oa", r._id, true)}>
+                              Export PDF
+                            </button>
                             <button
                               type="button"
                               className="rounded-lg border px-2 py-1 text-xs"
                               onClick={() => convertToProformaFromOAMutation.mutate(r._id)}
                             >
                               Convert to PI
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              onClick={() => convertToCiplFromOAMutation.mutate(r._id)}
+                            >
+                              Convert to CIPL
                             </button>
                           </div>
                         </td>
@@ -1903,6 +2136,22 @@ export default function Sales() {
               }}
               className="w-64"
             />
+            <button
+              type="button"
+              className="rounded-xl border px-3 py-2 text-sm"
+              onClick={() =>
+                exportListCsv("proforma-list", proformaRows, [
+                  { label: "Proforma No", value: (r) => r.proformaNo },
+                  { label: "Date", value: (r) => (r.proformaDate ? new Date(r.proformaDate).toLocaleDateString() : "") },
+                  { label: "Customer", value: (r) => r.customerName },
+                  { label: "Status", value: (r) => r.status },
+                  { label: "Currency", value: (r) => r.currency || "USD" },
+                  { label: "Total", value: (r) => money(r.grandTotal) },
+                ])
+              }
+            >
+              Export CSV
+            </button>
           </div>
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
@@ -1948,6 +2197,12 @@ export default function Sales() {
                           <div className="flex flex-wrap gap-1">
                             <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => setDetailId(r._id)}>
                               Open
+                            </button>
+                            <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("proforma", r._id)}>
+                              Print
+                            </button>
+                            <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("proforma", r._id, true)}>
+                              Export PDF
                             </button>
                             <button
                               type="button"
@@ -1996,6 +2251,22 @@ export default function Sales() {
               }}
               className="w-64"
             />
+            <button
+              type="button"
+              className="rounded-xl border px-3 py-2 text-sm"
+              onClick={() =>
+                exportListCsv("sales-invoice-list", salesInvoiceRows, [
+                  { label: "Invoice No", value: (r) => r.invoiceNo },
+                  { label: "Date", value: (r) => (r.invoiceDate ? new Date(r.invoiceDate).toLocaleDateString() : "") },
+                  { label: "Customer", value: (r) => r.customerName },
+                  { label: "Status", value: (r) => r.status },
+                  { label: "Currency", value: (r) => r.currency || "USD" },
+                  { label: "Total", value: (r) => money(r.grandTotal) },
+                ])
+              }
+            >
+              Export CSV
+            </button>
           </div>
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
@@ -2041,6 +2312,12 @@ export default function Sales() {
                           <div className="flex flex-wrap gap-1">
                             <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => setDetailId(r._id)}>
                               Open
+                            </button>
+                            <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-invoice", r._id)}>
+                              Print
+                            </button>
+                            <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-invoice", r._id, true)}>
+                              Export PDF
                             </button>
                             <button
                               type="button"
@@ -2094,6 +2371,22 @@ export default function Sales() {
               }}
               className="w-64"
             />
+            <button
+              type="button"
+              className="rounded-xl border px-3 py-2 text-sm"
+              onClick={() =>
+                exportListCsv("cipl-list", ciplRows, [
+                  { label: "CIPL No", value: (r) => r.ciplNo },
+                  { label: "Date", value: (r) => (r.ciplDate ? new Date(r.ciplDate).toLocaleDateString() : "") },
+                  { label: "Customer", value: (r) => r.customerName },
+                  { label: "Status", value: (r) => r.status },
+                  { label: "Currency", value: (r) => r.currency || "USD" },
+                  { label: "Total", value: (r) => money(r.grandTotal) },
+                ])
+              }
+            >
+              Export CSV
+            </button>
           </div>
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
@@ -2138,6 +2431,12 @@ export default function Sales() {
                         <td className="px-3 py-2">
                           <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => setDetailId(r._id)}>
                             Open
+                          </button>
+                          <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("cipl", r._id)}>
+                            Print
+                          </button>
+                          <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("cipl", r._id, true)}>
+                            Export PDF
                           </button>
                         </td>
                       </tr>
@@ -2258,6 +2557,28 @@ export default function Sales() {
               <button
                 type="button"
                 className="rounded-xl border px-2 py-1 text-xs"
+                onClick={() => {
+                  apiGet(`/quotations/${detail._id}/print-data`)
+                    .then((data) => renderPrintWindow(data))
+                    .catch((e) => setErr(e.message));
+                }}
+              >
+                Print
+              </button>
+              <button
+                type="button"
+                className="rounded-xl border px-2 py-1 text-xs"
+                onClick={() => {
+                  apiGet(`/quotations/${detail._id}/print-data`)
+                    .then((data) => renderPrintWindow(data, true))
+                    .catch((e) => setErr(e.message));
+                }}
+              >
+                Export PDF
+              </button>
+              <button
+                type="button"
+                className="rounded-xl border px-2 py-1 text-xs"
                 onClick={() => convertToOAMutation.mutate(detail._id)}
               >
                 Convert to OA
@@ -2303,12 +2624,27 @@ export default function Sales() {
               </div>
               <div className="text-xs text-gray-600">Linked Quotation: {oaDetail.linkedQuotationNo || "-"}</div>
               <div className="flex flex-wrap gap-2">
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("oa", oaDetail._id)}>
+                  Print
+                </button>
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("oa", oaDetail._id, true)}>
+                  Export PDF
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2">
                 {oaStatusOptions.map((s) => (
                   <button key={s} type="button" className="rounded-xl border px-2 py-1 text-xs" disabled>
                     {s}
                   </button>
                 ))}
               </div>
+              <button
+                type="button"
+                className="rounded-xl border px-2 py-1 text-xs"
+                onClick={() => convertToProformaFromOAMutation.mutate(oaDetail._id)}
+              >
+                Convert to PI
+              </button>
               <button
                 type="button"
                 className="rounded-xl border px-2 py-1 text-xs"
@@ -2343,6 +2679,14 @@ export default function Sales() {
             </div>
             <div className="text-xs text-gray-600">
               Linked Quotation: {proformaDetail.linkedQuotationNo || "-"} | Linked OA: {proformaDetail.linkedOANo || "-"}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("proforma", proformaDetail._id)}>
+                Print
+              </button>
+              <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("proforma", proformaDetail._id, true)}>
+                Export PDF
+              </button>
             </div>
             <div className="flex flex-wrap gap-2">
               {proformaStatusOptions.map((s) => (
@@ -2387,6 +2731,14 @@ export default function Sales() {
                 Linked PI: {salesInvoiceDetail.linkedProformaNo || "-"} | Linked OA: {salesInvoiceDetail.linkedOANo || "-"}
               </div>
               <div className="flex flex-wrap gap-2">
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-invoice", salesInvoiceDetail._id)}>
+                  Print
+                </button>
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-invoice", salesInvoiceDetail._id, true)}>
+                  Export PDF
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2">
                 {salesInvoiceStatusOptions.map((s) => (
                   <button key={s} type="button" className="rounded-xl border px-2 py-1 text-xs" disabled>
                     {s}
@@ -2427,6 +2779,14 @@ export default function Sales() {
             <div className="text-xs text-gray-600">
               Linked Quotation: {ciplDetail.linkedQuotationNo || "-"} | Linked OA: {ciplDetail.linkedOANo || "-"} | Linked Invoice:{" "}
               {ciplDetail.linkedSalesInvoiceNo || "-"}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("cipl", ciplDetail._id)}>
+                Print
+              </button>
+              <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("cipl", ciplDetail._id, true)}>
+                Export PDF
+              </button>
             </div>
             <div className="flex flex-wrap gap-2">
               {ciplStatusOptions.map((s) => (

@@ -5,6 +5,7 @@ import ProformaInvoice from "../models/ProformaInvoice.js";
 import SalesInvoice from "../models/SalesInvoice.js";
 import Cipl from "../models/Cipl.js";
 import Customer from "../models/Customer.js";
+import Company from "../models/Company.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
 
 function withCompany(req, filter = {}) {
@@ -852,6 +853,35 @@ export async function getOA(req, res) {
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
+}
+
+export async function getOAPrintData(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const [doc, company] = await Promise.all([
+      OrderAcknowledgement.findOne(withCompany(req, { _id: id })).lean(),
+      Company.findById(req.companyId).lean(),
+    ]);
+    if (!doc) return res.status(404).json({ message: "Not found" });
+    res.json({
+      orderAcknowledgement: doc,
+      company: {
+        companyName: company?.name || "",
+        code: company?.code || "",
+        logo: company?.logoUrl || "",
+        address: company?.address || "",
+        email: company?.email || "",
+        phone: company?.phone || "",
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getOAPdfData(req, res) {
+  return getOAPrintData(req, res);
 }
 
 export async function createOA(req, res) {
