@@ -211,7 +211,7 @@ function renderPrintWindow(data) {
   const hasCompanyLogo = String(company.logo || "").trim().length > 0;
   const companyName = String(company.companyName || "").toLowerCase();
   const isMarivolt = companyName.includes("marivolt");
-  const marivoltPrintLogo = "/marivolt-logo.png";
+  const marivoltPrintLogo = "/brand/marivolt-icon.png";
   const html = `
     <html>
       <head>
