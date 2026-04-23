@@ -219,37 +219,29 @@ function renderPrintWindow(data) {
         <style>
           body { font-family: Arial, sans-serif; margin: 24px; color: #111; padding-bottom: 90px; }
           .header {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            align-items: start;
-            margin-bottom: 20px;
-            gap: 24px;
-          }
-          .brand-left {
-            min-width: 0;
             display: flex;
-            justify-content: center;
-          }
-          .brand-logo-wrap {
-            width: 215px;
-            height: 215px;
-            display: flex;
+            justify-content: space-between;
             align-items: center;
-            justify-content: center;
+            gap: 20px;
+            margin-bottom: 20px;
+            page-break-inside: avoid;
           }
-          .brand-logo-wrap img {
-            max-width: 188px;
-            max-height: 188px;
+          .header-left, .header-center, .header-right {
+            flex: 1;
+            min-width: 0;
+            padding: 6px 8px;
+          }
+          .header-left {
+            display: flex;
+            justify-content: flex-start;
+            align-items: center;
+          }
+          .logo {
+            max-height: 80px;
+            max-width: 140px;
             object-fit: contain;
             image-rendering: auto;
             image-rendering: -webkit-optimize-contrast;
-          }
-          .brand-logo-wrap img.marivolt-icon-only {
-            width: 188px;
-            max-width: 188px;
-            max-height: 188px;
-            object-fit: contain;
-            object-position: center center;
           }
           .brand-fallback {
             font-weight: 800;
@@ -257,32 +249,30 @@ function renderPrintWindow(data) {
             color: #1f5a96;
             letter-spacing: 0.5px;
           }
-          .quote-block {
-            min-width: 0;
-            width: max-content;
-            justify-self: center;
-          }
-          .brand-right {
+          .header-center {
             text-align: center;
-            min-width: 0;
-            width: max-content;
-            justify-self: center;
+          }
+          .header-right {
+            text-align: center;
+          }
+          .header-right.is-marivolt {
+            text-align: right;
           }
           .brand-title {
             margin: 0;
             line-height: 1;
-            font-size: 39px;
+            font-size: 32px;
             font-weight: 800;
-            color: #ef6b53;
+            color: #e85d3f;
           }
           .brand-subtitle {
             margin-top: 4px;
-            font-size: 9px;
+            font-size: 14px;
             font-weight: 700;
             letter-spacing: 0.4px;
-            color: #1f5a96;
+            color: #1f4e79;
           }
-          .title { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+          .title { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
           .muted { color: #555; font-size: 12px; line-height: 1.5; }
           .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 10px 0 6px; }
           .info-box { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; background: #fafafa; }
@@ -335,8 +325,8 @@ function renderPrintWindow(data) {
               print-color-adjust: exact !important;
               color-adjust: exact !important;
             }
-            .brand-title { color: #ef6b53 !important; }
-            .brand-subtitle { color: #1f5a96 !important; }
+            .brand-title { color: #e85d3f !important; }
+            .brand-subtitle { color: #1f4e79 !important; }
             .brand-fallback { color: #1f5a96 !important; }
             .page-footer { color: #d6a327 !important; }
             .page-footer-line { background: #e1aa24 !important; }
@@ -348,24 +338,23 @@ function renderPrintWindow(data) {
             table, th, td {
               border-color: #d6d6d6 !important;
             }
+            .header { page-break-inside: avoid; }
             .page-footer { position: fixed; bottom: 8px; }
           }
         </style>
       </head>
       <body>
         <div class="header">
-          <div class="brand-left">
-            <div class="brand-logo-wrap">
-              ${
-                isMarivolt
-                  ? `<img src="${marivoltPrintLogo}" alt="Marivolt icon" class="marivolt-icon-only" />`
-                  : hasCompanyLogo
-                  ? `<img src="${company.logo}" alt="${company.companyName || "Company"} logo" />`
-                  : `<div class="brand-fallback">MV</div>`
-              }
-            </div>
+          <div class="header-left">
+            ${
+              isMarivolt
+                ? `<img src="${marivoltPrintLogo}" alt="Marivolt icon" class="logo" />`
+                : hasCompanyLogo
+                ? `<img src="${company.logo}" alt="${company.companyName || "Company"} logo" class="logo" />`
+                : `<div class="brand-fallback">MV</div>`
+            }
           </div>
-          <div class="quote-block">
+          <div class="header-center">
             <div class="title">Quotation</div>
             <div class="muted">
               <div><b>No:</b> ${q.quotationNo || "-"}</div>
@@ -375,11 +364,16 @@ function renderPrintWindow(data) {
           </div>
           ${
             isMarivolt
-              ? `<div class="brand-right">
+              ? `<div class="header-right is-marivolt">
                 <h1 class="brand-title">MariVolt</h1>
                 <div class="brand-subtitle">Marine Engine Spares</div>
+                <div class="muted" style="margin-top:8px;">
+                  <div>${company.address || "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"}</div>
+                  <div>${company.email || "sales@marivolt.co"}</div>
+                  <div>${company.phone || "+971-543053047"}</div>
+                </div>
               </div>`
-              : `<div class="muted" style="text-align:right;">
+              : `<div class="header-right muted">
                 <div><b>${company.companyName || ""}</b></div>
                 <div>${company.address || ""}</div>
                 <div>${company.email || ""}</div>
