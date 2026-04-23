@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 
-const salesInvoiceLineSchema = new mongoose.Schema(
+const proformaLineSchema = new mongoose.Schema(
   {
     itemCode: { type: String, required: true, trim: true, uppercase: true },
     description: { type: String, default: "" },
@@ -15,41 +15,39 @@ const salesInvoiceLineSchema = new mongoose.Schema(
   { _id: true }
 );
 
-const salesInvoiceSchema = new mongoose.Schema(
+const proformaInvoiceSchema = new mongoose.Schema(
   {
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
-    invoiceNo: { type: String, required: true, trim: true },
-    invoiceDate: { type: Date, default: () => new Date(), index: true },
-    linkedQuotationId: { type: mongoose.Schema.Types.ObjectId, ref: "Quotation", index: true, default: null },
+    proformaNo: { type: String, required: true, trim: true },
+    proformaDate: { type: Date, default: () => new Date() },
+    linkedQuotationId: { type: mongoose.Schema.Types.ObjectId, ref: "Quotation", index: true },
     linkedQuotationNo: { type: String, default: "", trim: true },
     linkedOAId: { type: mongoose.Schema.Types.ObjectId, ref: "OrderAcknowledgement", index: true, default: null },
     linkedOANo: { type: String, default: "", trim: true },
-    linkedProformaId: { type: mongoose.Schema.Types.ObjectId, ref: "ProformaInvoice", index: true, default: null },
-    linkedProformaNo: { type: String, default: "", trim: true },
-    customerName: { type: String, required: true, trim: true },
+    customerName: { type: String, required: true, trim: true, index: true },
     paymentTerms: { type: String, default: "" },
-    dispatchDetails: { type: String, default: "" },
-    shippingAddress: { type: String, default: "" },
-    billingAddress: { type: String, default: "" },
+    bankDetails: { type: String, default: "" },
+    validity: { type: String, default: "" },
+    shipmentTerms: { type: String, default: "" },
+    remarks: { type: String, default: "" },
     currency: { type: String, default: "USD", trim: true, uppercase: true },
-    lines: { type: [salesInvoiceLineSchema], default: [] },
+    lines: { type: [proformaLineSchema], default: [] },
     subTotal: { type: Number, default: 0 },
     discountTotal: { type: Number, default: 0 },
     taxTotal: { type: Number, default: 0 },
     grandTotal: { type: Number, default: 0 },
     status: {
       type: String,
-      enum: ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "CANCELLED"],
+      enum: ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "CONVERTED", "CANCELLED"],
       default: "DRAFT",
     },
-    remarks: { type: String, default: "" },
     createdBy: { type: String, default: "" },
     updatedBy: { type: String, default: "" },
   },
   { timestamps: true }
 );
 
-salesInvoiceSchema.index({ companyId: 1, invoiceNo: 1 }, { unique: true });
-salesInvoiceSchema.index({ companyId: 1, invoiceDate: -1 });
+proformaInvoiceSchema.index({ companyId: 1, proformaNo: 1 }, { unique: true });
+proformaInvoiceSchema.index({ companyId: 1, proformaDate: -1 });
 
-export default mongoose.model("SalesInvoice", salesInvoiceSchema);
+export default mongoose.model("ProformaInvoice", proformaInvoiceSchema);
