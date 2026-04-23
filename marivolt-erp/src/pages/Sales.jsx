@@ -275,7 +275,14 @@ function renderPrintWindow(data) {
           .title { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
           .muted { color: #555; font-size: 12px; line-height: 1.5; }
           .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 10px 0 6px; }
-          .info-box { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; background: #fafafa; }
+          .info-box {
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            padding: 10px 12px;
+            background: #fafafa;
+            min-height: 156px;
+            box-sizing: border-box;
+          }
           .info-box-title { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #6b7280; margin-bottom: 6px; letter-spacing: 0.3px; }
           table { width: 100%; border-collapse: collapse; margin-top: 12px; }
           th, td { border: 1px solid #ddd; padding: 8px; font-size: 12px; }
@@ -384,19 +391,20 @@ function renderPrintWindow(data) {
         </div>
         <div class="info-grid">
           <div class="info-box muted">
-            <div class="info-box-title">Customer Info</div>
+            <div class="info-box-title">Customer &amp; Address Info</div>
             <div><b>Customer:</b> ${q.customerName || "-"}</div>
             <div><b>Customer Ref:</b> ${q.customerReference || "-"}</div>
             <div><b>Attention:</b> ${q.attention || "-"}</div>
+            <div><b>Billing:</b> ${customer.billingAddress || "-"}</div>
+            <div><b>Shipping:</b> ${customer.shippingAddress || "-"}</div>
+          </div>
+          <div class="info-box muted">
+            <div class="info-box-title">Engine Details</div>
             <div><b>Engine:</b> ${q.engine || "-"}</div>
             <div><b>Model:</b> ${q.model || "-"}</div>
             <div><b>Config:</b> ${q.config || "-"}</div>
             <div><b>ESN:</b> ${q.esn || "-"}</div>
-          </div>
-          <div class="info-box muted">
-            <div class="info-box-title">Address Info</div>
-            <div><b>Billing:</b> ${customer.billingAddress || "-"}</div>
-            <div><b>Shipping:</b> ${customer.shippingAddress || "-"}</div>
+            <div><b>Currency:</b> ${q.currency || "-"}</div>
           </div>
         </div>
         <table>
