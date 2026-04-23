@@ -58,6 +58,700 @@ function validateConversionSource(doc, messagePrefix = "document") {
   }
 }
 
+const PENDING_QUOTATION_STATUSES = ["DRAFT", "SENT"];
+const PENDING_OA_STATUSES = ["DRAFT", "CONFIRMED"];
+
+function parseDateRange(query, fromKey = "dateFrom", toKey = "dateTo") {
+  const range = {};
+  if (query[fromKey]) {
+    const from = new Date(String(query[fromKey]));
+    if (!Number.isNaN(from.getTime())) range.$gte = from;
+  }
+  if (query[toKey]) {
+    const to = new Date(String(query[toKey]));
+    if (!Number.isNaN(to.getTime())) {
+      to.setHours(23, 59, 59, 999);
+      range.$lte = to;
+    }
+  }
+  return Object.keys(range).length ? range : null;
+}
+
+function toNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+}
+
+export async function getSalesSummary(req, res) {
+  try {
+    const companyFilter = withCompany(req);
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+
+    const [
+      totalQuotations,
+      pendingQuotations,
+      totalOA,
+      pendingOA,
+      totalProformas,
+      totalSalesInvoices,
+      unpaidSalesInvoices,
+      totalCipl,
+      salesValueAgg,
+      monthSalesAgg,
+    ] = await Promise.all([
+      Quotation.countDocuments(companyFilter),
+      Quotation.countDocuments(withCompany(req, { status: { $in: ["DRAFT", "SENT"] } })),
+      OrderAcknowledgement.countDocuments(companyFilter),
+      OrderAcknowledgement.countDocuments(withCompany(req, { status: { $in: ["DRAFT", "CONFIRMED"] } })),
+      ProformaInvoice.countDocuments(companyFilter),
+      SalesInvoice.countDocuments(companyFilter),
+      SalesInvoice.countDocuments(withCompany(req, { status: { $in: ["DRAFT", "ISSUED", "PARTIALLY_PAID"] } })),
+      Cipl.countDocuments(companyFilter),
+      SalesInvoice.aggregate([
+        { $match: companyFilter },
+        { $group: { _id: null, total: { $sum: { $ifNull: ["$grandTotal", 0] } } } },
+      ]),
+      SalesInvoice.aggregate([
+        { $match: withCompany(req, { invoiceDate: { $gte: monthStart } }) },
+        { $group: { _id: null, total: { $sum: { $ifNull: ["$grandTotal", 0] } } } },
+      ]),
+    ]);
+
+    res.json({
+      totalQuotations,
+      pendingQuotations,
+      totalOA,
+      pendingOA,
+      totalProformas,
+      totalSalesInvoices,
+      unpaidSalesInvoices,
+      totalCipl,
+      totalSalesValue: Number(salesValueAgg?.[0]?.total || 0),
+      thisMonthSales: Number(monthSalesAgg?.[0]?.total || 0),
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportQuotationSummary(req, res) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "20"), 10) || 20));
+    const skip = (page - 1) * limit;
+    const filter = withCompany(req);
+    const q = String(req.query.search || "").trim();
+    const dateRange = parseDateRange(req.query);
+    if (dateRange) filter.quotationDate = dateRange;
+    if (req.query.status) filter.status = String(req.query.status).toUpperCase();
+    if (req.query.customer) filter.customerName = new RegExp(String(req.query.customer).trim(), "i");
+    if (req.query.engine) filter.engine = new RegExp(String(req.query.engine).trim(), "i");
+    if (req.query.model) filter.model = new RegExp(String(req.query.model).trim(), "i");
+    if (req.query.esn) filter.esn = new RegExp(String(req.query.esn).trim(), "i");
+    if (q) {
+      filter.$or = [
+        { quotationNo: new RegExp(q, "i") },
+        { customerName: new RegExp(q, "i") },
+        { customerReference: new RegExp(q, "i") },
+        { engine: new RegExp(q, "i") },
+        { model: new RegExp(q, "i") },
+        { esn: new RegExp(q, "i") },
+      ];
+    }
+
+    const [rowsRaw, total, summaryAgg] = await Promise.all([
+      Quotation.find(filter)
+        .sort({ quotationDate: -1, createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Quotation.countDocuments(filter),
+      Quotation.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: null,
+            totalQuotedValue: { $sum: { $ifNull: ["$grandTotal", 0] } },
+            approvedCount: { $sum: { $cond: [{ $eq: ["$status", "APPROVED"] }, 1, 0] } },
+            rejectedCount: { $sum: { $cond: [{ $eq: ["$status", "REJECTED"] }, 1, 0] } },
+            convertedCount: { $sum: { $cond: [{ $eq: ["$status", "CONVERTED"] }, 1, 0] } },
+          },
+        },
+      ]),
+    ]);
+
+    const rows = rowsRaw.map((doc) => ({
+      _id: doc._id,
+      quotationNo: doc.quotationNo,
+      quotationDate: doc.quotationDate,
+      customerName: doc.customerName,
+      customerReference: doc.customerReference || "",
+      engine: doc.engine || "",
+      model: doc.model || "",
+      esn: doc.esn || "",
+      lineItems: Array.isArray(doc.lines) ? doc.lines.length : 0,
+      totalAmount: toNumber(doc.grandTotal),
+      status: doc.status || "DRAFT",
+    }));
+    const summary = summaryAgg?.[0] || {};
+    res.json({
+      rows,
+      page,
+      limit,
+      total,
+      totals: {
+        totalQuotations: total,
+        totalQuotedValue: toNumber(summary.totalQuotedValue),
+        approvedQuotations: toNumber(summary.approvedCount),
+        rejectedQuotations: toNumber(summary.rejectedCount),
+        convertedQuotations: toNumber(summary.convertedCount),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportPendingQuotation(req, res) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "20"), 10) || 20));
+    const skip = (page - 1) * limit;
+    const filter = withCompany(req, { status: { $in: PENDING_QUOTATION_STATUSES } });
+    const dateRange = parseDateRange(req.query);
+    if (dateRange) filter.quotationDate = dateRange;
+    if (req.query.customer) filter.customerName = new RegExp(String(req.query.customer).trim(), "i");
+    if (req.query.status) filter.status = String(req.query.status).toUpperCase();
+    const q = String(req.query.search || "").trim();
+    if (q) {
+      filter.$or = [{ quotationNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }, { remarks: new RegExp(q, "i") }];
+    }
+
+    const [rowsRaw, total, summaryAgg] = await Promise.all([
+      Quotation.find(filter).sort({ quotationDate: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Quotation.countDocuments(filter),
+      Quotation.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: null,
+            totalAmount: { $sum: { $ifNull: ["$grandTotal", 0] } },
+            draftCount: { $sum: { $cond: [{ $eq: ["$status", "DRAFT"] }, 1, 0] } },
+            sentCount: { $sum: { $cond: [{ $eq: ["$status", "SENT"] }, 1, 0] } },
+          },
+        },
+      ]),
+    ]);
+
+    const now = Date.now();
+    const rows = rowsRaw.map((doc) => {
+      const baseDate = doc.quotationDate ? new Date(doc.quotationDate).getTime() : now;
+      const ageDays = Math.max(0, Math.floor((now - baseDate) / 86400000));
+      return {
+        _id: doc._id,
+        quotationNo: doc.quotationNo,
+        quotationDate: doc.quotationDate,
+        customerName: doc.customerName,
+        articleCount: Array.isArray(doc.lines) ? doc.lines.length : 0,
+        totalAmount: toNumber(doc.grandTotal),
+        ageDays,
+        status: doc.status || "DRAFT",
+        followUpRemarks: String(doc.remarks || "").trim(),
+      };
+    });
+    const summary = summaryAgg?.[0] || {};
+    res.json({
+      rows,
+      page,
+      limit,
+      total,
+      totals: {
+        totalPendingQuotations: total,
+        totalPendingValue: toNumber(summary.totalAmount),
+        draftCount: toNumber(summary.draftCount),
+        sentCount: toNumber(summary.sentCount),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportOrderAcknowledgement(req, res) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "20"), 10) || 20));
+    const skip = (page - 1) * limit;
+    const filter = withCompany(req);
+    const dateRange = parseDateRange(req.query);
+    if (dateRange) filter.oaDate = dateRange;
+    if (req.query.customer) filter.customerName = new RegExp(String(req.query.customer).trim(), "i");
+    if (req.query.status) filter.status = String(req.query.status).toUpperCase();
+    const q = String(req.query.search || "").trim();
+    if (q) {
+      filter.$or = [{ oaNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }, { linkedQuotationNo: new RegExp(q, "i") }];
+    }
+
+    const [rowsRaw, total, summaryAgg] = await Promise.all([
+      OrderAcknowledgement.find(filter).sort({ oaDate: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+      OrderAcknowledgement.countDocuments(filter),
+      OrderAcknowledgement.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: null,
+            confirmedCount: { $sum: { $cond: [{ $eq: ["$status", "CONFIRMED"] }, 1, 0] } },
+            closedCount: { $sum: { $cond: [{ $eq: ["$status", "CLOSED"] }, 1, 0] } },
+            totalAmount: { $sum: { $ifNull: ["$grandTotal", 0] } },
+          },
+        },
+      ]),
+    ]);
+
+    const rows = rowsRaw.map((doc) => ({
+      _id: doc._id,
+      oaNo: doc.oaNo,
+      oaDate: doc.oaDate,
+      linkedQuotationNo: doc.linkedQuotationNo || "",
+      customerName: doc.customerName,
+      customerPORef: doc.customerPORef || "",
+      deliveryTerms: doc.deliverySchedule || "",
+      status: doc.status || "DRAFT",
+      totalAmount: toNumber(doc.grandTotal),
+    }));
+    const summary = summaryAgg?.[0] || {};
+    res.json({
+      rows,
+      page,
+      limit,
+      total,
+      totals: {
+        totalOaCount: total,
+        confirmedOaCount: toNumber(summary.confirmedCount),
+        closedOaCount: toNumber(summary.closedCount),
+        totalOaValue: toNumber(summary.totalAmount),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportPendingOrderAcknowledgement(req, res) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "20"), 10) || 20));
+    const skip = (page - 1) * limit;
+    const filter = withCompany(req, { status: { $in: PENDING_OA_STATUSES } });
+    const dateRange = parseDateRange(req.query);
+    if (dateRange) filter.oaDate = dateRange;
+    if (req.query.customer) filter.customerName = new RegExp(String(req.query.customer).trim(), "i");
+    if (req.query.status) filter.status = String(req.query.status).toUpperCase();
+    const q = String(req.query.search || "").trim();
+    if (q) {
+      filter.$or = [{ oaNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }, { linkedQuotationNo: new RegExp(q, "i") }];
+    }
+
+    const [rowsRaw, total, summaryAgg] = await Promise.all([
+      OrderAcknowledgement.find(filter).sort({ oaDate: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+      OrderAcknowledgement.countDocuments(filter),
+      OrderAcknowledgement.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: null,
+            totalAmount: { $sum: { $ifNull: ["$grandTotal", 0] } },
+            draftCount: { $sum: { $cond: [{ $eq: ["$status", "DRAFT"] }, 1, 0] } },
+            confirmedCount: { $sum: { $cond: [{ $eq: ["$status", "CONFIRMED"] }, 1, 0] } },
+          },
+        },
+      ]),
+    ]);
+
+    const now = Date.now();
+    const rows = rowsRaw.map((doc) => {
+      const baseDate = doc.oaDate ? new Date(doc.oaDate).getTime() : now;
+      const ageDays = Math.max(0, Math.floor((now - baseDate) / 86400000));
+      return {
+        _id: doc._id,
+        oaNo: doc.oaNo,
+        customerName: doc.customerName,
+        linkedQuotationNo: doc.linkedQuotationNo || "",
+        amount: toNumber(doc.grandTotal),
+        ageDays,
+        status: doc.status || "DRAFT",
+      };
+    });
+    const summary = summaryAgg?.[0] || {};
+    res.json({
+      rows,
+      page,
+      limit,
+      total,
+      totals: {
+        totalPendingOaCount: total,
+        totalPendingOaValue: toNumber(summary.totalAmount),
+        draftCount: toNumber(summary.draftCount),
+        confirmedCount: toNumber(summary.confirmedCount),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportProforma(req, res) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "20"), 10) || 20));
+    const skip = (page - 1) * limit;
+    const filter = withCompany(req);
+    const dateRange = parseDateRange(req.query);
+    if (dateRange) filter.proformaDate = dateRange;
+    if (req.query.customer) filter.customerName = new RegExp(String(req.query.customer).trim(), "i");
+    if (req.query.status) filter.status = String(req.query.status).toUpperCase();
+    const q = String(req.query.search || "").trim();
+    if (q) {
+      filter.$or = [{ proformaNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }, { linkedOANo: new RegExp(q, "i") }];
+    }
+
+    const [rowsRaw, total, summaryAgg] = await Promise.all([
+      ProformaInvoice.find(filter).sort({ proformaDate: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+      ProformaInvoice.countDocuments(filter),
+      ProformaInvoice.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: null,
+            totalAmount: { $sum: { $ifNull: ["$grandTotal", 0] } },
+            openCount: { $sum: { $cond: [{ $in: ["$status", ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT"]] }, 1, 0] } },
+            convertedCount: { $sum: { $cond: [{ $eq: ["$status", "CONVERTED"] }, 1, 0] } },
+            cancelledCount: { $sum: { $cond: [{ $eq: ["$status", "CANCELLED"] }, 1, 0] } },
+          },
+        },
+      ]),
+    ]);
+    const summary = summaryAgg?.[0] || {};
+    const rows = rowsRaw.map((doc) => ({
+      _id: doc._id,
+      proformaNo: doc.proformaNo,
+      proformaDate: doc.proformaDate,
+      linkedQuotationNo: doc.linkedQuotationNo || "",
+      linkedOANo: doc.linkedOANo || "",
+      customerName: doc.customerName,
+      amount: toNumber(doc.grandTotal),
+      status: doc.status || "DRAFT",
+      validity: doc.validity || "",
+      paymentTerms: doc.paymentTerms || "",
+    }));
+    res.json({
+      rows,
+      page,
+      limit,
+      total,
+      totals: {
+        totalProformas: total,
+        totalProformaValue: toNumber(summary.totalAmount),
+        openProformas: toNumber(summary.openCount),
+        convertedProformas: toNumber(summary.convertedCount),
+        cancelledProformas: toNumber(summary.cancelledCount),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportSalesInvoiceSummary(req, res) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "20"), 10) || 20));
+    const skip = (page - 1) * limit;
+    const filter = withCompany(req);
+    const dateRange = parseDateRange(req.query);
+    if (dateRange) filter.invoiceDate = dateRange;
+    if (req.query.customer) filter.customerName = new RegExp(String(req.query.customer).trim(), "i");
+    if (req.query.status) filter.status = String(req.query.status).toUpperCase();
+    const q = String(req.query.search || "").trim();
+    if (q) {
+      filter.$or = [{ invoiceNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }, { linkedProformaNo: new RegExp(q, "i") }];
+    }
+
+    const [rowsRaw, total, summaryAgg] = await Promise.all([
+      SalesInvoice.find(filter).sort({ invoiceDate: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+      SalesInvoice.countDocuments(filter),
+      SalesInvoice.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: null,
+            totalInvoicedValue: { $sum: { $ifNull: ["$grandTotal", 0] } },
+            paidValue: { $sum: { $cond: [{ $eq: ["$status", "PAID"] }, { $ifNull: ["$grandTotal", 0] }, 0] } },
+            unpaidValue: { $sum: { $cond: [{ $ne: ["$status", "PAID"] }, { $ifNull: ["$grandTotal", 0] }, 0] } },
+            overdueInvoicesCount: { $sum: 0 },
+          },
+        },
+      ]),
+    ]);
+    const rows = rowsRaw.map((doc) => {
+      const invoiceValue = toNumber(doc.grandTotal);
+      const paidAmount = doc.status === "PAID" ? invoiceValue : 0;
+      const balanceAmount = Math.max(0, invoiceValue - paidAmount);
+      return {
+        _id: doc._id,
+        invoiceNo: doc.invoiceNo,
+        invoiceDate: doc.invoiceDate,
+        customerName: doc.customerName,
+        linkedProformaNo: doc.linkedProformaNo || "",
+        linkedOANo: doc.linkedOANo || "",
+        currency: doc.currency || "USD",
+        invoiceValue,
+        paidAmount,
+        balanceAmount,
+        paymentStatus: doc.status || "DRAFT",
+      };
+    });
+    const summary = summaryAgg?.[0] || {};
+    res.json({
+      rows,
+      page,
+      limit,
+      total,
+      totals: {
+        totalInvoices: total,
+        totalInvoicedValue: toNumber(summary.totalInvoicedValue),
+        paidValue: toNumber(summary.paidValue),
+        unpaidValue: toNumber(summary.unpaidValue),
+        overdueInvoicesCount: toNumber(summary.overdueInvoicesCount),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportSalesInvoiceArticleWise(req, res) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "20"), 10) || 20));
+    const skip = (page - 1) * limit;
+    const match = withCompany(req);
+    const dateRange = parseDateRange(req.query);
+    if (dateRange) match.invoiceDate = dateRange;
+    if (req.query.customer) match.customerName = new RegExp(String(req.query.customer).trim(), "i");
+    const q = String(req.query.search || req.query.article || "").trim();
+
+    const pipeline = [
+      { $match: match },
+      { $unwind: "$lines" },
+      ...(q ? [{ $match: { "lines.article": new RegExp(q, "i") } }] : []),
+      {
+        $group: {
+          _id: "$lines.article",
+          description: { $first: "$lines.description" },
+          totalQtySold: { $sum: { $ifNull: ["$lines.qty", 0] } },
+          totalSalesValue: { $sum: { $ifNull: ["$lines.totalPrice", 0] } },
+          invoices: { $addToSet: "$invoiceNo" },
+          customers: { $addToSet: "$customerName" },
+          avgSellingPrice: { $avg: { $ifNull: ["$lines.price", 0] } },
+        },
+      },
+      { $sort: { totalSalesValue: -1 } },
+    ];
+    const rowsAgg = await SalesInvoice.aggregate([...pipeline, { $skip: skip }, { $limit: limit }]);
+    const totalAgg = await SalesInvoice.aggregate([...pipeline, { $count: "count" }]);
+    const summaryAgg = await SalesInvoice.aggregate([
+      ...pipeline,
+      {
+        $group: {
+          _id: null,
+          totalQtySold: { $sum: "$totalQtySold" },
+          totalSalesValue: { $sum: "$totalSalesValue" },
+          articleCount: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const rows = rowsAgg.map((r) => ({
+      _id: r._id || "",
+      article: r._id || "-",
+      description: r.description || "",
+      totalQtySold: toNumber(r.totalQtySold),
+      totalSalesValue: toNumber(r.totalSalesValue),
+      invoiceCount: Array.isArray(r.invoices) ? r.invoices.length : 0,
+      customersCount: Array.isArray(r.customers) ? r.customers.length : 0,
+      avgSellingPrice: toNumber(r.avgSellingPrice),
+    }));
+    const summary = summaryAgg?.[0] || {};
+    const total = toNumber(totalAgg?.[0]?.count || 0);
+    res.json({
+      rows,
+      page,
+      limit,
+      total,
+      totals: {
+        totalArticles: toNumber(summary.articleCount),
+        totalQtySold: toNumber(summary.totalQtySold),
+        totalSalesValue: toNumber(summary.totalSalesValue),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportSalesBranchWise(req, res) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "20"), 10) || 20));
+    const skip = (page - 1) * limit;
+    const match = withCompany(req);
+    const dateRange = parseDateRange(req.query);
+    if (dateRange) match.invoiceDate = dateRange;
+    if (req.query.customer) match.customerName = new RegExp(String(req.query.customer).trim(), "i");
+    if (req.query.status) match.status = String(req.query.status).toUpperCase();
+    if (req.query.search) match.invoiceNo = new RegExp(String(req.query.search).trim(), "i");
+
+    const pipeline = [
+      { $match: match },
+      { $unwind: { path: "$lines", preserveNullAndEmptyArrays: true } },
+      {
+        $group: {
+          _id: "$_id",
+          branch: { $first: { $ifNull: ["$branch", "UNSPECIFIED"] } },
+          customerName: { $first: "$customerName" },
+          status: { $first: "$status" },
+          grandTotal: { $first: { $ifNull: ["$grandTotal", 0] } },
+          qty: { $sum: { $ifNull: ["$lines.qty", 0] } },
+        },
+      },
+      {
+        $group: {
+          _id: "$branch",
+          noOfInvoices: { $sum: 1 },
+          customers: { $addToSet: "$customerName" },
+          totalQtySold: { $sum: "$qty" },
+          totalSalesValue: { $sum: "$grandTotal" },
+          paidAmount: { $sum: { $cond: [{ $eq: ["$status", "PAID"] }, "$grandTotal", 0] } },
+          unpaidAmount: { $sum: { $cond: [{ $ne: ["$status", "PAID"] }, "$grandTotal", 0] } },
+        },
+      },
+      { $sort: { totalSalesValue: -1 } },
+    ];
+    const rowsAgg = await SalesInvoice.aggregate([...pipeline, { $skip: skip }, { $limit: limit }]);
+    const totalAgg = await SalesInvoice.aggregate([...pipeline, { $count: "count" }]);
+    const summaryAgg = await SalesInvoice.aggregate([
+      ...pipeline,
+      {
+        $group: {
+          _id: null,
+          totalSalesValue: { $sum: "$totalSalesValue" },
+          paidAmount: { $sum: "$paidAmount" },
+          unpaidAmount: { $sum: "$unpaidAmount" },
+        },
+      },
+    ]);
+
+    const rows = rowsAgg.map((r) => ({
+      _id: r._id || "UNSPECIFIED",
+      branch: r._id || "UNSPECIFIED",
+      noOfInvoices: toNumber(r.noOfInvoices),
+      noOfCustomers: Array.isArray(r.customers) ? r.customers.length : 0,
+      totalQtySold: toNumber(r.totalQtySold),
+      totalSalesValue: toNumber(r.totalSalesValue),
+      paidAmount: toNumber(r.paidAmount),
+      unpaidAmount: toNumber(r.unpaidAmount),
+    }));
+    const summary = summaryAgg?.[0] || {};
+    const total = toNumber(totalAgg?.[0]?.count || 0);
+    res.json({
+      rows,
+      page,
+      limit,
+      total,
+      totals: {
+        totalBranches: total,
+        totalSalesValue: toNumber(summary.totalSalesValue),
+        paidAmount: toNumber(summary.paidAmount),
+        unpaidAmount: toNumber(summary.unpaidAmount),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportCipl(req, res) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "20"), 10) || 20));
+    const skip = (page - 1) * limit;
+    const filter = withCompany(req);
+    const dateRange = parseDateRange(req.query);
+    if (dateRange) filter.ciplDate = dateRange;
+    if (req.query.customer) filter.customerName = new RegExp(String(req.query.customer).trim(), "i");
+    if (req.query.status) filter.status = String(req.query.status).toUpperCase();
+    const q = String(req.query.search || "").trim();
+    if (q) {
+      filter.$or = [
+        { ciplNo: new RegExp(q, "i") },
+        { customerName: new RegExp(q, "i") },
+        { linkedSalesInvoiceNo: new RegExp(q, "i") },
+        { linkedQuotationNo: new RegExp(q, "i") },
+        { linkedOANo: new RegExp(q, "i") },
+      ];
+    }
+
+    const [rowsRaw, total, summaryAgg] = await Promise.all([
+      Cipl.find(filter).sort({ ciplDate: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Cipl.countDocuments(filter),
+      Cipl.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: null,
+            totalExportValue: { $sum: { $ifNull: ["$grandTotal", 0] } },
+            totalPackages: { $sum: { $size: { $ifNull: ["$lines", []] } } },
+            totalGrossWeight: { $sum: 0 },
+          },
+        },
+      ]),
+    ]);
+    const rows = rowsRaw.map((doc) => ({
+      _id: doc._id,
+      ciplNo: doc.ciplNo,
+      date: doc.ciplDate,
+      customerOrConsignee: doc.consigneeName || doc.customerName,
+      linkedReference: doc.linkedSalesInvoiceNo || doc.linkedQuotationNo || doc.linkedOANo || "",
+      destination: doc.finalDestination || "-",
+      portOfLoading: doc.portOfLoading || "-",
+      portOfDischarge: doc.portOfDischarge || "-",
+      packageCount: Array.isArray(doc.lines) ? doc.lines.length : 0,
+      netWeight: toNumber(doc.netWeight),
+      grossWeight: toNumber(doc.grossWeight),
+      value: toNumber(doc.grandTotal),
+      status: doc.status || "DRAFT",
+    }));
+    const summary = summaryAgg?.[0] || {};
+    res.json({
+      rows,
+      page,
+      limit,
+      total,
+      totals: {
+        totalCiplCount: total,
+        totalExportValue: toNumber(summary.totalExportValue),
+        totalPackages: toNumber(summary.totalPackages),
+        totalGrossWeight: toNumber(summary.totalGrossWeight),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
 export async function listCustomers(req, res) {
   try {
     const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);

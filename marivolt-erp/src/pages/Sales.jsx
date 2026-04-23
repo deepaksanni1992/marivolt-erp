@@ -4,6 +4,7 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import { apiGet, apiGetWithQuery, apiPatch, apiPost } from "../lib/api.js";
+import { useAuth } from "../context/AuthContext.jsx";
 
 const salesTabs = [
   "Customer Master",
@@ -12,6 +13,41 @@ const salesTabs = [
   "Proforma Invoice",
   "Sales Invoice",
   "CIPL",
+  "Reports",
+];
+
+const reportsCatalog = [
+  {
+    group: "Quotation Reports",
+    key: "pre-sales",
+    items: [
+      { id: "quotation-summary", title: "Quotation Summary", desc: "Company-wise quotation register with value, status, and conversion snapshot." },
+      { id: "pending-quotation", title: "Pending Quotation Report", desc: "Open quotations requiring follow-up by status and age." },
+    ],
+  },
+  {
+    group: "Order Confirmation Reports",
+    key: "oa",
+    items: [
+      { id: "order-acknowledgement", title: "Order Acknowledgement Report", desc: "Track OA issuance, linked quotation references, and confirmation state." },
+      { id: "pending-order-acknowledgement", title: "Pending Order Acknowledgement Report", desc: "OA records pending closure or downstream conversion." },
+    ],
+  },
+  {
+    group: "Invoice Reports",
+    key: "invoice",
+    items: [
+      { id: "proforma", title: "Proforma Invoice Report", desc: "Review proforma lifecycle, validity, and conversion progress." },
+      { id: "sales-invoice-summary", title: "Sales Invoice Summary", desc: "Customer-level invoicing totals including paid and unpaid split." },
+      { id: "sales-invoice-article-wise", title: "Sales Invoice Summary Article Wise", desc: "Article performance report by quantity, value, and customer count." },
+      { id: "sales-branch-wise", title: "Sales Report Summary Branch Wise", desc: "Branch/location-wise invoicing performance in extensible format." },
+    ],
+  },
+  {
+    group: "Export / Shipment Reports",
+    key: "shipment",
+    items: [{ id: "cipl", title: "CIPL Report", desc: "Shipment and export package report with value and logistics markers." }],
+  },
 ];
 
 const statusOptions = ["DRAFT", "SENT", "APPROVED", "REJECTED", "EXPIRED", "CONVERTED", "CANCELLED"];
@@ -19,6 +55,18 @@ const oaStatusOptions = ["DRAFT", "CONFIRMED", "CLOSED", "CANCELLED"];
 const proformaStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "CONVERTED", "CANCELLED"];
 const salesInvoiceStatusOptions = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "CANCELLED"];
 const ciplStatusOptions = ["DRAFT", "ISSUED", "SHIPPED", "CANCELLED"];
+
+const reportStatusOptionsById = {
+  "quotation-summary": statusOptions,
+  "pending-quotation": statusOptions,
+  "order-acknowledgement": oaStatusOptions,
+  "pending-order-acknowledgement": oaStatusOptions,
+  proforma: proformaStatusOptions,
+  "sales-invoice-summary": salesInvoiceStatusOptions,
+  "sales-invoice-article-wise": salesInvoiceStatusOptions,
+  "sales-branch-wise": salesInvoiceStatusOptions,
+  cipl: ciplStatusOptions,
+};
 
 const emptyLine = () => ({
   serialNo: 0,
@@ -36,6 +84,123 @@ const emptyLine = () => ({
 
 function money(n) {
   return Number(n || 0).toFixed(2);
+}
+
+function statusBadgeClass(status = "") {
+  const key = String(status).toUpperCase();
+  if (["APPROVED", "PAID", "CLOSED", "CONFIRMED", "CONVERTED", "ISSUED", "SHIPPED"].includes(key)) {
+    return "bg-emerald-50 text-emerald-700 ring-emerald-200";
+  }
+  if (["DRAFT", "SENT", "PARTIALLY_PAID", "PAID_PENDING_SHIPMENT"].includes(key)) {
+    return "bg-amber-50 text-amber-700 ring-amber-200";
+  }
+  if (["CANCELLED", "REJECTED", "EXPIRED"].includes(key)) {
+    return "bg-rose-50 text-rose-700 ring-rose-200";
+  }
+  return "bg-slate-100 text-slate-700 ring-slate-200";
+}
+
+const reportColumnsById = {
+  "quotation-summary": [
+    ["Quotation No", (r) => r.quotationNo || ""],
+    ["Date", (r) => (r.quotationDate ? new Date(r.quotationDate).toLocaleDateString() : "")],
+    ["Customer", (r) => r.customerName || ""],
+    ["Customer Ref", (r) => r.customerReference || ""],
+    ["Engine", (r) => r.engine || ""],
+    ["Model", (r) => r.model || ""],
+    ["ESN", (r) => r.esn || ""],
+    ["Line Items", (r) => r.lineItems || 0],
+    ["Total", (r) => money(r.totalAmount)],
+    ["Status", (r) => r.status || ""],
+  ],
+  "pending-quotation": [
+    ["Quotation No", (r) => r.quotationNo || ""],
+    ["Date", (r) => (r.quotationDate ? new Date(r.quotationDate).toLocaleDateString() : "")],
+    ["Customer", (r) => r.customerName || ""],
+    ["Article Count", (r) => r.articleCount || 0],
+    ["Total", (r) => money(r.totalAmount)],
+    ["Age (Days)", (r) => r.ageDays || 0],
+    ["Status", (r) => r.status || ""],
+    ["Follow-up Remarks", (r) => r.followUpRemarks || ""],
+  ],
+  "order-acknowledgement": [
+    ["OA No", (r) => r.oaNo || ""],
+    ["OA Date", (r) => (r.oaDate ? new Date(r.oaDate).toLocaleDateString() : "")],
+    ["Linked Quotation", (r) => r.linkedQuotationNo || ""],
+    ["Customer", (r) => r.customerName || ""],
+    ["Customer PO Ref", (r) => r.customerPORef || ""],
+    ["Delivery Terms", (r) => r.deliveryTerms || ""],
+    ["Total", (r) => money(r.totalAmount)],
+    ["Status", (r) => r.status || ""],
+  ],
+  "pending-order-acknowledgement": [
+    ["OA No", (r) => r.oaNo || ""],
+    ["Customer", (r) => r.customerName || ""],
+    ["Quotation Link", (r) => r.linkedQuotationNo || ""],
+    ["Amount", (r) => money(r.amount)],
+    ["Age (Days)", (r) => r.ageDays || 0],
+    ["Status", (r) => r.status || ""],
+  ],
+  proforma: [
+    ["Proforma No", (r) => r.proformaNo || ""],
+    ["Date", (r) => (r.proformaDate ? new Date(r.proformaDate).toLocaleDateString() : "")],
+    ["Linked Quotation/OA", (r) => r.linkedOANo || r.linkedQuotationNo || ""],
+    ["Customer", (r) => r.customerName || ""],
+    ["Amount", (r) => money(r.amount)],
+    ["Status", (r) => r.status || ""],
+    ["Validity", (r) => r.validity || ""],
+    ["Payment Terms", (r) => r.paymentTerms || ""],
+  ],
+  "sales-invoice-summary": [
+    ["Invoice No", (r) => r.invoiceNo || ""],
+    ["Date", (r) => (r.invoiceDate ? new Date(r.invoiceDate).toLocaleDateString() : "")],
+    ["Customer", (r) => r.customerName || ""],
+    ["Linked Proforma", (r) => r.linkedProformaNo || ""],
+    ["Linked OA", (r) => r.linkedOANo || ""],
+    ["Currency", (r) => r.currency || "USD"],
+    ["Invoice Value", (r) => money(r.invoiceValue)],
+    ["Paid Amount", (r) => money(r.paidAmount)],
+    ["Balance Amount", (r) => money(r.balanceAmount)],
+    ["Payment Status", (r) => r.paymentStatus || ""],
+  ],
+  "sales-invoice-article-wise": [
+    ["Article", (r) => r.article || ""],
+    ["Description", (r) => r.description || ""],
+    ["Total Qty Sold", (r) => r.totalQtySold || 0],
+    ["Total Sales Value", (r) => money(r.totalSalesValue)],
+    ["No. of Invoices", (r) => r.invoiceCount || 0],
+    ["Customers Count", (r) => r.customersCount || 0],
+    ["Avg Selling Price", (r) => money(r.avgSellingPrice)],
+  ],
+  "sales-branch-wise": [
+    ["Branch", (r) => r.branch || "UNSPECIFIED"],
+    ["No. of Invoices", (r) => r.noOfInvoices || 0],
+    ["No. of Customers", (r) => r.noOfCustomers || 0],
+    ["Total Qty Sold", (r) => r.totalQtySold || 0],
+    ["Total Sales Value", (r) => money(r.totalSalesValue)],
+    ["Paid Amount", (r) => money(r.paidAmount)],
+    ["Unpaid Amount", (r) => money(r.unpaidAmount)],
+  ],
+  cipl: [
+    ["CIPL No", (r) => r.ciplNo || ""],
+    ["Date", (r) => (r.date ? new Date(r.date).toLocaleDateString() : "")],
+    ["Customer/Consignee", (r) => r.customerOrConsignee || ""],
+    ["Linked Ref", (r) => r.linkedReference || ""],
+    ["Destination", (r) => r.destination || ""],
+    ["Port of Loading", (r) => r.portOfLoading || ""],
+    ["Port of Discharge", (r) => r.portOfDischarge || ""],
+    ["Package Count", (r) => r.packageCount || 0],
+    ["Net Weight", (r) => money(r.netWeight)],
+    ["Gross Weight", (r) => money(r.grossWeight)],
+    ["Value", (r) => money(r.value)],
+    ["Status", (r) => r.status || ""],
+  ],
+};
+
+function escapeCsvValue(value) {
+  const raw = String(value ?? "");
+  const escaped = raw.replace(/"/g, '""');
+  return /[",\n]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
 function renderPrintWindow(data) {
@@ -138,6 +303,8 @@ function renderPrintWindow(data) {
 
 export default function Sales() {
   const qc = useQueryClient();
+  const { auth } = useAuth();
+  const activeCompany = auth?.company;
   const [activeTab, setActiveTab] = useState("Quotation");
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
@@ -151,6 +318,15 @@ export default function Sales() {
   const [salesInvoiceCreateOpen, setSalesInvoiceCreateOpen] = useState(false);
   const [ciplCreateOpen, setCiplCreateOpen] = useState(false);
   const [err, setErr] = useState("");
+  const [selectedReportId, setSelectedReportId] = useState("");
+  const [reportPage, setReportPage] = useState(1);
+  const [reportFilters, setReportFilters] = useState({
+    search: "",
+    dateFrom: "",
+    dateTo: "",
+    customer: "",
+    status: "",
+  });
 
   const [form, setForm] = useState({
     quotationDate: new Date().toISOString().slice(0, 10),
@@ -265,6 +441,118 @@ export default function Sales() {
       }),
     enabled: activeTab === "CIPL",
   });
+
+  const { data: salesSummary, isLoading: summaryLoading } = useQuery({
+    queryKey: ["sales-summary", activeCompany?._id],
+    queryFn: () => apiGet("/sales/summary"),
+    enabled: !!activeCompany?._id,
+  });
+
+  const activeReportId = selectedReportId || "quotation-summary";
+  const reportTitleById = reportsCatalog.flatMap((section) => section.items).reduce((acc, item) => {
+    acc[item.id] = item.title;
+    return acc;
+  }, {});
+  const reportEndpointById = {
+    "quotation-summary": "/sales/reports/quotation-summary",
+    "pending-quotation": "/sales/reports/pending-quotation",
+    "order-acknowledgement": "/sales/reports/order-acknowledgement",
+    "pending-order-acknowledgement": "/sales/reports/pending-order-acknowledgement",
+    proforma: "/sales/reports/proforma",
+    "sales-invoice-summary": "/sales/reports/sales-invoice-summary",
+    "sales-invoice-article-wise": "/sales/reports/sales-invoice-article-wise",
+    "sales-branch-wise": "/sales/reports/sales-branch-wise",
+    cipl: "/sales/reports/cipl",
+  };
+  const reportApiPath = reportEndpointById[activeReportId] || null;
+  const activeReportTitle = reportTitleById[activeReportId] || "Selected Report";
+
+  const { data: activeReportData, isLoading: reportLoading } = useQuery({
+    queryKey: ["sales-report", activeCompany?._id, activeReportId, reportPage, reportFilters],
+    queryFn: () =>
+      apiGetWithQuery(reportApiPath, {
+        page: reportPage,
+        limit: 20,
+        search: reportFilters.search || undefined,
+        dateFrom: reportFilters.dateFrom || undefined,
+        dateTo: reportFilters.dateTo || undefined,
+        customer: reportFilters.customer || undefined,
+        status: reportFilters.status || undefined,
+      }),
+    enabled: activeTab === "Reports" && !!reportApiPath && !!activeCompany?._id,
+  });
+  const activeReportRows = activeReportData?.rows || [];
+  const activeExportColumns = reportColumnsById[activeReportId] || [];
+
+  function downloadBlobFile(filename, blob, type) {
+    const url = URL.createObjectURL(new Blob([blob], { type }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportActiveReportCsv() {
+    if (!activeExportColumns.length || !activeReportRows.length) return;
+    const header = activeExportColumns.map(([label]) => escapeCsvValue(label)).join(",");
+    const lines = activeReportRows.map((row) => activeExportColumns.map(([, getter]) => escapeCsvValue(getter(row))).join(","));
+    const csv = [header, ...lines].join("\n");
+    downloadBlobFile(`${activeReportId}-${new Date().toISOString().slice(0, 10)}.csv`, `\ufeff${csv}`, "text/csv;charset=utf-8;");
+  }
+
+  function exportActiveReportExcel() {
+    if (!activeExportColumns.length || !activeReportRows.length) return;
+    const headers = activeExportColumns.map(([label]) => `<th>${label}</th>`).join("");
+    const rows = activeReportRows
+      .map((row) => `<tr>${activeExportColumns.map(([, getter]) => `<td>${String(getter(row) ?? "")}</td>`).join("")}</tr>`)
+      .join("");
+    const html = `<table><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table>`;
+    downloadBlobFile(`${activeReportId}-${new Date().toISOString().slice(0, 10)}.xls`, html, "application/vnd.ms-excel");
+  }
+
+  function openReportPrintWindow(autoPrint = false) {
+    if (!activeExportColumns.length || !activeReportRows.length) return;
+    const headers = activeExportColumns.map(([label]) => `<th>${label}</th>`).join("");
+    const rows = activeReportRows
+      .map((row) => `<tr>${activeExportColumns.map(([, getter]) => `<td>${String(getter(row) ?? "")}</td>`).join("")}</tr>`)
+      .join("");
+    const html = `
+      <html>
+        <head>
+          <title>${activeReportTitle}</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
+            h1 { margin: 0 0 8px; font-size: 20px; }
+            .meta { margin-bottom: 14px; color: #444; font-size: 12px; }
+            table { width: 100%; border-collapse: collapse; }
+            th, td { border: 1px solid #ddd; padding: 7px; font-size: 12px; text-align: left; }
+            th { background: #f3f4f6; }
+          </style>
+        </head>
+        <body>
+          <h1>${activeReportTitle}</h1>
+          <div class="meta">Company: ${activeCompany?.name || activeCompany?.code || "-"} | Generated: ${new Date().toLocaleString()}</div>
+          <table>
+            <thead><tr>${headers}</tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </body>
+      </html>
+    `;
+    const win = window.open("", "_blank", "width=1200,height=900");
+    if (!win) return;
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    if (autoPrint) {
+      setTimeout(() => {
+        win.print();
+      }, 300);
+    }
+  }
 
   const { data: oaDetail } = useQuery({
     queryKey: ["oa-detail", detailId],
@@ -569,52 +857,82 @@ export default function Sales() {
     if (activeTab === "Proforma Invoice") return "proforma";
     if (activeTab === "Sales Invoice") return "sales-invoice";
     if (activeTab === "CIPL") return "cipl";
+    if (activeTab === "Reports") return "reports";
     return "coming";
   }, [activeTab]);
 
   return (
     <div>
-      <PageHeader title="Sales" subtitle="Company-wise sales document workflow.">
-        <button
-          type="button"
-          onClick={() => {
-            setErr("");
-            if (activeTab === "Customer Master") setCustomerCreateOpen(true);
-            else if (activeTab === "Quotation") setCreateOpen(true);
-            else if (activeTab === "Order Acknowledgement") setOaCreateOpen(true);
-            else if (activeTab === "Proforma Invoice") setProformaCreateOpen(true);
-            else if (activeTab === "Sales Invoice") setSalesInvoiceCreateOpen(true);
-            else if (activeTab === "CIPL") setCiplCreateOpen(true);
-          }}
-          className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white"
-        >
-          {activeTab === "Customer Master"
-            ? "New customer"
-            : activeTab === "Quotation"
-            ? "New quotation"
-            : activeTab === "Order Acknowledgement"
+      <PageHeader title="Sales" subtitle="Company-wise sales workflow and reporting.">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <span className="rounded-full bg-sky-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-sky-700 ring-1 ring-sky-200">
+            {activeCompany?.code || activeCompany?.name || "No company"}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setErr("");
+              if (activeTab === "Customer Master") setCustomerCreateOpen(true);
+              else if (activeTab === "Quotation") setCreateOpen(true);
+              else if (activeTab === "Order Acknowledgement") setOaCreateOpen(true);
+              else if (activeTab === "Proforma Invoice") setProformaCreateOpen(true);
+              else if (activeTab === "Sales Invoice") setSalesInvoiceCreateOpen(true);
+              else if (activeTab === "CIPL") setCiplCreateOpen(true);
+            }}
+            className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white shadow-sm"
+          >
+            {activeTab === "Customer Master"
+              ? "New customer"
+              : activeTab === "Quotation"
+              ? "New quotation"
+              : activeTab === "Order Acknowledgement"
               ? "New OA"
               : activeTab === "Proforma Invoice"
-                ? "New proforma"
-                : activeTab === "Sales Invoice"
-                  ? "New sales invoice"
-                  : activeTab === "CIPL"
-                    ? "New CIPL"
-                : "New document"}
-        </button>
+              ? "New proforma"
+              : activeTab === "Sales Invoice"
+              ? "New sales invoice"
+              : activeTab === "CIPL"
+              ? "New CIPL"
+              : "Create new"}
+          </button>
+        </div>
       </PageHeader>
 
-      <div className="mb-4 flex flex-wrap gap-2">
+      <div className="mb-4 rounded-2xl border bg-white p-4 shadow-sm">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {[
+            { label: "Total Quotations", value: salesSummary?.totalQuotations },
+            { label: "Pending Quotations", value: salesSummary?.pendingQuotations },
+            { label: "Total OA", value: salesSummary?.totalOA },
+            { label: "Pending OA", value: salesSummary?.pendingOA },
+            { label: "Total Proformas", value: salesSummary?.totalProformas },
+            { label: "Sales Invoices", value: salesSummary?.totalSalesInvoices },
+            { label: "Unpaid Invoices", value: salesSummary?.unpaidSalesInvoices },
+            { label: "Total Sales Value", value: `USD ${money(salesSummary?.totalSalesValue)}` },
+            { label: "Total CIPL", value: salesSummary?.totalCipl },
+            { label: "This Month Sales", value: `USD ${money(salesSummary?.thisMonthSales)}` },
+          ].map((kpi) => (
+            <div key={kpi.label} className="rounded-xl border border-gray-200 bg-gradient-to-b from-white to-gray-50 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">{kpi.label}</p>
+              <p className="mt-2 text-xl font-semibold text-gray-900">{summaryLoading ? "..." : kpi.value ?? 0}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="mb-4 flex flex-wrap gap-2 rounded-2xl border bg-white p-2 shadow-sm">
         {salesTabs.map((tab) => (
           <button
             key={tab}
             type="button"
             onClick={() => setActiveTab(tab)}
-            className={`rounded-xl border px-3 py-1.5 text-sm ${
-              activeTab === tab ? "border-gray-900 bg-gray-900 text-white" : "bg-white"
+            className={`rounded-xl px-3 py-1.5 text-sm font-medium transition ${
+              activeTab === tab
+                ? "bg-gray-900 text-white shadow-sm"
+                : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
             }`}
           >
-            {tab}
+            {tab === "Order Acknowledgement" ? "Order Ack." : tab === "Proforma Invoice" ? "Proforma" : tab}
           </button>
         ))}
       </div>
@@ -625,13 +943,479 @@ export default function Sales() {
         </div>
       )}
 
-      {tabContent === "coming" ? (
+      {tabContent === "reports" ? (
+        <div className="space-y-4">
+          <div className="rounded-2xl border bg-white p-4 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Sales Reports Center</h3>
+                <p className="mt-1 text-sm text-gray-600">
+                  Structured, company-wise reports for quotation, confirmation, invoice, and shipment analytics.
+                </p>
+              </div>
+              <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-indigo-700 ring-1 ring-indigo-200">
+                {activeCompany?.code || activeCompany?.name || "No company"}
+              </span>
+            </div>
+          </div>
+
+          {reportsCatalog.map((section) => (
+            <div key={section.key} className="rounded-2xl border bg-white p-4 shadow-sm">
+              <div className="mb-3 flex items-center justify-between">
+                <h4 className="text-sm font-semibold uppercase tracking-wide text-gray-700">{section.group}</h4>
+                <span className="text-xs text-gray-500">{section.items.length} reports</span>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {section.items.map((report) => (
+                  <div key={report.id} className="rounded-xl border border-gray-200 bg-gradient-to-b from-white to-gray-50 p-3">
+                    <p className="text-sm font-semibold text-gray-900">{report.title}</p>
+                    <p className="mt-1 min-h-10 text-xs text-gray-600">{report.desc}</p>
+                    <div className="mt-3 flex items-center justify-between">
+                      <button
+                        type="button"
+                        className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100"
+                        onClick={() => {
+                          setSelectedReportId(report.id);
+                          setReportPage(1);
+                        }}
+                      >
+                        Open report
+                      </button>
+                      <span className="text-[11px] font-medium text-emerald-700">Live</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          <div className="rounded-2xl border bg-white p-4 shadow-sm">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h4 className="text-sm font-semibold uppercase tracking-wide text-gray-700">{activeReportTitle}</h4>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                  onClick={exportActiveReportCsv}
+                  disabled={!activeReportRows.length || reportLoading}
+                >
+                  Export CSV
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                  onClick={exportActiveReportExcel}
+                  disabled={!activeReportRows.length || reportLoading}
+                >
+                  Export Excel
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                  onClick={() => openReportPrintWindow(true)}
+                  disabled={!activeReportRows.length || reportLoading}
+                >
+                  Export PDF
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg bg-gray-900 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm disabled:opacity-50"
+                  onClick={() => openReportPrintWindow(false)}
+                  disabled={!activeReportRows.length || reportLoading}
+                >
+                  Print
+                </button>
+              </div>
+            </div>
+
+            {reportApiPath ? (
+              <>
+                <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                  <TextInput
+                    placeholder="Search doc/customer/ref"
+                    value={reportFilters.search}
+                    onChange={(e) => {
+                      setReportFilters((prev) => ({ ...prev, search: e.target.value }));
+                      setReportPage(1);
+                    }}
+                  />
+                  <TextInput
+                    type="date"
+                    value={reportFilters.dateFrom}
+                    onChange={(e) => {
+                      setReportFilters((prev) => ({ ...prev, dateFrom: e.target.value }));
+                      setReportPage(1);
+                    }}
+                  />
+                  <TextInput
+                    type="date"
+                    value={reportFilters.dateTo}
+                    onChange={(e) => {
+                      setReportFilters((prev) => ({ ...prev, dateTo: e.target.value }));
+                      setReportPage(1);
+                    }}
+                  />
+                  <TextInput
+                    placeholder="Customer"
+                    value={reportFilters.customer}
+                    onChange={(e) => {
+                      setReportFilters((prev) => ({ ...prev, customer: e.target.value }));
+                      setReportPage(1);
+                    }}
+                  />
+                  <select
+                    className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-gray-500"
+                    value={reportFilters.status}
+                    onChange={(e) => {
+                      setReportFilters((prev) => ({ ...prev, status: e.target.value }));
+                      setReportPage(1);
+                    }}
+                  >
+                    <option value="">All statuses</option>
+                    {(reportStatusOptionsById[activeReportId] || []).map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="mb-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {Object.entries(activeReportData?.totals || {}).map(([key, val]) => (
+                    <div key={key} className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                        {key.replace(/([A-Z])/g, " $1").trim()}
+                      </p>
+                      <p className="mt-1 text-lg font-semibold text-gray-900">
+                        {String(key).toLowerCase().includes("value") || String(key).toLowerCase().includes("amount")
+                          ? `USD ${money(val)}`
+                          : val ?? 0}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="overflow-hidden rounded-2xl border">
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-left text-sm">
+                      <thead className="sticky top-0 z-10 border-b bg-gray-100 text-xs font-semibold uppercase tracking-wide text-gray-700">
+                        <tr>
+                          {activeReportId === "quotation-summary" && (
+                            <>
+                              <th className="px-3 py-2">Quotation No</th>
+                              <th className="px-3 py-2">Date</th>
+                              <th className="px-3 py-2">Customer</th>
+                              <th className="px-3 py-2">Customer Ref</th>
+                              <th className="px-3 py-2">Engine</th>
+                              <th className="px-3 py-2">Model</th>
+                              <th className="px-3 py-2">ESN</th>
+                              <th className="px-3 py-2">Line Items</th>
+                              <th className="px-3 py-2 text-right">Total</th>
+                              <th className="px-3 py-2">Status</th>
+                            </>
+                          )}
+                          {activeReportId === "pending-quotation" && (
+                            <>
+                              <th className="px-3 py-2">Quotation No</th>
+                              <th className="px-3 py-2">Date</th>
+                              <th className="px-3 py-2">Customer</th>
+                              <th className="px-3 py-2">Article Count</th>
+                              <th className="px-3 py-2 text-right">Total</th>
+                              <th className="px-3 py-2">Age (Days)</th>
+                              <th className="px-3 py-2">Status</th>
+                              <th className="px-3 py-2">Follow-up Remarks</th>
+                            </>
+                          )}
+                          {activeReportId === "order-acknowledgement" && (
+                            <>
+                              <th className="px-3 py-2">OA No</th>
+                              <th className="px-3 py-2">OA Date</th>
+                              <th className="px-3 py-2">Linked Quotation</th>
+                              <th className="px-3 py-2">Customer</th>
+                              <th className="px-3 py-2">Customer PO Ref</th>
+                              <th className="px-3 py-2">Delivery Terms</th>
+                              <th className="px-3 py-2 text-right">Total</th>
+                              <th className="px-3 py-2">Status</th>
+                            </>
+                          )}
+                          {activeReportId === "pending-order-acknowledgement" && (
+                            <>
+                              <th className="px-3 py-2">OA No</th>
+                              <th className="px-3 py-2">Customer</th>
+                              <th className="px-3 py-2">Quotation Link</th>
+                              <th className="px-3 py-2 text-right">Amount</th>
+                              <th className="px-3 py-2">Age (Days)</th>
+                              <th className="px-3 py-2">Status</th>
+                            </>
+                          )}
+                          {activeReportId === "proforma" && (
+                            <>
+                              <th className="px-3 py-2">Proforma No</th>
+                              <th className="px-3 py-2">Date</th>
+                              <th className="px-3 py-2">Linked Quotation/OA</th>
+                              <th className="px-3 py-2">Customer</th>
+                              <th className="px-3 py-2 text-right">Amount</th>
+                              <th className="px-3 py-2">Status</th>
+                              <th className="px-3 py-2">Validity</th>
+                              <th className="px-3 py-2">Payment Terms</th>
+                            </>
+                          )}
+                          {activeReportId === "sales-invoice-summary" && (
+                            <>
+                              <th className="px-3 py-2">Invoice No</th>
+                              <th className="px-3 py-2">Date</th>
+                              <th className="px-3 py-2">Customer</th>
+                              <th className="px-3 py-2">Linked Proforma</th>
+                              <th className="px-3 py-2">Linked OA</th>
+                              <th className="px-3 py-2">Currency</th>
+                              <th className="px-3 py-2 text-right">Invoice Value</th>
+                              <th className="px-3 py-2 text-right">Paid</th>
+                              <th className="px-3 py-2 text-right">Balance</th>
+                              <th className="px-3 py-2">Payment Status</th>
+                            </>
+                          )}
+                          {activeReportId === "sales-invoice-article-wise" && (
+                            <>
+                              <th className="px-3 py-2">Article</th>
+                              <th className="px-3 py-2">Description</th>
+                              <th className="px-3 py-2 text-right">Total Qty Sold</th>
+                              <th className="px-3 py-2 text-right">Total Sales Value</th>
+                              <th className="px-3 py-2 text-right">Invoices</th>
+                              <th className="px-3 py-2 text-right">Customers</th>
+                              <th className="px-3 py-2 text-right">Avg Selling Price</th>
+                            </>
+                          )}
+                          {activeReportId === "sales-branch-wise" && (
+                            <>
+                              <th className="px-3 py-2">Branch</th>
+                              <th className="px-3 py-2 text-right">No. of Invoices</th>
+                              <th className="px-3 py-2 text-right">No. of Customers</th>
+                              <th className="px-3 py-2 text-right">Total Qty Sold</th>
+                              <th className="px-3 py-2 text-right">Total Sales Value</th>
+                              <th className="px-3 py-2 text-right">Paid Amount</th>
+                              <th className="px-3 py-2 text-right">Unpaid Amount</th>
+                            </>
+                          )}
+                          {activeReportId === "cipl" && (
+                            <>
+                              <th className="px-3 py-2">CIPL No</th>
+                              <th className="px-3 py-2">Date</th>
+                              <th className="px-3 py-2">Customer/Consignee</th>
+                              <th className="px-3 py-2">Linked Ref</th>
+                              <th className="px-3 py-2">Destination</th>
+                              <th className="px-3 py-2">Port of Loading</th>
+                              <th className="px-3 py-2">Port of Discharge</th>
+                              <th className="px-3 py-2 text-right">Packages</th>
+                              <th className="px-3 py-2 text-right">Net Wt</th>
+                              <th className="px-3 py-2 text-right">Gross Wt</th>
+                              <th className="px-3 py-2 text-right">Value</th>
+                              <th className="px-3 py-2">Status</th>
+                            </>
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {reportLoading ? (
+                          <tr>
+                            <td className="px-3 py-8 text-center text-gray-500" colSpan={12}>
+                              Loading report...
+                            </td>
+                          </tr>
+                        ) : (activeReportData?.rows || []).length === 0 ? (
+                          <tr>
+                            <td className="px-3 py-8 text-center text-gray-500" colSpan={12}>
+                              No rows found for current filters. Adjust date/status/customer and try again.
+                            </td>
+                          </tr>
+                        ) : (
+                          (activeReportData?.rows || []).map((row) => (
+                            <tr key={row._id} className="border-b border-gray-100 hover:bg-gray-50/80">
+                              {activeReportId === "quotation-summary" && (
+                                <>
+                                  <td className="px-3 py-2 font-mono text-xs">{row.quotationNo}</td>
+                                  <td className="px-3 py-2">{row.quotationDate ? new Date(row.quotationDate).toLocaleDateString() : "-"}</td>
+                                  <td className="px-3 py-2">{row.customerName}</td>
+                                  <td className="px-3 py-2">{row.customerReference || "-"}</td>
+                                  <td className="px-3 py-2">{row.engine || "-"}</td>
+                                  <td className="px-3 py-2">{row.model || "-"}</td>
+                                  <td className="px-3 py-2">{row.esn || "-"}</td>
+                                  <td className="px-3 py-2">{row.lineItems || 0}</td>
+                                  <td className="px-3 py-2 text-right">USD {money(row.totalAmount)}</td>
+                                  <td className="px-3 py-2">
+                                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(row.status)}`}>
+                                      {row.status}
+                                    </span>
+                                  </td>
+                                </>
+                              )}
+                              {activeReportId === "pending-quotation" && (
+                                <>
+                                  <td className="px-3 py-2 font-mono text-xs">{row.quotationNo}</td>
+                                  <td className="px-3 py-2">{row.quotationDate ? new Date(row.quotationDate).toLocaleDateString() : "-"}</td>
+                                  <td className="px-3 py-2">{row.customerName}</td>
+                                  <td className="px-3 py-2">{row.articleCount || 0}</td>
+                                  <td className="px-3 py-2 text-right">USD {money(row.totalAmount)}</td>
+                                  <td className="px-3 py-2">{row.ageDays || 0}</td>
+                                  <td className="px-3 py-2">
+                                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(row.status)}`}>
+                                      {row.status}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-2">{row.followUpRemarks || "-"}</td>
+                                </>
+                              )}
+                              {activeReportId === "order-acknowledgement" && (
+                                <>
+                                  <td className="px-3 py-2 font-mono text-xs">{row.oaNo}</td>
+                                  <td className="px-3 py-2">{row.oaDate ? new Date(row.oaDate).toLocaleDateString() : "-"}</td>
+                                  <td className="px-3 py-2">{row.linkedQuotationNo || "-"}</td>
+                                  <td className="px-3 py-2">{row.customerName}</td>
+                                  <td className="px-3 py-2">{row.customerPORef || "-"}</td>
+                                  <td className="px-3 py-2">{row.deliveryTerms || "-"}</td>
+                                  <td className="px-3 py-2 text-right">USD {money(row.totalAmount)}</td>
+                                  <td className="px-3 py-2">
+                                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(row.status)}`}>
+                                      {row.status}
+                                    </span>
+                                  </td>
+                                </>
+                              )}
+                              {activeReportId === "pending-order-acknowledgement" && (
+                                <>
+                                  <td className="px-3 py-2 font-mono text-xs">{row.oaNo}</td>
+                                  <td className="px-3 py-2">{row.customerName}</td>
+                                  <td className="px-3 py-2">{row.linkedQuotationNo || "-"}</td>
+                                  <td className="px-3 py-2 text-right">USD {money(row.amount)}</td>
+                                  <td className="px-3 py-2">{row.ageDays || 0}</td>
+                                  <td className="px-3 py-2">
+                                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(row.status)}`}>
+                                      {row.status}
+                                    </span>
+                                  </td>
+                                </>
+                              )}
+                              {activeReportId === "proforma" && (
+                                <>
+                                  <td className="px-3 py-2 font-mono text-xs">{row.proformaNo}</td>
+                                  <td className="px-3 py-2">{row.proformaDate ? new Date(row.proformaDate).toLocaleDateString() : "-"}</td>
+                                  <td className="px-3 py-2">{row.linkedOANo || row.linkedQuotationNo || "-"}</td>
+                                  <td className="px-3 py-2">{row.customerName}</td>
+                                  <td className="px-3 py-2 text-right">USD {money(row.amount)}</td>
+                                  <td className="px-3 py-2">
+                                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(row.status)}`}>
+                                      {row.status}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-2">{row.validity || "-"}</td>
+                                  <td className="px-3 py-2">{row.paymentTerms || "-"}</td>
+                                </>
+                              )}
+                              {activeReportId === "sales-invoice-summary" && (
+                                <>
+                                  <td className="px-3 py-2 font-mono text-xs">{row.invoiceNo}</td>
+                                  <td className="px-3 py-2">{row.invoiceDate ? new Date(row.invoiceDate).toLocaleDateString() : "-"}</td>
+                                  <td className="px-3 py-2">{row.customerName}</td>
+                                  <td className="px-3 py-2">{row.linkedProformaNo || "-"}</td>
+                                  <td className="px-3 py-2">{row.linkedOANo || "-"}</td>
+                                  <td className="px-3 py-2">{row.currency || "USD"}</td>
+                                  <td className="px-3 py-2 text-right">{row.currency || "USD"} {money(row.invoiceValue)}</td>
+                                  <td className="px-3 py-2 text-right">{row.currency || "USD"} {money(row.paidAmount)}</td>
+                                  <td className="px-3 py-2 text-right">{row.currency || "USD"} {money(row.balanceAmount)}</td>
+                                  <td className="px-3 py-2">
+                                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(row.paymentStatus)}`}>
+                                      {row.paymentStatus}
+                                    </span>
+                                  </td>
+                                </>
+                              )}
+                              {activeReportId === "sales-invoice-article-wise" && (
+                                <>
+                                  <td className="px-3 py-2 font-mono text-xs">{row.article}</td>
+                                  <td className="px-3 py-2">{row.description || "-"}</td>
+                                  <td className="px-3 py-2 text-right">{row.totalQtySold || 0}</td>
+                                  <td className="px-3 py-2 text-right">USD {money(row.totalSalesValue)}</td>
+                                  <td className="px-3 py-2 text-right">{row.invoiceCount || 0}</td>
+                                  <td className="px-3 py-2 text-right">{row.customersCount || 0}</td>
+                                  <td className="px-3 py-2 text-right">USD {money(row.avgSellingPrice)}</td>
+                                </>
+                              )}
+                              {activeReportId === "sales-branch-wise" && (
+                                <>
+                                  <td className="px-3 py-2">{row.branch || "UNSPECIFIED"}</td>
+                                  <td className="px-3 py-2 text-right">{row.noOfInvoices || 0}</td>
+                                  <td className="px-3 py-2 text-right">{row.noOfCustomers || 0}</td>
+                                  <td className="px-3 py-2 text-right">{row.totalQtySold || 0}</td>
+                                  <td className="px-3 py-2 text-right">USD {money(row.totalSalesValue)}</td>
+                                  <td className="px-3 py-2 text-right">USD {money(row.paidAmount)}</td>
+                                  <td className="px-3 py-2 text-right">USD {money(row.unpaidAmount)}</td>
+                                </>
+                              )}
+                              {activeReportId === "cipl" && (
+                                <>
+                                  <td className="px-3 py-2 font-mono text-xs">{row.ciplNo}</td>
+                                  <td className="px-3 py-2">{row.date ? new Date(row.date).toLocaleDateString() : "-"}</td>
+                                  <td className="px-3 py-2">{row.customerOrConsignee || "-"}</td>
+                                  <td className="px-3 py-2">{row.linkedReference || "-"}</td>
+                                  <td className="px-3 py-2">{row.destination || "-"}</td>
+                                  <td className="px-3 py-2">{row.portOfLoading || "-"}</td>
+                                  <td className="px-3 py-2">{row.portOfDischarge || "-"}</td>
+                                  <td className="px-3 py-2 text-right">{row.packageCount || 0}</td>
+                                  <td className="px-3 py-2 text-right">{money(row.netWeight)}</td>
+                                  <td className="px-3 py-2 text-right">{money(row.grossWeight)}</td>
+                                  <td className="px-3 py-2 text-right">USD {money(row.value)}</td>
+                                  <td className="px-3 py-2">
+                                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(row.status)}`}>
+                                      {row.status}
+                                    </span>
+                                  </td>
+                                </>
+                              )}
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="flex items-center justify-between border-t px-3 py-2 text-sm text-gray-600">
+                    <span>
+                      Page {activeReportData?.page || 1}/{Math.max(1, Math.ceil((activeReportData?.total || 0) / (activeReportData?.limit || 20)))} ·{" "}
+                      {activeReportData?.total || 0} records
+                    </span>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        className="rounded-lg border px-2 py-1 disabled:opacity-40"
+                        disabled={(activeReportData?.page || 1) <= 1}
+                        onClick={() => setReportPage((p) => Math.max(1, p - 1))}
+                      >
+                        Prev
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-lg border px-2 py-1 disabled:opacity-40"
+                        disabled={(activeReportData?.page || 1) >= Math.max(1, Math.ceil((activeReportData?.total || 0) / (activeReportData?.limit || 20)))}
+                        onClick={() => setReportPage((p) => p + 1)}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-gray-600">
+                This report will be implemented in Phase 4. You can still browse and select it from the catalog.
+              </p>
+            )}
+          </div>
+        </div>
+      ) : tabContent === "coming" ? (
         <div className="rounded-2xl border bg-white p-8 text-sm text-gray-600">
           {activeTab} in next sales phase.
         </div>
       ) : tabContent === "customer-master" ? (
         <>
-          <div className="mb-3 flex flex-wrap gap-2">
+          <div className="mb-3 flex flex-wrap items-end gap-2 rounded-2xl border bg-white p-3 shadow-sm">
             <TextInput
               placeholder="Search customer/contact/email"
               value={search}
@@ -645,7 +1429,7 @@ export default function Sales() {
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
               <table className="min-w-full text-left text-sm">
-                <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
+                <thead className="sticky top-0 z-10 border-b bg-gray-100 text-xs font-semibold uppercase tracking-wide text-gray-700">
                   <tr>
                     <th className="px-3 py-2">Customer</th>
                     <th className="px-3 py-2">Contact</th>
@@ -710,7 +1494,7 @@ export default function Sales() {
         </>
       ) : tabContent === "quotation" ? (
         <>
-          <div className="mb-3 flex flex-wrap gap-2">
+          <div className="mb-3 flex flex-wrap items-end gap-2 rounded-2xl border bg-white p-3 shadow-sm">
             <TextInput
               placeholder="Search quote/customer/ref"
               value={search}
@@ -740,7 +1524,7 @@ export default function Sales() {
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
               <table className="min-w-full text-left text-sm">
-                <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
+                <thead className="sticky top-0 z-10 border-b bg-gray-100 text-xs font-semibold uppercase tracking-wide text-gray-700">
                   <tr>
                     <th className="px-3 py-2">Quotation No</th>
                     <th className="px-3 py-2">Customer</th>
@@ -777,7 +1561,11 @@ export default function Sales() {
                         <td className="px-3 py-2">{r.esn || "-"}</td>
                         <td className="px-3 py-2">{r.quotationDate ? new Date(r.quotationDate).toLocaleDateString() : "—"}</td>
                         <td className="px-3 py-2">{r.validityDate ? new Date(r.validityDate).toLocaleDateString() : "—"}</td>
-                        <td className="px-3 py-2">{r.status}</td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
+                            {r.status}
+                          </span>
+                        </td>
                         <td className="px-3 py-2 text-right">
                           {r.currency} {money(r.grandTotal)}
                         </td>
@@ -843,7 +1631,7 @@ export default function Sales() {
         </>
       ) : tabContent === "oa" ? (
         <>
-          <div className="mb-3 flex flex-wrap gap-2">
+          <div className="mb-3 flex flex-wrap items-end gap-2 rounded-2xl border bg-white p-3 shadow-sm">
             <TextInput
               placeholder="Search OA/customer"
               value={search}
@@ -857,7 +1645,7 @@ export default function Sales() {
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
               <table className="min-w-full text-left text-sm">
-                <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
+                <thead className="sticky top-0 z-10 border-b bg-gray-100 text-xs font-semibold uppercase tracking-wide text-gray-700">
                   <tr>
                     <th className="px-3 py-2">OA No</th>
                     <th className="px-3 py-2">Customer</th>
@@ -886,7 +1674,11 @@ export default function Sales() {
                         <td className="px-3 py-2 font-mono text-xs">{r.oaNo}</td>
                         <td className="px-3 py-2">{r.customerName}</td>
                         <td className="px-3 py-2">{r.oaDate ? new Date(r.oaDate).toLocaleDateString() : "—"}</td>
-                        <td className="px-3 py-2">{r.status}</td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
+                            {r.status}
+                          </span>
+                        </td>
                         <td className="px-3 py-2 text-right">
                           {r.currency} {money(r.grandTotal)}
                         </td>
@@ -932,7 +1724,7 @@ export default function Sales() {
         </>
       ) : tabContent === "proforma" ? (
         <>
-          <div className="mb-3 flex flex-wrap gap-2">
+          <div className="mb-3 flex flex-wrap items-end gap-2 rounded-2xl border bg-white p-3 shadow-sm">
             <TextInput
               placeholder="Search PI/customer"
               value={search}
@@ -946,7 +1738,7 @@ export default function Sales() {
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
               <table className="min-w-full text-left text-sm">
-                <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
+                <thead className="sticky top-0 z-10 border-b bg-gray-100 text-xs font-semibold uppercase tracking-wide text-gray-700">
                   <tr>
                     <th className="px-3 py-2">PI No</th>
                     <th className="px-3 py-2">Customer</th>
@@ -975,7 +1767,11 @@ export default function Sales() {
                         <td className="px-3 py-2 font-mono text-xs">{r.proformaNo}</td>
                         <td className="px-3 py-2">{r.customerName}</td>
                         <td className="px-3 py-2">{r.proformaDate ? new Date(r.proformaDate).toLocaleDateString() : "—"}</td>
-                        <td className="px-3 py-2">{r.status}</td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
+                            {r.status}
+                          </span>
+                        </td>
                         <td className="px-3 py-2 text-right">
                           {r.currency} {money(r.grandTotal)}
                         </td>
@@ -1021,7 +1817,7 @@ export default function Sales() {
         </>
       ) : tabContent === "sales-invoice" ? (
         <>
-          <div className="mb-3 flex flex-wrap gap-2">
+          <div className="mb-3 flex flex-wrap items-end gap-2 rounded-2xl border bg-white p-3 shadow-sm">
             <TextInput
               placeholder="Search invoice/customer"
               value={search}
@@ -1035,7 +1831,7 @@ export default function Sales() {
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
               <table className="min-w-full text-left text-sm">
-                <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
+                <thead className="sticky top-0 z-10 border-b bg-gray-100 text-xs font-semibold uppercase tracking-wide text-gray-700">
                   <tr>
                     <th className="px-3 py-2">Invoice No</th>
                     <th className="px-3 py-2">Customer</th>
@@ -1064,7 +1860,11 @@ export default function Sales() {
                         <td className="px-3 py-2 font-mono text-xs">{r.invoiceNo}</td>
                         <td className="px-3 py-2">{r.customerName}</td>
                         <td className="px-3 py-2">{r.invoiceDate ? new Date(r.invoiceDate).toLocaleDateString() : "—"}</td>
-                        <td className="px-3 py-2">{r.status}</td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
+                            {r.status}
+                          </span>
+                        </td>
                         <td className="px-3 py-2 text-right">
                           {r.currency} {money(r.grandTotal)}
                         </td>
@@ -1115,7 +1915,7 @@ export default function Sales() {
         </>
       ) : (
         <>
-          <div className="mb-3 flex flex-wrap gap-2">
+          <div className="mb-3 flex flex-wrap items-end gap-2 rounded-2xl border bg-white p-3 shadow-sm">
             <TextInput
               placeholder="Search CIPL/customer"
               value={search}
@@ -1129,7 +1929,7 @@ export default function Sales() {
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
               <table className="min-w-full text-left text-sm">
-                <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
+                <thead className="sticky top-0 z-10 border-b bg-gray-100 text-xs font-semibold uppercase tracking-wide text-gray-700">
                   <tr>
                     <th className="px-3 py-2">CIPL No</th>
                     <th className="px-3 py-2">Customer</th>
@@ -1158,7 +1958,11 @@ export default function Sales() {
                         <td className="px-3 py-2 font-mono text-xs">{r.ciplNo}</td>
                         <td className="px-3 py-2">{r.customerName}</td>
                         <td className="px-3 py-2">{r.ciplDate ? new Date(r.ciplDate).toLocaleDateString() : "—"}</td>
-                        <td className="px-3 py-2">{r.status}</td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
+                            {r.status}
+                          </span>
+                        </td>
                         <td className="px-3 py-2 text-right">
                           {r.currency} {money(r.grandTotal)}
                         </td>
@@ -1231,7 +2035,11 @@ export default function Sales() {
               </div>
               <div>
                 <div className="text-gray-500">Status</div>
-                <div>{detail.status}</div>
+                <div>
+                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(detail.status)}`}>
+                    {detail.status}
+                  </span>
+                </div>
               </div>
             </div>
             <div className="overflow-x-auto rounded-xl border">
@@ -1317,7 +2125,11 @@ export default function Sales() {
                 </div>
                 <div>
                   <div className="text-gray-500">Status</div>
-                  <div>{oaDetail.status}</div>
+                  <div>
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(oaDetail.status)}`}>
+                      {oaDetail.status}
+                    </span>
+                  </div>
                 </div>
               </div>
               <div className="text-xs text-gray-600">Linked Quotation: {oaDetail.linkedQuotationNo || "-"}</div>
@@ -1353,7 +2165,11 @@ export default function Sales() {
               </div>
               <div>
                 <div className="text-gray-500">Status</div>
-                <div>{proformaDetail.status}</div>
+                <div>
+                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(proformaDetail.status)}`}>
+                    {proformaDetail.status}
+                  </span>
+                </div>
               </div>
             </div>
             <div className="text-xs text-gray-600">
@@ -1391,7 +2207,11 @@ export default function Sales() {
                 </div>
                 <div>
                   <div className="text-gray-500">Status</div>
-                  <div>{salesInvoiceDetail.status}</div>
+                  <div>
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesInvoiceDetail.status)}`}>
+                      {salesInvoiceDetail.status}
+                    </span>
+                  </div>
                 </div>
               </div>
               <div className="text-xs text-gray-600">
@@ -1428,7 +2248,11 @@ export default function Sales() {
               </div>
               <div>
                 <div className="text-gray-500">Status</div>
-                <div>{ciplDetail.status}</div>
+                <div>
+                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(ciplDetail.status)}`}>
+                    {ciplDetail.status}
+                  </span>
+                </div>
               </div>
             </div>
             <div className="text-xs text-gray-600">

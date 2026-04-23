@@ -9,6 +9,16 @@ router.use(...requireErpAccess);
 router.get("/orders", c.listSalesOrders);
 router.post("/orders", c.createSalesOrder);
 router.get("/orders/:id", c.getSalesOrder);
+router.get("/summary", flow.getSalesSummary);
+router.get("/reports/quotation-summary", flow.reportQuotationSummary);
+router.get("/reports/pending-quotation", flow.reportPendingQuotation);
+router.get("/reports/order-acknowledgement", flow.reportOrderAcknowledgement);
+router.get("/reports/pending-order-acknowledgement", flow.reportPendingOrderAcknowledgement);
+router.get("/reports/proforma", flow.reportProforma);
+router.get("/reports/sales-invoice-summary", flow.reportSalesInvoiceSummary);
+router.get("/reports/sales-invoice-article-wise", flow.reportSalesInvoiceArticleWise);
+router.get("/reports/sales-branch-wise", flow.reportSalesBranchWise);
+router.get("/reports/cipl", flow.reportCipl);
 
 router.get("/customers", flow.listCustomers);
 router.post("/customers", flow.createCustomer);
