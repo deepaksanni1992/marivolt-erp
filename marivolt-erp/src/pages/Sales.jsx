@@ -4,6 +4,7 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import { apiGet, apiGetWithQuery, apiPatch, apiPost } from "../lib/api.js";
+import { SALES_QUOTATION_STYLE_PRINT_CSS } from "../lib/salesQuotationPrintCss.js";
 import { useAuth } from "../context/AuthContext.jsx";
 
 const salesTabs = [
@@ -217,152 +218,7 @@ function renderPrintWindow(data, autoPrint = false) {
       <head>
         <title>${q.quotationNo || "Quotation"}</title>
         <style>
-          body { font-family: Arial, sans-serif; margin: 24px; color: #111; padding-bottom: 90px; }
-          body.has-quote-terms { padding-bottom: 155px; }
-          .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 20px;
-            margin-bottom: 20px;
-            page-break-inside: avoid;
-          }
-          .header-left, .header-center, .header-right {
-            flex: 1;
-            min-width: 0;
-            padding: 6px 8px;
-          }
-          .header-left {
-            display: flex;
-            justify-content: flex-start;
-            align-items: center;
-          }
-          .logo {
-            height: 129px;
-            width: 146px;
-            object-fit: contain;
-            image-rendering: auto;
-            image-rendering: -webkit-optimize-contrast;
-          }
-          .brand-fallback {
-            font-weight: 800;
-            font-size: 28px;
-            color: #1f5a96;
-            letter-spacing: 0.5px;
-          }
-          .header-center {
-            text-align: center;
-          }
-          .header-right {
-            text-align: center;
-          }
-          .header-right.is-marivolt {
-            text-align: right;
-          }
-          .brand-title {
-            margin: 0;
-            line-height: 1;
-            font-size: 32px;
-            font-weight: 800;
-            color: #e85d3f;
-          }
-          .brand-subtitle {
-            margin-top: 4px;
-            font-size: 14px;
-            font-weight: 700;
-            letter-spacing: 0.4px;
-            color: #1f4e79;
-          }
-          .title { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
-          .muted { color: #555; font-size: 12px; line-height: 1.5; }
-          .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 10px 0 6px; }
-          .info-box {
-            border: 1px solid #e5e7eb;
-            border-radius: 10px;
-            padding: 10px 12px;
-            background: #fafafa;
-            min-height: 156px;
-            box-sizing: border-box;
-          }
-          .info-box-title { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #6b7280; margin-bottom: 6px; letter-spacing: 0.3px; }
-          table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-          th, td { border: 1px solid #ddd; padding: 8px; font-size: 12px; }
-          th { background: #f5f5f5; text-align: left; }
-          th.remarks-col, td.remarks-col { width: 22%; min-width: 180px; }
-          .right { text-align: right; }
-          .totals { margin-top: 12px; width: 320px; margin-left: auto; }
-          .totals div { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
-          .footer { margin-top: 30px; font-size: 12px; color: #444; }
-          .quote-terms {
-            margin-top: 28px;
-            margin-bottom: 16px;
-            padding: 12px 14px;
-            font-size: 11px;
-            line-height: 1.55;
-            color: #374151;
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
-            background: #f9fafb;
-          }
-          .quote-terms a { color: #1d4ed8; word-break: break-all; }
-          .doc-note {
-            margin-top: 30px;
-            text-align: center;
-            font-size: 11px;
-            color: #4b5563;
-            border-top: 1px dashed #cfd8e3;
-            padding-top: 10px;
-          }
-          .page-footer {
-            position: fixed;
-            left: 24px;
-            right: 24px;
-            bottom: 16px;
-            color: #d6a327;
-            font-size: 12px;
-          }
-          .page-footer-top {
-            display: grid;
-            grid-template-columns: 1fr 1.2fr 1fr;
-            gap: 12px;
-            align-items: start;
-          }
-          .page-footer-center { text-align: center; }
-          .page-footer-right { text-align: right; }
-          .page-footer-line {
-            margin-top: 8px;
-            height: 5px;
-            background: #e1aa24;
-            border-radius: 2px;
-          }
-          @media print {
-            html, body {
-              -webkit-print-color-adjust: exact !important;
-              print-color-adjust: exact !important;
-              color-adjust: exact !important;
-            }
-            * {
-              -webkit-print-color-adjust: exact !important;
-              print-color-adjust: exact !important;
-              color-adjust: exact !important;
-            }
-            .brand-title { color: #e85d3f !important; }
-            .brand-subtitle { color: #1f4e79 !important; }
-            .brand-fallback { color: #1f5a96 !important; }
-            .page-footer { color: #d6a327 !important; }
-            .page-footer-line { background: #e1aa24 !important; }
-            th { background: #f5f5f5 !important; color: #111 !important; }
-            .info-box {
-              background: #fafafa !important;
-              border-color: #e5e7eb !important;
-            }
-            table, th, td {
-              border-color: #d6d6d6 !important;
-            }
-            .header { page-break-inside: avoid; }
-            .quote-terms { page-break-inside: avoid; }
-            .page-footer { position: fixed; bottom: 8px; }
-          }
+${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
       <body class="${isMarivolt ? "has-quote-terms" : ""}">
@@ -490,6 +346,149 @@ function renderPrintWindow(data, autoPrint = false) {
   if (autoPrint) {
     setTimeout(() => w.print(), 300);
   }
+}
+
+function renderOrderAcknowledgementPrintWindow(payload, autoPrint = false) {
+  const oa = payload?.orderAcknowledgement || {};
+  const company = payload?.company || {};
+  const rows = oa.lines || [];
+  const hasCompanyLogo = String(company.logo || "").trim().length > 0;
+  const companyName = String(company.companyName || "").toLowerCase();
+  const isMarivolt = companyName.includes("marivolt");
+  const marivoltPrintLogo = "/brand/marivolt-icon.png";
+  const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "-");
+
+  const html = `
+    <html>
+      <head>
+        <title>${oa.oaNo || "Order Acknowledgement"}</title>
+        <style>
+${SALES_QUOTATION_STYLE_PRINT_CSS}
+        </style>
+      </head>
+      <body class="${isMarivolt ? "has-quote-terms" : ""}">
+        <div class="header">
+          <div class="header-left">
+            ${
+              isMarivolt
+                ? `<img src="${marivoltPrintLogo}" alt="Marivolt icon" class="logo" />`
+                : hasCompanyLogo
+                ? `<img src="${company.logo}" alt="${company.companyName || "Company"} logo" class="logo" />`
+                : `<div class="brand-fallback">MV</div>`
+            }
+          </div>
+          <div class="header-center">
+            <div class="title">Order Acknowledgement</div>
+            <div class="muted">
+              <div><b>No:</b> ${oa.oaNo || "-"}</div>
+              <div><b>Date:</b> ${fmtDate(oa.oaDate)}</div>
+              <div><b>Linked Quotation:</b> ${oa.linkedQuotationNo || "-"}</div>
+            </div>
+          </div>
+          ${
+            isMarivolt
+              ? `<div class="header-right is-marivolt">
+                <h1 class="brand-title">MariVolt</h1>
+                <div class="brand-subtitle">Marine Engine Spares</div>
+                <div class="muted" style="margin-top:8px;">
+                  <div>${company.address || "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"}</div>
+                  <div>${company.email || "sales@marivolt.co"}</div>
+                  <div>${company.phone || "+971-543053047"}</div>
+                </div>
+              </div>`
+              : `<div class="header-right muted">
+                <div><b>${company.companyName || ""}</b></div>
+                <div>${company.address || ""}</div>
+                <div>${company.email || ""}</div>
+                <div>${company.phone || ""}</div>
+              </div>`
+          }
+        </div>
+        <div class="info-grid">
+          <div class="info-box muted">
+            <div class="info-box-title">Customer &amp; Address Info</div>
+            <div><b>Customer:</b> ${oa.customerName || "-"}</div>
+            <div><b>Customer Ref:</b> ${oa.customerPORef || "-"}</div>
+            <div><b>Attention:</b> -</div>
+            <div><b>Billing:</b> -</div>
+            <div><b>Shipping:</b> -</div>
+          </div>
+          <div class="info-box muted">
+            <div class="info-box-title">Engine Details</div>
+            <div><b>Engine:</b> -</div>
+            <div><b>Model:</b> -</div>
+            <div><b>Config:</b> -</div>
+            <div><b>ESN:</b> -</div>
+            <div><b>Currency:</b> ${oa.currency || "-"}</div>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Serial number</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Price</th><th class="right">Total price</th><th class="remarks-col">Remarks</th><th>Availability</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows
+              .map(
+                (line) => `
+              <tr>
+                <td>${line.serialNo ?? ""}</td>
+                <td>${line.partNumber || ""}</td>
+                <td>${line.description || ""}</td>
+                <td>${line.uom || ""}</td>
+                <td class="right">${line.qty || 0}</td>
+                <td class="right">${money(line.price)}</td>
+                <td class="right">${money(line.totalPrice)}</td>
+                <td class="remarks-col">${line.remarks || ""}</td>
+                <td>${line.availability || ""}</td>
+              </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>
+        <div class="totals">
+          <div><span>Subtotal</span><span>${money(oa.subTotal)}</span></div>
+          <div><span>Discount</span><span>${money(oa.discountTotal)}</span></div>
+          <div><span>Tax</span><span>${money(oa.taxTotal)}</span></div>
+          <div><b>Grand Total</b><b>${money(oa.grandTotal)} ${oa.currency || ""}</b></div>
+        </div>
+        ${
+          isMarivolt
+            ? `<div class="quote-terms">Only Marivolt terms and condition applicable, check here-<a href="https://marivolt.co/about-us">https://marivolt.co/about-us</a></div>`
+            : ""
+        }
+        <div class="footer">
+          <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
+        </div>
+        ${
+          isMarivolt
+            ? `<div class="page-footer">
+          <div class="page-footer-top">
+            <div>
+              <div>Marivolt FZE</div>
+              <div>LV09B</div>
+            </div>
+            <div class="page-footer-center">Hamriyah freezone phase 2, Sharjah, UAE</div>
+            <div class="page-footer-right">
+              <div>Mob: +971-543053047</div>
+              <div>Email: sales@marivolt.co</div>
+              <div>Web: www.marivolt.co</div>
+            </div>
+          </div>
+          <div class="page-footer-line"></div>
+        </div>`
+            : ""
+        }
+      </body>
+    </html>
+  `;
+  const w = window.open("", "_blank", "width=1200,height=900");
+  if (!w) return;
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  if (autoPrint) setTimeout(() => w.print(), 300);
 }
 
 function renderFlowDocPrintWindow({
@@ -851,19 +850,13 @@ export default function Sales() {
       const company = activeCompany || {};
       if (type === "oa") {
         const payload = await apiGet(`/sales/order-acknowledgements/${id}/print`);
-        const doc = payload?.orderAcknowledgement;
-        renderFlowDocPrintWindow({
-          title: "Order Acknowledgement",
-          doc,
-          company: payload?.company || company,
-          docNoLabel: "OA No",
-          docNoValue: doc?.oaNo,
-          dateLabel: "OA Date",
-          dateValue: doc?.oaDate,
-          linkedLabel: "Linked Quotation",
-          linkedValue: doc?.linkedQuotationNo,
-          autoPrint,
-        });
+        renderOrderAcknowledgementPrintWindow(
+          {
+            orderAcknowledgement: payload?.orderAcknowledgement,
+            company: payload?.company || company,
+          },
+          autoPrint
+        );
         return;
       }
       if (type === "proforma") {
