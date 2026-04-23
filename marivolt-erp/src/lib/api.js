@@ -60,8 +60,13 @@ export const api = axios.create({
 api.interceptors.request.use((config) => {
   const token = getToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
+  const url = String(config.url || "");
+  const isAuthPath =
+    url.includes("/auth/login") ||
+    url.includes("/auth/select-company") ||
+    url.includes("/auth/switch-company");
   const companyId = getActiveCompanyId();
-  if (companyId) config.headers["x-company-id"] = companyId;
+  if (companyId && !isAuthPath) config.headers["x-company-id"] = companyId;
   return config;
 });
 
