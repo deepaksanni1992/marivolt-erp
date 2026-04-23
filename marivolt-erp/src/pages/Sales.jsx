@@ -1303,7 +1303,13 @@ export default function Sales() {
         )}
       </Modal>
 
-      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New Quotation" wide>
+      <Modal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        title="New Quotation"
+        wide
+        className="w-[92vw] max-w-[1700px]"
+      >
         <div className="grid gap-3 sm:grid-cols-3">
           <FormField label="Quotation Date">
             <TextInput
@@ -1365,7 +1371,7 @@ export default function Sales() {
               + Add line
             </button>
           </div>
-          <div className="overflow-x-auto rounded-xl border">
+          <div className="w-full overflow-x-auto rounded-xl border">
             <table className="min-w-[1400px] w-full text-xs">
               <thead className="bg-gray-50">
                 <tr>

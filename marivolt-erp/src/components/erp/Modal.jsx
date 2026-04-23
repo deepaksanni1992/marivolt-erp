@@ -1,4 +1,4 @@
-export default function Modal({ open, title, onClose, children, wide, document }) {
+export default function Modal({ open, title, onClose, children, wide, document, className = "" }) {
   if (!open) return null;
   const maxW = document ? "max-w-6xl" : wide ? "max-w-4xl" : "max-w-lg";
   const pad = document ? "p-5 sm:p-7" : "p-5";
@@ -17,6 +17,7 @@ export default function Modal({ open, title, onClose, children, wide, document }
           "relative max-h-[90vh] w-full overflow-y-auto rounded-2xl border bg-white shadow-lg",
           maxW,
           pad,
+          className,
         ].join(" ")}
       >
         <div className="mb-4 flex items-start justify-between gap-2">
