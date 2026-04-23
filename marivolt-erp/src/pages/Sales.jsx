@@ -6,6 +6,7 @@ import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import { apiGet, apiGetWithQuery, apiPatch, apiPost } from "../lib/api.js";
 
 const salesTabs = [
+  "Customer Master",
   "Quotation",
   "Order Acknowledgement",
   "Proforma Invoice",
@@ -143,6 +144,7 @@ export default function Sales() {
   const [status, setStatus] = useState("");
   const limit = 20;
   const [createOpen, setCreateOpen] = useState(false);
+  const [customerCreateOpen, setCustomerCreateOpen] = useState(false);
   const [detailId, setDetailId] = useState(null);
   const [oaCreateOpen, setOaCreateOpen] = useState(false);
   const [proformaCreateOpen, setProformaCreateOpen] = useState(false);
@@ -153,6 +155,7 @@ export default function Sales() {
   const [form, setForm] = useState({
     quotationDate: new Date().toISOString().slice(0, 10),
     validityDate: "",
+    customerId: "",
     customerName: "",
     customerReference: "",
     attention: "",
@@ -196,6 +199,27 @@ export default function Sales() {
     queryKey: ["quotation-detail", detailId],
     queryFn: () => apiGet(`/quotations/${detailId}`),
     enabled: !!detailId,
+  });
+
+  const { data: customerData, isLoading: customerLoading } = useQuery({
+    queryKey: ["sales-customers", page, search],
+    queryFn: () =>
+      apiGetWithQuery("/sales/customers", {
+        page,
+        limit,
+        search: search || undefined,
+      }),
+    enabled: activeTab === "Customer Master" || activeTab === "Quotation",
+  });
+
+  const { data: customerLookupData } = useQuery({
+    queryKey: ["sales-customers-lookup"],
+    queryFn: () =>
+      apiGetWithQuery("/sales/customers", {
+        page: 1,
+        limit: 500,
+      }),
+    enabled: activeTab === "Quotation" || createOpen,
   });
 
   const { data: oaData, isLoading: oaLoading } = useQuery({
@@ -274,6 +298,7 @@ export default function Sales() {
       setForm({
         quotationDate: new Date().toISOString().slice(0, 10),
         validityDate: "",
+        customerId: "",
         customerName: "",
         customerReference: "",
         attention: "",
@@ -318,6 +343,35 @@ export default function Sales() {
     mutationFn: (id) => apiPost(`/quotations/${id}/duplicate`, {}),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-quotations"] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const [customerForm, setCustomerForm] = useState({
+    name: "",
+    contactName: "",
+    phone: "",
+    email: "",
+    address: "",
+    paymentTerms: "CREDIT",
+    notes: "",
+  });
+
+  const createCustomerMutation = useMutation({
+    mutationFn: () => apiPost("/sales/customers", customerForm),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-customers"] });
+      qc.invalidateQueries({ queryKey: ["sales-customers-lookup"] });
+      setCustomerCreateOpen(false);
+      setCustomerForm({
+        name: "",
+        contactName: "",
+        phone: "",
+        email: "",
+        address: "",
+        paymentTerms: "CREDIT",
+        notes: "",
+      });
     },
     onError: (e) => setErr(e.message),
   });
@@ -499,13 +553,17 @@ export default function Sales() {
   const proformaRows = proformaData?.items ?? [];
   const salesInvoiceRows = salesInvoiceData?.items ?? [];
   const ciplRows = ciplData?.items ?? [];
+  const customerRows = customerData?.items ?? [];
+  const customerOptions = customerLookupData?.items ?? customerRows;
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const oaTotalPages = Math.max(1, Math.ceil((oaData?.total ?? 0) / limit));
   const proformaTotalPages = Math.max(1, Math.ceil((proformaData?.total ?? 0) / limit));
   const salesInvoiceTotalPages = Math.max(1, Math.ceil((salesInvoiceData?.total ?? 0) / limit));
   const ciplTotalPages = Math.max(1, Math.ceil((ciplData?.total ?? 0) / limit));
+  const customerTotalPages = Math.max(1, Math.ceil((customerData?.total ?? 0) / limit));
 
   const tabContent = useMemo(() => {
+    if (activeTab === "Customer Master") return "customer-master";
     if (activeTab === "Quotation") return "quotation";
     if (activeTab === "Order Acknowledgement") return "oa";
     if (activeTab === "Proforma Invoice") return "proforma";
@@ -521,7 +579,8 @@ export default function Sales() {
           type="button"
           onClick={() => {
             setErr("");
-            if (activeTab === "Quotation") setCreateOpen(true);
+            if (activeTab === "Customer Master") setCustomerCreateOpen(true);
+            else if (activeTab === "Quotation") setCreateOpen(true);
             else if (activeTab === "Order Acknowledgement") setOaCreateOpen(true);
             else if (activeTab === "Proforma Invoice") setProformaCreateOpen(true);
             else if (activeTab === "Sales Invoice") setSalesInvoiceCreateOpen(true);
@@ -529,7 +588,9 @@ export default function Sales() {
           }}
           className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white"
         >
-          {activeTab === "Quotation"
+          {activeTab === "Customer Master"
+            ? "New customer"
+            : activeTab === "Quotation"
             ? "New quotation"
             : activeTab === "Order Acknowledgement"
               ? "New OA"
@@ -568,6 +629,85 @@ export default function Sales() {
         <div className="rounded-2xl border bg-white p-8 text-sm text-gray-600">
           {activeTab} in next sales phase.
         </div>
+      ) : tabContent === "customer-master" ? (
+        <>
+          <div className="mb-3 flex flex-wrap gap-2">
+            <TextInput
+              placeholder="Search customer/contact/email"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
+              className="w-72"
+            />
+          </div>
+          <div className="overflow-hidden rounded-2xl border bg-white">
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left text-sm">
+                <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
+                  <tr>
+                    <th className="px-3 py-2">Customer</th>
+                    <th className="px-3 py-2">Contact</th>
+                    <th className="px-3 py-2">Phone</th>
+                    <th className="px-3 py-2">Email</th>
+                    <th className="px-3 py-2">Payment Terms</th>
+                    <th className="px-3 py-2">Address</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {customerLoading ? (
+                    <tr>
+                      <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                        Loading...
+                      </td>
+                    </tr>
+                  ) : customerRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                        No customers found.
+                      </td>
+                    </tr>
+                  ) : (
+                    customerRows.map((r) => (
+                      <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
+                        <td className="px-3 py-2">{r.name}</td>
+                        <td className="px-3 py-2">{r.contactName || "-"}</td>
+                        <td className="px-3 py-2">{r.phone || "-"}</td>
+                        <td className="px-3 py-2">{r.email || "-"}</td>
+                        <td className="px-3 py-2">{r.paymentTerms || "-"}</td>
+                        <td className="px-3 py-2">{r.address || "-"}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-between border-t px-3 py-2 text-sm text-gray-600">
+              <span>
+                Page {page}/{customerTotalPages} · {customerData?.total ?? 0} customers
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="rounded-lg border px-2 py-1 disabled:opacity-40"
+                  disabled={page <= 1}
+                  onClick={() => setPage((p) => p - 1)}
+                >
+                  Prev
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border px-2 py-1 disabled:opacity-40"
+                  disabled={page >= customerTotalPages}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
       ) : tabContent === "quotation" ? (
         <>
           <div className="mb-3 flex flex-wrap gap-2">
@@ -1306,6 +1446,55 @@ export default function Sales() {
         )}
       </Modal>
 
+      <Modal open={customerCreateOpen} onClose={() => setCustomerCreateOpen(false)} title="New Customer" wide>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <FormField label="Customer Name *">
+            <TextInput value={customerForm.name} onChange={(e) => setCustomerForm((f) => ({ ...f, name: e.target.value }))} />
+          </FormField>
+          <FormField label="Contact Name">
+            <TextInput
+              value={customerForm.contactName}
+              onChange={(e) => setCustomerForm((f) => ({ ...f, contactName: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Phone">
+            <TextInput value={customerForm.phone} onChange={(e) => setCustomerForm((f) => ({ ...f, phone: e.target.value }))} />
+          </FormField>
+          <FormField label="Email">
+            <TextInput value={customerForm.email} onChange={(e) => setCustomerForm((f) => ({ ...f, email: e.target.value }))} />
+          </FormField>
+          <FormField label="Payment Terms">
+            <select
+              className="w-full rounded-xl border px-3 py-2 text-sm"
+              value={customerForm.paymentTerms}
+              onChange={(e) => setCustomerForm((f) => ({ ...f, paymentTerms: e.target.value }))}
+            >
+              <option value="CREDIT">CREDIT</option>
+              <option value="ADVANCE">ADVANCE</option>
+            </select>
+          </FormField>
+          <FormField label="Address">
+            <TextInput
+              value={customerForm.address}
+              onChange={(e) => setCustomerForm((f) => ({ ...f, address: e.target.value }))}
+            />
+          </FormField>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={() => setCustomerCreateOpen(false)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            disabled={createCustomerMutation.isPending}
+            onClick={() => createCustomerMutation.mutate()}
+          >
+            {createCustomerMutation.isPending ? "Saving..." : "Create Customer"}
+          </button>
+        </div>
+      </Modal>
+
       <Modal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
@@ -1335,10 +1524,26 @@ export default function Sales() {
             />
           </FormField>
           <FormField label="Customer *">
-            <TextInput
-              value={form.customerName}
-              onChange={(e) => setForm((f) => ({ ...f, customerName: e.target.value }))}
-            />
+            <select
+              className="w-full rounded-xl border px-3 py-2 text-sm"
+              value={form.customerId || ""}
+              onChange={(e) => {
+                const selectedId = e.target.value;
+                const selected = customerOptions.find((c) => c._id === selectedId);
+                setForm((f) => ({
+                  ...f,
+                  customerId: selectedId,
+                  customerName: selected?.name || "",
+                }));
+              }}
+            >
+              <option value="">Select customer from Customer Master</option>
+              {customerOptions.map((c) => (
+                <option key={c._id} value={c._id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
           </FormField>
           <FormField label="Customer Ref">
             <TextInput
@@ -1529,6 +1734,10 @@ export default function Sales() {
             disabled={createMutation.isPending}
             onClick={() => {
               setErr("");
+              if (!form.customerId) {
+                setErr("Please select customer from Customer Master");
+                return;
+              }
               createMutation.mutate();
             }}
           >

@@ -10,6 +10,11 @@ router.get("/orders", c.listSalesOrders);
 router.post("/orders", c.createSalesOrder);
 router.get("/orders/:id", c.getSalesOrder);
 
+router.get("/customers", flow.listCustomers);
+router.post("/customers", flow.createCustomer);
+router.put("/customers/:id", flow.updateCustomer);
+router.delete("/customers/:id", flow.deleteCustomer);
+
 router.get("/order-acknowledgements", flow.listOAs);
 router.post("/order-acknowledgements", flow.createOA);
 router.get("/order-acknowledgements/:id", flow.getOA);

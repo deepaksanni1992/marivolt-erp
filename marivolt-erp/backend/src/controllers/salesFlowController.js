@@ -4,6 +4,7 @@ import OrderAcknowledgement from "../models/OrderAcknowledgement.js";
 import ProformaInvoice from "../models/ProformaInvoice.js";
 import SalesInvoice from "../models/SalesInvoice.js";
 import Cipl from "../models/Cipl.js";
+import Customer from "../models/Customer.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
 
 function withCompany(req, filter = {}) {
@@ -54,6 +55,76 @@ function validateConversionSource(doc, messagePrefix = "document") {
   if (!doc) throw new Error("Source document not found");
   if (doc.status === "CANCELLED" || doc.status === "REJECTED") {
     throw new Error(`Cannot convert ${messagePrefix} with status ${doc.status}`);
+  }
+}
+
+export async function listCustomers(req, res) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
+    const skip = (page - 1) * limit;
+    const filter = withCompany(req);
+    if (req.query.search) {
+      const q = String(req.query.search).trim();
+      filter.$or = [{ name: new RegExp(q, "i") }, { contactName: new RegExp(q, "i") }, { email: new RegExp(q, "i") }];
+    }
+    const [items, total] = await Promise.all([
+      Customer.find(filter).sort({ name: 1 }).skip(skip).limit(limit).lean(),
+      Customer.countDocuments(filter),
+    ]);
+    res.json({ items, total, page, limit });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function createCustomer(req, res) {
+  try {
+    const body = { ...req.body };
+    body.companyId = req.companyId;
+    if (!String(body.name || "").trim()) {
+      return res.status(400).json({ message: "Customer name is required" });
+    }
+    const doc = await Customer.create(body);
+    res.status(201).json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function updateCustomer(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid id" });
+    }
+    const allowed = ["name", "contactName", "phone", "email", "address", "paymentTerms", "notes"];
+    const payload = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) payload[key] = req.body[key];
+    }
+    const doc = await Customer.findOneAndUpdate(withCompany(req, { _id: id }), payload, {
+      new: true,
+      runValidators: true,
+    });
+    if (!doc) return res.status(404).json({ message: "Not found" });
+    res.json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function deleteCustomer(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid id" });
+    }
+    const doc = await Customer.findOneAndDelete(withCompany(req, { _id: id }));
+    if (!doc) return res.status(404).json({ message: "Not found" });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
   }
 }
 

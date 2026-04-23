@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import Quotation from "../models/Quotation.js";
 import Company from "../models/Company.js";
+import Customer from "../models/Customer.js";
 import Item from "../models/itemModel.js";
 import { applyStockOut } from "../services/stockService.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
@@ -43,6 +44,22 @@ function recalcQuotationTotals(doc) {
   doc.discountTotal = 0;
   doc.taxTotal = 0;
   doc.grandTotal = doc.subTotal;
+}
+
+async function resolveCustomerFromMaster(req, payload = {}) {
+  const customerId = payload.customerId ? String(payload.customerId).trim() : "";
+  const customerName = String(payload.customerName || "").trim();
+  let customer = null;
+  if (customerId && mongoose.Types.ObjectId.isValid(customerId)) {
+    customer = await Customer.findOne(withCompany(req, { _id: customerId })).lean();
+  }
+  if (!customer && customerName) {
+    customer = await Customer.findOne(withCompany(req, { name: new RegExp(`^${customerName}$`, "i") })).lean();
+  }
+  if (!customer) {
+    throw new Error("Customer must be selected from Customer Master");
+  }
+  return customer;
 }
 
 async function autoCreateItemsFromQuotation({ req, quotation }) {
@@ -122,9 +139,9 @@ export async function createQuotation(req, res) {
     if (!Array.isArray(body.lines) || body.lines.length === 0) {
       return res.status(400).json({ message: "Quotation must contain at least one line" });
     }
-    if (!String(body.customerName || "").trim()) {
-      return res.status(400).json({ message: "Customer is required" });
-    }
+    const customer = await resolveCustomerFromMaster(req, body);
+    body.customerId = customer._id;
+    body.customerName = customer.name;
     const company = await Company.findById(req.companyId).lean();
     if (!company || !company.isActive) {
       return res.status(403).json({ message: "Active company context required" });
@@ -145,6 +162,15 @@ export async function createQuotation(req, res) {
       email: company.email || "",
       phone: company.phone || "",
       registrationNo: "",
+    };
+    body.customer = {
+      name: customer.name || "",
+      billingAddress: customer.address || "",
+      shippingAddress: customer.address || "",
+      contactPerson: customer.contactName || "",
+      email: customer.email || "",
+      phone: customer.phone || "",
+      country: "",
     };
     body.validityDate = body.validityDate || body.validUntil || null;
     const doc = new Quotation(body);
@@ -171,6 +197,7 @@ export async function updateQuotation(req, res) {
 
     const allowed = [
       "quotationNo",
+      "customerId",
       "customerName",
       "customerReference",
       "attention",
@@ -197,6 +224,20 @@ export async function updateQuotation(req, res) {
     ];
     for (const k of allowed) {
       if (req.body[k] !== undefined) doc[k] = req.body[k];
+    }
+    if (req.body.customerId !== undefined || req.body.customerName !== undefined) {
+      const customer = await resolveCustomerFromMaster(req, doc);
+      doc.customerId = customer._id;
+      doc.customerName = customer.name;
+      doc.customer = {
+        name: customer.name || "",
+        billingAddress: customer.address || "",
+        shippingAddress: customer.address || "",
+        contactPerson: customer.contactName || "",
+        email: customer.email || "",
+        phone: customer.phone || "",
+        country: "",
+      };
     }
     doc.updatedBy = req.user?.email || "";
     recalcQuotationTotals(doc);

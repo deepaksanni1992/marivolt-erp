@@ -48,6 +48,7 @@ const quotationSchema = new mongoose.Schema(
     quotationNo: { type: String, required: true, trim: true },
     quotationDate: { type: Date, default: () => new Date() },
     validityDate: { type: Date },
+    customerId: { type: mongoose.Schema.Types.ObjectId, ref: "Customer", default: null, index: true },
     customerName: { type: String, required: true, trim: true, index: true },
     customerReference: { type: String, default: "", trim: true },
     attention: { type: String, default: "", trim: true },
