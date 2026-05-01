@@ -652,6 +652,7 @@ export default function Sales() {
   const [status, setStatus] = useState("");
   const limit = 20;
   const [createOpen, setCreateOpen] = useState(false);
+  const [isQuotationNoEdited, setIsQuotationNoEdited] = useState(false);
   const [customerCreateOpen, setCustomerCreateOpen] = useState(false);
   const [detailId, setDetailId] = useState(null);
   const [oaCreateOpen, setOaCreateOpen] = useState(false);
@@ -999,6 +1000,7 @@ export default function Sales() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-quotations"] });
       setCreateOpen(false);
+      setIsQuotationNoEdited(false);
       setForm({
         quotationNo: "",
         quotationDate: new Date().toISOString().slice(0, 10),
@@ -1199,13 +1201,14 @@ export default function Sales() {
 
   useEffect(() => {
     if (!createOpen) return;
+    if (isQuotationNoEdited) return;
     const nextNo = String(nextQuotationNoData?.quotationNo || "").trim();
     if (!nextNo) return;
     setForm((prev) => {
       if (prev.quotationNo === nextNo) return prev;
       return { ...prev, quotationNo: nextNo };
     });
-  }, [createOpen, nextQuotationNoData?.quotationNo]);
+  }, [createOpen, isQuotationNoEdited, nextQuotationNoData?.quotationNo]);
 
   const createOAMutation = useMutation({
     mutationFn: () => apiPost("/sales/order-acknowledgements", oaForm),
@@ -1315,7 +1318,10 @@ export default function Sales() {
             onClick={() => {
               setErr("");
               if (activeTab === "Customer Master") setCustomerCreateOpen(true);
-              else if (activeTab === "Quotation") setCreateOpen(true);
+              else if (activeTab === "Quotation") {
+                setIsQuotationNoEdited(false);
+                setCreateOpen(true);
+              }
               else if (activeTab === "Order Acknowledgement") setOaCreateOpen(true);
               else if (activeTab === "Proforma Invoice") setProformaCreateOpen(true);
               else if (activeTab === "Sales Invoice") setSalesInvoiceCreateOpen(true);
@@ -3143,20 +3149,32 @@ export default function Sales() {
 
       <Modal
         open={createOpen}
-        onClose={() => setCreateOpen(false)}
+        onClose={() => {
+          setIsQuotationNoEdited(false);
+          setCreateOpen(false);
+        }}
         title="New Quotation"
         wide
         className="w-[92vw] max-w-[1700px]"
       >
         <div className="grid gap-3 sm:grid-cols-4">
           <FormField label="Quotation No">
-            <TextInput value={form.quotationNo || ""} readOnly />
+            <TextInput
+              value={form.quotationNo || ""}
+              onChange={(e) => {
+                setIsQuotationNoEdited(true);
+                setForm((f) => ({ ...f, quotationNo: e.target.value }));
+              }}
+            />
           </FormField>
           <FormField label="Quotation Date">
             <TextInput
               type="date"
               value={form.quotationDate}
-              onChange={(e) => setForm((f) => ({ ...f, quotationDate: e.target.value }))}
+              onChange={(e) => {
+                setIsQuotationNoEdited(false);
+                setForm((f) => ({ ...f, quotationDate: e.target.value }));
+              }}
             />
           </FormField>
           <FormField label="Validity Date">
@@ -3374,7 +3392,14 @@ export default function Sales() {
         </div>
 
         <div className="mt-4 flex justify-end gap-2">
-          <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={() => setCreateOpen(false)}>
+          <button
+            type="button"
+            className="rounded-xl border px-4 py-2 text-sm"
+            onClick={() => {
+              setIsQuotationNoEdited(false);
+              setCreateOpen(false);
+            }}
+          >
             Cancel
           </button>
           <button

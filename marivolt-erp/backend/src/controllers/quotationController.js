@@ -68,22 +68,33 @@ async function autoCreateItemsFromQuotation({ req, quotation }) {
     if (!article) continue;
     const existing = await Item.findOne({ companyId: req.companyId, itemCode: article }).select("_id").lean();
     if (existing) continue;
-    await Item.create({
-      companyId: req.companyId,
-      itemCode: article,
-      description: line.description || "",
-      uom: line.uom || "PCS",
-      makerPartNo: line.partNumber || "",
-      materialCode: line.materialCode || "",
-      engine: quotation.engine || "",
-      modelName: quotation.model || "",
-      config: quotation.config || "",
-      esn: quotation.esn || "",
-      source: "quotation",
-      sourceDocumentType: "quotation",
-      sourceDocumentId: quotation._id,
-      sourceDocumentNo: quotation.quotationNo,
-    });
+    try {
+      await Item.create({
+        companyId: req.companyId,
+        itemCode: article,
+        description: line.description || "",
+        uom: line.uom || "PCS",
+        makerPartNo: line.partNumber || "",
+        materialCode: line.materialCode || "",
+        engine: quotation.engine || "",
+        modelName: quotation.model || "",
+        config: quotation.config || "",
+        esn: quotation.esn || "",
+        source: "quotation",
+        sourceDocumentType: "quotation",
+        sourceDocumentId: quotation._id,
+        sourceDocumentNo: quotation.quotationNo,
+      });
+    } catch (err) {
+      const isDuplicateKey = err?.code === 11000;
+      const duplicateSkuLegacyIndex = String(err?.message || "").includes("index: sku_1");
+      const duplicateItemCode = Boolean(err?.keyPattern?.companyId && err?.keyPattern?.itemCode);
+      if (isDuplicateKey && (duplicateSkuLegacyIndex || duplicateItemCode)) {
+        // Do not block quotation save on legacy or concurrent item-creation duplicate keys.
+        continue;
+      }
+      throw err;
+    }
   }
 }
 
