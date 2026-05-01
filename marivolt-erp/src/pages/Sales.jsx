@@ -13,6 +13,7 @@ const salesTabs = [
   "Quotation",
   "Order Acknowledgement",
   "Proforma Invoice",
+  "Order Allocation",
   "Sales Invoice",
   "CIPL",
   "Reports",
@@ -33,6 +34,8 @@ const reportsCatalog = [
     items: [
       { id: "order-acknowledgement", title: "Order Acknowledgement Report", desc: "Track OA issuance, linked quotation references, and confirmation state." },
       { id: "pending-order-acknowledgement", title: "Pending Order Acknowledgement Report", desc: "OA records pending closure or downstream conversion." },
+      { id: "order-allocation", title: "Order Allocation Report", desc: "Allocation register for Store processing (without pricing)." },
+      { id: "rts", title: "RTS Report", desc: "Ready-to-Ship register with packing information (without pricing)." },
     ],
   },
   {
@@ -57,12 +60,16 @@ const oaStatusOptions = ["DRAFT", "CONFIRMED", "CLOSED", "CANCELLED"];
 const proformaStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "APPROVED", "CONVERTED", "CANCELLED"];
 const salesInvoiceStatusOptions = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "CANCELLED"];
 const ciplStatusOptions = ["DRAFT", "ISSUED", "SHIPPED", "CANCELLED"];
+const orderAllocationStatusOptions = ["OPEN", "PARTIALLY_RTS", "RTS_COMPLETE", "APPROVED", "CLOSED", "CANCELLED"];
+const rtsStatusOptions = ["DRAFT", "APPROVED", "CANCELLED"];
 
 const reportStatusOptionsById = {
   "quotation-summary": statusOptions,
   "pending-quotation": statusOptions,
   "order-acknowledgement": oaStatusOptions,
   "pending-order-acknowledgement": oaStatusOptions,
+  "order-allocation": orderAllocationStatusOptions,
+  rts: rtsStatusOptions,
   proforma: proformaStatusOptions,
   "sales-invoice-summary": salesInvoiceStatusOptions,
   "sales-invoice-article-wise": salesInvoiceStatusOptions,
@@ -281,7 +288,7 @@ function oaDetailToEditableForm(oa) {
 
 /** Only DRAFT proformas can be edited in Sales (matches backend). */
 function proformaIsDraft(p) {
-  return p && String(p.status || "").toUpperCase() === "DRAFT";
+  return !!p && String(p.status || "").trim().toUpperCase() === "DRAFT";
 }
 
 function proformaLocked(p) {
@@ -291,10 +298,10 @@ function proformaLocked(p) {
 /** Legacy rows used CONVERTED; new conversions store APPROVED — both show as Approved in the UI. */
 function proformaDisplayStatus(p) {
   if (!p) return "";
-  const st = String(p.status || "").toUpperCase();
+  const st = String(p.status || "").trim().toUpperCase();
   if (st === "CANCELLED") return "CANCELLED";
   if (st === "APPROVED" || st === "CONVERTED") return "APPROVED";
-  return String(p.status || "");
+  return st || "DRAFT";
 }
 
 function proformaDetailToEditableForm(p) {
@@ -342,7 +349,7 @@ function proformaDetailToEditableForm(p) {
   };
 }
 
-const proformaManualStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "CANCELLED"];
+const proformaManualStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "APPROVED", "CANCELLED"];
 
 function money(n) {
   return Number(n || 0).toFixed(2);
@@ -401,6 +408,25 @@ const reportColumnsById = {
     ["Quotation Link", (r) => r.linkedQuotationNo || ""],
     ["Amount", (r) => money(r.amount)],
     ["Age (Days)", (r) => r.ageDays || 0],
+    ["Status", (r) => r.status || ""],
+  ],
+  "order-allocation": [
+    ["Allocation No", (r) => r.allocationNo || ""],
+    ["Date", (r) => (r.allocationDate ? new Date(r.allocationDate).toLocaleDateString() : "")],
+    ["Linked OA", (r) => r.linkedOANo || ""],
+    ["Linked PI", (r) => r.linkedProformaNo || ""],
+    ["Customer", (r) => r.customerName || ""],
+    ["Line Count", (r) => r.lineCount || 0],
+    ["Status", (r) => r.status || ""],
+  ],
+  rts: [
+    ["RTS No", (r) => r.rtsNo || ""],
+    ["Date", (r) => (r.rtsDate ? new Date(r.rtsDate).toLocaleDateString() : "")],
+    ["Allocation No", (r) => r.linkedOrderAllocationNo || ""],
+    ["Customer", (r) => r.customerName || ""],
+    ["Line Count", (r) => r.lineCount || 0],
+    ["Box Count", (r) => r.boxCount || 0],
+    ["Total Weight Kg", (r) => money(r.totalWeightKg || 0)],
     ["Status", (r) => r.status || ""],
   ],
   proforma: [
@@ -1028,6 +1054,17 @@ export default function Sales() {
     enabled: activeTab === "Proforma Invoice",
   });
 
+  const { data: allocationData, isLoading: allocationLoading } = useQuery({
+    queryKey: ["sales-order-allocation", page, search],
+    queryFn: () =>
+      apiGetWithQuery("/sales/order-allocations", {
+        page,
+        limit,
+        search: search || undefined,
+      }),
+    enabled: activeTab === "Order Allocation",
+  });
+
   const { data: salesInvoiceData, isLoading: salesInvoiceLoading } = useQuery({
     queryKey: ["sales-sales-invoices", page, search],
     queryFn: () =>
@@ -1066,6 +1103,8 @@ export default function Sales() {
     "pending-quotation": "/sales/reports/pending-quotation",
     "order-acknowledgement": "/sales/reports/order-acknowledgement",
     "pending-order-acknowledgement": "/sales/reports/pending-order-acknowledgement",
+    "order-allocation": "/sales/reports/order-allocation",
+    rts: "/sales/reports/rts",
     proforma: "/sales/reports/proforma",
     "sales-invoice-summary": "/sales/reports/sales-invoice-summary",
     "sales-invoice-article-wise": "/sales/reports/sales-invoice-article-wise",
@@ -1089,7 +1128,7 @@ export default function Sales() {
       }),
     enabled: activeTab === "Reports" && !!reportApiPath && !!activeCompany?._id,
   });
-  const activeReportRows = activeReportData?.rows || [];
+  const activeReportRows = activeReportData?.rows || activeReportData?.items || [];
   const activeExportColumns = reportColumnsById[activeReportId] || [];
 
   function downloadBlobFile(filename, blob, type) {
@@ -1544,6 +1583,26 @@ export default function Sales() {
     onError: (e) => setErr(e.message),
   });
 
+  const convertToOrderAllocationFromOAMutation = useMutation({
+    mutationFn: (id) => apiPost(`/sales/convert/oa/${id}/to-order-allocation`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-oa"] });
+      qc.invalidateQueries({ queryKey: ["store-order-allocations"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["oa-detail", detailId] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const convertToOrderAllocationFromProformaMutation = useMutation({
+    mutationFn: (id) => apiPost(`/sales/convert/proforma/${id}/to-order-allocation`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-proforma"] });
+      qc.invalidateQueries({ queryKey: ["store-order-allocations"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
   const convertToCiplFromSalesInvoiceMutation = useMutation({
     mutationFn: (id) => apiPost(`/sales/convert/sales-invoice/${id}/to-cipl`, {}),
     onSuccess: () => {
@@ -1682,6 +1741,7 @@ export default function Sales() {
   const total = data?.total ?? 0;
   const oaRows = oaData?.items ?? [];
   const proformaRows = proformaData?.items ?? [];
+  const allocationRows = allocationData?.items ?? [];
   const salesInvoiceRows = salesInvoiceData?.items ?? [];
   const ciplRows = ciplData?.items ?? [];
   const customerRows = customerData?.items ?? [];
@@ -1689,6 +1749,7 @@ export default function Sales() {
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const oaTotalPages = Math.max(1, Math.ceil((oaData?.total ?? 0) / limit));
   const proformaTotalPages = Math.max(1, Math.ceil((proformaData?.total ?? 0) / limit));
+  const allocationTotalPages = Math.max(1, Math.ceil((allocationData?.total ?? 0) / limit));
   const salesInvoiceTotalPages = Math.max(1, Math.ceil((salesInvoiceData?.total ?? 0) / limit));
   const ciplTotalPages = Math.max(1, Math.ceil((ciplData?.total ?? 0) / limit));
   const customerTotalPages = Math.max(1, Math.ceil((customerData?.total ?? 0) / limit));
@@ -1698,6 +1759,7 @@ export default function Sales() {
     if (activeTab === "Quotation") return "quotation";
     if (activeTab === "Order Acknowledgement") return "oa";
     if (activeTab === "Proforma Invoice") return "proforma";
+    if (activeTab === "Order Allocation") return "allocation";
     if (activeTab === "Sales Invoice") return "sales-invoice";
     if (activeTab === "CIPL") return "cipl";
     if (activeTab === "Reports") return "reports";
@@ -1713,6 +1775,7 @@ export default function Sales() {
           </span>
           <button
             type="button"
+            disabled={activeTab === "Order Allocation" || activeTab === "Reports"}
             onClick={() => {
               setErr("");
               if (activeTab === "Customer Master") setCustomerCreateOpen(true);
@@ -1725,7 +1788,7 @@ export default function Sales() {
               else if (activeTab === "Sales Invoice") setSalesInvoiceCreateOpen(true);
               else if (activeTab === "CIPL") setCiplCreateOpen(true);
             }}
-            className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white shadow-sm"
+            className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
           >
             {activeTab === "Customer Master"
               ? "New customer"
@@ -1994,6 +2057,29 @@ export default function Sales() {
                               <th className="px-3 py-2">Status</th>
                             </>
                           )}
+                          {activeReportId === "order-allocation" && (
+                            <>
+                              <th className="px-3 py-2">Allocation No</th>
+                              <th className="px-3 py-2">Date</th>
+                              <th className="px-3 py-2">Linked OA</th>
+                              <th className="px-3 py-2">Linked PI</th>
+                              <th className="px-3 py-2">Customer</th>
+                              <th className="px-3 py-2 text-right">Line Count</th>
+                              <th className="px-3 py-2">Status</th>
+                            </>
+                          )}
+                          {activeReportId === "rts" && (
+                            <>
+                              <th className="px-3 py-2">RTS No</th>
+                              <th className="px-3 py-2">Date</th>
+                              <th className="px-3 py-2">Allocation No</th>
+                              <th className="px-3 py-2">Customer</th>
+                              <th className="px-3 py-2 text-right">Line Count</th>
+                              <th className="px-3 py-2 text-right">Box Count</th>
+                              <th className="px-3 py-2 text-right">Total Weight Kg</th>
+                              <th className="px-3 py-2">Status</th>
+                            </>
+                          )}
                           {activeReportId === "proforma" && (
                             <>
                               <th className="px-3 py-2">Proforma No</th>
@@ -2067,14 +2153,14 @@ export default function Sales() {
                               Loading report...
                             </td>
                           </tr>
-                        ) : (activeReportData?.rows || []).length === 0 ? (
+                        ) : activeReportRows.length === 0 ? (
                           <tr>
                             <td className="px-3 py-8 text-center text-gray-500" colSpan={12}>
                               No rows found for current filters. Adjust date/status/customer and try again.
                             </td>
                           </tr>
                         ) : (
-                          (activeReportData?.rows || []).map((row) => (
+                          activeReportRows.map((row) => (
                             <tr key={row._id} className="border-b border-gray-100 hover:bg-gray-50/80">
                               {activeReportId === "quotation-summary" && (
                                 <>
@@ -2133,6 +2219,37 @@ export default function Sales() {
                                   <td className="px-3 py-2">{row.linkedQuotationNo || "-"}</td>
                                   <td className="px-3 py-2 text-right">USD {money(row.amount)}</td>
                                   <td className="px-3 py-2">{row.ageDays || 0}</td>
+                                  <td className="px-3 py-2">
+                                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(row.status)}`}>
+                                      {row.status}
+                                    </span>
+                                  </td>
+                                </>
+                              )}
+                              {activeReportId === "order-allocation" && (
+                                <>
+                                  <td className="px-3 py-2 font-mono text-xs">{row.allocationNo}</td>
+                                  <td className="px-3 py-2">{row.allocationDate ? new Date(row.allocationDate).toLocaleDateString() : "-"}</td>
+                                  <td className="px-3 py-2">{row.linkedOANo || "-"}</td>
+                                  <td className="px-3 py-2">{row.linkedProformaNo || "-"}</td>
+                                  <td className="px-3 py-2">{row.customerName || "-"}</td>
+                                  <td className="px-3 py-2 text-right">{row.lineCount || 0}</td>
+                                  <td className="px-3 py-2">
+                                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(row.status)}`}>
+                                      {row.status}
+                                    </span>
+                                  </td>
+                                </>
+                              )}
+                              {activeReportId === "rts" && (
+                                <>
+                                  <td className="px-3 py-2 font-mono text-xs">{row.rtsNo}</td>
+                                  <td className="px-3 py-2">{row.rtsDate ? new Date(row.rtsDate).toLocaleDateString() : "-"}</td>
+                                  <td className="px-3 py-2">{row.linkedOrderAllocationNo || "-"}</td>
+                                  <td className="px-3 py-2">{row.customerName || "-"}</td>
+                                  <td className="px-3 py-2 text-right">{row.lineCount || 0}</td>
+                                  <td className="px-3 py-2 text-right">{row.boxCount || 0}</td>
+                                  <td className="px-3 py-2 text-right">{money(row.totalWeightKg || 0)}</td>
                                   <td className="px-3 py-2">
                                     <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(row.status)}`}>
                                       {row.status}
@@ -2614,6 +2731,13 @@ export default function Sales() {
                             >
                               Convert to CIPL
                             </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              onClick={() => convertToOrderAllocationFromOAMutation.mutate(r._id)}
+                            >
+                              Convert to Order Allocation
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -2745,6 +2869,15 @@ export default function Sales() {
                             >
                               Convert to CIPL
                             </button>
+                            <button
+                              type="button"
+                              className={`rounded-lg border px-2 py-1 text-xs ${!["APPROVED"].includes(String(r.status || "").toUpperCase()) ? "opacity-40" : ""}`}
+                              disabled={!["APPROVED"].includes(String(r.status || "").toUpperCase())}
+                              title={!["APPROVED"].includes(String(r.status || "").toUpperCase()) ? "Proforma must be APPROVED" : ""}
+                              onClick={() => convertToOrderAllocationFromProformaMutation.mutate(r._id)}
+                            >
+                              Convert to Order Allocation
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -2766,6 +2899,97 @@ export default function Sales() {
                   type="button"
                   className="rounded-lg border px-2 py-1 disabled:opacity-40"
                   disabled={page >= proformaTotalPages}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : tabContent === "allocation" ? (
+        <>
+          <div className="mb-3 flex flex-wrap items-end gap-2 rounded-2xl border bg-white p-3 shadow-sm">
+            <TextInput
+              placeholder="Search allocation/customer"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
+              className="w-64"
+            />
+          </div>
+          <div className="overflow-hidden rounded-2xl border bg-white">
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left text-sm">
+                <thead className="sticky top-0 z-10 border-b bg-gray-100 text-xs font-semibold uppercase tracking-wide text-gray-700">
+                  <tr>
+                    <th className="px-3 py-2">Allocation No</th>
+                    <th className="px-3 py-2">Date</th>
+                    <th className="px-3 py-2">Customer</th>
+                    <th className="px-3 py-2">Linked OA</th>
+                    <th className="px-3 py-2">Linked PI</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {allocationLoading ? (
+                    <tr>
+                      <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                        Loading...
+                      </td>
+                    </tr>
+                  ) : allocationRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                        No order allocation found.
+                      </td>
+                    </tr>
+                  ) : (
+                    allocationRows.map((r) => (
+                      <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
+                        <td className="px-3 py-2 font-mono text-xs">{r.allocationNo}</td>
+                        <td className="px-3 py-2">{r.allocationDate ? new Date(r.allocationDate).toLocaleDateString() : "-"}</td>
+                        <td className="px-3 py-2">{r.customerName}</td>
+                        <td className="px-3 py-2">{r.linkedOANo || "-"}</td>
+                        <td className="px-3 py-2">{r.linkedProformaNo || "-"}</td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
+                            {r.status}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          <button
+                            type="button"
+                            className="rounded-lg border px-2 py-1 text-xs"
+                            onClick={() => apiPost(`/sales/order-allocations/${r._id}/to-sales-invoice`, {}).then(() => {
+                              qc.invalidateQueries({ queryKey: ["sales-order-allocation"] });
+                              qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
+                            }).catch((e) => setErr(e.message))}
+                          >
+                            Convert to SI
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-between border-t px-3 py-2 text-sm text-gray-600">
+              <span>
+                Page {page}/{allocationTotalPages} · {allocationData?.total ?? 0} allocations
+              </span>
+              <div className="flex gap-2">
+                <button type="button" className="rounded-lg border px-2 py-1 disabled:opacity-40" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+                  Prev
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border px-2 py-1 disabled:opacity-40"
+                  disabled={page >= allocationTotalPages}
                   onClick={() => setPage((p) => p + 1)}
                 >
                   Next
@@ -3021,8 +3245,12 @@ export default function Sales() {
                   ? "Sales Invoice View"
                   : "CIPL View"
         }
-        wide
-        expanded
+        subtitle={
+          tabContent === "proforma"
+            ? "Full-screen style PI view: draft opens editable form; approved/converted opens read-only document view."
+            : undefined
+        }
+        xlarge
       >
         {tabContent === "quotation" && !detail ? (
           <p className="text-sm text-gray-500">Loading...</p>
@@ -3774,6 +4002,13 @@ export default function Sales() {
                 >
                   Convert to CIPL
                 </button>
+                <button
+                  type="button"
+                  className="rounded-xl border px-2 py-1 text-xs"
+                  onClick={() => convertToOrderAllocationFromOAMutation.mutate(oaDetail._id)}
+                >
+                  Convert to Order Allocation
+                </button>
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -3906,6 +4141,13 @@ export default function Sales() {
                 </button>
                 <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => convertToCiplFromOAMutation.mutate(oaDetail._id)}>
                   Convert to CIPL
+                </button>
+                <button
+                  type="button"
+                  className="rounded-xl border px-2 py-1 text-xs"
+                  onClick={() => convertToOrderAllocationFromOAMutation.mutate(oaDetail._id)}
+                >
+                  Convert to Order Allocation
                 </button>
               </div>
             </div>
@@ -4160,6 +4402,15 @@ export default function Sales() {
                 >
                   Convert to CIPL
                 </button>
+                <button
+                  type="button"
+                  className={`rounded-xl border px-2 py-1 text-xs ${String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED" ? "opacity-40" : ""}`}
+                  disabled={String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED"}
+                  title={String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED" ? "Set PI status to APPROVED first" : ""}
+                  onClick={() => convertToOrderAllocationFromProformaMutation.mutate(proformaDetail._id)}
+                >
+                  Convert to Order Allocation
+                </button>
               </div>
               <div className="flex flex-wrap gap-2">
                 {proformaManualStatusOptions.map((s) => (
@@ -4290,6 +4541,14 @@ export default function Sales() {
                   onClick={() => convertProformaToCiplMutation.mutate(proformaDetail._id)}
                 >
                   Convert to CIPL
+                </button>
+                <button
+                  type="button"
+                  className={`rounded-xl border px-2 py-1 text-xs ${String(proformaDetail.status || "").toUpperCase() !== "APPROVED" ? "opacity-40" : ""}`}
+                  disabled={String(proformaDetail.status || "").toUpperCase() !== "APPROVED"}
+                  onClick={() => convertToOrderAllocationFromProformaMutation.mutate(proformaDetail._id)}
+                >
+                  Convert to Order Allocation
                 </button>
               </div>
             </div>

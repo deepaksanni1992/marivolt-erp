@@ -19,6 +19,8 @@ router.get("/reports/sales-invoice-summary", flow.reportSalesInvoiceSummary);
 router.get("/reports/sales-invoice-article-wise", flow.reportSalesInvoiceArticleWise);
 router.get("/reports/sales-branch-wise", flow.reportSalesBranchWise);
 router.get("/reports/cipl", flow.reportCipl);
+router.get("/reports/order-allocation", flow.reportOrderAllocation);
+router.get("/reports/rts", flow.reportRts);
 
 router.get("/customers", flow.listCustomers);
 router.post("/customers", flow.createCustomer);
@@ -45,6 +47,15 @@ router.get("/sales-invoices/:id", flow.getSalesInvoice);
 router.put("/sales-invoices/:id", flow.updateSalesInvoice);
 router.patch("/sales-invoices/:id/cancel", flow.cancelSalesInvoice);
 
+router.get("/order-allocations", flow.listOrderAllocations);
+router.get("/order-allocations/:id", flow.getOrderAllocation);
+router.post("/order-allocations/:id/rts", flow.createRtsFromOrderAllocation);
+router.post("/order-allocations/:id/to-sales-invoice", flow.convertOrderAllocationToSalesInvoice);
+
+router.get("/rts", flow.listRts);
+router.get("/rts/:id", flow.getRts);
+router.patch("/rts/:id/approve", flow.approveRts);
+
 router.get("/cipls", flow.listCipls);
 router.post("/cipls", flow.createCipl);
 router.get("/cipls/:id", flow.getCipl);
@@ -57,8 +68,10 @@ router.post("/convert/quotation/:id/to-cipl", flow.convertQuotationToCipl);
 router.post("/convert/oa/:id/to-proforma", flow.convertOAToProforma);
 router.post("/convert/oa/:id/to-sales-invoice", flow.convertOAToSalesInvoice);
 router.post("/convert/oa/:id/to-cipl", flow.convertOAToCipl);
+router.post("/convert/oa/:id/to-order-allocation", flow.convertOAToOrderAllocation);
 router.post("/convert/proforma/:id/to-sales-invoice", flow.convertProformaToSalesInvoice);
 router.post("/convert/proforma/:id/to-cipl", flow.convertProformaToCipl);
+router.post("/convert/proforma/:id/to-order-allocation", flow.convertProformaToOrderAllocation);
 router.post("/convert/sales-invoice/:id/to-cipl", flow.convertSalesInvoiceToCipl);
 
 export default router;

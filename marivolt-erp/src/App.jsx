@@ -10,6 +10,7 @@ import ItemFullView from "./pages/ItemFullView.jsx";
 import Purchase from "./pages/Purchase.jsx";
 import Sales from "./pages/Sales.jsx";
 import Inventory from "./pages/Inventory.jsx";
+import Store from "./pages/Store.jsx";
 import Logistics from "./pages/Logistics.jsx";
 import Accounts from "./pages/Accounts.jsx";
 import BOMPage from "./pages/BOM.jsx";
@@ -30,6 +31,7 @@ export default function App() {
           <Route path="items/item/:article" element={<ItemFullView />} />
           <Route path="purchase" element={<Purchase />} />
           <Route path="sales" element={<Sales />} />
+          <Route path="store" element={<Store />} />
           <Route path="inventory" element={<Inventory />} />
           <Route path="logistics" element={<Logistics />} />
           <Route path="accounts" element={<Accounts />} />

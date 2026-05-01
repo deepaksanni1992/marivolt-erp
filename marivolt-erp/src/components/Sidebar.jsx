@@ -5,7 +5,7 @@ const links = [
   { to: "/items", label: "Item Master" },
   { to: "/purchase", label: "Purchase" },
   { to: "/sales", label: "Sales" },
-  { to: "/inventory", label: "Inventory" },
+  { to: "/store", label: "Store" },
   { to: "/logistics", label: "Logistics" },
   { to: "/accounts", label: "Accounts" },
   { to: "/bom", label: "BOM" },
