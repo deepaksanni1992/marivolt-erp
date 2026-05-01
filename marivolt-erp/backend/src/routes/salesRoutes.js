@@ -55,6 +55,7 @@ router.post("/convert/quotation/:id/to-oa", flow.convertQuotationToOA);
 router.post("/convert/quotation/:id/to-proforma", flow.convertQuotationToProforma);
 router.post("/convert/quotation/:id/to-cipl", flow.convertQuotationToCipl);
 router.post("/convert/oa/:id/to-proforma", flow.convertOAToProforma);
+router.post("/convert/oa/:id/to-sales-invoice", flow.convertOAToSalesInvoice);
 router.post("/convert/oa/:id/to-cipl", flow.convertOAToCipl);
 router.post("/convert/proforma/:id/to-sales-invoice", flow.convertProformaToSalesInvoice);
 router.post("/convert/sales-invoice/:id/to-cipl", flow.convertSalesInvoiceToCipl);

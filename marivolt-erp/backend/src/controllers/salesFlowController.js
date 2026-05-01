@@ -1200,6 +1200,54 @@ export async function convertOAToProforma(req, res) {
   }
 }
 
+export async function convertOAToSalesInvoice(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid OA id" });
+    const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: id }));
+    validateConversionSource(oa, "order acknowledgement");
+    if (!oa.lines?.length) return res.status(400).json({ message: "OA requires at least one line to convert" });
+    const already = await SalesInvoice.findOne(withCompany(req, { linkedOAId: oa._id, linkedProformaId: null }));
+    if (already) return res.status(409).json({ message: `Sales invoice already exists (${already.invoiceNo})` });
+
+    const invoiceNo = await nextSalesDocNumber({
+      companyId: req.companyId,
+      companyCode: req.companyCode,
+      docKey: "SALES_INVOICE",
+    });
+    const lines = normalizeLines(oa.lines.map((line) => line.toObject?.() || line));
+    const totals = computeTotals(lines);
+    const doc = await SalesInvoice.create({
+      companyId: req.companyId,
+      invoiceNo,
+      invoiceDate: new Date(),
+      linkedQuotationId: oa.linkedQuotationId || null,
+      linkedQuotationNo: oa.linkedQuotationNo || "",
+      linkedOAId: oa._id,
+      linkedOANo: oa.oaNo,
+      linkedProformaId: null,
+      linkedProformaNo: "",
+      customerName: oa.customerName,
+      paymentTerms: oa.paymentTerms || "",
+      shippingAddress: "",
+      billingAddress: "",
+      dispatchDetails: oa.dispatchTerms || oa.deliverySchedule || "",
+      currency: oa.currency || "USD",
+      remarks: oa.acknowledgementNotes || "",
+      lines,
+      ...totals,
+      status: "DRAFT",
+      createdBy: req.user?.email || "",
+    });
+    if (!oa.convertedTo?.includes("SALES_INVOICE")) oa.convertedTo = [...(oa.convertedTo || []), "SALES_INVOICE"];
+    oa.updatedBy = req.user?.email || "";
+    await oa.save();
+    res.status(201).json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
 export async function listSalesInvoices(req, res) {
   try {
     const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);

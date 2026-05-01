@@ -1066,6 +1066,15 @@ export default function Sales() {
     onError: (e) => setErr(e.message),
   });
 
+  const convertToSalesInvoiceFromOAMutation = useMutation({
+    mutationFn: (id) => apiPost(`/sales/convert/oa/${id}/to-sales-invoice`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
+      qc.invalidateQueries({ queryKey: ["sales-oa"] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
   const convertProformaToSalesInvoiceMutation = useMutation({
     mutationFn: (id) => apiPost(`/sales/convert/proforma/${id}/to-sales-invoice`, {}),
     onSuccess: () => {
@@ -2104,6 +2113,13 @@ export default function Sales() {
                             <button
                               type="button"
                               className="rounded-lg border px-2 py-1 text-xs"
+                              onClick={() => convertToSalesInvoiceFromOAMutation.mutate(r._id)}
+                            >
+                              Convert to SI
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
                               onClick={() => convertToCiplFromOAMutation.mutate(r._id)}
                             >
                               Convert to CIPL
@@ -2656,6 +2672,13 @@ export default function Sales() {
                 onClick={() => convertToProformaFromOAMutation.mutate(oaDetail._id)}
               >
                 Convert to PI
+              </button>
+              <button
+                type="button"
+                className="rounded-xl border px-2 py-1 text-xs"
+                onClick={() => convertToSalesInvoiceFromOAMutation.mutate(oaDetail._id)}
+              >
+                Convert to SI
               </button>
               <button
                 type="button"
