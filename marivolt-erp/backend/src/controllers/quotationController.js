@@ -221,6 +221,9 @@ export async function updateQuotation(req, res) {
     }
     const doc = await Quotation.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
+    if (doc.status !== "DRAFT") {
+      return res.status(400).json({ message: "Only DRAFT quotations can be edited" });
+    }
 
     const allowed = [
       "quotationNo",
@@ -241,7 +244,6 @@ export async function updateQuotation(req, res) {
       "portOfDischarge",
       "finalDestination",
       "lines",
-      "status",
       "remarks",
       "internalNotes",
       "customer",
@@ -293,6 +295,11 @@ export async function patchQuotationStatus(req, res) {
     const allowed = ["DRAFT", "SENT", "APPROVED", "REJECTED", "EXPIRED", "CONVERTED", "CANCELLED"];
     if (!allowed.includes(String(status).toUpperCase())) {
       return res.status(400).json({ message: "invalid status" });
+    }
+    const existing = await Quotation.findOne(withCompany(req, { _id: id }));
+    if (!existing) return res.status(404).json({ message: "Not found" });
+    if (existing.status === "APPROVED" || existing.status === "CONVERTED") {
+      return res.status(400).json({ message: "Approved or converted quotations cannot be changed" });
     }
     const doc = await Quotation.findOneAndUpdate(
       withCompany(req, { _id: id }),

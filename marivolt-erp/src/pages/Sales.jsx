@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
-import { apiGet, apiGetWithQuery, apiPatch, apiPost } from "../lib/api.js";
+import { apiGet, apiGetWithQuery, apiPatch, apiPost, apiPut } from "../lib/api.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "../lib/salesQuotationPrintCss.js";
 import { useAuth } from "../context/AuthContext.jsx";
 
@@ -82,6 +82,64 @@ const emptyLine = () => ({
   materialCode: "",
   availability: "",
 });
+
+function quotationDetailToEditableForm(q) {
+  if (!q) return null;
+  const linesSrc = Array.isArray(q.lines) && q.lines.length ? q.lines : [];
+  const lines =
+    linesSrc.length > 0
+      ? linesSrc.map((l, idx) => {
+          const qty = Number(l.qty) || 0;
+          const price = Number(l.price) || 0;
+          const totalPrice = Number(l.totalPrice) || qty * price;
+          return {
+            serialNo: l.serialNo ?? idx + 1,
+            article: l.article || "",
+            partNumber: l.partNumber || "",
+            description: l.description || "",
+            qty,
+            uom: l.uom || "PCS",
+            price,
+            totalPrice,
+            remarks: l.remarks || "",
+            materialCode: l.materialCode || "",
+            availability: l.availability || "",
+          };
+        })
+      : [emptyLine()];
+  return {
+    quotationNo: q.quotationNo || "",
+    quotationDate: q.quotationDate ? new Date(q.quotationDate).toISOString().slice(0, 10) : "",
+    validityDate: q.validityDate ? new Date(q.validityDate).toISOString().slice(0, 10) : "",
+    customerId: String(q.customerId || ""),
+    customerName: q.customerName || "",
+    customerReference: q.customerReference || "",
+    attention: q.attention || "",
+    engine: q.engine || "",
+    model: q.model || "",
+    config: q.config || "",
+    esn: q.esn || "",
+    paymentTerms: q.paymentTerms || "",
+    deliveryTerms: q.deliveryTerms || "",
+    incoterm: q.incoterm || "",
+    currency: q.currency || "USD",
+    exchangeRate: q.exchangeRate ?? 1,
+    portOfLoading: q.portOfLoading || "",
+    portOfDischarge: q.portOfDischarge || "",
+    finalDestination: q.finalDestination || "",
+    remarks: q.remarks || "",
+    internalNotes: q.internalNotes || "",
+    customer: q.customer || {
+      billingAddress: "",
+      shippingAddress: "",
+      contactPerson: "",
+      email: "",
+      phone: "",
+      country: "",
+    },
+    lines,
+  };
+}
 
 function money(n) {
   return Number(n || 0).toFixed(2);
@@ -660,6 +718,7 @@ export default function Sales() {
   const [salesInvoiceCreateOpen, setSalesInvoiceCreateOpen] = useState(false);
   const [ciplCreateOpen, setCiplCreateOpen] = useState(false);
   const [err, setErr] = useState("");
+  const [detailQuotationDraftForm, setDetailQuotationDraftForm] = useState(null);
   const [selectedReportId, setSelectedReportId] = useState("");
   const [reportPage, setReportPage] = useState(1);
   const [reportFilters, setReportFilters] = useState({
@@ -1053,6 +1112,31 @@ export default function Sales() {
     },
     onError: (e) => setErr(e.message),
   });
+
+  const updateQuotationDetailMutation = useMutation({
+    mutationFn: () => apiPut(`/quotations/${detailId}`, detailQuotationDraftForm),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-quotations"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["quotation-detail", detailId] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  useEffect(() => {
+    if (activeTab !== "Quotation" || !detailId) {
+      setDetailQuotationDraftForm(null);
+      return;
+    }
+    if (!detail) {
+      setDetailQuotationDraftForm(null);
+      return;
+    }
+    if (detail.status !== "DRAFT") {
+      setDetailQuotationDraftForm(null);
+      return;
+    }
+    setDetailQuotationDraftForm(quotationDetailToEditableForm(detail));
+  }, [activeTab, detailId, detail]);
 
   const [customerForm, setCustomerForm] = useState({
     name: "",
@@ -2601,7 +2685,296 @@ export default function Sales() {
       >
         {tabContent === "quotation" && !detail ? (
           <p className="text-sm text-gray-500">Loading...</p>
-        ) : tabContent === "quotation" ? (
+        ) : tabContent === "quotation" && detail?.status === "DRAFT" && !detailQuotationDraftForm ? (
+          <p className="text-sm text-gray-500">Loading...</p>
+        ) : tabContent === "quotation" && detail?.status === "DRAFT" && detailQuotationDraftForm ? (
+          <div className="space-y-4 text-sm">
+            <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 ring-1 ring-amber-200">
+              Draft quotation — edit below, save changes, then use status buttons to approve when ready. Conversion to OA / Proforma is only available after <b>APPROVED</b>.
+            </div>
+            <div className="grid gap-3 sm:grid-cols-4">
+              <FormField label="Quotation No">
+                <TextInput value={detailQuotationDraftForm.quotationNo} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, quotationNo: e.target.value }))} />
+              </FormField>
+              <FormField label="Quotation Date">
+                <TextInput type="date" value={detailQuotationDraftForm.quotationDate} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, quotationDate: e.target.value }))} />
+              </FormField>
+              <FormField label="Validity Date">
+                <TextInput type="date" value={detailQuotationDraftForm.validityDate || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, validityDate: e.target.value }))} />
+              </FormField>
+              <FormField label="Currency">
+                <TextInput value={detailQuotationDraftForm.currency} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))} />
+              </FormField>
+              <FormField label="Customer *">
+                <select
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                  value={detailQuotationDraftForm.customerId || ""}
+                  onChange={(e) => {
+                    const selectedId = e.target.value;
+                    const selected = customerOptions.find((c) => c._id === selectedId);
+                    setDetailQuotationDraftForm((f) => ({ ...f, customerId: selectedId, customerName: selected?.name || "" }));
+                  }}
+                >
+                  <option value="">Select customer</option>
+                  {customerOptions.map((c) => (
+                    <option key={c._id} value={c._id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+              <FormField label="Customer Ref">
+                <TextInput value={detailQuotationDraftForm.customerReference} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, customerReference: e.target.value }))} />
+              </FormField>
+              <FormField label="Attention">
+                <TextInput value={detailQuotationDraftForm.attention || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, attention: e.target.value }))} />
+              </FormField>
+              <FormField label="Engine">
+                <TextInput value={detailQuotationDraftForm.engine || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, engine: e.target.value }))} />
+              </FormField>
+              <FormField label="Model">
+                <TextInput value={detailQuotationDraftForm.model || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, model: e.target.value }))} />
+              </FormField>
+              <FormField label="Config">
+                <TextInput value={detailQuotationDraftForm.config || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, config: e.target.value }))} />
+              </FormField>
+              <FormField label="ESN">
+                <TextInput value={detailQuotationDraftForm.esn || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, esn: e.target.value }))} />
+              </FormField>
+            </div>
+
+            <div className="mt-1">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-sm font-medium">Quotation Lines</span>
+                <button
+                  type="button"
+                  className="text-sm underline"
+                  onClick={() => setDetailQuotationDraftForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }))}
+                >
+                  + Add line
+                </button>
+              </div>
+              <div className="w-full overflow-x-auto rounded-xl border">
+                <table className="min-w-[1400px] w-full text-xs">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-2 py-2 text-left">S/N</th>
+                      <th className="px-2 py-2 text-left">Article</th>
+                      <th className="px-2 py-2 text-left">Part number</th>
+                      <th className="px-2 py-2 text-left">Description</th>
+                      <th className="px-2 py-2 text-left">UOM</th>
+                      <th className="px-2 py-2 text-right">QTY</th>
+                      <th className="px-2 py-2 text-right">Price</th>
+                      <th className="px-2 py-2 text-right">Total</th>
+                      <th className="px-2 py-2 text-left">Remarks</th>
+                      <th className="px-2 py-2 text-left">Material</th>
+                      <th className="px-2 py-2 text-left">Availability</th>
+                      <th className="px-2 py-2 text-left">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {detailQuotationDraftForm.lines.map((line, idx) => {
+                      const qty = Number(line.qty || 0);
+                      const price = Number(line.price || 0);
+                      const totalPrice = qty * price;
+                      return (
+                        <tr key={idx} className="border-t">
+                          <td className="px-2 py-1">{idx + 1}</td>
+                          <td className="px-2 py-1">
+                            <TextInput
+                              value={line.article || ""}
+                              onChange={(e) => {
+                                const lines = [...detailQuotationDraftForm.lines];
+                                lines[idx] = { ...line, article: e.target.value.toUpperCase(), serialNo: idx + 1, totalPrice };
+                                setDetailQuotationDraftForm((f) => ({ ...f, lines }));
+                              }}
+                            />
+                          </td>
+                          <td className="px-2 py-1">
+                            <TextInput
+                              value={line.partNumber || ""}
+                              onChange={(e) => {
+                                const lines = [...detailQuotationDraftForm.lines];
+                                lines[idx] = { ...line, partNumber: e.target.value, serialNo: idx + 1, totalPrice };
+                                setDetailQuotationDraftForm((f) => ({ ...f, lines }));
+                              }}
+                            />
+                          </td>
+                          <td className="px-2 py-1">
+                            <TextInput
+                              value={line.description || ""}
+                              onChange={(e) => {
+                                const lines = [...detailQuotationDraftForm.lines];
+                                lines[idx] = { ...line, description: e.target.value, serialNo: idx + 1, totalPrice };
+                                setDetailQuotationDraftForm((f) => ({ ...f, lines }));
+                              }}
+                            />
+                          </td>
+                          <td className="px-2 py-1">
+                            <TextInput
+                              value={line.uom || ""}
+                              onChange={(e) => {
+                                const lines = [...detailQuotationDraftForm.lines];
+                                lines[idx] = { ...line, uom: e.target.value, serialNo: idx + 1, totalPrice };
+                                setDetailQuotationDraftForm((f) => ({ ...f, lines }));
+                              }}
+                            />
+                          </td>
+                          <td className="px-2 py-1">
+                            <TextInput
+                              type="number"
+                              value={line.qty}
+                              onChange={(e) => {
+                                const nextQty = Number(e.target.value);
+                                const lines = [...detailQuotationDraftForm.lines];
+                                lines[idx] = { ...line, qty: nextQty, serialNo: idx + 1, totalPrice: nextQty * price };
+                                setDetailQuotationDraftForm((f) => ({ ...f, lines }));
+                              }}
+                            />
+                          </td>
+                          <td className="px-2 py-1">
+                            <TextInput
+                              type="number"
+                              step="0.01"
+                              value={line.price}
+                              onChange={(e) => {
+                                const nextPrice = Number(e.target.value);
+                                const lines = [...detailQuotationDraftForm.lines];
+                                lines[idx] = { ...line, price: nextPrice, serialNo: idx + 1, totalPrice: qty * nextPrice };
+                                setDetailQuotationDraftForm((f) => ({ ...f, lines }));
+                              }}
+                            />
+                          </td>
+                          <td className="px-2 py-1 text-right">{money(totalPrice)}</td>
+                          <td className="px-2 py-1">
+                            <TextInput
+                              value={line.remarks || ""}
+                              onChange={(e) => {
+                                const lines = [...detailQuotationDraftForm.lines];
+                                lines[idx] = { ...line, remarks: e.target.value, serialNo: idx + 1, totalPrice };
+                                setDetailQuotationDraftForm((f) => ({ ...f, lines }));
+                              }}
+                            />
+                          </td>
+                          <td className="px-2 py-1">
+                            <TextInput
+                              value={line.materialCode || ""}
+                              onChange={(e) => {
+                                const lines = [...detailQuotationDraftForm.lines];
+                                lines[idx] = { ...line, materialCode: e.target.value, serialNo: idx + 1, totalPrice };
+                                setDetailQuotationDraftForm((f) => ({ ...f, lines }));
+                              }}
+                            />
+                          </td>
+                          <td className="px-2 py-1">
+                            <TextInput
+                              value={line.availability || ""}
+                              onChange={(e) => {
+                                const lines = [...detailQuotationDraftForm.lines];
+                                lines[idx] = { ...line, availability: e.target.value, serialNo: idx + 1, totalPrice };
+                                setDetailQuotationDraftForm((f) => ({ ...f, lines }));
+                              }}
+                            />
+                          </td>
+                          <td className="px-2 py-1">
+                            <button
+                              type="button"
+                              className="rounded-xl border px-2 py-1 text-xs"
+                              onClick={() => {
+                                const lines = detailQuotationDraftForm.lines.filter((_, i) => i !== idx).map((l, i2) => ({ ...l, serialNo: i2 + 1 }));
+                                setDetailQuotationDraftForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
+                              }}
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
+              <div className="flex justify-between py-1">
+                <span>Subtotal</span>
+                <span>
+                  {money(
+                    detailQuotationDraftForm.lines.reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0)
+                  )}
+                </span>
+              </div>
+              <div className="flex justify-between py-1"><span>Discount</span><span>{money(detail.discountTotal)}</span></div>
+              <div className="flex justify-between py-1"><span>Tax</span><span>{money(detail.taxTotal)}</span></div>
+              <div className="flex justify-between py-1 text-base font-semibold">
+                <span>Grand Total</span>
+                <span>
+                  {money(detailQuotationDraftForm.lines.reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0))}{" "}
+                  {detailQuotationDraftForm.currency || ""}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="rounded-xl bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                disabled={updateQuotationDetailMutation.isPending || !detailId}
+                onClick={() => updateQuotationDetailMutation.mutate()}
+              >
+                {updateQuotationDetailMutation.isPending ? "Saving…" : "Save changes"}
+              </button>
+              <button type="button" className="rounded-xl border px-2 py-1 text-xs opacity-40" disabled title="Approve the quotation first">
+                Convert to OA
+              </button>
+              <button type="button" className="rounded-xl border px-2 py-1 text-xs opacity-40" disabled title="Approve the quotation first">
+                Convert to PI
+              </button>
+              <button type="button" className="rounded-xl border px-2 py-1 text-xs opacity-40" disabled title="Approve the quotation first">
+                Convert to CIPL
+              </button>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {statusOptions.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  disabled={s === detail.status || statusMutation.isPending}
+                  className="rounded-xl border px-2 py-1 text-xs disabled:opacity-40"
+                  onClick={() => statusMutation.mutate({ id: detail._id, nextStatus: s })}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="rounded-xl border px-2 py-1 text-xs"
+                onClick={() => {
+                  apiGet(`/quotations/${detail._id}/print-data`)
+                    .then((data) => renderPrintWindow(data))
+                    .catch((e) => setErr(e.message));
+                }}
+              >
+                Print
+              </button>
+              <button
+                type="button"
+                className="rounded-xl border px-2 py-1 text-xs"
+                onClick={() => {
+                  apiGet(`/quotations/${detail._id}/print-data`)
+                    .then((data) => renderPrintWindow(data, true))
+                    .catch((e) => setErr(e.message));
+                }}
+              >
+                Export PDF
+              </button>
+            </div>
+          </div>
+        ) : tabContent === "quotation" && detail ? (
           <div className="space-y-4 text-sm">
             <div className="grid gap-3 sm:grid-cols-3">
               <div>
@@ -2621,6 +2994,10 @@ export default function Sales() {
                 </div>
               </div>
             </div>
+
+            {(detail.status === "APPROVED" || detail.status === "CONVERTED") && (
+              <p className="text-xs text-gray-600">This quotation is locked — only print/export is allowed.</p>
+            )}
 
             <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded-xl border bg-gray-50 p-3">
@@ -2689,7 +3066,12 @@ export default function Sales() {
                 <button
                   key={s}
                   type="button"
-                  disabled={s === detail.status || statusMutation.isPending}
+                  disabled={
+                    s === detail.status ||
+                    statusMutation.isPending ||
+                    detail.status === "APPROVED" ||
+                    detail.status === "CONVERTED"
+                  }
                   className="rounded-xl border px-2 py-1 text-xs disabled:opacity-40"
                   onClick={() => statusMutation.mutate({ id: detail._id, nextStatus: s })}
                 >
@@ -2722,27 +3104,35 @@ export default function Sales() {
               </button>
               <button
                 type="button"
-                className="rounded-xl border px-2 py-1 text-xs"
+                className={`rounded-xl border px-2 py-1 text-xs ${detail.status !== "APPROVED" ? "opacity-40" : ""}`}
+                disabled={detail.status !== "APPROVED" || convertToOAMutation.isPending}
+                title={detail.status !== "APPROVED" ? "Quotation must be APPROVED" : ""}
                 onClick={() => convertToOAMutation.mutate(detail._id)}
               >
                 Convert to OA
               </button>
               <button
                 type="button"
-                className="rounded-xl border px-2 py-1 text-xs"
+                className={`rounded-xl border px-2 py-1 text-xs ${detail.status !== "APPROVED" ? "opacity-40" : ""}`}
+                disabled={detail.status !== "APPROVED" || convertToProformaFromQuotationMutation.isPending}
+                title={detail.status !== "APPROVED" ? "Quotation must be APPROVED" : ""}
                 onClick={() => convertToProformaFromQuotationMutation.mutate(detail._id)}
               >
                 Convert to PI
               </button>
               <button
                 type="button"
-                className="rounded-xl border px-2 py-1 text-xs"
+                className={`rounded-xl border px-2 py-1 text-xs ${detail.status !== "APPROVED" ? "opacity-40" : ""}`}
+                disabled={detail.status !== "APPROVED" || convertToCiplFromQuotationMutation.isPending}
+                title={detail.status !== "APPROVED" ? "Quotation must be APPROVED" : ""}
                 onClick={() => convertToCiplFromQuotationMutation.mutate(detail._id)}
               >
                 Convert to CIPL
               </button>
             </div>
           </div>
+        ) : tabContent === "quotation" ? (
+          <p className="text-sm text-gray-500">Loading...</p>
         ) : tabContent === "oa" ? (
           !oaDetail ? (
             <p className="text-sm text-gray-500">Loading...</p>

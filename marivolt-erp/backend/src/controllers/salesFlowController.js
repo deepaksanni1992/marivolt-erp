@@ -59,6 +59,13 @@ function validateConversionSource(doc, messagePrefix = "document") {
   }
 }
 
+function requireApprovedQuotationForConversion(quotation) {
+  const st = String(quotation?.status || "").toUpperCase();
+  if (st !== "APPROVED") {
+    throw new Error("Quotation must be APPROVED before it can be converted to OA, Proforma, or CIPL");
+  }
+}
+
 const PENDING_QUOTATION_STATUSES = ["DRAFT", "SENT"];
 const PENDING_OA_STATUSES = ["DRAFT", "CONFIRMED"];
 
@@ -1072,6 +1079,7 @@ export async function convertQuotationToOA(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid quotation id" });
     const quotation = await Quotation.findOne(withCompany(req, { _id: id }));
     validateConversionSource(quotation, "quotation");
+    requireApprovedQuotationForConversion(quotation);
     if (!quotation.lines?.length) {
       return res.status(400).json({ message: "Quotation requires at least one line to convert" });
     }
@@ -1117,6 +1125,7 @@ export async function convertQuotationToProforma(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid quotation id" });
     const quotation = await Quotation.findOne(withCompany(req, { _id: id }));
     validateConversionSource(quotation, "quotation");
+    requireApprovedQuotationForConversion(quotation);
     if (!quotation.lines?.length) {
       return res.status(400).json({ message: "Quotation requires at least one line to convert" });
     }
@@ -1513,6 +1522,7 @@ export async function convertQuotationToCipl(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid quotation id" });
     const quotation = await Quotation.findOne(withCompany(req, { _id: id }));
     validateConversionSource(quotation, "quotation");
+    requireApprovedQuotationForConversion(quotation);
     if (!quotation.lines?.length) return res.status(400).json({ message: "Quotation requires at least one line to convert" });
     const already = await Cipl.findOne(withCompany(req, { linkedQuotationId: quotation._id }));
     if (already) return res.status(409).json({ message: `CIPL already exists (${already.ciplNo})` });
