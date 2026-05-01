@@ -66,6 +66,14 @@ function requireApprovedQuotationForConversion(quotation) {
   }
 }
 
+function isOAEditLocked(doc) {
+  if (!doc) return true;
+  const st = String(doc.status || "").toUpperCase();
+  if (["APPROVED", "CONVERTED", "CLOSED", "CANCELLED"].includes(st)) return true;
+  const conv = Array.isArray(doc.convertedTo) ? doc.convertedTo.map(String) : [];
+  return conv.includes("PROFORMA") || conv.includes("SALES_INVOICE");
+}
+
 const PENDING_QUOTATION_STATUSES = ["DRAFT", "SENT"];
 const PENDING_OA_STATUSES = ["DRAFT", "CONFIRMED"];
 
@@ -924,22 +932,39 @@ export async function updateOA(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const doc = await OrderAcknowledgement.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
+    if (isOAEditLocked(doc)) {
+      return res.status(400).json({
+        message:
+          "This order acknowledgement is locked after conversion to Proforma or Sales Invoice (or finalized status); it cannot be edited.",
+      });
+    }
     const allowed = [
       "oaDate",
       "customerName",
       "customerPORef",
-      "customerPODate",
       "acknowledgementNotes",
       "deliverySchedule",
       "paymentTerms",
       "incoterm",
       "dispatchTerms",
       "currency",
-      "status",
       "lines",
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
+    }
+    if (req.body.customerPODate !== undefined) {
+      const raw = req.body.customerPODate;
+      doc.customerPODate = raw === "" || raw === null || raw === undefined ? null : new Date(raw);
+    }
+    if (req.body.status !== undefined) {
+      const st = String(req.body.status || "").toUpperCase();
+      if (["APPROVED", "CONVERTED"].includes(st)) {
+        return res.status(400).json({
+          message: "Status APPROVED is set automatically when converting to PI or Sales Invoice.",
+        });
+      }
+      doc.status = req.body.status;
     }
     doc.lines = normalizeLines(doc.lines || []);
     Object.assign(doc, computeTotals(doc.lines));
@@ -1201,6 +1226,7 @@ export async function convertOAToProforma(req, res) {
       createdBy: req.user?.email || "",
     });
     if (!oa.convertedTo?.includes("PROFORMA")) oa.convertedTo = [...(oa.convertedTo || []), "PROFORMA"];
+    oa.status = "APPROVED";
     oa.updatedBy = req.user?.email || "";
     await oa.save();
     res.status(201).json(doc);
@@ -1249,6 +1275,7 @@ export async function convertOAToSalesInvoice(req, res) {
       createdBy: req.user?.email || "",
     });
     if (!oa.convertedTo?.includes("SALES_INVOICE")) oa.convertedTo = [...(oa.convertedTo || []), "SALES_INVOICE"];
+    oa.status = "APPROVED";
     oa.updatedBy = req.user?.email || "";
     await oa.save();
     res.status(201).json(doc);

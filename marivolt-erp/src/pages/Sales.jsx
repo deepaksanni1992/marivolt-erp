@@ -216,6 +216,69 @@ function quotationDetailToEditableForm(q) {
   };
 }
 
+function orderAcknowledgementLocked(oa) {
+  if (!oa) return true;
+  const st = String(oa.status || "").toUpperCase();
+  if (["APPROVED", "CONVERTED", "CLOSED", "CANCELLED"].includes(st)) return true;
+  const conv = Array.isArray(oa.convertedTo) ? oa.convertedTo.map(String) : [];
+  return conv.includes("PROFORMA") || conv.includes("SALES_INVOICE");
+}
+
+/** Shown badge when OA was converted to PI/SI even if legacy records never updated status to APPROVED. */
+function orderAcknowledgementDisplayStatus(oa) {
+  if (!oa) return "";
+  const st = String(oa.status || "").toUpperCase();
+  if (st === "CANCELLED" || st === "CLOSED" || st === "CONVERTED") return st;
+  const conv = Array.isArray(oa.convertedTo) ? oa.convertedTo.map(String) : [];
+  if (conv.includes("PROFORMA") || conv.includes("SALES_INVOICE")) return "APPROVED";
+  return String(oa.status || "");
+}
+
+function oaDetailToEditableForm(oa) {
+  if (!oa) return null;
+  const linesSrc = Array.isArray(oa.lines) && oa.lines.length ? oa.lines : [];
+  const lines =
+    linesSrc.length > 0
+      ? linesSrc.map((l, idx) => {
+          const qty = Number(l.qty) || 0;
+          const price = Number(l.price) || 0;
+          const totalPrice = Number(l.totalPrice) || qty * price;
+          return {
+            serialNo: l.serialNo ?? idx + 1,
+            article: l.article || "",
+            partNumber: l.partNumber || "",
+            description: l.description || "",
+            qty,
+            uom: l.uom || "PCS",
+            price,
+            totalPrice,
+            remarks: l.remarks || "",
+            materialCode: l.materialCode || "",
+            availability: l.availability || "",
+          };
+        })
+      : [emptyLine()];
+  const pod =
+    oa.customerPODate != null && oa.customerPODate !== ""
+      ? new Date(oa.customerPODate).toISOString().slice(0, 10)
+      : "";
+  const oad = oa.oaDate ? new Date(oa.oaDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+  return {
+    customerName: oa.customerName || "",
+    customerPORef: oa.customerPORef || "",
+    customerPODate: pod,
+    acknowledgementNotes: oa.acknowledgementNotes || "",
+    deliverySchedule: oa.deliverySchedule || "",
+    paymentTerms: oa.paymentTerms || "",
+    incoterm: oa.incoterm || "",
+    dispatchTerms: oa.dispatchTerms || "",
+    currency: String(oa.currency || "USD").toUpperCase(),
+    oaDate: oad,
+    status: oa.status || "DRAFT",
+    lines,
+  };
+}
+
 function money(n) {
   return Number(n || 0).toFixed(2);
 }
@@ -795,6 +858,7 @@ export default function Sales() {
   const [ciplCreateOpen, setCiplCreateOpen] = useState(false);
   const [err, setErr] = useState("");
   const [detailQuotationDraftForm, setDetailQuotationDraftForm] = useState(null);
+  const [detailOADraftForm, setDetailOADraftForm] = useState(null);
   const [selectedReportId, setSelectedReportId] = useState("");
   const [reportPage, setReportPage] = useState(1);
   const [reportFilters, setReportFilters] = useState({
@@ -1258,6 +1322,31 @@ export default function Sales() {
     setDetailQuotationDraftForm(quotationDetailToEditableForm(detail));
   }, [activeTab, detailId, detail]);
 
+  const putOrderAcknowledgementMutation = useMutation({
+    mutationFn: ({ body }) => apiPut(`/sales/order-acknowledgements/${detailId}`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-oa"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["oa-detail", detailId] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  useEffect(() => {
+    if (activeTab !== "Order Acknowledgement" || !detailId) {
+      setDetailOADraftForm(null);
+      return;
+    }
+    if (!oaDetail) {
+      setDetailOADraftForm(null);
+      return;
+    }
+    if (orderAcknowledgementLocked(oaDetail)) {
+      setDetailOADraftForm(null);
+      return;
+    }
+    setDetailOADraftForm(oaDetailToEditableForm(oaDetail));
+  }, [activeTab, detailId, oaDetail]);
+
   const [customerForm, setCustomerForm] = useState({
     name: "",
     contactName: "",
@@ -1319,6 +1408,7 @@ export default function Sales() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-proforma"] });
       qc.invalidateQueries({ queryKey: ["sales-oa"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["oa-detail", detailId] });
     },
     onError: (e) => setErr(e.message),
   });
@@ -1328,6 +1418,7 @@ export default function Sales() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-cipl"] });
       qc.invalidateQueries({ queryKey: ["sales-oa"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["oa-detail", detailId] });
     },
     onError: (e) => setErr(e.message),
   });
@@ -1337,6 +1428,7 @@ export default function Sales() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
       qc.invalidateQueries({ queryKey: ["sales-oa"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["oa-detail", detailId] });
     },
     onError: (e) => setErr(e.message),
   });
@@ -2329,7 +2421,7 @@ export default function Sales() {
                   { label: "OA Date", value: (r) => (r.oaDate ? new Date(r.oaDate).toLocaleDateString() : "") },
                   { label: "Customer", value: (r) => r.customerName },
                   { label: "Linked Quotation", value: (r) => r.linkedQuotationNo || "" },
-                  { label: "Status", value: (r) => r.status },
+                  { label: "Status", value: (r) => orderAcknowledgementDisplayStatus(r) },
                   { label: "Currency", value: (r) => r.currency || "USD" },
                   { label: "Total", value: (r) => money(r.grandTotal) },
                 ])
@@ -2365,14 +2457,20 @@ export default function Sales() {
                       </td>
                     </tr>
                   ) : (
-                    oaRows.map((r) => (
+                    oaRows.map((r) => {
+                      const converted = Array.isArray(r.convertedTo) ? r.convertedTo.map(String) : [];
+                      const hasPIFromOA = converted.includes("PROFORMA");
+                      const hasSIFromOA = converted.includes("SALES_INVOICE");
+                      return (
                       <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
                         <td className="px-3 py-2 font-mono text-xs">{r.oaNo}</td>
                         <td className="px-3 py-2">{r.customerName}</td>
                         <td className="px-3 py-2">{r.oaDate ? new Date(r.oaDate).toLocaleDateString() : "—"}</td>
                         <td className="px-3 py-2">
-                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
-                            {r.status}
+                          <span
+                            className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(orderAcknowledgementDisplayStatus(r))}`}
+                          >
+                            {orderAcknowledgementDisplayStatus(r)}
                           </span>
                         </td>
                         <td className="px-3 py-2 text-right">
@@ -2391,14 +2489,18 @@ export default function Sales() {
                             </button>
                             <button
                               type="button"
-                              className="rounded-lg border px-2 py-1 text-xs"
+                              className={`rounded-lg border px-2 py-1 text-xs ${hasPIFromOA ? "opacity-40" : ""}`}
+                              disabled={hasPIFromOA}
+                              title={hasPIFromOA ? "Proforma already created from this OA" : ""}
                               onClick={() => convertToProformaFromOAMutation.mutate(r._id)}
                             >
                               Convert to PI
                             </button>
                             <button
                               type="button"
-                              className="rounded-lg border px-2 py-1 text-xs"
+                              className={`rounded-lg border px-2 py-1 text-xs ${hasSIFromOA ? "opacity-40" : ""}`}
+                              disabled={hasSIFromOA}
+                              title={hasSIFromOA ? "Sales invoice already created from this OA" : ""}
                               onClick={() => convertToSalesInvoiceFromOAMutation.mutate(r._id)}
                             >
                               Convert to SI
@@ -2413,7 +2515,8 @@ export default function Sales() {
                           </div>
                         </td>
                       </tr>
-                    ))
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -3256,8 +3359,334 @@ export default function Sales() {
         ) : tabContent === "oa" ? (
           !oaDetail ? (
             <p className="text-sm text-gray-500">Loading...</p>
+          ) : !orderAcknowledgementLocked(oaDetail) && !detailOADraftForm ? (
+            <p className="text-sm text-gray-500">Loading...</p>
+          ) : !orderAcknowledgementLocked(oaDetail) && detailOADraftForm ? (
+            <div className="space-y-4 text-sm">
+              <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 ring-1 ring-amber-200">
+                Draft / open OA — edit and save below. Convert to PI or SI is available while not yet converted to those documents. Once converted to a Proforma or Sales Invoice this OA locks and shows{" "}
+                <b>APPROVED</b>.
+              </div>
+              <div className="grid gap-3 sm:grid-cols-4">
+                <FormField label="OA No">
+                  <TextInput value={oaDetail.oaNo || ""} disabled className="bg-gray-50" />
+                </FormField>
+                <FormField label="OA Date">
+                  <TextInput
+                    type="date"
+                    value={detailOADraftForm.oaDate}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, oaDate: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Currency">
+                  <TextInput
+                    value={detailOADraftForm.currency}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
+                  />
+                </FormField>
+                <FormField label="Status">
+                  <TextInput value={detailOADraftForm.status || ""} disabled className="bg-gray-50" />
+                </FormField>
+                <FormField label="Customer *">
+                  <TextInput
+                    value={detailOADraftForm.customerName}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, customerName: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Customer PO ref">
+                  <TextInput
+                    value={detailOADraftForm.customerPORef || ""}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, customerPORef: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Customer PO date">
+                  <TextInput
+                    type="date"
+                    value={detailOADraftForm.customerPODate || ""}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, customerPODate: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Payment terms">
+                  <TextInput
+                    value={detailOADraftForm.paymentTerms || ""}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, paymentTerms: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Incoterm">
+                  <TextInput value={detailOADraftForm.incoterm || ""} onChange={(e) => setDetailOADraftForm((f) => ({ ...f, incoterm: e.target.value }))} />
+                </FormField>
+                <FormField label="Delivery / schedule">
+                  <TextInput
+                    value={detailOADraftForm.deliverySchedule || ""}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, deliverySchedule: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Dispatch terms">
+                  <TextInput
+                    value={detailOADraftForm.dispatchTerms || ""}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, dispatchTerms: e.target.value }))}
+                  />
+                </FormField>
+              </div>
+              <FormField label="Acknowledgement notes">
+                <textarea
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                  rows={3}
+                  value={detailOADraftForm.acknowledgementNotes || ""}
+                  onChange={(e) => setDetailOADraftForm((f) => ({ ...f, acknowledgementNotes: e.target.value }))}
+                />
+              </FormField>
+              <div className="text-xs text-gray-600">Linked Quotation: {oaDetail.linkedQuotationNo || "-"}</div>
+
+              <div className="mt-1">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-sm font-medium">OA Lines</span>
+                  <button
+                    type="button"
+                    className="text-sm underline"
+                    onClick={() => setDetailOADraftForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }))}
+                  >
+                    + Add line
+                  </button>
+                </div>
+                <div className="w-full overflow-x-auto rounded-xl border">
+                  <table className="min-w-[1200px] w-full text-xs">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-2 py-2 text-left">S/N</th>
+                        <th className="px-2 py-2 text-left">Article</th>
+                        <th className="px-2 py-2 text-left">Part number</th>
+                        <th className="px-2 py-2 text-left">Description</th>
+                        <th className="px-2 py-2 text-left">UOM</th>
+                        <th className="px-2 py-2 text-right">QTY</th>
+                        <th className="px-2 py-2 text-right">Price</th>
+                        <th className="px-2 py-2 text-right">Total</th>
+                        <th className="px-2 py-2 text-left">Remarks</th>
+                        <th className="px-2 py-2 text-left">Material</th>
+                        <th className="px-2 py-2 text-left">Avail.</th>
+                        <th className="px-2 py-2 text-left">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detailOADraftForm.lines.map((line, idx) => {
+                        const qty = Number(line.qty || 0);
+                        const price = Number(line.price || 0);
+                        const totalPrice = qty * price;
+                        return (
+                          <tr key={idx} className="border-t">
+                            <td className="px-2 py-1">{idx + 1}</td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                value={line.article || ""}
+                                onChange={(e) => {
+                                  const lines = [...detailOADraftForm.lines];
+                                  lines[idx] = { ...line, article: e.target.value.toUpperCase(), serialNo: idx + 1, totalPrice };
+                                  setDetailOADraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                value={line.partNumber || ""}
+                                onChange={(e) => {
+                                  const lines = [...detailOADraftForm.lines];
+                                  lines[idx] = { ...line, partNumber: e.target.value, serialNo: idx + 1, totalPrice };
+                                  setDetailOADraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                value={line.description || ""}
+                                onChange={(e) => {
+                                  const lines = [...detailOADraftForm.lines];
+                                  lines[idx] = { ...line, description: e.target.value, serialNo: idx + 1, totalPrice };
+                                  setDetailOADraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                value={line.uom || ""}
+                                onChange={(e) => {
+                                  const lines = [...detailOADraftForm.lines];
+                                  lines[idx] = { ...line, uom: e.target.value, serialNo: idx + 1, totalPrice };
+                                  setDetailOADraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                type="number"
+                                value={line.qty}
+                                onChange={(e) => {
+                                  const nextQty = Number(e.target.value);
+                                  const lines = [...detailOADraftForm.lines];
+                                  lines[idx] = { ...line, qty: nextQty, serialNo: idx + 1, totalPrice: nextQty * price };
+                                  setDetailOADraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                type="number"
+                                step="0.01"
+                                value={line.price}
+                                onChange={(e) => {
+                                  const nextPrice = Number(e.target.value);
+                                  const lines = [...detailOADraftForm.lines];
+                                  lines[idx] = { ...line, price: nextPrice, serialNo: idx + 1, totalPrice: qty * nextPrice };
+                                  setDetailOADraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1 text-right">{money(totalPrice)}</td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                value={line.remarks || ""}
+                                onChange={(e) => {
+                                  const lines = [...detailOADraftForm.lines];
+                                  lines[idx] = { ...line, remarks: e.target.value, serialNo: idx + 1, totalPrice };
+                                  setDetailOADraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                value={line.materialCode || ""}
+                                onChange={(e) => {
+                                  const lines = [...detailOADraftForm.lines];
+                                  lines[idx] = { ...line, materialCode: e.target.value, serialNo: idx + 1, totalPrice };
+                                  setDetailOADraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                value={line.availability || ""}
+                                onChange={(e) => {
+                                  const lines = [...detailOADraftForm.lines];
+                                  lines[idx] = { ...line, availability: e.target.value, serialNo: idx + 1, totalPrice };
+                                  setDetailOADraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1">
+                              <button
+                                type="button"
+                                className="rounded-xl border px-2 py-1 text-xs"
+                                onClick={() => {
+                                  const lines = detailOADraftForm.lines.filter((_, i) => i !== idx).map((l, i2) => ({ ...l, serialNo: i2 + 1 }));
+                                  setDetailOADraftForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
+                                }}
+                              >
+                                Remove
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
+                <div className="flex justify-between py-1">
+                  <span>Subtotal</span>
+                  <span>
+                    {money(detailOADraftForm.lines.reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0))}
+                  </span>
+                </div>
+                <div className="flex justify-between py-1 text-base font-semibold">
+                  <span>Grand Total</span>
+                  <span>
+                    {money(detailOADraftForm.lines.reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0))}{" "}
+                    {detailOADraftForm.currency || ""}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="rounded-xl bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                  disabled={putOrderAcknowledgementMutation.isPending || !detailId}
+                  onClick={() => putOrderAcknowledgementMutation.mutate({ body: detailOADraftForm })}
+                >
+                  {putOrderAcknowledgementMutation.isPending ? "Saving…" : "Save changes"}
+                </button>
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("oa", oaDetail._id)}>
+                  Print
+                </button>
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("oa", oaDetail._id, true)}>
+                  Export PDF
+                </button>
+                {(() => {
+                  const conv = Array.isArray(oaDetail.convertedTo) ? oaDetail.convertedTo.map(String) : [];
+                  const hasPI = conv.includes("PROFORMA");
+                  const hasSI = conv.includes("SALES_INVOICE");
+                  return (
+                    <>
+                      <button
+                        type="button"
+                        className={`rounded-xl border px-2 py-1 text-xs ${hasPI ? "opacity-40" : ""}`}
+                        disabled={hasPI || convertToProformaFromOAMutation.isPending}
+                        title={hasPI ? "Proforma already linked" : ""}
+                        onClick={() => convertToProformaFromOAMutation.mutate(oaDetail._id)}
+                      >
+                        Convert to PI
+                      </button>
+                      <button
+                        type="button"
+                        className={`rounded-xl border px-2 py-1 text-xs ${hasSI ? "opacity-40" : ""}`}
+                        disabled={hasSI || convertToSalesInvoiceFromOAMutation.isPending}
+                        title={hasSI ? "Sales invoice already linked (from OA)" : ""}
+                        onClick={() => convertToSalesInvoiceFromOAMutation.mutate(oaDetail._id)}
+                      >
+                        Convert to SI
+                      </button>
+                    </>
+                  );
+                })()}
+                <button
+                  type="button"
+                  className="rounded-xl border px-2 py-1 text-xs"
+                  onClick={() => convertToCiplFromOAMutation.mutate(oaDetail._id)}
+                >
+                  Convert to CIPL
+                </button>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {oaStatusOptions.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    disabled={s === detailOADraftForm.status || putOrderAcknowledgementMutation.isPending}
+                    className="rounded-xl border px-2 py-1 text-xs disabled:opacity-40"
+                    onClick={() =>
+                      putOrderAcknowledgementMutation.mutate({ body: { ...detailOADraftForm, status: s } })
+                    }
+                  >
+                    Set {s}
+                  </button>
+                ))}
+              </div>
+            </div>
           ) : (
+            (() => {
+              const oc = Array.isArray(oaDetail.convertedTo) ? oaDetail.convertedTo.map(String) : [];
+              const dupPIOpen = oc.includes("PROFORMA");
+              const dupSIOpen = oc.includes("SALES_INVOICE");
+              const displaySt = orderAcknowledgementDisplayStatus(oaDetail);
+              return (
             <div className="space-y-3 text-sm">
+              <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700 ring-1 ring-slate-200">
+                {dupPIOpen || dupSIOpen || displaySt === "APPROVED"
+                  ? "This OA shows as Approved after conversion to PI and/or Sales Invoice — it cannot be edited. Print or export PDF when you need to share it."
+                  : "This OA cannot be edited in its current state. Print or export PDF when you need to share it."}
+              </p>
               <div className="grid gap-2 sm:grid-cols-3">
                 <div>
                   <div className="text-gray-500">OA No</div>
@@ -3270,18 +3699,35 @@ export default function Sales() {
                 <div>
                   <div className="text-gray-500">Status</div>
                   <div>
-                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(oaDetail.status)}`}>
-                      {oaDetail.status}
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(displaySt)}`}>
+                      {displaySt}
                     </span>
                   </div>
                 </div>
               </div>
               <div className="text-xs text-gray-600">Linked Quotation: {oaDetail.linkedQuotationNo || "-"}</div>
+              {(oaDetail.acknowledgementNotes || oaDetail.deliverySchedule) && (
+                <div className="rounded-xl border bg-gray-50 p-3 text-xs">
+                  {oaDetail.deliverySchedule ? (
+                    <div>
+                      <span className="font-semibold text-gray-500">Delivery: </span>
+                      {oaDetail.deliverySchedule}
+                    </div>
+                  ) : null}
+                  {oaDetail.acknowledgementNotes ? (
+                    <div className={oaDetail.deliverySchedule ? "mt-2 whitespace-pre-wrap" : "whitespace-pre-wrap"}>
+                      <span className="font-semibold text-gray-500">Notes: </span>
+                      {oaDetail.acknowledgementNotes}
+                    </div>
+                  ) : null}
+                </div>
+              )}
               <div className="overflow-x-auto rounded-xl border">
                 <table className="min-w-full text-sm">
                   <thead className="bg-gray-100">
                     <tr>
                       <th className="px-3 py-2 text-left">S/N</th>
+                      <th className="px-3 py-2 text-left">Article</th>
                       <th className="px-3 py-2 text-left">Part no</th>
                       <th className="px-3 py-2 text-left">Description</th>
                       <th className="px-3 py-2 text-left">UOM</th>
@@ -3294,6 +3740,7 @@ export default function Sales() {
                     {oaDetail.lines?.map((line) => (
                       <tr key={line._id} className="border-t">
                         <td className="px-3 py-2">{line.serialNo}</td>
+                        <td className="px-3 py-2">{line.article || "—"}</td>
                         <td className="px-3 py-2">{line.partNumber}</td>
                         <td className="px-3 py-2">{line.description}</td>
                         <td className="px-3 py-2">{line.uom}</td>
@@ -3322,35 +3769,30 @@ export default function Sales() {
                   Export PDF
                 </button>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {oaStatusOptions.map((s) => (
-                  <button key={s} type="button" className="rounded-xl border px-2 py-1 text-xs" disabled>
-                    {s}
-                  </button>
-                ))}
+              <div className="flex flex-wrap gap-2 opacity-70">
+                <button
+                  type="button"
+                  className={`rounded-xl border px-2 py-1 text-xs ${dupPIOpen ? "opacity-40" : ""}`}
+                  disabled={dupPIOpen}
+                  onClick={() => convertToProformaFromOAMutation.mutate(oaDetail._id)}
+                >
+                  Convert to PI
+                </button>
+                <button
+                  type="button"
+                  className={`rounded-xl border px-2 py-1 text-xs ${dupSIOpen ? "opacity-40" : ""}`}
+                  disabled={dupSIOpen}
+                  onClick={() => convertToSalesInvoiceFromOAMutation.mutate(oaDetail._id)}
+                >
+                  Convert to SI
+                </button>
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => convertToCiplFromOAMutation.mutate(oaDetail._id)}>
+                  Convert to CIPL
+                </button>
               </div>
-              <button
-                type="button"
-                className="rounded-xl border px-2 py-1 text-xs"
-                onClick={() => convertToProformaFromOAMutation.mutate(oaDetail._id)}
-              >
-                Convert to PI
-              </button>
-              <button
-                type="button"
-                className="rounded-xl border px-2 py-1 text-xs"
-                onClick={() => convertToSalesInvoiceFromOAMutation.mutate(oaDetail._id)}
-              >
-                Convert to SI
-              </button>
-              <button
-                type="button"
-                className="rounded-xl border px-2 py-1 text-xs"
-                onClick={() => convertToCiplFromOAMutation.mutate(oaDetail._id)}
-              >
-                Convert to CIPL
-              </button>
             </div>
+              );
+            })()
           )
         ) : tabContent === "proforma" ? (
           !proformaDetail ? (

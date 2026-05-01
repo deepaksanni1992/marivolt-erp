@@ -40,7 +40,7 @@ const orderAcknowledgementSchema = new mongoose.Schema(
     grandTotal: { type: Number, default: 0 },
     status: {
       type: String,
-      enum: ["DRAFT", "CONFIRMED", "CLOSED", "CANCELLED"],
+      enum: ["DRAFT", "CONFIRMED", "APPROVED", "CONVERTED", "CLOSED", "CANCELLED"],
       default: "DRAFT",
     },
     convertedTo: [{ type: String, default: "", trim: true }],
