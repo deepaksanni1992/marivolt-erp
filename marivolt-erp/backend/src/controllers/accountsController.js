@@ -4,6 +4,7 @@ import PurchaseInvoice from "../models/PurchaseInvoice.js";
 import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
 import SupplierLedgerEntry from "../models/SupplierLedgerEntry.js";
 import CashBankEntry from "../models/CashBankEntry.js";
+import BankDetail from "../models/BankDetail.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 
 function withCompany(req, filter = {}) {
@@ -376,6 +377,58 @@ export async function deleteCashBankEntry(req, res) {
       return res.status(400).json({ message: "Invalid id" });
     }
     const row = await CashBankEntry.findOneAndDelete(withCompany(req, { _id: id }));
+    if (!row) return res.status(404).json({ message: "Not found" });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+// --- Bank details ---
+export async function listBankDetails(req, res) {
+  try {
+    const { page, limit, skip } = paginate(req);
+    const filter = withCompany(req);
+    if (req.query.search) {
+      const q = String(req.query.search).trim();
+      filter.$or = [{ bankName: new RegExp(q, "i") }, { accountName: new RegExp(q, "i") }, { accountNumber: new RegExp(q, "i") }];
+    }
+    if (req.query.currency) filter.currency = String(req.query.currency).trim().toUpperCase();
+    const [items, total] = await Promise.all([
+      BankDetail.find(filter).sort({ isDefault: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+      BankDetail.countDocuments(filter),
+    ]);
+    res.json({ items, total, page, limit });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function createBankDetail(req, res) {
+  try {
+    const body = {
+      ...req.body,
+      companyId: req.companyId,
+      createdBy: req.user?.email || "",
+    };
+    body.currency = String(body.currency || "USD").trim().toUpperCase();
+    if (body.isDefault) {
+      await BankDetail.updateMany(withCompany(req), { $set: { isDefault: false } });
+    }
+    const doc = await BankDetail.create(body);
+    res.status(201).json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function deleteBankDetail(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid id" });
+    }
+    const row = await BankDetail.findOneAndDelete(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json({ success: true });
   } catch (err) {

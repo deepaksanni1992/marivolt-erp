@@ -30,4 +30,8 @@ router.get("/cash-bank", c.listCashBank);
 router.post("/cash-bank", c.createCashBankEntry);
 router.delete("/cash-bank/:id", c.deleteCashBankEntry);
 
+router.get("/bank-details", c.listBankDetails);
+router.post("/bank-details", c.createBankDetail);
+router.delete("/bank-details/:id", c.deleteBankDetail);
+
 export default router;

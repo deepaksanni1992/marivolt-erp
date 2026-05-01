@@ -11,6 +11,7 @@ const tabs = [
   { id: "cust", label: "Customer ledger" },
   { id: "supp", label: "Supplier ledger" },
   { id: "cash", label: "Cash / bank" },
+  { id: "bank", label: "Bank details" },
 ];
 
 const invLine = () => ({
@@ -74,6 +75,17 @@ export default function Accounts() {
     mode: "",
     remarks: "",
   });
+  const [bankForm, setBankForm] = useState({
+    bankName: "",
+    accountName: "",
+    accountNumber: "",
+    currency: "USD",
+    branchName: "",
+    swiftCode: "",
+    iban: "",
+    isDefault: false,
+    remarks: "",
+  });
 
   const siQ = useQuery({
     queryKey: ["salesInvoices", page],
@@ -110,6 +122,11 @@ export default function Accounts() {
     queryFn: () => apiGetWithQuery("/accounts/cash-bank", { page, limit }),
     enabled: tab === "cash",
   });
+  const bankQ = useQuery({
+    queryKey: ["bankDetails", page],
+    queryFn: () => apiGetWithQuery("/accounts/bank-details", { page, limit }),
+    enabled: tab === "bank",
+  });
 
   const postMut = useMutation({
     mutationFn: ({ path, body }) => apiPost(path, body),
@@ -122,6 +139,7 @@ export default function Accounts() {
       if (v.path.includes("supplier-ledger"))
         qc.invalidateQueries({ queryKey: ["supplierLedger"] });
       if (v.path.includes("cash-bank")) qc.invalidateQueries({ queryKey: ["cashBank"] });
+      if (v.path.includes("bank-details")) qc.invalidateQueries({ queryKey: ["bankDetails"] });
       setModal(null);
       setErr("");
     },
@@ -139,6 +157,7 @@ export default function Accounts() {
       if (v.path.includes("supplier-ledger"))
         qc.invalidateQueries({ queryKey: ["supplierLedger"] });
       if (v.path.includes("cash-bank")) qc.invalidateQueries({ queryKey: ["cashBank"] });
+      if (v.path.includes("bank-details")) qc.invalidateQueries({ queryKey: ["bankDetails"] });
     },
   });
 
@@ -148,6 +167,7 @@ export default function Accounts() {
     if (tab === "cust") return custQ.data?.items ?? [];
     if (tab === "supp") return suppQ.data?.items ?? [];
     if (tab === "cash") return cashQ.data?.items ?? [];
+    if (tab === "bank") return bankQ.data?.items ?? [];
     return [];
   }
 
@@ -157,6 +177,7 @@ export default function Accounts() {
     if (tab === "cust") return custQ.data?.total ?? 0;
     if (tab === "supp") return suppQ.data?.total ?? 0;
     if (tab === "cash") return cashQ.data?.total ?? 0;
+    if (tab === "bank") return bankQ.data?.total ?? 0;
     return 0;
   }
 
@@ -166,6 +187,7 @@ export default function Accounts() {
     if (tab === "cust") return custQ.isLoading;
     if (tab === "supp") return suppQ.isLoading;
     if (tab === "cash") return cashQ.isLoading;
+    if (tab === "bank") return bankQ.isLoading;
     return false;
   }
 
@@ -251,6 +273,7 @@ export default function Accounts() {
           {tab === "cust" && "New customer entry"}
           {tab === "supp" && "New supplier entry"}
           {tab === "cash" && "New cash / bank entry"}
+          {tab === "bank" && "New bank detail"}
         </button>
       </div>
 
@@ -530,6 +553,59 @@ export default function Accounts() {
                           onClick={() => {
                             if (confirm("Delete entry?"))
                               delMut.mutate({ path: `/accounts/cash-bank/${r._id}` });
+                          }}
+                        >
+                          Del
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          )}
+          {tab === "bank" && (
+            <table className="min-w-full text-left text-sm">
+              <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
+                <tr>
+                  <th className="px-3 py-2">Bank</th>
+                  <th className="px-3 py-2">Account name</th>
+                  <th className="px-3 py-2">Account number</th>
+                  <th className="px-3 py-2">Currency</th>
+                  <th className="px-3 py-2">SWIFT</th>
+                  <th className="px-3 py-2">Default</th>
+                  <th className="px-3 py-2 w-16" />
+                </tr>
+              </thead>
+              <tbody>
+                {loading() ? (
+                  <tr>
+                    <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                      Loading…
+                    </td>
+                  </tr>
+                ) : activeRows().length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                      No bank details.
+                    </td>
+                  </tr>
+                ) : (
+                  activeRows().map((r) => (
+                    <tr key={r._id} className="border-b border-gray-100">
+                      <td className="px-3 py-2">{r.bankName}</td>
+                      <td className="px-3 py-2">{r.accountName}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{r.accountNumber}</td>
+                      <td className="px-3 py-2">{r.currency}</td>
+                      <td className="px-3 py-2">{r.swiftCode || "-"}</td>
+                      <td className="px-3 py-2">{r.isDefault ? "Yes" : "No"}</td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          className="text-xs text-red-600"
+                          onClick={() => {
+                            if (confirm("Delete bank detail?"))
+                              delMut.mutate({ path: `/accounts/bank-details/${r._id}` });
                           }}
                         >
                           Del
@@ -1018,6 +1094,80 @@ export default function Accounts() {
             className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
             disabled={postMut.isPending}
             onClick={() => postMut.mutate({ path: "/accounts/cash-bank", body: cashForm })}
+          >
+            Save
+          </button>
+        </div>
+      </Modal>
+      <Modal open={modal === "bank"} onClose={() => setModal(null)} title="Bank detail" wide>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <FormField label="Bank name *">
+            <TextInput
+              value={bankForm.bankName}
+              onChange={(e) => setBankForm((f) => ({ ...f, bankName: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Account name *">
+            <TextInput
+              value={bankForm.accountName}
+              onChange={(e) => setBankForm((f) => ({ ...f, accountName: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Account number *">
+            <TextInput
+              value={bankForm.accountNumber}
+              onChange={(e) => setBankForm((f) => ({ ...f, accountNumber: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Currency *">
+            <TextInput
+              value={bankForm.currency}
+              onChange={(e) => setBankForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
+            />
+          </FormField>
+          <FormField label="Branch name">
+            <TextInput
+              value={bankForm.branchName}
+              onChange={(e) => setBankForm((f) => ({ ...f, branchName: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="SWIFT code">
+            <TextInput
+              value={bankForm.swiftCode}
+              onChange={(e) => setBankForm((f) => ({ ...f, swiftCode: e.target.value.toUpperCase() }))}
+            />
+          </FormField>
+          <FormField label="IBAN">
+            <TextInput
+              value={bankForm.iban}
+              onChange={(e) => setBankForm((f) => ({ ...f, iban: e.target.value.toUpperCase() }))}
+            />
+          </FormField>
+          <FormField label="Default account">
+            <SelectInput
+              value={bankForm.isDefault ? "YES" : "NO"}
+              onChange={(e) => setBankForm((f) => ({ ...f, isDefault: e.target.value === "YES" }))}
+            >
+              <option value="NO">NO</option>
+              <option value="YES">YES</option>
+            </SelectInput>
+          </FormField>
+          <FormField label="Remarks" className="sm:col-span-2">
+            <TextInput
+              value={bankForm.remarks}
+              onChange={(e) => setBankForm((f) => ({ ...f, remarks: e.target.value }))}
+            />
+          </FormField>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={() => setModal(null)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
+            disabled={postMut.isPending}
+            onClick={() => postMut.mutate({ path: "/accounts/bank-details", body: bankForm })}
           >
             Save
           </button>
