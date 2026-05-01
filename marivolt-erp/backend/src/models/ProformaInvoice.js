@@ -40,7 +40,7 @@ const proformaInvoiceSchema = new mongoose.Schema(
     grandTotal: { type: Number, default: 0 },
     status: {
       type: String,
-      enum: ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "CONVERTED", "CANCELLED"],
+      enum: ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "APPROVED", "CONVERTED", "CANCELLED"],
       default: "DRAFT",
     },
     createdBy: { type: String, default: "" },

@@ -54,7 +54,7 @@ const reportsCatalog = [
 
 const statusOptions = ["DRAFT", "SENT", "APPROVED", "REJECTED", "EXPIRED", "CONVERTED", "CANCELLED"];
 const oaStatusOptions = ["DRAFT", "CONFIRMED", "CLOSED", "CANCELLED"];
-const proformaStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "CONVERTED", "CANCELLED"];
+const proformaStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "APPROVED", "CONVERTED", "CANCELLED"];
 const salesInvoiceStatusOptions = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "CANCELLED"];
 const ciplStatusOptions = ["DRAFT", "ISSUED", "SHIPPED", "CANCELLED"];
 
@@ -278,6 +278,71 @@ function oaDetailToEditableForm(oa) {
     lines,
   };
 }
+
+/** Only DRAFT proformas can be edited in Sales (matches backend). */
+function proformaIsDraft(p) {
+  return p && String(p.status || "").toUpperCase() === "DRAFT";
+}
+
+function proformaLocked(p) {
+  return !proformaIsDraft(p);
+}
+
+/** Legacy rows used CONVERTED; new conversions store APPROVED — both show as Approved in the UI. */
+function proformaDisplayStatus(p) {
+  if (!p) return "";
+  const st = String(p.status || "").toUpperCase();
+  if (st === "CANCELLED") return "CANCELLED";
+  if (st === "APPROVED" || st === "CONVERTED") return "APPROVED";
+  return String(p.status || "");
+}
+
+function proformaDetailToEditableForm(p) {
+  if (!p) return null;
+  const linesSrc = Array.isArray(p.lines) && p.lines.length ? p.lines : [];
+  const lines =
+    linesSrc.length > 0
+      ? linesSrc.map((l, idx) => {
+          const qty = Number(l.qty) || 0;
+          const price = Number(l.price) || 0;
+          const totalPrice = Number(l.totalPrice) || qty * price;
+          return {
+            serialNo: l.serialNo ?? idx + 1,
+            article: l.article || "",
+            partNumber: l.partNumber || "",
+            description: l.description || "",
+            qty,
+            uom: l.uom || "PCS",
+            price,
+            totalPrice,
+            remarks: l.remarks || "",
+            materialCode: l.materialCode || "",
+            availability: l.availability || "",
+          };
+        })
+      : [emptyLine()];
+  const pd = p.proformaDate ? new Date(p.proformaDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+  const validityStr =
+    typeof p.validity === "string"
+      ? p.validity
+      : p.validity
+        ? new Date(p.validity).toISOString().slice(0, 10)
+        : "";
+  return {
+    proformaDate: pd,
+    customerName: p.customerName || "",
+    paymentTerms: p.paymentTerms || "",
+    bankDetails: p.bankDetails || "",
+    validity: validityStr,
+    shipmentTerms: p.shipmentTerms || "",
+    remarks: p.remarks || "",
+    currency: String(p.currency || "USD").toUpperCase(),
+    status: p.status || "DRAFT",
+    lines,
+  };
+}
+
+const proformaManualStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "CANCELLED"];
 
 function money(n) {
   return Number(n || 0).toFixed(2);
@@ -859,6 +924,7 @@ export default function Sales() {
   const [err, setErr] = useState("");
   const [detailQuotationDraftForm, setDetailQuotationDraftForm] = useState(null);
   const [detailOADraftForm, setDetailOADraftForm] = useState(null);
+  const [detailProformaDraftForm, setDetailProformaDraftForm] = useState(null);
   const [selectedReportId, setSelectedReportId] = useState("");
   const [reportPage, setReportPage] = useState(1);
   const [reportFilters, setReportFilters] = useState({
@@ -1347,6 +1413,31 @@ export default function Sales() {
     setDetailOADraftForm(oaDetailToEditableForm(oaDetail));
   }, [activeTab, detailId, oaDetail]);
 
+  const putProformaMutation = useMutation({
+    mutationFn: ({ body }) => apiPut(`/sales/proforma-invoices/${detailId}`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-proforma"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  useEffect(() => {
+    if (activeTab !== "Proforma Invoice" || !detailId) {
+      setDetailProformaDraftForm(null);
+      return;
+    }
+    if (!proformaDetail) {
+      setDetailProformaDraftForm(null);
+      return;
+    }
+    if (!proformaIsDraft(proformaDetail)) {
+      setDetailProformaDraftForm(null);
+      return;
+    }
+    setDetailProformaDraftForm(proformaDetailToEditableForm(proformaDetail));
+  }, [activeTab, detailId, proformaDetail]);
+
   const [customerForm, setCustomerForm] = useState({
     name: "",
     contactName: "",
@@ -1438,6 +1529,17 @@ export default function Sales() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
       qc.invalidateQueries({ queryKey: ["sales-proforma"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const convertProformaToCiplMutation = useMutation({
+    mutationFn: (id) => apiPost(`/sales/convert/proforma/${id}/to-cipl`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-cipl"] });
+      qc.invalidateQueries({ queryKey: ["sales-proforma"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
     },
     onError: (e) => setErr(e.message),
   });
@@ -2561,7 +2663,7 @@ export default function Sales() {
                   { label: "Proforma No", value: (r) => r.proformaNo },
                   { label: "Date", value: (r) => (r.proformaDate ? new Date(r.proformaDate).toLocaleDateString() : "") },
                   { label: "Customer", value: (r) => r.customerName },
-                  { label: "Status", value: (r) => r.status },
+                  { label: "Status", value: (r) => proformaDisplayStatus(r) },
                   { label: "Currency", value: (r) => r.currency || "USD" },
                   { label: "Total", value: (r) => money(r.grandTotal) },
                 ])
@@ -2597,14 +2699,18 @@ export default function Sales() {
                       </td>
                     </tr>
                   ) : (
-                    proformaRows.map((r) => (
+                    proformaRows.map((r) => {
+                      const piApproved = ["APPROVED", "CONVERTED"].includes(String(r.status || "").toUpperCase());
+                      return (
                       <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
                         <td className="px-3 py-2 font-mono text-xs">{r.proformaNo}</td>
                         <td className="px-3 py-2">{r.customerName}</td>
                         <td className="px-3 py-2">{r.proformaDate ? new Date(r.proformaDate).toLocaleDateString() : "—"}</td>
                         <td className="px-3 py-2">
-                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
-                            {r.status}
+                          <span
+                            className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(proformaDisplayStatus(r))}`}
+                          >
+                            {proformaDisplayStatus(r)}
                           </span>
                         </td>
                         <td className="px-3 py-2 text-right">
@@ -2623,15 +2729,27 @@ export default function Sales() {
                             </button>
                             <button
                               type="button"
-                              className="rounded-lg border px-2 py-1 text-xs"
+                              className={`rounded-lg border px-2 py-1 text-xs ${piApproved ? "opacity-40" : ""}`}
+                              disabled={piApproved}
+                              title={piApproved ? "Already converted from this PI" : ""}
                               onClick={() => convertProformaToSalesInvoiceMutation.mutate(r._id)}
                             >
                               Convert to SI
                             </button>
+                            <button
+                              type="button"
+                              className={`rounded-lg border px-2 py-1 text-xs ${piApproved ? "opacity-40" : ""}`}
+                              disabled={piApproved}
+                              title={piApproved ? "Already converted from this PI" : ""}
+                              onClick={() => convertProformaToCiplMutation.mutate(r._id)}
+                            >
+                              Convert to CIPL
+                            </button>
                           </div>
                         </td>
                       </tr>
-                    ))
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -3796,91 +3914,386 @@ export default function Sales() {
           )
         ) : tabContent === "proforma" ? (
           !proformaDetail ? (
-          <p className="text-sm text-gray-500">Loading...</p>
-        ) : (
-          <div className="space-y-3 text-sm">
-            <div className="grid gap-2 sm:grid-cols-3">
-              <div>
-                <div className="text-gray-500">PI No</div>
-                <div className="font-mono">{proformaDetail.proformaNo}</div>
+            <p className="text-sm text-gray-500">Loading...</p>
+          ) : proformaIsDraft(proformaDetail) && !detailProformaDraftForm ? (
+            <p className="text-sm text-gray-500">Loading...</p>
+          ) : proformaIsDraft(proformaDetail) && detailProformaDraftForm ? (
+            <div className="space-y-4 text-sm">
+              <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 ring-1 ring-amber-200">
+                Draft proforma — edit below and save. After conversion to Sales Invoice or CIPL the status becomes <b>Approved</b> and editing is disabled.
               </div>
-              <div>
-                <div className="text-gray-500">Customer</div>
-                <div>{proformaDetail.customerName}</div>
+              <div className="grid gap-3 sm:grid-cols-4">
+                <FormField label="PI No">
+                  <TextInput value={proformaDetail.proformaNo || ""} disabled className="bg-gray-50" />
+                </FormField>
+                <FormField label="PI Date">
+                  <TextInput
+                    type="date"
+                    value={detailProformaDraftForm.proformaDate}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, proformaDate: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Currency">
+                  <TextInput
+                    value={detailProformaDraftForm.currency}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
+                  />
+                </FormField>
+                <FormField label="Status">
+                  <TextInput value={detailProformaDraftForm.status || ""} disabled className="bg-gray-50" />
+                </FormField>
+                <FormField label="Customer *">
+                  <TextInput
+                    value={detailProformaDraftForm.customerName}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, customerName: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Payment terms">
+                  <TextInput
+                    value={detailProformaDraftForm.paymentTerms || ""}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, paymentTerms: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Validity">
+                  <TextInput
+                    value={detailProformaDraftForm.validity || ""}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, validity: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Shipment terms">
+                  <TextInput
+                    value={detailProformaDraftForm.shipmentTerms || ""}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, shipmentTerms: e.target.value }))}
+                  />
+                </FormField>
               </div>
-              <div>
-                <div className="text-gray-500">Status</div>
-                <div>
-                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(proformaDetail.status)}`}>
-                    {proformaDetail.status}
+              <FormField label="Bank details">
+                <textarea
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                  rows={2}
+                  value={detailProformaDraftForm.bankDetails || ""}
+                  onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, bankDetails: e.target.value }))}
+                />
+              </FormField>
+              <FormField label="Remarks">
+                <textarea
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                  rows={3}
+                  value={detailProformaDraftForm.remarks || ""}
+                  onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, remarks: e.target.value }))}
+                />
+              </FormField>
+              <div className="text-xs text-gray-600">
+                Linked Quotation: {proformaDetail.linkedQuotationNo || "-"} | Linked OA: {proformaDetail.linkedOANo || "-"}
+              </div>
+              <div className="mt-1">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-sm font-medium">Lines</span>
+                  <button
+                    type="button"
+                    className="text-sm underline"
+                    onClick={() => setDetailProformaDraftForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }))}
+                  >
+                    + Add line
+                  </button>
+                </div>
+                <div className="w-full overflow-x-auto rounded-xl border">
+                  <table className="min-w-[1100px] w-full text-xs">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-2 py-2 text-left">S/N</th>
+                        <th className="px-2 py-2 text-left">Article</th>
+                        <th className="px-2 py-2 text-left">Part number</th>
+                        <th className="px-2 py-2 text-left">Description</th>
+                        <th className="px-2 py-2 text-left">UOM</th>
+                        <th className="px-2 py-2 text-right">QTY</th>
+                        <th className="px-2 py-2 text-right">Price</th>
+                        <th className="px-2 py-2 text-right">Total</th>
+                        <th className="px-2 py-2 text-left">Remarks</th>
+                        <th className="px-2 py-2 text-left">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detailProformaDraftForm.lines.map((line, idx) => {
+                        const qty = Number(line.qty || 0);
+                        const price = Number(line.price || 0);
+                        const totalPrice = qty * price;
+                        return (
+                          <tr key={idx} className="border-t">
+                            <td className="px-2 py-1">{idx + 1}</td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                value={line.article || ""}
+                                onChange={(e) => {
+                                  const lines = [...detailProformaDraftForm.lines];
+                                  lines[idx] = { ...line, article: e.target.value.toUpperCase(), serialNo: idx + 1, totalPrice };
+                                  setDetailProformaDraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                value={line.partNumber || ""}
+                                onChange={(e) => {
+                                  const lines = [...detailProformaDraftForm.lines];
+                                  lines[idx] = { ...line, partNumber: e.target.value, serialNo: idx + 1, totalPrice };
+                                  setDetailProformaDraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                value={line.description || ""}
+                                onChange={(e) => {
+                                  const lines = [...detailProformaDraftForm.lines];
+                                  lines[idx] = { ...line, description: e.target.value, serialNo: idx + 1, totalPrice };
+                                  setDetailProformaDraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                value={line.uom || ""}
+                                onChange={(e) => {
+                                  const lines = [...detailProformaDraftForm.lines];
+                                  lines[idx] = { ...line, uom: e.target.value, serialNo: idx + 1, totalPrice };
+                                  setDetailProformaDraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                type="number"
+                                value={line.qty}
+                                onChange={(e) => {
+                                  const nextQty = Number(e.target.value);
+                                  const lines = [...detailProformaDraftForm.lines];
+                                  lines[idx] = { ...line, qty: nextQty, serialNo: idx + 1, totalPrice: nextQty * price };
+                                  setDetailProformaDraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                type="number"
+                                step="0.01"
+                                value={line.price}
+                                onChange={(e) => {
+                                  const nextPrice = Number(e.target.value);
+                                  const lines = [...detailProformaDraftForm.lines];
+                                  lines[idx] = { ...line, price: nextPrice, serialNo: idx + 1, totalPrice: qty * nextPrice };
+                                  setDetailProformaDraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1 text-right">{money(totalPrice)}</td>
+                            <td className="px-2 py-1">
+                              <TextInput
+                                value={line.remarks || ""}
+                                onChange={(e) => {
+                                  const lines = [...detailProformaDraftForm.lines];
+                                  lines[idx] = { ...line, remarks: e.target.value, serialNo: idx + 1, totalPrice };
+                                  setDetailProformaDraftForm((f) => ({ ...f, lines }));
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1">
+                              <button
+                                type="button"
+                                className="rounded-xl border px-2 py-1 text-xs"
+                                onClick={() => {
+                                  const lines = detailProformaDraftForm.lines.filter((_, i) => i !== idx).map((l, i2) => ({ ...l, serialNo: i2 + 1 }));
+                                  setDetailProformaDraftForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
+                                }}
+                              >
+                                Remove
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
+                <div className="flex justify-between py-1">
+                  <span>Subtotal</span>
+                  <span>
+                    {money(detailProformaDraftForm.lines.reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0))}
+                  </span>
+                </div>
+                <div className="flex justify-between py-1 text-base font-semibold">
+                  <span>Grand Total</span>
+                  <span>
+                    {money(detailProformaDraftForm.lines.reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0))}{" "}
+                    {detailProformaDraftForm.currency || ""}
                   </span>
                 </div>
               </div>
-            </div>
-            <div className="text-xs text-gray-600">
-              Linked Quotation: {proformaDetail.linkedQuotationNo || "-"} | Linked OA: {proformaDetail.linkedOANo || "-"}
-            </div>
-            <div className="overflow-x-auto rounded-xl border">
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-100">
-                  <tr>
-                    <th className="px-3 py-2 text-left">S/N</th>
-                    <th className="px-3 py-2 text-left">Part no</th>
-                    <th className="px-3 py-2 text-left">Description</th>
-                    <th className="px-3 py-2 text-left">UOM</th>
-                    <th className="px-3 py-2 text-right">Qty</th>
-                    <th className="px-3 py-2 text-right">Price</th>
-                    <th className="px-3 py-2 text-right">Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {proformaDetail.lines?.map((line) => (
-                    <tr key={line._id} className="border-t">
-                      <td className="px-3 py-2">{line.serialNo}</td>
-                      <td className="px-3 py-2">{line.partNumber}</td>
-                      <td className="px-3 py-2">{line.description}</td>
-                      <td className="px-3 py-2">{line.uom}</td>
-                      <td className="px-3 py-2 text-right">{line.qty}</td>
-                      <td className="px-3 py-2 text-right">{money(line.price)}</td>
-                      <td className="px-3 py-2 text-right">{money(line.totalPrice)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
-              <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(proformaDetail.subTotal)}</span></div>
-              <div className="flex justify-between py-1"><span>Discount</span><span>{money(proformaDetail.discountTotal)}</span></div>
-              <div className="flex justify-between py-1"><span>Tax</span><span>{money(proformaDetail.taxTotal)}</span></div>
-              <div className="flex justify-between py-1 text-base font-semibold">
-                <span>Grand Total</span>
-                <span>{money(proformaDetail.grandTotal)} {proformaDetail.currency || ""}</span>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="rounded-xl bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                  disabled={putProformaMutation.isPending || !detailId}
+                  onClick={() => putProformaMutation.mutate({ body: detailProformaDraftForm })}
+                >
+                  {putProformaMutation.isPending ? "Saving…" : "Save changes"}
+                </button>
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("proforma", proformaDetail._id)}>
+                  Print
+                </button>
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("proforma", proformaDetail._id, true)}>
+                  Export PDF
+                </button>
+                <button
+                  type="button"
+                  className="rounded-xl border px-2 py-1 text-xs"
+                  onClick={() => convertProformaToSalesInvoiceMutation.mutate(proformaDetail._id)}
+                >
+                  Convert to SI
+                </button>
+                <button
+                  type="button"
+                  className="rounded-xl border px-2 py-1 text-xs"
+                  onClick={() => convertProformaToCiplMutation.mutate(proformaDetail._id)}
+                >
+                  Convert to CIPL
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {proformaManualStatusOptions.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    disabled={s === detailProformaDraftForm.status || putProformaMutation.isPending}
+                    className="rounded-xl border px-2 py-1 text-xs disabled:opacity-40"
+                    onClick={() => putProformaMutation.mutate({ body: { ...detailProformaDraftForm, status: s } })}
+                  >
+                    Set {s}
+                  </button>
+                ))}
               </div>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("proforma", proformaDetail._id)}>
-                Print
-              </button>
-              <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("proforma", proformaDetail._id, true)}>
-                Export PDF
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {proformaStatusOptions.map((s) => (
-                <button key={s} type="button" className="rounded-xl border px-2 py-1 text-xs" disabled>
-                  {s}
+          ) : (
+            <div className="space-y-3 text-sm">
+              <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700 ring-1 ring-slate-200">
+                {["APPROVED", "CONVERTED"].includes(String(proformaDetail.status || "").toUpperCase())
+                  ? "This proforma is approved (linked to Sales Invoice or CIPL) — editing is disabled. Print or export PDF to share."
+                  : "This proforma is not in draft — view only. Print or export PDF when needed."}
+              </p>
+              <div className="grid gap-2 sm:grid-cols-3">
+                <div>
+                  <div className="text-gray-500">PI No</div>
+                  <div className="font-mono">{proformaDetail.proformaNo}</div>
+                </div>
+                <div>
+                  <div className="text-gray-500">Customer</div>
+                  <div>{proformaDetail.customerName}</div>
+                </div>
+                <div>
+                  <div className="text-gray-500">Status</div>
+                  <div>
+                    <span
+                      className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(proformaDisplayStatus(proformaDetail))}`}
+                    >
+                      {proformaDisplayStatus(proformaDetail)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="text-xs text-gray-600">
+                Linked Quotation: {proformaDetail.linkedQuotationNo || "-"} | Linked OA: {proformaDetail.linkedOANo || "-"}
+              </div>
+              {(proformaDetail.bankDetails || proformaDetail.shipmentTerms || proformaDetail.remarks) ? (
+                <div className="rounded-xl border bg-gray-50 p-3 text-xs space-y-2">
+                  {proformaDetail.bankDetails ? (
+                    <div className="whitespace-pre-wrap">
+                      <span className="font-semibold text-gray-500">Bank: </span>
+                      {proformaDetail.bankDetails}
+                    </div>
+                  ) : null}
+                  {proformaDetail.shipmentTerms ? (
+                    <div>
+                      <span className="font-semibold text-gray-500">Shipment: </span>
+                      {proformaDetail.shipmentTerms}
+                    </div>
+                  ) : null}
+                  {proformaDetail.remarks ? (
+                    <div className="whitespace-pre-wrap">
+                      <span className="font-semibold text-gray-500">Remarks: </span>
+                      {proformaDetail.remarks}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="overflow-x-auto rounded-xl border">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th className="px-3 py-2 text-left">S/N</th>
+                      <th className="px-3 py-2 text-left">Article</th>
+                      <th className="px-3 py-2 text-left">Part no</th>
+                      <th className="px-3 py-2 text-left">Description</th>
+                      <th className="px-3 py-2 text-left">UOM</th>
+                      <th className="px-3 py-2 text-right">Qty</th>
+                      <th className="px-3 py-2 text-right">Price</th>
+                      <th className="px-3 py-2 text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {proformaDetail.lines?.map((line) => (
+                      <tr key={line._id} className="border-t">
+                        <td className="px-3 py-2">{line.serialNo}</td>
+                        <td className="px-3 py-2">{line.article || "—"}</td>
+                        <td className="px-3 py-2">{line.partNumber}</td>
+                        <td className="px-3 py-2">{line.description}</td>
+                        <td className="px-3 py-2">{line.uom}</td>
+                        <td className="px-3 py-2 text-right">{line.qty}</td>
+                        <td className="px-3 py-2 text-right">{money(line.price)}</td>
+                        <td className="px-3 py-2 text-right">{money(line.totalPrice)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
+                <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(proformaDetail.subTotal)}</span></div>
+                <div className="flex justify-between py-1"><span>Discount</span><span>{money(proformaDetail.discountTotal)}</span></div>
+                <div className="flex justify-between py-1"><span>Tax</span><span>{money(proformaDetail.taxTotal)}</span></div>
+                <div className="flex justify-between py-1 text-base font-semibold">
+                  <span>Grand Total</span>
+                  <span>{money(proformaDetail.grandTotal)} {proformaDetail.currency || ""}</span>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("proforma", proformaDetail._id)}>
+                  Print
                 </button>
-              ))}
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("proforma", proformaDetail._id, true)}>
+                  Export PDF
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2 opacity-80">
+                <button
+                  type="button"
+                  className={`rounded-xl border px-2 py-1 text-xs ${["APPROVED", "CONVERTED"].includes(String(proformaDetail.status || "").toUpperCase()) ? "opacity-40" : ""}`}
+                  disabled={["APPROVED", "CONVERTED"].includes(String(proformaDetail.status || "").toUpperCase())}
+                  onClick={() => convertProformaToSalesInvoiceMutation.mutate(proformaDetail._id)}
+                >
+                  Convert to SI
+                </button>
+                <button
+                  type="button"
+                  className={`rounded-xl border px-2 py-1 text-xs ${["APPROVED", "CONVERTED"].includes(String(proformaDetail.status || "").toUpperCase()) ? "opacity-40" : ""}`}
+                  disabled={["APPROVED", "CONVERTED"].includes(String(proformaDetail.status || "").toUpperCase())}
+                  onClick={() => convertProformaToCiplMutation.mutate(proformaDetail._id)}
+                >
+                  Convert to CIPL
+                </button>
+              </div>
             </div>
-            <button
-              type="button"
-              className="rounded-xl border px-2 py-1 text-xs"
-              onClick={() => convertProformaToSalesInvoiceMutation.mutate(proformaDetail._id)}
-            >
-              Convert to SI
-            </button>
-          </div>
-        )
+          )
         ) : tabContent === "sales-invoice" ? (
           !salesInvoiceDetail ? (
             <p className="text-sm text-gray-500">Loading...</p>

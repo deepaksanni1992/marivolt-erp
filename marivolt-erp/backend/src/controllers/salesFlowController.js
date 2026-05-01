@@ -74,6 +74,11 @@ function isOAEditLocked(doc) {
   return conv.includes("PROFORMA") || conv.includes("SALES_INVOICE");
 }
 
+/** Only DRAFT proformas are editable (matches Sales UI). */
+function isProformaEditable(doc) {
+  return doc && String(doc.status || "").toUpperCase() === "DRAFT";
+}
+
 const PENDING_QUOTATION_STATUSES = ["DRAFT", "SENT"];
 const PENDING_OA_STATUSES = ["DRAFT", "CONFIRMED"];
 
@@ -1057,6 +1062,11 @@ export async function updateProforma(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const doc = await ProformaInvoice.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
+    if (!isProformaEditable(doc)) {
+      return res.status(400).json({
+        message: "Proforma can only be edited while in DRAFT (after SI/CIPL conversion it is approved and locked).",
+      });
+    }
     const allowed = [
       "proformaDate",
       "customerName",
@@ -1066,11 +1076,19 @@ export async function updateProforma(req, res) {
       "shipmentTerms",
       "remarks",
       "currency",
-      "status",
       "lines",
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
+    }
+    if (req.body.status !== undefined) {
+      const st = String(req.body.status || "").toUpperCase();
+      if (["APPROVED", "CONVERTED"].includes(st)) {
+        return res.status(400).json({
+          message: "Status APPROVED is set when converting to Sales Invoice or CIPL.",
+        });
+      }
+      doc.status = req.body.status;
     }
     doc.lines = normalizeLines(doc.lines || []);
     Object.assign(doc, computeTotals(doc.lines));
@@ -1399,6 +1417,8 @@ export async function convertProformaToSalesInvoice(req, res) {
     if (!proforma.lines?.length) return res.status(400).json({ message: "Proforma requires at least one line to convert" });
     const already = await SalesInvoice.findOne(withCompany(req, { linkedProformaId: proforma._id }));
     if (already) return res.status(409).json({ message: `Sales invoice already exists (${already.invoiceNo})` });
+    const ciplFromPi = await Cipl.findOne(withCompany(req, { linkedProformaId: proforma._id }));
+    if (ciplFromPi) return res.status(409).json({ message: `CIPL already exists from this proforma (${ciplFromPi.ciplNo})` });
 
     const invoiceNo = await nextSalesDocNumber({
       companyId: req.companyId,
@@ -1429,7 +1449,54 @@ export async function convertProformaToSalesInvoice(req, res) {
       status: "DRAFT",
       createdBy: req.user?.email || "",
     });
-    proforma.status = "CONVERTED";
+    proforma.status = "APPROVED";
+    proforma.updatedBy = req.user?.email || "";
+    await proforma.save();
+    res.status(201).json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function convertProformaToCipl(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid proforma id" });
+    const proforma = await ProformaInvoice.findOne(withCompany(req, { _id: id }));
+    validateConversionSource(proforma, "proforma");
+    if (!proforma.lines?.length) return res.status(400).json({ message: "Proforma requires at least one line to convert" });
+    const si = await SalesInvoice.findOne(withCompany(req, { linkedProformaId: proforma._id }));
+    if (si) return res.status(409).json({ message: `Sales invoice already exists (${si.invoiceNo}) — cannot create CIPL from proforma` });
+    const already = await Cipl.findOne(withCompany(req, { linkedProformaId: proforma._id }));
+    if (already) return res.status(409).json({ message: `CIPL already exists (${already.ciplNo})` });
+
+    const ciplNo = await nextSalesDocNumber({
+      companyId: req.companyId,
+      companyCode: req.companyCode,
+      docKey: "CIPL",
+    });
+    const lines = normalizeLines(proforma.lines.map((line) => line.toObject?.() || line));
+    const totals = computeTotals(lines);
+    const doc = await Cipl.create({
+      companyId: req.companyId,
+      ciplNo,
+      ciplDate: new Date(),
+      linkedQuotationId: proforma.linkedQuotationId || null,
+      linkedQuotationNo: proforma.linkedQuotationNo || "",
+      linkedOAId: proforma.linkedOAId || null,
+      linkedOANo: proforma.linkedOANo || "",
+      linkedProformaId: proforma._id,
+      linkedProformaNo: proforma.proformaNo,
+      customerName: proforma.customerName,
+      incoterm: "",
+      currency: proforma.currency || "USD",
+      remarks: proforma.remarks || "",
+      lines,
+      ...totals,
+      status: "DRAFT",
+      createdBy: req.user?.email || "",
+    });
+    proforma.status = "APPROVED";
     proforma.updatedBy = req.user?.email || "";
     await proforma.save();
     res.status(201).json(doc);

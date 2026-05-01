@@ -28,6 +28,8 @@ const ciplSchema = new mongoose.Schema(
     linkedOANo: { type: String, default: "", trim: true },
     linkedSalesInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesInvoice", index: true, default: null },
     linkedSalesInvoiceNo: { type: String, default: "", trim: true },
+    linkedProformaId: { type: mongoose.Schema.Types.ObjectId, ref: "ProformaInvoice", index: true, default: null },
+    linkedProformaNo: { type: String, default: "", trim: true },
     customerName: { type: String, required: true, trim: true },
     consigneeName: { type: String, default: "", trim: true },
     shipmentMode: { type: String, default: "", trim: true },
