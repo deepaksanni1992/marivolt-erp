@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
@@ -670,6 +670,7 @@ export default function Sales() {
   });
 
   const [form, setForm] = useState({
+    quotationNo: "",
     quotationDate: new Date().toISOString().slice(0, 10),
     validityDate: "",
     customerId: "",
@@ -999,6 +1000,7 @@ export default function Sales() {
       qc.invalidateQueries({ queryKey: ["sales-quotations"] });
       setCreateOpen(false);
       setForm({
+        quotationNo: "",
         quotationDate: new Date().toISOString().slice(0, 10),
         validityDate: "",
         customerId: "",
@@ -1188,6 +1190,22 @@ export default function Sales() {
     currency: "USD",
     lines: [emptyLine()],
   });
+
+  const { data: nextQuotationNoData } = useQuery({
+    queryKey: ["next-quotation-number", form.quotationDate],
+    queryFn: () => apiGetWithQuery("/quotations/next-number", { date: form.quotationDate || undefined }),
+    enabled: createOpen,
+  });
+
+  useEffect(() => {
+    if (!createOpen) return;
+    const nextNo = String(nextQuotationNoData?.quotationNo || "").trim();
+    if (!nextNo) return;
+    setForm((prev) => {
+      if (prev.quotationNo === nextNo) return prev;
+      return { ...prev, quotationNo: nextNo };
+    });
+  }, [createOpen, nextQuotationNoData?.quotationNo]);
 
   const createOAMutation = useMutation({
     mutationFn: () => apiPost("/sales/order-acknowledgements", oaForm),
@@ -3131,6 +3149,9 @@ export default function Sales() {
         className="w-[92vw] max-w-[1700px]"
       >
         <div className="grid gap-3 sm:grid-cols-4">
+          <FormField label="Quotation No">
+            <TextInput value={form.quotationNo || ""} readOnly />
+          </FormField>
           <FormField label="Quotation Date">
             <TextInput
               type="date"

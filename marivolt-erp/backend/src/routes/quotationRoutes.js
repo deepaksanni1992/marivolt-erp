@@ -7,6 +7,7 @@ const router = express.Router();
 router.use(...requireErpAccess);
 
 router.get("/", c.listQuotations);
+router.get("/next-number", c.getNextQuotationNumber);
 router.get("/:id/print-data", c.getQuotationPrintData);
 router.post("/:id/duplicate", c.duplicateQuotation);
 router.get("/:id", c.getQuotation);

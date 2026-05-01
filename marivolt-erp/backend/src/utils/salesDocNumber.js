@@ -1,4 +1,5 @@
 import DocCounter from "../models/DocCounter.js";
+import Quotation from "../models/Quotation.js";
 
 const SALES_PREFIX_BY_KEY = {
   QUOTATION: "QUO",
@@ -8,8 +9,33 @@ const SALES_PREFIX_BY_KEY = {
   CIPL: "CIPL",
 };
 
-export async function nextSalesDocNumber({ companyId, companyCode, docKey }) {
+function formatDatePrefix(value) {
+  const date = value ? new Date(value) : new Date();
+  const year = String(date.getFullYear()).slice(-2);
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+
+async function nextQuotationNumber({ companyId, referenceDate }) {
+  const prefix = formatDatePrefix(referenceDate);
+  const pattern = new RegExp(`^${prefix}\\.\\d+$`);
+  const rows = await Quotation.find({ companyId, quotationNo: pattern }).select("quotationNo").lean();
+  let maxSeq = 0;
+  for (const row of rows) {
+    const value = String(row.quotationNo || "");
+    const seqRaw = value.slice(prefix.length + 1);
+    const seq = Number(seqRaw);
+    if (Number.isFinite(seq) && seq > maxSeq) maxSeq = seq;
+  }
+  return `${prefix}.${maxSeq + 1}`;
+}
+
+export async function nextSalesDocNumber({ companyId, companyCode, docKey, referenceDate }) {
   const safeKey = String(docKey || "").trim().toUpperCase();
+  if (safeKey === "QUOTATION") {
+    return nextQuotationNumber({ companyId, referenceDate });
+  }
   const suffix = SALES_PREFIX_BY_KEY[safeKey];
   if (!suffix) {
     throw new Error(`Unsupported sales docKey: ${safeKey}`);

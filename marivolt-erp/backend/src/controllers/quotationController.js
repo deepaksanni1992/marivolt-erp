@@ -133,6 +133,20 @@ export async function getQuotation(req, res) {
   }
 }
 
+export async function getNextQuotationNumber(req, res) {
+  try {
+    const quotationNo = await nextSalesDocNumber({
+      companyId: req.companyId,
+      companyCode: req.companyCode,
+      docKey: "QUOTATION",
+      referenceDate: req.query.date || new Date(),
+    });
+    res.json({ quotationNo });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
 export async function createQuotation(req, res) {
   try {
     const body = { ...req.body };
@@ -151,8 +165,10 @@ export async function createQuotation(req, res) {
         companyId: req.companyId,
         companyCode: req.companyCode,
         docKey: "QUOTATION",
+        referenceDate: body.quotationDate || new Date(),
       });
     }
+    body.quotationNumber = body.quotationNo;
     body.createdBy = req.user?.email || "";
     body.companyId = req.companyId;
     body.companySnapshot = {
@@ -224,6 +240,9 @@ export async function updateQuotation(req, res) {
     ];
     for (const k of allowed) {
       if (req.body[k] !== undefined) doc[k] = req.body[k];
+    }
+    if (doc.quotationNo) {
+      doc.quotationNumber = doc.quotationNo;
     }
     if (req.body.customerId !== undefined || req.body.customerName !== undefined) {
       const customer = await resolveCustomerFromMaster(req, doc);
@@ -358,6 +377,7 @@ export async function duplicateQuotation(req, res) {
       ...src,
       _id: undefined,
       quotationNo: nextNo,
+      quotationNumber: nextNo,
       quotationDate: new Date(),
       validityDate: null,
       status: "DRAFT",
