@@ -6,6 +6,7 @@ import Modal from "../components/erp/Modal.jsx";
 import Inventory from "./Inventory.jsx";
 import { apiGet, apiGetWithQuery, apiPatch, apiPost, apiPut } from "../lib/api.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "../lib/salesQuotationPrintCss.js";
+import { useAuth } from "../context/AuthContext.jsx";
 
 function money(n) {
   return Number(n || 0).toFixed(2);
@@ -106,11 +107,15 @@ function rtsCsvRows(doc) {
   return [...boxRows, ...lineRows];
 }
 
-function renderPackingListPrintWindow(rts, autoPrint = false) {
+function renderPackingListPrintWindow(rts, company = {}, autoPrint = false) {
   if (!rts) return;
   const rows = Array.isArray(rts.lines) ? rts.lines : [];
   const boxes = Array.isArray(rts.packingDetails?.boxes) ? rts.packingDetails.boxes : [];
   const totalBoxes = boxes.reduce((acc, b) => acc + (Number(b.count || 0) || 0), 0);
+  const hasCompanyLogo = String(company?.logo || company?.logoUrl || "").trim().length > 0;
+  const companyName = String(company?.name || company?.companyName || "").toLowerCase();
+  const isMarivolt = companyName.includes("marivolt");
+  const marivoltPrintLogo = "/brand/marivolt-icon.png";
   const html = `
     <html>
       <head>
@@ -119,10 +124,16 @@ function renderPackingListPrintWindow(rts, autoPrint = false) {
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
-      <body>
+      <body class="${isMarivolt ? "has-quote-terms" : ""}">
         <div class="header">
           <div class="header-left">
-            <div class="brand-fallback">MV</div>
+            ${
+              isMarivolt
+                ? `<img src="${marivoltPrintLogo}" alt="Marivolt icon" class="logo" />`
+                : hasCompanyLogo
+                ? `<img src="${company?.logo || company?.logoUrl}" alt="${company?.name || company?.companyName || "Company"} logo" class="logo" />`
+                : `<div class="brand-fallback">MV</div>`
+            }
           </div>
           <div class="header-center">
             <div class="title">RTS / Packing List</div>
@@ -132,10 +143,24 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
               <div><b>Order Allocation:</b> ${rts.linkedOrderAllocationNo || "-"}</div>
             </div>
           </div>
-          <div class="header-right muted">
-            <div><b>Customer:</b> ${rts.customerName || "-"}</div>
-            <div><b>Status:</b> ${rts.status || "-"}</div>
-          </div>
+          ${
+            isMarivolt
+              ? `<div class="header-right is-marivolt">
+                <h1 class="brand-title">MariVolt</h1>
+                <div class="brand-subtitle">Marine Engine Spares</div>
+                <div class="muted" style="margin-top:8px;">
+                  <div>${company?.address || "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"}</div>
+                  <div>${company?.email || "sales@marivolt.co"}</div>
+                  <div>${company?.phone || "+971-543053047"}</div>
+                </div>
+              </div>`
+              : `<div class="header-right muted">
+                <div><b>${company?.name || company?.companyName || "-"}</b></div>
+                <div>${company?.address || ""}</div>
+                <div>${company?.email || ""}</div>
+                <div>${company?.phone || ""}</div>
+              </div>`
+          }
         </div>
         <div class="info-grid">
           <div class="info-box muted">
@@ -208,6 +233,25 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         <div class="footer">
           <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
         </div>
+        ${
+          isMarivolt
+            ? `<div class="page-footer">
+          <div class="page-footer-top">
+            <div>
+              <div>Marivolt FZE</div>
+              <div>LV09B</div>
+            </div>
+            <div class="page-footer-center">Hamriyah freezone phase 2, Sharjah, UAE</div>
+            <div class="page-footer-right">
+              <div>Mob: +971-543053047</div>
+              <div>Email: sales@marivolt.co</div>
+              <div>Web: www.marivolt.co</div>
+            </div>
+          </div>
+          <div class="page-footer-line"></div>
+        </div>`
+            : ""
+        }
       </body>
     </html>
   `;
@@ -220,6 +264,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
 }
 
 export default function Store() {
+  const { auth } = useAuth();
+  const activeCompany = auth?.company || {};
   const qc = useQueryClient();
   const [tab, setTab] = useState("orders");
   const [page, setPage] = useState(1);
@@ -445,7 +491,7 @@ export default function Store() {
                                   className="rounded-lg border px-2 py-1 text-xs"
                                   onClick={() =>
                                     apiGet(`/sales/rts/${r.latestApprovedRtsId}`)
-                                      .then((doc) => renderPackingListPrintWindow(doc))
+                                      .then((doc) => renderPackingListPrintWindow(doc, activeCompany))
                                       .catch(() => {})
                                   }
                                 >
@@ -456,7 +502,7 @@ export default function Store() {
                                   className="rounded-lg border px-2 py-1 text-xs"
                                   onClick={() =>
                                     apiGet(`/sales/rts/${r.latestApprovedRtsId}`)
-                                      .then((doc) => renderPackingListPrintWindow(doc, true))
+                                      .then((doc) => renderPackingListPrintWindow(doc, activeCompany, true))
                                       .catch(() => {})
                                   }
                                 >
@@ -558,7 +604,7 @@ export default function Store() {
                               className="rounded-lg border px-2 py-1 text-xs"
                               onClick={() =>
                                 apiGet(`/sales/rts/${r._id}`)
-                                  .then((doc) => renderPackingListPrintWindow(doc))
+                                  .then((doc) => renderPackingListPrintWindow(doc, activeCompany))
                                   .catch(() => {})
                               }
                             >
@@ -569,7 +615,7 @@ export default function Store() {
                               className="rounded-lg border px-2 py-1 text-xs"
                               onClick={() =>
                                 apiGet(`/sales/rts/${r._id}`)
-                                  .then((doc) => renderPackingListPrintWindow(doc, true))
+                                  .then((doc) => renderPackingListPrintWindow(doc, activeCompany, true))
                                   .catch(() => {})
                               }
                             >
@@ -1063,10 +1109,10 @@ export default function Store() {
               </table>
             </div>
             <div className="flex flex-wrap justify-end gap-2">
-              <button type="button" className="rounded-xl border px-3 py-1.5 text-xs" onClick={() => renderPackingListPrintWindow(rtsDetail)}>
+              <button type="button" className="rounded-xl border px-3 py-1.5 text-xs" onClick={() => renderPackingListPrintWindow(rtsDetail, activeCompany)}>
                 Print
               </button>
-              <button type="button" className="rounded-xl border px-3 py-1.5 text-xs" onClick={() => renderPackingListPrintWindow(rtsDetail, true)}>
+              <button type="button" className="rounded-xl border px-3 py-1.5 text-xs" onClick={() => renderPackingListPrintWindow(rtsDetail, activeCompany, true)}>
                 Export PDF
               </button>
               <button
