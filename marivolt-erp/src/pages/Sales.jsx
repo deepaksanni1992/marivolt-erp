@@ -931,6 +931,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
 
 function renderPackingListPrintWindow({ rts, company, autoPrint = false }) {
   const rows = rts?.lines || [];
+  const boxes = Array.isArray(rts?.packingDetails?.boxes) ? rts.packingDetails.boxes : [];
+  const totalBoxes = boxes.reduce((acc, b) => acc + (Number(b.count || 0) || 0), 0);
   const html = `
     <html>
       <head>
@@ -987,9 +989,30 @@ function renderPackingListPrintWindow({ rts, company, autoPrint = false }) {
         </table>
         <div class="pack">
           <div><span>Total Weight (Kg)</span><b>${money(rts?.packingDetails?.totalWeightKg || 0)}</b></div>
-          <div><span>No. of Boxes</span><b>${Number(rts?.packingDetails?.boxCount || 0)}</b></div>
-          <div><span>Box Dimensions (mm)</span><b>${rts?.packingDetails?.boxDimensionsMm || "-"}</b></div>
+          <div><span>No. of Boxes</span><b>${Number(totalBoxes || rts?.packingDetails?.boxCount || 0)}</b></div>
         </div>
+        ${
+          boxes.length
+            ? `<table>
+          <thead>
+            <tr><th>S/N</th><th>Material</th><th class="right">Count</th><th>Dimensions (mm)</th><th>Remarks</th></tr>
+          </thead>
+          <tbody>
+            ${boxes
+              .map(
+                (b, i) => `<tr>
+              <td>${i + 1}</td>
+              <td>${b.material || "-"}</td>
+              <td class="right">${Number(b.count || 0)}</td>
+              <td>${b.dimensionsMm || "-"}</td>
+              <td>${b.remarks || "-"}</td>
+            </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>`
+            : ""
+        }
       </body>
     </html>
   `;
@@ -999,6 +1022,52 @@ function renderPackingListPrintWindow({ rts, company, autoPrint = false }) {
   win.document.close();
   win.focus();
   if (autoPrint) setTimeout(() => win.print(), 300);
+}
+
+function rtsCsvRowsForSales(doc) {
+  const boxes = Array.isArray(doc?.packingDetails?.boxes) ? doc.packingDetails.boxes : [];
+  const lines = Array.isArray(doc?.lines) ? doc.lines : [];
+  const base = {
+    rtsNo: doc?.rtsNo || "",
+    rtsDate: doc?.rtsDate ? new Date(doc.rtsDate).toISOString().slice(0, 10) : "",
+    allocationNo: doc?.linkedOrderAllocationNo || "",
+    customer: doc?.customerName || "",
+    totalWeightKg: doc?.packingDetails?.totalWeightKg ?? "",
+  };
+  return [
+    ...boxes.map((b) => ({
+      recordType: "BOX",
+      ...base,
+      boxMaterial: b?.material || "",
+      boxCount: b?.count ?? "",
+      boxDimensionsMm: b?.dimensionsMm || "",
+      boxRemarks: b?.remarks || "",
+      serialNo: "",
+      article: "",
+      partNo: "",
+      description: "",
+      uom: "",
+      qty: "",
+      unitWeightKg: "",
+      totalLineWeightKg: "",
+    })),
+    ...lines.map((line) => ({
+      recordType: "ITEM",
+      ...base,
+      boxMaterial: "",
+      boxCount: "",
+      boxDimensionsMm: "",
+      boxRemarks: "",
+      serialNo: line?.serialNo ?? "",
+      article: line?.article || "",
+      partNo: line?.partNumber || "",
+      description: line?.description || "",
+      uom: line?.uom || "",
+      qty: line?.qty ?? 0,
+      unitWeightKg: line?.unitWeightKg ?? "",
+      totalLineWeightKg: line?.totalWeightKg ?? "",
+    })),
+  ];
 }
 
 export default function Sales() {
@@ -3082,15 +3151,25 @@ export default function Sales() {
                                   onClick={() =>
                                     apiGet(`/sales/rts/${r.latestApprovedRtsId}`)
                                       .then((doc) =>
-                                        exportListCsv(`packing-list-${doc.rtsNo || "rts"}`, doc.lines || [], [
+                                        exportListCsv(`packing-list-${doc.rtsNo || "rts"}`, rtsCsvRowsForSales(doc), [
+                                          { label: "Record Type", value: (x) => x.recordType || "" },
+                                          { label: "RTS No", value: (x) => x.rtsNo || "" },
+                                          { label: "RTS Date", value: (x) => x.rtsDate || "" },
+                                          { label: "Allocation No", value: (x) => x.allocationNo || "" },
+                                          { label: "Customer", value: (x) => x.customer || "" },
+                                          { label: "Total Weight Kg", value: (x) => x.totalWeightKg ?? "" },
+                                          { label: "Box Material", value: (x) => x.boxMaterial || "" },
+                                          { label: "Box Count", value: (x) => x.boxCount ?? "" },
+                                          { label: "Box Dimensions mm", value: (x) => x.boxDimensionsMm || "" },
+                                          { label: "Box Remarks", value: (x) => x.boxRemarks || "" },
                                           { label: "S/N", value: (x) => x.serialNo || "" },
                                           { label: "Article", value: (x) => x.article || "" },
-                                          { label: "Part no", value: (x) => x.partNumber || "" },
+                                          { label: "Part no", value: (x) => x.partNo || "" },
                                           { label: "Description", value: (x) => x.description || "" },
                                           { label: "UOM", value: (x) => x.uom || "" },
-                                          { label: "Qty", value: (x) => x.qty || 0 },
+                                          { label: "Qty", value: (x) => x.qty ?? "" },
                                           { label: "Unit weight kg", value: (x) => x.unitWeightKg ?? "" },
-                                          { label: "Total weight kg", value: (x) => x.totalWeightKg ?? "" },
+                                          { label: "Total line weight kg", value: (x) => x.totalLineWeightKg ?? "" },
                                         ])
                                       )
                                       .catch((e) => setErr(e.message))

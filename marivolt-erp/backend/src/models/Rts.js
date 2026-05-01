@@ -18,6 +18,17 @@ const rtsLineSchema = new mongoose.Schema(
   { _id: true }
 );
 
+const rtsPackingBoxSchema = new mongoose.Schema(
+  {
+    serialNo: { type: Number, default: 0, min: 0 },
+    material: { type: String, default: "", trim: true },
+    count: { type: Number, default: 1, min: 1 },
+    dimensionsMm: { type: String, default: "", trim: true },
+    remarks: { type: String, default: "", trim: true },
+  },
+  { _id: true }
+);
+
 const rtsSchema = new mongoose.Schema(
   {
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
@@ -33,6 +44,7 @@ const rtsSchema = new mongoose.Schema(
       totalWeightKg: { type: Number, default: 0 },
       boxCount: { type: Number, default: 0 },
       boxDimensionsMm: { type: String, default: "", trim: true },
+      boxes: { type: [rtsPackingBoxSchema], default: [] },
     },
     status: {
       type: String,

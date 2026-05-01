@@ -10,6 +10,12 @@ function money(n) {
   return Number(n || 0).toFixed(2);
 }
 
+const BOX_MATERIALS = ["WOODEN", "CARDBOARD", "PLYWOOD", "PALLET", "OTHER"];
+
+function emptyBoxRow() {
+  return { material: "WOODEN", count: 1, dimensionsMm: "", remarks: "" };
+}
+
 function escapeCsv(val) {
   const s = String(val ?? "");
   if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
@@ -31,9 +37,79 @@ function downloadCsv(filename, headers, rows) {
   URL.revokeObjectURL(url);
 }
 
+function rtsCsvHeaders() {
+  return [
+    "Record Type",
+    "RTS No",
+    "RTS Date",
+    "Allocation No",
+    "Customer",
+    "Total Weight Kg",
+    "Box Material",
+    "Box Count",
+    "Box Dimensions mm",
+    "Box Remarks",
+    "S/N",
+    "Article",
+    "Part no",
+    "Description",
+    "UOM",
+    "Qty",
+    "Unit Weight Kg",
+    "Total Line Weight Kg",
+  ];
+}
+
+function rtsCsvRows(doc) {
+  const boxes = Array.isArray(doc?.packingDetails?.boxes) ? doc.packingDetails.boxes : [];
+  const lines = Array.isArray(doc?.lines) ? doc.lines : [];
+  const base = [
+    doc?.rtsNo || "",
+    doc?.rtsDate ? new Date(doc.rtsDate).toISOString().slice(0, 10) : "",
+    doc?.linkedOrderAllocationNo || "",
+    doc?.customerName || "",
+    doc?.packingDetails?.totalWeightKg ?? "",
+  ];
+  const boxRows = boxes.map((b) => [
+    "BOX",
+    ...base,
+    b?.material || "",
+    b?.count ?? "",
+    b?.dimensionsMm || "",
+    b?.remarks || "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+  ]);
+  const lineRows = lines.map((line) => [
+    "ITEM",
+    ...base,
+    "",
+    "",
+    "",
+    "",
+    line?.serialNo ?? "",
+    line?.article || "",
+    line?.partNumber || "",
+    line?.description || "",
+    line?.uom || "",
+    line?.qty ?? 0,
+    line?.unitWeightKg ?? "",
+    line?.totalWeightKg ?? "",
+  ]);
+  return [...boxRows, ...lineRows];
+}
+
 function renderPackingListPrintWindow(rts, autoPrint = false) {
   if (!rts) return;
   const rows = Array.isArray(rts.lines) ? rts.lines : [];
+  const boxes = Array.isArray(rts.packingDetails?.boxes) ? rts.packingDetails.boxes : [];
+  const totalBoxes = boxes.reduce((acc, b) => acc + (Number(b.count || 0) || 0), 0);
   const html = `
     <html>
       <head>
@@ -89,9 +165,30 @@ function renderPackingListPrintWindow(rts, autoPrint = false) {
         </table>
         <div class="pack">
           <div><span>Total Weight (Kg)</span><b>${money(rts.packingDetails?.totalWeightKg || 0)}</b></div>
-          <div><span>No. of Boxes</span><b>${Number(rts.packingDetails?.boxCount || 0)}</b></div>
-          <div><span>Box Dimensions (mm)</span><b>${rts.packingDetails?.boxDimensionsMm || "-"}</b></div>
+          <div><span>No. of Boxes</span><b>${Number(totalBoxes || rts.packingDetails?.boxCount || 0)}</b></div>
         </div>
+        ${
+          boxes.length
+            ? `<table>
+          <thead>
+            <tr><th>S/N</th><th>Material</th><th class="right">Count</th><th>Dimensions (mm)</th><th>Remarks</th></tr>
+          </thead>
+          <tbody>
+            ${boxes
+              .map(
+                (b, i) => `<tr>
+              <td>${i + 1}</td>
+              <td>${b.material || "-"}</td>
+              <td class="right">${Number(b.count || 0)}</td>
+              <td>${b.dimensionsMm || "-"}</td>
+              <td>${b.remarks || "-"}</td>
+            </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>`
+            : ""
+        }
       </body>
     </html>
   `;
@@ -113,8 +210,7 @@ export default function Store() {
   const [selected, setSelected] = useState({});
   const [packing, setPacking] = useState({
     totalWeightKg: "",
-    boxCount: "",
-    boxDimensionsMm: "",
+    boxes: [emptyBoxRow()],
   });
   const limit = 20;
 
@@ -165,8 +261,15 @@ export default function Store() {
       lines: Array.isArray(rtsDetail.lines) ? rtsDetail.lines.map((l, idx) => ({ ...l, serialNo: idx + 1 })) : [],
       packingDetails: {
         totalWeightKg: rtsDetail.packingDetails?.totalWeightKg ?? 0,
-        boxCount: rtsDetail.packingDetails?.boxCount ?? 0,
-        boxDimensionsMm: rtsDetail.packingDetails?.boxDimensionsMm || "",
+        boxes:
+          Array.isArray(rtsDetail.packingDetails?.boxes) && rtsDetail.packingDetails.boxes.length
+            ? rtsDetail.packingDetails.boxes.map((b) => ({
+                material: b.material || "WOODEN",
+                count: b.count ?? 1,
+                dimensionsMm: b.dimensionsMm || "",
+                remarks: b.remarks || "",
+              }))
+            : [emptyBoxRow()],
       },
       editable: !!rtsDetail.editable,
     });
@@ -190,8 +293,12 @@ export default function Store() {
         lines,
         packingDetails: {
           totalWeightKg: Number(packing.totalWeightKg || 0),
-          boxCount: Number(packing.boxCount || 0),
-          boxDimensionsMm: packing.boxDimensionsMm || "",
+          boxes: (packing.boxes || []).map((b) => ({
+            material: b.material || "",
+            count: Number(b.count || 0),
+            dimensionsMm: b.dimensionsMm || "",
+            remarks: b.remarks || "",
+          })),
         },
       });
     },
@@ -201,7 +308,7 @@ export default function Store() {
       qc.invalidateQueries({ queryKey: ["store-rts"] });
       setAllocationOpenId(null);
       setSelected({});
-      setPacking({ totalWeightKg: "", boxCount: "", boxDimensionsMm: "" });
+      setPacking({ totalWeightKg: "", boxes: [emptyBoxRow()] });
     },
   });
 
@@ -344,17 +451,8 @@ export default function Store() {
                                       .then((doc) =>
                                         downloadCsv(
                                           `packing-list-${doc.rtsNo || "rts"}.csv`,
-                                          ["S/N", "Article", "Part no", "Description", "UOM", "Qty", "Unit Weight Kg", "Total Weight Kg"],
-                                          (doc.lines || []).map((line) => [
-                                            line.serialNo ?? "",
-                                            line.article || "",
-                                            line.partNumber || "",
-                                            line.description || "",
-                                            line.uom || "",
-                                            line.qty || 0,
-                                            line.unitWeightKg ?? "",
-                                            line.totalWeightKg ?? "",
-                                          ])
+                                          rtsCsvHeaders(),
+                                          rtsCsvRows(doc)
                                         )
                                       )
                                       .catch(() => {})
@@ -466,17 +564,8 @@ export default function Store() {
                                   .then((doc) =>
                                     downloadCsv(
                                       `packing-list-${doc.rtsNo || "rts"}.csv`,
-                                      ["S/N", "Article", "Part no", "Description", "UOM", "Qty", "Unit Weight Kg", "Total Weight Kg"],
-                                      (doc.lines || []).map((line) => [
-                                        line.serialNo ?? "",
-                                        line.article || "",
-                                        line.partNumber || "",
-                                        line.description || "",
-                                        line.uom || "",
-                                        line.qty || 0,
-                                        line.unitWeightKg ?? "",
-                                        line.totalWeightKg ?? "",
-                                      ])
+                                      rtsCsvHeaders(),
+                                      rtsCsvRows(doc)
                                     )
                                   )
                                   .catch(() => {})
@@ -516,7 +605,7 @@ export default function Store() {
         onClose={() => {
           setAllocationOpenId(null);
           setSelected({});
-          setPacking({ totalWeightKg: "", boxCount: "", boxDimensionsMm: "" });
+          setPacking({ totalWeightKg: "", boxes: [emptyBoxRow()] });
         }}
         title={`Create RTS${allocationDetail?.allocationNo ? ` • ${allocationDetail.allocationNo}` : ""}`}
         xlarge
@@ -569,17 +658,112 @@ export default function Store() {
                 value={packing.totalWeightKg}
                 onChange={(e) => setPacking((p) => ({ ...p, totalWeightKg: e.target.value }))}
               />
-              <TextInput
-                placeholder="Number of boxes"
-                type="number"
-                value={packing.boxCount}
-                onChange={(e) => setPacking((p) => ({ ...p, boxCount: e.target.value }))}
-              />
-              <TextInput
-                placeholder="Box dimensions (LxWxH mm)"
-                value={packing.boxDimensionsMm}
-                onChange={(e) => setPacking((p) => ({ ...p, boxDimensionsMm: e.target.value }))}
-              />
+              <div className="rounded-xl border px-3 py-2 text-xs text-gray-700">
+                Total boxes: {(packing.boxes || []).reduce((acc, b) => acc + (Number(b.count || 0) || 0), 0)}
+              </div>
+            </div>
+            <div className="rounded-xl border">
+              <div className="flex items-center justify-between border-b bg-gray-50 px-3 py-2">
+                <span className="text-xs font-semibold">Box details</span>
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 text-xs"
+                  onClick={() => setPacking((p) => ({ ...p, boxes: [...(p.boxes || []), emptyBoxRow()] }))}
+                >
+                  + Add box row
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="min-w-[900px] w-full text-xs">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-2 py-2 text-left">S/N</th>
+                      <th className="px-2 py-2 text-left">Material</th>
+                      <th className="px-2 py-2 text-right">Count</th>
+                      <th className="px-2 py-2 text-left">Dimensions (LxWxH mm)</th>
+                      <th className="px-2 py-2 text-left">Remarks</th>
+                      <th className="px-2 py-2 text-left">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(packing.boxes || []).map((box, idx) => (
+                      <tr key={idx} className="border-t">
+                        <td className="px-2 py-1">{idx + 1}</td>
+                        <td className="px-2 py-1">
+                          <select
+                            className="w-full rounded-xl border px-2 py-1 text-xs"
+                            value={box.material || "WOODEN"}
+                            onChange={(e) =>
+                              setPacking((p) => {
+                                const boxes = [...(p.boxes || [])];
+                                boxes[idx] = { ...box, material: e.target.value };
+                                return { ...p, boxes };
+                              })
+                            }
+                          >
+                            {BOX_MATERIALS.map((m) => (
+                              <option key={m} value={m}>
+                                {m}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-2 py-1">
+                          <TextInput
+                            type="number"
+                            value={box.count ?? 1}
+                            onChange={(e) =>
+                              setPacking((p) => {
+                                const boxes = [...(p.boxes || [])];
+                                boxes[idx] = { ...box, count: e.target.value };
+                                return { ...p, boxes };
+                              })
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-1">
+                          <TextInput
+                            value={box.dimensionsMm || ""}
+                            onChange={(e) =>
+                              setPacking((p) => {
+                                const boxes = [...(p.boxes || [])];
+                                boxes[idx] = { ...box, dimensionsMm: e.target.value };
+                                return { ...p, boxes };
+                              })
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-1">
+                          <TextInput
+                            value={box.remarks || ""}
+                            onChange={(e) =>
+                              setPacking((p) => {
+                                const boxes = [...(p.boxes || [])];
+                                boxes[idx] = { ...box, remarks: e.target.value };
+                                return { ...p, boxes };
+                              })
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-1">
+                          <button
+                            type="button"
+                            className="rounded border px-2 py-1 text-xs"
+                            onClick={() =>
+                              setPacking((p) => {
+                                const boxes = (p.boxes || []).filter((_, i) => i !== idx);
+                                return { ...p, boxes: boxes.length ? boxes : [emptyBoxRow()] };
+                              })
+                            }
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
             <div className="overflow-x-auto rounded-xl border">
               <table className="min-w-[1100px] w-full text-xs">
@@ -690,29 +874,128 @@ export default function Store() {
                   }))
                 }
               />
-              <TextInput
-                placeholder="Number of boxes"
-                type="number"
-                disabled={!rtsEditForm.editable}
-                value={rtsEditForm.packingDetails?.boxCount ?? ""}
-                onChange={(e) =>
-                  setRtsEditForm((f) => ({
-                    ...f,
-                    packingDetails: { ...f.packingDetails, boxCount: e.target.value },
-                  }))
-                }
-              />
-              <TextInput
-                placeholder="Box dimensions (LxWxH mm)"
-                disabled={!rtsEditForm.editable}
-                value={rtsEditForm.packingDetails?.boxDimensionsMm ?? ""}
-                onChange={(e) =>
-                  setRtsEditForm((f) => ({
-                    ...f,
-                    packingDetails: { ...f.packingDetails, boxDimensionsMm: e.target.value },
-                  }))
-                }
-              />
+              <div className="rounded-xl border px-3 py-2 text-xs text-gray-700">
+                Total boxes: {((rtsEditForm.packingDetails?.boxes || []).reduce((acc, b) => acc + (Number(b.count || 0) || 0), 0))}
+              </div>
+            </div>
+            <div className="rounded-xl border">
+              <div className="flex items-center justify-between border-b bg-gray-50 px-3 py-2">
+                <span className="text-xs font-semibold">Box details</span>
+                {rtsEditForm.editable ? (
+                  <button
+                    type="button"
+                    className="rounded border px-2 py-1 text-xs"
+                    onClick={() =>
+                      setRtsEditForm((f) => ({
+                        ...f,
+                        packingDetails: { ...f.packingDetails, boxes: [...(f.packingDetails?.boxes || []), emptyBoxRow()] },
+                      }))
+                    }
+                  >
+                    + Add box row
+                  </button>
+                ) : null}
+              </div>
+              <div className="overflow-x-auto">
+                <table className="min-w-[900px] w-full text-xs">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-2 py-2 text-left">S/N</th>
+                      <th className="px-2 py-2 text-left">Material</th>
+                      <th className="px-2 py-2 text-right">Count</th>
+                      <th className="px-2 py-2 text-left">Dimensions (LxWxH mm)</th>
+                      <th className="px-2 py-2 text-left">Remarks</th>
+                      <th className="px-2 py-2 text-left">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(rtsEditForm.packingDetails?.boxes || []).map((box, idx) => (
+                      <tr key={idx} className="border-t">
+                        <td className="px-2 py-1">{idx + 1}</td>
+                        <td className="px-2 py-1">
+                          <select
+                            className="w-full rounded-xl border px-2 py-1 text-xs"
+                            disabled={!rtsEditForm.editable}
+                            value={box.material || "WOODEN"}
+                            onChange={(e) =>
+                              setRtsEditForm((f) => {
+                                const boxes = [...(f.packingDetails?.boxes || [])];
+                                boxes[idx] = { ...box, material: e.target.value };
+                                return { ...f, packingDetails: { ...f.packingDetails, boxes } };
+                              })
+                            }
+                          >
+                            {BOX_MATERIALS.map((m) => (
+                              <option key={m} value={m}>
+                                {m}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-2 py-1">
+                          <TextInput
+                            type="number"
+                            disabled={!rtsEditForm.editable}
+                            value={box.count ?? 1}
+                            onChange={(e) =>
+                              setRtsEditForm((f) => {
+                                const boxes = [...(f.packingDetails?.boxes || [])];
+                                boxes[idx] = { ...box, count: e.target.value };
+                                return { ...f, packingDetails: { ...f.packingDetails, boxes } };
+                              })
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-1">
+                          <TextInput
+                            disabled={!rtsEditForm.editable}
+                            value={box.dimensionsMm || ""}
+                            onChange={(e) =>
+                              setRtsEditForm((f) => {
+                                const boxes = [...(f.packingDetails?.boxes || [])];
+                                boxes[idx] = { ...box, dimensionsMm: e.target.value };
+                                return { ...f, packingDetails: { ...f.packingDetails, boxes } };
+                              })
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-1">
+                          <TextInput
+                            disabled={!rtsEditForm.editable}
+                            value={box.remarks || ""}
+                            onChange={(e) =>
+                              setRtsEditForm((f) => {
+                                const boxes = [...(f.packingDetails?.boxes || [])];
+                                boxes[idx] = { ...box, remarks: e.target.value };
+                                return { ...f, packingDetails: { ...f.packingDetails, boxes } };
+                              })
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-1">
+                          {rtsEditForm.editable ? (
+                            <button
+                              type="button"
+                              className="rounded border px-2 py-1 text-xs"
+                              onClick={() =>
+                                setRtsEditForm((f) => {
+                                  const boxes = (f.packingDetails?.boxes || []).filter((_, i) => i !== idx);
+                                  return {
+                                    ...f,
+                                    packingDetails: { ...f.packingDetails, boxes: boxes.length ? boxes : [emptyBoxRow()] },
+                                  };
+                                })
+                              }
+                            >
+                              Remove
+                            </button>
+                          ) : null}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
             <div className="overflow-x-auto rounded-xl border">
               <table className="min-w-[1100px] w-full text-xs">
@@ -773,17 +1056,8 @@ export default function Store() {
                 onClick={() =>
                   downloadCsv(
                     `packing-list-${rtsDetail.rtsNo || "rts"}.csv`,
-                    ["S/N", "Article", "Part no", "Description", "UOM", "Qty", "Unit Weight Kg", "Total Weight Kg"],
-                    (rtsEditForm.lines || []).map((line) => [
-                      line.serialNo ?? "",
-                      line.article || "",
-                      line.partNumber || "",
-                      line.description || "",
-                      line.uom || "",
-                      line.qty || 0,
-                      line.unitWeightKg ?? "",
-                      line.totalWeightKg ?? "",
-                    ])
+                    rtsCsvHeaders(),
+                    rtsCsvRows({ ...rtsDetail, lines: rtsEditForm.lines, packingDetails: rtsEditForm.packingDetails })
                   )
                 }
               >
@@ -800,8 +1074,12 @@ export default function Store() {
                       status: rtsEditForm.status,
                       packingDetails: {
                         totalWeightKg: Number(rtsEditForm.packingDetails?.totalWeightKg || 0),
-                        boxCount: Number(rtsEditForm.packingDetails?.boxCount || 0),
-                        boxDimensionsMm: rtsEditForm.packingDetails?.boxDimensionsMm || "",
+                        boxes: (rtsEditForm.packingDetails?.boxes || []).map((b) => ({
+                          material: b.material || "",
+                          count: Number(b.count || 0),
+                          dimensionsMm: b.dimensionsMm || "",
+                          remarks: b.remarks || "",
+                        })),
                       },
                       lines: (rtsEditForm.lines || []).map((line) => ({
                         allocationLineId: line.allocationLineId,

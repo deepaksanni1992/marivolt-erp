@@ -131,6 +131,36 @@ function isRtsEditable(doc) {
   return !doc.linkedSalesInvoiceId;
 }
 
+function normalizeRtsPackingDetails(raw = {}) {
+  const boxesRaw = Array.isArray(raw?.boxes) ? raw.boxes : [];
+  const boxes = boxesRaw
+    .map((b, idx) => {
+      const count = Math.max(1, Number(b?.count || 1) || 1);
+      const materialInput = String(b?.material || "").trim().toUpperCase();
+      let material = materialInput;
+      if (material === "PLUBOARD") material = "PLYWOOD";
+      const allowed = ["WOODEN", "CARDBOARD", "PLYWOOD", "PALLET", "OTHER"];
+      if (!allowed.includes(material)) material = material ? "OTHER" : "";
+      return {
+        serialNo: idx + 1,
+        material,
+        count,
+        dimensionsMm: String(b?.dimensionsMm || "").trim(),
+        remarks: String(b?.remarks || "").trim(),
+      };
+    })
+    .filter((b) => b.material || b.dimensionsMm || b.count > 0 || b.remarks);
+
+  const computedBoxCount = boxes.reduce((acc, b) => acc + (Number(b.count) || 0), 0);
+  const fallbackCount = Number(raw?.boxCount || 0);
+  return {
+    totalWeightKg: Number(raw?.totalWeightKg || 0),
+    boxCount: computedBoxCount || fallbackCount,
+    boxDimensionsMm: String(raw?.boxDimensionsMm || boxes[0]?.dimensionsMm || "").trim(),
+    boxes,
+  };
+}
+
 const PENDING_QUOTATION_STATUSES = ["DRAFT", "SENT"];
 const PENDING_OA_STATUSES = ["DRAFT", "CONFIRMED"];
 
@@ -1733,11 +1763,7 @@ export async function updateRts(req, res) {
 
     if (req.body.rtsDate !== undefined) doc.rtsDate = req.body.rtsDate;
     if (req.body.packingDetails !== undefined) {
-      doc.packingDetails = {
-        totalWeightKg: Number(req.body?.packingDetails?.totalWeightKg || 0),
-        boxCount: Number(req.body?.packingDetails?.boxCount || 0),
-        boxDimensionsMm: String(req.body?.packingDetails?.boxDimensionsMm || ""),
-      };
+      doc.packingDetails = normalizeRtsPackingDetails(req.body?.packingDetails || {});
     }
     if (req.body.lines !== undefined) {
       const incoming = Array.isArray(req.body.lines) ? req.body.lines : [];
@@ -1944,11 +1970,7 @@ export async function createRtsFromOrderAllocation(req, res) {
       linkedOrderAllocationNo: allocation.allocationNo,
       customerName: allocation.customerName,
       lines: rtsLines,
-      packingDetails: {
-        totalWeightKg: Number(req.body?.packingDetails?.totalWeightKg || 0),
-        boxCount: Number(req.body?.packingDetails?.boxCount || 0),
-        boxDimensionsMm: String(req.body?.packingDetails?.boxDimensionsMm || ""),
-      },
+      packingDetails: normalizeRtsPackingDetails(req.body?.packingDetails || {}),
       status: "DRAFT",
       createdBy: req.user?.email || "",
     });
