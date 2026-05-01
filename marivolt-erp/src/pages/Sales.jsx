@@ -2578,15 +2578,15 @@ export default function Sales() {
         {tabContent === "quotation" && !detail ? (
           <p className="text-sm text-gray-500">Loading...</p>
         ) : tabContent === "quotation" ? (
-          <div className="space-y-3 text-sm">
-            <div className="grid gap-2 sm:grid-cols-3">
+          <div className="space-y-4 text-sm">
+            <div className="grid gap-3 sm:grid-cols-3">
               <div>
                 <div className="text-gray-500">No</div>
-                <div className="font-mono">{detail.quotationNo}</div>
+                <div className="font-mono text-base">{detail.quotationNo}</div>
               </div>
               <div>
                 <div className="text-gray-500">Customer</div>
-                <div>{detail.customerName}</div>
+                <div className="text-base">{detail.customerName}</div>
               </div>
               <div>
                 <div className="text-gray-500">Status</div>
@@ -2597,36 +2597,69 @@ export default function Sales() {
                 </div>
               </div>
             </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-xl border bg-gray-50 p-3">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Customer &amp; Address Info</div>
+                <div><span className="font-medium">Customer:</span> {detail.customerName || "-"}</div>
+                <div><span className="font-medium">Customer Ref:</span> {detail.customerReference || "-"}</div>
+                <div><span className="font-medium">Attention:</span> {detail.attention || "-"}</div>
+                <div><span className="font-medium">Billing:</span> {detail.customer?.billingAddress || "-"}</div>
+                <div><span className="font-medium">Shipping:</span> {detail.customer?.shippingAddress || "-"}</div>
+              </div>
+              <div className="rounded-xl border bg-gray-50 p-3">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Engine Details</div>
+                <div><span className="font-medium">Engine:</span> {detail.engine || "-"}</div>
+                <div><span className="font-medium">Model:</span> {detail.model || "-"}</div>
+                <div><span className="font-medium">Config:</span> {detail.config || "-"}</div>
+                <div><span className="font-medium">ESN:</span> {detail.esn || "-"}</div>
+                <div><span className="font-medium">Currency:</span> {detail.currency || "-"}</div>
+              </div>
+            </div>
+
             <div className="overflow-x-auto rounded-xl border">
-              <table className="min-w-full text-xs">
-                <thead className="bg-gray-50">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-100">
                   <tr>
-                    <th className="px-2 py-1 text-left">S/N</th>
-                    <th className="px-2 py-1 text-left">Article</th>
-                    <th className="px-2 py-1 text-left">Part no</th>
-                    <th className="px-2 py-1 text-left">Description</th>
-                    <th className="px-2 py-1 text-left">UOM</th>
-                    <th className="px-2 py-1 text-right">Qty</th>
-                    <th className="px-2 py-1 text-right">Price</th>
-                    <th className="px-2 py-1 text-right">Total</th>
+                    <th className="px-3 py-2 text-left">S/N</th>
+                    <th className="px-3 py-2 text-left">Part no</th>
+                    <th className="px-3 py-2 text-left">Description</th>
+                    <th className="px-3 py-2 text-left">UOM</th>
+                    <th className="px-3 py-2 text-right">Qty</th>
+                    <th className="px-3 py-2 text-right">Price</th>
+                    <th className="px-3 py-2 text-right">Total</th>
+                    <th className="px-3 py-2 text-left">Remarks</th>
+                    <th className="px-3 py-2 text-left">Availability</th>
                   </tr>
                 </thead>
                 <tbody>
                   {detail.lines?.map((line) => (
                     <tr key={line._id} className="border-t">
-                      <td className="px-2 py-1">{line.serialNo}</td>
-                      <td className="px-2 py-1">{line.article}</td>
-                      <td className="px-2 py-1">{line.partNumber}</td>
-                      <td className="px-2 py-1">{line.description}</td>
-                      <td className="px-2 py-1">{line.uom}</td>
-                      <td className="px-2 py-1 text-right">{line.qty}</td>
-                      <td className="px-2 py-1 text-right">{money(line.price)}</td>
-                      <td className="px-2 py-1 text-right">{money(line.totalPrice)}</td>
+                      <td className="px-3 py-2">{line.serialNo}</td>
+                      <td className="px-3 py-2">{line.partNumber}</td>
+                      <td className="px-3 py-2">{line.description}</td>
+                      <td className="px-3 py-2">{line.uom}</td>
+                      <td className="px-3 py-2 text-right">{line.qty}</td>
+                      <td className="px-3 py-2 text-right">{money(line.price)}</td>
+                      <td className="px-3 py-2 text-right">{money(line.totalPrice)}</td>
+                      <td className="px-3 py-2">{line.remarks || "-"}</td>
+                      <td className="px-3 py-2">{line.availability || "-"}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+
+            <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
+              <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(detail.subTotal)}</span></div>
+              <div className="flex justify-between py-1"><span>Discount</span><span>{money(detail.discountTotal)}</span></div>
+              <div className="flex justify-between py-1"><span>Tax</span><span>{money(detail.taxTotal)}</span></div>
+              <div className="flex justify-between py-1 text-base font-semibold">
+                <span>Grand Total</span>
+                <span>{money(detail.grandTotal)} {detail.currency || ""}</span>
+              </div>
+            </div>
+
             <div className="flex flex-wrap gap-2">
               {statusOptions.map((s) => (
                 <button
@@ -2710,6 +2743,43 @@ export default function Sales() {
                 </div>
               </div>
               <div className="text-xs text-gray-600">Linked Quotation: {oaDetail.linkedQuotationNo || "-"}</div>
+              <div className="overflow-x-auto rounded-xl border">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th className="px-3 py-2 text-left">S/N</th>
+                      <th className="px-3 py-2 text-left">Part no</th>
+                      <th className="px-3 py-2 text-left">Description</th>
+                      <th className="px-3 py-2 text-left">UOM</th>
+                      <th className="px-3 py-2 text-right">Qty</th>
+                      <th className="px-3 py-2 text-right">Price</th>
+                      <th className="px-3 py-2 text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {oaDetail.lines?.map((line) => (
+                      <tr key={line._id} className="border-t">
+                        <td className="px-3 py-2">{line.serialNo}</td>
+                        <td className="px-3 py-2">{line.partNumber}</td>
+                        <td className="px-3 py-2">{line.description}</td>
+                        <td className="px-3 py-2">{line.uom}</td>
+                        <td className="px-3 py-2 text-right">{line.qty}</td>
+                        <td className="px-3 py-2 text-right">{money(line.price)}</td>
+                        <td className="px-3 py-2 text-right">{money(line.totalPrice)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
+                <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(oaDetail.subTotal)}</span></div>
+                <div className="flex justify-between py-1"><span>Discount</span><span>{money(oaDetail.discountTotal)}</span></div>
+                <div className="flex justify-between py-1"><span>Tax</span><span>{money(oaDetail.taxTotal)}</span></div>
+                <div className="flex justify-between py-1 text-base font-semibold">
+                  <span>Grand Total</span>
+                  <span>{money(oaDetail.grandTotal)} {oaDetail.currency || ""}</span>
+                </div>
+              </div>
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("oa", oaDetail._id)}>
                   Print
@@ -2774,6 +2844,43 @@ export default function Sales() {
             <div className="text-xs text-gray-600">
               Linked Quotation: {proformaDetail.linkedQuotationNo || "-"} | Linked OA: {proformaDetail.linkedOANo || "-"}
             </div>
+            <div className="overflow-x-auto rounded-xl border">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-100">
+                  <tr>
+                    <th className="px-3 py-2 text-left">S/N</th>
+                    <th className="px-3 py-2 text-left">Part no</th>
+                    <th className="px-3 py-2 text-left">Description</th>
+                    <th className="px-3 py-2 text-left">UOM</th>
+                    <th className="px-3 py-2 text-right">Qty</th>
+                    <th className="px-3 py-2 text-right">Price</th>
+                    <th className="px-3 py-2 text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {proformaDetail.lines?.map((line) => (
+                    <tr key={line._id} className="border-t">
+                      <td className="px-3 py-2">{line.serialNo}</td>
+                      <td className="px-3 py-2">{line.partNumber}</td>
+                      <td className="px-3 py-2">{line.description}</td>
+                      <td className="px-3 py-2">{line.uom}</td>
+                      <td className="px-3 py-2 text-right">{line.qty}</td>
+                      <td className="px-3 py-2 text-right">{money(line.price)}</td>
+                      <td className="px-3 py-2 text-right">{money(line.totalPrice)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
+              <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(proformaDetail.subTotal)}</span></div>
+              <div className="flex justify-between py-1"><span>Discount</span><span>{money(proformaDetail.discountTotal)}</span></div>
+              <div className="flex justify-between py-1"><span>Tax</span><span>{money(proformaDetail.taxTotal)}</span></div>
+              <div className="flex justify-between py-1 text-base font-semibold">
+                <span>Grand Total</span>
+                <span>{money(proformaDetail.grandTotal)} {proformaDetail.currency || ""}</span>
+              </div>
+            </div>
             <div className="flex flex-wrap gap-2">
               <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("proforma", proformaDetail._id)}>
                 Print
@@ -2824,6 +2931,43 @@ export default function Sales() {
               <div className="text-xs text-gray-600">
                 Linked PI: {salesInvoiceDetail.linkedProformaNo || "-"} | Linked OA: {salesInvoiceDetail.linkedOANo || "-"}
               </div>
+              <div className="overflow-x-auto rounded-xl border">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th className="px-3 py-2 text-left">S/N</th>
+                      <th className="px-3 py-2 text-left">Part no</th>
+                      <th className="px-3 py-2 text-left">Description</th>
+                      <th className="px-3 py-2 text-left">UOM</th>
+                      <th className="px-3 py-2 text-right">Qty</th>
+                      <th className="px-3 py-2 text-right">Price</th>
+                      <th className="px-3 py-2 text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {salesInvoiceDetail.lines?.map((line) => (
+                      <tr key={line._id} className="border-t">
+                        <td className="px-3 py-2">{line.serialNo}</td>
+                        <td className="px-3 py-2">{line.partNumber}</td>
+                        <td className="px-3 py-2">{line.description}</td>
+                        <td className="px-3 py-2">{line.uom}</td>
+                        <td className="px-3 py-2 text-right">{line.qty}</td>
+                        <td className="px-3 py-2 text-right">{money(line.price)}</td>
+                        <td className="px-3 py-2 text-right">{money(line.totalPrice)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
+                <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(salesInvoiceDetail.subTotal)}</span></div>
+                <div className="flex justify-between py-1"><span>Discount</span><span>{money(salesInvoiceDetail.discountTotal)}</span></div>
+                <div className="flex justify-between py-1"><span>Tax</span><span>{money(salesInvoiceDetail.taxTotal)}</span></div>
+                <div className="flex justify-between py-1 text-base font-semibold">
+                  <span>Grand Total</span>
+                  <span>{money(salesInvoiceDetail.grandTotal)} {salesInvoiceDetail.currency || ""}</span>
+                </div>
+              </div>
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-invoice", salesInvoiceDetail._id)}>
                   Print
@@ -2873,6 +3017,43 @@ export default function Sales() {
             <div className="text-xs text-gray-600">
               Linked Quotation: {ciplDetail.linkedQuotationNo || "-"} | Linked OA: {ciplDetail.linkedOANo || "-"} | Linked Invoice:{" "}
               {ciplDetail.linkedSalesInvoiceNo || "-"}
+            </div>
+            <div className="overflow-x-auto rounded-xl border">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-100">
+                  <tr>
+                    <th className="px-3 py-2 text-left">S/N</th>
+                    <th className="px-3 py-2 text-left">Part no</th>
+                    <th className="px-3 py-2 text-left">Description</th>
+                    <th className="px-3 py-2 text-left">UOM</th>
+                    <th className="px-3 py-2 text-right">Qty</th>
+                    <th className="px-3 py-2 text-right">Price</th>
+                    <th className="px-3 py-2 text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ciplDetail.lines?.map((line) => (
+                    <tr key={line._id} className="border-t">
+                      <td className="px-3 py-2">{line.serialNo}</td>
+                      <td className="px-3 py-2">{line.partNumber}</td>
+                      <td className="px-3 py-2">{line.description}</td>
+                      <td className="px-3 py-2">{line.uom}</td>
+                      <td className="px-3 py-2 text-right">{line.qty}</td>
+                      <td className="px-3 py-2 text-right">{money(line.price)}</td>
+                      <td className="px-3 py-2 text-right">{money(line.totalPrice)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
+              <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(ciplDetail.subTotal)}</span></div>
+              <div className="flex justify-between py-1"><span>Discount</span><span>{money(ciplDetail.discountTotal)}</span></div>
+              <div className="flex justify-between py-1"><span>Tax</span><span>{money(ciplDetail.taxTotal)}</span></div>
+              <div className="flex justify-between py-1 text-base font-semibold">
+                <span>Grand Total</span>
+                <span>{money(ciplDetail.grandTotal)} {ciplDetail.currency || ""}</span>
+              </div>
             </div>
             <div className="flex flex-wrap gap-2">
               <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("cipl", ciplDetail._id)}>
