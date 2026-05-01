@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import Papa from "papaparse";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
@@ -82,6 +83,80 @@ const emptyLine = () => ({
   materialCode: "",
   availability: "",
 });
+
+/** Sample CSV aligned with quotation line columns (Article, Description, and positive QTY required per row). */
+const QUOTATION_LINES_CSV_TEMPLATE = `Article,Part number,Description,UOM,QTY,Price,Remarks,Material code,Availability
+51228,034.02.112,Sample spare part,PCS,1,25.00,Optional note,ABC123,In stock`;
+
+function normCsvHeader(s) {
+  return String(s ?? "")
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/_/g, " ");
+}
+
+function compactHeader(s) {
+  return normCsvHeader(s).replace(/\s/g, "");
+}
+
+/** First matching non-empty header among aliases (compares normalized compact keys). */
+function pickCsv(row, aliases) {
+  if (!row || typeof row !== "object") return "";
+  const keyMap = Object.keys(row).map((k) => ({ raw: k, c: compactHeader(k) }));
+  for (const a of aliases) {
+    const want = compactHeader(a);
+    const hit = keyMap.find((x) => x.c === want);
+    if (!hit) continue;
+    const v = row[hit.raw];
+    if (v === undefined || v === null || String(v).trim() === "") continue;
+    return String(v).trim();
+  }
+  return "";
+}
+
+function parseMoneyOrQty(raw) {
+  const s = String(raw ?? "").trim().replace(/,/g, "");
+  const n = Number.parseFloat(s);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function quotationLinesFromCsvRows(csvRows) {
+  const out = [];
+  if (!Array.isArray(csvRows)) return out;
+  for (const row of csvRows) {
+    if (!row || typeof row !== "object") continue;
+    const hasAnyCell = Object.keys(row).some((k) => String(row[k] ?? "").trim() !== "");
+    if (!hasAnyCell) continue;
+    const article = pickCsv(row, ["article", "item", "item code", "itemcode", "sku"]);
+    const description = pickCsv(row, ["description", "desc", "item description"]);
+    const qtyRaw = pickCsv(row, ["qty", "quantity", "q"]);
+    const qty = qtyRaw === "" ? NaN : parseMoneyOrQty(qtyRaw);
+    if (!article || !description || !(qty > 0)) continue;
+    const partNumber = pickCsv(row, ["part number", "part no", "partno", "maker part"]);
+    const uom = pickCsv(row, ["uom", "unit", "unit of measure"]) || "PCS";
+    const priceRaw = pickCsv(row, ["price", "unit price", "sale price", "unitprice", "rate"]);
+    const price = Number.isFinite(parseMoneyOrQty(priceRaw)) ? Math.max(0, parseMoneyOrQty(priceRaw)) : 0;
+    const remarks = pickCsv(row, ["remarks", "notes", "note"]);
+    const materialCode = pickCsv(row, ["material code", "material", "materialcode"]);
+    const availability = pickCsv(row, ["availability", "stock", "avail"]);
+    out.push({
+      serialNo: out.length + 1,
+      article: article.toUpperCase(),
+      partNumber,
+      description,
+      uom,
+      qty,
+      price,
+      totalPrice: qty * price,
+      remarks,
+      materialCode,
+      availability,
+    });
+  }
+  return out;
+}
 
 function quotationDetailToEditableForm(q) {
   if (!q) return null;
@@ -709,6 +784,7 @@ export default function Sales() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const limit = 20;
+  const quotationCsvInputRef = useRef(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [isQuotationNoEdited, setIsQuotationNoEdited] = useState(false);
   const [customerCreateOpen, setCustomerCreateOpen] = useState(false);
@@ -1095,6 +1171,50 @@ export default function Sales() {
     },
     onError: (e) => setErr(e.message),
   });
+
+  function downloadQuotationLinesCsvTemplate() {
+    const url = URL.createObjectURL(
+      new Blob([`${QUOTATION_LINES_CSV_TEMPLATE}\n`], { type: "text/csv;charset=utf-8" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "quotation-lines-template.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleQuotationLinesCsvSelected(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: "greedy",
+      dynamicTyping: false,
+      complete: (results) => {
+        const imported = quotationLinesFromCsvRows(results.data || []);
+        if (!imported.length) {
+          setErr(
+            "No valid CSV rows. Each row needs Article (or Item/SKU), Description, and a positive QTY. Optional: Part number, UOM, Price, Remarks, Material code, Availability.",
+          );
+          return;
+        }
+        setErr("");
+        setForm((f) => {
+          const prev = f.lines || [];
+          const hasRealLine = prev.some(
+            (l) => String(l.article || "").trim() !== "" || String(l.description || "").trim() !== "",
+          );
+          const base = hasRealLine ? prev : [];
+          const merged = [...base, ...imported].map((line, i) => ({ ...line, serialNo: i + 1 }));
+          return { ...f, lines: merged.length ? merged : [emptyLine()] };
+        });
+      },
+      error: (parseErr) => setErr(parseErr.message || "Could not read CSV file"),
+    });
+  }
 
   const statusMutation = useMutation({
     mutationFn: ({ id, nextStatus }) => apiPatch(`/quotations/${id}/status`, { status: nextStatus }),
@@ -3544,8 +3664,8 @@ export default function Sales() {
           setCreateOpen(false);
         }}
         title="New Quotation"
-        wide
-        className="w-[92vw] max-w-[1700px]"
+        subtitle="Enter header details, add lines manually or import from CSV. Required per line: Article, Description, quantity."
+        xlarge
       >
         <div className="grid gap-3 sm:grid-cols-4">
           <FormField label="Quotation No">
@@ -3628,20 +3748,43 @@ export default function Sales() {
           </FormField>
         </div>
 
-        <div className="mt-4">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm font-medium">Quotation Lines</span>
-            <button
-              type="button"
-              className="text-sm underline"
-              onClick={() => setForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }))}
-            >
-              + Add line
-            </button>
+        <div className="mt-6">
+          <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <span className="text-sm font-semibold text-slate-800">Quotation lines</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                ref={quotationCsvInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                className="hidden"
+                onChange={handleQuotationLinesCsvSelected}
+              />
+              <button
+                type="button"
+                className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
+                onClick={() => quotationCsvInputRef.current?.click()}
+              >
+                Import CSV
+              </button>
+              <button
+                type="button"
+                className="rounded-xl border border-transparent px-3 py-1.5 text-sm font-medium text-slate-600 underline underline-offset-2 hover:text-slate-900"
+                onClick={downloadQuotationLinesCsvTemplate}
+              >
+                Download sample CSV
+              </button>
+              <button
+                type="button"
+                className="rounded-xl bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
+                onClick={() => setForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }))}
+              >
+                + Add line
+              </button>
+            </div>
           </div>
-          <div className="w-full overflow-x-auto rounded-xl border">
+          <div className="w-full overflow-x-auto rounded-xl border border-slate-200 shadow-sm">
             <table className="min-w-[1400px] w-full text-xs">
-              <thead className="bg-gray-50">
+              <thead className="bg-slate-50">
                 <tr>
                   <th className="px-2 py-2 text-left">Serial number</th>
                   <th className="px-2 py-2 text-left">Article</th>
