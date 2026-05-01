@@ -504,29 +504,30 @@ function renderFlowDocPrintWindow({
   autoPrint = false,
 }) {
   const rows = doc?.lines || [];
+  const hasCompanyLogo = String(company?.logo || company?.logoUrl || "").trim().length > 0;
+  const companyName = String(company?.name || company?.companyName || "").toLowerCase();
+  const isMarivolt = companyName.includes("marivolt");
+  const marivoltPrintLogo = "/brand/marivolt-icon.png";
   const html = `
     <html>
       <head>
         <title>${docNoValue || title}</title>
         <style>
-          body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
-          .header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 16px; gap: 16px; }
-          .title { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
-          .muted { color: #555; font-size: 12px; line-height: 1.5; }
-          table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-          th, td { border: 1px solid #ddd; padding: 8px; font-size: 12px; }
-          th { background: #f5f5f5; text-align: left; }
-          .right { text-align: right; }
-          .totals { margin-top: 12px; width: 320px; margin-left: auto; }
-          .totals div { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
-          @media print {
-            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-          }
+${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
-      <body>
+      <body class="${isMarivolt ? "has-quote-terms" : ""}">
         <div class="header">
-          <div>
+          <div class="header-left">
+            ${
+              isMarivolt
+                ? `<img src="${marivoltPrintLogo}" alt="Marivolt icon" class="logo" />`
+                : hasCompanyLogo
+                ? `<img src="${company?.logo || company?.logoUrl}" alt="${company?.name || company?.companyName || "Company"} logo" class="logo" />`
+                : `<div class="brand-fallback">MV</div>`
+            }
+          </div>
+          <div class="header-center">
             <div class="title">${title}</div>
             <div class="muted">
               <div><b>${docNoLabel}:</b> ${docNoValue || "-"}</div>
@@ -535,17 +536,47 @@ function renderFlowDocPrintWindow({
               <div><b>Customer:</b> ${doc?.customerName || "-"}</div>
             </div>
           </div>
-          <div class="muted" style="text-align:right;">
-            <div><b>${company?.name || company?.companyName || ""}</b></div>
-            <div>${company?.address || ""}</div>
-            <div>${company?.email || ""}</div>
-            <div>${company?.phone || ""}</div>
+          ${
+            isMarivolt
+              ? `<div class="header-right is-marivolt">
+                <h1 class="brand-title">MariVolt</h1>
+                <div class="brand-subtitle">Marine Engine Spares</div>
+                <div class="muted" style="margin-top:8px;">
+                  <div>${company?.address || "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"}</div>
+                  <div>${company?.email || "sales@marivolt.co"}</div>
+                  <div>${company?.phone || "+971-543053047"}</div>
+                </div>
+              </div>`
+              : `<div class="header-right muted">
+                <div><b>${company?.name || company?.companyName || ""}</b></div>
+                <div>${company?.address || ""}</div>
+                <div>${company?.email || ""}</div>
+                <div>${company?.phone || ""}</div>
+              </div>`
+          }
+        </div>
+        <div class="info-grid">
+          <div class="info-box muted">
+            <div class="info-box-title">Customer &amp; Address Info</div>
+            <div><b>Customer:</b> ${doc?.customerName || "-"}</div>
+            <div><b>Reference:</b> ${linkedValue || "-"}</div>
+            <div><b>Attention:</b> -</div>
+            <div><b>Billing:</b> ${doc?.billingAddress || "-"}</div>
+            <div><b>Shipping:</b> ${doc?.shippingAddress || "-"}</div>
+          </div>
+          <div class="info-box muted">
+            <div class="info-box-title">Dispatch &amp; Terms</div>
+            <div><b>Dispatch:</b> ${doc?.dispatchDetails || "-"}</div>
+            <div><b>Payment Terms:</b> ${doc?.paymentTerms || "-"}</div>
+            <div><b>Status:</b> ${doc?.status || "-"}</div>
+            <div><b>Currency:</b> ${doc?.currency || "-"}</div>
+            <div><b>Remarks:</b> ${doc?.remarks || "-"}</div>
           </div>
         </div>
         <table>
           <thead>
             <tr>
-              <th>S/N</th><th>Article</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Price</th><th class="right">Total</th><th>Remarks</th>
+              <th>Serial number</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Price</th><th class="right">Total price</th><th class="remarks-col">Remarks</th><th>Availability</th>
             </tr>
           </thead>
           <tbody>
@@ -553,15 +584,15 @@ function renderFlowDocPrintWindow({
               .map(
                 (line) => `
               <tr>
-                <td>${line.serialNo || ""}</td>
-                <td>${line.article || ""}</td>
+                <td>${line.serialNo ?? ""}</td>
                 <td>${line.partNumber || ""}</td>
                 <td>${line.description || ""}</td>
                 <td>${line.uom || ""}</td>
                 <td class="right">${line.qty || 0}</td>
                 <td class="right">${money(line.price)}</td>
                 <td class="right">${money(line.totalPrice)}</td>
-                <td>${line.remarks || ""}</td>
+                <td class="remarks-col">${line.remarks || ""}</td>
+                <td>${line.availability || ""}</td>
               </tr>`
               )
               .join("")}
@@ -573,6 +604,33 @@ function renderFlowDocPrintWindow({
           <div><span>Tax</span><span>${money(doc?.taxTotal)}</span></div>
           <div><b>Grand Total</b><b>${money(doc?.grandTotal)} ${doc?.currency || ""}</b></div>
         </div>
+        ${
+          isMarivolt
+            ? `<div class="quote-terms">Only Marivolt terms and condition applicable, check here-<a href="https://marivolt.co/about-us">https://marivolt.co/about-us</a></div>`
+            : ""
+        }
+        <div class="footer">
+          <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
+        </div>
+        ${
+          isMarivolt
+            ? `<div class="page-footer">
+          <div class="page-footer-top">
+            <div>
+              <div>Marivolt FZE</div>
+              <div>LV09B</div>
+            </div>
+            <div class="page-footer-center">Hamriyah freezone phase 2, Sharjah, UAE</div>
+            <div class="page-footer-right">
+              <div>Mob: +971-543053047</div>
+              <div>Email: sales@marivolt.co</div>
+              <div>Web: www.marivolt.co</div>
+            </div>
+          </div>
+          <div class="page-footer-line"></div>
+        </div>`
+            : ""
+        }
       </body>
     </html>
   `;
