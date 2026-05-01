@@ -2573,6 +2573,7 @@ export default function Sales() {
                   : "CIPL View"
         }
         wide
+        expanded
       >
         {tabContent === "quotation" && !detail ? (
           <p className="text-sm text-gray-500">Loading...</p>

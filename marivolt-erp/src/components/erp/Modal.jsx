@@ -1,9 +1,11 @@
-export default function Modal({ open, title, onClose, children, wide, document, className = "" }) {
+export default function Modal({ open, title, onClose, children, wide, document, expanded = false, className = "" }) {
   if (!open) return null;
-  const maxW = document ? "max-w-6xl" : wide ? "max-w-4xl" : "max-w-lg";
+  const maxW = expanded ? "max-w-[96vw]" : document ? "max-w-6xl" : wide ? "max-w-4xl" : "max-w-lg";
   const pad = document ? "p-5 sm:p-7" : "p-5";
+  const frameAlign = expanded ? "items-start py-4 sm:py-6" : "items-center";
+  const maxH = expanded ? "max-h-[94vh]" : "max-h-[90vh]";
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+    <div className={`fixed inset-0 z-[60] flex justify-center p-4 ${frameAlign}`}>
       <button
         type="button"
         className="absolute inset-0 bg-black/40"
@@ -14,7 +16,7 @@ export default function Modal({ open, title, onClose, children, wide, document, 
         role="dialog"
         aria-modal="true"
         className={[
-          "relative max-h-[90vh] w-full overflow-y-auto rounded-2xl border bg-white shadow-lg",
+          `relative ${maxH} w-full overflow-y-auto rounded-2xl border bg-white shadow-lg`,
           maxW,
           pad,
           className,
