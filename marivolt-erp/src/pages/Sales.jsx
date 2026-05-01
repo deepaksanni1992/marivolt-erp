@@ -1003,7 +1003,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         <table>
           <thead>
             <tr>
-              <th>Serial number</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Unit wt (Kg)</th><th class="right">Total wt (Kg)</th><th class="remarks-col">Remarks</th><th>Availability</th>
+              <th>Serial number</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Unit wt (Kg)</th><th class="right">Total wt (Kg)</th><th class="remarks-col">COO</th><th>Availability</th>
             </tr>
           </thead>
           <tbody>
@@ -1017,7 +1017,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
                   <td class="right">${line.qty || 0}</td>
                   <td class="right">${line.unitWeightKg == null ? "" : money(line.unitWeightKg)}</td>
                   <td class="right">${line.totalWeightKg == null ? "" : money(line.totalWeightKg)}</td>
-                  <td class="remarks-col">${line.remarks || ""}</td>
+                  <td class="remarks-col">${line.coo || "Germany"}</td>
                   <td>${line.availability || ""}</td>
                 </tr>`
               )
@@ -1128,6 +1128,7 @@ function rtsCsvRowsForSales(doc) {
       description: line?.description || "",
       uom: line?.uom || "",
       qty: line?.qty ?? 0,
+      coo: line?.coo || "Germany",
       unitWeightKg: line?.unitWeightKg ?? "",
       totalLineWeightKg: line?.totalWeightKg ?? "",
     })),
@@ -3232,6 +3233,7 @@ export default function Sales() {
                                           { label: "Description", value: (x) => x.description || "" },
                                           { label: "UOM", value: (x) => x.uom || "" },
                                           { label: "Qty", value: (x) => x.qty ?? "" },
+                                          { label: "COO", value: (x) => x.coo || "Germany" },
                                           { label: "Unit weight kg", value: (x) => x.unitWeightKg ?? "" },
                                           { label: "Total line weight kg", value: (x) => x.totalLineWeightKg ?? "" },
                                         ])

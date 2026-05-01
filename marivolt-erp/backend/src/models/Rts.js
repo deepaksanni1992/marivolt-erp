@@ -9,6 +9,7 @@ const rtsLineSchema = new mongoose.Schema(
     description: { type: String, default: "" },
     qty: { type: Number, required: true, min: 0.0001 },
     uom: { type: String, default: "PCS", trim: true },
+    coo: { type: String, default: "Germany", trim: true },
     remarks: { type: String, default: "" },
     materialCode: { type: String, default: "", trim: true },
     availability: { type: String, default: "", trim: true },

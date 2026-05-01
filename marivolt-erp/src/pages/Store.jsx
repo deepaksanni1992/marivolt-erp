@@ -57,6 +57,7 @@ function rtsCsvHeaders() {
     "Description",
     "UOM",
     "Qty",
+    "COO",
     "Unit Weight Kg",
     "Total Line Weight Kg",
   ];
@@ -101,6 +102,7 @@ function rtsCsvRows(doc) {
     line?.description || "",
     line?.uom || "",
     line?.qty ?? 0,
+    line?.coo || "Germany",
     line?.unitWeightKg ?? "",
     line?.totalWeightKg ?? "",
   ]);
@@ -182,7 +184,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         <table>
           <thead>
             <tr>
-              <th>Serial number</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Unit wt (Kg)</th><th class="right">Total wt (Kg)</th><th class="remarks-col">Remarks</th><th>Availability</th>
+              <th>Serial number</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Unit wt (Kg)</th><th class="right">Total wt (Kg)</th><th class="remarks-col">COO</th><th>Availability</th>
             </tr>
           </thead>
           <tbody>
@@ -197,7 +199,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
                     <td class="right">${line.qty || 0}</td>
                     <td class="right">${line.unitWeightKg == null ? "" : money(line.unitWeightKg)}</td>
                     <td class="right">${line.totalWeightKg == null ? "" : money(line.totalWeightKg)}</td>
-                    <td class="remarks-col">${line.remarks || ""}</td>
+                    <td class="remarks-col">${line.coo || "Germany"}</td>
                     <td>${line.availability || ""}</td>
                   </tr>`
               )
@@ -351,6 +353,7 @@ export default function Store() {
             allocationLineId: line._id,
             qty,
             unitWeightKg: s.unitWeightKg === "" ? null : Number(s.unitWeightKg),
+            coo: s.coo || "Germany",
           };
         })
         .filter(Boolean);
@@ -689,6 +692,7 @@ export default function Store() {
                     next[String(line._id)] = {
                       qty: Number(line.pendingQty || 0),
                       unitWeightKg: line.unitWeightKg ?? "",
+                      coo: line.coo || "Germany",
                     };
                   }
                   setSelected(next);
@@ -705,6 +709,7 @@ export default function Store() {
                     next[String(line._id)] = {
                       qty: Number(line.qty || 0),
                       unitWeightKg: line.unitWeightKg ?? "",
+                      coo: line.coo || "Germany",
                     };
                   }
                   setSelected(next);
@@ -842,6 +847,7 @@ export default function Store() {
                     <th className="px-2 py-2 text-right">Shipped</th>
                     <th className="px-2 py-2 text-right">Pending</th>
                     <th className="px-2 py-2 text-right">RTS Qty</th>
+                    <th className="px-2 py-2 text-left">COO</th>
                     <th className="px-2 py-2 text-right">Unit wt (Kg)</th>
                   </tr>
                 </thead>
@@ -866,6 +872,17 @@ export default function Store() {
                               setSelected((s) => ({
                                 ...s,
                                 [key]: { ...row, qty: e.target.value },
+                              }))
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-1">
+                          <TextInput
+                            value={row.coo ?? "Germany"}
+                            onChange={(e) =>
+                              setSelected((s) => ({
+                                ...s,
+                                [key]: { ...row, coo: e.target.value },
                               }))
                             }
                           />
@@ -1071,6 +1088,7 @@ export default function Store() {
                     <th className="px-2 py-2 text-left">Part no</th>
                     <th className="px-2 py-2 text-left">Description</th>
                     <th className="px-2 py-2 text-right">Qty</th>
+                    <th className="px-2 py-2 text-left">COO</th>
                     <th className="px-2 py-2 text-right">Unit wt (Kg)</th>
                     <th className="px-2 py-2 text-right">Total wt (Kg)</th>
                   </tr>
@@ -1083,6 +1101,20 @@ export default function Store() {
                       <td className="px-2 py-1">{line.partNumber || "-"}</td>
                       <td className="px-2 py-1">{line.description}</td>
                       <td className="px-2 py-1 text-right">{line.qty}</td>
+                      <td className="px-2 py-1">
+                        <TextInput
+                          disabled={!rtsEditForm.editable}
+                          value={line.coo ?? "Germany"}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setRtsEditForm((f) => {
+                              const lines = [...(f.lines || [])];
+                              lines[idx] = { ...line, coo: v };
+                              return { ...f, lines };
+                            });
+                          }}
+                        />
+                      </td>
                       <td className="px-2 py-1">
                         <TextInput
                           type="number"
@@ -1153,6 +1185,7 @@ export default function Store() {
                         description: line.description,
                         qty: Number(line.qty || 0),
                         uom: line.uom || "PCS",
+                        coo: line.coo || "Germany",
                         remarks: line.remarks || "",
                         materialCode: line.materialCode || "",
                         availability: line.availability || "",

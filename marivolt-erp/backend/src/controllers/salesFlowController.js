@@ -105,6 +105,40 @@ async function attachUnitWeightFromItems(req, lines = []) {
   });
 }
 
+async function attachRtsDefaultsFromItems(req, lines = []) {
+  if (!lines.length) return lines;
+  const articles = Array.from(new Set(lines.map((l) => String(l.article || "").trim().toUpperCase()).filter(Boolean)));
+  if (!articles.length) {
+    return lines.map((line) => ({
+      ...line,
+      coo: String(line.coo || "").trim() || "Germany",
+    }));
+  }
+  const items = await Item.find(withCompany(req, { itemCode: { $in: articles } }))
+    .select("itemCode weightKg coo")
+    .lean();
+  const byCode = new Map(
+    items.map((it) => [
+      String(it.itemCode || "").toUpperCase(),
+      {
+        weightKg: normalizeWeight(it.weightKg),
+        coo: String(it.coo || "").trim(),
+      },
+    ])
+  );
+  return lines.map((line) => {
+    const fromItem = byCode.get(String(line.article || "").toUpperCase()) || {};
+    const unitWeightKg = normalizeWeight(line.unitWeightKg) ?? fromItem.weightKg ?? null;
+    const coo = String(line.coo || "").trim() || fromItem.coo || "Germany";
+    return {
+      ...line,
+      unitWeightKg,
+      coo,
+      totalWeightKg: unitWeightKg == null ? null : (Number(line.qty) || 0) * unitWeightKg,
+    };
+  });
+}
+
 async function approvedRtsByAllocation(req, allocationId) {
   return Rts.find(
     withCompany(req, {
@@ -1779,6 +1813,7 @@ export async function updateRts(req, res) {
           description: String(line.description || ""),
           qty,
           uom: String(line.uom || "PCS"),
+          coo: String(line.coo || "").trim() || "Germany",
           remarks: String(line.remarks || ""),
           materialCode: String(line.materialCode || ""),
           availability: String(line.availability || ""),
@@ -1949,6 +1984,7 @@ export async function createRtsFromOrderAllocation(req, res) {
         description: line.description || "",
         qty,
         uom: line.uom || "PCS",
+        coo: String(row.coo || "").trim(),
         remarks: line.remarks || "",
         materialCode: line.materialCode || "",
         availability: line.availability || "",
@@ -1957,6 +1993,7 @@ export async function createRtsFromOrderAllocation(req, res) {
       });
     }
     if (!rtsLines.length) return res.status(400).json({ message: "No valid RTS lines selected" });
+    const rtsLinesWithDefaults = await attachRtsDefaultsFromItems(req, rtsLines);
     const rtsNo = await nextSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
@@ -1969,7 +2006,7 @@ export async function createRtsFromOrderAllocation(req, res) {
       linkedOrderAllocationId: allocation._id,
       linkedOrderAllocationNo: allocation.allocationNo,
       customerName: allocation.customerName,
-      lines: rtsLines,
+      lines: rtsLinesWithDefaults,
       packingDetails: normalizeRtsPackingDetails(req.body?.packingDetails || {}),
       status: "DRAFT",
       createdBy: req.user?.email || "",
