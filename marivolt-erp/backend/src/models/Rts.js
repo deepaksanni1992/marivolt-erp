@@ -25,6 +25,8 @@ const rtsSchema = new mongoose.Schema(
     rtsDate: { type: Date, default: () => new Date(), index: true },
     linkedOrderAllocationId: { type: mongoose.Schema.Types.ObjectId, ref: "OrderAllocation", required: true, index: true },
     linkedOrderAllocationNo: { type: String, default: "", trim: true },
+    linkedSalesInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesInvoice", index: true, default: null },
+    linkedSalesInvoiceNo: { type: String, default: "", trim: true },
     customerName: { type: String, required: true, trim: true, index: true },
     lines: { type: [rtsLineSchema], default: [] },
     packingDetails: {

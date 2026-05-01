@@ -54,6 +54,7 @@ router.post("/order-allocations/:id/to-sales-invoice", flow.convertOrderAllocati
 
 router.get("/rts", flow.listRts);
 router.get("/rts/:id", flow.getRts);
+router.put("/rts/:id", flow.updateRts);
 router.patch("/rts/:id/approve", flow.approveRts);
 
 router.get("/cipls", flow.listCipls);

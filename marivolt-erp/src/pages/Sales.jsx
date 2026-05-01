@@ -929,6 +929,78 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
   if (autoPrint) setTimeout(() => win.print(), 300);
 }
 
+function renderPackingListPrintWindow({ rts, company, autoPrint = false }) {
+  const rows = rts?.lines || [];
+  const html = `
+    <html>
+      <head>
+        <title>${rts?.rtsNo || "Packing List"}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
+          .head { display:flex; justify-content:space-between; gap:16px; margin-bottom: 12px; }
+          .title { font-size: 24px; font-weight: 700; }
+          .muted { color:#555; font-size: 12px; }
+          table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+          th, td { border: 1px solid #ddd; padding: 7px; font-size: 12px; text-align: left; }
+          th { background: #f3f4f6; }
+          .right { text-align: right; }
+          .pack { margin-top: 14px; width: 360px; margin-left:auto; border:1px solid #ddd; border-radius:6px; padding:10px; }
+          .pack div { display:flex; justify-content:space-between; margin:3px 0; font-size:12px; }
+        </style>
+      </head>
+      <body>
+        <div class="head">
+          <div>
+            <div class="title">Packing List</div>
+            <div class="muted"><b>RTS No:</b> ${rts?.rtsNo || "-"}</div>
+            <div class="muted"><b>Date:</b> ${rts?.rtsDate ? new Date(rts.rtsDate).toLocaleDateString() : "-"}</div>
+            <div class="muted"><b>Order Allocation:</b> ${rts?.linkedOrderAllocationNo || "-"}</div>
+          </div>
+          <div class="muted">
+            <div><b>Customer:</b> ${rts?.customerName || "-"}</div>
+            <div><b>Status:</b> ${rts?.status || "-"}</div>
+            <div><b>Company:</b> ${company?.name || company?.code || "-"}</div>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>S/N</th><th>Article</th><th>Part no</th><th>Description</th><th>UOM</th><th class="right">Qty</th><th class="right">Unit wt (Kg)</th><th class="right">Total wt (Kg)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows
+              .map(
+                (line) => `<tr>
+                  <td>${line.serialNo ?? ""}</td>
+                  <td>${line.article || ""}</td>
+                  <td>${line.partNumber || ""}</td>
+                  <td>${line.description || ""}</td>
+                  <td>${line.uom || ""}</td>
+                  <td class="right">${line.qty || 0}</td>
+                  <td class="right">${line.unitWeightKg == null ? "" : money(line.unitWeightKg)}</td>
+                  <td class="right">${line.totalWeightKg == null ? "" : money(line.totalWeightKg)}</td>
+                </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>
+        <div class="pack">
+          <div><span>Total Weight (Kg)</span><b>${money(rts?.packingDetails?.totalWeightKg || 0)}</b></div>
+          <div><span>No. of Boxes</span><b>${Number(rts?.packingDetails?.boxCount || 0)}</b></div>
+          <div><span>Box Dimensions (mm)</span><b>${rts?.packingDetails?.boxDimensionsMm || "-"}</b></div>
+        </div>
+      </body>
+    </html>
+  `;
+  const win = window.open("", "_blank", "width=1200,height=900");
+  if (!win) return;
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  if (autoPrint) setTimeout(() => win.print(), 300);
+}
+
 export default function Sales() {
   const qc = useQueryClient();
   const { auth } = useAuth();
@@ -1267,6 +1339,15 @@ export default function Sales() {
           dateValue: doc?.ciplDate,
           linkedLabel: "Linked Reference",
           linkedValue: doc?.linkedSalesInvoiceNo || doc?.linkedQuotationNo || doc?.linkedOANo,
+          autoPrint,
+        });
+        return;
+      }
+      if (type === "rts") {
+        const rts = await apiGet(`/sales/rts/${id}`);
+        renderPackingListPrintWindow({
+          rts,
+          company,
           autoPrint,
         });
       }
@@ -2961,16 +3042,65 @@ export default function Sales() {
                           </span>
                         </td>
                         <td className="px-3 py-2">
-                          <button
-                            type="button"
-                            className="rounded-lg border px-2 py-1 text-xs"
-                            onClick={() => apiPost(`/sales/order-allocations/${r._id}/to-sales-invoice`, {}).then(() => {
-                              qc.invalidateQueries({ queryKey: ["sales-order-allocation"] });
-                              qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
-                            }).catch((e) => setErr(e.message))}
-                          >
-                            Convert to SI
-                          </button>
+                          <div className="flex flex-wrap gap-1">
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              onClick={() =>
+                                apiPost(`/sales/order-allocations/${r._id}/to-sales-invoice`, {
+                                  rtsId: r.latestApprovedRtsId || undefined,
+                                })
+                                  .then(() => {
+                                    qc.invalidateQueries({ queryKey: ["sales-order-allocation"] });
+                                    qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
+                                    qc.invalidateQueries({ queryKey: ["store-rts"] });
+                                  })
+                                  .catch((e) => setErr(e.message))
+                              }
+                            >
+                              Convert to SI
+                            </button>
+                            {r.latestApprovedRtsId ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="rounded-lg border px-2 py-1 text-xs"
+                                  onClick={() => openFlowDocumentPrint("rts", r.latestApprovedRtsId)}
+                                >
+                                  Print
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded-lg border px-2 py-1 text-xs"
+                                  onClick={() => openFlowDocumentPrint("rts", r.latestApprovedRtsId, true)}
+                                >
+                                  Export PDF
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded-lg border px-2 py-1 text-xs"
+                                  onClick={() =>
+                                    apiGet(`/sales/rts/${r.latestApprovedRtsId}`)
+                                      .then((doc) =>
+                                        exportListCsv(`packing-list-${doc.rtsNo || "rts"}`, doc.lines || [], [
+                                          { label: "S/N", value: (x) => x.serialNo || "" },
+                                          { label: "Article", value: (x) => x.article || "" },
+                                          { label: "Part no", value: (x) => x.partNumber || "" },
+                                          { label: "Description", value: (x) => x.description || "" },
+                                          { label: "UOM", value: (x) => x.uom || "" },
+                                          { label: "Qty", value: (x) => x.qty || 0 },
+                                          { label: "Unit weight kg", value: (x) => x.unitWeightKg ?? "" },
+                                          { label: "Total weight kg", value: (x) => x.totalWeightKg ?? "" },
+                                        ])
+                                      )
+                                      .catch((e) => setErr(e.message))
+                                  }
+                                >
+                                  Export CSV
+                                </button>
+                              </>
+                            ) : null}
+                          </div>
                         </td>
                       </tr>
                     ))

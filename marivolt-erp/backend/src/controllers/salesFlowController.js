@@ -126,6 +126,11 @@ function shippedQtyMapForAllocation(approvedRtsDocs = []) {
   return shipped;
 }
 
+function isRtsEditable(doc) {
+  if (!doc) return false;
+  return !doc.linkedSalesInvoiceId;
+}
+
 const PENDING_QUOTATION_STATUSES = ["DRAFT", "SENT"];
 const PENDING_OA_STATUSES = ["DRAFT", "CONFIRMED"];
 
@@ -1567,7 +1572,31 @@ export async function listOrderAllocations(req, res) {
       OrderAllocation.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       OrderAllocation.countDocuments(filter),
     ]);
-    res.json({ items, total, page, limit });
+    const allocationIds = items.map((x) => x._id);
+    const rtsDocs = allocationIds.length
+      ? await Rts.find(
+          withCompany(req, {
+            linkedOrderAllocationId: { $in: allocationIds },
+            status: "APPROVED",
+          })
+        )
+          .sort({ rtsDate: -1, createdAt: -1 })
+          .lean()
+      : [];
+    const latestByAllocation = new Map();
+    for (const rts of rtsDocs) {
+      const key = String(rts.linkedOrderAllocationId || "");
+      if (!latestByAllocation.has(key)) latestByAllocation.set(key, rts);
+    }
+    const rows = items.map((x) => {
+      const latest = latestByAllocation.get(String(x._id || ""));
+      return {
+        ...x,
+        latestApprovedRtsId: latest?._id || null,
+        latestApprovedRtsNo: latest?.rtsNo || "",
+      };
+    });
+    res.json({ items: rows, total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -1666,6 +1695,9 @@ export async function listRts(req, res) {
       const q = String(req.query.search).trim();
       filter.$or = [{ rtsNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }, { linkedOrderAllocationNo: new RegExp(q, "i") }];
     }
+    if (req.query.allocationId && mongoose.Types.ObjectId.isValid(String(req.query.allocationId))) {
+      filter.linkedOrderAllocationId = new mongoose.Types.ObjectId(String(req.query.allocationId));
+    }
     if (req.query.status) filter.status = String(req.query.status).toUpperCase();
     const [items, total] = await Promise.all([
       Rts.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
@@ -1683,9 +1715,64 @@ export async function getRts(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const doc = await Rts.findOne(withCompany(req, { _id: id })).lean();
     if (!doc) return res.status(404).json({ message: "Not found" });
-    res.json(doc);
+    res.json({ ...doc, editable: isRtsEditable(doc) });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+}
+
+export async function updateRts(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const doc = await Rts.findOne(withCompany(req, { _id: id }));
+    if (!doc) return res.status(404).json({ message: "Not found" });
+    if (!isRtsEditable(doc)) {
+      return res.status(400).json({ message: "RTS is locked after Sales Invoice reference is created." });
+    }
+
+    if (req.body.rtsDate !== undefined) doc.rtsDate = req.body.rtsDate;
+    if (req.body.packingDetails !== undefined) {
+      doc.packingDetails = {
+        totalWeightKg: Number(req.body?.packingDetails?.totalWeightKg || 0),
+        boxCount: Number(req.body?.packingDetails?.boxCount || 0),
+        boxDimensionsMm: String(req.body?.packingDetails?.boxDimensionsMm || ""),
+      };
+    }
+    if (req.body.lines !== undefined) {
+      const incoming = Array.isArray(req.body.lines) ? req.body.lines : [];
+      if (!incoming.length) return res.status(400).json({ message: "RTS requires at least one line" });
+      doc.lines = incoming.map((line, idx) => {
+        const qty = Number(line.qty) || 0;
+        const unitWeightKg = normalizeWeight(line.unitWeightKg);
+        return {
+          serialNo: idx + 1,
+          allocationLineId: line.allocationLineId,
+          article: String(line.article || "").trim().toUpperCase(),
+          partNumber: String(line.partNumber || ""),
+          description: String(line.description || ""),
+          qty,
+          uom: String(line.uom || "PCS"),
+          remarks: String(line.remarks || ""),
+          materialCode: String(line.materialCode || ""),
+          availability: String(line.availability || ""),
+          unitWeightKg,
+          totalWeightKg: unitWeightKg == null ? null : qty * unitWeightKg,
+        };
+      });
+    }
+    if (req.body.status !== undefined) {
+      const st = String(req.body.status || "").toUpperCase();
+      if (!["DRAFT", "APPROVED", "CANCELLED"].includes(st)) {
+        return res.status(400).json({ message: "Invalid RTS status" });
+      }
+      doc.status = st;
+    }
+    doc.updatedBy = req.user?.email || "";
+    await doc.save();
+    res.json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
   }
 }
 
@@ -1695,6 +1782,7 @@ export async function approveRts(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const doc = await Rts.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
+    if (!isRtsEditable(doc)) return res.status(400).json({ message: "RTS is locked after Sales Invoice reference is created." });
     if (doc.status === "APPROVED") return res.json(doc);
     doc.status = "APPROVED";
     doc.updatedBy = req.user?.email || "";
@@ -1880,6 +1968,14 @@ export async function convertOrderAllocationToSalesInvoice(req, res) {
     if (!approvedDocs.length) {
       return res.status(400).json({ message: "At least one APPROVED RTS is required before converting to Sales Invoice" });
     }
+    const requestedRtsId = req.body?.rtsId;
+    let refRts = null;
+    if (requestedRtsId && mongoose.Types.ObjectId.isValid(String(requestedRtsId))) {
+      refRts = approvedDocs.find((x) => String(x._id) === String(requestedRtsId)) || null;
+      if (!refRts) return res.status(400).json({ message: "Selected RTS is not approved or not linked to this allocation" });
+    } else {
+      refRts = approvedDocs[0];
+    }
     const already = await SalesInvoice.findOne(withCompany(req, { linkedOrderAllocationId: allocation._id }));
     if (already) return res.status(409).json({ message: `Sales invoice already exists (${already.invoiceNo})` });
     const invoiceNo = await nextSalesDocNumber({
@@ -1901,6 +1997,8 @@ export async function convertOrderAllocationToSalesInvoice(req, res) {
       linkedProformaNo: allocation.linkedProformaNo || "",
       linkedOrderAllocationId: allocation._id,
       linkedOrderAllocationNo: allocation.allocationNo,
+      linkedRtsId: refRts?._id || null,
+      linkedRtsNo: refRts?.rtsNo || "",
       customerName: allocation.customerName,
       paymentTerms: "",
       dispatchDetails: "",
@@ -1918,6 +2016,16 @@ export async function convertOrderAllocationToSalesInvoice(req, res) {
     allocation.linkedSalesInvoiceNo = doc.invoiceNo;
     allocation.updatedBy = req.user?.email || "";
     await allocation.save();
+    if (refRts?._id) {
+      await Rts.findOneAndUpdate(
+        withCompany(req, { _id: refRts._id }),
+        {
+          linkedSalesInvoiceId: doc._id,
+          linkedSalesInvoiceNo: doc.invoiceNo,
+          updatedBy: req.user?.email || "",
+        }
+      );
+    }
     res.status(201).json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });

@@ -30,6 +30,8 @@ const salesInvoiceSchema = new mongoose.Schema(
     linkedProformaNo: { type: String, default: "", trim: true },
     linkedOrderAllocationId: { type: mongoose.Schema.Types.ObjectId, ref: "OrderAllocation", index: true, default: null },
     linkedOrderAllocationNo: { type: String, default: "", trim: true },
+    linkedRtsId: { type: mongoose.Schema.Types.ObjectId, ref: "Rts", index: true, default: null },
+    linkedRtsNo: { type: String, default: "", trim: true },
     customerName: { type: String, required: true, trim: true },
     paymentTerms: { type: String, default: "" },
     dispatchDetails: { type: String, default: "" },

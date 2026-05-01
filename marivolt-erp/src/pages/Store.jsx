@@ -1,13 +1,106 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import { TextInput } from "../components/erp/FormField.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import Inventory from "./Inventory.jsx";
-import { apiGet, apiGetWithQuery, apiPatch, apiPost } from "../lib/api.js";
+import { apiGet, apiGetWithQuery, apiPatch, apiPost, apiPut } from "../lib/api.js";
 
 function money(n) {
   return Number(n || 0).toFixed(2);
+}
+
+function escapeCsv(val) {
+  const s = String(val ?? "");
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function downloadCsv(filename, headers, rows) {
+  const head = headers.map(escapeCsv).join(",");
+  const body = rows.map((r) => r.map(escapeCsv).join(",")).join("\n");
+  const csv = `\ufeff${[head, body].filter(Boolean).join("\n")}`;
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function renderPackingListPrintWindow(rts, autoPrint = false) {
+  if (!rts) return;
+  const rows = Array.isArray(rts.lines) ? rts.lines : [];
+  const html = `
+    <html>
+      <head>
+        <title>Packing List ${rts.rtsNo || ""}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 20px; color: #111; }
+          .top { display:flex; justify-content:space-between; margin-bottom: 14px; }
+          .title { font-size: 24px; font-weight: 700; letter-spacing: 0.2px; }
+          .meta { font-size: 12px; color:#444; margin-bottom: 8px; }
+          table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+          th, td { border: 1px solid #ddd; padding: 6px; font-size: 12px; text-align: left; }
+          th { background: #f5f5f5; }
+          .right { text-align: right; }
+          .pack { margin-top: 12px; border:1px solid #ddd; border-radius:6px; padding:10px; width:360px; margin-left:auto; }
+          .pack div { display:flex; justify-content:space-between; margin:2px 0; font-size:12px; }
+        </style>
+      </head>
+      <body>
+        <div class="top">
+          <div>
+            <div class="title">Packing List</div>
+            <div class="meta">RTS No: ${rts.rtsNo || "-"}</div>
+            <div class="meta">Date: ${rts.rtsDate ? new Date(rts.rtsDate).toLocaleDateString() : "-"}</div>
+          </div>
+          <div>
+            <div class="meta">Customer: ${rts.customerName || "-"}</div>
+            <div class="meta">Order Allocation: ${rts.linkedOrderAllocationNo || "-"}</div>
+            <div class="meta">Status: ${rts.status || "-"}</div>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>S/N</th><th>Article</th><th>Part no</th><th>Description</th><th>UOM</th><th class="right">Qty</th><th class="right">Unit wt (Kg)</th><th class="right">Total wt (Kg)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows
+              .map(
+                (line) => `<tr>
+                    <td>${line.serialNo ?? ""}</td>
+                    <td>${line.article || ""}</td>
+                    <td>${line.partNumber || ""}</td>
+                    <td>${line.description || ""}</td>
+                    <td>${line.uom || ""}</td>
+                    <td class="right">${line.qty || 0}</td>
+                    <td class="right">${line.unitWeightKg == null ? "" : money(line.unitWeightKg)}</td>
+                    <td class="right">${line.totalWeightKg == null ? "" : money(line.totalWeightKg)}</td>
+                  </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>
+        <div class="pack">
+          <div><span>Total Weight (Kg)</span><b>${money(rts.packingDetails?.totalWeightKg || 0)}</b></div>
+          <div><span>No. of Boxes</span><b>${Number(rts.packingDetails?.boxCount || 0)}</b></div>
+          <div><span>Box Dimensions (mm)</span><b>${rts.packingDetails?.boxDimensionsMm || "-"}</b></div>
+        </div>
+      </body>
+    </html>
+  `;
+  const win = window.open("", "_blank", "width=1200,height=900");
+  if (!win) return;
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  if (autoPrint) setTimeout(() => win.print(), 300);
 }
 
 export default function Store() {
@@ -16,6 +109,7 @@ export default function Store() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [allocationOpenId, setAllocationOpenId] = useState(null);
+  const [rtsOpenId, setRtsOpenId] = useState(null);
   const [selected, setSelected] = useState({});
   const [packing, setPacking] = useState({
     totalWeightKg: "",
@@ -51,6 +145,32 @@ export default function Store() {
       }),
     enabled: tab === "rts",
   });
+
+  const { data: rtsDetail } = useQuery({
+    queryKey: ["store-rts-detail", rtsOpenId],
+    queryFn: () => apiGet(`/sales/rts/${rtsOpenId}`),
+    enabled: !!rtsOpenId,
+  });
+
+  const [rtsEditForm, setRtsEditForm] = useState(null);
+
+  useEffect(() => {
+    if (!rtsDetail) {
+      setRtsEditForm(null);
+      return;
+    }
+    setRtsEditForm({
+      rtsDate: rtsDetail.rtsDate ? new Date(rtsDetail.rtsDate).toISOString().slice(0, 10) : "",
+      status: rtsDetail.status || "DRAFT",
+      lines: Array.isArray(rtsDetail.lines) ? rtsDetail.lines.map((l, idx) => ({ ...l, serialNo: idx + 1 })) : [],
+      packingDetails: {
+        totalWeightKg: rtsDetail.packingDetails?.totalWeightKg ?? 0,
+        boxCount: rtsDetail.packingDetails?.boxCount ?? 0,
+        boxDimensionsMm: rtsDetail.packingDetails?.boxDimensionsMm || "",
+      },
+      editable: !!rtsDetail.editable,
+    });
+  }, [rtsDetail]);
 
   const createRtsMutation = useMutation({
     mutationFn: () => {
@@ -89,6 +209,15 @@ export default function Store() {
     mutationFn: (id) => apiPatch(`/sales/rts/${id}/approve`, {}),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["store-rts"] });
+      qc.invalidateQueries({ queryKey: ["store-order-allocations"] });
+    },
+  });
+
+  const updateRtsMutation = useMutation({
+    mutationFn: (payload) => apiPut(`/sales/rts/${rtsOpenId}`, payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["store-rts"] });
+      if (rtsOpenId) qc.invalidateQueries({ queryKey: ["store-rts-detail", rtsOpenId] });
       qc.invalidateQueries({ queryKey: ["store-order-allocations"] });
     },
   });
@@ -183,6 +312,58 @@ export default function Store() {
                             <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => setAllocationOpenId(r._id)}>
                               Create RTS
                             </button>
+                            {r.latestApprovedRtsId ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="rounded-lg border px-2 py-1 text-xs"
+                                  onClick={() =>
+                                    apiGet(`/sales/rts/${r.latestApprovedRtsId}`)
+                                      .then((doc) => renderPackingListPrintWindow(doc))
+                                      .catch(() => {})
+                                  }
+                                >
+                                  Print
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded-lg border px-2 py-1 text-xs"
+                                  onClick={() =>
+                                    apiGet(`/sales/rts/${r.latestApprovedRtsId}`)
+                                      .then((doc) => renderPackingListPrintWindow(doc, true))
+                                      .catch(() => {})
+                                  }
+                                >
+                                  Export PDF
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded-lg border px-2 py-1 text-xs"
+                                  onClick={() =>
+                                    apiGet(`/sales/rts/${r.latestApprovedRtsId}`)
+                                      .then((doc) =>
+                                        downloadCsv(
+                                          `packing-list-${doc.rtsNo || "rts"}.csv`,
+                                          ["S/N", "Article", "Part no", "Description", "UOM", "Qty", "Unit Weight Kg", "Total Weight Kg"],
+                                          (doc.lines || []).map((line) => [
+                                            line.serialNo ?? "",
+                                            line.article || "",
+                                            line.partNumber || "",
+                                            line.description || "",
+                                            line.uom || "",
+                                            line.qty || 0,
+                                            line.unitWeightKg ?? "",
+                                            line.totalWeightKg ?? "",
+                                          ])
+                                        )
+                                      )
+                                      .catch(() => {})
+                                  }
+                                >
+                                  Export CSV
+                                </button>
+                              </>
+                            ) : null}
                             <button
                               type="button"
                               className="rounded-lg border px-2 py-1 text-xs"
@@ -251,14 +432,67 @@ export default function Store() {
                         <td className="px-3 py-2">{money(r.packingDetails?.totalWeightKg ?? r.totalWeightKg ?? 0)}</td>
                         <td className="px-3 py-2">{r.status}</td>
                         <td className="px-3 py-2">
-                          <button
-                            type="button"
-                            className="rounded-lg border px-2 py-1 text-xs disabled:opacity-40"
-                            disabled={String(r.status || "").toUpperCase() === "APPROVED"}
-                            onClick={() => approveRtsMutation.mutate(r._id)}
-                          >
-                            Approve
-                          </button>
+                          <div className="flex flex-wrap gap-1">
+                            <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => setRtsOpenId(r._id)}>
+                              Open
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              onClick={() =>
+                                apiGet(`/sales/rts/${r._id}`)
+                                  .then((doc) => renderPackingListPrintWindow(doc))
+                                  .catch(() => {})
+                              }
+                            >
+                              Print
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              onClick={() =>
+                                apiGet(`/sales/rts/${r._id}`)
+                                  .then((doc) => renderPackingListPrintWindow(doc, true))
+                                  .catch(() => {})
+                              }
+                            >
+                              Export PDF
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              onClick={() =>
+                                apiGet(`/sales/rts/${r._id}`)
+                                  .then((doc) =>
+                                    downloadCsv(
+                                      `packing-list-${doc.rtsNo || "rts"}.csv`,
+                                      ["S/N", "Article", "Part no", "Description", "UOM", "Qty", "Unit Weight Kg", "Total Weight Kg"],
+                                      (doc.lines || []).map((line) => [
+                                        line.serialNo ?? "",
+                                        line.article || "",
+                                        line.partNumber || "",
+                                        line.description || "",
+                                        line.uom || "",
+                                        line.qty || 0,
+                                        line.unitWeightKg ?? "",
+                                        line.totalWeightKg ?? "",
+                                      ])
+                                    )
+                                  )
+                                  .catch(() => {})
+                              }
+                            >
+                              Export CSV
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs disabled:opacity-40"
+                              disabled={String(r.status || "").toUpperCase() === "APPROVED" || !!r.linkedSalesInvoiceId}
+                              onClick={() => approveRtsMutation.mutate(r._id)}
+                            >
+                              Approve
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))
@@ -417,6 +651,176 @@ export default function Store() {
               >
                 {createRtsMutation.isPending ? "Creating..." : "Create RTS"}
               </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal open={!!rtsOpenId} onClose={() => setRtsOpenId(null)} title="Packing List (RTS)" xlarge>
+        {!rtsDetail || !rtsEditForm ? (
+          <p className="text-sm text-gray-500">Loading RTS...</p>
+        ) : (
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-4">
+              <TextInput value={rtsDetail.rtsNo || ""} disabled className="bg-gray-50" />
+              <TextInput
+                type="date"
+                value={rtsEditForm.rtsDate}
+                disabled={!rtsEditForm.editable}
+                onChange={(e) => setRtsEditForm((f) => ({ ...f, rtsDate: e.target.value }))}
+              />
+              <TextInput value={rtsDetail.customerName || ""} disabled className="bg-gray-50" />
+              <TextInput value={rtsDetail.linkedOrderAllocationNo || ""} disabled className="bg-gray-50" />
+            </div>
+            {!rtsEditForm.editable ? (
+              <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700 ring-1 ring-slate-200">
+                This RTS is linked to Sales Invoice {rtsDetail.linkedSalesInvoiceNo || "-"} and is read-only.
+              </p>
+            ) : null}
+            <div className="grid gap-3 sm:grid-cols-3">
+              <TextInput
+                placeholder="Total Weight (Kg)"
+                type="number"
+                disabled={!rtsEditForm.editable}
+                value={rtsEditForm.packingDetails?.totalWeightKg ?? ""}
+                onChange={(e) =>
+                  setRtsEditForm((f) => ({
+                    ...f,
+                    packingDetails: { ...f.packingDetails, totalWeightKg: e.target.value },
+                  }))
+                }
+              />
+              <TextInput
+                placeholder="Number of boxes"
+                type="number"
+                disabled={!rtsEditForm.editable}
+                value={rtsEditForm.packingDetails?.boxCount ?? ""}
+                onChange={(e) =>
+                  setRtsEditForm((f) => ({
+                    ...f,
+                    packingDetails: { ...f.packingDetails, boxCount: e.target.value },
+                  }))
+                }
+              />
+              <TextInput
+                placeholder="Box dimensions (LxWxH mm)"
+                disabled={!rtsEditForm.editable}
+                value={rtsEditForm.packingDetails?.boxDimensionsMm ?? ""}
+                onChange={(e) =>
+                  setRtsEditForm((f) => ({
+                    ...f,
+                    packingDetails: { ...f.packingDetails, boxDimensionsMm: e.target.value },
+                  }))
+                }
+              />
+            </div>
+            <div className="overflow-x-auto rounded-xl border">
+              <table className="min-w-[1100px] w-full text-xs">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-2 py-2 text-left">S/N</th>
+                    <th className="px-2 py-2 text-left">Article</th>
+                    <th className="px-2 py-2 text-left">Part no</th>
+                    <th className="px-2 py-2 text-left">Description</th>
+                    <th className="px-2 py-2 text-right">Qty</th>
+                    <th className="px-2 py-2 text-right">Unit wt (Kg)</th>
+                    <th className="px-2 py-2 text-right">Total wt (Kg)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(rtsEditForm.lines || []).map((line, idx) => (
+                    <tr key={line._id || idx} className="border-t">
+                      <td className="px-2 py-1">{idx + 1}</td>
+                      <td className="px-2 py-1">{line.article}</td>
+                      <td className="px-2 py-1">{line.partNumber || "-"}</td>
+                      <td className="px-2 py-1">{line.description}</td>
+                      <td className="px-2 py-1 text-right">{line.qty}</td>
+                      <td className="px-2 py-1">
+                        <TextInput
+                          type="number"
+                          disabled={!rtsEditForm.editable}
+                          value={line.unitWeightKg ?? ""}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setRtsEditForm((f) => {
+                              const lines = [...(f.lines || [])];
+                              lines[idx] = {
+                                ...line,
+                                unitWeightKg: v,
+                                totalWeightKg: v === "" ? null : Number(v) * Number(line.qty || 0),
+                              };
+                              return { ...f, lines };
+                            });
+                          }}
+                        />
+                      </td>
+                      <td className="px-2 py-1 text-right">{line.totalWeightKg == null ? "" : money(line.totalWeightKg)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2">
+              <button type="button" className="rounded-xl border px-3 py-1.5 text-xs" onClick={() => renderPackingListPrintWindow(rtsDetail)}>
+                Print
+              </button>
+              <button type="button" className="rounded-xl border px-3 py-1.5 text-xs" onClick={() => renderPackingListPrintWindow(rtsDetail, true)}>
+                Export PDF
+              </button>
+              <button
+                type="button"
+                className="rounded-xl border px-3 py-1.5 text-xs"
+                onClick={() =>
+                  downloadCsv(
+                    `packing-list-${rtsDetail.rtsNo || "rts"}.csv`,
+                    ["S/N", "Article", "Part no", "Description", "UOM", "Qty", "Unit Weight Kg", "Total Weight Kg"],
+                    (rtsEditForm.lines || []).map((line) => [
+                      line.serialNo ?? "",
+                      line.article || "",
+                      line.partNumber || "",
+                      line.description || "",
+                      line.uom || "",
+                      line.qty || 0,
+                      line.unitWeightKg ?? "",
+                      line.totalWeightKg ?? "",
+                    ])
+                  )
+                }
+              >
+                Export CSV
+              </button>
+              {rtsEditForm.editable ? (
+                <button
+                  type="button"
+                  className="rounded-xl bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+                  disabled={updateRtsMutation.isPending}
+                  onClick={() =>
+                    updateRtsMutation.mutate({
+                      rtsDate: rtsEditForm.rtsDate,
+                      status: rtsEditForm.status,
+                      packingDetails: {
+                        totalWeightKg: Number(rtsEditForm.packingDetails?.totalWeightKg || 0),
+                        boxCount: Number(rtsEditForm.packingDetails?.boxCount || 0),
+                        boxDimensionsMm: rtsEditForm.packingDetails?.boxDimensionsMm || "",
+                      },
+                      lines: (rtsEditForm.lines || []).map((line) => ({
+                        allocationLineId: line.allocationLineId,
+                        article: line.article,
+                        partNumber: line.partNumber,
+                        description: line.description,
+                        qty: Number(line.qty || 0),
+                        uom: line.uom || "PCS",
+                        remarks: line.remarks || "",
+                        materialCode: line.materialCode || "",
+                        availability: line.availability || "",
+                        unitWeightKg: line.unitWeightKg === "" ? null : Number(line.unitWeightKg),
+                      })),
+                    })
+                  }
+                >
+                  {updateRtsMutation.isPending ? "Saving..." : "Save changes"}
+                </button>
+              ) : null}
             </div>
           </div>
         )}
