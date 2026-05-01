@@ -1,6 +1,9 @@
 import express from "express";
+import { requireRole } from "../middleware/auth.js";
 import { requireErpAccess } from "../middleware/erpAccess.js";
 import * as c from "../controllers/accountsController.js";
+
+const bankDetailAdminRoles = ["super_admin", "company_admin", "admin"];
 
 const router = express.Router();
 
@@ -31,7 +34,7 @@ router.post("/cash-bank", c.createCashBankEntry);
 router.delete("/cash-bank/:id", c.deleteCashBankEntry);
 
 router.get("/bank-details", c.listBankDetails);
-router.post("/bank-details", c.createBankDetail);
-router.delete("/bank-details/:id", c.deleteBankDetail);
+router.post("/bank-details", requireRole(...bankDetailAdminRoles), c.createBankDetail);
+router.delete("/bank-details/:id", requireRole(...bankDetailAdminRoles), c.deleteBankDetail);
 
 export default router;

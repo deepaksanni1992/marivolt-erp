@@ -3,7 +3,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
+import { useAuth } from "../context/AuthContext.jsx";
 import { apiDelete, apiGetWithQuery, apiPost } from "../lib/api.js";
+
+function canManageBankDetails(role) {
+  const r = String(role || "").toLowerCase().trim();
+  return ["super_admin", "company_admin", "admin"].includes(r);
+}
 
 const tabs = [
   { id: "si", label: "Sales invoices" },
@@ -22,6 +28,8 @@ const invLine = () => ({
 });
 
 export default function Accounts() {
+  const { auth } = useAuth();
+  const bankDetailsAdmin = canManageBankDetails(auth?.user?.role);
   const qc = useQueryClient();
   const [tab, setTab] = useState("si");
   const [page, setPage] = useState(1);
@@ -226,6 +234,12 @@ export default function Accounts() {
         ))}
       </div>
 
+      {tab === "bank" && !bankDetailsAdmin ? (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          Bank details are read-only for your role. Only company admins can add or remove bank accounts.
+        </div>
+      ) : null}
+
       {(tab === "cust" || tab === "supp") && (
         <div className="mb-4 flex flex-wrap items-end gap-3 rounded-2xl border bg-white p-4">
           {tab === "cust" ? (
@@ -259,23 +273,25 @@ export default function Accounts() {
         </div>
       )}
 
-      <div className="mb-3 flex justify-end">
-        <button
-          type="button"
-          className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white"
-          onClick={() => {
-            setErr("");
-            setModal(tab);
-          }}
-        >
-          {tab === "si" && "New sales invoice"}
-          {tab === "pi" && "New purchase invoice"}
-          {tab === "cust" && "New customer entry"}
-          {tab === "supp" && "New supplier entry"}
-          {tab === "cash" && "New cash / bank entry"}
-          {tab === "bank" && "New bank detail"}
-        </button>
-      </div>
+      {(tab !== "bank" || bankDetailsAdmin) && (
+        <div className="mb-3 flex justify-end">
+          <button
+            type="button"
+            className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white"
+            onClick={() => {
+              setErr("");
+              setModal(tab);
+            }}
+          >
+            {tab === "si" && "New sales invoice"}
+            {tab === "pi" && "New purchase invoice"}
+            {tab === "cust" && "New customer entry"}
+            {tab === "supp" && "New supplier entry"}
+            {tab === "cash" && "New cash / bank entry"}
+            {tab === "bank" && "New bank detail"}
+          </button>
+        </div>
+      )}
 
       <div className="overflow-hidden rounded-2xl border bg-white">
         <div className="overflow-x-auto">
@@ -574,19 +590,19 @@ export default function Accounts() {
                   <th className="px-3 py-2">Currency</th>
                   <th className="px-3 py-2">SWIFT</th>
                   <th className="px-3 py-2">Default</th>
-                  <th className="px-3 py-2 w-16" />
+                  {bankDetailsAdmin ? <th className="px-3 py-2 w-16" /> : null}
                 </tr>
               </thead>
               <tbody>
                 {loading() ? (
                   <tr>
-                    <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                    <td colSpan={bankDetailsAdmin ? 7 : 6} className="px-3 py-8 text-center text-gray-500">
                       Loading…
                     </td>
                   </tr>
                 ) : activeRows().length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                    <td colSpan={bankDetailsAdmin ? 7 : 6} className="px-3 py-8 text-center text-gray-500">
                       No bank details.
                     </td>
                   </tr>
@@ -599,18 +615,20 @@ export default function Accounts() {
                       <td className="px-3 py-2">{r.currency}</td>
                       <td className="px-3 py-2">{r.swiftCode || "-"}</td>
                       <td className="px-3 py-2">{r.isDefault ? "Yes" : "No"}</td>
-                      <td className="px-3 py-2">
-                        <button
-                          type="button"
-                          className="text-xs text-red-600"
-                          onClick={() => {
-                            if (confirm("Delete bank detail?"))
-                              delMut.mutate({ path: `/accounts/bank-details/${r._id}` });
-                          }}
-                        >
-                          Del
-                        </button>
-                      </td>
+                      {bankDetailsAdmin ? (
+                        <td className="px-3 py-2">
+                          <button
+                            type="button"
+                            className="text-xs text-red-600"
+                            onClick={() => {
+                              if (confirm("Delete bank detail?"))
+                                delMut.mutate({ path: `/accounts/bank-details/${r._id}` });
+                            }}
+                          >
+                            Del
+                          </button>
+                        </td>
+                      ) : null}
                     </tr>
                   ))
                 )}
@@ -1099,7 +1117,7 @@ export default function Accounts() {
           </button>
         </div>
       </Modal>
-      <Modal open={modal === "bank"} onClose={() => setModal(null)} title="Bank detail" wide>
+      <Modal open={modal === "bank" && bankDetailsAdmin} onClose={() => setModal(null)} title="Bank detail" wide>
         <div className="grid gap-3 sm:grid-cols-2">
           <FormField label="Bank name *">
             <TextInput
