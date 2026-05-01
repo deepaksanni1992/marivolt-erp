@@ -933,41 +933,77 @@ function renderPackingListPrintWindow({ rts, company, autoPrint = false }) {
   const rows = rts?.lines || [];
   const boxes = Array.isArray(rts?.packingDetails?.boxes) ? rts.packingDetails.boxes : [];
   const totalBoxes = boxes.reduce((acc, b) => acc + (Number(b.count || 0) || 0), 0);
+  const hasCompanyLogo = String(company?.logo || company?.logoUrl || "").trim().length > 0;
+  const companyName = String(company?.name || company?.companyName || "").toLowerCase();
+  const isMarivolt = companyName.includes("marivolt");
+  const marivoltPrintLogo = "/brand/marivolt-icon.png";
   const html = `
     <html>
       <head>
         <title>${rts?.rtsNo || "Packing List"}</title>
         <style>
-          body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
-          .head { display:flex; justify-content:space-between; gap:16px; margin-bottom: 12px; }
-          .title { font-size: 24px; font-weight: 700; }
-          .muted { color:#555; font-size: 12px; }
-          table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-          th, td { border: 1px solid #ddd; padding: 7px; font-size: 12px; text-align: left; }
-          th { background: #f3f4f6; }
-          .right { text-align: right; }
-          .pack { margin-top: 14px; width: 360px; margin-left:auto; border:1px solid #ddd; border-radius:6px; padding:10px; }
-          .pack div { display:flex; justify-content:space-between; margin:3px 0; font-size:12px; }
+${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
-      <body>
-        <div class="head">
-          <div>
-            <div class="title">Packing List</div>
-            <div class="muted"><b>RTS No:</b> ${rts?.rtsNo || "-"}</div>
-            <div class="muted"><b>Date:</b> ${rts?.rtsDate ? new Date(rts.rtsDate).toLocaleDateString() : "-"}</div>
-            <div class="muted"><b>Order Allocation:</b> ${rts?.linkedOrderAllocationNo || "-"}</div>
+      <body class="${isMarivolt ? "has-quote-terms" : ""}">
+        <div class="header">
+          <div class="header-left">
+            ${
+              isMarivolt
+                ? `<img src="${marivoltPrintLogo}" alt="Marivolt icon" class="logo" />`
+                : hasCompanyLogo
+                ? `<img src="${company?.logo || company?.logoUrl}" alt="${company?.name || company?.companyName || "Company"} logo" class="logo" />`
+                : `<div class="brand-fallback">MV</div>`
+            }
           </div>
-          <div class="muted">
+          <div class="header-center">
+            <div class="title">RTS / Packing List</div>
+            <div class="muted">
+              <div><b>RTS No:</b> ${rts?.rtsNo || "-"}</div>
+              <div><b>Date:</b> ${rts?.rtsDate ? new Date(rts.rtsDate).toLocaleDateString() : "-"}</div>
+              <div><b>Order Allocation:</b> ${rts?.linkedOrderAllocationNo || "-"}</div>
+            </div>
+          </div>
+          ${
+            isMarivolt
+              ? `<div class="header-right is-marivolt">
+                <h1 class="brand-title">MariVolt</h1>
+                <div class="brand-subtitle">Marine Engine Spares</div>
+                <div class="muted" style="margin-top:8px;">
+                  <div>${company?.address || "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"}</div>
+                  <div>${company?.email || "sales@marivolt.co"}</div>
+                  <div>${company?.phone || "+971-543053047"}</div>
+                </div>
+              </div>`
+              : `<div class="header-right muted">
+                <div><b>${company?.name || company?.companyName || "-"}</b></div>
+                <div>${company?.address || ""}</div>
+                <div>${company?.email || ""}</div>
+                <div>${company?.phone || ""}</div>
+              </div>`
+          }
+        </div>
+        <div class="info-grid">
+          <div class="info-box muted">
+            <div class="info-box-title">Customer &amp; Shipment Info</div>
             <div><b>Customer:</b> ${rts?.customerName || "-"}</div>
             <div><b>Status:</b> ${rts?.status || "-"}</div>
-            <div><b>Company:</b> ${company?.name || company?.code || "-"}</div>
+            <div><b>Order Allocation:</b> ${rts?.linkedOrderAllocationNo || "-"}</div>
+            <div><b>Total Weight (Kg):</b> ${money(rts?.packingDetails?.totalWeightKg || 0)}</div>
+            <div><b>No. of Boxes:</b> ${Number(totalBoxes || rts?.packingDetails?.boxCount || 0)}</div>
+          </div>
+          <div class="info-box muted">
+            <div class="info-box-title">Dispatch &amp; Terms</div>
+            <div><b>Dispatch:</b> ${rts?.dispatchDetails || "-"}</div>
+            <div><b>Payment Terms:</b> ${rts?.paymentTerms || "-"}</div>
+            <div><b>Currency:</b> ${rts?.currency || "-"}</div>
+            <div><b>Remarks:</b> ${rts?.remarks || "-"}</div>
           </div>
         </div>
         <table>
           <thead>
             <tr>
-              <th>S/N</th><th>Article</th><th>Part no</th><th>Description</th><th>UOM</th><th class="right">Qty</th><th class="right">Unit wt (Kg)</th><th class="right">Total wt (Kg)</th>
+              <th>Serial number</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Unit wt (Kg)</th><th class="right">Total wt (Kg)</th><th class="remarks-col">Remarks</th><th>Availability</th>
             </tr>
           </thead>
           <tbody>
@@ -975,42 +1011,70 @@ function renderPackingListPrintWindow({ rts, company, autoPrint = false }) {
               .map(
                 (line) => `<tr>
                   <td>${line.serialNo ?? ""}</td>
-                  <td>${line.article || ""}</td>
-                  <td>${line.partNumber || ""}</td>
+                  <td>${line.partNumber || line.article || ""}</td>
                   <td>${line.description || ""}</td>
                   <td>${line.uom || ""}</td>
                   <td class="right">${line.qty || 0}</td>
                   <td class="right">${line.unitWeightKg == null ? "" : money(line.unitWeightKg)}</td>
                   <td class="right">${line.totalWeightKg == null ? "" : money(line.totalWeightKg)}</td>
+                  <td class="remarks-col">${line.remarks || ""}</td>
+                  <td>${line.availability || ""}</td>
                 </tr>`
               )
               .join("")}
           </tbody>
         </table>
-        <div class="pack">
-          <div><span>Total Weight (Kg)</span><b>${money(rts?.packingDetails?.totalWeightKg || 0)}</b></div>
-          <div><span>No. of Boxes</span><b>${Number(totalBoxes || rts?.packingDetails?.boxCount || 0)}</b></div>
-        </div>
         ${
           boxes.length
             ? `<table>
-          <thead>
-            <tr><th>S/N</th><th>Material</th><th class="right">Count</th><th>Dimensions (mm)</th><th>Remarks</th></tr>
-          </thead>
-          <tbody>
-            ${boxes
-              .map(
-                (b, i) => `<tr>
-              <td>${i + 1}</td>
-              <td>${b.material || "-"}</td>
-              <td class="right">${Number(b.count || 0)}</td>
-              <td>${b.dimensionsMm || "-"}</td>
-              <td>${b.remarks || "-"}</td>
-            </tr>`
-              )
-              .join("")}
-          </tbody>
-        </table>`
+              <thead>
+                <tr><th>S/N</th><th>Material</th><th class="right">Count</th><th>Dimensions (mm)</th><th>Remarks</th></tr>
+              </thead>
+              <tbody>
+                ${boxes
+                  .map(
+                    (b, i) => `<tr>
+                      <td>${i + 1}</td>
+                      <td>${b.material || "-"}</td>
+                      <td class="right">${Number(b.count || 0)}</td>
+                      <td>${b.dimensionsMm || "-"}</td>
+                      <td>${b.remarks || "-"}</td>
+                    </tr>`
+                  )
+                  .join("")}
+              </tbody>
+            </table>`
+            : ""
+        }
+        <div class="totals">
+          <div><span>Total Weight</span><span>${money(rts?.packingDetails?.totalWeightKg || 0)} Kg</span></div>
+          <div><b>Total Boxes</b><b>${Number(totalBoxes || rts?.packingDetails?.boxCount || 0)}</b></div>
+        </div>
+        ${
+          isMarivolt
+            ? `<div class="quote-terms">Only Marivolt terms and condition applicable, check here-<a href="https://marivolt.co/about-us">https://marivolt.co/about-us</a></div>`
+            : ""
+        }
+        <div class="footer">
+          <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
+        </div>
+        ${
+          isMarivolt
+            ? `<div class="page-footer">
+          <div class="page-footer-top">
+            <div>
+              <div>Marivolt FZE</div>
+              <div>LV09B</div>
+            </div>
+            <div class="page-footer-center">Hamriyah freezone phase 2, Sharjah, UAE</div>
+            <div class="page-footer-right">
+              <div>Mob: +971-543053047</div>
+              <div>Email: sales@marivolt.co</div>
+              <div>Web: www.marivolt.co</div>
+            </div>
+          </div>
+          <div class="page-footer-line"></div>
+        </div>`
             : ""
         }
       </body>

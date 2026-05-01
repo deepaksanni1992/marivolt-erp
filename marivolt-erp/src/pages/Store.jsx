@@ -5,6 +5,7 @@ import { TextInput } from "../components/erp/FormField.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import Inventory from "./Inventory.jsx";
 import { apiGet, apiGetWithQuery, apiPatch, apiPost, apiPut } from "../lib/api.js";
+import { SALES_QUOTATION_STYLE_PRINT_CSS } from "../lib/salesQuotationPrintCss.js";
 
 function money(n) {
   return Number(n || 0).toFixed(2);
@@ -115,35 +116,48 @@ function renderPackingListPrintWindow(rts, autoPrint = false) {
       <head>
         <title>Packing List ${rts.rtsNo || ""}</title>
         <style>
-          body { font-family: Arial, sans-serif; margin: 20px; color: #111; }
-          .top { display:flex; justify-content:space-between; margin-bottom: 14px; }
-          .title { font-size: 24px; font-weight: 700; letter-spacing: 0.2px; }
-          .meta { font-size: 12px; color:#444; margin-bottom: 8px; }
-          table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-          th, td { border: 1px solid #ddd; padding: 6px; font-size: 12px; text-align: left; }
-          th { background: #f5f5f5; }
-          .right { text-align: right; }
-          .pack { margin-top: 12px; border:1px solid #ddd; border-radius:6px; padding:10px; width:360px; margin-left:auto; }
-          .pack div { display:flex; justify-content:space-between; margin:2px 0; font-size:12px; }
+${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
       <body>
-        <div class="top">
-          <div>
-            <div class="title">Packing List</div>
-            <div class="meta">RTS No: ${rts.rtsNo || "-"}</div>
-            <div class="meta">Date: ${rts.rtsDate ? new Date(rts.rtsDate).toLocaleDateString() : "-"}</div>
+        <div class="header">
+          <div class="header-left">
+            <div class="brand-fallback">MV</div>
           </div>
-          <div>
-            <div class="meta">Customer: ${rts.customerName || "-"}</div>
-            <div class="meta">Order Allocation: ${rts.linkedOrderAllocationNo || "-"}</div>
-            <div class="meta">Status: ${rts.status || "-"}</div>
+          <div class="header-center">
+            <div class="title">RTS / Packing List</div>
+            <div class="muted">
+              <div><b>RTS No:</b> ${rts.rtsNo || "-"}</div>
+              <div><b>Date:</b> ${rts.rtsDate ? new Date(rts.rtsDate).toLocaleDateString() : "-"}</div>
+              <div><b>Order Allocation:</b> ${rts.linkedOrderAllocationNo || "-"}</div>
+            </div>
+          </div>
+          <div class="header-right muted">
+            <div><b>Customer:</b> ${rts.customerName || "-"}</div>
+            <div><b>Status:</b> ${rts.status || "-"}</div>
+          </div>
+        </div>
+        <div class="info-grid">
+          <div class="info-box muted">
+            <div class="info-box-title">Customer &amp; Shipment Info</div>
+            <div><b>Customer:</b> ${rts.customerName || "-"}</div>
+            <div><b>Status:</b> ${rts.status || "-"}</div>
+            <div><b>Order Allocation:</b> ${rts.linkedOrderAllocationNo || "-"}</div>
+            <div><b>Total Weight (Kg):</b> ${money(rts.packingDetails?.totalWeightKg || 0)}</div>
+            <div><b>No. of Boxes:</b> ${Number(totalBoxes || rts.packingDetails?.boxCount || 0)}</div>
+          </div>
+          <div class="info-box muted">
+            <div class="info-box-title">Dispatch &amp; Terms</div>
+            <div><b>Dispatch:</b> ${rts.dispatchDetails || "-"}</div>
+            <div><b>Payment Terms:</b> ${rts.paymentTerms || "-"}</div>
+            <div><b>Currency:</b> ${rts.currency || "-"}</div>
+            <div><b>Remarks:</b> ${rts.remarks || "-"}</div>
           </div>
         </div>
         <table>
           <thead>
             <tr>
-              <th>S/N</th><th>Article</th><th>Part no</th><th>Description</th><th>UOM</th><th class="right">Qty</th><th class="right">Unit wt (Kg)</th><th class="right">Total wt (Kg)</th>
+              <th>Serial number</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Unit wt (Kg)</th><th class="right">Total wt (Kg)</th><th class="remarks-col">Remarks</th><th>Availability</th>
             </tr>
           </thead>
           <tbody>
@@ -158,15 +172,13 @@ function renderPackingListPrintWindow(rts, autoPrint = false) {
                     <td class="right">${line.qty || 0}</td>
                     <td class="right">${line.unitWeightKg == null ? "" : money(line.unitWeightKg)}</td>
                     <td class="right">${line.totalWeightKg == null ? "" : money(line.totalWeightKg)}</td>
+                    <td class="remarks-col">${line.remarks || ""}</td>
+                    <td>${line.availability || ""}</td>
                   </tr>`
               )
               .join("")}
           </tbody>
         </table>
-        <div class="pack">
-          <div><span>Total Weight (Kg)</span><b>${money(rts.packingDetails?.totalWeightKg || 0)}</b></div>
-          <div><span>No. of Boxes</span><b>${Number(totalBoxes || rts.packingDetails?.boxCount || 0)}</b></div>
-        </div>
         ${
           boxes.length
             ? `<table>
@@ -189,6 +201,13 @@ function renderPackingListPrintWindow(rts, autoPrint = false) {
         </table>`
             : ""
         }
+        <div class="totals">
+          <div><span>Total Weight</span><span>${money(rts.packingDetails?.totalWeightKg || 0)} Kg</span></div>
+          <div><b>Total Boxes</b><b>${Number(totalBoxes || rts.packingDetails?.boxCount || 0)}</b></div>
+        </div>
+        <div class="footer">
+          <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
+        </div>
       </body>
     </html>
   `;
