@@ -788,6 +788,7 @@ function renderFlowDocPrintWindow({
   dateValue,
   linkedLabel = "",
   linkedValue = "",
+  salesInvoiceLayout = false,
   autoPrint = false,
 }) {
   const rows = doc?.lines || [];
@@ -795,6 +796,52 @@ function renderFlowDocPrintWindow({
   const companyName = String(company?.name || company?.companyName || "").toLowerCase();
   const isMarivolt = companyName.includes("marivolt");
   const marivoltPrintLogo = "/brand/marivolt-icon.png";
+  const lineTableHeaderHtml = salesInvoiceLayout
+    ? `
+              <th style="width:6%;">Pos.</th>
+              <th style="width:13%;">Part Number</th>
+              <th style="width:22%;">Description</th>
+              <th style="width:8%;">UOM</th>
+              <th class="right" style="width:7%;">QTY</th>
+              <th class="right" style="width:11%;">Unit price</th>
+              <th class="right" style="width:11%;">Total price</th>
+              <th class="right" style="width:11%;">Unit Wt</th>
+              <th class="right" style="width:11%;">Total Wt</th>
+            `
+    : `<th>Serial number</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Price</th><th class="right">Total price</th><th class="remarks-col">Remarks</th><th>Availability</th>`;
+  const lineTableRowsHtml = salesInvoiceLayout
+    ? rows
+        .map(
+          (line) => `
+              <tr>
+                <td>${line.serialNo ?? ""}</td>
+                <td>${line.partNumber || ""}</td>
+                <td>${line.description || ""}</td>
+                <td>${line.uom || ""}</td>
+                <td class="right">${line.qty || 0}</td>
+                <td class="right">${money(line.price)}</td>
+                <td class="right">${money(line.totalPrice)}</td>
+                <td class="right">${line.unitWeightKg == null ? "" : money(line.unitWeightKg)}</td>
+                <td class="right">${line.totalWeightKg == null ? "" : money(line.totalWeightKg)}</td>
+              </tr>`
+        )
+        .join("")
+    : rows
+        .map(
+          (line) => `
+              <tr>
+                <td>${line.serialNo ?? ""}</td>
+                <td>${line.partNumber || ""}</td>
+                <td>${line.description || ""}</td>
+                <td>${line.uom || ""}</td>
+                <td class="right">${line.qty || 0}</td>
+                <td class="right">${money(line.price)}</td>
+                <td class="right">${money(line.totalPrice)}</td>
+                <td class="remarks-col">${line.remarks || ""}</td>
+                <td>${line.availability || ""}</td>
+              </tr>`
+        )
+        .join("");
   const html = `
     <html>
       <head>
@@ -863,26 +910,11 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         <table>
           <thead>
             <tr>
-              <th>Serial number</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Price</th><th class="right">Total price</th><th class="remarks-col">Remarks</th><th>Availability</th>
+              ${lineTableHeaderHtml}
             </tr>
           </thead>
           <tbody>
-            ${rows
-              .map(
-                (line) => `
-              <tr>
-                <td>${line.serialNo ?? ""}</td>
-                <td>${line.partNumber || ""}</td>
-                <td>${line.description || ""}</td>
-                <td>${line.uom || ""}</td>
-                <td class="right">${line.qty || 0}</td>
-                <td class="right">${money(line.price)}</td>
-                <td class="right">${money(line.totalPrice)}</td>
-                <td class="remarks-col">${line.remarks || ""}</td>
-                <td>${line.availability || ""}</td>
-              </tr>`
-              )
-              .join("")}
+            ${lineTableRowsHtml}
           </tbody>
         </table>
         <div class="totals">
@@ -1448,7 +1480,7 @@ export default function Sales() {
       if (type === "sales-invoice") {
         const doc = await apiGet(`/sales/sales-invoices/${id}`);
         renderFlowDocPrintWindow({
-          title: "Sales Invoice",
+          title: "Tax invoice",
           doc,
           company,
           docNoLabel: "Invoice No",
@@ -1457,6 +1489,7 @@ export default function Sales() {
           dateValue: doc?.invoiceDate,
           linkedLabel: "Linked Proforma",
           linkedValue: doc?.linkedProformaNo || doc?.linkedOANo,
+          salesInvoiceLayout: true,
           autoPrint,
         });
         return;
