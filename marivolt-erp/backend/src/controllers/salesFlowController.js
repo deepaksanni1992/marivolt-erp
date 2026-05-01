@@ -3,6 +3,7 @@ import Quotation from "../models/Quotation.js";
 import OrderAcknowledgement from "../models/OrderAcknowledgement.js";
 import ProformaInvoice from "../models/ProformaInvoice.js";
 import SalesInvoice from "../models/SalesInvoice.js";
+import SalesDispatch from "../models/SalesDispatch.js";
 import Cipl from "../models/Cipl.js";
 import OrderAllocation from "../models/OrderAllocation.js";
 import Rts from "../models/Rts.js";
@@ -1519,6 +1520,81 @@ export async function cancelSalesInvoice(req, res) {
     );
     if (!doc) return res.status(404).json({ message: "Not found" });
     res.json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function listSalesDispatches(req, res) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "20"), 10) || 20));
+    const skip = (page - 1) * limit;
+    const filter = withCompany(req);
+    if (req.query.search) {
+      const q = String(req.query.search).trim();
+      filter.$or = [{ dispatchNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }, { linkedSalesInvoiceNo: new RegExp(q, "i") }];
+    }
+    const [items, total] = await Promise.all([
+      SalesDispatch.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      SalesDispatch.countDocuments(filter),
+    ]);
+    res.json({ items, total, page, limit });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getSalesDispatch(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const doc = await SalesDispatch.findOne(withCompany(req, { _id: id })).lean();
+    if (!doc) return res.status(404).json({ message: "Not found" });
+    res.json(doc);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function convertSalesInvoiceToSalesDispatch(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid sales invoice id" });
+    const invoice = await SalesInvoice.findOne(withCompany(req, { _id: id }));
+    validateConversionSource(invoice, "sales invoice");
+    if (!invoice?.lines?.length) return res.status(400).json({ message: "Sales invoice requires at least one line to convert" });
+    if (String(invoice.status || "").toUpperCase() !== "DISPATCHED") {
+      return res.status(400).json({ message: "Sales invoice must be DISPATCHED before converting to Sales Dispatch" });
+    }
+    const already = await SalesDispatch.findOne(withCompany(req, { linkedSalesInvoiceId: invoice._id }));
+    if (already) return res.status(409).json({ message: `Sales Dispatch already exists (${already.dispatchNo})` });
+    const dispatchNo = await nextSalesDocNumber({
+      companyId: req.companyId,
+      companyCode: req.companyCode,
+      docKey: "SALES_DISPATCH",
+    });
+    const lines = normalizeLines(invoice.lines.map((line) => line.toObject?.() || line));
+    const totals = computeTotals(lines);
+    const doc = await SalesDispatch.create({
+      companyId: req.companyId,
+      dispatchNo,
+      dispatchDate: new Date(),
+      linkedSalesInvoiceId: invoice._id,
+      linkedSalesInvoiceNo: invoice.invoiceNo,
+      customerName: invoice.customerName,
+      currency: invoice.currency || "USD",
+      remarks: invoice.remarks || "",
+      lines,
+      ...totals,
+      status: "DRAFT",
+      createdBy: req.user?.email || "",
+    });
+    invoice.linkedSalesDispatchId = doc._id;
+    invoice.linkedSalesDispatchNo = doc.dispatchNo;
+    invoice.updatedBy = req.user?.email || "";
+    await invoice.save();
+    res.status(201).json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }

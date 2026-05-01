@@ -32,6 +32,8 @@ const salesInvoiceSchema = new mongoose.Schema(
     linkedOrderAllocationNo: { type: String, default: "", trim: true },
     linkedRtsId: { type: mongoose.Schema.Types.ObjectId, ref: "Rts", index: true, default: null },
     linkedRtsNo: { type: String, default: "", trim: true },
+    linkedSalesDispatchId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesDispatch", index: true, default: null },
+    linkedSalesDispatchNo: { type: String, default: "", trim: true },
     customerName: { type: String, required: true, trim: true },
     paymentTerms: { type: String, default: "" },
     dispatchDetails: { type: String, default: "" },
@@ -45,7 +47,7 @@ const salesInvoiceSchema = new mongoose.Schema(
     grandTotal: { type: Number, default: 0 },
     status: {
       type: String,
-      enum: ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "CANCELLED"],
+      enum: ["DRAFT", "ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID", "CANCELLED"],
       default: "DRAFT",
     },
     remarks: { type: String, default: "" },

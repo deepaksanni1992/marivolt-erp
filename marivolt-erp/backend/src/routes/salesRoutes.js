@@ -46,6 +46,8 @@ router.post("/sales-invoices", flow.createSalesInvoice);
 router.get("/sales-invoices/:id", flow.getSalesInvoice);
 router.put("/sales-invoices/:id", flow.updateSalesInvoice);
 router.patch("/sales-invoices/:id/cancel", flow.cancelSalesInvoice);
+router.get("/sales-dispatches", flow.listSalesDispatches);
+router.get("/sales-dispatches/:id", flow.getSalesDispatch);
 
 router.get("/order-allocations", flow.listOrderAllocations);
 router.get("/order-allocations/:id", flow.getOrderAllocation);
@@ -74,5 +76,6 @@ router.post("/convert/proforma/:id/to-sales-invoice", flow.convertProformaToSale
 router.post("/convert/proforma/:id/to-cipl", flow.convertProformaToCipl);
 router.post("/convert/proforma/:id/to-order-allocation", flow.convertProformaToOrderAllocation);
 router.post("/convert/sales-invoice/:id/to-cipl", flow.convertSalesInvoiceToCipl);
+router.post("/convert/sales-invoice/:id/to-sales-dispatch", flow.convertSalesInvoiceToSalesDispatch);
 
 export default router;

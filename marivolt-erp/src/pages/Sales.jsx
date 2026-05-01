@@ -15,7 +15,7 @@ const salesTabs = [
   "Proforma Invoice",
   "Order Allocation",
   "Sales Invoice",
-  "CIPL",
+  "Sales Dispatch",
   "Reports",
 ];
 
@@ -58,8 +58,8 @@ const reportsCatalog = [
 const statusOptions = ["DRAFT", "SENT", "APPROVED", "REJECTED", "EXPIRED", "CONVERTED", "CANCELLED"];
 const oaStatusOptions = ["DRAFT", "CONFIRMED", "CLOSED", "CANCELLED"];
 const proformaStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "APPROVED", "CONVERTED", "CANCELLED"];
-const salesInvoiceStatusOptions = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "CANCELLED"];
-const ciplStatusOptions = ["DRAFT", "ISSUED", "SHIPPED", "CANCELLED"];
+const salesInvoiceStatusOptions = ["DRAFT", "ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID", "CANCELLED"];
+const salesDispatchStatusOptions = ["DRAFT", "DISPATCHED", "CANCELLED"];
 const orderAllocationStatusOptions = ["OPEN", "PARTIALLY_RTS", "RTS_COMPLETE", "APPROVED", "CLOSED", "CANCELLED"];
 const rtsStatusOptions = ["DRAFT", "APPROVED", "CANCELLED"];
 
@@ -74,7 +74,6 @@ const reportStatusOptionsById = {
   "sales-invoice-summary": salesInvoiceStatusOptions,
   "sales-invoice-article-wise": salesInvoiceStatusOptions,
   "sales-branch-wise": salesInvoiceStatusOptions,
-  cipl: ciplStatusOptions,
 };
 
 const emptyLine = () => ({
@@ -345,6 +344,49 @@ function proformaDetailToEditableForm(p) {
     remarks: p.remarks || "",
     currency: String(p.currency || "USD").toUpperCase(),
     status: p.status || "DRAFT",
+    lines,
+  };
+}
+
+function salesInvoiceIsDraft(inv) {
+  return !!inv && String(inv.status || "").trim().toUpperCase() === "DRAFT";
+}
+
+function salesInvoiceDetailToEditableForm(inv) {
+  if (!inv) return null;
+  const linesSrc = Array.isArray(inv.lines) && inv.lines.length ? inv.lines : [];
+  const lines =
+    linesSrc.length > 0
+      ? linesSrc.map((l, idx) => {
+          const qty = Number(l.qty) || 0;
+          const price = Number(l.price) || 0;
+          const totalPrice = Number(l.totalPrice) || qty * price;
+          return {
+            serialNo: l.serialNo ?? idx + 1,
+            article: l.article || "",
+            partNumber: l.partNumber || "",
+            description: l.description || "",
+            qty,
+            uom: l.uom || "PCS",
+            price,
+            totalPrice,
+            remarks: l.remarks || "",
+            materialCode: l.materialCode || "",
+            availability: l.availability || "",
+          };
+        })
+      : [emptyLine()];
+  const invoiceDate = inv.invoiceDate ? new Date(inv.invoiceDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+  return {
+    invoiceDate,
+    customerName: inv.customerName || "",
+    paymentTerms: inv.paymentTerms || "",
+    dispatchDetails: inv.dispatchDetails || "",
+    shippingAddress: inv.shippingAddress || "",
+    billingAddress: inv.billingAddress || "",
+    currency: String(inv.currency || "USD").toUpperCase(),
+    status: inv.status || "DRAFT",
+    remarks: inv.remarks || "",
     lines,
   };
 }
@@ -1189,6 +1231,7 @@ export default function Sales() {
   const [detailQuotationDraftForm, setDetailQuotationDraftForm] = useState(null);
   const [detailOADraftForm, setDetailOADraftForm] = useState(null);
   const [detailProformaDraftForm, setDetailProformaDraftForm] = useState(null);
+  const [detailSalesInvoiceDraftForm, setDetailSalesInvoiceDraftForm] = useState(null);
   const [selectedReportId, setSelectedReportId] = useState("");
   const [reportPage, setReportPage] = useState(1);
   const [reportFilters, setReportFilters] = useState({
@@ -1314,15 +1357,15 @@ export default function Sales() {
     enabled: activeTab === "Sales Invoice",
   });
 
-  const { data: ciplData, isLoading: ciplLoading } = useQuery({
-    queryKey: ["sales-cipl", page, search],
+  const { data: salesDispatchData, isLoading: salesDispatchLoading } = useQuery({
+    queryKey: ["sales-sales-dispatch", page, search],
     queryFn: () =>
-      apiGetWithQuery("/sales/cipls", {
+      apiGetWithQuery("/sales/sales-dispatches", {
         page,
         limit,
         search: search || undefined,
       }),
-    enabled: activeTab === "CIPL",
+    enabled: activeTab === "Sales Dispatch",
   });
 
   const { data: salesSummary, isLoading: summaryLoading } = useQuery({
@@ -1510,6 +1553,22 @@ export default function Sales() {
         });
         return;
       }
+      if (type === "sales-dispatch") {
+        const doc = await apiGet(`/sales/sales-dispatches/${id}`);
+        renderFlowDocPrintWindow({
+          title: "Sales Dispatch",
+          doc,
+          company,
+          docNoLabel: "Dispatch No",
+          docNoValue: doc?.dispatchNo,
+          dateLabel: "Date",
+          dateValue: doc?.dispatchDate,
+          linkedLabel: "Linked Invoice",
+          linkedValue: doc?.linkedSalesInvoiceNo,
+          autoPrint,
+        });
+        return;
+      }
       if (type === "rts") {
         const rts = await apiGet(`/sales/rts/${id}`);
         renderPackingListPrintWindow({
@@ -1541,10 +1600,10 @@ export default function Sales() {
     enabled: !!detailId && activeTab === "Sales Invoice",
   });
 
-  const { data: ciplDetail } = useQuery({
-    queryKey: ["cipl-detail", detailId],
-    queryFn: () => apiGet(`/sales/cipls/${detailId}`),
-    enabled: !!detailId && activeTab === "CIPL",
+  const { data: salesDispatchDetail } = useQuery({
+    queryKey: ["sales-dispatch-detail", detailId],
+    queryFn: () => apiGet(`/sales/sales-dispatches/${detailId}`),
+    enabled: !!detailId && activeTab === "Sales Dispatch",
   });
 
   const createMutation = useMutation({
@@ -1725,6 +1784,31 @@ export default function Sales() {
     setDetailProformaDraftForm(proformaDetailToEditableForm(proformaDetail));
   }, [activeTab, detailId, proformaDetail]);
 
+  const putSalesInvoiceMutation = useMutation({
+    mutationFn: ({ body }) => apiPut(`/sales/sales-invoices/${detailId}`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["sales-invoice-detail", detailId] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  useEffect(() => {
+    if (activeTab !== "Sales Invoice" || !detailId) {
+      setDetailSalesInvoiceDraftForm(null);
+      return;
+    }
+    if (!salesInvoiceDetail) {
+      setDetailSalesInvoiceDraftForm(null);
+      return;
+    }
+    if (!salesInvoiceIsDraft(salesInvoiceDetail)) {
+      setDetailSalesInvoiceDraftForm(null);
+      return;
+    }
+    setDetailSalesInvoiceDraftForm(salesInvoiceDetailToEditableForm(salesInvoiceDetail));
+  }, [activeTab, detailId, salesInvoiceDetail]);
+
   const [customerForm, setCustomerForm] = useState({
     name: "",
     contactName: "",
@@ -1851,10 +1935,10 @@ export default function Sales() {
     onError: (e) => setErr(e.message),
   });
 
-  const convertToCiplFromSalesInvoiceMutation = useMutation({
-    mutationFn: (id) => apiPost(`/sales/convert/sales-invoice/${id}/to-cipl`, {}),
+  const convertToSalesDispatchFromSalesInvoiceMutation = useMutation({
+    mutationFn: (id) => apiPost(`/sales/convert/sales-invoice/${id}/to-sales-dispatch`, {}),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["sales-cipl"] });
+      qc.invalidateQueries({ queryKey: ["sales-sales-dispatch"] });
       qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
     },
     onError: (e) => setErr(e.message),
@@ -1991,7 +2075,7 @@ export default function Sales() {
   const proformaRows = proformaData?.items ?? [];
   const allocationRows = allocationData?.items ?? [];
   const salesInvoiceRows = salesInvoiceData?.items ?? [];
-  const ciplRows = ciplData?.items ?? [];
+  const salesDispatchRows = salesDispatchData?.items ?? [];
   const customerRows = customerData?.items ?? [];
   const customerOptions = customerLookupData?.items ?? customerRows;
   const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -1999,7 +2083,7 @@ export default function Sales() {
   const proformaTotalPages = Math.max(1, Math.ceil((proformaData?.total ?? 0) / limit));
   const allocationTotalPages = Math.max(1, Math.ceil((allocationData?.total ?? 0) / limit));
   const salesInvoiceTotalPages = Math.max(1, Math.ceil((salesInvoiceData?.total ?? 0) / limit));
-  const ciplTotalPages = Math.max(1, Math.ceil((ciplData?.total ?? 0) / limit));
+  const salesDispatchTotalPages = Math.max(1, Math.ceil((salesDispatchData?.total ?? 0) / limit));
   const customerTotalPages = Math.max(1, Math.ceil((customerData?.total ?? 0) / limit));
 
   const tabContent = useMemo(() => {
@@ -2009,7 +2093,7 @@ export default function Sales() {
     if (activeTab === "Proforma Invoice") return "proforma";
     if (activeTab === "Order Allocation") return "allocation";
     if (activeTab === "Sales Invoice") return "sales-invoice";
-    if (activeTab === "CIPL") return "cipl";
+    if (activeTab === "Sales Dispatch") return "sales-dispatch";
     if (activeTab === "Reports") return "reports";
     return "coming";
   }, [activeTab]);
@@ -2023,7 +2107,7 @@ export default function Sales() {
           </span>
           <button
             type="button"
-            disabled={activeTab === "Order Allocation" || activeTab === "Reports"}
+            disabled={activeTab === "Order Allocation" || activeTab === "Reports" || activeTab === "Sales Dispatch"}
             onClick={() => {
               setErr("");
               if (activeTab === "Customer Master") setCustomerCreateOpen(true);
@@ -2034,7 +2118,6 @@ export default function Sales() {
               else if (activeTab === "Order Acknowledgement") setOaCreateOpen(true);
               else if (activeTab === "Proforma Invoice") setProformaCreateOpen(true);
               else if (activeTab === "Sales Invoice") setSalesInvoiceCreateOpen(true);
-              else if (activeTab === "CIPL") setCiplCreateOpen(true);
             }}
             className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
           >
@@ -2048,8 +2131,8 @@ export default function Sales() {
               ? "New proforma"
               : activeTab === "Sales Invoice"
               ? "New sales invoice"
-              : activeTab === "CIPL"
-              ? "New CIPL"
+              : activeTab === "Sales Dispatch"
+              ? "Create from dispatched invoice"
               : "Create new"}
           </button>
         </div>
@@ -3389,9 +3472,10 @@ export default function Sales() {
                             <button
                               type="button"
                               className="rounded-lg border px-2 py-1 text-xs"
-                              onClick={() => convertToCiplFromSalesInvoiceMutation.mutate(r._id)}
+                              disabled={String(r.status || "").toUpperCase() !== "DISPATCHED"}
+                              onClick={() => convertToSalesDispatchFromSalesInvoiceMutation.mutate(r._id)}
                             >
-                              Convert to CIPL
+                              Convert to Sales Dispatch
                             </button>
                           </div>
                         </td>
@@ -3430,7 +3514,7 @@ export default function Sales() {
         <>
           <div className="mb-3 flex flex-wrap items-end gap-2 rounded-2xl border bg-white p-3 shadow-sm">
             <TextInput
-              placeholder="Search CIPL/customer"
+              placeholder="Search dispatch/customer"
               value={search}
               onChange={(e) => {
                 setSearch(e.target.value);
@@ -3442,9 +3526,10 @@ export default function Sales() {
               type="button"
               className="rounded-xl border px-3 py-2 text-sm"
               onClick={() =>
-                exportListCsv("cipl-list", ciplRows, [
-                  { label: "CIPL No", value: (r) => r.ciplNo },
-                  { label: "Date", value: (r) => (r.ciplDate ? new Date(r.ciplDate).toLocaleDateString() : "") },
+                exportListCsv("sales-dispatch-list", salesDispatchRows, [
+                  { label: "Dispatch No", value: (r) => r.dispatchNo },
+                  { label: "Date", value: (r) => (r.dispatchDate ? new Date(r.dispatchDate).toLocaleDateString() : "") },
+                  { label: "Linked Invoice", value: (r) => r.linkedSalesInvoiceNo || "" },
                   { label: "Customer", value: (r) => r.customerName },
                   { label: "Status", value: (r) => r.status },
                   { label: "Currency", value: (r) => r.currency || "USD" },
@@ -3460,7 +3545,8 @@ export default function Sales() {
               <table className="min-w-full text-left text-sm">
                 <thead className="sticky top-0 z-10 border-b bg-gray-100 text-xs font-semibold uppercase tracking-wide text-gray-700">
                   <tr>
-                    <th className="px-3 py-2">CIPL No</th>
+                    <th className="px-3 py-2">Dispatch No</th>
+                    <th className="px-3 py-2">Invoice</th>
                     <th className="px-3 py-2">Customer</th>
                     <th className="px-3 py-2">Date</th>
                     <th className="px-3 py-2">Status</th>
@@ -3469,24 +3555,25 @@ export default function Sales() {
                   </tr>
                 </thead>
                 <tbody>
-                  {ciplLoading ? (
+                  {salesDispatchLoading ? (
                     <tr>
-                      <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
                         Loading...
                       </td>
                     </tr>
-                  ) : ciplRows.length === 0 ? (
+                  ) : salesDispatchRows.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
-                        No CIPL found.
+                      <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                        No Sales Dispatch found.
                       </td>
                     </tr>
                   ) : (
-                    ciplRows.map((r) => (
+                    salesDispatchRows.map((r) => (
                       <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
-                        <td className="px-3 py-2 font-mono text-xs">{r.ciplNo}</td>
+                        <td className="px-3 py-2 font-mono text-xs">{r.dispatchNo}</td>
+                        <td className="px-3 py-2">{r.linkedSalesInvoiceNo || "-"}</td>
                         <td className="px-3 py-2">{r.customerName}</td>
-                        <td className="px-3 py-2">{r.ciplDate ? new Date(r.ciplDate).toLocaleDateString() : "—"}</td>
+                        <td className="px-3 py-2">{r.dispatchDate ? new Date(r.dispatchDate).toLocaleDateString() : "—"}</td>
                         <td className="px-3 py-2">
                           <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
                             {r.status}
@@ -3499,10 +3586,10 @@ export default function Sales() {
                           <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => setDetailId(r._id)}>
                             Open
                           </button>
-                          <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("cipl", r._id)}>
+                          <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", r._id)}>
                             Print
                           </button>
-                          <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("cipl", r._id, true)}>
+                          <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", r._id, true)}>
                             Export PDF
                           </button>
                         </td>
@@ -3514,7 +3601,7 @@ export default function Sales() {
             </div>
             <div className="flex items-center justify-between border-t px-3 py-2 text-sm text-gray-600">
               <span>
-                Page {page}/{ciplTotalPages} · {ciplData?.total ?? 0} CIPL
+                Page {page}/{salesDispatchTotalPages} · {salesDispatchData?.total ?? 0} Sales Dispatch
               </span>
               <div className="flex gap-2">
                 <button
@@ -3528,7 +3615,7 @@ export default function Sales() {
                 <button
                   type="button"
                   className="rounded-lg border px-2 py-1 disabled:opacity-40"
-                  disabled={page >= ciplTotalPages}
+                  disabled={page >= salesDispatchTotalPages}
                   onClick={() => setPage((p) => p + 1)}
                 >
                   Next
@@ -3551,7 +3638,7 @@ export default function Sales() {
                 ? "Proforma View"
                 : tabContent === "sales-invoice"
                   ? "Sales Invoice View"
-                  : "CIPL View"
+                  : "Sales Dispatch View"
         }
         subtitle={
           tabContent === "proforma"
@@ -4864,167 +4951,115 @@ export default function Sales() {
         ) : tabContent === "sales-invoice" ? (
           !salesInvoiceDetail ? (
             <p className="text-sm text-gray-500">Loading...</p>
-          ) : (
-            <div className="space-y-3 text-sm">
-              <div className="grid gap-2 sm:grid-cols-3">
-                <div>
-                  <div className="text-gray-500">Invoice No</div>
-                  <div className="font-mono">{salesInvoiceDetail.invoiceNo}</div>
-                </div>
-                <div>
-                  <div className="text-gray-500">Customer</div>
-                  <div>{salesInvoiceDetail.customerName}</div>
-                </div>
-                <div>
-                  <div className="text-gray-500">Status</div>
-                  <div>
-                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesInvoiceDetail.status)}`}>
-                      {salesInvoiceDetail.status}
-                    </span>
-                  </div>
-                </div>
+          ) : salesInvoiceIsDraft(salesInvoiceDetail) && !detailSalesInvoiceDraftForm ? (
+            <p className="text-sm text-gray-500">Loading...</p>
+          ) : salesInvoiceIsDraft(salesInvoiceDetail) && detailSalesInvoiceDraftForm ? (
+            <div className="space-y-4 text-sm">
+              <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 ring-1 ring-amber-200">
+                Draft sales invoice - edit details and save. Set status to <b>DISPATCHED</b> to convert into Sales Dispatch.
               </div>
-              <div className="text-xs text-gray-600">
-                Linked PI: {salesInvoiceDetail.linkedProformaNo || "-"} | Linked OA: {salesInvoiceDetail.linkedOANo || "-"}
+              <div className="grid gap-3 sm:grid-cols-4">
+                <FormField label="Invoice Date">
+                  <TextInput type="date" value={detailSalesInvoiceDraftForm.invoiceDate} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, invoiceDate: e.target.value }))} />
+                </FormField>
+                <FormField label="Customer">
+                  <TextInput value={detailSalesInvoiceDraftForm.customerName} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, customerName: e.target.value }))} />
+                </FormField>
+                <FormField label="Payment Terms">
+                  <TextInput value={detailSalesInvoiceDraftForm.paymentTerms || ""} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, paymentTerms: e.target.value }))} />
+                </FormField>
+                <FormField label="Currency">
+                  <TextInput value={detailSalesInvoiceDraftForm.currency || "USD"} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))} />
+                </FormField>
               </div>
               <div className="overflow-x-auto rounded-xl border">
-                <table className="min-w-full text-sm">
-                  <thead className="bg-gray-100">
+                <table className="min-w-[980px] w-full text-xs">
+                  <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-3 py-2 text-left">S/N</th>
-                      <th className="px-3 py-2 text-left">Part no</th>
-                      <th className="px-3 py-2 text-left">Description</th>
-                      <th className="px-3 py-2 text-left">UOM</th>
-                      <th className="px-3 py-2 text-right">Qty</th>
-                      <th className="px-3 py-2 text-right">Price</th>
-                      <th className="px-3 py-2 text-right">Total</th>
+                      <th className="px-2 py-2 text-left">S/N</th>
+                      <th className="px-2 py-2 text-left">Article</th>
+                      <th className="px-2 py-2 text-left">Part no</th>
+                      <th className="px-2 py-2 text-left">Description</th>
+                      <th className="px-2 py-2 text-right">Qty</th>
+                      <th className="px-2 py-2 text-right">Price</th>
+                      <th className="px-2 py-2 text-right">Total</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {salesInvoiceDetail.lines?.map((line) => (
-                      <tr key={line._id} className="border-t">
-                        <td className="px-3 py-2">{line.serialNo}</td>
-                        <td className="px-3 py-2">{line.partNumber}</td>
-                        <td className="px-3 py-2">{line.description}</td>
-                        <td className="px-3 py-2">{line.uom}</td>
-                        <td className="px-3 py-2 text-right">{line.qty}</td>
-                        <td className="px-3 py-2 text-right">{money(line.price)}</td>
-                        <td className="px-3 py-2 text-right">{money(line.totalPrice)}</td>
+                    {detailSalesInvoiceDraftForm.lines.map((line, idx) => (
+                      <tr key={idx} className="border-t">
+                        <td className="px-2 py-1">{idx + 1}</td>
+                        <td className="px-2 py-1">{line.article}</td>
+                        <td className="px-2 py-1"><TextInput value={line.partNumber || ""} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => { const lines = [...f.lines]; lines[idx] = { ...line, partNumber: e.target.value }; return { ...f, lines }; })} /></td>
+                        <td className="px-2 py-1"><TextInput value={line.description || ""} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => { const lines = [...f.lines]; lines[idx] = { ...line, description: e.target.value }; return { ...f, lines }; })} /></td>
+                        <td className="px-2 py-1"><TextInput type="number" value={line.qty || 0} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => { const qty = Number(e.target.value || 0); const lines = [...f.lines]; lines[idx] = { ...line, qty, totalPrice: qty * Number(line.price || 0) }; return { ...f, lines }; })} /></td>
+                        <td className="px-2 py-1"><TextInput type="number" value={line.price || 0} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => { const price = Number(e.target.value || 0); const lines = [...f.lines]; lines[idx] = { ...line, price, totalPrice: Number(line.qty || 0) * price }; return { ...f, lines }; })} /></td>
+                        <td className="px-2 py-1 text-right">{money(line.totalPrice || 0)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
-                <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(salesInvoiceDetail.subTotal)}</span></div>
-                <div className="flex justify-between py-1"><span>Discount</span><span>{money(salesInvoiceDetail.discountTotal)}</span></div>
-                <div className="flex justify-between py-1"><span>Tax</span><span>{money(salesInvoiceDetail.taxTotal)}</span></div>
-                <div className="flex justify-between py-1 text-base font-semibold">
-                  <span>Grand Total</span>
-                  <span>{money(salesInvoiceDetail.grandTotal)} {salesInvoiceDetail.currency || ""}</span>
-                </div>
-              </div>
               <div className="flex flex-wrap gap-2">
-                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-invoice", salesInvoiceDetail._id)}>
-                  Print
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" disabled={putSalesInvoiceMutation.isPending} onClick={() => putSalesInvoiceMutation.mutate({ body: detailSalesInvoiceDraftForm })}>
+                  {putSalesInvoiceMutation.isPending ? "Saving..." : "Save changes"}
                 </button>
-                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-invoice", salesInvoiceDetail._id, true)}>
-                  Export PDF
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2">
                 {salesInvoiceStatusOptions.map((s) => (
-                  <button key={s} type="button" className="rounded-xl border px-2 py-1 text-xs" disabled>
+                  <button key={s} type="button" className={`rounded-xl border px-2 py-1 text-xs ${s === detailSalesInvoiceDraftForm.status ? "bg-gray-100" : ""}`} onClick={() => putSalesInvoiceMutation.mutate({ body: { ...detailSalesInvoiceDraftForm, status: s } })}>
                     {s}
                   </button>
                 ))}
               </div>
-              <button
-                type="button"
-                className="rounded-xl border px-2 py-1 text-xs"
-                onClick={() => convertToCiplFromSalesInvoiceMutation.mutate(salesInvoiceDetail._id)}
-              >
-                Convert to CIPL
-              </button>
+            </div>
+          ) : (
+            <div className="space-y-3 text-sm">
+              <div className="grid gap-2 sm:grid-cols-3">
+                <div><div className="text-gray-500">Invoice No</div><div className="font-mono">{salesInvoiceDetail.invoiceNo}</div></div>
+                <div><div className="text-gray-500">Customer</div><div>{salesInvoiceDetail.customerName}</div></div>
+                <div><div className="text-gray-500">Status</div><div><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesInvoiceDetail.status)}`}>{salesInvoiceDetail.status}</span></div></div>
+              </div>
+              <div className="text-xs text-gray-600">Linked PI: {salesInvoiceDetail.linkedProformaNo || "-"} | Linked OA: {salesInvoiceDetail.linkedOANo || "-"}</div>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-invoice", salesInvoiceDetail._id)}>Print</button>
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-invoice", salesInvoiceDetail._id, true)}>Export PDF</button>
+                <button
+                  type="button"
+                  className={`rounded-xl border px-2 py-1 text-xs ${String(salesInvoiceDetail.status || "").toUpperCase() !== "DISPATCHED" ? "opacity-40" : ""}`}
+                  disabled={String(salesInvoiceDetail.status || "").toUpperCase() !== "DISPATCHED"}
+                  onClick={() => convertToSalesDispatchFromSalesInvoiceMutation.mutate(salesInvoiceDetail._id)}
+                >
+                  Convert to Sales Dispatch
+                </button>
+              </div>
             </div>
           )
-        ) : !ciplDetail ? (
+        ) : !salesDispatchDetail ? (
           <p className="text-sm text-gray-500">Loading...</p>
         ) : (
           <div className="space-y-3 text-sm">
             <div className="grid gap-2 sm:grid-cols-3">
-              <div>
-                <div className="text-gray-500">CIPL No</div>
-                <div className="font-mono">{ciplDetail.ciplNo}</div>
-              </div>
-              <div>
-                <div className="text-gray-500">Customer</div>
-                <div>{ciplDetail.customerName}</div>
-              </div>
-              <div>
-                <div className="text-gray-500">Status</div>
-                <div>
-                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(ciplDetail.status)}`}>
-                    {ciplDetail.status}
-                  </span>
-                </div>
-              </div>
+              <div><div className="text-gray-500">Dispatch No</div><div className="font-mono">{salesDispatchDetail.dispatchNo}</div></div>
+              <div><div className="text-gray-500">Customer</div><div>{salesDispatchDetail.customerName}</div></div>
+              <div><div className="text-gray-500">Status</div><div><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesDispatchDetail.status)}`}>{salesDispatchDetail.status}</span></div></div>
             </div>
-            <div className="text-xs text-gray-600">
-              Linked Quotation: {ciplDetail.linkedQuotationNo || "-"} | Linked OA: {ciplDetail.linkedOANo || "-"} | Linked Invoice:{" "}
-              {ciplDetail.linkedSalesInvoiceNo || "-"}
-            </div>
+            <div className="text-xs text-gray-600">Linked Invoice: {salesDispatchDetail.linkedSalesInvoiceNo || "-"}</div>
             <div className="overflow-x-auto rounded-xl border">
               <table className="min-w-full text-sm">
                 <thead className="bg-gray-100">
-                  <tr>
-                    <th className="px-3 py-2 text-left">S/N</th>
-                    <th className="px-3 py-2 text-left">Part no</th>
-                    <th className="px-3 py-2 text-left">Description</th>
-                    <th className="px-3 py-2 text-left">UOM</th>
-                    <th className="px-3 py-2 text-right">Qty</th>
-                    <th className="px-3 py-2 text-right">Price</th>
-                    <th className="px-3 py-2 text-right">Total</th>
-                  </tr>
+                  <tr><th className="px-3 py-2 text-left">S/N</th><th className="px-3 py-2 text-left">Part no</th><th className="px-3 py-2 text-left">Description</th><th className="px-3 py-2 text-left">UOM</th><th className="px-3 py-2 text-right">Qty</th><th className="px-3 py-2 text-right">Price</th><th className="px-3 py-2 text-right">Total</th></tr>
                 </thead>
                 <tbody>
-                  {ciplDetail.lines?.map((line) => (
+                  {salesDispatchDetail.lines?.map((line) => (
                     <tr key={line._id} className="border-t">
-                      <td className="px-3 py-2">{line.serialNo}</td>
-                      <td className="px-3 py-2">{line.partNumber}</td>
-                      <td className="px-3 py-2">{line.description}</td>
-                      <td className="px-3 py-2">{line.uom}</td>
-                      <td className="px-3 py-2 text-right">{line.qty}</td>
-                      <td className="px-3 py-2 text-right">{money(line.price)}</td>
-                      <td className="px-3 py-2 text-right">{money(line.totalPrice)}</td>
+                      <td className="px-3 py-2">{line.serialNo}</td><td className="px-3 py-2">{line.partNumber}</td><td className="px-3 py-2">{line.description}</td><td className="px-3 py-2">{line.uom}</td><td className="px-3 py-2 text-right">{line.qty}</td><td className="px-3 py-2 text-right">{money(line.price)}</td><td className="px-3 py-2 text-right">{money(line.totalPrice)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
-              <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(ciplDetail.subTotal)}</span></div>
-              <div className="flex justify-between py-1"><span>Discount</span><span>{money(ciplDetail.discountTotal)}</span></div>
-              <div className="flex justify-between py-1"><span>Tax</span><span>{money(ciplDetail.taxTotal)}</span></div>
-              <div className="flex justify-between py-1 text-base font-semibold">
-                <span>Grand Total</span>
-                <span>{money(ciplDetail.grandTotal)} {ciplDetail.currency || ""}</span>
-              </div>
-            </div>
             <div className="flex flex-wrap gap-2">
-              <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("cipl", ciplDetail._id)}>
-                Print
-              </button>
-              <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("cipl", ciplDetail._id, true)}>
-                Export PDF
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {ciplStatusOptions.map((s) => (
-                <button key={s} type="button" className="rounded-xl border px-2 py-1 text-xs" disabled>
-                  {s}
-                </button>
-              ))}
+              <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", salesDispatchDetail._id)}>Print</button>
+              <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", salesDispatchDetail._id, true)}>Export PDF</button>
             </div>
           </div>
         )}
