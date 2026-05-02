@@ -138,13 +138,10 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             border-radius: 4px;
             background: #fafafa;
           }
-          .si-beneficiary {
-            border: 1px solid #d1d5db;
-            border-top: none;
-            padding: 10px 12px;
-            font-size: 11px;
-            line-height: 1.45;
-          }
+          .si-corr-block { margin-top: 12px; padding-top: 10px; border-top: 1px dashed #e5e7eb; }
+          .si-beneficiary-cell { line-height: 1.45; }
+          .si-beneficiary-inner { margin-top: 8px; font-size: 11px; color: #111; }
+          .si-beneficiary-line { line-height: 1.5; }
           .si-beneficiary-addr { margin-top: 4px; color: #374151; }
           @media print {
             html, body {

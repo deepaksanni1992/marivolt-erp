@@ -108,16 +108,34 @@ export function formatInvoiceAmountInWords(amount, currencyCode) {
   return `${core} Only`;
 }
 
+/** Default beneficiary line for Marivolt-branded tax invoices when bank/company overrides are empty. */
+export const MARIVOLT_DEFAULT_BENEFICIARY_LINE =
+  "MARIVOLT FZE, Warehouse No. LV-09/B Hamriyah Free Zone Sharjah U.A.E.";
+
+function buildBeneficiaryBodyHtml(esc, bankDetail, company) {
+  const bn = (bankDetail?.beneficiaryName || "").trim();
+  const ba = (bankDetail?.beneficiaryAddress || "").trim();
+  if (bn || ba) {
+    return `
+      ${bn ? `<div>${esc(bn).replace(/\r?\n/g, "<br/>")}</div>` : ""}
+      ${ba ? `<div class="si-beneficiary-addr">${esc(ba).replace(/\r?\n/g, "<br/>")}</div>` : ""}`;
+  }
+  const compName = String(company?.name || company?.companyName || "").toLowerCase();
+  if (compName.includes("marivolt")) {
+    return `<div class="si-beneficiary-line">${esc(MARIVOLT_DEFAULT_BENEFICIARY_LINE)}</div>`;
+  }
+  const fallbackName = String(company?.name || company?.companyName || "").trim();
+  const fallbackAddr = String(company?.address || "").trim();
+  if (!fallbackName && !fallbackAddr) return `<div class="muted">—</div>`;
+  return `
+    ${fallbackName ? `<div>${esc(fallbackName).replace(/\r?\n/g, "<br/>")}</div>` : ""}
+    ${fallbackAddr ? `<div class="si-beneficiary-addr">${esc(fallbackAddr).replace(/\r?\n/g, "<br/>")}</div>` : ""}`;
+}
+
 export function renderSiBankFooterHtml({ bankDetail, amountInWords, company, docCurrency }) {
   const esc = escapePrintHtml;
   const purposeDefault = "Purchase of Spare Parts";
   const missingMsg = `No bank details found for invoice currency <b>${esc(docCurrency || "-")}</b>. Add a matching row in Accounts → Bank details (currency EUR/EURO, AED, or USD).`;
-
-  const beneficiaryName =
-    (bankDetail?.beneficiaryName || "").trim() ||
-    String(company?.name || company?.companyName || "").trim();
-  const beneficiaryAddr =
-    (bankDetail?.beneficiaryAddress || "").trim() || String(company?.address || "").trim();
 
   let bankLinesHtml = "";
   let ibanLine = "";
@@ -141,11 +159,17 @@ export function renderSiBankFooterHtml({ bankDetail, amountInWords, company, doc
     const cs = (bankDetail.correspondentSwiftCode || "").trim();
     if (cb || cs) {
       corrHtml = `
-        <div class="si-corr-head">CORRESPONDENT BANK DETAILS</div>
-        ${cb ? `<div><b>Bank Name :</b> ${esc(cb)}</div>` : ""}
-        ${cs ? `<div><b>Swift Code :</b> ${esc(cs)}</div>` : ""}`;
+        <div class="si-corr-block">
+          <div class="si-corr-head">CORRESPONDENT BANK DETAILS</div>
+          ${cb ? `<div><b>Bank Name :</b> ${esc(cb)}</div>` : ""}
+          ${cs ? `<div><b>Swift Code :</b> ${esc(cs)}</div>` : ""}
+        </div>`;
     }
   }
+
+  const beneficiaryCellHtml = `
+    <div><b>Beneficiary Details-</b></div>
+    <div class="si-beneficiary-inner">${buildBeneficiaryBodyHtml(esc, bankDetail, company)}</div>`;
 
   const wordsBlock = `<div><b>Total Amount In Words :</b></div><div class="si-amount-words">${esc(amountInWords || "")}</div>`;
 
@@ -158,14 +182,14 @@ export function renderSiBankFooterHtml({ bankDetail, amountInWords, company, doc
               <div><b>Bank Details :</b></div>
               ${
                 bankDetail
-                  ? `<div class="si-bank-detail-text">${bankLinesHtml}</div>${ibanLine}${swiftLine}${purposeLine}`
+                  ? `<div class="si-bank-detail-text">${bankLinesHtml}</div>${ibanLine}${swiftLine}${purposeLine}${corrHtml}`
                   : `<div class="si-bank-missing muted">${missingMsg}</div>`
               }
             </td>
             <td class="si-bank-td si-bank-td-right">${wordsBlock}</td>
           </tr>
           <tr>
-            <td class="si-bank-td si-bank-td-left si-bank-mid">${corrHtml || `<span class="muted">—</span>`}</td>
+            <td class="si-bank-td si-bank-td-left si-beneficiary-cell">${beneficiaryCellHtml}</td>
             <td class="si-bank-td si-bank-td-right si-signature-wrap">
               <div><b>Signature &amp; Stamp</b></div>
               <div class="si-signature-box"></div>
@@ -173,14 +197,5 @@ export function renderSiBankFooterHtml({ bankDetail, amountInWords, company, doc
           </tr>
         </tbody>
       </table>
-      <div class="si-beneficiary">
-        <div><b>Beneficiary Details-</b></div>
-        <div>${beneficiaryName ? esc(beneficiaryName).replace(/\r?\n/g, "<br/>") : "—"}</div>
-        ${
-          beneficiaryAddr
-            ? `<div class="si-beneficiary-addr">${esc(beneficiaryAddr).replace(/\r?\n/g, "<br/>")}</div>`
-            : ""
-        }
-      </div>
     </div>`;
 }
