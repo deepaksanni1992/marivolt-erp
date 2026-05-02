@@ -199,3 +199,82 @@ export function renderSiBankFooterHtml({ bankDetail, amountInWords, company, doc
       </table>
     </div>`;
 }
+
+/**
+ * Tax invoice top section: Shipper | (Invoice details + Customer) | Consignee — matches commercial invoice layout.
+ */
+export function buildTaxInvoiceHeaderHtml({
+  doc,
+  company,
+  invoiceNo,
+  invoiceDateStr,
+  isMarivolt,
+}) {
+  const esc = escapePrintHtml;
+  const custRef =
+    [doc.customerReference, doc.linkedOANo, doc.linkedProformaNo, doc.linkedQuotationNo]
+      .map((s) => String(s || "").trim())
+      .find(Boolean) || "—";
+  const curRaw = String(doc.currency || "USD").trim().toUpperCase();
+  const curDisplay = curRaw === "EUR" || curRaw === "EURO" ? "EURO" : curRaw;
+  const curSpanClass = curRaw === "EUR" || curRaw === "EURO" ? "si-currency-eur" : "";
+
+  let shipperInner;
+  if (isMarivolt) {
+    shipperInner = `MARIVOLT FZE<br/>Warehouse No. LV-09/B<br/>Hamriyah Free Zone<br/>Sharjah, U.A.E.<br/>Tel :- +971 65657872<br/>Email: <a href="mailto:operations@marivolt.co">operations@marivolt.co</a><br/>TRN No : 105082088300003`;
+  } else {
+    const nm = esc(company?.name || company?.companyName || "");
+    const addr = esc(company?.address || "").replace(/\r?\n/g, "<br/>");
+    const tel = company?.phone ? `Tel :- ${esc(company.phone)}` : "";
+    const emRaw = String(company?.email || "").trim();
+    const em = emRaw
+      ? `Email: <a href="mailto:${encodeURIComponent(emRaw)}">${esc(emRaw)}</a>`
+      : "";
+    const trn = company?.trnNo ? `TRN No : ${esc(company.trnNo)}` : "";
+    shipperInner = [nm, addr, tel, em, trn].filter(Boolean).join("<br/>") || "—";
+  }
+
+  const loading = esc(doc.loadingPort || "").trim() || "—";
+  const discharge = esc(doc.dischargePort || "").trim() || "—";
+
+  const custAddr = String(doc.billingAddress || doc.shippingAddress || "").trim();
+  const custAddrHtml = custAddr ? esc(custAddr).replace(/\r?\n/g, "<br/>") : "—";
+  const vatLine = String(doc.customerVatNo || "").trim()
+    ? `<div class="si-customer-vat"><b>VAT NO :</b> ${esc(doc.customerVatNo)}</div>`
+    : "";
+
+  const consigneeRaw = String(doc.consignee || "").trim();
+  const consigneeHtml = consigneeRaw ? esc(consigneeRaw).replace(/\r?\n/g, "<br/>") : "—";
+
+  return `
+    <div class="si-tax-print-wrap">
+      <div class="si-print-main-title">Tax Invoice</div>
+      <div class="si-header-3col">
+        <div class="si-hbox-tax si-hbox-stretch">
+          <div class="si-hbox-title">Shipper</div>
+          <div class="si-hbox-body">${shipperInner}</div>
+        </div>
+        <div class="si-mid-stack">
+          <div class="si-hbox-tax">
+            <div class="si-hbox-title">Invoice details</div>
+            <div><b>Invoice Nr:</b> ${esc(invoiceNo || "")}</div>
+            <div><b>Date:</b> ${esc(invoiceDateStr || "—")}</div>
+            <div><b>Cust Ref:</b> ${esc(custRef)}</div>
+            <div><b>Currency:</b> <span class="${curSpanClass}">${esc(curDisplay)}</span></div>
+            <div><b>Loading Port:</b> ${loading}</div>
+            <div><b>Discharge Port:</b> ${discharge}</div>
+          </div>
+          <div class="si-hbox-tax">
+            <div class="si-hbox-title">Customer</div>
+            <div class="si-customer-name">${esc(doc.customerName || "—")}</div>
+            <div class="si-customer-addr">${custAddrHtml}</div>
+            ${vatLine}
+          </div>
+        </div>
+        <div class="si-hbox-tax si-hbox-stretch">
+          <div class="si-hbox-title">Consignee</div>
+          <div class="si-hbox-body">${consigneeHtml}</div>
+        </div>
+      </div>
+    </div>`;
+}

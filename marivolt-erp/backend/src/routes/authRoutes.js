@@ -38,6 +38,10 @@ function normalizeCompany(company) {
     logoUrl: company.logoUrl || "",
     currency: company.currency || "USD",
     isActive: !!company.isActive,
+    address: company.address || "",
+    email: company.email || "",
+    phone: company.phone || "",
+    trnNo: company.trnNo || "",
   };
 }
 
@@ -110,7 +114,7 @@ router.post("/login", async (req, res) => {
       ? user.allowedCompanies.map((x) => String(x))
       : [];
     const companies = await Company.find({ _id: { $in: allowedIds }, isActive: true })
-      .select("name code logoUrl currency isActive")
+      .select("name code logoUrl currency isActive address email phone trnNo")
       .sort({ name: 1 })
       .lean();
     if (!companies.length) {
@@ -186,7 +190,7 @@ router.post("/select-company", async (req, res) => {
       return res.status(403).json({ message: "Invalid company access" });
     }
     const companies = await Company.find({ _id: { $in: allowedIds }, isActive: true })
-      .select("name code logoUrl currency isActive")
+      .select("name code logoUrl currency isActive address email phone trnNo")
       .lean();
     const selected = companies.find((c) => String(c._id) === companyId);
     if (!selected) return res.status(403).json({ message: "Company inactive or unavailable" });
@@ -215,7 +219,7 @@ router.post("/switch-company", requireAuth, async (req, res) => {
       return res.status(403).json({ message: "Invalid company access" });
     }
     const companies = await Company.find({ _id: { $in: allowedIds }, isActive: true })
-      .select("name code logoUrl currency isActive")
+      .select("name code logoUrl currency isActive address email phone trnNo")
       .lean();
     const selected = companies.find((c) => String(c._id) === companyId);
     if (!selected) return res.status(403).json({ message: "Company inactive or unavailable" });
@@ -239,7 +243,7 @@ router.get("/companies", requireAuth, async (req, res) => {
       ? user.allowedCompanies.map((x) => String(x))
       : [];
     const companies = await Company.find({ _id: { $in: allowedIds }, isActive: true })
-      .select("name code logoUrl currency isActive")
+      .select("name code logoUrl currency isActive address email phone trnNo")
       .sort({ name: 1 })
       .lean();
     res.json({ companies: companies.map(normalizeCompany) });

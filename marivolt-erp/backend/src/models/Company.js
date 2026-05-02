@@ -8,6 +8,8 @@ const companySchema = new mongoose.Schema(
     address: { type: String, default: "", trim: true },
     email: { type: String, default: "", trim: true, lowercase: true },
     phone: { type: String, default: "", trim: true },
+    /** Tax registration / TRN shown on Tax invoice shipper block (non-Marivolt). */
+    trnNo: { type: String, default: "", trim: true },
     currency: { type: String, default: "USD", trim: true, uppercase: true },
     isActive: { type: Boolean, default: true },
   },

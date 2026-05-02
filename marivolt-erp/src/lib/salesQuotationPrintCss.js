@@ -118,6 +118,41 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             background: #e1aa24;
             border-radius: 2px;
           }
+          .si-tax-print-wrap { margin-bottom: 14px; page-break-inside: avoid; }
+          .si-print-main-title { text-align: center; font-size: 22px; font-weight: 700; margin: 0 0 14px; letter-spacing: 0.02em; color: #111; }
+          .si-header-3col {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+            align-items: stretch;
+          }
+          .si-mid-stack { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+          .si-hbox-tax {
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            padding: 10px 12px;
+            background: #fafafa;
+            font-size: 11px;
+            line-height: 1.45;
+            color: #374151;
+            min-width: 0;
+            box-sizing: border-box;
+          }
+          .si-hbox-stretch { align-self: stretch; display: flex; flex-direction: column; }
+          .si-hbox-title {
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #1f4e79;
+            margin-bottom: 8px;
+          }
+          .si-hbox-body { flex: 1; color: #111; word-break: break-word; }
+          .si-hbox-body a { color: #1d4ed8; }
+          .si-customer-name { font-weight: 600; color: #111; margin-bottom: 4px; }
+          .si-customer-addr { white-space: normal; word-break: break-word; }
+          .si-customer-vat { margin-top: 8px; font-size: 11px; }
+          .si-currency-eur { color: #cc0000; font-weight: 700; }
           .si-bank-block { margin-top: 16px; page-break-inside: avoid; }
           .si-bank-table { width: 100%; border-collapse: collapse; font-size: 11px; table-layout: fixed; }
           .si-bank-td {

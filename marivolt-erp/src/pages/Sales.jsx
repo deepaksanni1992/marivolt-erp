@@ -6,7 +6,11 @@ import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import { apiGet, apiGetWithQuery, apiPatch, apiPost, apiPut } from "../lib/api.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "../lib/salesQuotationPrintCss.js";
-import { formatInvoiceAmountInWords, renderSiBankFooterHtml } from "../lib/salesInvoicePrint.js";
+import {
+  buildTaxInvoiceHeaderHtml,
+  formatInvoiceAmountInWords,
+  renderSiBankFooterHtml,
+} from "../lib/salesInvoicePrint.js";
 import { useAuth } from "../context/AuthContext.jsx";
 
 const salesTabs = [
@@ -385,6 +389,11 @@ function salesInvoiceDetailToEditableForm(inv) {
     dispatchDetails: inv.dispatchDetails || "",
     shippingAddress: inv.shippingAddress || "",
     billingAddress: inv.billingAddress || "",
+    customerReference: inv.customerReference || "",
+    loadingPort: inv.loadingPort || "",
+    dischargePort: inv.dischargePort || "",
+    consignee: inv.consignee || "",
+    customerVatNo: inv.customerVatNo || "",
     currency: String(inv.currency || "USD").toUpperCase(),
     status: inv.status || "DRAFT",
     remarks: inv.remarks || "",
@@ -887,15 +896,8 @@ function renderFlowDocPrintWindow({
               </tr>`
         )
         .join("");
-  const html = `
-    <html>
-      <head>
-        <title>${docNoValue || title}</title>
-        <style>
-${SALES_QUOTATION_STYLE_PRINT_CSS}
-        </style>
-      </head>
-      <body class="${isMarivolt ? "has-quote-terms" : ""}">
+  const invoiceDateFormatted = dateValue ? new Date(dateValue).toLocaleDateString() : "—";
+  const flowDocClassicTop = `
         <div class="header">
           <div class="header-left">
             ${
@@ -910,7 +912,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             <div class="title">${title}</div>
             <div class="muted">
               <div><b>${docNoLabel}:</b> ${docNoValue || "-"}</div>
-              <div><b>${dateLabel}:</b> ${dateValue ? new Date(dateValue).toLocaleDateString() : "-"}</div>
+              <div><b>${dateLabel}:</b> ${invoiceDateFormatted}</div>
               ${linkedLabel ? `<div><b>${linkedLabel}:</b> ${linkedValue || "-"}</div>` : ""}
               <div><b>Customer:</b> ${doc?.customerName || "-"}</div>
             </div>
@@ -951,7 +953,26 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             <div><b>Currency:</b> ${doc?.currency || "-"}</div>
             <div><b>Remarks:</b> ${doc?.remarks || "-"}</div>
           </div>
-        </div>
+        </div>`;
+  const taxInvoiceTopHtml = salesInvoiceLayout
+    ? buildTaxInvoiceHeaderHtml({
+        doc,
+        company,
+        invoiceNo: docNoValue || doc?.invoiceNo || "",
+        invoiceDateStr: invoiceDateFormatted,
+        isMarivolt,
+      })
+    : "";
+  const html = `
+    <html>
+      <head>
+        <title>${docNoValue || title}</title>
+        <style>
+${SALES_QUOTATION_STYLE_PRINT_CSS}
+        </style>
+      </head>
+      <body class="${isMarivolt ? "has-quote-terms" : ""}">
+        ${salesInvoiceLayout ? taxInvoiceTopHtml : flowDocClassicTop}
         <table>
           <thead>
             <tr>
@@ -1996,6 +2017,13 @@ export default function Sales() {
     customerName: "",
     paymentTerms: "",
     dispatchDetails: "",
+    shippingAddress: "",
+    billingAddress: "",
+    customerReference: "",
+    loadingPort: "",
+    dischargePort: "",
+    consignee: "",
+    customerVatNo: "",
     currency: "USD",
     lines: [emptyLine()],
   });
@@ -2072,6 +2100,13 @@ export default function Sales() {
         customerName: "",
         paymentTerms: "",
         dispatchDetails: "",
+        shippingAddress: "",
+        billingAddress: "",
+        customerReference: "",
+        loadingPort: "",
+        dischargePort: "",
+        consignee: "",
+        customerVatNo: "",
         currency: "USD",
         lines: [emptyLine()],
       });
@@ -5000,6 +5035,74 @@ export default function Sales() {
                   <TextInput value={detailSalesInvoiceDraftForm.currency || "USD"} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))} />
                 </FormField>
               </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <FormField label="Cust ref (Tax invoice)">
+                  <TextInput
+                    value={detailSalesInvoiceDraftForm.customerReference || ""}
+                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, customerReference: e.target.value }))}
+                    placeholder="Or leave blank to use linked OA / PI ref."
+                  />
+                </FormField>
+                <FormField label="Loading port">
+                  <TextInput
+                    value={detailSalesInvoiceDraftForm.loadingPort || ""}
+                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, loadingPort: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Discharge port">
+                  <TextInput
+                    value={detailSalesInvoiceDraftForm.dischargePort || ""}
+                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, dischargePort: e.target.value }))}
+                  />
+                </FormField>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <FormField label="Billing address">
+                  <textarea
+                    value={detailSalesInvoiceDraftForm.billingAddress || ""}
+                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, billingAddress: e.target.value }))}
+                    rows={3}
+                    className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+                  />
+                </FormField>
+                <FormField label="Shipping address">
+                  <textarea
+                    value={detailSalesInvoiceDraftForm.shippingAddress || ""}
+                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, shippingAddress: e.target.value }))}
+                    rows={3}
+                    className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+                  />
+                </FormField>
+              </div>
+              <FormField label="Consignee (Tax invoice print)" className="max-w-4xl">
+                <textarea
+                  value={detailSalesInvoiceDraftForm.consignee || ""}
+                  onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, consignee: e.target.value }))}
+                  rows={4}
+                  placeholder="Full consignee block as it should appear on the invoice"
+                  className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+                />
+              </FormField>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <FormField label="Customer VAT no.">
+                  <TextInput
+                    value={detailSalesInvoiceDraftForm.customerVatNo || ""}
+                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, customerVatNo: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Dispatch details">
+                  <TextInput
+                    value={detailSalesInvoiceDraftForm.dispatchDetails || ""}
+                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, dispatchDetails: e.target.value }))}
+                  />
+                </FormField>
+              </div>
+              <FormField label="Remarks" className="max-w-2xl">
+                <TextInput
+                  value={detailSalesInvoiceDraftForm.remarks || ""}
+                  onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, remarks: e.target.value }))}
+                />
+              </FormField>
               <div className="overflow-x-auto rounded-xl border">
                 <table className="min-w-[980px] w-full text-xs">
                   <thead className="bg-gray-50">
