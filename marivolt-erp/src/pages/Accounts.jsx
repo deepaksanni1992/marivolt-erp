@@ -91,6 +91,12 @@ export default function Accounts() {
     branchName: "",
     swiftCode: "",
     iban: "",
+    bankAddress: "",
+    correspondentBankName: "",
+    correspondentSwiftCode: "",
+    beneficiaryName: "",
+    beneficiaryAddress: "",
+    purposeOfPayment: "",
     isDefault: false,
     remarks: "",
   });
@@ -1141,6 +1147,16 @@ export default function Accounts() {
             <TextInput
               value={bankForm.currency}
               onChange={(e) => setBankForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
+              placeholder="EUR, AED, or USD (EURO matches EUR)"
+            />
+          </FormField>
+          <FormField label="Bank address (print)" className="sm:col-span-2">
+            <textarea
+              value={bankForm.bankAddress}
+              onChange={(e) => setBankForm((f) => ({ ...f, bankAddress: e.target.value }))}
+              rows={3}
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+              placeholder="Branch, street, P.O. Box, city (shown on Tax invoice)"
             />
           </FormField>
           <FormField label="Branch name">
@@ -1159,6 +1175,41 @@ export default function Accounts() {
             <TextInput
               value={bankForm.iban}
               onChange={(e) => setBankForm((f) => ({ ...f, iban: e.target.value.toUpperCase() }))}
+            />
+          </FormField>
+          <FormField label="Correspondent bank name">
+            <TextInput
+              value={bankForm.correspondentBankName}
+              onChange={(e) => setBankForm((f) => ({ ...f, correspondentBankName: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Correspondent SWIFT">
+            <TextInput
+              value={bankForm.correspondentSwiftCode}
+              onChange={(e) => setBankForm((f) => ({ ...f, correspondentSwiftCode: e.target.value.toUpperCase() }))}
+            />
+          </FormField>
+          <FormField label="Beneficiary name (print)">
+            <TextInput
+              value={bankForm.beneficiaryName}
+              onChange={(e) => setBankForm((f) => ({ ...f, beneficiaryName: e.target.value }))}
+              placeholder="Defaults to company name if empty"
+            />
+          </FormField>
+          <FormField label="Beneficiary address (print)" className="sm:col-span-2">
+            <textarea
+              value={bankForm.beneficiaryAddress}
+              onChange={(e) => setBankForm((f) => ({ ...f, beneficiaryAddress: e.target.value }))}
+              rows={2}
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+              placeholder="Defaults to company address if empty"
+            />
+          </FormField>
+          <FormField label="Purpose of payment (print)" className="sm:col-span-2">
+            <TextInput
+              value={bankForm.purposeOfPayment}
+              onChange={(e) => setBankForm((f) => ({ ...f, purposeOfPayment: e.target.value }))}
+              placeholder="e.g. Purchase of Spare Parts"
             />
           </FormField>
           <FormField label="Default account">

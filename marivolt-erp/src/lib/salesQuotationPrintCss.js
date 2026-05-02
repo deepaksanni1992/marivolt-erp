@@ -118,6 +118,34 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             background: #e1aa24;
             border-radius: 2px;
           }
+          .si-bank-block { margin-top: 16px; page-break-inside: avoid; }
+          .si-bank-table { width: 100%; border-collapse: collapse; font-size: 11px; table-layout: fixed; }
+          .si-bank-td {
+            border: 1px solid #d1d5db;
+            padding: 10px 12px;
+            vertical-align: top;
+            width: 50%;
+          }
+          .si-bank-detail-text { margin: 6px 0 8px; line-height: 1.45; color: #111; }
+          .si-bank-missing { line-height: 1.45; }
+          .si-amount-words { margin-top: 8px; line-height: 1.5; font-weight: 600; color: #111; }
+          .si-corr-head { font-weight: 700; margin-bottom: 8px; letter-spacing: 0.02em; }
+          .si-signature-wrap { text-align: left; }
+          .si-signature-box {
+            margin-top: 8px;
+            min-height: 72px;
+            border: 1px dashed #9ca3af;
+            border-radius: 4px;
+            background: #fafafa;
+          }
+          .si-beneficiary {
+            border: 1px solid #d1d5db;
+            border-top: none;
+            padding: 10px 12px;
+            font-size: 11px;
+            line-height: 1.45;
+          }
+          .si-beneficiary-addr { margin-top: 4px; color: #374151; }
           @media print {
             html, body {
               -webkit-print-color-adjust: exact !important;

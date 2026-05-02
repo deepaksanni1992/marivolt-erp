@@ -385,6 +385,36 @@ export async function deleteCashBankEntry(req, res) {
 }
 
 // --- Bank details ---
+const BANK_CURRENCY_GROUPS = {
+  EUR: ["EUR", "EURO"],
+  EURO: ["EUR", "EURO"],
+  USD: ["USD"],
+  AED: ["AED"],
+};
+
+function currencyCodesForBankMatch(raw) {
+  const u = String(raw || "USD").trim().toUpperCase();
+  if (BANK_CURRENCY_GROUPS[u]) return BANK_CURRENCY_GROUPS[u];
+  for (const arr of Object.values(BANK_CURRENCY_GROUPS)) {
+    if (arr.includes(u)) return [...arr];
+  }
+  return [u];
+}
+
+/** Resolve invoice currency (EUR/EURO/AED/USD) to a stored bank row for this company. */
+export async function getBankDetailForCurrency(req, res) {
+  try {
+    const raw = req.params.currency ?? req.query.currency ?? "USD";
+    const codes = currencyCodesForBankMatch(raw);
+    const row = await BankDetail.findOne(withCompany(req, { currency: { $in: codes } }))
+      .sort({ isDefault: -1, createdAt: -1 })
+      .lean();
+    res.json({ bankDetail: row || null });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
 export async function listBankDetails(req, res) {
   try {
     const { page, limit, skip } = paginate(req);
@@ -412,6 +442,7 @@ export async function createBankDetail(req, res) {
       createdBy: req.user?.email || "",
     };
     body.currency = String(body.currency || "USD").trim().toUpperCase();
+    if (body.currency === "EURO") body.currency = "EUR";
     if (body.isDefault) {
       await BankDetail.updateMany(withCompany(req), { $set: { isDefault: false } });
     }

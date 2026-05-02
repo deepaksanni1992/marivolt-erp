@@ -6,6 +6,7 @@ import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import { apiGet, apiGetWithQuery, apiPatch, apiPost, apiPut } from "../lib/api.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "../lib/salesQuotationPrintCss.js";
+import { formatInvoiceAmountInWords, renderSiBankFooterHtml } from "../lib/salesInvoicePrint.js";
 import { useAuth } from "../context/AuthContext.jsx";
 
 const salesTabs = [
@@ -831,6 +832,8 @@ function renderFlowDocPrintWindow({
   linkedLabel = "",
   linkedValue = "",
   salesInvoiceLayout = false,
+  bankDetail = null,
+  amountInWords = "",
   autoPrint = false,
 }) {
   const rows = doc?.lines || [];
@@ -966,12 +969,26 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           <div><b>Grand Total</b><b>${money(doc?.grandTotal)} ${doc?.currency || ""}</b></div>
         </div>
         ${
+          salesInvoiceLayout
+            ? renderSiBankFooterHtml({
+                bankDetail,
+                amountInWords,
+                company,
+                docCurrency: doc?.currency,
+              })
+            : ""
+        }
+        ${
           isMarivolt
             ? `<div class="quote-terms">Only Marivolt terms and condition applicable, check here-<a href="https://marivolt.co/about-us">https://marivolt.co/about-us</a></div>`
             : ""
         }
         <div class="footer">
-          <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
+          <div class="doc-note">${
+            salesInvoiceLayout
+              ? "This is a computer generated document."
+              : "This is a computer generated documents and does not required signature or stamp."
+          }</div>
         </div>
         ${
           isMarivolt
@@ -1522,6 +1539,15 @@ export default function Sales() {
       }
       if (type === "sales-invoice") {
         const doc = await apiGet(`/sales/sales-invoices/${id}`);
+        const curEnc = encodeURIComponent(String(doc?.currency || "USD").trim());
+        let bankDetail = null;
+        try {
+          const bdRes = await apiGet(`/accounts/bank-details/for-currency/${curEnc}`);
+          bankDetail = bdRes?.bankDetail ?? null;
+        } catch {
+          bankDetail = null;
+        }
+        const amountInWords = formatInvoiceAmountInWords(doc?.grandTotal, doc?.currency);
         renderFlowDocPrintWindow({
           title: "Tax invoice",
           doc,
@@ -1533,6 +1559,8 @@ export default function Sales() {
           linkedLabel: "Linked Proforma",
           linkedValue: doc?.linkedProformaNo || doc?.linkedOANo,
           salesInvoiceLayout: true,
+          bankDetail,
+          amountInWords,
           autoPrint,
         });
         return;

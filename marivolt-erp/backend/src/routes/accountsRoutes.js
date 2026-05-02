@@ -33,6 +33,7 @@ router.get("/cash-bank", c.listCashBank);
 router.post("/cash-bank", c.createCashBankEntry);
 router.delete("/cash-bank/:id", c.deleteCashBankEntry);
 
+router.get("/bank-details/for-currency/:currency", c.getBankDetailForCurrency);
 router.get("/bank-details", c.listBankDetails);
 router.post("/bank-details", requireRole(...bankDetailAdminRoles), c.createBankDetail);
 router.delete("/bank-details/:id", requireRole(...bankDetailAdminRoles), c.deleteBankDetail);
