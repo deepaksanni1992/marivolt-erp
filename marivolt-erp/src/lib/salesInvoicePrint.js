@@ -138,7 +138,7 @@ export function renderSiBankFooterHtml({ bankDetail, amountInWords, company, doc
   const missingMsg = `No bank details found for invoice currency <b>${esc(docCurrency || "-")}</b>. Add a matching row in Accounts → Bank details (currency EUR/EURO, AED, or USD).`;
 
   let bankLinesHtml = "";
-  let ibanLine = "";
+  let accountAndIbanLines = "";
   let swiftLine = "";
   let purposeLine = "";
   let corrHtml = "";
@@ -148,9 +148,9 @@ export function renderSiBankFooterHtml({ bankDetail, amountInWords, company, doc
       .map((x) => String(x || "").trim())
       .filter(Boolean);
     bankLinesHtml = parts.map((line) => `<div>${esc(line).replace(/\r?\n/g, "<br/>")}</div>`).join("");
-    const acctLabel = bankDetail.iban ? "A/c No (IBAN)" : "A/c No";
-    const acctVal = esc((bankDetail.iban || bankDetail.accountNumber || "").trim() || "—");
-    ibanLine = `<div><b>${acctLabel} :</b> ${acctVal}</div>`;
+    const acctNum = String(bankDetail.accountNumber || "").trim();
+    const ibanVal = String(bankDetail.iban || "").trim();
+    accountAndIbanLines = `<div><b>Account number :</b> ${acctNum ? esc(acctNum) : "—"}</div><div><b>IBAN :</b> ${ibanVal ? esc(ibanVal) : "—"}</div>`;
     swiftLine = `<div><b>Swift Code :</b> ${esc(bankDetail.swiftCode || "—")}</div>`;
     const purpose = (bankDetail.purposeOfPayment || "").trim() || purposeDefault;
     purposeLine = `<div><b>Purpose of Payment</b> "${esc(purpose)}"</div>`;
@@ -182,7 +182,7 @@ export function renderSiBankFooterHtml({ bankDetail, amountInWords, company, doc
               <div><b>Bank Details :</b></div>
               ${
                 bankDetail
-                  ? `<div class="si-bank-detail-text">${bankLinesHtml}</div>${ibanLine}${swiftLine}${purposeLine}${corrHtml}`
+                  ? `<div class="si-bank-detail-text">${bankLinesHtml}</div>${accountAndIbanLines}${swiftLine}${purposeLine}${corrHtml}`
                   : `<div class="si-bank-missing muted">${missingMsg}</div>`
               }
             </td>
