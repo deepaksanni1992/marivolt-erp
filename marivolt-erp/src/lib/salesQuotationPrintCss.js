@@ -118,8 +118,7 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             background: #e1aa24;
             border-radius: 2px;
           }
-          .si-tax-print-wrap { margin-bottom: 14px; page-break-inside: avoid; }
-          .si-print-main-title { text-align: center; font-size: 22px; font-weight: 700; margin: 0 0 14px; letter-spacing: 0.02em; color: #111; }
+          .si-tax-print-wrap { margin-top: 10px; margin-bottom: 14px; page-break-inside: avoid; }
           .si-header-3col {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
@@ -140,12 +139,12 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
           }
           .si-hbox-stretch { align-self: stretch; display: flex; flex-direction: column; }
           .si-hbox-title {
-            font-size: 10px;
+            font-size: 11px;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.04em;
-            color: #1f4e79;
-            margin-bottom: 8px;
+            letter-spacing: 0.3px;
+            color: #6b7280;
+            margin-bottom: 6px;
           }
           .si-hbox-body { flex: 1; color: #111; word-break: break-word; }
           .si-hbox-body a { color: #1d4ed8; }

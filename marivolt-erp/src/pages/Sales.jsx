@@ -954,7 +954,44 @@ function renderFlowDocPrintWindow({
             <div><b>Remarks:</b> ${doc?.remarks || "-"}</div>
           </div>
         </div>`;
-  const taxInvoiceTopHtml = salesInvoiceLayout
+  const taxInvoiceQuotationHeader = `
+        <div class="header">
+          <div class="header-left">
+            ${
+              isMarivolt
+                ? `<img src="${marivoltPrintLogo}" alt="Marivolt icon" class="logo" />`
+                : hasCompanyLogo
+                ? `<img src="${company?.logo || company?.logoUrl}" alt="${company?.name || company?.companyName || "Company"} logo" class="logo" />`
+                : `<div class="brand-fallback">MV</div>`
+            }
+          </div>
+          <div class="header-center">
+            <div class="title">Tax Invoice</div>
+            <div class="muted">
+              <div><b>No:</b> ${docNoValue || doc?.invoiceNo || "-"}</div>
+              <div><b>Date:</b> ${invoiceDateFormatted}</div>
+            </div>
+          </div>
+          ${
+            isMarivolt
+              ? `<div class="header-right is-marivolt">
+                <h1 class="brand-title">MariVolt</h1>
+                <div class="brand-subtitle">Marine Engine Spares</div>
+                <div class="muted" style="margin-top:8px;">
+                  <div>${company?.address || "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"}</div>
+                  <div>${company?.email || "sales@marivolt.co"}</div>
+                  <div>${company?.phone || "+971-543053047"}</div>
+                </div>
+              </div>`
+              : `<div class="header-right muted">
+                <div><b>${company?.name || company?.companyName || ""}</b></div>
+                <div>${company?.address || ""}</div>
+                <div>${company?.email || ""}</div>
+                <div>${company?.phone || ""}</div>
+              </div>`
+          }
+        </div>`;
+  const taxInvoiceGridHtml = salesInvoiceLayout
     ? buildTaxInvoiceHeaderHtml({
         doc,
         company,
@@ -972,7 +1009,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
       <body class="${isMarivolt ? "has-quote-terms" : ""}">
-        ${salesInvoiceLayout ? taxInvoiceTopHtml : flowDocClassicTop}
+        ${salesInvoiceLayout ? taxInvoiceQuotationHeader + taxInvoiceGridHtml : flowDocClassicTop}
         <table>
           <thead>
             <tr>

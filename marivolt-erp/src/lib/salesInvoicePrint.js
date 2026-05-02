@@ -248,7 +248,6 @@ export function buildTaxInvoiceHeaderHtml({
 
   return `
     <div class="si-tax-print-wrap">
-      <div class="si-print-main-title">Tax Invoice</div>
       <div class="si-header-3col">
         <div class="si-hbox-tax si-hbox-stretch">
           <div class="si-hbox-title">Shipper</div>
