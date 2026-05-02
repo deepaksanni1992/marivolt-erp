@@ -4,11 +4,60 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
-import { apiDelete, apiGetWithQuery, apiPost } from "../lib/api.js";
+import { apiDelete, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
 
 function canManageBankDetails(role) {
   const r = String(role || "").toLowerCase().trim();
   return ["super_admin", "company_admin", "admin"].includes(r);
+}
+
+function emptyBankForm() {
+  return {
+    bankName: "",
+    accountName: "",
+    accountNumber: "",
+    currency: "USD",
+    branchName: "",
+    swiftCode: "",
+    iban: "",
+    bankAddress: "",
+    correspondentBankName: "",
+    correspondentSwiftCode: "",
+    beneficiaryName: "",
+    beneficiaryAddress: "",
+    purposeOfPayment: "",
+    isDefault: false,
+    remarks: "",
+  };
+}
+
+function bankRowToForm(r) {
+  return {
+    bankName: r.bankName ?? "",
+    accountName: r.accountName ?? "",
+    accountNumber: r.accountNumber ?? "",
+    currency: r.currency ?? "USD",
+    branchName: r.branchName ?? "",
+    swiftCode: r.swiftCode ?? "",
+    iban: r.iban ?? "",
+    bankAddress: r.bankAddress ?? "",
+    correspondentBankName: r.correspondentBankName ?? "",
+    correspondentSwiftCode: r.correspondentSwiftCode ?? "",
+    beneficiaryName: r.beneficiaryName ?? "",
+    beneficiaryAddress: r.beneficiaryAddress ?? "",
+    purposeOfPayment: r.purposeOfPayment ?? "",
+    isDefault: !!r.isDefault,
+    remarks: r.remarks ?? "",
+  };
+}
+
+function truncateBankAddressCell(s, max = 56) {
+  const t = String(s ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n+/g, " ")
+    .trim();
+  if (!t) return "—";
+  return t.length > max ? `${t.slice(0, max)}…` : t;
 }
 
 const tabs = [
@@ -83,23 +132,8 @@ export default function Accounts() {
     mode: "",
     remarks: "",
   });
-  const [bankForm, setBankForm] = useState({
-    bankName: "",
-    accountName: "",
-    accountNumber: "",
-    currency: "USD",
-    branchName: "",
-    swiftCode: "",
-    iban: "",
-    bankAddress: "",
-    correspondentBankName: "",
-    correspondentSwiftCode: "",
-    beneficiaryName: "",
-    beneficiaryAddress: "",
-    purposeOfPayment: "",
-    isDefault: false,
-    remarks: "",
-  });
+  const [bankForm, setBankForm] = useState(() => emptyBankForm());
+  const [bankEditId, setBankEditId] = useState(null);
 
   const siQ = useQuery({
     queryKey: ["salesInvoices", page],
@@ -153,7 +187,25 @@ export default function Accounts() {
       if (v.path.includes("supplier-ledger"))
         qc.invalidateQueries({ queryKey: ["supplierLedger"] });
       if (v.path.includes("cash-bank")) qc.invalidateQueries({ queryKey: ["cashBank"] });
-      if (v.path.includes("bank-details")) qc.invalidateQueries({ queryKey: ["bankDetails"] });
+      if (v.path.includes("bank-details")) {
+        qc.invalidateQueries({ queryKey: ["bankDetails"] });
+        setBankEditId(null);
+        setBankForm(emptyBankForm());
+      }
+      setModal(null);
+      setErr("");
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const putMut = useMutation({
+    mutationFn: ({ path, body }) => apiPut(path, body),
+    onSuccess: (_, v) => {
+      if (v.path.includes("bank-details")) {
+        qc.invalidateQueries({ queryKey: ["bankDetails"] });
+        setBankEditId(null);
+        setBankForm(emptyBankForm());
+      }
       setModal(null);
       setErr("");
     },
@@ -286,6 +338,10 @@ export default function Accounts() {
             className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white"
             onClick={() => {
               setErr("");
+              if (tab === "bank") {
+                setBankEditId(null);
+                setBankForm(emptyBankForm());
+              }
               setModal(tab);
             }}
           >
@@ -591,24 +647,25 @@ export default function Accounts() {
               <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
                 <tr>
                   <th className="px-3 py-2">Bank</th>
+                  <th className="px-3 py-2 min-w-[140px] max-w-[220px]">Bank address</th>
                   <th className="px-3 py-2">Account name</th>
                   <th className="px-3 py-2">Account number</th>
                   <th className="px-3 py-2">Currency</th>
                   <th className="px-3 py-2">SWIFT</th>
                   <th className="px-3 py-2">Default</th>
-                  {bankDetailsAdmin ? <th className="px-3 py-2 w-16" /> : null}
+                  {bankDetailsAdmin ? <th className="px-3 py-2 w-28">Actions</th> : null}
                 </tr>
               </thead>
               <tbody>
                 {loading() ? (
                   <tr>
-                    <td colSpan={bankDetailsAdmin ? 7 : 6} className="px-3 py-8 text-center text-gray-500">
+                    <td colSpan={bankDetailsAdmin ? 8 : 7} className="px-3 py-8 text-center text-gray-500">
                       Loading…
                     </td>
                   </tr>
                 ) : activeRows().length === 0 ? (
                   <tr>
-                    <td colSpan={bankDetailsAdmin ? 7 : 6} className="px-3 py-8 text-center text-gray-500">
+                    <td colSpan={bankDetailsAdmin ? 8 : 7} className="px-3 py-8 text-center text-gray-500">
                       No bank details.
                     </td>
                   </tr>
@@ -616,23 +673,43 @@ export default function Accounts() {
                   activeRows().map((r) => (
                     <tr key={r._id} className="border-b border-gray-100">
                       <td className="px-3 py-2">{r.bankName}</td>
+                      <td
+                        className="px-3 py-2 max-w-[220px] align-top text-xs text-gray-700"
+                        title={String(r.bankAddress || "").trim() || undefined}
+                      >
+                        {truncateBankAddressCell(r.bankAddress)}
+                      </td>
                       <td className="px-3 py-2">{r.accountName}</td>
                       <td className="px-3 py-2 font-mono text-xs">{r.accountNumber}</td>
                       <td className="px-3 py-2">{r.currency}</td>
                       <td className="px-3 py-2">{r.swiftCode || "-"}</td>
                       <td className="px-3 py-2">{r.isDefault ? "Yes" : "No"}</td>
                       {bankDetailsAdmin ? (
-                        <td className="px-3 py-2">
-                          <button
-                            type="button"
-                            className="text-xs text-red-600"
-                            onClick={() => {
-                              if (confirm("Delete bank detail?"))
-                                delMut.mutate({ path: `/accounts/bank-details/${r._id}` });
-                            }}
-                          >
-                            Del
-                          </button>
+                        <td className="px-3 py-2 align-top">
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              className="text-xs font-medium text-gray-900 underline decoration-gray-400 underline-offset-2 hover:text-gray-700"
+                              onClick={() => {
+                                setErr("");
+                                setBankEditId(r._id);
+                                setBankForm(bankRowToForm(r));
+                                setModal("bank");
+                              }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              className="text-xs text-red-600"
+                              onClick={() => {
+                                if (confirm("Delete bank detail?"))
+                                  delMut.mutate({ path: `/accounts/bank-details/${r._id}` });
+                              }}
+                            >
+                              Del
+                            </button>
+                          </div>
                         </td>
                       ) : null}
                     </tr>
@@ -1123,7 +1200,16 @@ export default function Accounts() {
           </button>
         </div>
       </Modal>
-      <Modal open={modal === "bank" && bankDetailsAdmin} onClose={() => setModal(null)} title="Bank detail" wide>
+      <Modal
+        open={modal === "bank" && bankDetailsAdmin}
+        onClose={() => {
+          setModal(null);
+          setBankEditId(null);
+          setBankForm(emptyBankForm());
+        }}
+        title={bankEditId ? "Edit bank detail" : "New bank detail"}
+        wide
+      >
         <div className="grid gap-3 sm:grid-cols-2">
           <FormField label="Bank name *">
             <TextInput
@@ -1150,13 +1236,13 @@ export default function Accounts() {
               placeholder="EUR, AED, or USD (EURO matches EUR)"
             />
           </FormField>
-          <FormField label="Bank address (print)" className="sm:col-span-2">
+          <FormField label="Bank address" className="sm:col-span-2">
             <textarea
               value={bankForm.bankAddress}
               onChange={(e) => setBankForm((f) => ({ ...f, bankAddress: e.target.value }))}
               rows={3}
               className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
-              placeholder="Branch, street, P.O. Box, city (shown on Tax invoice)"
+              placeholder="Branch, street, P.O. Box, city (shown in Accounts list and on Tax invoice)"
             />
           </FormField>
           <FormField label="Branch name">
@@ -1229,14 +1315,28 @@ export default function Accounts() {
           </FormField>
         </div>
         <div className="mt-4 flex justify-end gap-2">
-          <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={() => setModal(null)}>
+          <button
+            type="button"
+            className="rounded-xl border px-4 py-2 text-sm"
+            onClick={() => {
+              setModal(null);
+              setBankEditId(null);
+              setBankForm(emptyBankForm());
+            }}
+          >
             Cancel
           </button>
           <button
             type="button"
             className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
-            disabled={postMut.isPending}
-            onClick={() => postMut.mutate({ path: "/accounts/bank-details", body: bankForm })}
+            disabled={postMut.isPending || putMut.isPending}
+            onClick={() => {
+              if (bankEditId) {
+                putMut.mutate({ path: `/accounts/bank-details/${bankEditId}`, body: bankForm });
+              } else {
+                postMut.mutate({ path: "/accounts/bank-details", body: bankForm });
+              }
+            }}
           >
             Save
           </button>

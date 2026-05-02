@@ -36,6 +36,7 @@ router.delete("/cash-bank/:id", c.deleteCashBankEntry);
 router.get("/bank-details/for-currency/:currency", c.getBankDetailForCurrency);
 router.get("/bank-details", c.listBankDetails);
 router.post("/bank-details", requireRole(...bankDetailAdminRoles), c.createBankDetail);
+router.put("/bank-details/:id", requireRole(...bankDetailAdminRoles), c.updateBankDetail);
 router.delete("/bank-details/:id", requireRole(...bankDetailAdminRoles), c.deleteBankDetail);
 
 export default router;

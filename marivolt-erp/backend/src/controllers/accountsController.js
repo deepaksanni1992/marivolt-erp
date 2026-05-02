@@ -453,6 +453,38 @@ export async function createBankDetail(req, res) {
   }
 }
 
+export async function updateBankDetail(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid id" });
+    }
+    const existing = await BankDetail.findOne(withCompany(req, { _id: id }));
+    if (!existing) return res.status(404).json({ message: "Not found" });
+
+    const raw = { ...req.body };
+    delete raw.companyId;
+    delete raw._id;
+    delete raw.createdAt;
+    raw.updatedBy = req.user?.email || "";
+    if (raw.currency !== undefined) {
+      raw.currency = String(raw.currency || "USD").trim().toUpperCase();
+      if (raw.currency === "EURO") raw.currency = "EUR";
+    }
+    if (raw.isDefault) {
+      await BankDetail.updateMany(withCompany(req, { _id: { $ne: id } }), { $set: { isDefault: false } });
+    }
+    const doc = await BankDetail.findOneAndUpdate(
+      withCompany(req, { _id: id }),
+      { $set: raw },
+      { new: true, runValidators: true }
+    );
+    res.json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
 export async function deleteBankDetail(req, res) {
   try {
     const { id } = req.params;
