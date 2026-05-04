@@ -2,7 +2,14 @@ import { useCallback, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import { FormField, TextInput, SelectInput } from "../components/erp/FormField.jsx";
-import { API_BASE, apiDelete, apiGet, apiGetWithQuery, apiPostFormData } from "../lib/api.js";
+import {
+  API_BASE,
+  apiDelete,
+  apiGet,
+  apiGetWithQuery,
+  apiPostFormData,
+  isRunningUiOnLocalhost,
+} from "../lib/api.js";
 
 /** Must match backend `DOCUMENT_TYPES` / S3 folder mapping. */
 const DOCUMENT_TYPE_OPTIONS = [
@@ -156,25 +163,30 @@ export default function Documents() {
   const openSignedUrl = useCallback(
     async (id, inline) => {
       setDownloadBusyId(id);
-      // Open a tab synchronously so popup blockers allow navigation after async fetch.
-      const w = window.open("about:blank", "_blank", "noopener,noreferrer");
       try {
         const path = inline ? `/documents/${id}/download?inline=1` : `/documents/${id}/download`;
         const data = await apiGet(path);
-        if (data?.url) {
-          if (w) {
-            w.opener = null;
-            w.location.href = data.url;
-          } else {
-            window.open(data.url, "_blank", "noopener,noreferrer");
-          }
-        } else {
-          w?.close();
+        if (!data?.url) {
           toast("error", "No download URL returned.");
+          return;
         }
+        // After async fetch, avoid `about:blank` + assign (leaves an empty tab if the API errors).
+        // Programmatic <a target="_blank"> usually opens the S3 URL without a stuck blank tab.
+        const a = document.createElement("a");
+        a.href = data.url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.style.display = "none";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
       } catch (e) {
-        w?.close();
-        toast("error", e.message || "Could not open file.");
+        let msg = e.message || "Could not open file.";
+        if (/S3 is not configured/i.test(msg)) {
+          msg +=
+            " Set AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_S3_BUCKET on the API server (marivolt-erp/backend/.env locally, or Render env + redeploy).";
+        }
+        toast("error", msg);
       } finally {
         setDownloadBusyId(null);
       }
@@ -195,13 +207,15 @@ export default function Documents() {
         <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
           <p className="font-semibold">S3 is not configured on this API server</p>
           <p className="mt-1 text-amber-900/90">
-            View/Download need AWS credentials on the backend. In dev, requests go to{" "}
-            <code className="rounded bg-amber-100/80 px-1">{API_BASE}</code> (see Vite proxy +{" "}
-            <code className="rounded bg-amber-100/80 px-1">marivolt-erp/backend/.env</code>). On Render, set{" "}
+            View/Download need{" "}
             <code className="rounded bg-amber-100/80 px-1">AWS_REGION</code>,{" "}
             <code className="rounded bg-amber-100/80 px-1">AWS_ACCESS_KEY_ID</code>,{" "}
             <code className="rounded bg-amber-100/80 px-1">AWS_SECRET_ACCESS_KEY</code>,{" "}
-            <code className="rounded bg-amber-100/80 px-1">AWS_S3_BUCKET</code> and redeploy.
+            <code className="rounded bg-amber-100/80 px-1">AWS_S3_BUCKET</code> on the backend. You are calling{" "}
+            <code className="rounded bg-amber-100/80 px-1">{API_BASE}</code>
+            {isRunningUiOnLocalhost()
+              ? " On localhost the app uses this URL + Vite proxy → Express on port 5000. Add the four AWS variables to marivolt-erp/backend/.env and restart the backend."
+              : " Add the same variables on Render (or your API host) for this URL and redeploy the API."}
           </p>
         </div>
       ) : null}

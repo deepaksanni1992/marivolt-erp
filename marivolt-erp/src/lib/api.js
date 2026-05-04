@@ -1,35 +1,40 @@
 import axios from "axios";
 
-/** True when VITE_* points at this machine (direct :5000 etc.). */
-function isLocalDevApiHost(url) {
-  const s = String(url || "").trim();
-  if (!s) return true;
-  try {
-    const u = new URL(s.startsWith("http") ? s : `http://${s}`);
-    return u.hostname === "localhost" || u.hostname === "127.0.0.1";
-  } catch {
-    return false;
-  }
+/** True when the ERP UI is opened on this machine (any port). Used at runtime in the browser bundle. */
+export function isRunningUiOnLocalhost() {
+  if (typeof window === "undefined") return false;
+  const h = window.location.hostname;
+  return h === "localhost" || h === "127.0.0.1" || h === "[::1]";
 }
 
 /**
  * Base origin for the API (no `/api` suffix here; API_BASE adds it).
- * In Vite dev: use same-origin `/api` + vite.config proxy → always hits local backend with your .env,
- * unless VITE_API_BASE_URL / VITE_API_BASE points at a non-localhost host (e.g. Render) on purpose.
+ *
+ * If the page is served from **localhost** (Vite dev, `vite preview`, or opening a prod build locally),
+ * always use same-origin `/api` + vite.config proxy → `http://127.0.0.1:5000` so you use **local**
+ * `backend/.env` (with AWS) instead of a Render URL baked into the build.
+ *
+ * Set `VITE_USE_REMOTE_API_WHILE_LOCAL=true` only if you intentionally want localhost UI → remote API.
+ *
+ * Deployed sites (e.g. *.vercel.app) use `VITE_API_BASE_URL` from the build.
  */
 function resolveApiBase() {
+  const forceRemoteWhileLocal =
+    String(import.meta.env.VITE_USE_REMOTE_API_WHILE_LOCAL || "").trim() === "true";
+
+  if (typeof window !== "undefined" && !forceRemoteWhileLocal && isRunningUiOnLocalhost()) {
+    return "/api";
+  }
+
+  if (import.meta.env.DEV) {
+    return "/api";
+  }
+
   const fromEnv = (
     import.meta.env.VITE_API_BASE_URL ||
     import.meta.env.VITE_API_BASE ||
     ""
   ).trim();
-
-  if (import.meta.env.DEV) {
-    if (fromEnv && !isLocalDevApiHost(fromEnv)) {
-      return fromEnv;
-    }
-    return "/api";
-  }
 
   if (!fromEnv) {
     return "";
