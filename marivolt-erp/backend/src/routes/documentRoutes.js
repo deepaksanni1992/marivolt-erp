@@ -1,7 +1,7 @@
 import express from "express";
 import multer from "multer";
 import { requireErpAccess } from "../middleware/erpAccess.js";
-import { isS3Configured } from "../config/s3.js";
+import { getS3EnvPresence, isS3Configured } from "../config/s3.js";
 import * as doc from "../controllers/documentController.js";
 
 const router = express.Router();
@@ -32,7 +32,10 @@ router.post("/upload", uploadSingleFile, doc.uploadDocument);
 router.get("/", doc.listDocuments);
 /** Before /:id — lets the UI show why View/Download may fail on a given server */
 router.get("/s3-status", (req, res) => {
-  res.json({ s3Configured: isS3Configured() });
+  res.json({
+    s3Configured: isS3Configured(),
+    awsEnvPresence: getS3EnvPresence(),
+  });
 });
 /** More specific routes before /:id */
 router.get("/:id/download", doc.downloadDocument);

@@ -1355,6 +1355,7 @@ export default function Sales() {
   const [detailProformaDraftForm, setDetailProformaDraftForm] = useState(null);
   const [detailSalesInvoiceDraftForm, setDetailSalesInvoiceDraftForm] = useState(null);
   const [selectedReportId, setSelectedReportId] = useState("");
+  const reportViewerRef = useRef(null);
   const [reportPage, setReportPage] = useState(1);
   const [reportFilters, setReportFilters] = useState({
     search: "",
@@ -1540,7 +1541,12 @@ export default function Sales() {
   const reportApiPath = reportEndpointById[activeReportId] || null;
   const activeReportTitle = reportTitleById[activeReportId] || "Selected Report";
 
-  const { data: activeReportData, isLoading: reportLoading } = useQuery({
+  const {
+    data: activeReportData,
+    isLoading: reportLoading,
+    isError: reportIsError,
+    error: reportQueryError,
+  } = useQuery({
     queryKey: ["sales-report", activeCompanyId, activeReportId, reportPage, reportFilters],
     queryFn: () =>
       apiGetWithQuery(reportApiPath, {
@@ -1569,29 +1575,33 @@ export default function Sales() {
   }
 
   function exportActiveReportCsv() {
-    if (!activeExportColumns.length || !activeReportRows.length) return;
+    if (!activeExportColumns.length) return;
     const header = activeExportColumns.map(([label]) => escapeCsvValue(label)).join(",");
     const lines = activeReportRows.map((row) => activeExportColumns.map(([, getter]) => escapeCsvValue(getter(row))).join(","));
-    const csv = [header, ...lines].join("\n");
-    downloadBlobFile(`${activeReportId}-${new Date().toISOString().slice(0, 10)}.csv`, `\ufeff${csv}`, "text/csv;charset=utf-8;");
+    const csv = lines.length ? [header, ...lines].join("\n") : header;
+    downloadBlobFile(`${activeReportId}-${new Date().toISOString().slice(0, 10)}.csv`, `\ufeff${csv}`, "text/csv;charset=utf-8");
   }
 
   function exportActiveReportExcel() {
-    if (!activeExportColumns.length || !activeReportRows.length) return;
+    if (!activeExportColumns.length) return;
     const headers = activeExportColumns.map(([label]) => `<th>${label}</th>`).join("");
-    const rows = activeReportRows
-      .map((row) => `<tr>${activeExportColumns.map(([, getter]) => `<td>${String(getter(row) ?? "")}</td>`).join("")}</tr>`)
-      .join("");
+    const rows = activeReportRows.length
+      ? activeReportRows
+          .map((row) => `<tr>${activeExportColumns.map(([, getter]) => `<td>${String(getter(row) ?? "")}</td>`).join("")}</tr>`)
+          .join("")
+      : `<tr><td colspan="${activeExportColumns.length}">No data for current filters.</td></tr>`;
     const html = `<table><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table>`;
     downloadBlobFile(`${activeReportId}-${new Date().toISOString().slice(0, 10)}.xls`, html, "application/vnd.ms-excel");
   }
 
   function openReportPrintWindow(autoPrint = false) {
-    if (!activeExportColumns.length || !activeReportRows.length) return;
+    if (!activeExportColumns.length) return;
     const headers = activeExportColumns.map(([label]) => `<th>${label}</th>`).join("");
-    const rows = activeReportRows
-      .map((row) => `<tr>${activeExportColumns.map(([, getter]) => `<td>${String(getter(row) ?? "")}</td>`).join("")}</tr>`)
-      .join("");
+    const rows = activeReportRows.length
+      ? activeReportRows
+          .map((row) => `<tr>${activeExportColumns.map(([, getter]) => `<td>${String(getter(row) ?? "")}</td>`).join("")}</tr>`)
+          .join("")
+      : `<tr><td colspan="${activeExportColumns.length}" style="padding:12px;color:#666;">No data for current filters.</td></tr>`;
     const html = `
       <html>
         <head>
@@ -1616,7 +1626,12 @@ export default function Sales() {
       </html>
     `;
     const win = window.open("", "_blank", "width=1200,height=900");
-    if (!win) return;
+    if (!win) {
+      window.alert(
+        "Your browser blocked the pop-up. Allow pop-ups for this site to export PDF or print the report."
+      );
+      return;
+    }
     win.document.write(html);
     win.document.close();
     win.focus();
@@ -2531,45 +2546,18 @@ export default function Sales() {
             </div>
           </div>
 
-          {reportsCatalog.map((section) => (
-            <div key={section.key} className="rounded-2xl border bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center justify-between">
-                <h4 className="text-sm font-semibold uppercase tracking-wide text-gray-700">{section.group}</h4>
-                <span className="text-xs text-gray-500">{section.items.length} reports</span>
-              </div>
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {section.items.map((report) => (
-                  <div key={report.id} className="rounded-xl border border-gray-200 bg-gradient-to-b from-white to-gray-50 p-3">
-                    <p className="text-sm font-semibold text-gray-900">{report.title}</p>
-                    <p className="mt-1 min-h-10 text-xs text-gray-600">{report.desc}</p>
-                    <div className="mt-3 flex items-center justify-between">
-                      <button
-                        type="button"
-                        className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100"
-                        onClick={() => {
-                          setSelectedReportId(report.id);
-                          setReportPage(1);
-                        }}
-                      >
-                        Open report
-                      </button>
-                      <span className="text-[11px] font-medium text-emerald-700">Live</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-
-          <div className="rounded-2xl border bg-white p-4 shadow-sm">
+          <div ref={reportViewerRef} className="scroll-mt-24 rounded-2xl border bg-white p-4 shadow-sm">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h4 className="text-sm font-semibold uppercase tracking-wide text-gray-700">{activeReportTitle}</h4>
+              <div>
+                <h4 className="text-sm font-semibold uppercase tracking-wide text-gray-700">{activeReportTitle}</h4>
+                <p className="mt-1 text-xs text-gray-500">Filters and exports apply to this report. Pick another report from the catalog below.</p>
+              </div>
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
                   onClick={exportActiveReportCsv}
-                  disabled={!activeReportRows.length || reportLoading}
+                  disabled={!activeExportColumns.length || reportLoading || reportIsError || !reportApiPath}
                 >
                   Export CSV
                 </button>
@@ -2577,7 +2565,7 @@ export default function Sales() {
                   type="button"
                   className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
                   onClick={exportActiveReportExcel}
-                  disabled={!activeReportRows.length || reportLoading}
+                  disabled={!activeExportColumns.length || reportLoading || reportIsError || !reportApiPath}
                 >
                   Export Excel
                 </button>
@@ -2585,7 +2573,7 @@ export default function Sales() {
                   type="button"
                   className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
                   onClick={() => openReportPrintWindow(true)}
-                  disabled={!activeReportRows.length || reportLoading}
+                  disabled={!activeExportColumns.length || reportLoading || reportIsError || !reportApiPath}
                 >
                   Export PDF
                 </button>
@@ -2593,7 +2581,7 @@ export default function Sales() {
                   type="button"
                   className="rounded-lg bg-gray-900 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm disabled:opacity-50"
                   onClick={() => openReportPrintWindow(false)}
-                  disabled={!activeReportRows.length || reportLoading}
+                  disabled={!activeExportColumns.length || reportLoading || reportIsError || !reportApiPath}
                 >
                   Print
                 </button>
@@ -2602,6 +2590,11 @@ export default function Sales() {
 
             {reportApiPath ? (
               <>
+                {reportIsError ? (
+                  <div className="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                    {reportQueryError?.message || "Could not load this report. Check your connection and try again."}
+                  </div>
+                ) : null}
                 <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
                   <TextInput
                     placeholder="Search doc/customer/ref"
@@ -2814,6 +2807,12 @@ export default function Sales() {
                           <tr>
                             <td className="px-3 py-8 text-center text-gray-500" colSpan={12}>
                               Loading report...
+                            </td>
+                          </tr>
+                        ) : reportIsError ? (
+                          <tr>
+                            <td className="px-3 py-8 text-center text-gray-500" colSpan={12}>
+                              Report failed to load. See the message above or adjust filters and retry.
                             </td>
                           </tr>
                         ) : activeReportRows.length === 0 ? (
@@ -3034,6 +3033,39 @@ export default function Sales() {
               </p>
             )}
           </div>
+
+          {reportsCatalog.map((section) => (
+            <div key={section.key} className="rounded-2xl border bg-white p-4 shadow-sm">
+              <div className="mb-3 flex items-center justify-between">
+                <h4 className="text-sm font-semibold uppercase tracking-wide text-gray-700">{section.group}</h4>
+                <span className="text-xs text-gray-500">{section.items.length} reports</span>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {section.items.map((report) => (
+                  <div key={report.id} className="rounded-xl border border-gray-200 bg-gradient-to-b from-white to-gray-50 p-3">
+                    <p className="text-sm font-semibold text-gray-900">{report.title}</p>
+                    <p className="mt-1 min-h-10 text-xs text-gray-600">{report.desc}</p>
+                    <div className="mt-3 flex items-center justify-between">
+                      <button
+                        type="button"
+                        className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100"
+                        onClick={() => {
+                          setSelectedReportId(report.id);
+                          setReportPage(1);
+                          window.setTimeout(() => {
+                            reportViewerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                          }, 0);
+                        }}
+                      >
+                        Open report
+                      </button>
+                      <span className="text-[11px] font-medium text-emerald-700">Live</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       ) : tabContent === "coming" ? (
         <div className="rounded-2xl border bg-white p-8 text-sm text-gray-600">
