@@ -55,6 +55,13 @@ const salesInvoiceSchema = new mongoose.Schema(
       enum: ["DRAFT", "ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID", "CANCELLED"],
       default: "DRAFT",
     },
+    /** When set, inventory was reduced via SALES_INVOICE_OUT (supports safe cancel reversal). */
+    stockPostedAt: { type: Date, default: null },
+    cancelledAt: { type: Date, default: null },
+    cancelledBy: { type: String, default: "" },
+    cancellationReason: { type: String, default: "" },
+    convertedFromRtsAt: { type: Date, default: null },
+    convertedFromRtsBy: { type: String, default: "" },
     remarks: { type: String, default: "" },
     createdBy: { type: String, default: "" },
     updatedBy: { type: String, default: "" },

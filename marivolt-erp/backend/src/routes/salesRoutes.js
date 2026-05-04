@@ -92,4 +92,16 @@ router.post("/convert/proforma/:id/to-order-allocation", flow.convertProformaToO
 router.post("/convert/sales-invoice/:id/to-cipl", flow.convertSalesInvoiceToCipl);
 router.post("/convert/sales-invoice/:id/to-sales-dispatch", flow.convertSalesInvoiceToSalesDispatch);
 
+/** ERP workflow aliases (same handlers as /convert/* where applicable). */
+router.post("/quotations/:id/convert-to-oa", flow.convertQuotationToOA);
+router.post("/order-acknowledgements/:id/create-proforma", flow.convertOAToProforma);
+router.post("/order-acknowledgements/:id/allocate", flow.convertOAToOrderAllocation);
+router.post("/proformas/:id/mark-paid", flow.markProformaPaid);
+router.post("/allocations/:id/convert-to-rts", flow.createRtsFromOrderAllocation);
+router.post("/rts/:id/convert-to-invoice", flow.convertRtsToSalesInvoice);
+router.post("/invoices/:id/cancel", flow.cancelSalesInvoice);
+router.post("/rts/:id/cancel", flow.cancelRtsDocument);
+router.post("/allocations/:id/cancel", flow.cancelOrderAllocation);
+router.post("/order-acknowledgements/:id/cancel", flow.cancelOA);
+
 export default router;

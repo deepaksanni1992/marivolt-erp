@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
-import { TextInput } from "../components/erp/FormField.jsx";
+import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import Inventory from "./Inventory.jsx";
 import { apiGet, apiGetWithQuery, apiPatch, apiPost, apiPut } from "../lib/api.js";
@@ -279,6 +279,7 @@ export default function Store() {
   const [search, setSearch] = useState("");
   const [allocationOpenId, setAllocationOpenId] = useState(null);
   const [rtsOpenId, setRtsOpenId] = useState(null);
+  const [rtsCancelModal, setRtsCancelModal] = useState(null);
   const [selected, setSelected] = useState({});
   const [packing, setPacking] = useState({
     totalWeightKg: "",
@@ -390,6 +391,21 @@ export default function Store() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["store-rts"] });
       qc.invalidateQueries({ queryKey: ["store-order-allocations"] });
+      qc.invalidateQueries({ queryKey: ["stockBalances"] });
+    },
+  });
+
+  const cancelRtsMutation = useMutation({
+    mutationFn: async ({ id, reason, dryRun }) => {
+      const path = `/sales/rts/${id}/cancel${dryRun ? "?dryRun=1" : ""}`;
+      return apiPost(path, { cancellationReason: reason });
+    },
+    onSuccess: (_d, v) => {
+      if (v.dryRun) return;
+      setRtsCancelModal(null);
+      qc.invalidateQueries({ queryKey: ["store-rts"] });
+      qc.invalidateQueries({ queryKey: ["store-order-allocations"] });
+      qc.invalidateQueries({ queryKey: ["stockBalances"] });
     },
   });
 
@@ -694,10 +710,36 @@ export default function Store() {
                             <button
                               type="button"
                               className="rounded-lg border px-2 py-1 text-xs disabled:opacity-40"
-                              disabled={String(r.status || "").toUpperCase() === "APPROVED" || !!r.linkedSalesInvoiceId}
+                              disabled={
+                                ["APPROVED", "CONVERTED_TO_INVOICE", "CANCELLED"].includes(String(r.status || "").toUpperCase()) ||
+                                !!r.linkedSalesInvoiceId
+                              }
                               onClick={() => approveRtsMutation.mutate(r._id)}
                             >
                               Approve
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs disabled:opacity-40"
+                              disabled={
+                                ["CANCELLED", "CONVERTED_TO_INVOICE"].includes(String(r.status || "").toUpperCase()) ||
+                                !!r.linkedSalesInvoiceId
+                              }
+                              title="RTS → reservation (one step back)"
+                              onClick={async () => {
+                                try {
+                                  const preview = await cancelRtsMutation.mutateAsync({
+                                    id: r._id,
+                                    reason: "-",
+                                    dryRun: true,
+                                  });
+                                  setRtsCancelModal({ id: r._id, reason: "", preview });
+                                } catch {
+                                  /* surface via react-query */
+                                }
+                              }}
+                            >
+                              Cancel RTS
                             </button>
                           </div>
                         </td>
@@ -1291,6 +1333,56 @@ export default function Store() {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={!!rtsCancelModal}
+        onClose={() => {
+          if (!cancelRtsMutation.isPending) setRtsCancelModal(null);
+        }}
+        title="Cancel RTS"
+      >
+        {rtsCancelModal ? (
+          <div className="space-y-3 text-sm">
+            {Array.isArray(rtsCancelModal.preview?.stockImpact) && rtsCancelModal.preview.stockImpact.length > 0 ? (
+              <div className="rounded border bg-gray-50 p-2 text-xs">
+                <p className="mb-1 font-semibold text-gray-600">Stock impact</p>
+                <ul className="space-y-1">
+                  {rtsCancelModal.preview.stockImpact.map((row, i) => (
+                    <li key={i} className="font-mono">
+                      {row.article}: {row.qty} ({row.from} → {row.to})
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            <FormField label="Cancellation reason">
+              <TextInput
+                value={rtsCancelModal.reason}
+                onChange={(e) => setRtsCancelModal((m) => (m ? { ...m, reason: e.target.value } : m))}
+              />
+            </FormField>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="rounded border px-2 py-1" onClick={() => setRtsCancelModal(null)}>
+                Close
+              </button>
+              <button
+                type="button"
+                className="rounded bg-gray-900 px-2 py-1 text-white disabled:opacity-50"
+                disabled={cancelRtsMutation.isPending || !String(rtsCancelModal.reason || "").trim()}
+                onClick={() =>
+                  cancelRtsMutation.mutate({
+                    id: rtsCancelModal.id,
+                    reason: String(rtsCancelModal.reason || "").trim(),
+                    dryRun: false,
+                  })
+                }
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        ) : null}
       </Modal>
     </div>
   );

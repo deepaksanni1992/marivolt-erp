@@ -16,10 +16,17 @@ export async function listBalances(req, res) {
     if (req.query.itemCode) {
       filter.itemCode = new RegExp(String(req.query.itemCode).trim(), "i");
     }
-    const [items, total] = await Promise.all([
+    const [rawItems, total] = await Promise.all([
       StockBalance.find(filter).sort({ itemCode: 1, warehouse: 1 }).skip(skip).limit(limit).lean(),
       StockBalance.countDocuments(filter),
     ]);
+    const items = rawItems.map((r) => {
+      const phys = Number(r.quantity) || 0;
+      const resq = Number(r.reservedQty) || 0;
+      const rts = Number(r.rtsQty) || 0;
+      const availableQty = Math.max(0, phys - resq - rts);
+      return { ...r, rtsQty: rts, availableQty };
+    });
     res.json({ items, total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -37,11 +44,20 @@ export async function getBalance(req, res) {
         warehouse,
         quantity: 0,
         reservedQty: 0,
+        rtsQty: 0,
+        availableQty: 0,
         unitCost: 0,
         location: "",
       });
     }
-    res.json(row);
+    const phys = Number(row.quantity) || 0;
+    const resq = Number(row.reservedQty) || 0;
+    const rts = Number(row.rtsQty) || 0;
+    res.json({
+      ...row,
+      rtsQty: rts,
+      availableQty: Math.max(0, phys - resq - rts),
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

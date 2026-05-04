@@ -70,11 +70,11 @@ const reportsCatalog = [
 ];
 
 const statusOptions = ["DRAFT", "SENT", "APPROVED", "REJECTED", "EXPIRED", "CONVERTED", "CANCELLED"];
-const oaStatusOptions = ["DRAFT", "CONFIRMED", "CLOSED", "CANCELLED"];
+const oaStatusOptions = ["DRAFT", "ACTIVE", "CONFIRMED", "CLOSED", "CANCELLED"];
 const proformaStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "APPROVED", "CONVERTED", "CANCELLED"];
 const salesInvoiceStatusOptions = ["DRAFT", "ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID", "CANCELLED"];
 const orderAllocationStatusOptions = ["OPEN", "PARTIALLY_RTS", "RTS_COMPLETE", "APPROVED", "CLOSED", "CANCELLED"];
-const rtsStatusOptions = ["DRAFT", "APPROVED", "CANCELLED"];
+const rtsStatusOptions = ["DRAFT", "APPROVED", "CONVERTED_TO_INVOICE", "CANCELLED"];
 
 const reportStatusOptionsById = {
   "quotation-summary": statusOptions,
@@ -308,6 +308,7 @@ function proformaDisplayStatus(p) {
   if (!p) return "";
   const st = String(p.status || "").trim().toUpperCase();
   if (st === "CANCELLED") return "CANCELLED";
+  if (st === "PAID_PENDING_SHIPMENT") return "PAID";
   if (st === "APPROVED" || st === "CONVERTED") return "APPROVED";
   return st || "DRAFT";
 }
@@ -1355,6 +1356,8 @@ export default function Sales() {
   const [salesInvoiceCreateOpen, setSalesInvoiceCreateOpen] = useState(false);
   const [ciplCreateOpen, setCiplCreateOpen] = useState(false);
   const [err, setErr] = useState("");
+  /** { open, kind: "SI"|"ALC"|"RTS"|"OA"|"PI", id, reason, preview, step: "form"|"confirm" } */
+  const [salesCancelModal, setSalesCancelModal] = useState(null);
   const [detailQuotationDraftForm, setDetailQuotationDraftForm] = useState(null);
   const [detailOADraftForm, setDetailOADraftForm] = useState(null);
   const [detailProformaDraftForm, setDetailProformaDraftForm] = useState(null);
@@ -2135,6 +2138,47 @@ export default function Sales() {
     onError: (e) => setErr(e.message),
   });
 
+  const markProformaPaidMutation = useMutation({
+    mutationFn: (id) => apiPost(`/sales/proformas/${id}/mark-paid`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-proforma"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
+      setErr("");
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const salesCancelMutation = useMutation({
+    mutationFn: async ({ kind, id, reason, dryRun }) => {
+      if (kind === "PI") {
+        const path = `/sales/proforma-invoices/${id}/cancel${dryRun ? "?dryRun=1" : ""}`;
+        return apiPatch(path, { cancellationReason: reason });
+      }
+      const paths = {
+        SI: `/sales/invoices/${id}/cancel`,
+        ALC: `/sales/allocations/${id}/cancel`,
+        RTS: `/sales/rts/${id}/cancel`,
+        OA: `/sales/order-acknowledgements/${id}/cancel`,
+      };
+      const path = `${paths[kind]}${dryRun ? "?dryRun=1" : ""}`;
+      return apiPost(path, { cancellationReason: reason });
+    },
+    onSuccess: (_data, variables) => {
+      if (variables.dryRun) return;
+      setSalesCancelModal(null);
+      qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
+      qc.invalidateQueries({ queryKey: ["sales-order-allocation"] });
+      qc.invalidateQueries({ queryKey: ["store-rts"] });
+      qc.invalidateQueries({ queryKey: ["store-order-allocations"] });
+      qc.invalidateQueries({ queryKey: ["sales-oa"] });
+      qc.invalidateQueries({ queryKey: ["sales-proforma"] });
+      qc.invalidateQueries({ queryKey: ["stockBalances"] });
+      qc.invalidateQueries({ queryKey: ["inventoryLedger"] });
+      setErr("");
+    },
+    onError: (e) => setErr(e.message),
+  });
+
   const openShippingDispatchDocument = useCallback(async (docId, inline) => {
     setShippingDownloadBusyId(docId);
     try {
@@ -2534,6 +2578,89 @@ export default function Sales() {
           {error?.message || err}
         </div>
       )}
+
+      <Modal
+        open={!!salesCancelModal?.open}
+        onClose={() => {
+          if (!salesCancelMutation.isPending) setSalesCancelModal(null);
+        }}
+        title="Confirm cancellation"
+      >
+        {salesCancelModal?.open ? (
+          <div className="space-y-3 text-sm">
+            <p className="text-gray-700">
+              Cancelling{" "}
+              {salesCancelModal.kind === "SI"
+                ? "this sales invoice"
+                : salesCancelModal.kind === "ALC"
+                ? "this order allocation"
+                : salesCancelModal.kind === "RTS"
+                ? "this RTS"
+                : salesCancelModal.kind === "OA"
+                ? "this order acknowledgement"
+                : "this proforma"}{" "}
+              applies a single-step stock reversal (see preview below).
+            </p>
+            {Array.isArray(salesCancelModal.preview?.stockImpact) && salesCancelModal.preview.stockImpact.length > 0 ? (
+              <div className="rounded-lg border bg-gray-50 p-2">
+                <p className="mb-2 text-xs font-semibold uppercase text-gray-600">Stock impact preview</p>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-gray-500">
+                      <th className="py-1">Article</th>
+                      <th className="py-1 text-right">Qty</th>
+                      <th className="py-1 text-right">Move</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {salesCancelModal.preview.stockImpact.map((row, i) => (
+                      <tr key={i} className="border-t border-gray-200">
+                        <td className="py-1 font-mono">{row.article}</td>
+                        <td className="py-1 text-right tabular-nums">{row.qty}</td>
+                        <td className="py-1 text-right text-gray-600">
+                          {row.from} → {row.to}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+            <FormField label="Cancellation reason (required)">
+              <TextInput
+                value={salesCancelModal.reason}
+                onChange={(e) => setSalesCancelModal((m) => (m ? { ...m, reason: e.target.value } : m))}
+                placeholder="e.g. Customer requested to stop shipment"
+              />
+            </FormField>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                className="rounded-lg border px-3 py-1.5"
+                disabled={salesCancelMutation.isPending}
+                onClick={() => setSalesCancelModal(null)}
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                disabled={salesCancelMutation.isPending || !String(salesCancelModal.reason || "").trim()}
+                className="rounded-lg bg-gray-900 px-3 py-1.5 text-white disabled:opacity-50"
+                onClick={() =>
+                  salesCancelMutation.mutate({
+                    kind: salesCancelModal.kind,
+                    id: salesCancelModal.id,
+                    reason: String(salesCancelModal.reason || "").trim(),
+                    dryRun: false,
+                  })
+                }
+              >
+                {salesCancelMutation.isPending ? "Working…" : "Confirm cancel"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
 
       {tabContent === "reports" ? (
         <div className="space-y-4">
@@ -3555,6 +3682,9 @@ export default function Sales() {
                   ) : (
                     proformaRows.map((r) => {
                       const piApproved = ["APPROVED", "CONVERTED"].includes(String(r.status || "").toUpperCase());
+                      const st = String(r.status || "").toUpperCase();
+                      const canMarkPaid = ["DRAFT", "ISSUED"].includes(st);
+                      const canCancelPi = !["CANCELLED", "CONVERTED"].includes(st);
                       return (
                       <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
                         <td className="px-3 py-2 font-mono text-xs">{r.proformaNo}</td>
@@ -3583,6 +3713,32 @@ export default function Sales() {
                             </button>
                             <button
                               type="button"
+                              className={`rounded-lg border px-2 py-1 text-xs ${!canMarkPaid ? "opacity-40" : ""}`}
+                              disabled={!canMarkPaid || markProformaPaidMutation.isPending}
+                              title={!canMarkPaid ? "Only draft/issued proformas can be marked paid here" : "Mark advance payment received"}
+                              onClick={() => markProformaPaidMutation.mutate(r._id)}
+                            >
+                              Mark payment received
+                            </button>
+                            <button
+                              type="button"
+                              className={`rounded-lg border px-2 py-1 text-xs ${!canCancelPi ? "opacity-40" : ""}`}
+                              disabled={!canCancelPi}
+                              title={!canCancelPi ? "Cannot cancel" : "Cancel proforma"}
+                              onClick={() =>
+                                setSalesCancelModal({
+                                  open: true,
+                                  kind: "PI",
+                                  id: r._id,
+                                  reason: "",
+                                  preview: { stockImpact: [] },
+                                })
+                              }
+                            >
+                              Cancel PI
+                            </button>
+                            <button
+                              type="button"
                               className={`rounded-lg border px-2 py-1 text-xs ${piApproved ? "opacity-40" : ""}`}
                               disabled={piApproved}
                               title={piApproved ? "Already converted from this PI" : ""}
@@ -3601,9 +3757,15 @@ export default function Sales() {
                             </button>
                             <button
                               type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${!["APPROVED"].includes(String(r.status || "").toUpperCase()) ? "opacity-40" : ""}`}
-                              disabled={!["APPROVED"].includes(String(r.status || "").toUpperCase())}
-                              title={!["APPROVED"].includes(String(r.status || "").toUpperCase()) ? "Proforma must be APPROVED" : ""}
+                              className={`rounded-lg border px-2 py-1 text-xs ${
+                                !["APPROVED", "PAID_PENDING_SHIPMENT"].includes(String(r.status || "").toUpperCase()) ? "opacity-40" : ""
+                              }`}
+                              disabled={!["APPROVED", "PAID_PENDING_SHIPMENT"].includes(String(r.status || "").toUpperCase())}
+                              title={
+                                !["APPROVED", "PAID_PENDING_SHIPMENT"].includes(String(r.status || "").toUpperCase())
+                                  ? "Proforma must be APPROVED or PAID before allocation"
+                                  : ""
+                              }
                               onClick={() => convertToOrderAllocationFromProformaMutation.mutate(r._id)}
                             >
                               Convert to Order Allocation
@@ -3708,6 +3870,44 @@ export default function Sales() {
                               }
                             >
                               Convert to SI
+                            </button>
+                            <button
+                              type="button"
+                              className={`rounded-lg border px-2 py-1 text-xs ${
+                                r.linkedSalesInvoiceId || String(r.status || "").toUpperCase() === "CANCELLED"
+                                  ? "opacity-40"
+                                  : ""
+                              }`}
+                              disabled={!!r.linkedSalesInvoiceId || String(r.status || "").toUpperCase() === "CANCELLED"}
+                              title={
+                                r.linkedSalesInvoiceId
+                                  ? "Cancel the sales invoice first"
+                                  : String(r.status || "").toUpperCase() === "CANCELLED"
+                                  ? "Already cancelled"
+                                  : "Release reservation (cancel allocation)"
+                              }
+                              onClick={async () => {
+                                setErr("");
+                                try {
+                                  const preview = await salesCancelMutation.mutateAsync({
+                                    kind: "ALC",
+                                    id: r._id,
+                                    reason: "-",
+                                    dryRun: true,
+                                  });
+                                  setSalesCancelModal({
+                                    open: true,
+                                    kind: "ALC",
+                                    id: r._id,
+                                    reason: "",
+                                    preview,
+                                  });
+                                } catch (e) {
+                                  setErr(e.message);
+                                }
+                              }}
+                            >
+                              Cancel allocation
                             </button>
                             <button
                               type="button"
@@ -3925,6 +4125,36 @@ export default function Sales() {
                               onClick={() => convertToSalesDispatchFromSalesInvoiceMutation.mutate(r._id)}
                             >
                               Convert to Sales Dispatch
+                            </button>
+                            <button
+                              type="button"
+                              className={`rounded-lg border px-2 py-1 text-xs ${
+                                String(r.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""
+                              }`}
+                              disabled={String(r.status || "").toUpperCase() === "CANCELLED"}
+                              title="Invoice → RTS (one step back)"
+                              onClick={async () => {
+                                setErr("");
+                                try {
+                                  const preview = await salesCancelMutation.mutateAsync({
+                                    kind: "SI",
+                                    id: r._id,
+                                    reason: "-",
+                                    dryRun: true,
+                                  });
+                                  setSalesCancelModal({
+                                    open: true,
+                                    kind: "SI",
+                                    id: r._id,
+                                    reason: "",
+                                    preview,
+                                  });
+                                } catch (e) {
+                                  setErr(e.message);
+                                }
+                              }}
+                            >
+                              Cancel invoice
                             </button>
                           </div>
                         </td>

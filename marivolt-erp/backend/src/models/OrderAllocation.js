@@ -31,6 +31,8 @@ const orderAllocationSchema = new mongoose.Schema(
     linkedProformaNo: { type: String, default: "", trim: true },
     linkedSalesInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesInvoice", index: true, default: null },
     linkedSalesInvoiceNo: { type: String, default: "", trim: true },
+    /** Warehouse used for reservation / RTS / invoice stock buckets (default MAIN). */
+    warehouse: { type: String, default: "MAIN", trim: true, uppercase: true },
     customerName: { type: String, required: true, trim: true, index: true },
     currency: { type: String, default: "USD", trim: true, uppercase: true },
     lines: { type: [orderAllocationLineSchema], default: [] },
@@ -43,6 +45,11 @@ const orderAllocationSchema = new mongoose.Schema(
       enum: ["OPEN", "PARTIALLY_RTS", "RTS_COMPLETE", "APPROVED", "CLOSED", "CANCELLED"],
       default: "OPEN",
     },
+    /** Set when SALES_RESERVE was applied for this allocation (legacy rows may be null). */
+    stockReservedAt: { type: Date, default: null },
+    cancelledAt: { type: Date, default: null },
+    cancelledBy: { type: String, default: "" },
+    cancellationReason: { type: String, default: "" },
     createdBy: { type: String, default: "" },
     updatedBy: { type: String, default: "" },
   },

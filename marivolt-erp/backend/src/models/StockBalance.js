@@ -8,6 +8,8 @@ const stockBalanceSchema = new mongoose.Schema(
     location: { type: String, default: "", trim: true },
     quantity: { type: Number, default: 0 },
     reservedQty: { type: Number, default: 0 },
+    /** Qty staged after RTS approval, waiting for sales invoice (still in warehouse). */
+    rtsQty: { type: Number, default: 0 },
     unitCost: { type: Number, default: 0 },
   },
   { timestamps: true }
