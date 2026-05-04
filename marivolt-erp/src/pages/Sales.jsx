@@ -68,7 +68,6 @@ const statusOptions = ["DRAFT", "SENT", "APPROVED", "REJECTED", "EXPIRED", "CONV
 const oaStatusOptions = ["DRAFT", "CONFIRMED", "CLOSED", "CANCELLED"];
 const proformaStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "APPROVED", "CONVERTED", "CANCELLED"];
 const salesInvoiceStatusOptions = ["DRAFT", "ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID", "CANCELLED"];
-const salesDispatchStatusOptions = ["DRAFT", "DISPATCHED", "CLOSED", "CANCELLED"];
 const orderAllocationStatusOptions = ["OPEN", "PARTIALLY_RTS", "RTS_COMPLETE", "APPROVED", "CLOSED", "CANCELLED"];
 const rtsStatusOptions = ["DRAFT", "APPROVED", "CANCELLED"];
 
@@ -297,10 +296,6 @@ function oaDetailToEditableForm(oa) {
 /** Only DRAFT proformas can be edited in Sales (matches backend). */
 function proformaIsDraft(p) {
   return !!p && String(p.status || "").trim().toUpperCase() === "DRAFT";
-}
-
-function proformaLocked(p) {
-  return !proformaIsDraft(p);
 }
 
 /** Legacy rows used CONVERTED; new conversions store APPROVED — both show as Approved in the UI. */
@@ -3967,7 +3962,7 @@ export default function Sales() {
                             <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", r._id, true)}>
                               Export PDF
                             </button>
-                            {canShip ? (
+                            {String(r.status || "").toUpperCase() === "DRAFT" ? (
                               <button
                                 type="button"
                                 className="rounded-lg border px-2 py-1 text-xs"
