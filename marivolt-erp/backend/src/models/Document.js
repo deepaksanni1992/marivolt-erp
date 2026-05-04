@@ -7,6 +7,7 @@ export const DOCUMENT_TYPES = [
   "Purchase Order",
   "Sales Invoice",
   "Packing List",
+  "Shipping Document",
   "GRN Document",
   "Other",
 ];

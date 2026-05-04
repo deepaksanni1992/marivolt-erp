@@ -18,6 +18,7 @@ const DOCUMENT_TYPE_OPTIONS = [
   "Purchase Order",
   "Sales Invoice",
   "Packing List",
+  "Shipping Document",
   "GRN Document",
   "Other",
 ];

@@ -13,6 +13,7 @@ const DOCUMENT_TYPE_TO_FOLDER = {
   "Purchase Order": "purchase-orders",
   "Sales Invoice": "sales-invoices",
   "Packing List": "packing-lists",
+  "Shipping Document": "shipping-documents",
   "GRN Document": "grn-documents",
   Other: "others",
 };
@@ -139,6 +140,10 @@ export async function listDocuments(req, res) {
     const q = String(req.query.search || "").trim();
 
     const filter = scopeToCompany(req, {});
+    const moduleName = String(req.query.moduleName || "").trim();
+    const relatedId = String(req.query.relatedId || "").trim();
+    if (moduleName) filter.moduleName = moduleName;
+    if (relatedId) filter.relatedId = relatedId;
     if (q) {
       filter.$or = [
         { refNo: new RegExp(q, "i") },

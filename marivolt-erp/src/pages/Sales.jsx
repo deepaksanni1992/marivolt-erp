@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Papa from "papaparse";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
-import { apiGet, apiGetWithQuery, apiPatch, apiPost, apiPut } from "../lib/api.js";
+import { apiGet, apiGetWithQuery, apiPatch, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "../lib/salesQuotationPrintCss.js";
 import {
   buildTaxInvoiceHeaderHtml,
@@ -12,6 +12,9 @@ import {
   renderSiBankFooterHtml,
 } from "../lib/salesInvoicePrint.js";
 import { useAuth } from "../context/AuthContext.jsx";
+
+/** Document types allowed when uploading from Sales Dispatch flow (subset of backend DOCUMENT_TYPES). */
+const SHIPPING_DOC_TYPE_OPTIONS = ["Shipping Document", "Packing List", "Other"];
 
 const salesTabs = [
   "Customer Master",
@@ -1290,6 +1293,14 @@ function canEditSalesCustomerMaster(role) {
   return ["super_admin", "company_admin", "admin"].includes(r);
 }
 
+function formatFileBytes(n) {
+  if (n == null || Number.isNaN(Number(n))) return "—";
+  const v = Number(n);
+  if (v < 1024) return `${Math.round(v)} B`;
+  if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`;
+  return `${(v / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export default function Sales() {
   const qc = useQueryClient();
   const { auth } = useAuth();
@@ -1318,6 +1329,13 @@ export default function Sales() {
     notes: "",
   });
   const canEditCustomers = canEditSalesCustomerMaster(auth?.user?.role);
+  const shippingFileRef = useRef(null);
+  const [shippingDocsAfterDispatch, setShippingDocsAfterDispatch] = useState(null);
+  const [shippingDocForm, setShippingDocForm] = useState({
+    documentType: "Shipping Document",
+    remarks: "",
+  });
+  const [shippingDownloadBusyId, setShippingDownloadBusyId] = useState(null);
   const [detailId, setDetailId] = useState(null);
   const [oaCreateOpen, setOaCreateOpen] = useState(false);
   const [proformaCreateOpen, setProformaCreateOpen] = useState(false);
@@ -1462,6 +1480,18 @@ export default function Sales() {
         search: search || undefined,
       }),
     enabled: activeTab === "Sales Dispatch",
+  });
+
+  const { data: shippingDocsForDispatchData, isLoading: shippingDocsListLoading } = useQuery({
+    queryKey: ["shipping-docs-for-dispatch", shippingDocsAfterDispatch?.dispatchId],
+    queryFn: () =>
+      apiGetWithQuery("/documents", {
+        page: 1,
+        limit: 100,
+        moduleName: "Sales Dispatch",
+        relatedId: String(shippingDocsAfterDispatch.dispatchId),
+      }),
+    enabled: !!shippingDocsAfterDispatch?.dispatchId,
   });
 
   const { data: salesSummary, isLoading: summaryLoading } = useQuery({
@@ -2066,11 +2096,70 @@ export default function Sales() {
     onError: (e) => setErr(e.message),
   });
 
+  const openShippingDispatchDocument = useCallback(async (docId, inline) => {
+    setShippingDownloadBusyId(docId);
+    try {
+      const path = inline ? `/documents/${docId}/download?inline=1` : `/documents/${docId}/download`;
+      const data = await apiGet(path);
+      if (!data?.url) {
+        setErr("No download URL returned.");
+        return;
+      }
+      const a = document.createElement("a");
+      a.href = data.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (e) {
+      setErr(e.message || "Could not open file.");
+    } finally {
+      setShippingDownloadBusyId(null);
+    }
+  }, []);
+
+  const uploadShippingDispatchDocMutation = useMutation({
+    mutationFn: async () => {
+      const ctx = shippingDocsAfterDispatch;
+      if (!ctx?.dispatchId) throw new Error("Missing dispatch.");
+      const file = shippingFileRef.current?.files?.[0];
+      if (!file) throw new Error("Choose a file (PDF, images, Office formats — max 10 MB).");
+      const fd = new FormData();
+      fd.append("documentType", shippingDocForm.documentType);
+      fd.append("refNo", ctx.dispatchNo || "");
+      fd.append("partyName", ctx.customerName || "");
+      fd.append("moduleName", "Sales Dispatch");
+      fd.append("relatedId", String(ctx.dispatchId));
+      fd.append("remarks", shippingDocForm.remarks || "");
+      fd.append("file", file);
+      return apiPostFormData("/documents/upload", fd);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["shipping-docs-for-dispatch"] });
+      qc.invalidateQueries({ queryKey: ["documents"] });
+      if (shippingFileRef.current) shippingFileRef.current.value = "";
+      setShippingDocForm((f) => ({ ...f, remarks: "" }));
+    },
+    onError: (e) => setErr(e.message),
+  });
+
   const convertToSalesDispatchFromSalesInvoiceMutation = useMutation({
     mutationFn: (id) => apiPost(`/sales/convert/sales-invoice/${id}/to-sales-dispatch`, {}),
-    onSuccess: () => {
+    onSuccess: (dispatch) => {
       qc.invalidateQueries({ queryKey: ["sales-sales-dispatch"] });
       qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["sales-invoice-detail", detailId] });
+      setErr("");
+      setShippingDocForm({ documentType: "Shipping Document", remarks: "" });
+      if (shippingFileRef.current) shippingFileRef.current.value = "";
+      setShippingDocsAfterDispatch({
+        dispatchId: dispatch._id,
+        dispatchNo: dispatch.dispatchNo || "",
+        customerName: dispatch.customerName || "",
+        linkedInvoiceNo: dispatch.linkedSalesInvoiceNo || "",
+      });
     },
     onError: (e) => setErr(e.message),
   });
@@ -3758,15 +3847,34 @@ export default function Sales() {
                           {r.currency} {money(r.grandTotal)}
                         </td>
                         <td className="px-3 py-2">
-                          <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => setDetailId(r._id)}>
-                            Open
-                          </button>
-                          <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", r._id)}>
-                            Print
-                          </button>
-                          <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", r._id, true)}>
-                            Export PDF
-                          </button>
+                          <div className="flex flex-wrap gap-1">
+                            <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => setDetailId(r._id)}>
+                              Open
+                            </button>
+                            <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", r._id)}>
+                              Print
+                            </button>
+                            <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", r._id, true)}>
+                              Export PDF
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              onClick={() => {
+                                setErr("");
+                                setShippingDocForm({ documentType: "Shipping Document", remarks: "" });
+                                if (shippingFileRef.current) shippingFileRef.current.value = "";
+                                setShippingDocsAfterDispatch({
+                                  dispatchId: r._id,
+                                  dispatchNo: r.dispatchNo || "",
+                                  customerName: r.customerName || "",
+                                  linkedInvoiceNo: r.linkedSalesInvoiceNo || "",
+                                });
+                              }}
+                            >
+                              Shipping docs
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))
@@ -5303,6 +5411,23 @@ export default function Sales() {
             <div className="flex flex-wrap gap-2">
               <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", salesDispatchDetail._id)}>Print</button>
               <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", salesDispatchDetail._id, true)}>Export PDF</button>
+              <button
+                type="button"
+                className="rounded-xl border px-2 py-1 text-xs"
+                onClick={() => {
+                  setErr("");
+                  setShippingDocForm({ documentType: "Shipping Document", remarks: "" });
+                  if (shippingFileRef.current) shippingFileRef.current.value = "";
+                  setShippingDocsAfterDispatch({
+                    dispatchId: salesDispatchDetail._id,
+                    dispatchNo: salesDispatchDetail.dispatchNo || "",
+                    customerName: salesDispatchDetail.customerName || "",
+                    linkedInvoiceNo: salesDispatchDetail.linkedSalesInvoiceNo || "",
+                  });
+                }}
+              >
+                Shipping docs (S3)
+              </button>
             </div>
           </div>
         )}
@@ -5432,6 +5557,140 @@ export default function Sales() {
             onClick={() => updateCustomerMutation.mutate()}
           >
             {updateCustomerMutation.isPending ? "Saving..." : "Save changes"}
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={!!shippingDocsAfterDispatch}
+        onClose={() => {
+          setShippingDocsAfterDispatch(null);
+          setShippingDownloadBusyId(null);
+        }}
+        title="Shipping documents"
+        subtitle={
+          shippingDocsAfterDispatch
+            ? `${shippingDocsAfterDispatch.dispatchNo} · ${shippingDocsAfterDispatch.customerName}${
+                shippingDocsAfterDispatch.linkedInvoiceNo
+                  ? ` · Invoice ${shippingDocsAfterDispatch.linkedInvoiceNo}`
+                  : ""
+              }`
+            : ""
+        }
+        wide
+      >
+        <p className="text-sm text-gray-600">
+          Upload bills of lading, airway bills, packing lists, or other shipping paperwork. Files are stored in{" "}
+          <strong>AWS S3</strong> (same pipeline as <span className="font-medium">Documents</span>).
+        </p>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <FormField label="Document type">
+            <select
+              className="w-full rounded-xl border px-3 py-2 text-sm"
+              value={shippingDocForm.documentType}
+              onChange={(e) => setShippingDocForm((f) => ({ ...f, documentType: e.target.value }))}
+            >
+              {SHIPPING_DOC_TYPE_OPTIONS.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </FormField>
+          <FormField label="Remarks (optional)">
+            <TextInput
+              value={shippingDocForm.remarks}
+              onChange={(e) => setShippingDocForm((f) => ({ ...f, remarks: e.target.value }))}
+              placeholder="e.g. DHL AWB, vessel name"
+            />
+          </FormField>
+        </div>
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <FormField label="File (max 10 MB)" className="min-w-[220px] flex-1">
+            <input
+              ref={shippingFileRef}
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png,.xls,.xlsx,.doc,.docx"
+              className="block w-full text-sm text-gray-700 file:mr-3 file:rounded-lg file:border file:bg-gray-50 file:px-3 file:py-2"
+            />
+          </FormField>
+          <button
+            type="button"
+            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            disabled={uploadShippingDispatchDocMutation.isPending}
+            onClick={() => uploadShippingDispatchDocMutation.mutate()}
+          >
+            {uploadShippingDispatchDocMutation.isPending ? "Uploading…" : "Upload to S3"}
+          </button>
+        </div>
+        <div className="mt-6">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Uploaded for this dispatch</h3>
+          <div className="mt-2 overflow-hidden rounded-xl border">
+            <table className="min-w-full text-left text-sm">
+              <thead className="border-b bg-gray-50 text-xs font-semibold uppercase text-gray-600">
+                <tr>
+                  <th className="px-3 py-2">Type</th>
+                  <th className="px-3 py-2">File</th>
+                  <th className="px-3 py-2">Size</th>
+                  <th className="px-3 py-2 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shippingDocsListLoading ? (
+                  <tr>
+                    <td colSpan={4} className="px-3 py-6 text-center text-gray-500">
+                      Loading…
+                    </td>
+                  </tr>
+                ) : (shippingDocsForDispatchData?.rows ?? []).length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-3 py-6 text-center text-gray-500">
+                      No files yet. Upload a document above.
+                    </td>
+                  </tr>
+                ) : (
+                  (shippingDocsForDispatchData?.rows ?? []).map((doc) => (
+                    <tr key={doc._id} className="border-t border-gray-100">
+                      <td className="px-3 py-2">{doc.documentType}</td>
+                      <td className="max-w-[200px] truncate px-3 py-2" title={doc.originalFileName}>
+                        {doc.originalFileName}
+                      </td>
+                      <td className="px-3 py-2">{formatFileBytes(doc.size)}</td>
+                      <td className="px-3 py-2 text-right">
+                        <button
+                          type="button"
+                          className="rounded-lg border px-2 py-1 text-xs disabled:opacity-50"
+                          disabled={shippingDownloadBusyId === doc._id}
+                          onClick={() => openShippingDispatchDocument(doc._id, true)}
+                        >
+                          {shippingDownloadBusyId === doc._id ? "…" : "View"}
+                        </button>
+                        <button
+                          type="button"
+                          className="ml-1 rounded-lg border px-2 py-1 text-xs disabled:opacity-50"
+                          disabled={shippingDownloadBusyId === doc._id}
+                          onClick={() => openShippingDispatchDocument(doc._id, false)}
+                        >
+                          Download
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="mt-6 flex justify-end">
+          <button
+            type="button"
+            className="rounded-xl border px-4 py-2 text-sm font-medium text-gray-800"
+            onClick={() => {
+              setShippingDocsAfterDispatch(null);
+              setShippingDownloadBusyId(null);
+            }}
+          >
+            Done
           </button>
         </div>
       </Modal>
