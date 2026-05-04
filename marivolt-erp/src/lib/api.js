@@ -7,14 +7,24 @@ export function isRunningUiOnLocalhost() {
   return h === "localhost" || h === "127.0.0.1" || h === "[::1]";
 }
 
+/** Vite dev (5173/5174) and preview (4173/4174) default ports — same-origin `/api` uses vite.config proxy. */
+function isViteDefaultDevOrPreviewPort() {
+  if (typeof window === "undefined") return false;
+  const port = String(window.location.port || "");
+  return ["5173", "5174", "4173", "4174"].includes(port);
+}
+
 /**
  * Base origin for the API (no `/api` suffix here; API_BASE adds it).
  *
- * If the page is served from **localhost** (Vite dev, `vite preview`, or opening a prod build locally),
- * always use same-origin `/api` + vite.config proxy → `http://127.0.0.1:5000` so you use **local**
- * `backend/.env` (with AWS) instead of a Render URL baked into the build.
+ * Uses same-origin `/api` when:
+ * - `import.meta.env.DEV` (Vite `npm run dev`), or
+ * - URL uses Vite default dev/preview ports (e.g. `vite preview` on `http://192.168.x.x:4173` — `DEV` is false but proxy still applies), or
+ * - Hostname is localhost / 127.0.0.1 / ::1 (covers default http/https ports with empty `location.port`).
  *
- * Set `VITE_USE_REMOTE_API_WHILE_LOCAL=true` only if you intentionally want localhost UI → remote API.
+ * That way `backend/.env` applies via the proxy instead of a baked-in Render URL.
+ *
+ * Set `VITE_USE_REMOTE_API_WHILE_LOCAL=true` only if you intentionally want local UI → remote API.
  *
  * Deployed sites (e.g. *.vercel.app) use `VITE_API_BASE_URL` from the build.
  */
@@ -22,12 +32,18 @@ function resolveApiBase() {
   const forceRemoteWhileLocal =
     String(import.meta.env.VITE_USE_REMOTE_API_WHILE_LOCAL || "").trim() === "true";
 
-  if (typeof window !== "undefined" && !forceRemoteWhileLocal && isRunningUiOnLocalhost()) {
-    return "/api";
-  }
-
-  if (import.meta.env.DEV) {
-    return "/api";
+  if (!forceRemoteWhileLocal) {
+    if (import.meta.env.DEV) {
+      return "/api";
+    }
+    if (typeof window !== "undefined") {
+      if (isViteDefaultDevOrPreviewPort()) {
+        return "/api";
+      }
+      if (isRunningUiOnLocalhost()) {
+        return "/api";
+      }
+    }
   }
 
   const fromEnv = (
@@ -54,6 +70,11 @@ if (!rawBase) {
 export const API_BASE = rawBase.endsWith("/api")
   ? rawBase
   : `${rawBase.replace(/\/$/, "")}/api`;
+
+/** True when requests go to same-origin `/api` (Vite proxy → local backend), not a full remote URL. */
+export function isUsingSameOriginApiProxy() {
+  return typeof API_BASE === "string" && API_BASE.startsWith("/");
+}
 
 export const AUTH_KEY = "marivoltz_auth_v1";
 

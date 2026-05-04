@@ -8,7 +8,7 @@ import {
   apiGet,
   apiGetWithQuery,
   apiPostFormData,
-  isRunningUiOnLocalhost,
+  isUsingSameOriginApiProxy,
 } from "../lib/api.js";
 
 /** Must match backend `DOCUMENT_TYPES` / S3 folder mapping. */
@@ -181,12 +181,7 @@ export default function Documents() {
         a.click();
         document.body.removeChild(a);
       } catch (e) {
-        let msg = e.message || "Could not open file.";
-        if (/S3 is not configured/i.test(msg)) {
-          msg +=
-            " Set AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_S3_BUCKET on the API server (marivolt-erp/backend/.env locally, or Render env + redeploy).";
-        }
-        toast("error", msg);
+        toast("error", e.message || "Could not open file.");
       } finally {
         setDownloadBusyId(null);
       }
@@ -207,16 +202,26 @@ export default function Documents() {
         <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
           <p className="font-semibold">S3 is not configured on this API server</p>
           <p className="mt-1 text-amber-900/90">
-            View/Download need{" "}
-            <code className="rounded bg-amber-100/80 px-1">AWS_REGION</code>,{" "}
+            View/Download need non-empty{" "}
+            <code className="rounded bg-amber-100/80 px-1">AWS_REGION</code> (or{" "}
+            <code className="rounded bg-amber-100/80 px-1">AWS_DEFAULT_REGION</code>),{" "}
             <code className="rounded bg-amber-100/80 px-1">AWS_ACCESS_KEY_ID</code>,{" "}
             <code className="rounded bg-amber-100/80 px-1">AWS_SECRET_ACCESS_KEY</code>,{" "}
-            <code className="rounded bg-amber-100/80 px-1">AWS_S3_BUCKET</code> on the backend. You are calling{" "}
+            <code className="rounded bg-amber-100/80 px-1">AWS_S3_BUCKET</code> in{" "}
+            <code className="rounded bg-amber-100/80 px-1">marivolt-erp/backend/.env</code> (remove UTF-8 BOM if the file was edited in Notepad). API base:{" "}
             <code className="rounded bg-amber-100/80 px-1">{API_BASE}</code>
-            {isRunningUiOnLocalhost()
-              ? " On localhost the app uses this URL + Vite proxy → Express on port 5000. Add the four AWS variables to marivolt-erp/backend/.env and restart the backend."
-              : " Add the same variables on Render (or your API host) for this URL and redeploy the API."}
+            {isUsingSameOriginApiProxy()
+              ? " — UI uses the Vite proxy to your local API (port 5000); restart the backend after saving .env."
+              : " — on Render, set the same four keys in Environment and redeploy."}
           </p>
+          {s3StatusQuery.data?.awsEnvPresence ? (
+            <p className="mt-2 text-xs text-amber-900/90">
+              Detected on server (non-secret): region={String(s3StatusQuery.data.awsEnvPresence.hasRegion)}, accessKeyId=
+              {String(s3StatusQuery.data.awsEnvPresence.hasAccessKeyId)}, secretKey=
+              {String(s3StatusQuery.data.awsEnvPresence.hasSecretAccessKey)}, bucket=
+              {String(s3StatusQuery.data.awsEnvPresence.hasBucket)}
+            </p>
+          ) : null}
         </div>
       ) : null}
 
