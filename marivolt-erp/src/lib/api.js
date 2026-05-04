@@ -1,21 +1,40 @@
 import axios from "axios";
 
+/** True when VITE_* points at this machine (direct :5000 etc.). */
+function isLocalDevApiHost(url) {
+  const s = String(url || "").trim();
+  if (!s) return true;
+  try {
+    const u = new URL(s.startsWith("http") ? s : `http://${s}`);
+    return u.hostname === "localhost" || u.hostname === "127.0.0.1";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Base origin for the API (no `/api` suffix here; API_BASE adds it).
+ * In Vite dev: use same-origin `/api` + vite.config proxy → always hits local backend with your .env,
+ * unless VITE_API_BASE_URL / VITE_API_BASE points at a non-localhost host (e.g. Render) on purpose.
+ */
 function resolveApiBase() {
   const fromEnv = (
     import.meta.env.VITE_API_BASE_URL ||
     import.meta.env.VITE_API_BASE ||
     ""
   ).trim();
-  if (fromEnv) return fromEnv;
 
   if (import.meta.env.DEV) {
-    console.warn(
-      "[api] VITE_API_BASE_URL / VITE_API_BASE not set — using http://localhost:5000. Add them to .env for a different API URL."
-    );
-    return "http://localhost:5000";
+    if (fromEnv && !isLocalDevApiHost(fromEnv)) {
+      return fromEnv;
+    }
+    return "/api";
   }
 
-  return "";
+  if (!fromEnv) {
+    return "";
+  }
+  return fromEnv;
 }
 
 const rawBase = resolveApiBase();

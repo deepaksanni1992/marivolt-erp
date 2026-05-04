@@ -1,5 +1,5 @@
 // backend/src/server.js
-import dotenv from "dotenv";
+import "./loadEnv.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import express from "express";
@@ -22,20 +22,24 @@ import dekittingRoutes from "./routes/dekittingRoutes.js";
 import supplierRoutes from "./routes/supplierRoutes.js";
 import purchaseReturnRoutes from "./routes/purchaseReturnRoutes.js";
 import documentRoutes from "./routes/documentRoutes.js";
+import { isS3Configured } from "./config/s3.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-dotenv.config({ path: path.join(__dirname, "../.env") });
-
 const PORT = process.env.PORT || 5000;
+
+console.log(
+  "Documents / S3:",
+  isS3Configured() ? "AWS env present (upload & signed URLs enabled)" : "AWS env missing — set keys in backend/.env",
+);
 
 async function startServer() {
   try {
     mongoose.set("strictQuery", true);
 
     if (!process.env.MONGO_URI) {
-      throw new Error("MONGO_URI is missing in .env");
+      throw new Error("MONGO_URI is missing in backend/.env");
     }
 
     await mongoose.connect(process.env.MONGO_URI, {
@@ -46,49 +50,39 @@ async function startServer() {
 
     const app = express();
 
-    if (process.env.NODE_ENV !== "production") {
-      app.use(
-        cors({
-          origin: true,
-          credentials: true,
-        })
-      );
-      app.options(/.*/, cors());
-    } else {
-      const allowedExactOrigins = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        ...(process.env.CLIENT_URL ? [process.env.CLIENT_URL] : []),
-      ];
+    const allowedExactOrigins = [
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+      "http://localhost:5174",
+      "http://127.0.0.1:5174",
+      ...(process.env.CLIENT_URL ? [process.env.CLIENT_URL] : []),
+    ];
 
-      function isAllowedOrigin(origin) {
-        if (!origin) return true;
-        if (allowedExactOrigins.includes(origin)) return true;
-        if (origin.endsWith(".vercel.app")) return true;
-        if (
-          origin.startsWith("http://localhost:") ||
-          origin.startsWith("http://127.0.0.1:")
-        ) {
-          return true;
-        }
-        return false;
+    function isAllowedOrigin(origin) {
+      if (!origin) return true;
+      if (allowedExactOrigins.includes(origin)) return true;
+      if (origin.endsWith(".vercel.app")) return true;
+      if (
+        origin.startsWith("http://localhost:") ||
+        origin.startsWith("http://127.0.0.1:")
+      ) {
+        return true;
       }
-
-      const corsOptions = {
-        origin: (origin, callback) => {
-          if (isAllowedOrigin(origin)) return callback(null, true);
-          return callback(new Error("Not allowed by CORS: " + origin));
-        },
-        credentials: true,
-        methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allowedHeaders: ["Content-Type", "Authorization", "x-company-id"],
-      };
-
-      app.use(cors(corsOptions));
-      app.options(/.*/, cors(corsOptions));
+      return false;
     }
+
+    const corsOptions = {
+      origin: (origin, callback) => {
+        if (isAllowedOrigin(origin)) return callback(null, true);
+        return callback(new Error("Not allowed by CORS: " + origin));
+      },
+      credentials: true,
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization", "x-company-id"],
+    };
+
+    app.use(cors(corsOptions));
+    app.options(/.*/, cors(corsOptions));
 
     app.use(express.json({ limit: "2mb" }));
     app.use(morgan("dev"));

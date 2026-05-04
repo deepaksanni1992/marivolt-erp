@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import { FormField, TextInput, SelectInput } from "../components/erp/FormField.jsx";
-import { apiDelete, apiGet, apiGetWithQuery, apiPostFormData } from "../lib/api.js";
+import { API_BASE, apiDelete, apiGet, apiGetWithQuery, apiPostFormData } from "../lib/api.js";
 
 /** Must match backend `DOCUMENT_TYPES` / S3 folder mapping. */
 const DOCUMENT_TYPE_OPTIONS = [
@@ -64,6 +64,8 @@ export default function Documents() {
   const [search, setSearch] = useState("");
   const limit = 20;
 
+  const [downloadBusyId, setDownloadBusyId] = useState(null);
+
   const [form, setForm] = useState({
     documentType: DOCUMENT_TYPE_OPTIONS[0],
     refNo: "",
@@ -95,6 +97,12 @@ export default function Documents() {
         limit,
         search: search.trim() || undefined,
       }),
+  });
+
+  const s3StatusQuery = useQuery({
+    queryKey: ["documents-s3-status"],
+    queryFn: () => apiGet("/documents/s3-status"),
+    staleTime: 30_000,
   });
 
   const rows = listQuery.data?.rows || [];
@@ -147,16 +155,28 @@ export default function Documents() {
 
   const openSignedUrl = useCallback(
     async (id, inline) => {
+      setDownloadBusyId(id);
+      // Open a tab synchronously so popup blockers allow navigation after async fetch.
+      const w = window.open("about:blank", "_blank", "noopener,noreferrer");
       try {
         const path = inline ? `/documents/${id}/download?inline=1` : `/documents/${id}/download`;
         const data = await apiGet(path);
         if (data?.url) {
-          window.open(data.url, "_blank", "noopener,noreferrer");
+          if (w) {
+            w.opener = null;
+            w.location.href = data.url;
+          } else {
+            window.open(data.url, "_blank", "noopener,noreferrer");
+          }
         } else {
+          w?.close();
           toast("error", "No download URL returned.");
         }
       } catch (e) {
+        w?.close();
         toast("error", e.message || "Could not open file.");
+      } finally {
+        setDownloadBusyId(null);
       }
     },
     [toast],
@@ -170,6 +190,21 @@ export default function Documents() {
         title="Documents"
         subtitle="Upload and manage files in AWS S3. Metadata is stored in MongoDB; downloads use secure signed URLs."
       />
+
+      {s3StatusQuery.isSuccess && s3StatusQuery.data?.s3Configured === false ? (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          <p className="font-semibold">S3 is not configured on this API server</p>
+          <p className="mt-1 text-amber-900/90">
+            View/Download need AWS credentials on the backend. In dev, requests go to{" "}
+            <code className="rounded bg-amber-100/80 px-1">{API_BASE}</code> (see Vite proxy +{" "}
+            <code className="rounded bg-amber-100/80 px-1">marivolt-erp/backend/.env</code>). On Render, set{" "}
+            <code className="rounded bg-amber-100/80 px-1">AWS_REGION</code>,{" "}
+            <code className="rounded bg-amber-100/80 px-1">AWS_ACCESS_KEY_ID</code>,{" "}
+            <code className="rounded bg-amber-100/80 px-1">AWS_SECRET_ACCESS_KEY</code>,{" "}
+            <code className="rounded bg-amber-100/80 px-1">AWS_S3_BUCKET</code> and redeploy.
+          </p>
+        </div>
+      ) : null}
 
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
 
@@ -303,17 +338,19 @@ export default function Documents() {
                     <td className="whitespace-nowrap px-4 py-3 text-right">
                       <button
                         type="button"
-                        className="mr-1 rounded-lg border border-gray-300 px-2 py-1 text-xs hover:bg-gray-50"
+                        className="mr-1 rounded-lg border border-gray-300 px-2 py-1 text-xs hover:bg-gray-50 disabled:opacity-50"
+                        disabled={downloadBusyId === r._id}
                         onClick={() => openSignedUrl(r._id, true)}
                       >
-                        View
+                        {downloadBusyId === r._id ? "…" : "View"}
                       </button>
                       <button
                         type="button"
-                        className="mr-1 rounded-lg border border-gray-300 px-2 py-1 text-xs hover:bg-gray-50"
+                        className="mr-1 rounded-lg border border-gray-300 px-2 py-1 text-xs hover:bg-gray-50 disabled:opacity-50"
+                        disabled={downloadBusyId === r._id}
                         onClick={() => openSignedUrl(r._id, false)}
                       >
-                        Download
+                        {downloadBusyId === r._id ? "…" : "Download"}
                       </button>
                       <button
                         type="button"
