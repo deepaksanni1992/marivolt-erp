@@ -10,10 +10,30 @@ import Rts from "../models/Rts.js";
 import Customer from "../models/Customer.js";
 import Company from "../models/Company.js";
 import Item from "../models/Item.js";
+import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
+}
+
+async function enrichSalesDispatchesWithInvoiceStatus(companyId, items) {
+  if (!items?.length) return items;
+  const ids = [...new Set(items.map((d) => d.linkedSalesInvoiceId).filter(Boolean).map(String))];
+  if (!ids.length) {
+    return items.map((d) => ({ ...d, linkedInvoiceStatus: null }));
+  }
+  const invoices = await SalesInvoice.find({
+    companyId,
+    _id: { $in: ids },
+  })
+    .select("status paymentTerms")
+    .lean();
+  const map = Object.fromEntries(invoices.map((i) => [String(i._id), i]));
+  return items.map((d) => ({
+    ...d,
+    linkedInvoiceStatus: map[String(d.linkedSalesInvoiceId)]?.status ?? null,
+  }));
 }
 
 function normalizeLines(lines = []) {
@@ -1540,10 +1560,11 @@ export async function listSalesDispatches(req, res) {
       const q = String(req.query.search).trim();
       filter.$or = [{ dispatchNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }, { linkedSalesInvoiceNo: new RegExp(q, "i") }];
     }
-    const [items, total] = await Promise.all([
+    const [rawItems, total] = await Promise.all([
       SalesDispatch.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       SalesDispatch.countDocuments(filter),
     ]);
+    const items = await enrichSalesDispatchesWithInvoiceStatus(req.companyId, rawItems);
     res.json({ items, total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -1556,9 +1577,88 @@ export async function getSalesDispatch(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const doc = await SalesDispatch.findOne(withCompany(req, { _id: id })).lean();
     if (!doc) return res.status(404).json({ message: "Not found" });
-    res.json(doc);
+    const [enriched] = await enrichSalesDispatchesWithInvoiceStatus(req.companyId, [doc]);
+    res.json(enriched);
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+}
+
+/**
+ * PATCH /sales/sales-dispatches/:id
+ * Body: { status?: "DISPATCHED" | "CLOSED", postCustomerLedgerCredit?: boolean, remarks?: string }
+ * — DRAFT→DISPATCHED (shipped); DISPATCHED→CLOSED only if linked sales invoice is PAID.
+ */
+export async function patchSalesDispatch(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const dispatch = await SalesDispatch.findOne(withCompany(req, { _id: id }));
+    if (!dispatch) return res.status(404).json({ message: "Not found" });
+
+    if (req.body.remarks !== undefined) {
+      dispatch.remarks = String(req.body.remarks || "");
+    }
+
+    const nextStatus = req.body.status != null ? String(req.body.status).toUpperCase().trim() : "";
+    const cur = String(dispatch.status || "").toUpperCase();
+
+    if (nextStatus) {
+      if (nextStatus === "DISPATCHED" && cur === "DRAFT") {
+        dispatch.status = "DISPATCHED";
+        dispatch.updatedBy = req.user?.email || "";
+        await dispatch.save();
+        const lean = dispatch.toObject();
+        const [enriched] = await enrichSalesDispatchesWithInvoiceStatus(req.companyId, [lean]);
+        return res.json(enriched);
+      }
+
+      if (nextStatus === "CLOSED" && cur === "DISPATCHED") {
+        const inv = await SalesInvoice.findOne(withCompany(req, { _id: dispatch.linkedSalesInvoiceId }));
+        if (!inv) return res.status(400).json({ message: "Linked sales invoice not found" });
+        if (String(inv.status || "").toUpperCase() !== "PAID") {
+          return res.status(400).json({
+            message: "Sales invoice must be PAID before closing this dispatch (settle payment on the invoice first).",
+          });
+        }
+        dispatch.status = "CLOSED";
+        dispatch.closedAt = new Date();
+        dispatch.closedBy = req.user?.email || "";
+        const postCredit = req.body.postCustomerLedgerCredit === true;
+        if (postCredit && !dispatch.ledgerCloseEntryId) {
+          const credit = Number(dispatch.grandTotal) || 0;
+          if (credit > 0) {
+            const entry = await CustomerLedgerEntry.create({
+              companyId: req.companyId,
+              entryDate: new Date(),
+              customerName: dispatch.customerName,
+              referenceType: "SALES_DISPATCH_CLOSE",
+              referenceNumber: dispatch.dispatchNo,
+              debit: 0,
+              credit,
+              narrative: `Dispatch closed — payment received (${dispatch.dispatchNo})`,
+              createdBy: req.user?.email || "",
+            });
+            dispatch.ledgerCloseEntryId = entry._id;
+          }
+        }
+        dispatch.updatedBy = req.user?.email || "";
+        await dispatch.save();
+        const lean = dispatch.toObject();
+        const [enriched] = await enrichSalesDispatchesWithInvoiceStatus(req.companyId, [lean]);
+        return res.json(enriched);
+      }
+
+      return res.status(400).json({ message: `Invalid status transition (${cur} → ${nextStatus})` });
+    }
+
+    dispatch.updatedBy = req.user?.email || "";
+    await dispatch.save();
+    const lean = dispatch.toObject();
+    const [enriched] = await enrichSalesDispatchesWithInvoiceStatus(req.companyId, [lean]);
+    res.json(enriched);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
   }
 }
 

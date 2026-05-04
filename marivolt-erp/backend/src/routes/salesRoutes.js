@@ -3,6 +3,7 @@ import { requireRole } from "../middleware/auth.js";
 import { requireErpAccess } from "../middleware/erpAccess.js";
 import * as c from "../controllers/salesController.js";
 import * as flow from "../controllers/salesFlowController.js";
+import * as salesReturn from "../controllers/salesReturnController.js";
 
 /** Customer master edits (PUT/DELETE) — super_admin, company_admin, or admin only. */
 const customerMasterAdminRoles = ["super_admin", "company_admin", "admin"];
@@ -52,6 +53,15 @@ router.put("/sales-invoices/:id", flow.updateSalesInvoice);
 router.patch("/sales-invoices/:id/cancel", flow.cancelSalesInvoice);
 router.get("/sales-dispatches", flow.listSalesDispatches);
 router.get("/sales-dispatches/:id", flow.getSalesDispatch);
+router.patch("/sales-dispatches/:id", flow.patchSalesDispatch);
+
+router.get("/sales-returns/prefill-from-dispatch/:dispatchId", salesReturn.getSalesReturnPrefillFromDispatch);
+router.get("/sales-returns", salesReturn.listSalesReturns);
+router.post("/sales-returns", salesReturn.createSalesReturn);
+router.get("/sales-returns/:id", salesReturn.getSalesReturn);
+router.put("/sales-returns/:id", salesReturn.updateSalesReturn);
+router.delete("/sales-returns/:id", salesReturn.deleteSalesReturn);
+router.patch("/sales-returns/:id/post", salesReturn.postSalesReturn);
 
 router.get("/order-allocations", flow.listOrderAllocations);
 router.get("/order-allocations/:id", flow.getOrderAllocation);

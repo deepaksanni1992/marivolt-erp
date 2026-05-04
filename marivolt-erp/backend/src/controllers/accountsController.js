@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import SalesInvoice from "../models/SalesInvoice.js";
+import SalesDispatch from "../models/SalesDispatch.js";
 import PurchaseInvoice from "../models/PurchaseInvoice.js";
 import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
 import SupplierLedgerEntry from "../models/SupplierLedgerEntry.js";
@@ -25,6 +26,36 @@ function sumInvoiceLines(lines, rateField) {
     sub += amt;
   }
   return sub;
+}
+
+// --- Sales dispatches (logistics / AR follow-up; same collection as Sales module) ---
+export async function listSalesDispatchesAccounts(req, res) {
+  try {
+    const { page, limit, skip } = paginate(req);
+    const filter = withCompany(req);
+    if (req.query.customerName) {
+      filter.customerName = new RegExp(String(req.query.customerName).trim(), "i");
+    }
+    const [items, total] = await Promise.all([
+      SalesDispatch.find(filter).sort({ dispatchDate: -1 }).skip(skip).limit(limit).lean(),
+      SalesDispatch.countDocuments(filter),
+    ]);
+    const ids = [...new Set(items.map((d) => d.linkedSalesInvoiceId).filter(Boolean).map(String))];
+    let invMap = {};
+    if (ids.length) {
+      const invs = await SalesInvoice.find({ companyId: req.companyId, _id: { $in: ids } })
+        .select("status paymentTerms invoiceNo grandTotal currency")
+        .lean();
+      invMap = Object.fromEntries(invs.map((i) => [String(i._id), i]));
+    }
+    const enriched = items.map((d) => ({
+      ...d,
+      linkedInvoice: invMap[String(d.linkedSalesInvoiceId)] || null,
+    }));
+    res.json({ items: enriched, total, page, limit });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 }
 
 // --- Sales invoices ---

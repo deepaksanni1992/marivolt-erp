@@ -24,6 +24,7 @@ const salesTabs = [
   "Order Allocation",
   "Sales Invoice",
   "Sales Dispatch",
+  "Sales Return",
   "Reports",
 ];
 
@@ -67,7 +68,7 @@ const statusOptions = ["DRAFT", "SENT", "APPROVED", "REJECTED", "EXPIRED", "CONV
 const oaStatusOptions = ["DRAFT", "CONFIRMED", "CLOSED", "CANCELLED"];
 const proformaStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "APPROVED", "CONVERTED", "CANCELLED"];
 const salesInvoiceStatusOptions = ["DRAFT", "ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID", "CANCELLED"];
-const salesDispatchStatusOptions = ["DRAFT", "DISPATCHED", "CANCELLED"];
+const salesDispatchStatusOptions = ["DRAFT", "DISPATCHED", "CLOSED", "CANCELLED"];
 const orderAllocationStatusOptions = ["OPEN", "PARTIALLY_RTS", "RTS_COMPLETE", "APPROVED", "CLOSED", "CANCELLED"];
 const rtsStatusOptions = ["DRAFT", "APPROVED", "CANCELLED"];
 
@@ -1336,6 +1337,18 @@ export default function Sales() {
     remarks: "",
   });
   const [shippingDownloadBusyId, setShippingDownloadBusyId] = useState(null);
+  const [srCreateOpen, setSrCreateOpen] = useState(false);
+  const [srForm, setSrForm] = useState({
+    customerName: "",
+    warehouse: "MAIN",
+    currency: "USD",
+    linkedSalesDispatchId: "",
+    linkedSalesDispatchNo: "",
+    linkedSalesInvoiceId: "",
+    linkedSalesInvoiceNo: "",
+    remarks: "",
+    lines: [{ article: "", partNumber: "", description: "", qty: 1, uom: "PCS", unitPrice: 0, reason: "" }],
+  });
   const [detailId, setDetailId] = useState(null);
   const [oaCreateOpen, setOaCreateOpen] = useState(false);
   const [proformaCreateOpen, setProformaCreateOpen] = useState(false);
@@ -1479,7 +1492,18 @@ export default function Sales() {
         limit,
         search: search || undefined,
       }),
-    enabled: activeTab === "Sales Dispatch",
+    enabled: activeTab === "Sales Dispatch" || activeTab === "Sales Return" || srCreateOpen,
+  });
+
+  const { data: salesReturnData, isLoading: salesReturnLoading } = useQuery({
+    queryKey: ["sales-sales-returns", page, search],
+    queryFn: () =>
+      apiGetWithQuery("/sales/sales-returns", {
+        page,
+        limit,
+        search: search || undefined,
+      }),
+    enabled: activeTab === "Sales Return",
   });
 
   const { data: shippingDocsForDispatchData, isLoading: shippingDocsListLoading } = useQuery({
@@ -2150,6 +2174,7 @@ export default function Sales() {
     onSuccess: (dispatch) => {
       qc.invalidateQueries({ queryKey: ["sales-sales-dispatch"] });
       qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
+      qc.invalidateQueries({ queryKey: ["accountsSalesDispatches"] });
       if (detailId) qc.invalidateQueries({ queryKey: ["sales-invoice-detail", detailId] });
       setErr("");
       setShippingDocForm({ documentType: "Shipping Document", remarks: "" });
@@ -2160,6 +2185,74 @@ export default function Sales() {
         customerName: dispatch.customerName || "",
         linkedInvoiceNo: dispatch.linkedSalesInvoiceNo || "",
       });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const patchSalesDispatchMutation = useMutation({
+    mutationFn: ({ id, body }) => apiPatch(`/sales/sales-dispatches/${id}`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-sales-dispatch"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-detail"] });
+      qc.invalidateQueries({ queryKey: ["accountsSalesDispatches"] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const createSalesReturnMutation = useMutation({
+    mutationFn: () => {
+      const body = {
+        customerName: String(srForm.customerName || "").trim(),
+        warehouse: srForm.warehouse,
+        currency: srForm.currency,
+        remarks: srForm.remarks,
+        lines: srForm.lines
+          .filter((l) => String(l.article || "").trim())
+          .map((l) => ({
+            article: String(l.article || "").trim().toUpperCase(),
+            partNumber: l.partNumber || "",
+            description: l.description || "",
+            qty: Number(l.qty) || 0,
+            uom: l.uom || "PCS",
+            unitPrice: Number(l.unitPrice) || 0,
+            reason: l.reason || "",
+          })),
+      };
+      if (!body.customerName) throw new Error("Customer name is required.");
+      if (!body.lines.length) throw new Error("Add at least one line with an article code.");
+      if (srForm.linkedSalesDispatchId) {
+        body.linkedSalesDispatchId = srForm.linkedSalesDispatchId;
+        body.linkedSalesDispatchNo = srForm.linkedSalesDispatchNo;
+      }
+      if (srForm.linkedSalesInvoiceId) {
+        body.linkedSalesInvoiceId = srForm.linkedSalesInvoiceId;
+        body.linkedSalesInvoiceNo = srForm.linkedSalesInvoiceNo;
+      }
+      return apiPost("/sales/sales-returns", body);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-sales-returns"] });
+      setSrCreateOpen(false);
+      setSrForm({
+        customerName: "",
+        warehouse: "MAIN",
+        currency: "USD",
+        linkedSalesDispatchId: "",
+        linkedSalesDispatchNo: "",
+        linkedSalesInvoiceId: "",
+        linkedSalesInvoiceNo: "",
+        remarks: "",
+        lines: [{ article: "", partNumber: "", description: "", qty: 1, uom: "PCS", unitPrice: 0, reason: "" }],
+      });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const postSalesReturnMutation = useMutation({
+    mutationFn: (id) => apiPatch(`/sales/sales-returns/${id}/post`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-sales-returns"] });
+      qc.invalidateQueries({ queryKey: ["inventoryLedger"] });
     },
     onError: (e) => setErr(e.message),
   });
@@ -2318,6 +2411,8 @@ export default function Sales() {
   const allocationTotalPages = Math.max(1, Math.ceil((allocationData?.total ?? 0) / limit));
   const salesInvoiceTotalPages = Math.max(1, Math.ceil((salesInvoiceData?.total ?? 0) / limit));
   const salesDispatchTotalPages = Math.max(1, Math.ceil((salesDispatchData?.total ?? 0) / limit));
+  const salesReturnRows = salesReturnData?.items ?? [];
+  const salesReturnTotalPages = Math.max(1, Math.ceil((salesReturnData?.total ?? 0) / limit));
   const customerTotalPages = Math.max(1, Math.ceil((customerData?.total ?? 0) / limit));
 
   const tabContent = useMemo(() => {
@@ -2328,6 +2423,7 @@ export default function Sales() {
     if (activeTab === "Order Allocation") return "allocation";
     if (activeTab === "Sales Invoice") return "sales-invoice";
     if (activeTab === "Sales Dispatch") return "sales-dispatch";
+    if (activeTab === "Sales Return") return "sales-return";
     if (activeTab === "Reports") return "reports";
     return "coming";
   }, [activeTab]);
@@ -2341,7 +2437,11 @@ export default function Sales() {
           </span>
           <button
             type="button"
-            disabled={activeTab === "Order Allocation" || activeTab === "Reports" || activeTab === "Sales Dispatch"}
+            disabled={
+              activeTab === "Order Allocation" ||
+              activeTab === "Reports" ||
+              activeTab === "Sales Dispatch"
+            }
             onClick={() => {
               setErr("");
               if (activeTab === "Customer Master") setCustomerCreateOpen(true);
@@ -2352,6 +2452,7 @@ export default function Sales() {
               else if (activeTab === "Order Acknowledgement") setOaCreateOpen(true);
               else if (activeTab === "Proforma Invoice") setProformaCreateOpen(true);
               else if (activeTab === "Sales Invoice") setSalesInvoiceCreateOpen(true);
+              else if (activeTab === "Sales Return") setSrCreateOpen(true);
             }}
             className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
           >
@@ -2367,6 +2468,8 @@ export default function Sales() {
               ? "New sales invoice"
               : activeTab === "Sales Dispatch"
               ? "Create from dispatched invoice"
+              : activeTab === "Sales Return"
+              ? "New sales return"
               : "Create new"}
           </button>
         </div>
@@ -3774,7 +3877,7 @@ export default function Sales() {
             </div>
           </div>
         </>
-      ) : (
+      ) : tabContent === "sales-dispatch" ? (
         <>
           <div className="mb-3 flex flex-wrap items-end gap-2 rounded-2xl border bg-white p-3 shadow-sm">
             <TextInput
@@ -3811,6 +3914,7 @@ export default function Sales() {
                   <tr>
                     <th className="px-3 py-2">Dispatch No</th>
                     <th className="px-3 py-2">Invoice</th>
+                    <th className="px-3 py-2">Inv. status</th>
                     <th className="px-3 py-2">Customer</th>
                     <th className="px-3 py-2">Date</th>
                     <th className="px-3 py-2">Status</th>
@@ -3821,21 +3925,27 @@ export default function Sales() {
                 <tbody>
                   {salesDispatchLoading ? (
                     <tr>
-                      <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={8} className="px-3 py-8 text-center text-gray-500">
                         Loading...
                       </td>
                     </tr>
                   ) : salesDispatchRows.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={8} className="px-3 py-8 text-center text-gray-500">
                         No Sales Dispatch found.
                       </td>
                     </tr>
                   ) : (
-                    salesDispatchRows.map((r) => (
+                    salesDispatchRows.map((r) => {
+                      const invSt = String(r.linkedInvoiceStatus || "—");
+                      const canClose =
+                        String(r.status || "").toUpperCase() === "DISPATCHED" &&
+                        String(invSt || "").toUpperCase() === "PAID";
+                      return (
                       <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
                         <td className="px-3 py-2 font-mono text-xs">{r.dispatchNo}</td>
                         <td className="px-3 py-2">{r.linkedSalesInvoiceNo || "-"}</td>
+                        <td className="px-3 py-2 text-xs">{invSt}</td>
                         <td className="px-3 py-2">{r.customerName}</td>
                         <td className="px-3 py-2">{r.dispatchDate ? new Date(r.dispatchDate).toLocaleDateString() : "—"}</td>
                         <td className="px-3 py-2">
@@ -3857,6 +3967,37 @@ export default function Sales() {
                             <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", r._id, true)}>
                               Export PDF
                             </button>
+                            {canShip ? (
+                              <button
+                                type="button"
+                                className="rounded-lg border px-2 py-1 text-xs"
+                                disabled={patchSalesDispatchMutation.isPending}
+                                onClick={() =>
+                                  patchSalesDispatchMutation.mutate({ id: r._id, body: { status: "DISPATCHED" } })
+                                }
+                              >
+                                Mark shipped
+                              </button>
+                            ) : null}
+                            {canClose ? (
+                              <button
+                                type="button"
+                                className="rounded-lg border px-2 py-1 text-xs"
+                                disabled={patchSalesDispatchMutation.isPending}
+                                onClick={() => {
+                                  if (!window.confirm("Close dispatch? Invoice is PAID.")) return;
+                                  const postCredit = window.confirm(
+                                    "Post customer ledger CREDIT for dispatch total? OK = yes, Cancel = no"
+                                  );
+                                  patchSalesDispatchMutation.mutate({
+                                    id: r._id,
+                                    body: { status: "CLOSED", postCustomerLedgerCredit: postCredit },
+                                  });
+                                }}
+                              >
+                                Close
+                              </button>
+                            ) : null}
                             <button
                               type="button"
                               className="rounded-lg border px-2 py-1 text-xs"
@@ -3877,7 +4018,8 @@ export default function Sales() {
                           </div>
                         </td>
                       </tr>
-                    ))
+                    );
+                    })
                   )}
                 </tbody>
               </table>
@@ -3907,7 +4049,111 @@ export default function Sales() {
             </div>
           </div>
         </>
-      )}
+      ) : tabContent === "sales-return" ? (
+        <>
+          <p className="mb-3 text-sm text-gray-600">
+            Record customer returns against a dispatch or invoice. <strong>Post</strong> adds stock back via inventory{" "}
+            <code className="rounded bg-gray-100 px-1">IN_RETURN</code>.
+          </p>
+          <div className="mb-3 flex flex-wrap items-end gap-2 rounded-2xl border bg-white p-3 shadow-sm">
+            <TextInput
+              placeholder="Search return no / customer / dispatch"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
+              className="w-72"
+            />
+          </div>
+          <div className="overflow-hidden rounded-2xl border bg-white">
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left text-sm">
+                <thead className="sticky top-0 z-10 border-b bg-gray-100 text-xs font-semibold uppercase tracking-wide text-gray-700">
+                  <tr>
+                    <th className="px-3 py-2">Return No</th>
+                    <th className="px-3 py-2">Customer</th>
+                    <th className="px-3 py-2">Dispatch</th>
+                    <th className="px-3 py-2">Date</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2 text-right">Total</th>
+                    <th className="px-3 py-2">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {salesReturnLoading ? (
+                    <tr>
+                      <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                        Loading...
+                      </td>
+                    </tr>
+                  ) : salesReturnRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                        No sales returns yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    salesReturnRows.map((r) => (
+                      <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
+                        <td className="px-3 py-2 font-mono text-xs">{r.returnNo}</td>
+                        <td className="px-3 py-2">{r.customerName}</td>
+                        <td className="px-3 py-2 font-mono text-xs">{r.linkedSalesDispatchNo || "—"}</td>
+                        <td className="px-3 py-2">{r.returnDate ? new Date(r.returnDate).toLocaleDateString() : "—"}</td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
+                            {r.status}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          {r.currency} {money(r.grandTotal)}
+                        </td>
+                        <td className="px-3 py-2">
+                          {r.status === "DRAFT" ? (
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs disabled:opacity-50"
+                              disabled={postSalesReturnMutation.isPending}
+                              onClick={() => postSalesReturnMutation.mutate(r._id)}
+                            >
+                              Post to stock
+                            </button>
+                          ) : (
+                            <span className="text-xs text-gray-500">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-between border-t px-3 py-2 text-sm text-gray-600">
+              <span>
+                Page {page}/{salesReturnTotalPages} · {salesReturnData?.total ?? 0} returns
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="rounded-lg border px-2 py-1 disabled:opacity-40"
+                  disabled={page <= 1}
+                  onClick={() => setPage((p) => p - 1)}
+                >
+                  Prev
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border px-2 py-1 disabled:opacity-40"
+                  disabled={page >= salesReturnTotalPages}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : null}
 
       <Modal
         open={!!detailId}
@@ -5388,10 +5634,11 @@ export default function Sales() {
           <p className="text-sm text-gray-500">Loading...</p>
         ) : (
           <div className="space-y-3 text-sm">
-            <div className="grid gap-2 sm:grid-cols-3">
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               <div><div className="text-gray-500">Dispatch No</div><div className="font-mono">{salesDispatchDetail.dispatchNo}</div></div>
               <div><div className="text-gray-500">Customer</div><div>{salesDispatchDetail.customerName}</div></div>
-              <div><div className="text-gray-500">Status</div><div><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesDispatchDetail.status)}`}>{salesDispatchDetail.status}</span></div></div>
+              <div><div className="text-gray-500">Dispatch status</div><div><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesDispatchDetail.status)}`}>{salesDispatchDetail.status}</span></div></div>
+              <div><div className="text-gray-500">Invoice status</div><div>{salesDispatchDetail.linkedInvoiceStatus || "—"}</div></div>
             </div>
             <div className="text-xs text-gray-600">Linked Invoice: {salesDispatchDetail.linkedSalesInvoiceNo || "-"}</div>
             <div className="overflow-x-auto rounded-xl border">
@@ -5411,6 +5658,38 @@ export default function Sales() {
             <div className="flex flex-wrap gap-2">
               <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", salesDispatchDetail._id)}>Print</button>
               <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", salesDispatchDetail._id, true)}>Export PDF</button>
+              {String(salesDispatchDetail.status || "").toUpperCase() === "DRAFT" ? (
+                <button
+                  type="button"
+                  className="rounded-xl border px-2 py-1 text-xs"
+                  disabled={patchSalesDispatchMutation.isPending}
+                  onClick={() =>
+                    patchSalesDispatchMutation.mutate({ id: salesDispatchDetail._id, body: { status: "DISPATCHED" } })
+                  }
+                >
+                  Mark shipped
+                </button>
+              ) : null}
+              {String(salesDispatchDetail.status || "").toUpperCase() === "DISPATCHED" &&
+              String(salesDispatchDetail.linkedInvoiceStatus || "").toUpperCase() === "PAID" ? (
+                <button
+                  type="button"
+                  className="rounded-xl border px-2 py-1 text-xs"
+                  disabled={patchSalesDispatchMutation.isPending}
+                  onClick={() => {
+                    if (!window.confirm("Close dispatch?")) return;
+                    const postCredit = window.confirm(
+                      "Post customer ledger CREDIT for dispatch total? OK = yes, Cancel = no"
+                    );
+                    patchSalesDispatchMutation.mutate({
+                      id: salesDispatchDetail._id,
+                      body: { status: "CLOSED", postCustomerLedgerCredit: postCredit },
+                    });
+                  }}
+                >
+                  Close (paid)
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="rounded-xl border px-2 py-1 text-xs"
@@ -5691,6 +5970,244 @@ export default function Sales() {
             }}
           >
             Done
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={srCreateOpen}
+        onClose={() => setSrCreateOpen(false)}
+        title="New sales return"
+        subtitle="Link an optional dispatch to copy lines. Posting adds stock back (IN_RETURN)."
+        wide
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          <FormField label="Customer name *">
+            <TextInput
+              value={srForm.customerName}
+              onChange={(e) => setSrForm((f) => ({ ...f, customerName: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Warehouse">
+            <TextInput
+              value={srForm.warehouse}
+              onChange={(e) => setSrForm((f) => ({ ...f, warehouse: e.target.value.toUpperCase() }))}
+            />
+          </FormField>
+          <FormField label="Currency">
+            <TextInput
+              value={srForm.currency}
+              onChange={(e) => setSrForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
+            />
+          </FormField>
+          <FormField label="Prefill from dispatch (optional)">
+            <div className="flex flex-wrap gap-2">
+              <select
+                className="min-w-[180px] flex-1 rounded-xl border px-3 py-2 text-sm"
+                value={srForm.linkedSalesDispatchId || ""}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  const row = (salesDispatchData?.items ?? []).find((d) => String(d._id) === id);
+                  setSrForm((f) => ({
+                    ...f,
+                    linkedSalesDispatchId: id,
+                    linkedSalesDispatchNo: row?.dispatchNo || "",
+                  }));
+                }}
+              >
+                <option value="">— None —</option>
+                {(salesDispatchData?.items ?? []).map((d) => (
+                  <option key={d._id} value={d._id}>
+                    {d.dispatchNo} · {d.customerName}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="rounded-xl border px-3 py-2 text-sm"
+                disabled={!srForm.linkedSalesDispatchId}
+                onClick={async () => {
+                  try {
+                    const data = await apiGet(`/sales/sales-returns/prefill-from-dispatch/${srForm.linkedSalesDispatchId}`);
+                    setSrForm((f) => ({
+                      ...f,
+                      customerName: data.customerName || f.customerName,
+                      linkedSalesDispatchId: String(data.linkedSalesDispatchId || f.linkedSalesDispatchId),
+                      linkedSalesDispatchNo: data.linkedSalesDispatchNo || "",
+                      linkedSalesInvoiceId: data.linkedSalesInvoiceId ? String(data.linkedSalesInvoiceId) : "",
+                      linkedSalesInvoiceNo: data.linkedSalesInvoiceNo || "",
+                      currency: data.currency || f.currency,
+                      lines:
+                        data.lines?.length > 0
+                          ? data.lines.map((l) => ({
+                              article: l.article || "",
+                              partNumber: l.partNumber || "",
+                              description: l.description || "",
+                              qty: l.qty ?? 1,
+                              uom: l.uom || "PCS",
+                              unitPrice: l.unitPrice ?? 0,
+                              reason: l.reason || "",
+                            }))
+                          : f.lines,
+                    }));
+                  } catch (e) {
+                    setErr(e.message || "Could not load dispatch lines");
+                  }
+                }}
+              >
+                Load lines
+              </button>
+            </div>
+          </FormField>
+        </div>
+        <FormField label="Remarks" className="mt-3">
+          <TextInput value={srForm.remarks} onChange={(e) => setSrForm((f) => ({ ...f, remarks: e.target.value }))} />
+        </FormField>
+        <div className="mt-4 overflow-x-auto rounded-xl border">
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-2 py-2 text-left">Article *</th>
+                <th className="px-2 py-2 text-left">Part no</th>
+                <th className="px-2 py-2 text-left">Description</th>
+                <th className="px-2 py-2 text-left">UOM</th>
+                <th className="px-2 py-2 text-right">Qty</th>
+                <th className="px-2 py-2 text-right">Unit price</th>
+                <th className="px-2 py-2 text-left">Reason</th>
+                <th className="px-2 py-2 w-10" />
+              </tr>
+            </thead>
+            <tbody>
+              {srForm.lines.map((line, idx) => (
+                <tr key={idx} className="border-t">
+                  <td className="px-2 py-1">
+                    <TextInput
+                      value={line.article}
+                      onChange={(e) =>
+                        setSrForm((f) => {
+                          const lines = [...f.lines];
+                          lines[idx] = { ...line, article: e.target.value };
+                          return { ...f, lines };
+                        })
+                      }
+                    />
+                  </td>
+                  <td className="px-2 py-1">
+                    <TextInput
+                      value={line.partNumber}
+                      onChange={(e) =>
+                        setSrForm((f) => {
+                          const lines = [...f.lines];
+                          lines[idx] = { ...line, partNumber: e.target.value };
+                          return { ...f, lines };
+                        })
+                      }
+                    />
+                  </td>
+                  <td className="px-2 py-1">
+                    <TextInput
+                      value={line.description}
+                      onChange={(e) =>
+                        setSrForm((f) => {
+                          const lines = [...f.lines];
+                          lines[idx] = { ...line, description: e.target.value };
+                          return { ...f, lines };
+                        })
+                      }
+                    />
+                  </td>
+                  <td className="px-2 py-1">
+                    <TextInput
+                      value={line.uom}
+                      onChange={(e) =>
+                        setSrForm((f) => {
+                          const lines = [...f.lines];
+                          lines[idx] = { ...line, uom: e.target.value };
+                          return { ...f, lines };
+                        })
+                      }
+                    />
+                  </td>
+                  <td className="px-2 py-1">
+                    <TextInput
+                      type="number"
+                      value={line.qty}
+                      onChange={(e) =>
+                        setSrForm((f) => {
+                          const lines = [...f.lines];
+                          lines[idx] = { ...line, qty: Number(e.target.value || 0) };
+                          return { ...f, lines };
+                        })
+                      }
+                    />
+                  </td>
+                  <td className="px-2 py-1">
+                    <TextInput
+                      type="number"
+                      value={line.unitPrice}
+                      onChange={(e) =>
+                        setSrForm((f) => {
+                          const lines = [...f.lines];
+                          lines[idx] = { ...line, unitPrice: Number(e.target.value || 0) };
+                          return { ...f, lines };
+                        })
+                      }
+                    />
+                  </td>
+                  <td className="px-2 py-1">
+                    <TextInput
+                      value={line.reason}
+                      onChange={(e) =>
+                        setSrForm((f) => {
+                          const lines = [...f.lines];
+                          lines[idx] = { ...line, reason: e.target.value };
+                          return { ...f, lines };
+                        })
+                      }
+                    />
+                  </td>
+                  <td className="px-2 py-1">
+                    <button
+                      type="button"
+                      className="text-xs text-red-600"
+                      onClick={() =>
+                        setSrForm((f) => ({
+                          ...f,
+                          lines: f.lines.length > 1 ? f.lines.filter((_, i) => i !== idx) : f.lines,
+                        }))
+                      }
+                    >
+                      ×
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <button
+          type="button"
+          className="mt-2 text-sm text-gray-700 underline"
+          onClick={() =>
+            setSrForm((f) => ({
+              ...f,
+              lines: [...f.lines, { article: "", partNumber: "", description: "", qty: 1, uom: "PCS", unitPrice: 0, reason: "" }],
+            }))
+          }
+        >
+          + Add line
+        </button>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={() => setSrCreateOpen(false)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            disabled={createSalesReturnMutation.isPending}
+            onClick={() => createSalesReturnMutation.mutate()}
+          >
+            {createSalesReturnMutation.isPending ? "Saving…" : "Save draft"}
           </button>
         </div>
       </Modal>

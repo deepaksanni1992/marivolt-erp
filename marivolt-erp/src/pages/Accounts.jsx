@@ -4,7 +4,7 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
-import { apiDelete, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
+import { apiDelete, apiGetWithQuery, apiPatch, apiPost, apiPut } from "../lib/api.js";
 
 function canManageBankDetails(role) {
   const r = String(role || "").toLowerCase().trim();
@@ -62,6 +62,7 @@ function truncateBankAddressCell(s, max = 56) {
 
 const tabs = [
   { id: "si", label: "Sales invoices" },
+  { id: "sd", label: "Sales dispatches" },
   { id: "pi", label: "Purchase invoices" },
   { id: "cust", label: "Customer ledger" },
   { id: "supp", label: "Supplier ledger" },
@@ -140,6 +141,11 @@ export default function Accounts() {
     queryFn: () => apiGetWithQuery("/accounts/sales-invoices", { page, limit }),
     enabled: tab === "si",
   });
+  const sdQ = useQuery({
+    queryKey: ["accountsSalesDispatches", page],
+    queryFn: () => apiGetWithQuery("/accounts/sales-dispatches", { page, limit }),
+    enabled: tab === "sd",
+  });
   const piQ = useQuery({
     queryKey: ["purchaseInvoices", page],
     queryFn: () => apiGetWithQuery("/accounts/purchase-invoices", { page, limit }),
@@ -198,6 +204,20 @@ export default function Accounts() {
     onError: (e) => setErr(e.message),
   });
 
+  const patchMut = useMutation({
+    mutationFn: ({ path, body }) => apiPatch(path, body),
+    onSuccess: (_, v) => {
+      if (String(v.path || "").includes("sales-dispatches")) {
+        qc.invalidateQueries({ queryKey: ["accountsSalesDispatches"] });
+        qc.invalidateQueries({ queryKey: ["sales-sales-dispatch"] });
+        qc.invalidateQueries({ queryKey: ["sales-dispatch-detail"] });
+        qc.invalidateQueries({ queryKey: ["customerLedger"] });
+      }
+      setErr("");
+    },
+    onError: (e) => setErr(e.message),
+  });
+
   const putMut = useMutation({
     mutationFn: ({ path, body }) => apiPut(path, body),
     onSuccess: (_, v) => {
@@ -229,6 +249,7 @@ export default function Accounts() {
 
   function activeRows() {
     if (tab === "si") return siQ.data?.items ?? [];
+    if (tab === "sd") return sdQ.data?.items ?? [];
     if (tab === "pi") return piQ.data?.items ?? [];
     if (tab === "cust") return custQ.data?.items ?? [];
     if (tab === "supp") return suppQ.data?.items ?? [];
@@ -239,6 +260,7 @@ export default function Accounts() {
 
   function activeTotal() {
     if (tab === "si") return siQ.data?.total ?? 0;
+    if (tab === "sd") return sdQ.data?.total ?? 0;
     if (tab === "pi") return piQ.data?.total ?? 0;
     if (tab === "cust") return custQ.data?.total ?? 0;
     if (tab === "supp") return suppQ.data?.total ?? 0;
@@ -249,6 +271,7 @@ export default function Accounts() {
 
   function loading() {
     if (tab === "si") return siQ.isLoading;
+    if (tab === "sd") return sdQ.isLoading;
     if (tab === "pi") return piQ.isLoading;
     if (tab === "cust") return custQ.isLoading;
     if (tab === "supp") return suppQ.isLoading;
@@ -264,7 +287,7 @@ export default function Accounts() {
     <div>
       <PageHeader
         title="Accounts"
-        subtitle="Invoices, AR/AP style ledgers, and cash or bank movements."
+        subtitle="Invoices, sales dispatches (ship / close vs payment), AR/AP ledgers, and cash or bank movements."
       />
 
       {err ? (
@@ -331,7 +354,7 @@ export default function Accounts() {
         </div>
       )}
 
-      {(tab !== "bank" || bankDetailsAdmin) && (
+      {(tab !== "bank" || bankDetailsAdmin) && tab !== "sd" && (
         <div className="mb-3 flex justify-end">
           <button
             type="button"
@@ -385,14 +408,15 @@ export default function Accounts() {
                 ) : (
                   activeRows().map((r) => (
                     <tr key={r._id} className="border-b border-gray-100">
-                      <td className="px-3 py-2 font-mono text-xs">{r.invoiceNumber}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{r.invoiceNo || r.invoiceNumber || "—"}</td>
                       <td className="px-3 py-2">{r.customerName}</td>
                       <td className="px-3 py-2 text-xs text-gray-600">
                         {r.invoiceDate ? new Date(r.invoiceDate).toLocaleDateString() : "—"}
                       </td>
-                      <td className="px-3 py-2">{r.paymentStatus}</td>
+                      <td className="px-3 py-2">{r.paymentStatus || r.status || "—"}</td>
                       <td className="px-3 py-2 text-right tabular-nums">
-                        {r.currency} {Number(r.totalAmount || 0).toFixed(2)}
+                        {r.currency || "USD"}{" "}
+                        {Number(r.grandTotal ?? r.totalAmount ?? 0).toFixed(2)}
                       </td>
                       <td className="px-3 py-2">
                         <button
@@ -408,6 +432,94 @@ export default function Accounts() {
                       </td>
                     </tr>
                   ))
+                )}
+              </tbody>
+            </table>
+          )}
+          {tab === "sd" && (
+            <table className="min-w-full text-left text-sm">
+              <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
+                <tr>
+                  <th className="px-3 py-2">Dispatch</th>
+                  <th className="px-3 py-2">Customer</th>
+                  <th className="px-3 py-2">Invoice</th>
+                  <th className="px-3 py-2">Inv. status</th>
+                  <th className="px-3 py-2">Disp. status</th>
+                  <th className="px-3 py-2 text-right">Total</th>
+                  <th className="px-3 py-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading() ? (
+                  <tr>
+                    <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                      Loading…
+                    </td>
+                  </tr>
+                ) : activeRows().length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                      No rows.
+                    </td>
+                  </tr>
+                ) : (
+                  activeRows().map((r) => {
+                    const invSt = r.linkedInvoice?.status || "—";
+                    const canShip = String(r.status || "").toUpperCase() === "DRAFT";
+                    const canClose =
+                      String(r.status || "").toUpperCase() === "DISPATCHED" &&
+                      String(invSt || "").toUpperCase() === "PAID";
+                    return (
+                      <tr key={r._id} className="border-b border-gray-100">
+                        <td className="px-3 py-2 font-mono text-xs">{r.dispatchNo}</td>
+                        <td className="px-3 py-2">{r.customerName}</td>
+                        <td className="px-3 py-2 font-mono text-xs">{r.linkedSalesInvoiceNo || "—"}</td>
+                        <td className="px-3 py-2 text-xs">{invSt}</td>
+                        <td className="px-3 py-2 text-xs">{r.status}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {r.currency || "USD"} {Number(r.grandTotal || 0).toFixed(2)}
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex flex-wrap gap-1">
+                            {canShip ? (
+                              <button
+                                type="button"
+                                className="rounded-lg border px-2 py-1 text-xs"
+                                disabled={patchMut.isPending}
+                                onClick={() =>
+                                  patchMut.mutate({
+                                    path: `/sales/sales-dispatches/${r._id}`,
+                                    body: { status: "DISPATCHED" },
+                                  })
+                                }
+                              >
+                                Mark shipped
+                              </button>
+                            ) : null}
+                            {canClose ? (
+                              <button
+                                type="button"
+                                className="rounded-lg border px-2 py-1 text-xs"
+                                disabled={patchMut.isPending}
+                                onClick={() => {
+                                  if (!window.confirm("Close this dispatch? The linked invoice must already be PAID.")) return;
+                                  const postCredit = window.confirm(
+                                    "Also post a customer ledger CREDIT for this dispatch total? (OK = yes, Cancel = no)"
+                                  );
+                                  patchMut.mutate({
+                                    path: `/sales/sales-dispatches/${r._id}`,
+                                    body: { status: "CLOSED", postCustomerLedgerCredit: postCredit },
+                                  });
+                                }}
+                              >
+                                Close (paid)
+                              </button>
+                            ) : null}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

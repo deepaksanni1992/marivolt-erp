@@ -31,8 +31,12 @@ const salesDispatchSchema = new mongoose.Schema(
     discountTotal: { type: Number, default: 0 },
     taxTotal: { type: Number, default: 0 },
     grandTotal: { type: Number, default: 0 },
-    status: { type: String, enum: ["DRAFT", "DISPATCHED", "CANCELLED"], default: "DRAFT" },
+    status: { type: String, enum: ["DRAFT", "DISPATCHED", "CLOSED", "CANCELLED"], default: "DRAFT" },
     remarks: { type: String, default: "" },
+    closedAt: { type: Date, default: null },
+    closedBy: { type: String, default: "" },
+    /** Customer ledger credit row when closing with postCustomerLedgerCredit (optional). */
+    ledgerCloseEntryId: { type: mongoose.Schema.Types.ObjectId, ref: "CustomerLedgerEntry", default: null },
     createdBy: { type: String, default: "" },
     updatedBy: { type: String, default: "" },
   },

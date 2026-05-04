@@ -9,6 +9,7 @@ const router = express.Router();
 
 router.use(...requireErpAccess);
 
+router.get("/sales-dispatches", c.listSalesDispatchesAccounts);
 router.get("/sales-invoices", c.listSalesInvoices);
 router.get("/sales-invoices/:id", c.getSalesInvoice);
 router.post("/sales-invoices", c.createSalesInvoice);
