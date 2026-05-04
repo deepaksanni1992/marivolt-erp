@@ -14,6 +14,7 @@ const poLineSchema = new mongoose.Schema(
     expectedDeliveryDate: { type: Date },
     receivedQty: { type: Number, default: 0, min: 0 },
     remarks: { type: String, default: "" },
+    leadTime: { type: String, default: "", trim: true },
   },
   { _id: true }
 );

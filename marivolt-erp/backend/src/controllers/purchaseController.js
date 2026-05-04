@@ -26,6 +26,7 @@ function normalizePoLines(lines = []) {
         unitPrice: Number(l.unitPrice) || 0,
         description: l.description ?? "",
         remarks: l.remarks ?? "",
+        leadTime: l.leadTime != null ? String(l.leadTime).trim() : "",
       };
     })
     .filter((l) => l.itemCode && l.qty > 0);

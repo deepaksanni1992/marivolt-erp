@@ -37,6 +37,7 @@ const defaultLine = () => ({
   uom: "PCS",
   unitPrice: 0,
   remarks: "",
+  leadTime: "",
 });
 
 function todayDateInput() {
@@ -82,6 +83,7 @@ function buildPoPayload(form) {
         uom: String(l.uom || "PCS").trim(),
         unitPrice: Number(l.unitPrice) || 0,
         remarks: String(l.remarks || "").trim(),
+        leadTime: String(l.leadTime || "").trim(),
         currency: cur,
       };
     })
@@ -130,6 +132,122 @@ function formatPoDate(val) {
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
+/** Lowercase keys with single spaces for flexible CSV header matching. */
+function rowKeysNormMap(row) {
+  const m = Object.create(null);
+  for (const [k, v] of Object.entries(row || {})) {
+    if (k == null || String(k).trim() === "") continue;
+    const nk = String(k)
+      .replace(/^\uFEFF/, "")
+      .trim()
+      .toLowerCase()
+      .replace(/_+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    m[nk] = v;
+    const compact = nk.replace(/\s+/g, "");
+    if (!m[compact]) m[compact] = v;
+  }
+  return m;
+}
+
+function pickCsvCell(m, labels) {
+  for (const lab of labels) {
+    const a = lab.toLowerCase().replace(/_+/g, " ").replace(/\s+/g, " ").trim();
+    const b = a.replace(/\s+/g, "");
+    const v = m[a] ?? m[b];
+    if (v !== undefined && v !== null && String(v).trim() !== "") return v;
+  }
+  return "";
+}
+
+function mapCsvRowToPurchaseOrderLine(raw) {
+  const m = rowKeysNormMap(raw);
+  const articleNo = String(
+    pickCsvCell(m, ["article nr.", "article nr", "article no", "article", "articlenr", "item code", "itemcode"])
+  ).trim();
+  const partNo = String(
+    pickCsvCell(m, ["part nr.", "part nr", "part no", "part", "partnumber", "partnr"])
+  ).trim();
+  const description = String(pickCsvCell(m, ["description", "desc"])).trim();
+  const qty = Number(pickCsvCell(m, ["qty", "quantity"])) || 0;
+  const uom = String(pickCsvCell(m, ["uom", "unit", "unit of measure"]) || "PCS").trim();
+  const unitPrice =
+    Number(pickCsvCell(m, ["unit rate", "unitrate", "unit price", "unitprice", "rate", "price"])) || 0;
+  const remarks = String(pickCsvCell(m, ["remarks", "remark", "note", "notes"])).trim();
+  const leadTime = String(pickCsvCell(m, ["lead time", "leadtime", "lead-time", "delivery time"])).trim();
+  return {
+    articleNo,
+    itemCode: "",
+    partNo,
+    description,
+    qty: qty > 0 ? qty : 1,
+    uom: uom || "PCS",
+    unitPrice,
+    remarks,
+    leadTime,
+  };
+}
+
+function lineIsImportable(l) {
+  const code = String(l.articleNo || l.partNo || "").trim();
+  const qty = Number(l.qty) || 0;
+  return !!code && qty > 0;
+}
+
+function poDocLineExportRows(lines) {
+  return (lines || []).map((l, i) => {
+    const qty = Number(l.qty) || 0;
+    const rate = Number(l.unitPrice) || 0;
+    return {
+      pos: i + 1,
+      articleNo: l.articleNo || l.itemCode || "",
+      description: l.description || "",
+      partNo: l.partNo || "",
+      qty,
+      uom: l.uom || "PCS",
+      unitRate: rate.toFixed(2),
+      total: (qty * rate).toFixed(2),
+      remarks: l.remarks || "",
+      leadTime: l.leadTime || "",
+    };
+  });
+}
+
+const PO_LINE_EXPORT_COLS = [
+  { key: "pos", header: "Pos" },
+  { key: "articleNo", header: "Article Nr." },
+  { key: "description", header: "Description" },
+  { key: "partNo", header: "Part Nr." },
+  { key: "qty", header: "Qty" },
+  { key: "uom", header: "UOM" },
+  { key: "unitRate", header: "Unit rate" },
+  { key: "total", header: "Total" },
+  { key: "remarks", header: "Remarks" },
+  { key: "leadTime", header: "Lead time" },
+];
+
+function exportPurchaseOrderLinesCsv(docLike, fileBase) {
+  const rows = poDocLineExportRows(docLike.lines);
+  downloadCsv(`${fileBase}-${Date.now()}.csv`, PO_LINE_EXPORT_COLS, rows);
+}
+
+function exportPurchaseOrderLinesPdf(docLike, fileBase) {
+  const poNo = docLike.poNumber || "draft-po";
+  const sub = [
+    docLike.supplierName && `Supplier: ${docLike.supplierName}`,
+    `Currency: ${docLike.currency || "USD"}`,
+    docLike.orderDate && `Date: ${formatPoDate(docLike.orderDate)}`,
+  ]
+    .filter(Boolean)
+    .join(" | ");
+  const rows = poDocLineExportRows(docLike.lines).map((r) => ({
+    ...r,
+    qty: String(r.qty),
+  }));
+  downloadPdfTable(`Purchase order ${poNo}`, sub, PO_LINE_EXPORT_COLS, rows, fileBase);
+}
+
 const defaultPrLine = () => ({
   itemCode: "",
   description: "",
@@ -156,6 +274,120 @@ function StatusBadge({ status }) {
     >
       {status}
     </span>
+  );
+}
+
+function PurchaseOrderPreviewPanel({ doc, unsaved }) {
+  if (!doc) return null;
+  const lines = doc.lines || [];
+  const subTotal =
+    doc.subTotal != null
+      ? Number(doc.subTotal)
+      : lines.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0), 0);
+  const grand = doc.grandTotal != null ? Number(doc.grandTotal) : subTotal;
+  const cur = doc.currency || "USD";
+
+  return (
+    <div className="max-h-[70vh] space-y-4 overflow-y-auto text-sm text-gray-800">
+      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-gray-100 pb-3">
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Purchase order</div>
+            <div className="mt-1 font-mono text-lg font-bold text-gray-900">
+              {unsaved ? "Draft (not saved yet)" : doc.poNumber || "—"}
+            </div>
+            <div className="mt-2 text-xs text-gray-600">
+              {formatPoDate(doc.orderDate)} · {cur} {grand.toFixed(2)}
+            </div>
+          </div>
+          {unsaved ? (
+            <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-900 ring-1 ring-amber-200">
+              Unsaved draft
+            </span>
+          ) : doc.status ? (
+            <StatusBadge status={doc.status} />
+          ) : null}
+        </div>
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-3">
+            <div className="text-[10px] font-bold uppercase text-gray-500">Buyer</div>
+            <div className="mt-1 font-semibold text-gray-900">{doc.buyerLegalName || BUYER_DEFAULTS.buyerLegalName}</div>
+            <div className="mt-1 whitespace-pre-line text-xs text-gray-600">{doc.buyerAddressLine || BUYER_DEFAULTS.buyerAddressLine}</div>
+          </div>
+          <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-3">
+            <div className="text-[10px] font-bold uppercase text-gray-500">Supplier</div>
+            <div className="mt-1 font-semibold text-gray-900">{doc.supplierName || "—"}</div>
+            {doc.supplierAddress ? (
+              <div className="mt-1 whitespace-pre-line text-xs text-gray-600">{doc.supplierAddress}</div>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="mt-3 overflow-x-auto rounded-lg border border-gray-200">
+          <table className="min-w-[880px] w-full border-collapse text-xs">
+            <thead>
+              <tr className="border-b border-gray-200 bg-gray-100 text-left">
+                <th className="px-2 py-2 font-bold text-gray-700">Pos</th>
+                <th className="px-2 py-2 font-bold text-gray-700">Article Nr.</th>
+                <th className="px-2 py-2 font-bold text-gray-700">Description</th>
+                <th className="px-2 py-2 font-bold text-gray-700">Part Nr.</th>
+                <th className="px-2 py-2 text-right font-bold text-gray-700">Qty</th>
+                <th className="px-2 py-2 font-bold text-gray-700">UOM</th>
+                <th className="px-2 py-2 text-right font-bold text-gray-700">Unit rate</th>
+                <th className="px-2 py-2 text-right font-bold text-gray-700">Total</th>
+                <th className="px-2 py-2 font-bold text-gray-700">Lead time</th>
+                <th className="px-2 py-2 font-bold text-gray-700">Remark</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lines.length === 0 ? (
+                <tr>
+                  <td colSpan={10} className="px-2 py-8 text-center text-gray-500">
+                    No line items.
+                  </td>
+                </tr>
+              ) : (
+                lines.map((l, i) => {
+                  const tot = (Number(l.qty) || 0) * (Number(l.unitPrice) || 0);
+                  return (
+                    <tr key={l._id || i} className="border-b border-gray-100">
+                      <td className="px-2 py-2 text-gray-500">{i + 1}</td>
+                      <td className="px-2 py-2 font-mono text-[11px]">{l.articleNo || l.itemCode || "—"}</td>
+                      <td className="px-2 py-2">{l.description || "—"}</td>
+                      <td className="px-2 py-2 font-mono text-[11px]">{l.partNo || "—"}</td>
+                      <td className="px-2 py-2 text-right tabular-nums">{l.qty}</td>
+                      <td className="px-2 py-2">{l.uom || "PCS"}</td>
+                      <td className="px-2 py-2 text-right tabular-nums">{Number(l.unitPrice || 0).toFixed(2)}</td>
+                      <td className="px-2 py-2 text-right tabular-nums font-medium">{tot.toFixed(2)}</td>
+                      <td className="px-2 py-2 text-gray-700">{l.leadTime || "—"}</td>
+                      <td className="px-2 py-2 text-gray-600">{l.remarks || "—"}</td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-3 flex justify-end border-t border-gray-100 pt-3 text-sm tabular-nums">
+          <div className="w-full max-w-xs space-y-1">
+            <div className="flex justify-between text-gray-500">
+              <span>Sub total</span>
+              <span className="font-medium text-gray-900">
+                {cur} {subTotal.toFixed(2)}
+              </span>
+            </div>
+            <div className="flex justify-between text-base font-bold">
+              <span>Grand total</span>
+              <span>
+                {cur} {grand.toFixed(2)}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -200,6 +432,10 @@ function csvRowsToPurchaseOrders(rows) {
       description: String(r.description || r.Description || "").trim(),
       qty: Number(r.qty || r.Qty) || 0,
       unitPrice: Number(r.unitPrice || r.UnitPrice || r.Rate) || 0,
+      remarks: String(
+        r.lineRemarks || r.lineRemark || r.LineRemarks || r["Line remarks"] || r["Line remark"] || ""
+      ).trim(),
+      leadTime: String(r.leadTime || r.LeadTime || r["Lead time"] || "").trim(),
     });
   }
   return [...byKey.values()].filter((p) => p.lines.length > 0);
@@ -227,7 +463,9 @@ export default function Purchase() {
   const [err, setErr] = useState("");
 
   const poImportRef = useRef(null);
+  const poLineCsvImportRef = useRef(null);
   const supImportRef = useRef(null);
+  const [poPreview, setPoPreview] = useState(null);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["purchaseOrders", page, poFilterSupplier, poFilterStatus],
@@ -510,6 +748,49 @@ export default function Purchase() {
         } catch (ex) {
           setErr(ex.message || "CSV parse failed");
         }
+      },
+      error: (ex) => setErr(ex.message),
+    });
+  }
+
+  function draftDocSnapshotForExport() {
+    return {
+      ...form,
+      orderDate: form.orderDate,
+      lines: form.lines,
+      subTotal: poPreviewTotals.subTotal,
+      grandTotal: poPreviewTotals.grandTotal,
+      status: "DRAFT",
+    };
+  }
+
+  function onPoLinesCsvFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (res) => {
+        const imported = (res.data || []).map(mapCsvRowToPurchaseOrderLine).filter(lineIsImportable);
+        if (!imported.length) {
+          setErr(
+            "No valid lines in CSV. Use headers such as Article Nr., Description, Part Nr., Qty, UOM, Unit rate, Remarks, Lead time (Article or Part Nr. and Qty required per row)."
+          );
+          return;
+        }
+        setErr("");
+        setForm((f) => {
+          const onlyEmptyFirst =
+            f.lines.length === 1 &&
+            !String(f.lines[0].articleNo || "").trim() &&
+            !String(f.lines[0].partNo || "").trim() &&
+            !String(f.lines[0].description || "").trim() &&
+            Number(f.lines[0].qty) === 1 &&
+            Number(f.lines[0].unitPrice) === 0;
+          const base = onlyEmptyFirst ? [] : f.lines;
+          return { ...f, lines: [...base, ...imported] };
+        });
       },
       error: (ex) => setErr(ex.message),
     });
@@ -1413,7 +1694,7 @@ export default function Purchase() {
             </div>
 
             <div className="overflow-x-auto rounded-xl border border-gray-200">
-              <table className="min-w-[920px] w-full border-collapse text-xs">
+              <table className="min-w-[1000px] w-full border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-gray-200 bg-gray-100 text-left">
                     <th className="px-2 py-2 font-bold text-gray-700">Pos</th>
@@ -1425,6 +1706,7 @@ export default function Purchase() {
                     <th className="px-2 py-2 text-right font-bold text-gray-700">Unit rate</th>
                     <th className="px-2 py-2 text-right font-bold text-gray-700">Total</th>
                     <th className="px-2 py-2 text-right font-bold text-gray-700">Rcvd</th>
+                    <th className="px-2 py-2 font-bold text-gray-700">Lead time</th>
                     <th className="px-2 py-2 font-bold text-gray-700">Remark</th>
                   </tr>
                 </thead>
@@ -1446,6 +1728,7 @@ export default function Purchase() {
                       <td className="px-2 py-2 text-right tabular-nums text-gray-600">
                         {l.receivedQty ?? 0}
                       </td>
+                      <td className="px-2 py-2 text-gray-700">{l.leadTime || "—"}</td>
                       <td className="px-2 py-2 text-gray-600">{l.remarks || "—"}</td>
                     </tr>
                   ))}
@@ -1507,6 +1790,29 @@ export default function Purchase() {
             </div>
 
             <div className="flex flex-wrap gap-2 border-t border-gray-100 pt-4">
+              <button
+                type="button"
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
+                onClick={() => setPoPreview({ unsaved: false, doc: detail })}
+              >
+                Preview
+              </button>
+              <button
+                type="button"
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
+                onClick={() => exportPurchaseOrderLinesCsv(detail, `po-${detail.poNumber || detail._id}-lines`)}
+              >
+                Export lines CSV
+              </button>
+              <button
+                type="button"
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
+                onClick={() =>
+                  exportPurchaseOrderLinesPdf(detail, `po-${detail.poNumber || detail._id}-lines`)
+                }
+              >
+                Export lines PDF
+              </button>
               <button
                 type="button"
                 className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
@@ -1753,18 +2059,63 @@ export default function Purchase() {
           </div>
 
           <div className="mt-5">
-            <div className="mb-2 flex items-center justify-between">
+            <input
+              ref={poLineCsvImportRef}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={onPoLinesCsvFile}
+            />
+            <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-xs font-bold uppercase tracking-wide text-gray-600">Line items</span>
-              <button
-                type="button"
-                className="text-xs font-semibold text-gray-800 underline"
-                onClick={() => setForm((f) => ({ ...f, lines: [...f.lines, defaultLine()] }))}
-              >
-                + Add line
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+                  onClick={() => poLineCsvImportRef.current?.click()}
+                >
+                  Import lines (CSV)
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+                  onClick={() => {
+                    setPoPreview({ unsaved: true, doc: draftDocSnapshotForExport() });
+                  }}
+                >
+                  Preview
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+                  onClick={() => exportPurchaseOrderLinesCsv(draftDocSnapshotForExport(), "po-draft-lines")}
+                >
+                  Export lines CSV
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+                  onClick={() =>
+                    exportPurchaseOrderLinesPdf(draftDocSnapshotForExport(), "po-draft-lines")
+                  }
+                >
+                  Export lines PDF
+                </button>
+                <button
+                  type="button"
+                  className="text-xs font-semibold text-gray-800 underline"
+                  onClick={() => setForm((f) => ({ ...f, lines: [...f.lines, defaultLine()] }))}
+                >
+                  + Add line
+                </button>
+              </div>
             </div>
+            <p className="mb-2 text-[10px] text-gray-500">
+              CSV columns (first row headers): Article Nr., Description, Part Nr., Qty, UOM, Unit rate, Remarks, Lead
+              time. Rows append to the grid; a blank first line is replaced when importing.
+            </p>
             <div className="overflow-x-auto rounded-lg border border-gray-200">
-              <table className="min-w-[920px] w-full border-collapse text-xs">
+              <table className="min-w-[1040px] w-full border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-gray-200 bg-gray-100 text-left">
                     <th className="px-1.5 py-2 font-bold text-gray-700">Pos</th>
@@ -1775,6 +2126,7 @@ export default function Purchase() {
                     <th className="px-1.5 py-2 font-bold text-gray-700">UOM</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">Unit rate</th>
                     <th className="px-1.5 py-2 text-right font-bold text-gray-700">Total</th>
+                    <th className="min-w-[72px] px-1.5 py-2 font-bold text-gray-700">Lead time</th>
                     <th className="min-w-[72px] px-1.5 py-2 font-bold text-gray-700">Remark</th>
                     <th className="w-8 px-1 py-2" />
                   </tr>
@@ -1842,6 +2194,14 @@ export default function Purchase() {
                         </td>
                         <td className="px-1.5 py-1.5 text-right tabular-nums font-medium text-gray-800">
                           {lineTot.toFixed(2)}
+                        </td>
+                        <td className="px-1.5 py-1.5">
+                          <TextInput
+                            className="py-1.5 text-[11px]"
+                            placeholder="e.g. 2 wks"
+                            value={line.leadTime ?? ""}
+                            onChange={(e) => setLine({ leadTime: e.target.value })}
+                          />
                         </td>
                         <td className="px-1.5 py-1.5">
                           <TextInput
@@ -1986,6 +2346,10 @@ export default function Purchase() {
             {createMutation.isPending ? "Saving…" : "Create"}
           </button>
         </div>
+      </Modal>
+
+      <Modal open={!!poPreview} onClose={() => setPoPreview(null)} title="Purchase order preview" document>
+        {poPreview ? <PurchaseOrderPreviewPanel doc={poPreview.doc} unsaved={poPreview.unsaved} /> : null}
       </Modal>
 
       <Modal open={supModal} onClose={() => setSupModal(false)} title={supEditing ? "Edit supplier" : "New supplier"} wide>
