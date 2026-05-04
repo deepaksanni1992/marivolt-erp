@@ -1288,6 +1288,9 @@ export default function Sales() {
   const qc = useQueryClient();
   const { auth } = useAuth();
   const activeCompany = auth?.company;
+  /** Auth persists `company.id` (not `_id`); align with `getActiveCompanyId()` in api.js */
+  const activeCompanyId = activeCompany?.id ?? activeCompany?._id ?? null;
+  const summaryCurrency = String(activeCompany?.currency || "USD").trim().toUpperCase() || "USD";
   const [activeTab, setActiveTab] = useState("Quotation");
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
@@ -1444,9 +1447,9 @@ export default function Sales() {
   });
 
   const { data: salesSummary, isLoading: summaryLoading } = useQuery({
-    queryKey: ["sales-summary", activeCompany?._id],
+    queryKey: ["sales-summary", activeCompanyId],
     queryFn: () => apiGet("/sales/summary"),
-    enabled: !!activeCompany?._id,
+    enabled: !!activeCompanyId && !!auth?.token,
   });
 
   const activeReportId = selectedReportId || "quotation-summary";
@@ -1471,7 +1474,7 @@ export default function Sales() {
   const activeReportTitle = reportTitleById[activeReportId] || "Selected Report";
 
   const { data: activeReportData, isLoading: reportLoading } = useQuery({
-    queryKey: ["sales-report", activeCompany?._id, activeReportId, reportPage, reportFilters],
+    queryKey: ["sales-report", activeCompanyId, activeReportId, reportPage, reportFilters],
     queryFn: () =>
       apiGetWithQuery(reportApiPath, {
         page: reportPage,
@@ -1482,7 +1485,7 @@ export default function Sales() {
         customer: reportFilters.customer || undefined,
         status: reportFilters.status || undefined,
       }),
-    enabled: activeTab === "Reports" && !!reportApiPath && !!activeCompany?._id,
+    enabled: activeTab === "Reports" && !!reportApiPath && !!activeCompanyId && !!auth?.token,
   });
   const activeReportRows = activeReportData?.rows || activeReportData?.items || [];
   const activeExportColumns = reportColumnsById[activeReportId] || [];
@@ -2261,9 +2264,9 @@ export default function Sales() {
             { label: "Total Proformas", value: salesSummary?.totalProformas },
             { label: "Sales Invoices", value: salesSummary?.totalSalesInvoices },
             { label: "Unpaid Invoices", value: salesSummary?.unpaidSalesInvoices },
-            { label: "Total Sales Value", value: `USD ${money(salesSummary?.totalSalesValue)}` },
+            { label: "Total Sales Value", value: `${summaryCurrency} ${money(salesSummary?.totalSalesValue)}` },
             { label: "Total CIPL", value: salesSummary?.totalCipl },
-            { label: "This Month Sales", value: `USD ${money(salesSummary?.thisMonthSales)}` },
+            { label: "This Month Sales", value: `${summaryCurrency} ${money(salesSummary?.thisMonthSales)}` },
           ].map((kpi) => (
             <div key={kpi.label} className="rounded-xl border border-gray-200 bg-gradient-to-b from-white to-gray-50 p-3">
               <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">{kpi.label}</p>
