@@ -16,6 +16,7 @@ import Accounts from "./pages/Accounts.jsx";
 import BOMPage from "./pages/BOM.jsx";
 import Kitting from "./pages/Kitting.jsx";
 import DeKitting from "./pages/DeKitting.jsx";
+import Documents from "./pages/Documents.jsx";
 
 export default function App() {
   return (
@@ -35,6 +36,7 @@ export default function App() {
           <Route path="inventory" element={<Inventory />} />
           <Route path="logistics" element={<Logistics />} />
           <Route path="accounts" element={<Accounts />} />
+          <Route path="documents" element={<Documents />} />
           <Route path="bom" element={<BOMPage />} />
           <Route path="kitting" element={<Kitting />} />
           <Route path="dekitting" element={<DeKitting />} />

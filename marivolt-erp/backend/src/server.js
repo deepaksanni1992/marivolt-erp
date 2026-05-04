@@ -21,6 +21,7 @@ import kittingRoutes from "./routes/kittingRoutes.js";
 import dekittingRoutes from "./routes/dekittingRoutes.js";
 import supplierRoutes from "./routes/supplierRoutes.js";
 import purchaseReturnRoutes from "./routes/purchaseReturnRoutes.js";
+import documentRoutes from "./routes/documentRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -106,6 +107,7 @@ async function startServer() {
     app.use("/api/boms", bomRoutes);
     app.use("/api/kitting", kittingRoutes);
     app.use("/api/dekitting", dekittingRoutes);
+    app.use("/api/documents", documentRoutes);
 
     app.get("/api/health", (req, res) => {
       res.json({ ok: true, message: "Marivoltz API running" });

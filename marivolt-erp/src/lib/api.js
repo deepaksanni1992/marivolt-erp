@@ -97,6 +97,8 @@ export async function apiPostFormData(path, formData) {
   const headers = {};
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
+  const companyId = getActiveCompanyId();
+  if (companyId) headers["x-company-id"] = companyId;
 
   const res = await fetch(url, { method: "POST", headers, body: formData });
   const text = await res.text();
