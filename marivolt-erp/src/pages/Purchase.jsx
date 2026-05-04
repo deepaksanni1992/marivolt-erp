@@ -19,6 +19,10 @@ import {
   apiPost,
   apiPut,
 } from "../lib/api.js";
+import { useAuth } from "../context/AuthContext.jsx";
+
+/** Same path as sales quotation print branding. */
+const MARIVOLT_PO_LOGO = "/brand/marivolt-icon.png";
 
 const TABS = [
   { id: "orders", label: "Purchase order" },
@@ -121,6 +125,70 @@ function buildPoPayload(form) {
     specialRemarks: form.specialRemarks ?? "",
     termsAndConditions: form.termsAndConditions ?? "",
     closingNote: form.closingNote ?? "",
+    lines,
+  };
+}
+
+function canDeletePurchaseOrderRole(role) {
+  const r = String(role || "").toLowerCase().trim();
+  return ["super_admin", "company_admin", "admin"].includes(r);
+}
+
+function canModifyPoStatus(status) {
+  return status === "DRAFT" || status === "SAVED";
+}
+
+function purchaseOrderApiToForm(po) {
+  const orderDate =
+    po.orderDate != null ? new Date(po.orderDate).toISOString().slice(0, 10) : todayDateInput();
+  const lines =
+    Array.isArray(po.lines) && po.lines.length > 0
+      ? po.lines.map((l) => ({
+          articleNo: l.articleNo || "",
+          itemCode: l.itemCode || "",
+          partNo: l.partNo || "",
+          description: l.description || "",
+          qty: Number(l.qty) || 1,
+          uom: l.uom || "PCS",
+          unitPrice: Number(l.unitPrice) || 0,
+          remarks: l.remarks || "",
+          leadTime: l.leadTime || "",
+        }))
+      : [defaultLine()];
+  return {
+    ...BUYER_DEFAULTS,
+    ...COMMERCIAL_DEFAULTS,
+    buyerLegalName: po.buyerLegalName || BUYER_DEFAULTS.buyerLegalName,
+    buyerAddressLine: po.buyerAddressLine || BUYER_DEFAULTS.buyerAddressLine,
+    buyerPhone: po.buyerPhone || BUYER_DEFAULTS.buyerPhone,
+    buyerEmail: po.buyerEmail || BUYER_DEFAULTS.buyerEmail,
+    buyerWeb: po.buyerWeb || BUYER_DEFAULTS.buyerWeb,
+    supplierName: po.supplierName || "",
+    supplierAddress: po.supplierAddress || "",
+    supplierPhone: po.supplierPhone || "",
+    supplierEmail: po.supplierEmail || "",
+    ref: po.ref || "",
+    intRef: po.intRef || "",
+    contactPerson: po.contactPerson || "",
+    supplierReference: po.supplierReference || "",
+    offerDate: po.offerDate || "",
+    currency: po.currency || "USD",
+    orderDate,
+    remarks: po.remarks || "",
+    delivery: po.delivery ?? COMMERCIAL_DEFAULTS.delivery,
+    insurance: po.insurance ?? COMMERCIAL_DEFAULTS.insurance,
+    packing: po.packing ?? COMMERCIAL_DEFAULTS.packing,
+    freight: po.freight ?? COMMERCIAL_DEFAULTS.freight,
+    taxes: po.taxes ?? COMMERCIAL_DEFAULTS.taxes,
+    payment: po.payment ?? COMMERCIAL_DEFAULTS.payment,
+    specialRemarks:
+      po.specialRemarks != null && po.specialRemarks !== "" ? po.specialRemarks : DEFAULT_SPECIAL_REMARKS,
+    termsAndConditions:
+      po.termsAndConditions != null && po.termsAndConditions !== ""
+        ? po.termsAndConditions
+        : DEFAULT_PURCHASE_TERMS,
+    closingNote:
+      po.closingNote != null && po.closingNote !== "" ? po.closingNote : DEFAULT_CLOSING_NOTE,
     lines,
   };
 }
@@ -286,64 +354,140 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
       : lines.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0), 0);
   const grand = doc.grandTotal != null ? Number(doc.grandTotal) : subTotal;
   const cur = doc.currency || "USD";
+  const buyer = {
+    name: doc.buyerLegalName || BUYER_DEFAULTS.buyerLegalName,
+    address: doc.buyerAddressLine || BUYER_DEFAULTS.buyerAddressLine,
+    phone: doc.buyerPhone || BUYER_DEFAULTS.buyerPhone,
+    email: doc.buyerEmail || BUYER_DEFAULTS.buyerEmail,
+    web: doc.buyerWeb || BUYER_DEFAULTS.buyerWeb,
+  };
+  const poNo = unsaved ? "Draft (not saved)" : doc.poNumber || "—";
 
   return (
-    <div className="max-h-[70vh] space-y-4 overflow-y-auto text-sm text-gray-800">
-      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-gray-100 pb-3">
-          <div>
-            <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Purchase order</div>
-            <div className="mt-1 font-mono text-lg font-bold text-gray-900">
-              {unsaved ? "Draft (not saved yet)" : doc.poNumber || "—"}
-            </div>
-            <div className="mt-2 text-xs text-gray-600">
-              {formatPoDate(doc.orderDate)} · {cur} {grand.toFixed(2)}
+    <div className="max-h-[75vh] overflow-y-auto bg-slate-50/80 p-3 sm:p-4">
+      <div className="mx-auto max-w-5xl rounded-lg border border-slate-200 bg-white p-5 shadow-sm ring-1 ring-slate-100">
+        <header className="flex flex-col gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex shrink-0 items-start gap-3">
+            <img
+              src={MARIVOLT_PO_LOGO}
+              alt="Marivolt"
+              className="h-[88px] w-[100px] object-contain"
+            />
+            <div className="min-w-0 pt-1">
+              <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-500">Purchase order</p>
+              <p className="mt-1 font-mono text-xl font-bold tracking-tight text-slate-900">{poNo}</p>
+              <div className="mt-2 space-y-0.5 text-xs text-slate-600">
+                <div>
+                  <span className="font-semibold text-slate-500">Date: </span>
+                  {formatPoDate(doc.orderDate)}
+                </div>
+                <div>
+                  <span className="font-semibold text-slate-500">Currency: </span>
+                  {cur}
+                </div>
+                {doc.ref ? (
+                  <div>
+                    <span className="font-semibold text-slate-500">Ref: </span>
+                    {doc.ref}
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
-          {unsaved ? (
-            <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-900 ring-1 ring-amber-200">
-              Unsaved draft
-            </span>
-          ) : doc.status ? (
-            <StatusBadge status={doc.status} />
-          ) : null}
+          <div className="flex flex-1 flex-col items-center text-center sm:items-center sm:pt-1">
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">PURCHASE ORDER</h1>
+            <p className="mt-1 text-xs text-slate-500">Buyer reference document — quotation-style layout</p>
+            <div className="mt-3">
+              {unsaved ? (
+                <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-900 ring-1 ring-amber-200">
+                  Unsaved draft
+                </span>
+              ) : doc.status ? (
+                <StatusBadge status={doc.status} />
+              ) : null}
+            </div>
+          </div>
+          <div className="text-right text-xs leading-relaxed text-slate-600 sm:max-w-[220px] sm:pt-1">
+            <p className="text-[28px] font-extrabold leading-none text-[#e85d3f]">MariVolt</p>
+            <p className="mt-1 text-[11px] font-bold uppercase tracking-wide text-[#1f4e79]">Marine Engine Spares</p>
+            <p className="mt-2 text-[11px] text-slate-600">{buyer.address}</p>
+            <p className="mt-1">{buyer.phone}</p>
+            <p>{buyer.email}</p>
+            <p className="text-slate-500">{buyer.web}</p>
+          </div>
+        </header>
+
+        <div className="mt-5 grid gap-3 md:grid-cols-2">
+          <div className="min-h-[140px] rounded-lg border border-slate-200 bg-[#fafafa] p-3">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Buyer</p>
+            <p className="mt-1 text-sm font-semibold text-slate-900">{buyer.name}</p>
+            <p className="mt-1 whitespace-pre-line text-xs leading-relaxed text-slate-600">{buyer.address}</p>
+            <p className="mt-2 text-xs text-slate-600">Tel: {buyer.phone}</p>
+            <p className="text-xs">{buyer.email}</p>
+          </div>
+          <div className="min-h-[140px] rounded-lg border border-slate-200 bg-[#fafafa] p-3">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Supplier</p>
+            <p className="mt-1 text-sm font-semibold text-slate-900">{doc.supplierName || "—"}</p>
+            {doc.supplierAddress ? (
+              <p className="mt-1 whitespace-pre-line text-xs leading-relaxed text-slate-600">{doc.supplierAddress}</p>
+            ) : null}
+            <div className="mt-2 space-y-0.5 text-xs text-slate-600">
+              {doc.supplierPhone ? <p>Tel: {doc.supplierPhone}</p> : null}
+              {doc.supplierEmail ? <p>{doc.supplierEmail}</p> : null}
+            </div>
+          </div>
         </div>
 
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
-          <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-3">
-            <div className="text-[10px] font-bold uppercase text-gray-500">Buyer</div>
-            <div className="mt-1 font-semibold text-gray-900">{doc.buyerLegalName || BUYER_DEFAULTS.buyerLegalName}</div>
-            <div className="mt-1 whitespace-pre-line text-xs text-gray-600">{doc.buyerAddressLine || BUYER_DEFAULTS.buyerAddressLine}</div>
-          </div>
-          <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-3">
-            <div className="text-[10px] font-bold uppercase text-gray-500">Supplier</div>
-            <div className="mt-1 font-semibold text-gray-900">{doc.supplierName || "—"}</div>
-            {doc.supplierAddress ? (
-              <div className="mt-1 whitespace-pre-line text-xs text-gray-600">{doc.supplierAddress}</div>
+        {(doc.delivery || doc.payment || doc.contactPerson) && (
+          <div className="mt-4 grid gap-2 border-t border-slate-100 pt-4 text-[11px] text-slate-600 sm:grid-cols-3">
+            {doc.contactPerson ? (
+              <div>
+                <span className="font-semibold text-slate-500">Contact: </span>
+                {doc.contactPerson}
+              </div>
+            ) : null}
+            {doc.delivery ? (
+              <div>
+                <span className="font-semibold text-slate-500">Delivery: </span>
+                {doc.delivery}
+              </div>
+            ) : null}
+            {doc.payment ? (
+              <div>
+                <span className="font-semibold text-slate-500">Payment: </span>
+                {doc.payment}
+              </div>
             ) : null}
           </div>
-        </div>
+        )}
 
-        <div className="mt-3 overflow-x-auto rounded-lg border border-gray-200">
-          <table className="min-w-[880px] w-full border-collapse text-xs">
+        {doc.remarks ? (
+          <div className="mt-3 rounded-md border border-dashed border-slate-200 bg-white px-3 py-2 text-xs text-slate-700">
+            <span className="font-semibold text-slate-500">Header remarks: </span>
+            {doc.remarks}
+          </div>
+        ) : null}
+
+        <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200">
+          <table className="min-w-[900px] w-full border-collapse text-xs">
             <thead>
-              <tr className="border-b border-gray-200 bg-gray-100 text-left">
-                <th className="px-2 py-2 font-bold text-gray-700">Pos</th>
-                <th className="px-2 py-2 font-bold text-gray-700">Article Nr.</th>
-                <th className="px-2 py-2 font-bold text-gray-700">Description</th>
-                <th className="px-2 py-2 font-bold text-gray-700">Part Nr.</th>
-                <th className="px-2 py-2 text-right font-bold text-gray-700">Qty</th>
-                <th className="px-2 py-2 font-bold text-gray-700">UOM</th>
-                <th className="px-2 py-2 text-right font-bold text-gray-700">Unit rate</th>
-                <th className="px-2 py-2 text-right font-bold text-gray-700">Total</th>
-                <th className="px-2 py-2 font-bold text-gray-700">Lead time</th>
-                <th className="px-2 py-2 font-bold text-gray-700">Remark</th>
+              <tr className="bg-[#f5f5f5] text-left text-[11px] font-bold uppercase tracking-wide text-slate-700">
+                <th className="border border-slate-200 px-2 py-2">Pos</th>
+                <th className="border border-slate-200 px-2 py-2">Article Nr.</th>
+                <th className="border border-slate-200 px-2 py-2">Description</th>
+                <th className="border border-slate-200 px-2 py-2">Part Nr.</th>
+                <th className="border border-slate-200 px-2 py-2 text-right">Qty</th>
+                <th className="border border-slate-200 px-2 py-2">UOM</th>
+                <th className="border border-slate-200 px-2 py-2 text-right">Unit rate</th>
+                <th className="border border-slate-200 px-2 py-2 text-right">Total</th>
+                <th className="border border-slate-200 px-2 py-2">Lead time</th>
+                <th className="border border-slate-200 px-2 py-2">Remark</th>
               </tr>
             </thead>
             <tbody>
               {lines.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="px-2 py-8 text-center text-gray-500">
+                  <td colSpan={10} className="border border-slate-200 px-2 py-8 text-center text-slate-500">
                     No line items.
                   </td>
                 </tr>
@@ -351,17 +495,23 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
                 lines.map((l, i) => {
                   const tot = (Number(l.qty) || 0) * (Number(l.unitPrice) || 0);
                   return (
-                    <tr key={l._id || i} className="border-b border-gray-100">
-                      <td className="px-2 py-2 text-gray-500">{i + 1}</td>
-                      <td className="px-2 py-2 font-mono text-[11px]">{l.articleNo || l.itemCode || "—"}</td>
-                      <td className="px-2 py-2">{l.description || "—"}</td>
-                      <td className="px-2 py-2 font-mono text-[11px]">{l.partNo || "—"}</td>
-                      <td className="px-2 py-2 text-right tabular-nums">{l.qty}</td>
-                      <td className="px-2 py-2">{l.uom || "PCS"}</td>
-                      <td className="px-2 py-2 text-right tabular-nums">{Number(l.unitPrice || 0).toFixed(2)}</td>
-                      <td className="px-2 py-2 text-right tabular-nums font-medium">{tot.toFixed(2)}</td>
-                      <td className="px-2 py-2 text-gray-700">{l.leadTime || "—"}</td>
-                      <td className="px-2 py-2 text-gray-600">{l.remarks || "—"}</td>
+                    <tr key={l._id || i} className="odd:bg-white even:bg-slate-50/60">
+                      <td className="border border-slate-200 px-2 py-2 text-slate-500">{i + 1}</td>
+                      <td className="border border-slate-200 px-2 py-2 font-mono text-[11px] text-slate-900">
+                        {l.articleNo || l.itemCode || "—"}
+                      </td>
+                      <td className="border border-slate-200 px-2 py-2 text-slate-800">{l.description || "—"}</td>
+                      <td className="border border-slate-200 px-2 py-2 font-mono text-[11px]">{l.partNo || "—"}</td>
+                      <td className="border border-slate-200 px-2 py-2 text-right tabular-nums">{l.qty}</td>
+                      <td className="border border-slate-200 px-2 py-2">{l.uom || "PCS"}</td>
+                      <td className="border border-slate-200 px-2 py-2 text-right tabular-nums">
+                        {Number(l.unitPrice || 0).toFixed(2)}
+                      </td>
+                      <td className="border border-slate-200 px-2 py-2 text-right tabular-nums font-semibold text-slate-900">
+                        {tot.toFixed(2)}
+                      </td>
+                      <td className="border border-slate-200 px-2 py-2 text-slate-700">{l.leadTime || "—"}</td>
+                      <td className="border border-slate-200 px-2 py-2 text-slate-600">{l.remarks || "—"}</td>
                     </tr>
                   );
                 })
@@ -370,15 +520,15 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
           </table>
         </div>
 
-        <div className="mt-3 flex justify-end border-t border-gray-100 pt-3 text-sm tabular-nums">
-          <div className="w-full max-w-xs space-y-1">
-            <div className="flex justify-between text-gray-500">
+        <div className="mt-4 flex justify-end border-t border-slate-200 pt-4">
+          <div className="w-full max-w-xs space-y-1.5 text-sm tabular-nums">
+            <div className="flex justify-between text-slate-600">
               <span>Sub total</span>
-              <span className="font-medium text-gray-900">
+              <span className="font-semibold text-slate-900">
                 {cur} {subTotal.toFixed(2)}
               </span>
             </div>
-            <div className="flex justify-between text-base font-bold">
+            <div className="flex justify-between border-t border-slate-200 pt-1 text-base font-bold text-slate-900">
               <span>Grand total</span>
               <span>
                 {cur} {grand.toFixed(2)}
@@ -442,6 +592,7 @@ function csvRowsToPurchaseOrders(rows) {
 }
 
 export default function Purchase() {
+  const { auth } = useAuth();
   const qc = useQueryClient();
   const [tab, setTab] = useState("orders");
   const [page, setPage] = useState(1);
@@ -455,6 +606,7 @@ export default function Purchase() {
   const [supSearch, setSupSearch] = useState("");
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [editPoId, setEditPoId] = useState(null);
   const [detailId, setDetailId] = useState(null);
   const [receiveOpen, setReceiveOpen] = useState(false);
   const [form, setForm] = useState(() => initialPoForm());
@@ -535,10 +687,82 @@ export default function Purchase() {
       qc.invalidateQueries({ queryKey: ["pendingPoReport"] });
       setErr("");
       setCreateOpen(false);
+      setEditPoId(null);
       setForm(initialPoForm());
     },
     onError: (e) => setErr(e.message || "Could not create purchase order"),
   });
+
+  const updatePoMutation = useMutation({
+    mutationFn: ({ id, body }) => apiPut(`/purchase-orders/${id}`, body),
+    onSuccess: (_, { id }) => {
+      qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
+      qc.invalidateQueries({ queryKey: ["purchaseSummary"] });
+      qc.invalidateQueries({ queryKey: ["pendingPoReport"] });
+      qc.invalidateQueries({ queryKey: ["purchaseOrder", id] });
+      setErr("");
+      setCreateOpen(false);
+      setEditPoId(null);
+      setForm(initialPoForm());
+    },
+    onError: (e) => setErr(e.message || "Could not update purchase order"),
+  });
+
+  const deletePoMutation = useMutation({
+    mutationFn: (id) => apiDelete(`/purchase-orders/${id}`),
+    onSuccess: (_, id) => {
+      qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
+      qc.invalidateQueries({ queryKey: ["purchaseSummary"] });
+      qc.invalidateQueries({ queryKey: ["pendingPoReport"] });
+      setErr("");
+      if (detailId === id) setDetailId(null);
+    },
+    onError: (e) => setErr(e.message || "Could not delete purchase order"),
+  });
+
+  function openPoForModify(id) {
+    setErr("");
+    apiGet(`/purchase-orders/${id}`)
+      .then((po) => {
+        if (!canModifyPoStatus(po.status)) {
+          setErr("Only draft or saved orders can be modified.");
+          return;
+        }
+        setForm(purchaseOrderApiToForm(po));
+        setEditPoId(id);
+        setCreateOpen(true);
+      })
+      .catch((e) => setErr(e.message));
+  }
+
+  function confirmDeletePoRow(row) {
+    if (!canDeletePurchaseOrderRole(auth?.user?.role)) return;
+    if (!canModifyPoStatus(row.status)) {
+      window.alert("Only draft or saved orders can be deleted.");
+      return;
+    }
+    if (!window.confirm(`Delete purchase order ${row.poNumber}? This cannot be undone.`)) return;
+    deletePoMutation.mutate(row._id);
+  }
+
+  function openModifyFromDetail() {
+    if (!detail || !canModifyPoStatus(detail.status)) return;
+    setErr("");
+    setForm(purchaseOrderApiToForm(detail));
+    setEditPoId(detail._id);
+    setDetailId(null);
+    setCreateOpen(true);
+  }
+
+  function confirmDeleteDetail() {
+    if (!detail || !canDeletePurchaseOrderRole(auth?.user?.role)) return;
+    if (!canModifyPoStatus(detail.status)) {
+      window.alert("Only draft or saved orders can be deleted.");
+      return;
+    }
+    if (!window.confirm(`Delete purchase order ${detail.poNumber}? This cannot be undone.`)) return;
+    deletePoMutation.mutate(detail._id);
+  }
 
   const poPreviewTotals = useMemo(() => {
     const sub = form.lines.reduce(
@@ -999,6 +1223,8 @@ export default function Purchase() {
                 onClick={() => {
                   setErr("");
                   createMutation.reset();
+                  updatePoMutation.reset();
+                  setEditPoId(null);
                   setForm(initialPoForm());
                   setCreateOpen(true);
                 }}
@@ -1054,7 +1280,7 @@ export default function Purchase() {
                   <th className="px-4 py-3">Date</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3 text-right">Total</th>
-                  <th className="px-4 py-3 w-28" />
+                  <th className="px-4 py-3 min-w-[220px] text-left">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -1087,16 +1313,37 @@ export default function Purchase() {
                         {r.currency} {Number(r.grandTotal || 0).toFixed(2)}
                       </td>
                       <td className="px-4 py-2.5">
-                        <button
-                          type="button"
-                          className="rounded-md border border-gray-300 bg-white px-2.5 py-1 text-xs font-semibold text-gray-800 hover:bg-gray-50"
-                          onClick={() => {
-                            setDetailId(r._id);
-                            setErr("");
-                          }}
-                        >
-                          Open
-                        </button>
+                        <div className="flex flex-wrap gap-1.5">
+                          <button
+                            type="button"
+                            className="rounded-md border border-gray-300 bg-white px-2.5 py-1 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+                            onClick={() => {
+                              setDetailId(r._id);
+                              setErr("");
+                            }}
+                          >
+                            Open
+                          </button>
+                          {canModifyPoStatus(r.status) ? (
+                            <button
+                              type="button"
+                              className="rounded-md border border-gray-300 bg-white px-2.5 py-1 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+                              onClick={() => openPoForModify(r._id)}
+                            >
+                              Modify
+                            </button>
+                          ) : null}
+                          {canModifyPoStatus(r.status) && canDeletePurchaseOrderRole(auth?.user?.role) ? (
+                            <button
+                              type="button"
+                              className="rounded-md border border-red-200 bg-white px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                              disabled={deletePoMutation.isPending}
+                              onClick={() => confirmDeletePoRow(r)}
+                            >
+                              Delete
+                            </button>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -1790,6 +2037,25 @@ export default function Purchase() {
             </div>
 
             <div className="flex flex-wrap gap-2 border-t border-gray-100 pt-4">
+              {detail && canModifyPoStatus(detail.status) ? (
+                <button
+                  type="button"
+                  className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
+                  onClick={openModifyFromDetail}
+                >
+                  Modify
+                </button>
+              ) : null}
+              {detail && canModifyPoStatus(detail.status) && canDeletePurchaseOrderRole(auth?.user?.role) ? (
+                <button
+                  type="button"
+                  className="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                  disabled={deletePoMutation.isPending}
+                  onClick={confirmDeleteDetail}
+                >
+                  Delete
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
@@ -1917,16 +2183,20 @@ export default function Purchase() {
         open={createOpen}
         onClose={() => {
           setCreateOpen(false);
+          setEditPoId(null);
           setErr("");
           createMutation.reset();
+          updatePoMutation.reset();
         }}
-        title="New purchase order"
+        title={editPoId ? "Modify purchase order" : "New purchase order"}
         document
       >
         {err ? <div className="mb-3 text-sm text-red-600">{err}</div> : null}
         <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm sm:p-5">
           <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
-            Document preview — saved as draft PO
+            {editPoId
+              ? "Editing draft or saved PO — click Save changes when done."
+              : "Document preview — saved as draft PO"}
           </p>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -2328,7 +2598,7 @@ export default function Purchase() {
           <button
             type="button"
             className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-            disabled={createMutation.isPending}
+            disabled={createMutation.isPending || updatePoMutation.isPending}
             onClick={() => {
               setErr("");
               const body = buildPoPayload(form);
@@ -2340,10 +2610,20 @@ export default function Purchase() {
                 setErr("Add at least one line with Article Nr., code, or Part Nr. and quantity.");
                 return;
               }
-              createMutation.mutate(body);
+              if (editPoId) {
+                updatePoMutation.mutate({ id: editPoId, body });
+              } else {
+                createMutation.mutate(body);
+              }
             }}
           >
-            {createMutation.isPending ? "Saving…" : "Create"}
+            {editPoId
+              ? updatePoMutation.isPending
+                ? "Saving…"
+                : "Save changes"
+              : createMutation.isPending
+                ? "Saving…"
+                : "Create"}
           </button>
         </div>
       </Modal>

@@ -113,6 +113,9 @@ export async function updatePurchaseOrder(req, res) {
     }
     const doc = await PurchaseOrder.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
+    if (!["DRAFT", "SAVED"].includes(doc.status)) {
+      return res.status(400).json({ message: "Only draft or saved purchase orders can be modified." });
+    }
 
     const allowed = [
       "buyerLegalName",
@@ -241,12 +244,22 @@ export async function receivePurchaseOrder(req, res) {
 
 export async function deletePurchaseOrder(req, res) {
   try {
+    const role = String(req.user?.role || "")
+      .toLowerCase()
+      .trim();
+    if (!["super_admin", "company_admin", "admin"].includes(role)) {
+      return res.status(403).json({ message: "Only administrators can delete purchase orders." });
+    }
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await PurchaseOrder.findOneAndDelete(withCompany(req, { _id: id }));
+    const row = await PurchaseOrder.findOne(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
+    if (!["DRAFT", "SAVED"].includes(row.status)) {
+      return res.status(400).json({ message: "Only draft or saved purchase orders can be deleted." });
+    }
+    await PurchaseOrder.deleteOne(withCompany(req, { _id: id }));
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ message: err.message });
