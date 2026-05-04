@@ -262,6 +262,11 @@ export function buildTaxInvoiceHeaderHtml({
             <div><b>Currency:</b> <span class="${curSpanClass}">${esc(curDisplay)}</span></div>
             <div><b>Loading Port:</b> ${loading}</div>
             <div><b>Discharge Port:</b> ${discharge}</div>
+            ${
+              String(doc.dispatchNo || "").trim()
+                ? `<div><b>Dispatch ref:</b> ${esc(String(doc.dispatchNo).trim())}</div>`
+                : ""
+            }
           </div>
           <div class="si-hbox-tax">
             <div class="si-hbox-title">Customer</div>

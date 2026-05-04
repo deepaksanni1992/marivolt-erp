@@ -1641,16 +1641,29 @@ export default function Sales() {
       }
       if (type === "sales-dispatch") {
         const doc = await apiGet(`/sales/sales-dispatches/${id}`);
+        const curEnc = encodeURIComponent(String(doc?.currency || "USD").trim());
+        let bankDetail = null;
+        try {
+          const bdRes = await apiGet(`/accounts/bank-details/for-currency/${curEnc}`);
+          bankDetail = bdRes?.bankDetail ?? null;
+        } catch {
+          bankDetail = null;
+        }
+        const amountInWords = formatInvoiceAmountInWords(doc?.grandTotal, doc?.currency);
+        const invoiceNoForPrint = String(doc?.linkedSalesInvoiceNo || "").trim() || doc?.dispatchNo;
         renderFlowDocPrintWindow({
-          title: "Sales Dispatch",
+          title: "Tax invoice",
           doc,
           company,
-          docNoLabel: "Dispatch No",
-          docNoValue: doc?.dispatchNo,
+          docNoLabel: "Invoice No",
+          docNoValue: invoiceNoForPrint,
           dateLabel: "Date",
           dateValue: doc?.dispatchDate,
-          linkedLabel: "Linked Invoice",
-          linkedValue: doc?.linkedSalesInvoiceNo,
+          linkedLabel: "",
+          linkedValue: "",
+          salesInvoiceLayout: true,
+          bankDetail,
+          amountInWords,
           autoPrint,
         });
         return;
