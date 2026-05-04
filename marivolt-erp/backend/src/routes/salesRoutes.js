@@ -1,7 +1,11 @@
 import express from "express";
+import { requireRole } from "../middleware/auth.js";
 import { requireErpAccess } from "../middleware/erpAccess.js";
 import * as c from "../controllers/salesController.js";
 import * as flow from "../controllers/salesFlowController.js";
+
+/** Customer master edits (PUT/DELETE) — super_admin, company_admin, or admin only. */
+const customerMasterAdminRoles = ["super_admin", "company_admin", "admin"];
 
 const router = express.Router();
 
@@ -24,8 +28,8 @@ router.get("/reports/rts", flow.reportRts);
 
 router.get("/customers", flow.listCustomers);
 router.post("/customers", flow.createCustomer);
-router.put("/customers/:id", flow.updateCustomer);
-router.delete("/customers/:id", flow.deleteCustomer);
+router.put("/customers/:id", requireRole(...customerMasterAdminRoles), flow.updateCustomer);
+router.delete("/customers/:id", requireRole(...customerMasterAdminRoles), flow.deleteCustomer);
 
 router.get("/order-acknowledgements", flow.listOAs);
 router.post("/order-acknowledgements", flow.createOA);

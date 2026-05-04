@@ -1284,6 +1284,12 @@ function rtsCsvRowsForSales(doc) {
   ];
 }
 
+/** Aligns with backend customer PUT/DELETE: super_admin, company_admin, admin only. */
+function canEditSalesCustomerMaster(role) {
+  const r = String(role || "").toLowerCase().trim();
+  return ["super_admin", "company_admin", "admin"].includes(r);
+}
+
 export default function Sales() {
   const qc = useQueryClient();
   const { auth } = useAuth();
@@ -1300,6 +1306,18 @@ export default function Sales() {
   const [createOpen, setCreateOpen] = useState(false);
   const [isQuotationNoEdited, setIsQuotationNoEdited] = useState(false);
   const [customerCreateOpen, setCustomerCreateOpen] = useState(false);
+  const [customerEditOpen, setCustomerEditOpen] = useState(false);
+  const [customerEditId, setCustomerEditId] = useState(null);
+  const [customerEditForm, setCustomerEditForm] = useState({
+    name: "",
+    contactName: "",
+    phone: "",
+    email: "",
+    address: "",
+    paymentTerms: "CREDIT",
+    notes: "",
+  });
+  const canEditCustomers = canEditSalesCustomerMaster(auth?.user?.role);
   const [detailId, setDetailId] = useState(null);
   const [oaCreateOpen, setOaCreateOpen] = useState(false);
   const [proformaCreateOpen, setProformaCreateOpen] = useState(false);
@@ -1936,6 +1954,17 @@ export default function Sales() {
         paymentTerms: "CREDIT",
         notes: "",
       });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const updateCustomerMutation = useMutation({
+    mutationFn: () => apiPut(`/sales/customers/${customerEditId}`, customerEditForm),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-customers"] });
+      qc.invalidateQueries({ queryKey: ["sales-customers-lookup"] });
+      setCustomerEditOpen(false);
+      setCustomerEditId(null);
     },
     onError: (e) => setErr(e.message),
   });
@@ -2835,6 +2864,11 @@ export default function Sales() {
               }}
               className="w-72"
             />
+            {!canEditCustomers ? (
+              <p className="text-xs text-gray-500">
+                Only admins can edit customer records. Contact an administrator to update details.
+              </p>
+            ) : null}
           </div>
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
@@ -2847,18 +2881,19 @@ export default function Sales() {
                     <th className="px-3 py-2">Email</th>
                     <th className="px-3 py-2">Payment Terms</th>
                     <th className="px-3 py-2">Address</th>
+                    {canEditCustomers ? <th className="px-3 py-2 text-right">Actions</th> : null}
                   </tr>
                 </thead>
                 <tbody>
                   {customerLoading ? (
                     <tr>
-                      <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={canEditCustomers ? 7 : 6} className="px-3 py-8 text-center text-gray-500">
                         Loading...
                       </td>
                     </tr>
                   ) : customerRows.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={canEditCustomers ? 7 : 6} className="px-3 py-8 text-center text-gray-500">
                         No customers found.
                       </td>
                     </tr>
@@ -2871,6 +2906,30 @@ export default function Sales() {
                         <td className="px-3 py-2">{r.email || "-"}</td>
                         <td className="px-3 py-2">{r.paymentTerms || "-"}</td>
                         <td className="px-3 py-2">{r.address || "-"}</td>
+                        {canEditCustomers ? (
+                          <td className="px-3 py-2 text-right">
+                            <button
+                              type="button"
+                              className="rounded-lg border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-800 hover:bg-gray-50"
+                              onClick={() => {
+                                setErr("");
+                                setCustomerEditId(r._id);
+                                setCustomerEditForm({
+                                  name: r.name || "",
+                                  contactName: r.contactName || "",
+                                  phone: r.phone || "",
+                                  email: r.email || "",
+                                  address: r.address || "",
+                                  paymentTerms: r.paymentTerms === "ADVANCE" ? "ADVANCE" : "CREDIT",
+                                  notes: r.notes || "",
+                                });
+                                setCustomerEditOpen(true);
+                              }}
+                            >
+                              Edit
+                            </button>
+                          </td>
+                        ) : null}
                       </tr>
                     ))
                   )}
@@ -5294,6 +5353,85 @@ export default function Sales() {
             onClick={() => createCustomerMutation.mutate()}
           >
             {createCustomerMutation.isPending ? "Saving..." : "Create Customer"}
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={customerEditOpen}
+        onClose={() => {
+          setCustomerEditOpen(false);
+          setCustomerEditId(null);
+        }}
+        title="Edit Customer"
+        wide
+      >
+        <div className="grid gap-3 sm:grid-cols-3">
+          <FormField label="Customer Name *">
+            <TextInput
+              value={customerEditForm.name}
+              onChange={(e) => setCustomerEditForm((f) => ({ ...f, name: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Contact Name">
+            <TextInput
+              value={customerEditForm.contactName}
+              onChange={(e) => setCustomerEditForm((f) => ({ ...f, contactName: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Phone">
+            <TextInput
+              value={customerEditForm.phone}
+              onChange={(e) => setCustomerEditForm((f) => ({ ...f, phone: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Email">
+            <TextInput
+              value={customerEditForm.email}
+              onChange={(e) => setCustomerEditForm((f) => ({ ...f, email: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Payment Terms">
+            <select
+              className="w-full rounded-xl border px-3 py-2 text-sm"
+              value={customerEditForm.paymentTerms}
+              onChange={(e) => setCustomerEditForm((f) => ({ ...f, paymentTerms: e.target.value }))}
+            >
+              <option value="CREDIT">CREDIT</option>
+              <option value="ADVANCE">ADVANCE</option>
+            </select>
+          </FormField>
+          <FormField label="Address">
+            <TextInput
+              value={customerEditForm.address}
+              onChange={(e) => setCustomerEditForm((f) => ({ ...f, address: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Notes" className="sm:col-span-3">
+            <TextInput
+              value={customerEditForm.notes}
+              onChange={(e) => setCustomerEditForm((f) => ({ ...f, notes: e.target.value }))}
+            />
+          </FormField>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            className="rounded-xl border px-4 py-2 text-sm"
+            onClick={() => {
+              setCustomerEditOpen(false);
+              setCustomerEditId(null);
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            disabled={updateCustomerMutation.isPending || !customerEditId || !String(customerEditForm.name || "").trim()}
+            onClick={() => updateCustomerMutation.mutate()}
+          >
+            {updateCustomerMutation.isPending ? "Saving..." : "Save changes"}
           </button>
         </div>
       </Modal>
