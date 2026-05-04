@@ -11,6 +11,11 @@ import {
   formatInvoiceAmountInWords,
   renderSiBankFooterHtml,
 } from "../lib/salesInvoicePrint.js";
+import {
+  orderAllocationCsvHeaders,
+  orderAllocationCsvRows,
+  renderOrderAllocationPrintWindow,
+} from "../lib/orderAllocationPrint.js";
 import { useAuth } from "../context/AuthContext.jsx";
 
 /** Document types allowed when uploading from Sales Dispatch flow (subset of backend DOCUMENT_TYPES). */
@@ -3704,25 +3709,75 @@ export default function Sales() {
                             >
                               Convert to SI
                             </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              title="Order allocation document"
+                              onClick={() =>
+                                apiGet(`/sales/order-allocations/${r._id}`)
+                                  .then((doc) => renderOrderAllocationPrintWindow(doc, activeCompany))
+                                  .catch((e) => setErr(e.message))
+                              }
+                            >
+                              Print
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              title="Order allocation PDF (print to PDF)"
+                              onClick={() =>
+                                apiGet(`/sales/order-allocations/${r._id}`)
+                                  .then((doc) => renderOrderAllocationPrintWindow(doc, activeCompany, true))
+                                  .catch((e) => setErr(e.message))
+                              }
+                            >
+                              Export PDF
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              title="Order allocation CSV"
+                              onClick={() =>
+                                apiGet(`/sales/order-allocations/${r._id}`)
+                                  .then((doc) => {
+                                    const headers = orderAllocationCsvHeaders();
+                                    const rowArrays = orderAllocationCsvRows(doc);
+                                    const rows = rowArrays.map((arr) =>
+                                      Object.fromEntries(headers.map((key, i) => [key, arr[i]]))
+                                    );
+                                    exportListCsv(
+                                      `order-allocation-${doc.allocationNo || "export"}`,
+                                      rows,
+                                      headers.map((label) => ({ label, value: (row) => row[label] ?? "" }))
+                                    );
+                                  })
+                                  .catch((e) => setErr(e.message))
+                              }
+                            >
+                              Export CSV
+                            </button>
                             {r.latestApprovedRtsId ? (
                               <>
                                 <button
                                   type="button"
                                   className="rounded-lg border px-2 py-1 text-xs"
+                                  title="Approved RTS packing list"
                                   onClick={() => openFlowDocumentPrint("rts", r.latestApprovedRtsId)}
                                 >
-                                  Print
+                                  RTS print
                                 </button>
                                 <button
                                   type="button"
                                   className="rounded-lg border px-2 py-1 text-xs"
+                                  title="RTS packing PDF"
                                   onClick={() => openFlowDocumentPrint("rts", r.latestApprovedRtsId, true)}
                                 >
-                                  Export PDF
+                                  RTS PDF
                                 </button>
                                 <button
                                   type="button"
                                   className="rounded-lg border px-2 py-1 text-xs"
+                                  title="RTS packing CSV"
                                   onClick={() =>
                                     apiGet(`/sales/rts/${r.latestApprovedRtsId}`)
                                       .then((doc) =>
@@ -3751,7 +3806,7 @@ export default function Sales() {
                                       .catch((e) => setErr(e.message))
                                   }
                                 >
-                                  Export CSV
+                                  RTS CSV
                                 </button>
                               </>
                             ) : null}

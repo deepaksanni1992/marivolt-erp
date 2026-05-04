@@ -6,6 +6,11 @@ import Modal from "../components/erp/Modal.jsx";
 import Inventory from "./Inventory.jsx";
 import { apiGet, apiGetWithQuery, apiPatch, apiPost, apiPut } from "../lib/api.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "../lib/salesQuotationPrintCss.js";
+import {
+  orderAllocationCsvHeaders,
+  orderAllocationCsvRows,
+  renderOrderAllocationPrintWindow,
+} from "../lib/orderAllocationPrint.js";
 import { useAuth } from "../context/AuthContext.jsx";
 
 function money(n) {
@@ -487,33 +492,78 @@ export default function Store() {
                             <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => setAllocationOpenId(r._id)}>
                               Create RTS
                             </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              title="Order allocation (lines for store)"
+                              onClick={() =>
+                                apiGet(`/sales/order-allocations/${r._id}`)
+                                  .then((doc) => renderOrderAllocationPrintWindow(doc, activeCompany))
+                                  .catch(() => {})
+                              }
+                            >
+                              Print
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              title="Order allocation PDF (print to PDF)"
+                              onClick={() =>
+                                apiGet(`/sales/order-allocations/${r._id}`)
+                                  .then((doc) => renderOrderAllocationPrintWindow(doc, activeCompany, true))
+                                  .catch(() => {})
+                              }
+                            >
+                              Export PDF
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              title="Order allocation CSV"
+                              onClick={() =>
+                                apiGet(`/sales/order-allocations/${r._id}`)
+                                  .then((doc) =>
+                                    downloadCsv(
+                                      `order-allocation-${doc.allocationNo || "export"}.csv`,
+                                      orderAllocationCsvHeaders(),
+                                      orderAllocationCsvRows(doc)
+                                    )
+                                  )
+                                  .catch(() => {})
+                              }
+                            >
+                              Export CSV
+                            </button>
                             {r.latestApprovedRtsId ? (
                               <>
                                 <button
                                   type="button"
                                   className="rounded-lg border px-2 py-1 text-xs"
+                                  title="Approved RTS packing list"
                                   onClick={() =>
                                     apiGet(`/sales/rts/${r.latestApprovedRtsId}`)
                                       .then((doc) => renderPackingListPrintWindow(doc, activeCompany))
                                       .catch(() => {})
                                   }
                                 >
-                                  Print
+                                  RTS print
                                 </button>
                                 <button
                                   type="button"
                                   className="rounded-lg border px-2 py-1 text-xs"
+                                  title="RTS packing PDF"
                                   onClick={() =>
                                     apiGet(`/sales/rts/${r.latestApprovedRtsId}`)
                                       .then((doc) => renderPackingListPrintWindow(doc, activeCompany, true))
                                       .catch(() => {})
                                   }
                                 >
-                                  Export PDF
+                                  RTS PDF
                                 </button>
                                 <button
                                   type="button"
                                   className="rounded-lg border px-2 py-1 text-xs"
+                                  title="RTS packing CSV"
                                   onClick={() =>
                                     apiGet(`/sales/rts/${r.latestApprovedRtsId}`)
                                       .then((doc) =>
@@ -526,7 +576,7 @@ export default function Store() {
                                       .catch(() => {})
                                   }
                                 >
-                                  Export CSV
+                                  RTS CSV
                                 </button>
                               </>
                             ) : null}
@@ -927,6 +977,47 @@ export default function Store() {
           <p className="text-sm text-gray-500">Loading RTS...</p>
         ) : (
           <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+              <span className="text-xs font-semibold text-slate-600">Print / export (includes unsaved edits below):</span>
+              <button
+                type="button"
+                className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 hover:bg-white"
+                onClick={() =>
+                  renderPackingListPrintWindow(
+                    { ...rtsDetail, lines: rtsEditForm.lines, packingDetails: rtsEditForm.packingDetails },
+                    activeCompany
+                  )
+                }
+              >
+                Print
+              </button>
+              <button
+                type="button"
+                className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 hover:bg-white"
+                onClick={() =>
+                  renderPackingListPrintWindow(
+                    { ...rtsDetail, lines: rtsEditForm.lines, packingDetails: rtsEditForm.packingDetails },
+                    activeCompany,
+                    true
+                  )
+                }
+              >
+                Export PDF
+              </button>
+              <button
+                type="button"
+                className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 hover:bg-white"
+                onClick={() =>
+                  downloadCsv(
+                    `packing-list-${rtsDetail.rtsNo || "rts"}.csv`,
+                    rtsCsvHeaders(),
+                    rtsCsvRows({ ...rtsDetail, lines: rtsEditForm.lines, packingDetails: rtsEditForm.packingDetails })
+                  )
+                }
+              >
+                Export CSV
+              </button>
+            </div>
             <div className="grid gap-3 sm:grid-cols-4">
               <TextInput value={rtsDetail.rtsNo || ""} disabled className="bg-gray-50" />
               <TextInput
