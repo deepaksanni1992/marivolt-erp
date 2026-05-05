@@ -819,8 +819,8 @@ export default function Purchase() {
     phone: "",
     email: "",
     address: "",
-    gstNo: "",
-    panNo: "",
+    vatNo: "",
+    tradeLicenseNo: "",
     notes: "",
   });
 
@@ -1028,7 +1028,8 @@ export default function Purchase() {
       { key: "contactName", header: "Contact" },
       { key: "phone", header: "Phone" },
       { key: "email", header: "Email" },
-      { key: "gstNo", header: "GST" },
+      { key: "vatNo", header: "VAT" },
+      { key: "tradeLicenseNo", header: "Trade License / Registration No" },
     ];
     downloadCsv(`suppliers-${Date.now()}.csv`, cols, items);
   }
@@ -1066,8 +1067,8 @@ export default function Purchase() {
             phone: r.phone || "",
             email: r.email || "",
             address: r.address || "",
-            gstNo: r.gstNo || "",
-            panNo: r.panNo || "",
+            vatNo: r.vatNo || r.VAT || r.gstNo || "",
+            tradeLicenseNo: r.tradeLicenseNo || r["Trade License Number"] || r["Registration Number"] || r.panNo || "",
             notes: r.notes || "",
           }))
           .filter((r) => r.name);
@@ -1412,8 +1413,8 @@ export default function Purchase() {
                     phone: "",
                     email: "",
                     address: "",
-                    gstNo: "",
-                    panNo: "",
+                    vatNo: "",
+                    tradeLicenseNo: "",
                     notes: "",
                   });
                   setErr("");
@@ -1486,8 +1487,8 @@ export default function Purchase() {
                               phone: s.phone || "",
                               email: s.email || "",
                               address: s.address || "",
-                              gstNo: s.gstNo || "",
-                              panNo: s.panNo || "",
+                              vatNo: s.vatNo || s.gstNo || "",
+                              tradeLicenseNo: s.tradeLicenseNo || s.panNo || "",
                               notes: s.notes || "",
                             });
                             setSupModal(true);
@@ -2638,7 +2639,6 @@ export default function Purchase() {
             <TextInput
               value={supForm.supplierCode}
               onChange={(e) => setSupForm((f) => ({ ...f, supplierCode: e.target.value }))}
-              disabled={!supEditing}
             />
           </FormField>
           <FormField label="Name *">
@@ -2671,16 +2671,16 @@ export default function Purchase() {
               onChange={(e) => setSupForm((f) => ({ ...f, address: e.target.value }))}
             />
           </FormField>
-          <FormField label="GST #">
+          <FormField label="VAT #">
             <TextInput
-              value={supForm.gstNo}
-              onChange={(e) => setSupForm((f) => ({ ...f, gstNo: e.target.value }))}
+              value={supForm.vatNo}
+              onChange={(e) => setSupForm((f) => ({ ...f, vatNo: e.target.value }))}
             />
           </FormField>
-          <FormField label="PAN #">
+          <FormField label="Trade License / Registration No">
             <TextInput
-              value={supForm.panNo}
-              onChange={(e) => setSupForm((f) => ({ ...f, panNo: e.target.value }))}
+              value={supForm.tradeLicenseNo}
+              onChange={(e) => setSupForm((f) => ({ ...f, tradeLicenseNo: e.target.value }))}
             />
           </FormField>
           <FormField label="Notes" className="sm:col-span-2">

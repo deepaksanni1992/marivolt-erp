@@ -37,7 +37,7 @@ export async function listSuppliersAll(req, res) {
   try {
     const items = await Supplier.find(withCompany(req))
       .sort({ name: 1 })
-      .select("supplierCode name contactName phone email address gstNo panNo")
+      .select("supplierCode name contactName phone email address vatNo tradeLicenseNo gstNo panNo")
       .lean();
     res.json({ items });
   } catch (err) {
@@ -67,6 +67,8 @@ async function nextSupplierCode(req) {
 export async function createSupplier(req, res) {
   try {
     const body = { ...req.body };
+    body.vatNo = String(body.vatNo ?? body.gstNo ?? "").trim();
+    body.tradeLicenseNo = String(body.tradeLicenseNo ?? body.panNo ?? "").trim();
     if (body.supplierCode) {
       body.supplierCode = String(body.supplierCode).trim().toUpperCase();
     } else {
@@ -87,6 +89,8 @@ export async function updateSupplier(req, res) {
     }
     const payload = { ...req.body };
     delete payload._id;
+    payload.vatNo = String(payload.vatNo ?? payload.gstNo ?? "").trim();
+    payload.tradeLicenseNo = String(payload.tradeLicenseNo ?? payload.panNo ?? "").trim();
     if (payload.supplierCode) {
       payload.supplierCode = String(payload.supplierCode).trim().toUpperCase();
     }
@@ -148,6 +152,8 @@ export async function importSuppliers(req, res) {
               phone: row.phone ?? "",
               email: row.email ?? "",
               address: row.address ?? "",
+              vatNo: row.vatNo ?? row.gstNo ?? "",
+              tradeLicenseNo: row.tradeLicenseNo ?? row.panNo ?? "",
               gstNo: row.gstNo ?? "",
               panNo: row.panNo ?? "",
               notes: row.notes ?? "",

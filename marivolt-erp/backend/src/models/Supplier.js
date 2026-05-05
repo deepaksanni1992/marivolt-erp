@@ -9,6 +9,8 @@ const supplierSchema = new mongoose.Schema(
     phone: { type: String, default: "" },
     email: { type: String, default: "" },
     address: { type: String, default: "" },
+    vatNo: { type: String, default: "" },
+    tradeLicenseNo: { type: String, default: "" },
     gstNo: { type: String, default: "" },
     panNo: { type: String, default: "" },
     notes: { type: String, default: "" },
