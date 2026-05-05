@@ -3,6 +3,7 @@ import XLSX from "xlsx";
 import ItemMaster, { UOM_VALUES } from "../models/itemMasterModel.js";
 import ItemTechnical from "../models/itemTechnicalModel.js";
 import ItemSupplier from "../models/itemSupplierModel.js";
+import StockBalance from "../models/StockBalance.js";
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -25,6 +26,14 @@ function trim(value) {
 function normalizeUom(value) {
   const upper = trim(value).toUpperCase();
   return UOM_VALUES.includes(upper) ? upper : "PCS";
+}
+
+function pick(row, ...keys) {
+  for (const key of keys) {
+    const out = trim(row[key]);
+    if (out) return out;
+  }
+  return "";
 }
 
 function normalizeDimension(value) {
@@ -114,9 +123,44 @@ export async function listItems(req, res) {
     ]);
 
     const articles = items.map((row) => row.article);
-    const technicalRows = await ItemTechnical.find(withCompany(req, { article: { $in: articles } })).lean();
+    const [technicalRows, supplierRows, stockRows] = await Promise.all([
+      ItemTechnical.find(withCompany(req, { article: { $in: articles } })).lean(),
+      ItemSupplier.find(withCompany(req, { article: { $in: articles } })).sort({ supplierName: 1 }).lean(),
+      StockBalance.find(withCompany(req, { article: { $in: articles } }))
+        .select("article onHandQty")
+        .lean(),
+    ]);
     const technicalByArticle = new Map(technicalRows.map((row) => [row.article, row]));
-    const merged = items.map((row) => ({ ...row, dimension: technicalByArticle.get(row.article)?.dimension || "" }));
+    const suppliersByArticle = new Map();
+    const qtyByArticle = new Map();
+    for (const sup of supplierRows) {
+      const list = suppliersByArticle.get(sup.article) || [];
+      list.push(sup);
+      suppliersByArticle.set(sup.article, list);
+    }
+    for (const stk of stockRows) {
+      qtyByArticle.set(stk.article, Number(qtyByArticle.get(stk.article) || 0) + Number(stk.onHandQty || 0));
+    }
+    const merged = items.map((row) => {
+      const technical = technicalByArticle.get(row.article) || null;
+      const supplierList = suppliersByArticle.get(row.article) || [];
+      return {
+        ...row,
+        technical,
+        dimension: technical?.dimension || "",
+        spn: technical?.spn || "",
+        materialCode: technical?.materialCode || "",
+        drawingNumber: technical?.drawingNumber || "",
+        extRemarks: technical?.extRemarks || "",
+        internalRemarks: technical?.internalRemarks || "",
+        oeMarkings: technical?.oeMarkings || "",
+        supplier1: supplierList[0]?.supplierName || "",
+        supplier1PartNumber: supplierList[0]?.supplierPartNumber || "",
+        supplier2: supplierList[1]?.supplierName || "",
+        supplier2PartNumber: supplierList[1]?.supplierPartNumber || "",
+        qty: Number(qtyByArticle.get(row.article) || 0),
+      };
+    });
 
     res.json({ items: merged, total, page, limit });
   } catch (err) {
@@ -350,25 +394,25 @@ export async function importItems(req, res) {
         const row = Object.fromEntries(
           Object.entries(raw).map(([k, v]) => [trim(k), trim(v)])
         );
-        const article = trim(row.Article).toUpperCase();
+        const article = pick(row, "Article", "ARTICLE").toUpperCase();
         if (!article) {
           throw new Error("Article missing");
         }
 
-        const uom = normalizeUom(row.UOM);
-        const dimension = normalizeDimension(row.Dimension);
+        const uom = normalizeUom(pick(row, "UOM", "Uom", "uom"));
+        const dimension = normalizeDimension(pick(row, "Dimension", "DIMENSION"));
 
         await ItemMaster.findOneAndUpdate(
           withCompany(req, { article }),
           {
             companyId: req.companyId,
             article,
-            itemName: trim(row["Item Name"]),
-            description: trim(row.Description),
-            vertical: trim(row.Vertical),
-            engine: trim(row.Engine),
-            model: trim(row.Model),
-            config: trim(row.Config),
+            itemName: pick(row, "ITEM NAME", "Item Name", "itemName"),
+            description: pick(row, "Description", "DESCRIPTION"),
+            vertical: pick(row, "Vertical", "VERTICLE"),
+            engine: pick(row, "Eng no", "Engine", "ENG NO"),
+            model: pick(row, "Model", "MODEL"),
+            config: pick(row, "Config", "CONFIG"),
             uom,
             status: "Active",
           },
@@ -381,12 +425,12 @@ export async function importItems(req, res) {
           {
             companyId: req.companyId,
             article,
-            spn: trim(row.SPN),
-            materialCode: trim(row["Material Code"]),
-            drawingNumber: trim(row["Drawing Number"]),
-            extRemarks: trim(row["Ext Remarks"]),
-            internalRemarks: trim(row["Internal Remarks"]),
-            oeMarkings: trim(row["OE Markings"]),
+            spn: pick(row, "SPN"),
+            materialCode: pick(row, "Material Code", "Material code"),
+            drawingNumber: pick(row, "Drawing Number", "Drawing number"),
+            extRemarks: pick(row, "Ext Remarks", "Ext remarks"),
+            internalRemarks: pick(row, "Internal Remarks", "Internal remarks"),
+            oeMarkings: pick(row, "OE Markings", "OE Markings"),
             dimension,
           },
           { upsert: true, new: true, runValidators: true }
@@ -394,8 +438,14 @@ export async function importItems(req, res) {
         result.upsertedTechnicals += 1;
 
         const suppliersFromLegacyCols = [
-          { supplierName: trim(row["Supplier 1"]), supplierPartNumber: trim(row["Supplier 1 P/N"]) },
-          { supplierName: trim(row["Supplier 2"]), supplierPartNumber: trim(row["Supplier 2 P/N"]) },
+          {
+            supplierName: pick(row, "Supplier 1"),
+            supplierPartNumber: pick(row, "Supplier 1 P/N", "Supplier 1 P/N "),
+          },
+          {
+            supplierName: pick(row, "Supplier 2"),
+            supplierPartNumber: pick(row, "Supplier 2 P/N", "Supplier 2 P/N "),
+          },
         ].filter((sup) => sup.supplierName);
 
         for (const supplier of suppliersFromLegacyCols) {
@@ -450,10 +500,10 @@ export async function exportItems(req, res) {
       const tech = technicalByArticle.get(item.article);
       return {
         Article: item.article,
-        "Item Name": item.itemName,
+        "ITEM NAME": item.itemName,
         Description: item.description,
         Vertical: item.vertical,
-        Engine: item.engine,
+        "Eng no": item.engine,
         Model: item.model,
         Config: item.config,
         SPN: tech?.spn || "",

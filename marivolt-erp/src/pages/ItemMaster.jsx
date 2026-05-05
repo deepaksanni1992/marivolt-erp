@@ -37,10 +37,10 @@ const emptySupplier = {
 
 const EXPORT_COLUMNS = [
   { key: "Article", header: "Article" },
-  { key: "Item Name", header: "Item Name" },
+  { key: "ITEM NAME", header: "ITEM NAME" },
   { key: "Description", header: "Description" },
   { key: "Vertical", header: "Vertical" },
-  { key: "Engine", header: "Engine" },
+  { key: "Eng no", header: "Eng no" },
   { key: "Model", header: "Model" },
   { key: "Config", header: "Config" },
   { key: "SPN", header: "SPN" },
@@ -259,22 +259,54 @@ export default function ItemMaster() {
 
       <div className="overflow-hidden rounded-2xl border bg-white">
         <div className="max-h-[62vh] overflow-auto">
-          <table className="min-w-[1200px] w-full text-sm">
+          <table className="min-w-[2800px] w-full text-sm">
             <thead className="sticky top-0 bg-slate-100">
               <tr className="text-left">
-                <th className="px-3 py-3">Article</th><th className="px-3 py-3">Item Name</th><th className="px-3 py-3">Description</th><th className="px-3 py-3">Engine</th><th className="px-3 py-3">Model</th><th className="px-3 py-3">Config</th><th className="px-3 py-3">Dimension</th><th className="px-3 py-3">Status</th><th className="px-3 py-3 text-right">Actions</th>
+                <th className="px-3 py-3">Vertical</th>
+                <th className="px-3 py-3">Eng no</th>
+                <th className="px-3 py-3">Model</th>
+                <th className="px-3 py-3">Config</th>
+                <th className="px-3 py-3">Article</th>
+                <th className="px-3 py-3">Description</th>
+                <th className="px-3 py-3">ITEM NAME</th>
+                <th className="px-3 py-3">SPN</th>
+                <th className="px-3 py-3">Material Code</th>
+                <th className="px-3 py-3">Drawing Number</th>
+                <th className="px-3 py-3">QTY</th>
+                <th className="px-3 py-3">Ext Remarks</th>
+                <th className="px-3 py-3">Internal Remarks</th>
+                <th className="px-3 py-3">OE Markings</th>
+                <th className="px-3 py-3">Dimension</th>
+                <th className="px-3 py-3">Supplier 1</th>
+                <th className="px-3 py-3">Supplier 1 P/N</th>
+                <th className="px-3 py-3">Supplier 2</th>
+                <th className="px-3 py-3">Supplier 2 P/N</th>
+                <th className="px-3 py-3">Status</th>
+                <th className="px-3 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {isLoading ? <tr><td className="px-3 py-8" colSpan={9}>Loading...</td></tr> : list.map((row) => (
+              {isLoading ? <tr><td className="px-3 py-8" colSpan={20}>Loading...</td></tr> : list.map((row) => (
                 <tr key={row._id} className="border-t">
-                  <td className="px-3 py-2 font-mono">{row.article}</td>
-                  <td className="px-3 py-2">{row.itemName}</td>
-                  <td className="px-3 py-2">{row.description || "-"}</td>
+                  <td className="px-3 py-2">{row.vertical || "-"}</td>
                   <td className="px-3 py-2">{row.engine || "-"}</td>
                   <td className="px-3 py-2">{row.model || "-"}</td>
                   <td className="px-3 py-2">{row.config || "-"}</td>
+                  <td className="px-3 py-2 font-mono">{row.article}</td>
+                  <td className="px-3 py-2">{row.description || "-"}</td>
+                  <td className="px-3 py-2">{row.itemName || "-"}</td>
+                  <td className="px-3 py-2">{row.spn || "-"}</td>
+                  <td className="px-3 py-2">{row.materialCode || "-"}</td>
+                  <td className="px-3 py-2">{row.drawingNumber || "-"}</td>
+                  <td className="px-3 py-2">{Number(row.qty || 0)}</td>
+                  <td className="px-3 py-2">{row.extRemarks || "-"}</td>
+                  <td className="px-3 py-2">{row.internalRemarks || "-"}</td>
+                  <td className="px-3 py-2">{row.oeMarkings || "-"}</td>
                   <td className="px-3 py-2">{row.dimension || "-"}</td>
+                  <td className="px-3 py-2">{row.supplier1 || "-"}</td>
+                  <td className="px-3 py-2">{row.supplier1PartNumber || "-"}</td>
+                  <td className="px-3 py-2">{row.supplier2 || "-"}</td>
+                  <td className="px-3 py-2">{row.supplier2PartNumber || "-"}</td>
                   <td className="px-3 py-2"><StatusBadge status={row.status} /></td>
                   <td className="px-3 py-2">
                     <div className="flex justify-end gap-2">

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
+    "verify": "node --check src/server.js && node --check src/controllers/itemController.js && node --check src/controllers/grnController.js && node --check src/controllers/stockController.js && node --check src/routes/itemRoutes.js && node --check src/routes/grnRoutes.js && node --check src/routes/stockRoutes.js && node --check src/services/stockLedgerService.js",
     "test": "echo \"Error: no test specified\" && exit 1",
     "seed:companies": "node src/seedCompanies.js",
     "migrate:company-marivolt": "node scripts/migrate-company-marivolt.mjs",
