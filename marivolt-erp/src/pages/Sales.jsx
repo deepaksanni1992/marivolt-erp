@@ -619,19 +619,19 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
       <body class="${isMarivolt ? "has-quote-terms" : ""}">
-        <div class="header">
-          <div class="header-left">
+        <div class="quote-header">
+          <div class="quote-left">
             ${
               useBrandedLayout
-                ? `<img src="${printLogo}" alt="${companyDisplayName || "Company"} logo" class="logo" />`
+                ? `<img src="${printLogo}" alt="${companyDisplayName || "Company"} logo" class="quote-logo" />`
                 : hasCompanyLogo
-                ? `<img src="${company.logo}" alt="${company.companyName || "Company"} logo" class="logo" />`
+                ? `<img src="${company.logo}" alt="${company.companyName || "Company"} logo" class="quote-logo" />`
                 : `<div class="brand-fallback">MV</div>`
             }
           </div>
-          <div class="header-center">
-            <div class="title">Quotation</div>
-            <div class="muted">
+          <div class="quote-center">
+            <div class="quote-title">Quotation</div>
+            <div class="quote-meta">
               <div><b>No:</b> ${q.quotationNo || "-"}</div>
               <div><b>Date:</b> ${q.quotationDate ? new Date(q.quotationDate).toLocaleDateString() : "-"}</div>
               <div><b>Validity:</b> ${q.validityDate ? new Date(q.validityDate).toLocaleDateString() : "-"}</div>
@@ -639,16 +639,16 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           </div>
           ${
             useBrandedLayout
-              ? `<div class="header-right is-marivolt">
-                <h1 class="brand-title">${companyDisplayName || (company.companyName || "")}</h1>
-                ${companySubtitle ? `<div class="brand-subtitle">${companySubtitle}</div>` : ""}
-                <div class="muted" style="margin-top:8px;">
+              ? `<div class="quote-right">
+                <h1 class="company-name">${companyDisplayName || (company.companyName || "")}</h1>
+                ${companySubtitle ? `<div class="company-subtitle">${companySubtitle}</div>` : ""}
+                <div class="company-details">
                   <div>${company.address || reportAddress}</div>
                   <div>${company.email || reportEmail}</div>
                   <div>${company.phone || reportPhone}</div>
                 </div>
               </div>`
-              : `<div class="header-right muted">
+              : `<div class="quote-right company-details">
                 <div><b>${company.companyName || ""}</b></div>
                 <div>${company.address || ""}</div>
                 <div>${company.email || ""}</div>

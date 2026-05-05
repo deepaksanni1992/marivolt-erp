@@ -2,6 +2,58 @@
 export const SALES_QUOTATION_STYLE_PRINT_CSS = `
           body { font-family: Arial, sans-serif; margin: 24px; color: #111; padding-bottom: 90px; }
           body.has-quote-terms { padding-bottom: 155px; }
+          .quote-header {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            align-items: center;
+            width: 100%;
+            padding: 20px 30px;
+            border-bottom: 2px solid #e5e7eb;
+            box-sizing: border-box;
+            min-height: 118px;
+            margin-bottom: 16px;
+          }
+          .quote-left {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+          }
+          .quote-center { text-align: center; }
+          .quote-right { text-align: right; }
+          .quote-logo {
+            max-width: 160px;
+            height: auto;
+            object-fit: contain;
+          }
+          .quote-title {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 5px;
+          }
+          .quote-meta {
+            font-size: 13px;
+            color: #555;
+            line-height: 1.5;
+          }
+          .company-name {
+            font-size: 32px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            color: #1f3a5f;
+            line-height: 1;
+          }
+          .company-subtitle {
+            font-size: 14px;
+            font-weight: 600;
+            color: #2c5282;
+            margin-top: 4px;
+          }
+          .company-details {
+            font-size: 12px;
+            color: #4a5568;
+            line-height: 1.6;
+            margin-top: 8px;
+          }
           .header {
             display: flex;
             justify-content: space-between;
@@ -202,6 +254,7 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
               border-color: #d6d6d6 !important;
             }
             .header { page-break-inside: avoid; }
+            .quote-header { page-break-inside: avoid; }
             .quote-terms { page-break-inside: avoid; }
             .page-footer { position: fixed; bottom: 8px; }
           }
