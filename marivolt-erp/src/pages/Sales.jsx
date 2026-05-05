@@ -564,6 +564,21 @@ function escapeCsvValue(value) {
   return /[",\n]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
+function getReportBranding(companyNameRaw = "") {
+  const companyName = String(companyNameRaw || "").toLowerCase();
+  const isMarivolt = companyName.includes("marivolt");
+  const isOkeanos = companyName.includes("okeanos");
+  const useBrandedLayout = isMarivolt || isOkeanos;
+  const printLogo = isMarivolt
+    ? "/brand/marivolt-icon.png"
+    : isOkeanos
+      ? "/brand/okeanos-logo.png"
+      : "";
+  const companyDisplayName = isMarivolt ? "MariVolt" : isOkeanos ? "OKEANOS" : "";
+  const companySubtitle = isMarivolt ? "Marine Engine Spares" : "";
+  return { isMarivolt, isOkeanos, useBrandedLayout, printLogo, companyDisplayName, companySubtitle };
+}
+
 function renderPrintWindow(data, autoPrint = false) {
   const q = data?.quotation || {};
   const company = q.companySnapshot || {};
@@ -571,8 +586,7 @@ function renderPrintWindow(data, autoPrint = false) {
   const rows = q.lines || [];
   const hasCompanyLogo = String(company.logo || "").trim().length > 0;
   const companyName = String(company.companyName || "").toLowerCase();
-  const isMarivolt = companyName.includes("marivolt");
-  const marivoltPrintLogo = "/brand/marivolt-icon.png";
+  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle } = getReportBranding(companyName);
   const html = `
     <html>
       <head>
@@ -585,8 +599,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         <div class="header">
           <div class="header-left">
             ${
-              isMarivolt
-                ? `<img src="${marivoltPrintLogo}" alt="Marivolt icon" class="logo" />`
+              useBrandedLayout
+                ? `<img src="${printLogo}" alt="${companyDisplayName || "Company"} logo" class="logo" />`
                 : hasCompanyLogo
                 ? `<img src="${company.logo}" alt="${company.companyName || "Company"} logo" class="logo" />`
                 : `<div class="brand-fallback">MV</div>`
@@ -601,14 +615,14 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             </div>
           </div>
           ${
-            isMarivolt
+            useBrandedLayout
               ? `<div class="header-right is-marivolt">
-                <h1 class="brand-title">MariVolt</h1>
-                <div class="brand-subtitle">Marine Engine Spares</div>
+                <h1 class="brand-title">${companyDisplayName || (company.companyName || "")}</h1>
+                ${companySubtitle ? `<div class="brand-subtitle">${companySubtitle}</div>` : ""}
                 <div class="muted" style="margin-top:8px;">
-                  <div>${company.address || "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"}</div>
-                  <div>${company.email || "sales@marivolt.co"}</div>
-                  <div>${company.phone || "+971-543053047"}</div>
+                  <div>${company.address || ""}</div>
+                  <div>${company.email || ""}</div>
+                  <div>${company.phone || ""}</div>
                 </div>
               </div>`
               : `<div class="header-right muted">
@@ -717,8 +731,7 @@ function renderOrderAcknowledgementPrintWindow(payload, autoPrint = false) {
   const rows = oa.lines || [];
   const hasCompanyLogo = String(company.logo || "").trim().length > 0;
   const companyName = String(company.companyName || "").toLowerCase();
-  const isMarivolt = companyName.includes("marivolt");
-  const marivoltPrintLogo = "/brand/marivolt-icon.png";
+  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle } = getReportBranding(companyName);
   const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "-");
 
   const html = `
@@ -733,8 +746,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         <div class="header">
           <div class="header-left">
             ${
-              isMarivolt
-                ? `<img src="${marivoltPrintLogo}" alt="Marivolt icon" class="logo" />`
+              useBrandedLayout
+                ? `<img src="${printLogo}" alt="${companyDisplayName || "Company"} logo" class="logo" />`
                 : hasCompanyLogo
                 ? `<img src="${company.logo}" alt="${company.companyName || "Company"} logo" class="logo" />`
                 : `<div class="brand-fallback">MV</div>`
@@ -749,14 +762,14 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             </div>
           </div>
           ${
-            isMarivolt
+            useBrandedLayout
               ? `<div class="header-right is-marivolt">
-                <h1 class="brand-title">MariVolt</h1>
-                <div class="brand-subtitle">Marine Engine Spares</div>
+                <h1 class="brand-title">${companyDisplayName || (company.companyName || "")}</h1>
+                ${companySubtitle ? `<div class="brand-subtitle">${companySubtitle}</div>` : ""}
                 <div class="muted" style="margin-top:8px;">
-                  <div>${company.address || "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"}</div>
-                  <div>${company.email || "sales@marivolt.co"}</div>
-                  <div>${company.phone || "+971-543053047"}</div>
+                  <div>${company.address || ""}</div>
+                  <div>${company.email || ""}</div>
+                  <div>${company.phone || ""}</div>
                 </div>
               </div>`
               : `<div class="header-right muted">
@@ -873,8 +886,7 @@ function renderFlowDocPrintWindow({
   const rows = doc?.lines || [];
   const hasCompanyLogo = String(company?.logo || company?.logoUrl || "").trim().length > 0;
   const companyName = String(company?.name || company?.companyName || "").toLowerCase();
-  const isMarivolt = companyName.includes("marivolt");
-  const marivoltPrintLogo = "/brand/marivolt-icon.png";
+  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle } = getReportBranding(companyName);
   const lineTableHeaderHtml = salesInvoiceLayout
     ? `
               <th style="width:6%;">Pos.</th>
@@ -926,8 +938,8 @@ function renderFlowDocPrintWindow({
         <div class="header">
           <div class="header-left">
             ${
-              isMarivolt
-                ? `<img src="${marivoltPrintLogo}" alt="Marivolt icon" class="logo" />`
+              useBrandedLayout
+                ? `<img src="${printLogo}" alt="${companyDisplayName || "Company"} logo" class="logo" />`
                 : hasCompanyLogo
                 ? `<img src="${company?.logo || company?.logoUrl}" alt="${company?.name || company?.companyName || "Company"} logo" class="logo" />`
                 : `<div class="brand-fallback">MV</div>`
@@ -943,14 +955,14 @@ function renderFlowDocPrintWindow({
             </div>
           </div>
           ${
-            isMarivolt
+            useBrandedLayout
               ? `<div class="header-right is-marivolt">
-                <h1 class="brand-title">MariVolt</h1>
-                <div class="brand-subtitle">Marine Engine Spares</div>
+                <h1 class="brand-title">${companyDisplayName || (company?.name || company?.companyName || "")}</h1>
+                ${companySubtitle ? `<div class="brand-subtitle">${companySubtitle}</div>` : ""}
                 <div class="muted" style="margin-top:8px;">
-                  <div>${company?.address || "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"}</div>
-                  <div>${company?.email || "sales@marivolt.co"}</div>
-                  <div>${company?.phone || "+971-543053047"}</div>
+                  <div>${company?.address || ""}</div>
+                  <div>${company?.email || ""}</div>
+                  <div>${company?.phone || ""}</div>
                 </div>
               </div>`
               : `<div class="header-right muted">
@@ -983,8 +995,8 @@ function renderFlowDocPrintWindow({
         <div class="header">
           <div class="header-left">
             ${
-              isMarivolt
-                ? `<img src="${marivoltPrintLogo}" alt="Marivolt icon" class="logo" />`
+              useBrandedLayout
+                ? `<img src="${printLogo}" alt="${companyDisplayName || "Company"} logo" class="logo" />`
                 : hasCompanyLogo
                 ? `<img src="${company?.logo || company?.logoUrl}" alt="${company?.name || company?.companyName || "Company"} logo" class="logo" />`
                 : `<div class="brand-fallback">MV</div>`
@@ -998,14 +1010,14 @@ function renderFlowDocPrintWindow({
             </div>
           </div>
           ${
-            isMarivolt
+            useBrandedLayout
               ? `<div class="header-right is-marivolt">
-                <h1 class="brand-title">MariVolt</h1>
-                <div class="brand-subtitle">Marine Engine Spares</div>
+                <h1 class="brand-title">${companyDisplayName || (company?.name || company?.companyName || "")}</h1>
+                ${companySubtitle ? `<div class="brand-subtitle">${companySubtitle}</div>` : ""}
                 <div class="muted" style="margin-top:8px;">
-                  <div>${company?.address || "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"}</div>
-                  <div>${company?.email || "sales@marivolt.co"}</div>
-                  <div>${company?.phone || "+971-543053047"}</div>
+                  <div>${company?.address || ""}</div>
+                  <div>${company?.email || ""}</div>
+                  <div>${company?.phone || ""}</div>
                 </div>
               </div>`
               : `<div class="header-right muted">
@@ -1109,8 +1121,7 @@ function renderPackingListPrintWindow({ rts, company, autoPrint = false }) {
   const totalBoxes = boxes.reduce((acc, b) => acc + (Number(b.count || 0) || 0), 0);
   const hasCompanyLogo = String(company?.logo || company?.logoUrl || "").trim().length > 0;
   const companyName = String(company?.name || company?.companyName || "").toLowerCase();
-  const isMarivolt = companyName.includes("marivolt");
-  const marivoltPrintLogo = "/brand/marivolt-icon.png";
+  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle } = getReportBranding(companyName);
   const html = `
     <html>
       <head>
@@ -1123,8 +1134,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         <div class="header">
           <div class="header-left">
             ${
-              isMarivolt
-                ? `<img src="${marivoltPrintLogo}" alt="Marivolt icon" class="logo" />`
+              useBrandedLayout
+                ? `<img src="${printLogo}" alt="${companyDisplayName || "Company"} logo" class="logo" />`
                 : hasCompanyLogo
                 ? `<img src="${company?.logo || company?.logoUrl}" alt="${company?.name || company?.companyName || "Company"} logo" class="logo" />`
                 : `<div class="brand-fallback">MV</div>`
@@ -1139,14 +1150,14 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             </div>
           </div>
           ${
-            isMarivolt
+            useBrandedLayout
               ? `<div class="header-right is-marivolt">
-                <h1 class="brand-title">MariVolt</h1>
-                <div class="brand-subtitle">Marine Engine Spares</div>
+                <h1 class="brand-title">${companyDisplayName || (company?.name || company?.companyName || "")}</h1>
+                ${companySubtitle ? `<div class="brand-subtitle">${companySubtitle}</div>` : ""}
                 <div class="muted" style="margin-top:8px;">
-                  <div>${company?.address || "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"}</div>
-                  <div>${company?.email || "sales@marivolt.co"}</div>
-                  <div>${company?.phone || "+971-543053047"}</div>
+                  <div>${company?.address || ""}</div>
+                  <div>${company?.email || ""}</div>
+                  <div>${company?.phone || ""}</div>
                 </div>
               </div>`
               : `<div class="header-right muted">

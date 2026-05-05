@@ -11,7 +11,11 @@ export function renderOrderAllocationPrintWindow(allocation, company = {}, autoP
   const hasCompanyLogo = String(company?.logo || company?.logoUrl || "").trim().length > 0;
   const companyName = String(company?.name || company?.companyName || "").toLowerCase();
   const isMarivolt = companyName.includes("marivolt");
-  const marivoltPrintLogo = "/brand/marivolt-icon.png";
+  const isOkeanos = companyName.includes("okeanos");
+  const useBrandedLayout = isMarivolt || isOkeanos;
+  const printLogo = isMarivolt ? "/brand/marivolt-icon.png" : isOkeanos ? "/brand/okeanos-logo.png" : "";
+  const companyDisplayName = isMarivolt ? "MariVolt" : isOkeanos ? "OKEANOS" : (company?.name || company?.companyName || "-");
+  const companySubtitle = isMarivolt ? "Marine Engine Spares" : "";
   const html = `
     <html>
       <head>
@@ -24,8 +28,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         <div class="header">
           <div class="header-left">
             ${
-              isMarivolt
-                ? `<img src="${marivoltPrintLogo}" alt="Marivolt icon" class="logo" />`
+              useBrandedLayout
+                ? `<img src="${printLogo}" alt="${companyDisplayName}" class="logo" />`
                 : hasCompanyLogo
                   ? `<img src="${company?.logo || company?.logoUrl}" alt="${company?.name || company?.companyName || "Company"} logo" class="logo" />`
                   : `<div class="brand-fallback">MV</div>`
@@ -41,14 +45,14 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             </div>
           </div>
           ${
-            isMarivolt
+            useBrandedLayout
               ? `<div class="header-right is-marivolt">
-                <h1 class="brand-title">MariVolt</h1>
-                <div class="brand-subtitle">Marine Engine Spares</div>
+                <h1 class="brand-title">${companyDisplayName}</h1>
+                ${companySubtitle ? `<div class="brand-subtitle">${companySubtitle}</div>` : ""}
                 <div class="muted" style="margin-top:8px;">
-                  <div>${company?.address || "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"}</div>
-                  <div>${company?.email || "sales@marivolt.co"}</div>
-                  <div>${company?.phone || "+971-543053047"}</div>
+                  <div>${company?.address || ""}</div>
+                  <div>${company?.email || ""}</div>
+                  <div>${company?.phone || ""}</div>
                 </div>
               </div>`
               : `<div class="header-right muted">
