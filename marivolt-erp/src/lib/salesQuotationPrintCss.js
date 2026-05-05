@@ -153,7 +153,7 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             left: 24px;
             right: 24px;
             bottom: 16px;
-            color: #d6a327;
+            color: #1f3a5f;
             font-size: 12px;
           }
           .page-footer-top {
@@ -167,7 +167,7 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
           .page-footer-line {
             margin-top: 8px;
             height: 5px;
-            background: #e1aa24;
+            background: #1f3a5f;
             border-radius: 2px;
           }
           .si-tax-print-wrap { margin-top: 10px; margin-bottom: 14px; page-break-inside: avoid; }
@@ -243,8 +243,8 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             .brand-title { color: #e85d3f !important; }
             .brand-subtitle { color: #1f4e79 !important; }
             .brand-fallback { color: #1f5a96 !important; }
-            .page-footer { color: #d6a327 !important; }
-            .page-footer-line { background: #e1aa24 !important; }
+            .page-footer { color: #1f3a5f !important; }
+            .page-footer-line { background: #1f3a5f !important; }
             th { background: #f5f5f5 !important; color: #111 !important; }
             .info-box {
               background: #fafafa !important;
