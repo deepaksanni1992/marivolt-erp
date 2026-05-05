@@ -575,8 +575,27 @@ function getReportBranding(companyNameRaw = "") {
       ? "/brand/okeanos-logo.png"
       : "";
   const companyDisplayName = isMarivolt ? "MariVolt" : isOkeanos ? "OKEANOS" : "";
-  const companySubtitle = isMarivolt ? "Marine Engine Spares" : "";
-  return { isMarivolt, isOkeanos, useBrandedLayout, printLogo, companyDisplayName, companySubtitle };
+  const companySubtitle = useBrandedLayout ? "Marine Engine Spares" : "";
+  const reportAddress = isMarivolt
+    ? "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"
+    : isOkeanos
+      ? "C1 Building, Ajman Freezone, Ajman, UAE"
+      : "";
+  const reportEmail = isMarivolt ? "sales@marivolt.co" : isOkeanos ? "Sales@okeanos.pro" : "";
+  const reportPhone = isMarivolt ? "+971-543053047" : isOkeanos ? "+971-543050000" : "";
+  const reportWebsite = isMarivolt ? "www.marivolt.co" : isOkeanos ? "www.okfze.com" : "";
+  return {
+    isMarivolt,
+    isOkeanos,
+    useBrandedLayout,
+    printLogo,
+    companyDisplayName,
+    companySubtitle,
+    reportAddress,
+    reportEmail,
+    reportPhone,
+    reportWebsite,
+  };
 }
 
 function renderPrintWindow(data, autoPrint = false) {
@@ -586,7 +605,7 @@ function renderPrintWindow(data, autoPrint = false) {
   const rows = q.lines || [];
   const hasCompanyLogo = String(company.logo || "").trim().length > 0;
   const companyName = String(company.companyName || "").toLowerCase();
-  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle } = getReportBranding(companyName);
+  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite } = getReportBranding(companyName);
   const html = `
     <html>
       <head>
@@ -620,9 +639,9 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
                 <h1 class="brand-title">${companyDisplayName || (company.companyName || "")}</h1>
                 ${companySubtitle ? `<div class="brand-subtitle">${companySubtitle}</div>` : ""}
                 <div class="muted" style="margin-top:8px;">
-                  <div>${company.address || ""}</div>
-                  <div>${company.email || ""}</div>
-                  <div>${company.phone || ""}</div>
+                  <div>${company.address || reportAddress}</div>
+                  <div>${company.email || reportEmail}</div>
+                  <div>${company.phone || reportPhone}</div>
                 </div>
               </div>`
               : `<div class="header-right muted">
@@ -694,18 +713,18 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
         </div>
         ${
-          isMarivolt
+          useBrandedLayout
             ? `<div class="page-footer">
           <div class="page-footer-top">
             <div>
-              <div>Marivolt FZE</div>
-              <div>LV09B</div>
+              <div>${companyDisplayName || "-"}</div>
+              <div>C1/MV Office</div>
             </div>
-            <div class="page-footer-center">Hamriyah freezone phase 2, Sharjah, UAE</div>
+            <div class="page-footer-center">${reportAddress}</div>
             <div class="page-footer-right">
-              <div>Mob: +971-543053047</div>
-              <div>Email: sales@marivolt.co</div>
-              <div>Web: www.marivolt.co</div>
+              <div>Mob: ${reportPhone}</div>
+              <div>Email: ${reportEmail}</div>
+              <div>Web: ${reportWebsite}</div>
             </div>
           </div>
           <div class="page-footer-line"></div>
@@ -731,7 +750,7 @@ function renderOrderAcknowledgementPrintWindow(payload, autoPrint = false) {
   const rows = oa.lines || [];
   const hasCompanyLogo = String(company.logo || "").trim().length > 0;
   const companyName = String(company.companyName || "").toLowerCase();
-  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle } = getReportBranding(companyName);
+  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite } = getReportBranding(companyName);
   const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "-");
 
   const html = `
@@ -767,9 +786,9 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
                 <h1 class="brand-title">${companyDisplayName || (company.companyName || "")}</h1>
                 ${companySubtitle ? `<div class="brand-subtitle">${companySubtitle}</div>` : ""}
                 <div class="muted" style="margin-top:8px;">
-                  <div>${company.address || ""}</div>
-                  <div>${company.email || ""}</div>
-                  <div>${company.phone || ""}</div>
+                  <div>${company.address || reportAddress}</div>
+                  <div>${company.email || reportEmail}</div>
+                  <div>${company.phone || reportPhone}</div>
                 </div>
               </div>`
               : `<div class="header-right muted">
@@ -838,18 +857,18 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
         </div>
         ${
-          isMarivolt
+          useBrandedLayout
             ? `<div class="page-footer">
           <div class="page-footer-top">
             <div>
-              <div>Marivolt FZE</div>
-              <div>LV09B</div>
+              <div>${companyDisplayName || "-"}</div>
+              <div>C1/MV Office</div>
             </div>
-            <div class="page-footer-center">Hamriyah freezone phase 2, Sharjah, UAE</div>
+            <div class="page-footer-center">${reportAddress}</div>
             <div class="page-footer-right">
-              <div>Mob: +971-543053047</div>
-              <div>Email: sales@marivolt.co</div>
-              <div>Web: www.marivolt.co</div>
+              <div>Mob: ${reportPhone}</div>
+              <div>Email: ${reportEmail}</div>
+              <div>Web: ${reportWebsite}</div>
             </div>
           </div>
           <div class="page-footer-line"></div>
@@ -886,7 +905,7 @@ function renderFlowDocPrintWindow({
   const rows = doc?.lines || [];
   const hasCompanyLogo = String(company?.logo || company?.logoUrl || "").trim().length > 0;
   const companyName = String(company?.name || company?.companyName || "").toLowerCase();
-  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle } = getReportBranding(companyName);
+  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite } = getReportBranding(companyName);
   const lineTableHeaderHtml = salesInvoiceLayout
     ? `
               <th style="width:6%;">Pos.</th>
@@ -960,9 +979,9 @@ function renderFlowDocPrintWindow({
                 <h1 class="brand-title">${companyDisplayName || (company?.name || company?.companyName || "")}</h1>
                 ${companySubtitle ? `<div class="brand-subtitle">${companySubtitle}</div>` : ""}
                 <div class="muted" style="margin-top:8px;">
-                  <div>${company?.address || ""}</div>
-                  <div>${company?.email || ""}</div>
-                  <div>${company?.phone || ""}</div>
+                  <div>${company?.address || reportAddress}</div>
+                  <div>${company?.email || reportEmail}</div>
+                  <div>${company?.phone || reportPhone}</div>
                 </div>
               </div>`
               : `<div class="header-right muted">
@@ -1015,9 +1034,9 @@ function renderFlowDocPrintWindow({
                 <h1 class="brand-title">${companyDisplayName || (company?.name || company?.companyName || "")}</h1>
                 ${companySubtitle ? `<div class="brand-subtitle">${companySubtitle}</div>` : ""}
                 <div class="muted" style="margin-top:8px;">
-                  <div>${company?.address || ""}</div>
-                  <div>${company?.email || ""}</div>
-                  <div>${company?.phone || ""}</div>
+                  <div>${company?.address || reportAddress}</div>
+                  <div>${company?.email || reportEmail}</div>
+                  <div>${company?.phone || reportPhone}</div>
                 </div>
               </div>`
               : `<div class="header-right muted">
@@ -1086,18 +1105,18 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           }</div>
         </div>
         ${
-          isMarivolt
+          useBrandedLayout
             ? `<div class="page-footer">
           <div class="page-footer-top">
             <div>
-              <div>Marivolt FZE</div>
-              <div>LV09B</div>
+              <div>${companyDisplayName || "-"}</div>
+              <div>C1/MV Office</div>
             </div>
-            <div class="page-footer-center">Hamriyah freezone phase 2, Sharjah, UAE</div>
+            <div class="page-footer-center">${reportAddress}</div>
             <div class="page-footer-right">
-              <div>Mob: +971-543053047</div>
-              <div>Email: sales@marivolt.co</div>
-              <div>Web: www.marivolt.co</div>
+              <div>Mob: ${reportPhone}</div>
+              <div>Email: ${reportEmail}</div>
+              <div>Web: ${reportWebsite}</div>
             </div>
           </div>
           <div class="page-footer-line"></div>
@@ -1121,7 +1140,7 @@ function renderPackingListPrintWindow({ rts, company, autoPrint = false }) {
   const totalBoxes = boxes.reduce((acc, b) => acc + (Number(b.count || 0) || 0), 0);
   const hasCompanyLogo = String(company?.logo || company?.logoUrl || "").trim().length > 0;
   const companyName = String(company?.name || company?.companyName || "").toLowerCase();
-  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle } = getReportBranding(companyName);
+  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite } = getReportBranding(companyName);
   const html = `
     <html>
       <head>
@@ -1155,9 +1174,9 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
                 <h1 class="brand-title">${companyDisplayName || (company?.name || company?.companyName || "")}</h1>
                 ${companySubtitle ? `<div class="brand-subtitle">${companySubtitle}</div>` : ""}
                 <div class="muted" style="margin-top:8px;">
-                  <div>${company?.address || ""}</div>
-                  <div>${company?.email || ""}</div>
-                  <div>${company?.phone || ""}</div>
+                  <div>${company?.address || reportAddress}</div>
+                  <div>${company?.email || reportEmail}</div>
+                  <div>${company?.phone || reportPhone}</div>
                 </div>
               </div>`
               : `<div class="header-right muted">
@@ -1244,18 +1263,18 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
         </div>
         ${
-          isMarivolt
+          useBrandedLayout
             ? `<div class="page-footer">
           <div class="page-footer-top">
             <div>
-              <div>Marivolt FZE</div>
-              <div>LV09B</div>
+              <div>${companyDisplayName || "-"}</div>
+              <div>C1/MV Office</div>
             </div>
-            <div class="page-footer-center">Hamriyah freezone phase 2, Sharjah, UAE</div>
+            <div class="page-footer-center">${reportAddress}</div>
             <div class="page-footer-right">
-              <div>Mob: +971-543053047</div>
-              <div>Email: sales@marivolt.co</div>
-              <div>Web: www.marivolt.co</div>
+              <div>Mob: ${reportPhone}</div>
+              <div>Email: ${reportEmail}</div>
+              <div>Web: ${reportWebsite}</div>
             </div>
           </div>
           <div class="page-footer-line"></div>

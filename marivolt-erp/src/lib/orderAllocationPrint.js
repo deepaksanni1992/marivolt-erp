@@ -15,7 +15,15 @@ export function renderOrderAllocationPrintWindow(allocation, company = {}, autoP
   const useBrandedLayout = isMarivolt || isOkeanos;
   const printLogo = isMarivolt ? "/brand/marivolt-icon.png" : isOkeanos ? "/brand/okeanos-logo.png" : "";
   const companyDisplayName = isMarivolt ? "MariVolt" : isOkeanos ? "OKEANOS" : (company?.name || company?.companyName || "-");
-  const companySubtitle = isMarivolt ? "Marine Engine Spares" : "";
+  const companySubtitle = useBrandedLayout ? "Marine Engine Spares" : "";
+  const reportAddress = isMarivolt
+    ? "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"
+    : isOkeanos
+      ? "C1 Building, Ajman Freezone, Ajman, UAE"
+      : (company?.address || "");
+  const reportEmail = isMarivolt ? "sales@marivolt.co" : isOkeanos ? "Sales@okeanos.pro" : (company?.email || "");
+  const reportPhone = isMarivolt ? "+971-543053047" : isOkeanos ? "+971-543050000" : (company?.phone || "");
+  const reportWebsite = isMarivolt ? "www.marivolt.co" : isOkeanos ? "www.okfze.com" : "";
   const html = `
     <html>
       <head>
@@ -50,9 +58,9 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
                 <h1 class="brand-title">${companyDisplayName}</h1>
                 ${companySubtitle ? `<div class="brand-subtitle">${companySubtitle}</div>` : ""}
                 <div class="muted" style="margin-top:8px;">
-                  <div>${company?.address || ""}</div>
-                  <div>${company?.email || ""}</div>
-                  <div>${company?.phone || ""}</div>
+                  <div>${reportAddress}</div>
+                  <div>${reportEmail}</div>
+                  <div>${reportPhone}</div>
                 </div>
               </div>`
               : `<div class="header-right muted">
@@ -112,6 +120,25 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         <div class="footer">
           <div class="doc-note">This is a computer generated document and does not require signature or stamp.</div>
         </div>
+        ${
+          useBrandedLayout
+            ? `<div class="page-footer">
+          <div class="page-footer-top">
+            <div>
+              <div>${companyDisplayName || "-"}</div>
+              <div>C1/MV Office</div>
+            </div>
+            <div class="page-footer-center">${reportAddress}</div>
+            <div class="page-footer-right">
+              <div>Mob: ${reportPhone}</div>
+              <div>Email: ${reportEmail}</div>
+              <div>Web: ${reportWebsite}</div>
+            </div>
+          </div>
+          <div class="page-footer-line"></div>
+        </div>`
+            : ""
+        }
       </body>
     </html>
   `;
