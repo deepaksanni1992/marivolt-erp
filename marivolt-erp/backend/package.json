@@ -9,6 +9,7 @@
     "verify": "node --check src/server.js && node --check src/controllers/itemController.js && node --check src/controllers/grnController.js && node --check src/controllers/stockController.js && node --check src/routes/itemRoutes.js && node --check src/routes/grnRoutes.js && node --check src/routes/stockRoutes.js && node --check src/services/stockLedgerService.js",
     "test": "echo \"Error: no test specified\" && exit 1",
     "seed:companies": "node src/seedCompanies.js",
+    "seed:clone-item-master-okeanos": "node scripts/clone-item-master-mar-to-oke.mjs",
     "migrate:company-marivolt": "node scripts/migrate-company-marivolt.mjs",
     "migrate:item-master": "node scripts/migrate-item-master-2026.mjs",
     "migrate:bom-from-items": "node scripts/migrate-bom-from-items.mjs"
