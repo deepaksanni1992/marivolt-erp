@@ -846,6 +846,7 @@ function renderFlowDocPrintWindow({
   linkedLabel = "",
   linkedValue = "",
   salesInvoiceLayout = false,
+  includeBankFooter = false,
   bankDetail = null,
   amountInWords = "",
   autoPrint = false,
@@ -1032,7 +1033,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           <div><b>Grand Total</b><b>${money(doc?.grandTotal)} ${doc?.currency || ""}</b></div>
         </div>
         ${
-          salesInvoiceLayout
+          salesInvoiceLayout || includeBankFooter
             ? renderSiBankFooterHtml({
                 bankDetail,
                 amountInWords,
@@ -1674,6 +1675,15 @@ export default function Sales() {
       }
       if (type === "proforma") {
         const doc = await apiGet(`/sales/proforma-invoices/${id}`);
+        const curEnc = encodeURIComponent(String(doc?.currency || "USD").trim());
+        let bankDetail = null;
+        try {
+          const bdRes = await apiGet(`/accounts/bank-details/for-currency/${curEnc}`);
+          bankDetail = bdRes?.bankDetail ?? null;
+        } catch {
+          bankDetail = null;
+        }
+        const amountInWords = formatInvoiceAmountInWords(doc?.grandTotal, doc?.currency);
         renderFlowDocPrintWindow({
           title: "Proforma Invoice",
           doc,
@@ -1684,6 +1694,9 @@ export default function Sales() {
           dateValue: doc?.proformaDate,
           linkedLabel: "Linked OA",
           linkedValue: doc?.linkedOANo || doc?.linkedQuotationNo,
+          includeBankFooter: true,
+          bankDetail,
+          amountInWords,
           autoPrint,
         });
         return;
