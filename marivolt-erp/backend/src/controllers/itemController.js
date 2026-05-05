@@ -1,41 +1,66 @@
 import mongoose from "mongoose";
-import Item from "../models/itemModel.js";
-import ItemMapping from "../models/itemMappingModel.js";
-import ItemSupplierOffer from "../models/supplierModel.js";
-
-function escapeRegex(s) {
-  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function pagination(req) {
-  const exportMode = String(req.query.export || "") === "1";
-  const page = exportMode ? 1 : Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
-  const limit = exportMode
-    ? Math.min(10_000, Math.max(1, parseInt(String(req.query.limit || "5000"), 10) || 5000))
-    : Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
-  const skip = exportMode ? 0 : (page - 1) * limit;
-  return { page, limit, skip, exportMode };
-}
+import XLSX from "xlsx";
+import ItemMaster, { UOM_VALUES } from "../models/itemMasterModel.js";
+import ItemTechnical from "../models/itemTechnicalModel.js";
+import ItemSupplier from "../models/itemSupplierModel.js";
 
 function withCompany(req, filter = {}) {
-  return { ...filter, companyId: req.companyId };
+  return { companyId: req.companyId, ...filter };
+}
+
+function escRe(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function parsePaging(req) {
+  const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+  const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
+  return { page, limit, skip: (page - 1) * limit };
+}
+
+function trim(value) {
+  return String(value ?? "").trim();
+}
+
+function normalizeUom(value) {
+  const upper = trim(value).toUpperCase();
+  return UOM_VALUES.includes(upper) ? upper : "PCS";
+}
+
+function normalizeDimension(value) {
+  const raw = trim(value).replace(/\s+/g, " ");
+  if (!raw) return "";
+  const isValid = /^(\d+(\.\d+)?)\s*x\s*(\d+(\.\d+)?)\s*x\s*(\d+(\.\d+)?)(\s*mm)?$/i.test(raw);
+  if (!isValid) {
+    throw new Error("Invalid dimension format");
+  }
+  return raw.replace(/\s*mm$/i, "").replace(/\s*x\s*/gi, "x");
+}
+
+async function ensureItemExists(req, article) {
+  const item = await ItemMaster.findOne(withCompany(req, { article })).select("_id article").lean();
+  if (!item) throw new Error("Article not found in ItemMaster");
+}
+
+function mapMerged(item, technical, suppliers) {
+  return {
+    ...item,
+    technical: technical || null,
+    suppliers: suppliers || [],
+    dimension: technical?.dimension || "",
+  };
 }
 
 export async function listItemFacets(req, res) {
   try {
-    const [verticals, brands, models] = await Promise.all([
-      Item.distinct("vertical", withCompany(req, { vertical: { $nin: [null, ""] } })),
-      Item.distinct("brand", withCompany(req, { brand: { $nin: [null, ""] } })),
-      Item.distinct("modelName", withCompany(req, { modelName: { $nin: [null, ""] } })),
+    const [verticals, engines] = await Promise.all([
+      ItemMaster.distinct("vertical", withCompany(req, { vertical: { $nin: [null, ""] } })),
+      ItemMaster.distinct("engine", withCompany(req, { engine: { $nin: [null, ""] } })),
     ]);
-    const norm = (arr) =>
-      [...new Set(arr.map((x) => String(x || "").trim()).filter(Boolean))].sort((a, b) =>
-        a.localeCompare(b, undefined, { sensitivity: "base" })
-      );
+    const norm = (arr) => [...new Set(arr.map((x) => trim(x)).filter(Boolean))].sort();
     res.json({
       verticals: norm(verticals),
-      brands: norm(brands),
-      models: norm(models),
+      engines: norm(engines),
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -44,44 +69,56 @@ export async function listItemFacets(req, res) {
 
 export async function listItems(req, res) {
   try {
-    const { page, limit, skip, exportMode } = pagination(req);
+    const { page, limit, skip } = parsePaging(req);
     const filter = withCompany(req);
-    if (req.query.isActive !== undefined) {
-      filter.isActive = String(req.query.isActive) === "true";
-    }
-    if (req.query.search) {
-      const s = String(req.query.search).trim();
-      const re = new RegExp(escapeRegex(s), "i");
-      const [mappingArticles, supplierArticles] = await Promise.all([
-        ItemMapping.find({
-          companyId: req.companyId,
-          $or: [{ mpn: re }, { partNumber: re }, { materialCode: re }, { drawingNumber: re }],
-        })
-          .distinct("article")
-          .exec(),
-        ItemSupplierOffer.find(withCompany(req, { supplierPartNumber: re })).distinct("article").exec(),
+
+    const status = trim(req.query.status);
+    if (status && ["Active", "Inactive"].includes(status)) filter.status = status;
+    const vertical = trim(req.query.vertical);
+    if (vertical) filter.vertical = new RegExp(`^${escRe(vertical)}$`, "i");
+    const engine = trim(req.query.engine);
+    if (engine) filter.engine = new RegExp(`^${escRe(engine)}$`, "i");
+
+    const search = trim(req.query.search);
+    if (search) {
+      const re = new RegExp(escRe(search), "i");
+      const [technicalArticles, supplierArticles] = await Promise.all([
+        ItemTechnical.find(
+          withCompany(req, {
+            $or: [{ spn: re }, { materialCode: re }, { drawingNumber: re }, { dimension: re }],
+          })
+        )
+          .distinct("article"),
+        ItemSupplier.find(
+          withCompany(req, {
+            $or: [{ supplierName: re }, { supplierPartNumber: re }],
+          })
+        )
+          .distinct("article"),
       ]);
-      const fromRelated = [...new Set([...mappingArticles, ...supplierArticles])];
+      const articleHits = [...new Set([...technicalArticles, ...supplierArticles])];
       filter.$or = [
-        { itemCode: re },
+        { article: re },
+        { itemName: re },
         { description: re },
-        { makerPartNo: re },
-        { supplierPartNo: re },
-        ...(fromRelated.length ? [{ itemCode: { $in: fromRelated } }] : []),
+        { engine: re },
+        { model: re },
+        { config: re },
+        ...(articleHits.length ? [{ article: { $in: articleHits } }] : []),
       ];
     }
-    if (req.query.category) filter.category = new RegExp(String(req.query.category).trim(), "i");
-    const v = String(req.query.vertical || "").trim();
-    if (v) filter.vertical = new RegExp(`^${escapeRegex(v)}$`, "i");
-    const b = String(req.query.brand || "").trim();
-    if (b) filter.brand = new RegExp(`^${escapeRegex(b)}$`, "i");
-    const m = String(req.query.model || "").trim();
-    if (m) filter.modelName = new RegExp(`^${escapeRegex(m)}$`, "i");
+
     const [items, total] = await Promise.all([
-      Item.find(filter).sort({ itemCode: 1 }).skip(skip).limit(limit).lean(),
-      Item.countDocuments(filter),
+      ItemMaster.find(filter).sort({ article: 1 }).skip(skip).limit(limit).lean(),
+      ItemMaster.countDocuments(filter),
     ]);
-    res.json({ items, total, page, limit, exportMode });
+
+    const articles = items.map((row) => row.article);
+    const technicalRows = await ItemTechnical.find(withCompany(req, { article: { $in: articles } })).lean();
+    const technicalByArticle = new Map(technicalRows.map((row) => [row.article, row]));
+    const merged = items.map((row) => ({ ...row, dimension: technicalByArticle.get(row.article)?.dimension || "" }));
+
+    res.json({ items: merged, total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -89,103 +126,14 @@ export async function listItems(req, res) {
 
 export async function getItem(req, res) {
   try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: "Invalid id" });
-    }
-    const item = await Item.findOne(withCompany(req, { _id: id })).lean();
+    const article = trim(req.params.article).toUpperCase();
+    const item = await ItemMaster.findOne(withCompany(req, { article })).lean();
     if (!item) return res.status(404).json({ message: "Not found" });
-    res.json(item);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-}
-
-export async function getItemByCode(req, res) {
-  try {
-    const code = String(req.params.code || "").trim().toUpperCase();
-    const item = await Item.findOne(withCompany(req, { itemCode: code })).lean();
-    if (!item) return res.status(404).json({ message: "Not found" });
-    res.json(item);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-}
-
-/** POST /api/items/mappings — add one mapping row (Article must exist) */
-export async function createItemMapping(req, res) {
-  try {
-    const b = req.body || {};
-    const article = String(b.article || "").trim().toUpperCase();
-    if (!article) return res.status(400).json({ message: "article is required" });
-
-    const exists = await Item.findOne(withCompany(req, { itemCode: article })).select("_id").lean();
-    if (!exists) return res.status(404).json({ message: "Article not found in Item Master" });
-
-    const doc = await ItemMapping.create({
-      companyId: req.companyId,
-      article,
-      model: b.model ?? "",
-      esn: b.esn ?? "",
-      mpn: b.mpn ?? "",
-      partNumber: b.partNumber ?? "",
-      materialCode: b.materialCode ?? "",
-      drawingNumber: b.drawingNumber ?? "",
-      description: b.description ?? "",
-    });
-    res.status(201).json(doc);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
-}
-
-/** POST /api/items/supplier-offers — add one supplier offer row (Article must exist) */
-export async function createItemSupplierOffer(req, res) {
-  try {
-    const b = req.body || {};
-    const article = String(b.article || "").trim().toUpperCase();
-    if (!article) return res.status(400).json({ message: "article is required" });
-    const supplierName = String(b.supplierName || "").trim();
-    if (!supplierName) return res.status(400).json({ message: "supplierName is required" });
-
-    const exists = await Item.findOne(withCompany(req, { itemCode: article })).select("_id").lean();
-    if (!exists) return res.status(404).json({ message: "Article not found in Item Master" });
-
-    const unitPrice = Number(b.unitPrice);
-    if (Number.isNaN(unitPrice) || unitPrice < 0) {
-      return res.status(400).json({ message: "Invalid unitPrice" });
-    }
-
-    const doc = await ItemSupplierOffer.create({
-      companyId: req.companyId,
-      article,
-      supplierName,
-      supplierPartNumber: b.supplierPartNumber != null ? String(b.supplierPartNumber) : "",
-      unitPrice,
-      currency: String(b.currency || "USD").trim() || "USD",
-    });
-    res.status(201).json(doc);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
-}
-
-/** GET /api/items/full/:article — item + mapping rows + supplier offer rows */
-export async function getItemFullByArticle(req, res) {
-  try {
-    const raw = req.params.article ?? "";
-    const code = decodeURIComponent(String(raw).trim()).toUpperCase();
-    if (!code) return res.status(400).json({ message: "Article is required" });
-
-    const item = await Item.findOne(withCompany(req, { itemCode: code })).lean();
-    if (!item) return res.status(404).json({ message: "Item not found" });
-
-    const [mappings, suppliers] = await Promise.all([
-      ItemMapping.find(withCompany(req, { article: code })).sort({ createdAt: -1 }).lean(),
-      ItemSupplierOffer.find(withCompany(req, { article: code })).sort({ createdAt: -1 }).lean(),
+    const [technical, suppliers] = await Promise.all([
+      ItemTechnical.findOne(withCompany(req, { article })).lean(),
+      ItemSupplier.find(withCompany(req, { article })).sort({ supplierName: 1 }).lean(),
     ]);
-
-    res.json({ item, mappings, suppliers });
+    res.json(mapMerged(item, technical, suppliers));
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -193,10 +141,21 @@ export async function getItemFullByArticle(req, res) {
 
 export async function createItem(req, res) {
   try {
-    const payload = { ...req.body };
-    if (payload.itemCode) payload.itemCode = String(payload.itemCode).trim().toUpperCase();
-    const item = await Item.create({ ...payload, companyId: req.companyId });
-    res.status(201).json(item);
+    const article = trim(req.body.article).toUpperCase();
+    const payload = {
+      companyId: req.companyId,
+      article,
+      itemName: trim(req.body.itemName),
+      description: trim(req.body.description),
+      vertical: trim(req.body.vertical),
+      engine: trim(req.body.engine),
+      model: trim(req.body.model),
+      config: trim(req.body.config),
+      uom: normalizeUom(req.body.uom),
+      status: trim(req.body.status) === "Inactive" ? "Inactive" : "Active",
+    };
+    const created = await ItemMaster.create(payload);
+    res.status(201).json(created);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -204,19 +163,23 @@ export async function createItem(req, res) {
 
 export async function updateItem(req, res) {
   try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: "Invalid id" });
-    }
-    const payload = { ...req.body };
-    if (payload.itemCode) payload.itemCode = String(payload.itemCode).trim().toUpperCase();
-    delete payload._id;
-    const item = await Item.findOneAndUpdate(withCompany(req, { _id: id }), payload, {
+    const article = trim(req.params.article).toUpperCase();
+    const payload = {
+      itemName: trim(req.body.itemName),
+      description: trim(req.body.description),
+      vertical: trim(req.body.vertical),
+      engine: trim(req.body.engine),
+      model: trim(req.body.model),
+      config: trim(req.body.config),
+      uom: normalizeUom(req.body.uom),
+      status: trim(req.body.status) === "Inactive" ? "Inactive" : "Active",
+    };
+    const row = await ItemMaster.findOneAndUpdate(withCompany(req, { article }), payload, {
       new: true,
       runValidators: true,
     });
-    if (!item) return res.status(404).json({ message: "Not found" });
-    res.json(item);
+    if (!row) return res.status(404).json({ message: "Not found" });
+    res.json(row);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -224,12 +187,147 @@ export async function updateItem(req, res) {
 
 export async function deleteItem(req, res) {
   try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: "Invalid id" });
+    const article = trim(req.params.article).toUpperCase();
+    const deleted = await ItemMaster.findOneAndDelete(withCompany(req, { article }));
+    if (!deleted) return res.status(404).json({ message: "Not found" });
+    await Promise.all([
+      ItemTechnical.deleteMany(withCompany(req, { article })),
+      ItemSupplier.deleteMany(withCompany(req, { article })),
+    ]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function createItemTechnical(req, res) {
+  try {
+    const article = trim(req.params.article).toUpperCase();
+    await ensureItemExists(req, article);
+    const payload = {
+      companyId: req.companyId,
+      article,
+      spn: trim(req.body.spn),
+      materialCode: trim(req.body.materialCode),
+      drawingNumber: trim(req.body.drawingNumber),
+      dimension: normalizeDimension(req.body.dimension),
+      oeMarkings: trim(req.body.oeMarkings),
+      extRemarks: trim(req.body.extRemarks),
+      internalRemarks: trim(req.body.internalRemarks),
+    };
+    const row = await ItemTechnical.findOneAndUpdate(withCompany(req, { article }), payload, {
+      new: true,
+      upsert: true,
+      runValidators: true,
+    });
+    res.status(201).json(row);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function getItemTechnical(req, res) {
+  try {
+    const article = trim(req.params.article).toUpperCase();
+    await ensureItemExists(req, article);
+    const row = await ItemTechnical.findOne(withCompany(req, { article })).lean();
+    res.json(row || null);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function updateItemTechnical(req, res) {
+  try {
+    const article = trim(req.params.article).toUpperCase();
+    await ensureItemExists(req, article);
+    const payload = {
+      spn: trim(req.body.spn),
+      materialCode: trim(req.body.materialCode),
+      drawingNumber: trim(req.body.drawingNumber),
+      dimension: normalizeDimension(req.body.dimension),
+      oeMarkings: trim(req.body.oeMarkings),
+      extRemarks: trim(req.body.extRemarks),
+      internalRemarks: trim(req.body.internalRemarks),
+    };
+    const row = await ItemTechnical.findOneAndUpdate(withCompany(req, { article }), payload, {
+      new: true,
+      upsert: true,
+      runValidators: true,
+    });
+    res.json(row);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function createItemSupplier(req, res) {
+  try {
+    const article = trim(req.params.article).toUpperCase();
+    await ensureItemExists(req, article);
+    const row = await ItemSupplier.create({
+      companyId: req.companyId,
+      article,
+      supplierName: trim(req.body.supplierName),
+      supplierPartNumber: trim(req.body.supplierPartNumber),
+      currency: trim(req.body.currency || "USD").toUpperCase() || "USD",
+      price: Number(req.body.price) || 0,
+      leadTime: trim(req.body.leadTime),
+      remarks: trim(req.body.remarks),
+    });
+    res.status(201).json(row);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function listItemSuppliers(req, res) {
+  try {
+    const article = trim(req.params.article).toUpperCase();
+    await ensureItemExists(req, article);
+    const rows = await ItemSupplier.find(withCompany(req, { article })).sort({ supplierName: 1 }).lean();
+    res.json(rows);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function updateItemSupplier(req, res) {
+  try {
+    const article = trim(req.params.article).toUpperCase();
+    const supplierId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(supplierId)) {
+      return res.status(400).json({ message: "Invalid supplier id" });
     }
-    const item = await Item.findOneAndDelete(withCompany(req, { _id: id }));
-    if (!item) return res.status(404).json({ message: "Not found" });
+    await ensureItemExists(req, article);
+    const row = await ItemSupplier.findOneAndUpdate(
+      withCompany(req, { _id: supplierId, article }),
+      {
+        supplierName: trim(req.body.supplierName),
+        supplierPartNumber: trim(req.body.supplierPartNumber),
+        currency: trim(req.body.currency || "USD").toUpperCase() || "USD",
+        price: Number(req.body.price) || 0,
+        leadTime: trim(req.body.leadTime),
+        remarks: trim(req.body.remarks),
+      },
+      { new: true, runValidators: true }
+    );
+    if (!row) return res.status(404).json({ message: "Supplier row not found" });
+    res.json(row);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function deleteItemSupplier(req, res) {
+  try {
+    const article = trim(req.params.article).toUpperCase();
+    const supplierId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(supplierId)) {
+      return res.status(400).json({ message: "Invalid supplier id" });
+    }
+    const row = await ItemSupplier.findOneAndDelete(withCompany(req, { _id: supplierId, article }));
+    if (!row) return res.status(404).json({ message: "Supplier row not found" });
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -237,57 +335,139 @@ export async function deleteItem(req, res) {
 }
 
 export async function importItems(req, res) {
+  const result = { total: 0, upsertedItems: 0, upsertedTechnicals: 0, upsertedSuppliers: 0, errors: [] };
   try {
-    const { items } = req.body;
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ message: "Body must include non-empty items array" });
-    }
-    if (items.length > 2000) {
-      return res.status(400).json({ message: "Maximum 2000 rows per import" });
-    }
-    let upserted = 0;
-    let errors = [];
-    for (let i = 0; i < items.length; i++) {
-      const row = items[i];
+    if (!req.file?.buffer) return res.status(400).json({ message: "Upload CSV/Excel with file field" });
+
+    const workbook = XLSX.read(req.file.buffer, { type: "buffer", raw: false });
+    const ws = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+    result.total = rows.length;
+
+    for (let index = 0; index < rows.length; index += 1) {
+      const raw = rows[index];
       try {
-        const itemCode = String(row.itemCode || "").trim().toUpperCase();
-        if (!itemCode) throw new Error("itemCode required");
-        await Item.findOneAndUpdate(
-          { companyId: req.companyId, itemCode },
+        const row = Object.fromEntries(
+          Object.entries(raw).map(([k, v]) => [trim(k), trim(v)])
+        );
+        const article = trim(row.Article).toUpperCase();
+        if (!article) {
+          throw new Error("Article missing");
+        }
+
+        const uom = normalizeUom(row.UOM);
+        const dimension = normalizeDimension(row.Dimension);
+
+        await ItemMaster.findOneAndUpdate(
+          withCompany(req, { article }),
           {
-            $set: {
-              itemCode,
-              companyId: req.companyId,
-              description: row.description ?? "",
-              uom: row.uom ?? "PCS",
-              vertical: row.vertical ?? "",
-              brand: row.brand ?? "",
-              modelName: row.modelName ?? row.model ?? "",
-              makerPartNo: row.makerPartNo ?? "",
-              hsnCode: row.hsnCode ?? "",
-              category: row.category ?? "",
-              supplierName: row.supplierName ?? "",
-              supplierPartNo: row.supplierPartNo ?? "",
-              supplierLeadTimeDays: Number(row.supplierLeadTimeDays) || 0,
-              purchasePrice: Number(row.purchasePrice) || 0,
-              salePrice: Number(row.salePrice) || 0,
-              currency: row.currency ?? "USD",
-              weightKg: Number(row.weightKg) || 0,
-              coo: row.coo ?? row.COO ?? "",
-              reorderLevel: Number(row.reorderLevel) || 0,
-              remarks: row.remarks ?? "",
-              isActive: row.isActive !== false,
-            },
+            companyId: req.companyId,
+            article,
+            itemName: trim(row["Item Name"]),
+            description: trim(row.Description),
+            vertical: trim(row.Vertical),
+            engine: trim(row.Engine),
+            model: trim(row.Model),
+            config: trim(row.Config),
+            uom,
+            status: "Active",
           },
           { upsert: true, new: true, runValidators: true }
         );
-        upserted += 1;
-      } catch (e) {
-        errors.push({ index: i, message: e.message });
+        result.upsertedItems += 1;
+
+        await ItemTechnical.findOneAndUpdate(
+          withCompany(req, { article }),
+          {
+            companyId: req.companyId,
+            article,
+            spn: trim(row.SPN),
+            materialCode: trim(row["Material Code"]),
+            drawingNumber: trim(row["Drawing Number"]),
+            extRemarks: trim(row["Ext Remarks"]),
+            internalRemarks: trim(row["Internal Remarks"]),
+            oeMarkings: trim(row["OE Markings"]),
+            dimension,
+          },
+          { upsert: true, new: true, runValidators: true }
+        );
+        result.upsertedTechnicals += 1;
+
+        const suppliersFromLegacyCols = [
+          { supplierName: trim(row["Supplier 1"]), supplierPartNumber: trim(row["Supplier 1 P/N"]) },
+          { supplierName: trim(row["Supplier 2"]), supplierPartNumber: trim(row["Supplier 2 P/N"]) },
+        ].filter((sup) => sup.supplierName);
+
+        for (const supplier of suppliersFromLegacyCols) {
+          await ItemSupplier.findOneAndUpdate(
+            withCompany(req, {
+              article,
+              supplierName: supplier.supplierName,
+              supplierPartNumber: supplier.supplierPartNumber,
+            }),
+            {
+              companyId: req.companyId,
+              article,
+              supplierName: supplier.supplierName,
+              supplierPartNumber: supplier.supplierPartNumber,
+              currency: "USD",
+              price: 0,
+              leadTime: "",
+              remarks: "",
+            },
+            { upsert: true, new: true, runValidators: true }
+          );
+          result.upsertedSuppliers += 1;
+        }
+      } catch (rowErr) {
+        result.errors.push({ row: index + 2, reason: rowErr.message });
       }
     }
-    res.json({ upserted, errors, errorCount: errors.length });
+
+    res.json(result);
   } catch (err) {
     res.status(400).json({ message: err.message });
+  }
+}
+
+export async function exportItems(req, res) {
+  try {
+    const rows = await ItemMaster.find(withCompany(req)).sort({ article: 1 }).lean();
+    const articles = rows.map((row) => row.article);
+    const [technicals, suppliers] = await Promise.all([
+      ItemTechnical.find(withCompany(req, { article: { $in: articles } })).lean(),
+      ItemSupplier.find(withCompany(req, { article: { $in: articles } })).lean(),
+    ]);
+    const technicalByArticle = new Map(technicals.map((row) => [row.article, row]));
+    const suppliersByArticle = new Map();
+    for (const row of suppliers) {
+      const list = suppliersByArticle.get(row.article) || [];
+      list.push(`${row.supplierName}${row.supplierPartNumber ? ` (${row.supplierPartNumber})` : ""}`);
+      suppliersByArticle.set(row.article, list);
+    }
+
+    const merged = rows.map((item) => {
+      const tech = technicalByArticle.get(item.article);
+      return {
+        Article: item.article,
+        "Item Name": item.itemName,
+        Description: item.description,
+        Vertical: item.vertical,
+        Engine: item.engine,
+        Model: item.model,
+        Config: item.config,
+        SPN: tech?.spn || "",
+        "Material Code": tech?.materialCode || "",
+        "Drawing Number": tech?.drawingNumber || "",
+        Dimension: tech?.dimension || "",
+        "OE Markings": tech?.oeMarkings || "",
+        Suppliers: (suppliersByArticle.get(item.article) || []).join("; "),
+        Status: item.status,
+      };
+    });
+
+    res.json({ items: merged });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 }
