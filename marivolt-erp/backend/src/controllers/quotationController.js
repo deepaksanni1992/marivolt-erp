@@ -116,15 +116,18 @@ async function autoCreateItemsFromQuotation({ req, quotation }) {
       const technical = await ItemTechnical.findOne({ companyId: req.companyId, article });
       const nextSpn = clean(line.partNumber);
       const nextMaterialCode = clean(line.materialCode);
+      const nextEsn = clean(quotation.esn);
       if (!technical) {
         await ItemTechnical.create({
           companyId: req.companyId,
           article,
           spn: nextSpn,
+          esn: nextEsn,
           materialCode: nextMaterialCode,
         });
       } else {
         technical.spn = mergeSet(technical.spn, nextSpn);
+        technical.esn = mergeSet(technical.esn, nextEsn);
         technical.materialCode = mergeSet(technical.materialCode, nextMaterialCode);
         await technical.save();
       }
@@ -150,12 +153,19 @@ export async function listQuotations(req, res) {
     if (req.query.customerName) {
       filter.customerName = new RegExp(String(req.query.customerName).trim(), "i");
     }
+    if (req.query.vertical) {
+      filter.vertical = new RegExp(String(req.query.vertical).trim(), "i");
+    }
+    if (req.query.brand) {
+      filter.engine = new RegExp(String(req.query.brand).trim(), "i");
+    }
     if (req.query.search) {
       const q = String(req.query.search).trim();
       filter.$or = [
         { quotationNo: new RegExp(q, "i") },
         { customerName: new RegExp(q, "i") },
         { customerReference: new RegExp(q, "i") },
+        { vertical: new RegExp(q, "i") },
         { engine: new RegExp(q, "i") },
         { model: new RegExp(q, "i") },
         { config: new RegExp(q, "i") },
@@ -167,6 +177,22 @@ export async function listQuotations(req, res) {
       Quotation.countDocuments(filter),
     ]);
     res.json({ items: rows, total, page, limit });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getQuotationFacets(req, res) {
+  try {
+    const norm = (arr = []) =>
+      [...new Set((arr || []).map((v) => String(v || "").trim()).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b)
+      );
+    const [brands, verticals] = await Promise.all([
+      Quotation.distinct("engine", withCompany(req, { engine: { $nin: [null, ""] } })),
+      Quotation.distinct("vertical", withCompany(req, { vertical: { $nin: [null, ""] } })),
+    ]);
+    res.json({ brands: norm(brands), verticals: norm(verticals) });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -273,6 +299,7 @@ export async function updateQuotation(req, res) {
       "customerName",
       "customerReference",
       "attention",
+      "vertical",
       "engine",
       "model",
       "config",

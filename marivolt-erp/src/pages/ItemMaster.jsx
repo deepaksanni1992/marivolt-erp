@@ -40,7 +40,7 @@ const EXPORT_COLUMNS = [
   { key: "ITEM NAME", header: "ITEM NAME" },
   { key: "Description", header: "Description" },
   { key: "Vertical", header: "Vertical" },
-  { key: "Eng no", header: "Eng no" },
+  { key: "Brand", header: "Brand" },
   { key: "Model", header: "Model" },
   { key: "Config", header: "Config" },
   { key: "SPN", header: "SPN" },
@@ -237,7 +237,7 @@ export default function ItemMaster() {
               {(facets?.verticals || []).map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
           </Field>
-          <Field label="Engine">
+          <Field label="Brand">
             <select className="rounded-lg border px-3 py-2" value={engine} onChange={(e) => setEngine(e.target.value)}>
               <option value="">All</option>
               {(facets?.engines || []).map((v) => <option key={v} value={v}>{v}</option>)}
@@ -263,7 +263,7 @@ export default function ItemMaster() {
             <thead className="sticky top-0 bg-slate-100">
               <tr className="text-left">
                 <th className="px-3 py-3">Vertical</th>
-                <th className="px-3 py-3">Eng no</th>
+                <th className="px-3 py-3">Brand</th>
                 <th className="px-3 py-3">Model</th>
                 <th className="px-3 py-3">Config</th>
                 <th className="px-3 py-3">Article</th>
@@ -345,7 +345,7 @@ export default function ItemMaster() {
               <div className="space-y-4">
                 <div className="grid gap-3 md:grid-cols-2">
                   <Field label="Vertical"><input className="rounded-lg border px-3 py-2" value={item.vertical} onChange={(e) => setItem((v) => ({ ...v, vertical: e.target.value }))} /></Field>
-                  <Field label="Engine"><input className="rounded-lg border px-3 py-2" value={item.engine} onChange={(e) => setItem((v) => ({ ...v, engine: e.target.value }))} /></Field>
+                  <Field label="Brand"><input className="rounded-lg border px-3 py-2" value={item.engine} onChange={(e) => setItem((v) => ({ ...v, engine: e.target.value }))} /></Field>
                   <Field label="Model"><input className="rounded-lg border px-3 py-2" value={item.model} onChange={(e) => setItem((v) => ({ ...v, model: e.target.value }))} /></Field>
                   <Field label="Config"><input className="rounded-lg border px-3 py-2" value={item.config} onChange={(e) => setItem((v) => ({ ...v, config: e.target.value }))} /></Field>
                   <Field label="Article"><input disabled={Boolean(selectedArticle)} className="rounded-lg border px-3 py-2 disabled:bg-slate-100" value={item.article} onChange={(e) => setItem((v) => ({ ...v, article: e.target.value.toUpperCase() }))} /></Field>

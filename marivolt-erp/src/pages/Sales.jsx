@@ -209,6 +209,7 @@ function quotationDetailToEditableForm(q) {
     customerName: q.customerName || "",
     customerReference: q.customerReference || "",
     attention: q.attention || "",
+    vertical: q.vertical || "",
     engine: q.engine || "",
     model: q.model || "",
     config: q.config || "",
@@ -432,7 +433,8 @@ const reportColumnsById = {
     ["Date", (r) => (r.quotationDate ? new Date(r.quotationDate).toLocaleDateString() : "")],
     ["Customer", (r) => r.customerName || ""],
     ["Customer Ref", (r) => r.customerReference || ""],
-    ["Engine", (r) => r.engine || ""],
+    ["Brand", (r) => r.engine || ""],
+    ["Vertical", (r) => r.vertical || ""],
     ["Model", (r) => r.model || ""],
     ["ESN", (r) => r.esn || ""],
     ["Line Items", (r) => r.lineItems || 0],
@@ -613,8 +615,9 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             <div><b>Shipping:</b> ${customer.shippingAddress || "-"}</div>
           </div>
           <div class="info-box muted">
-            <div class="info-box-title">Engine Details</div>
-            <div><b>Engine:</b> ${q.engine || "-"}</div>
+            <div class="info-box-title">Machine Details</div>
+            <div><b>Vertical:</b> ${q.vertical || "-"}</div>
+            <div><b>Brand:</b> ${q.engine || "-"}</div>
             <div><b>Model:</b> ${q.model || "-"}</div>
             <div><b>Config:</b> ${q.config || "-"}</div>
             <div><b>ESN:</b> ${q.esn || "-"}</div>
@@ -1315,6 +1318,8 @@ export default function Sales() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
+  const [brandFilter, setBrandFilter] = useState("");
+  const [verticalFilter, setVerticalFilter] = useState("");
   const limit = 20;
   const quotationCsvInputRef = useRef(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -1382,6 +1387,7 @@ export default function Sales() {
     customerName: "",
     customerReference: "",
     attention: "",
+    vertical: "",
     engine: "",
     model: "",
     config: "",
@@ -1408,14 +1414,21 @@ export default function Sales() {
   });
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["sales-quotations", page, search, status],
+    queryKey: ["sales-quotations", page, search, status, brandFilter, verticalFilter],
     queryFn: () =>
       apiGetWithQuery("/quotations", {
         page,
         limit,
         search: search || undefined,
         status: status || undefined,
+        brand: brandFilter || undefined,
+        vertical: verticalFilter || undefined,
       }),
+  });
+  const { data: quotationFacets } = useQuery({
+    queryKey: ["sales-quotation-facets"],
+    queryFn: () => apiGet("/quotations/facets"),
+    enabled: activeTab === "Quotation" || createOpen,
   });
 
   const { data: detail } = useQuery({
@@ -1659,6 +1672,33 @@ export default function Sales() {
     downloadBlobFile(`${filename}-${new Date().toISOString().slice(0, 10)}.csv`, `\ufeff${csv}`, "text/csv;charset=utf-8;");
   }
 
+  async function fetchBankDetailForCurrency(currencyCode) {
+    const raw = String(currencyCode || "USD").trim().toUpperCase();
+    const candidates = [];
+    const pushUnique = (v) => {
+      const n = String(v || "").trim().toUpperCase();
+      if (!n || candidates.includes(n)) return;
+      candidates.push(n);
+    };
+    pushUnique(raw);
+    if (raw === "EUR") pushUnique("EURO");
+    if (raw === "EURO") pushUnique("EUR");
+    if (raw === "USD") pushUnique("US DOLLAR");
+    if (raw === "AED") pushUnique("DIRHAM");
+
+    for (const code of candidates) {
+      try {
+        const curEnc = encodeURIComponent(code);
+        const bdRes = await apiGet(`/accounts/bank-details/for-currency/${curEnc}`);
+        const bankDetail = bdRes?.bankDetail ?? null;
+        if (bankDetail) return bankDetail;
+      } catch {
+        // try next alias
+      }
+    }
+    return null;
+  }
+
   async function openFlowDocumentPrint(type, id, autoPrint = false) {
     try {
       const company = activeCompany || {};
@@ -1675,14 +1715,7 @@ export default function Sales() {
       }
       if (type === "proforma") {
         const doc = await apiGet(`/sales/proforma-invoices/${id}`);
-        const curEnc = encodeURIComponent(String(doc?.currency || "USD").trim());
-        let bankDetail = null;
-        try {
-          const bdRes = await apiGet(`/accounts/bank-details/for-currency/${curEnc}`);
-          bankDetail = bdRes?.bankDetail ?? null;
-        } catch {
-          bankDetail = null;
-        }
+        const bankDetail = await fetchBankDetailForCurrency(doc?.currency);
         const amountInWords = formatInvoiceAmountInWords(doc?.grandTotal, doc?.currency);
         renderFlowDocPrintWindow({
           title: "Proforma Invoice",
@@ -1703,14 +1736,7 @@ export default function Sales() {
       }
       if (type === "sales-invoice") {
         const doc = await apiGet(`/sales/sales-invoices/${id}`);
-        const curEnc = encodeURIComponent(String(doc?.currency || "USD").trim());
-        let bankDetail = null;
-        try {
-          const bdRes = await apiGet(`/accounts/bank-details/for-currency/${curEnc}`);
-          bankDetail = bdRes?.bankDetail ?? null;
-        } catch {
-          bankDetail = null;
-        }
+        const bankDetail = await fetchBankDetailForCurrency(doc?.currency);
         const amountInWords = formatInvoiceAmountInWords(doc?.grandTotal, doc?.currency);
         renderFlowDocPrintWindow({
           title: "Tax invoice",
@@ -1747,14 +1773,7 @@ export default function Sales() {
       }
       if (type === "sales-dispatch") {
         const doc = await apiGet(`/sales/sales-dispatches/${id}`);
-        const curEnc = encodeURIComponent(String(doc?.currency || "USD").trim());
-        let bankDetail = null;
-        try {
-          const bdRes = await apiGet(`/accounts/bank-details/for-currency/${curEnc}`);
-          bankDetail = bdRes?.bankDetail ?? null;
-        } catch {
-          bankDetail = null;
-        }
+        const bankDetail = await fetchBankDetailForCurrency(doc?.currency);
         const amountInWords = formatInvoiceAmountInWords(doc?.grandTotal, doc?.currency);
         const invoiceNoForPrint = String(doc?.linkedSalesInvoiceNo || "").trim() || doc?.dispatchNo;
         renderFlowDocPrintWindow({
@@ -1825,6 +1844,7 @@ export default function Sales() {
         customerName: "",
         customerReference: "",
         attention: "",
+        vertical: "",
         engine: "",
         model: "",
         config: "",
@@ -2816,7 +2836,8 @@ export default function Sales() {
                               <th className="px-3 py-2">Date</th>
                               <th className="px-3 py-2">Customer</th>
                               <th className="px-3 py-2">Customer Ref</th>
-                              <th className="px-3 py-2">Engine</th>
+                              <th className="px-3 py-2">Brand</th>
+                              <th className="px-3 py-2">Vertical</th>
                               <th className="px-3 py-2">Model</th>
                               <th className="px-3 py-2">ESN</th>
                               <th className="px-3 py-2">Line Items</th>
@@ -2976,6 +2997,7 @@ export default function Sales() {
                                   <td className="px-3 py-2">{row.customerName}</td>
                                   <td className="px-3 py-2">{row.customerReference || "-"}</td>
                                   <td className="px-3 py-2">{row.engine || "-"}</td>
+                                  <td className="px-3 py-2">{row.vertical || "-"}</td>
                                   <td className="px-3 py-2">{row.model || "-"}</td>
                                   <td className="px-3 py-2">{row.esn || "-"}</td>
                                   <td className="px-3 py-2">{row.lineItems || 0}</td>
@@ -3352,6 +3374,36 @@ export default function Sales() {
                 </option>
               ))}
             </select>
+            <select
+              className="w-44 rounded-xl border px-3 py-2 text-sm"
+              value={brandFilter}
+              onChange={(e) => {
+                setBrandFilter(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="">All brands</option>
+              {(quotationFacets?.brands || []).map((brand) => (
+                <option key={brand} value={brand}>
+                  {brand}
+                </option>
+              ))}
+            </select>
+            <select
+              className="w-44 rounded-xl border px-3 py-2 text-sm"
+              value={verticalFilter}
+              onChange={(e) => {
+                setVerticalFilter(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="">All verticals</option>
+              {(quotationFacets?.verticals || []).map((vertical) => (
+                <option key={vertical} value={vertical}>
+                  {vertical}
+                </option>
+              ))}
+            </select>
             <button
               type="button"
               className="rounded-xl border px-3 py-2 text-sm"
@@ -3359,6 +3411,8 @@ export default function Sales() {
                 exportListCsv("quotation-list", rows, [
                   { label: "Quotation No", value: (r) => r.quotationNo },
                   { label: "Customer", value: (r) => r.customerName },
+                  { label: "Brand", value: (r) => r.engine || "" },
+                  { label: "Vertical", value: (r) => r.vertical || "" },
                   { label: "Date", value: (r) => (r.quotationDate ? new Date(r.quotationDate).toLocaleDateString() : "") },
                   { label: "Status", value: (r) => r.status },
                   { label: "Currency", value: (r) => r.currency || "USD" },
@@ -3377,7 +3431,8 @@ export default function Sales() {
                   <tr>
                     <th className="px-3 py-2">Quotation No</th>
                     <th className="px-3 py-2">Customer</th>
-                    <th className="px-3 py-2">Engine</th>
+                    <th className="px-3 py-2">Brand</th>
+                    <th className="px-3 py-2">Vertical</th>
                     <th className="px-3 py-2">Model</th>
                     <th className="px-3 py-2">ESN</th>
                     <th className="px-3 py-2">Date</th>
@@ -3406,6 +3461,7 @@ export default function Sales() {
                         <td className="px-3 py-2 font-mono text-xs">{r.quotationNo}</td>
                         <td className="px-3 py-2">{r.customerName}</td>
                         <td className="px-3 py-2">{r.engine || "-"}</td>
+                        <td className="px-3 py-2">{r.vertical || "-"}</td>
                         <td className="px-3 py-2">{r.model || "-"}</td>
                         <td className="px-3 py-2">{r.esn || "-"}</td>
                         <td className="px-3 py-2">{r.quotationDate ? new Date(r.quotationDate).toLocaleDateString() : "—"}</td>
@@ -4547,7 +4603,10 @@ export default function Sales() {
               <FormField label="Attention">
                 <TextInput value={detailQuotationDraftForm.attention || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, attention: e.target.value }))} />
               </FormField>
-              <FormField label="Engine">
+              <FormField label="Vertical">
+                <TextInput value={detailQuotationDraftForm.vertical || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, vertical: e.target.value }))} />
+              </FormField>
+              <FormField label="Brand">
                 <TextInput value={detailQuotationDraftForm.engine || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, engine: e.target.value }))} />
               </FormField>
               <FormField label="Model">
@@ -4827,8 +4886,9 @@ export default function Sales() {
                 <div><span className="font-medium">Shipping:</span> {detail.customer?.shippingAddress || "-"}</div>
               </div>
               <div className="rounded-xl border bg-gray-50 p-3">
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Engine Details</div>
-                <div><span className="font-medium">Engine:</span> {detail.engine || "-"}</div>
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Machine Details</div>
+                <div><span className="font-medium">Vertical:</span> {detail.vertical || "-"}</div>
+                <div><span className="font-medium">Brand:</span> {detail.engine || "-"}</div>
                 <div><span className="font-medium">Model:</span> {detail.model || "-"}</div>
                 <div><span className="font-medium">Config:</span> {detail.config || "-"}</div>
                 <div><span className="font-medium">ESN:</span> {detail.esn || "-"}</div>
@@ -6614,7 +6674,10 @@ export default function Sales() {
               onChange={(e) => setForm((f) => ({ ...f, attention: e.target.value }))}
             />
           </FormField>
-          <FormField label="Engine">
+          <FormField label="Vertical">
+            <TextInput value={form.vertical || ""} onChange={(e) => setForm((f) => ({ ...f, vertical: e.target.value }))} />
+          </FormField>
+          <FormField label="Brand">
             <TextInput value={form.engine} onChange={(e) => setForm((f) => ({ ...f, engine: e.target.value }))} />
           </FormField>
           <FormField label="Model">

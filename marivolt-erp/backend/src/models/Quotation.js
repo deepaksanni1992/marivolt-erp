@@ -53,6 +53,7 @@ const quotationSchema = new mongoose.Schema(
     customerName: { type: String, required: true, trim: true, index: true },
     customerReference: { type: String, default: "", trim: true },
     attention: { type: String, default: "", trim: true },
+    vertical: { type: String, default: "", trim: true },
     engine: { type: String, default: "", trim: true },
     model: { type: String, default: "", trim: true },
     config: { type: String, default: "", trim: true },

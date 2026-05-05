@@ -5,6 +5,7 @@ const itemTechnicalSchema = new mongoose.Schema(
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
     article: { type: String, required: true, ref: "ItemMaster", trim: true, uppercase: true },
     spn: { type: String, default: "", trim: true },
+    esn: { type: String, default: "", trim: true },
     materialCode: { type: String, default: "", trim: true },
     drawingNumber: { type: String, default: "", trim: true },
     dimension: { type: String, default: "", trim: true },
