@@ -1,17 +1,4 @@
 import DocCounter from "../models/DocCounter.js";
-import Quotation from "../models/Quotation.js";
-
-const SALES_PREFIX_BY_KEY = {
-  QUOTATION: "QUO",
-  ORDER_ACK: "OA",
-  PROFORMA: "PI",
-  ORDER_ALLOCATION: "ALLOC",
-  RTS: "RTS",
-  SALES_INVOICE: "SINV",
-  SALES_DISPATCH: "SDISP",
-  SALES_RETURN: "SRET",
-  CIPL: "CIPL",
-};
 
 function formatDatePrefix(value) {
   const date = value ? new Date(value) : new Date();
@@ -21,34 +8,37 @@ function formatDatePrefix(value) {
   return `${year}${month}${day}`;
 }
 
-async function nextQuotationNumber({ companyId, referenceDate }) {
-  const prefix = formatDatePrefix(referenceDate);
-  const pattern = new RegExp(`^${prefix}\\.\\d+$`);
-  const rows = await Quotation.find({ companyId, quotationNo: pattern }).select("quotationNo").lean();
-  let maxSeq = 0;
-  for (const row of rows) {
-    const value = String(row.quotationNo || "");
-    const seqRaw = value.slice(prefix.length + 1);
-    const seq = Number(seqRaw);
-    if (Number.isFinite(seq) && seq > maxSeq) maxSeq = seq;
-  }
-  return `${prefix}.${maxSeq + 1}`;
+function companyInitial(companyCode) {
+  const code = String(companyCode || "").trim().toUpperCase();
+  if (code === "MAR") return "MV";
+  if (code === "OKE") return "OK";
+  if (!code) return "CP";
+  if (code.length === 1) return code;
+  return code.slice(0, 2);
 }
 
 export async function nextSalesDocNumber({ companyId, companyCode, docKey, referenceDate }) {
   const safeKey = String(docKey || "").trim().toUpperCase();
-  if (safeKey === "QUOTATION") {
-    return nextQuotationNumber({ companyId, referenceDate });
-  }
-  const suffix = SALES_PREFIX_BY_KEY[safeKey];
-  if (!suffix) {
+  const allowed = new Set([
+    "QUOTATION",
+    "ORDER_ACK",
+    "PROFORMA",
+    "ORDER_ALLOCATION",
+    "RTS",
+    "SALES_INVOICE",
+    "SALES_DISPATCH",
+    "SALES_RETURN",
+    "CIPL",
+  ]);
+  if (!allowed.has(safeKey)) {
     throw new Error(`Unsupported sales docKey: ${safeKey}`);
   }
-  const companyPrefix = String(companyCode || "CMP").trim().toUpperCase() || "CMP";
+  const datePrefix = formatDatePrefix(referenceDate);
+  const scopedDocKey = `${safeKey}:${datePrefix}`;
   const row = await DocCounter.findOneAndUpdate(
-    { companyId, docKey: safeKey },
+    { companyId, docKey: scopedDocKey },
     { $inc: { seq: 1 } },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
-  return `${companyPrefix}-${suffix}-${String(row.seq).padStart(4, "0")}`;
+  return `${companyInitial(companyCode)}/${datePrefix}.${row.seq}`;
 }
