@@ -217,6 +217,8 @@ function quotationDetailToEditableForm(q) {
     paymentTerms: q.paymentTerms || "",
     deliveryTerms: q.deliveryTerms || "",
     incoterm: q.incoterm || "",
+    packingCost: Number(q.packingCost) || 0,
+    clearanceCost: Number(q.clearanceCost) || 0,
     currency: q.currency || "USD",
     exchangeRate: q.exchangeRate ?? 1,
     portOfLoading: q.portOfLoading || "",
@@ -233,6 +235,18 @@ function quotationDetailToEditableForm(q) {
       country: "",
     },
     lines,
+  };
+}
+
+function calcQuotationTotalsView(src) {
+  const subTotal = (src?.lines || []).reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0);
+  const packingCost = Math.max(0, Number(src?.packingCost) || 0);
+  const clearanceCost = Math.max(0, Number(src?.clearanceCost) || 0);
+  return {
+    subTotal,
+    packingCost,
+    clearanceCost,
+    grandTotal: subTotal + packingCost + clearanceCost,
   };
 }
 
@@ -651,6 +665,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </table>
         <div class="totals">
           <div><span>Subtotal</span><span>${money(q.subTotal)}</span></div>
+          <div><span>Packing Cost</span><span>${money(q.packingCost)}</span></div>
+          <div><span>Clearance Cost</span><span>${money(q.clearanceCost)}</span></div>
           <div><span>Discount</span><span>${money(q.discountTotal)}</span></div>
           <div><span>Tax</span><span>${money(q.taxTotal)}</span></div>
           <div><b>Grand Total</b><b>${money(q.grandTotal)} ${q.currency || ""}</b></div>
@@ -1395,6 +1411,8 @@ export default function Sales() {
     paymentTerms: "",
     deliveryTerms: "",
     incoterm: "",
+    packingCost: 0,
+    clearanceCost: 0,
     currency: "USD",
     exchangeRate: 1,
     portOfLoading: "",
@@ -1852,6 +1870,8 @@ export default function Sales() {
         paymentTerms: "",
         deliveryTerms: "",
         incoterm: "",
+        packingCost: 0,
+        clearanceCost: 0,
         currency: "USD",
         exchangeRate: 1,
         portOfLoading: "",
@@ -4618,6 +4638,24 @@ export default function Sales() {
               <FormField label="ESN">
                 <TextInput value={detailQuotationDraftForm.esn || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, esn: e.target.value }))} />
               </FormField>
+              <FormField label="Packing Cost">
+                <TextInput
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={detailQuotationDraftForm.packingCost ?? 0}
+                  onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, packingCost: Number(e.target.value) || 0 }))}
+                />
+              </FormField>
+              <FormField label="Clearance Cost">
+                <TextInput
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={detailQuotationDraftForm.clearanceCost ?? 0}
+                  onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, clearanceCost: Number(e.target.value) || 0 }))}
+                />
+              </FormField>
             </div>
 
             <div className="mt-1">
@@ -4773,25 +4811,27 @@ export default function Sales() {
               </div>
             </div>
 
-            <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
-              <div className="flex justify-between py-1">
-                <span>Subtotal</span>
-                <span>
-                  {money(
-                    detailQuotationDraftForm.lines.reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0)
-                  )}
-                </span>
-              </div>
-              <div className="flex justify-between py-1"><span>Discount</span><span>{money(detail.discountTotal)}</span></div>
-              <div className="flex justify-between py-1"><span>Tax</span><span>{money(detail.taxTotal)}</span></div>
-              <div className="flex justify-between py-1 text-base font-semibold">
-                <span>Grand Total</span>
-                <span>
-                  {money(detailQuotationDraftForm.lines.reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0))}{" "}
-                  {detailQuotationDraftForm.currency || ""}
-                </span>
-              </div>
-            </div>
+            {(() => {
+              const t = calcQuotationTotalsView(detailQuotationDraftForm);
+              return (
+                <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
+                  <div className="flex justify-between py-1">
+                    <span>Subtotal</span>
+                    <span>{money(t.subTotal)}</span>
+                  </div>
+                  <div className="flex justify-between py-1"><span>Packing Cost</span><span>{money(t.packingCost)}</span></div>
+                  <div className="flex justify-between py-1"><span>Clearance Cost</span><span>{money(t.clearanceCost)}</span></div>
+                  <div className="flex justify-between py-1"><span>Discount</span><span>{money(detail.discountTotal)}</span></div>
+                  <div className="flex justify-between py-1"><span>Tax</span><span>{money(detail.taxTotal)}</span></div>
+                  <div className="flex justify-between py-1 text-base font-semibold">
+                    <span>Grand Total</span>
+                    <span>
+                      {money(t.grandTotal)} {detailQuotationDraftForm.currency || ""}
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
 
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -4931,6 +4971,8 @@ export default function Sales() {
 
             <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
               <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(detail.subTotal)}</span></div>
+              <div className="flex justify-between py-1"><span>Packing Cost</span><span>{money(detail.packingCost)}</span></div>
+              <div className="flex justify-between py-1"><span>Clearance Cost</span><span>{money(detail.clearanceCost)}</span></div>
               <div className="flex justify-between py-1"><span>Discount</span><span>{money(detail.discountTotal)}</span></div>
               <div className="flex justify-between py-1"><span>Tax</span><span>{money(detail.taxTotal)}</span></div>
               <div className="flex justify-between py-1 text-base font-semibold">
@@ -6688,6 +6730,24 @@ export default function Sales() {
           </FormField>
           <FormField label="ESN">
             <TextInput value={form.esn} onChange={(e) => setForm((f) => ({ ...f, esn: e.target.value }))} />
+          </FormField>
+          <FormField label="Packing Cost">
+            <TextInput
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.packingCost ?? 0}
+              onChange={(e) => setForm((f) => ({ ...f, packingCost: Number(e.target.value) || 0 }))}
+            />
+          </FormField>
+          <FormField label="Clearance Cost">
+            <TextInput
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.clearanceCost ?? 0}
+              onChange={(e) => setForm((f) => ({ ...f, clearanceCost: Number(e.target.value) || 0 }))}
+            />
           </FormField>
         </div>
 

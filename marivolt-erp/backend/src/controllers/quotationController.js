@@ -44,7 +44,9 @@ function recalcQuotationTotals(doc) {
   doc.subTotal = doc.lines.reduce((acc, line) => acc + (Number(line.totalPrice) || 0), 0);
   doc.discountTotal = 0;
   doc.taxTotal = 0;
-  doc.grandTotal = doc.subTotal;
+  doc.packingCost = Math.max(0, Number(doc.packingCost) || 0);
+  doc.clearanceCost = Math.max(0, Number(doc.clearanceCost) || 0);
+  doc.grandTotal = doc.subTotal + doc.packingCost + doc.clearanceCost;
 }
 
 async function resolveCustomerFromMaster(req, payload = {}) {
@@ -319,6 +321,8 @@ export async function updateQuotation(req, res) {
       "quotationDate",
       "validityDate",
       "shipmentReference",
+      "packingCost",
+      "clearanceCost",
     ];
     for (const k of allowed) {
       if (req.body[k] !== undefined) doc[k] = req.body[k];
