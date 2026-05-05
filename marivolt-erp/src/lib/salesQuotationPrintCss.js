@@ -21,7 +21,7 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
           .quote-center { text-align: center; }
           .quote-right { text-align: right; }
           .quote-logo {
-            max-width: 160px;
+            max-width: 208px;
             height: auto;
             object-fit: contain;
           }
@@ -73,8 +73,8 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             align-items: center;
           }
           .logo {
-            height: 129px;
-            width: 146px;
+            width: 190px;
+            height: auto;
             object-fit: contain;
             image-rendering: auto;
             image-rendering: -webkit-optimize-contrast;
