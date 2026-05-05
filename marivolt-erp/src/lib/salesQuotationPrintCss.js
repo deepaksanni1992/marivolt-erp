@@ -55,17 +55,19 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             margin-top: 8px;
           }
           .header {
-            display: flex;
-            justify-content: space-between;
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
             align-items: center;
-            gap: 20px;
-            margin-bottom: 20px;
+            width: 100%;
+            padding: 20px 30px;
+            border-bottom: 2px solid #e5e7eb;
+            box-sizing: border-box;
+            min-height: 118px;
+            margin-bottom: 16px;
             page-break-inside: avoid;
           }
           .header-left, .header-center, .header-right {
-            flex: 1;
             min-width: 0;
-            padding: 6px 8px;
           }
           .header-left {
             display: flex;
@@ -89,7 +91,7 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             text-align: center;
           }
           .header-right {
-            text-align: center;
+            text-align: right;
           }
           .header-right.is-marivolt {
             text-align: right;
@@ -99,7 +101,7 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             line-height: 1;
             font-size: 32px;
             font-weight: 800;
-            color: #e85d3f;
+            color: #1f3a5f;
           }
           .brand-subtitle {
             margin-top: 4px;
@@ -240,7 +242,7 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
               print-color-adjust: exact !important;
               color-adjust: exact !important;
             }
-            .brand-title { color: #e85d3f !important; }
+            .brand-title { color: #1f3a5f !important; }
             .brand-subtitle { color: #1f4e79 !important; }
             .brand-fallback { color: #1f5a96 !important; }
             .page-footer { color: #1f3a5f !important; }
