@@ -4,6 +4,7 @@ import Company from "../models/Company.js";
 import Customer from "../models/Customer.js";
 import Item from "../models/itemModel.js";
 import ItemTechnical from "../models/itemTechnicalModel.js";
+import OrderAcknowledgement from "../models/OrderAcknowledgement.js";
 import { applyStockOut } from "../services/stockService.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
 
@@ -371,8 +372,9 @@ export async function patchQuotationStatus(req, res) {
     }
     const existing = await Quotation.findOne(withCompany(req, { _id: id }));
     if (!existing) return res.status(404).json({ message: "Not found" });
-    if (existing.status === "APPROVED" || existing.status === "CONVERTED") {
-      return res.status(400).json({ message: "Approved or converted quotations cannot be changed" });
+    const currentStatus = String(existing.status || "").toUpperCase();
+    if (["APPROVED", "CONVERTED", "CANCELLED"].includes(currentStatus)) {
+      return res.status(400).json({ message: "Approved, converted, or cancelled quotations cannot be changed" });
     }
     const doc = await Quotation.findOneAndUpdate(
       withCompany(req, { _id: id }),
@@ -436,12 +438,40 @@ export async function stockOutFromQuotation(req, res) {
 
 export async function deleteQuotation(req, res) {
   try {
+    const role = String(req.user?.role || "")
+      .toLowerCase()
+      .trim();
+    if (!["super_admin", "company_admin", "admin"].includes(role)) {
+      return res.status(403).json({ message: "Only administrators can delete quotations." });
+    }
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await Quotation.findOneAndDelete(withCompany(req, { _id: id }));
+    const row = await Quotation.findOne(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
+
+    const quotationStatus = String(row.status || "").toUpperCase();
+    const linkedOAs = await OrderAcknowledgement.find(
+      withCompany(req, { linkedQuotationId: row._id })
+    )
+      .select("status oaNo")
+      .lean();
+    const hasLinkedOA = linkedOAs.length > 0;
+    const hasActiveOA = linkedOAs.some((oa) => String(oa.status || "").toUpperCase() !== "CANCELLED");
+
+    if (!hasLinkedOA && !["DRAFT", "APPROVED"].includes(quotationStatus)) {
+      return res.status(400).json({
+        message: "Only DRAFT or APPROVED quotations can be deleted unless linked order confirmation is cancelled.",
+      });
+    }
+    if (hasActiveOA) {
+      return res.status(400).json({
+        message: "Cannot delete quotation because linked order confirmation is active. Cancel order confirmation first.",
+      });
+    }
+
+    await Quotation.deleteOne(withCompany(req, { _id: id }));
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ message: err.message });

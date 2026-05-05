@@ -4,7 +4,7 @@ import Papa from "papaparse";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
-import { apiGet, apiGetWithQuery, apiPatch, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
+import { apiDelete, apiGet, apiGetWithQuery, apiPatch, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "../lib/salesQuotationPrintCss.js";
 import {
   buildTaxInvoiceHeaderHtml,
@@ -439,6 +439,11 @@ function statusBadgeClass(status = "") {
     return "bg-rose-50 text-rose-700 ring-rose-200";
   }
   return "bg-slate-100 text-slate-700 ring-slate-200";
+}
+
+function quotationLockedStatus(status = "") {
+  const st = String(status || "").toUpperCase();
+  return st === "APPROVED" || st === "CONVERTED" || st === "CANCELLED";
 }
 
 const reportColumnsById = {
@@ -1349,6 +1354,11 @@ function canEditSalesCustomerMaster(role) {
   return ["super_admin", "company_admin", "admin"].includes(r);
 }
 
+function canManageSalesQuotationDeletion(role) {
+  const r = String(role || "").toLowerCase().trim();
+  return ["super_admin", "company_admin", "admin"].includes(r);
+}
+
 function formatFileBytes(n) {
   if (n == null || Number.isNaN(Number(n))) return "—";
   const v = Number(n);
@@ -1387,6 +1397,7 @@ export default function Sales() {
     notes: "",
   });
   const canEditCustomers = canEditSalesCustomerMaster(auth?.user?.role);
+  const canDeleteQuotations = canManageSalesQuotationDeletion(auth?.user?.role);
   const shippingFileRef = useRef(null);
   const [shippingDocsAfterDispatch, setShippingDocsAfterDispatch] = useState(null);
   const [shippingDocForm, setShippingDocForm] = useState({
@@ -1993,6 +2004,17 @@ export default function Sales() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-quotations"] });
       if (detailId) qc.invalidateQueries({ queryKey: ["quotation-detail", detailId] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const deleteQuotationMutation = useMutation({
+    mutationFn: (id) => apiDelete(`/quotations/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-quotations"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["quotation-detail", detailId] });
+      setDetailId(null);
+      setErr("");
     },
     onError: (e) => setErr(e.message),
   });
@@ -3537,13 +3559,15 @@ export default function Sales() {
                             >
                               Open
                             </button>
-                            <button
-                              type="button"
-                              className="rounded-lg border px-2 py-1 text-xs"
-                              onClick={() => duplicateMutation.mutate(r._id)}
-                            >
-                              Duplicate
-                            </button>
+                            {String(r.status || "").toUpperCase() !== "CANCELLED" ? (
+                              <button
+                                type="button"
+                                className="rounded-lg border px-2 py-1 text-xs"
+                                onClick={() => duplicateMutation.mutate(r._id)}
+                              >
+                                Duplicate
+                              </button>
+                            ) : null}
                             <button
                               type="button"
                               className="rounded-lg border px-2 py-1 text-xs"
@@ -4876,6 +4900,20 @@ export default function Sales() {
               >
                 {updateQuotationDetailMutation.isPending ? "Saving…" : "Save changes"}
               </button>
+              {canDeleteQuotations ? (
+                <button
+                  type="button"
+                  className="rounded-xl border border-rose-300 px-3 py-1.5 text-xs font-semibold text-rose-700 disabled:opacity-50"
+                  disabled={deleteQuotationMutation.isPending || !detail?._id}
+                  onClick={() => {
+                    if (!detail?._id) return;
+                    if (!window.confirm("Delete this quotation? This action cannot be undone.")) return;
+                    deleteQuotationMutation.mutate(detail._id);
+                  }}
+                >
+                  {deleteQuotationMutation.isPending ? "Deleting…" : "Delete quotation"}
+                </button>
+              ) : null}
               <button type="button" className="rounded-xl border px-2 py-1 text-xs opacity-40" disabled title="Approve the quotation first">
                 Convert to OA
               </button>
@@ -4901,6 +4939,20 @@ export default function Sales() {
               ))}
             </div>
             <div className="flex flex-wrap gap-2">
+              {canDeleteQuotations ? (
+                <button
+                  type="button"
+                  className="rounded-xl border border-rose-300 px-2 py-1 text-xs text-rose-700 disabled:opacity-50"
+                  disabled={deleteQuotationMutation.isPending || !detail?._id}
+                  onClick={() => {
+                    if (!detail?._id) return;
+                    if (!window.confirm("Delete this quotation? This action cannot be undone.")) return;
+                    deleteQuotationMutation.mutate(detail._id);
+                  }}
+                >
+                  {deleteQuotationMutation.isPending ? "Deleting…" : "Delete quotation"}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="rounded-xl border px-2 py-1 text-xs"
@@ -4946,7 +4998,7 @@ export default function Sales() {
               </div>
             </div>
 
-            {(detail.status === "APPROVED" || detail.status === "CONVERTED") && (
+            {quotationLockedStatus(detail.status) && (
               <p className="text-xs text-gray-600">This quotation is locked — only print/export is allowed.</p>
             )}
 
@@ -5023,8 +5075,7 @@ export default function Sales() {
                   disabled={
                     s === detail.status ||
                     statusMutation.isPending ||
-                    detail.status === "APPROVED" ||
-                    detail.status === "CONVERTED"
+                    quotationLockedStatus(detail.status)
                   }
                   className="rounded-xl border px-2 py-1 text-xs disabled:opacity-40"
                   onClick={() => statusMutation.mutate({ id: detail._id, nextStatus: s })}
