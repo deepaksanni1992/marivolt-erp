@@ -87,6 +87,7 @@ export async function listItems(req, res) {
     if (vertical) filter.vertical = new RegExp(`^${escRe(vertical)}$`, "i");
     const engine = trim(req.query.engine);
     if (engine) filter.engine = new RegExp(`^${escRe(engine)}$`, "i");
+    const esn = trim(req.query.esn);
 
     const search = trim(req.query.search);
     if (search) {
@@ -94,7 +95,7 @@ export async function listItems(req, res) {
       const [technicalArticles, supplierArticles] = await Promise.all([
         ItemTechnical.find(
           withCompany(req, {
-            $or: [{ spn: re }, { materialCode: re }, { drawingNumber: re }, { dimension: re }],
+            $or: [{ spn: re }, { esn: re }, { materialCode: re }, { drawingNumber: re }, { dimension: re }],
           })
         )
           .distinct("article"),
@@ -115,6 +116,19 @@ export async function listItems(req, res) {
         { config: re },
         ...(articleHits.length ? [{ article: { $in: articleHits } }] : []),
       ];
+    }
+    if (esn) {
+      const re = new RegExp(escRe(esn), "i");
+      const esnArticles = await ItemTechnical.find(withCompany(req, { esn: re })).distinct("article");
+      if (!esnArticles.length) {
+        return res.json({ items: [], total: 0, page, limit });
+      }
+      if (filter.$or) {
+        filter.$and = [{ $or: filter.$or }, { article: { $in: esnArticles } }];
+        delete filter.$or;
+      } else {
+        filter.article = { $in: esnArticles };
+      }
     }
 
     const [items, total] = await Promise.all([
@@ -149,6 +163,7 @@ export async function listItems(req, res) {
         technical,
         dimension: technical?.dimension || "",
         spn: technical?.spn || "",
+        esn: technical?.esn || "",
         materialCode: technical?.materialCode || "",
         drawingNumber: technical?.drawingNumber || "",
         extRemarks: technical?.extRemarks || "",
@@ -252,6 +267,7 @@ export async function createItemTechnical(req, res) {
       companyId: req.companyId,
       article,
       spn: trim(req.body.spn),
+      esn: trim(req.body.esn),
       materialCode: trim(req.body.materialCode),
       drawingNumber: trim(req.body.drawingNumber),
       dimension: normalizeDimension(req.body.dimension),
@@ -287,6 +303,7 @@ export async function updateItemTechnical(req, res) {
     await ensureItemExists(req, article);
     const payload = {
       spn: trim(req.body.spn),
+      esn: trim(req.body.esn),
       materialCode: trim(req.body.materialCode),
       drawingNumber: trim(req.body.drawingNumber),
       dimension: normalizeDimension(req.body.dimension),
@@ -426,6 +443,7 @@ export async function importItems(req, res) {
             companyId: req.companyId,
             article,
             spn: pick(row, "SPN"),
+            esn: pick(row, "ESN"),
             materialCode: pick(row, "Material Code", "Material code"),
             drawingNumber: pick(row, "Drawing Number", "Drawing number"),
             extRemarks: pick(row, "Ext Remarks", "Ext remarks"),
@@ -507,6 +525,7 @@ export async function exportItems(req, res) {
         Model: item.model,
         Config: item.config,
         SPN: tech?.spn || "",
+        ESN: tech?.esn || "",
         "Material Code": tech?.materialCode || "",
         "Drawing Number": tech?.drawingNumber || "",
         Dimension: tech?.dimension || "",

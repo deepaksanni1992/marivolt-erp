@@ -18,6 +18,7 @@ const emptyItem = {
 
 const emptyTechnical = {
   spn: "",
+  esn: "",
   materialCode: "",
   drawingNumber: "",
   dimension: "",
@@ -44,6 +45,7 @@ const EXPORT_COLUMNS = [
   { key: "Model", header: "Model" },
   { key: "Config", header: "Config" },
   { key: "SPN", header: "SPN" },
+  { key: "ESN", header: "ESN" },
   { key: "Material Code", header: "Material Code" },
   { key: "Drawing Number", header: "Drawing Number" },
   { key: "Dimension", header: "Dimension" },
@@ -77,6 +79,7 @@ export default function ItemMaster() {
   const [search, setSearch] = useState("");
   const [vertical, setVertical] = useState("");
   const [engine, setEngine] = useState("");
+  const [esn, setEsn] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [tab, setTab] = useState("basic");
   const [selectedArticle, setSelectedArticle] = useState("");
@@ -87,7 +90,7 @@ export default function ItemMaster() {
   const [editingSupplierId, setEditingSupplierId] = useState("");
 
   const { data: listData, isLoading } = useQuery({
-    queryKey: ["items", page, search, vertical, engine],
+    queryKey: ["items", page, search, vertical, engine, esn],
     queryFn: () =>
       apiGetWithQuery("/items", {
         page,
@@ -95,6 +98,7 @@ export default function ItemMaster() {
         search: search || undefined,
         vertical: vertical || undefined,
         engine: engine || undefined,
+        esn: esn || undefined,
       }),
   });
 
@@ -230,7 +234,7 @@ export default function ItemMaster() {
       </div>
 
       <div className="rounded-2xl border bg-white p-4">
-        <div className="grid gap-3 md:grid-cols-4">
+        <div className="grid gap-3 md:grid-cols-5">
           <Field label="Vertical">
             <select className="rounded-lg border px-3 py-2" value={vertical} onChange={(e) => setVertical(e.target.value)}>
               <option value="">All</option>
@@ -248,6 +252,9 @@ export default function ItemMaster() {
               <Search size={16} className="text-slate-400" />
               <input className="w-full px-2 py-2 outline-none" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Article, SPN, Material, Supplier..." />
             </div>
+          </Field>
+          <Field label="ESN">
+            <input className="rounded-lg border px-3 py-2" value={esn} onChange={(e) => setEsn(e.target.value)} placeholder="Filter by ESN" />
           </Field>
           <div className="flex items-end">
             <button onClick={() => { setPage(1); qc.invalidateQueries({ queryKey: ["items"] }); }} className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white">Apply</button>
@@ -270,6 +277,7 @@ export default function ItemMaster() {
                 <th className="px-3 py-3">Description</th>
                 <th className="px-3 py-3">ITEM NAME</th>
                 <th className="px-3 py-3">SPN</th>
+                <th className="px-3 py-3">ESN</th>
                 <th className="px-3 py-3">Material Code</th>
                 <th className="px-3 py-3">Drawing Number</th>
                 <th className="px-3 py-3">QTY</th>
@@ -286,7 +294,7 @@ export default function ItemMaster() {
               </tr>
             </thead>
             <tbody>
-              {isLoading ? <tr><td className="px-3 py-8" colSpan={20}>Loading...</td></tr> : list.map((row) => (
+              {isLoading ? <tr><td className="px-3 py-8" colSpan={22}>Loading...</td></tr> : list.map((row) => (
                 <tr key={row._id} className="border-t">
                   <td className="px-3 py-2">{row.vertical || "-"}</td>
                   <td className="px-3 py-2">{row.engine || "-"}</td>
@@ -296,6 +304,7 @@ export default function ItemMaster() {
                   <td className="px-3 py-2">{row.description || "-"}</td>
                   <td className="px-3 py-2">{row.itemName || "-"}</td>
                   <td className="px-3 py-2">{row.spn || "-"}</td>
+                  <td className="px-3 py-2">{row.esn || "-"}</td>
                   <td className="px-3 py-2">{row.materialCode || "-"}</td>
                   <td className="px-3 py-2">{row.drawingNumber || "-"}</td>
                   <td className="px-3 py-2">{Number(row.qty || 0)}</td>
@@ -362,6 +371,7 @@ export default function ItemMaster() {
               <div className="space-y-4">
                 <div className="grid gap-3 md:grid-cols-2">
                   <Field label="SPN"><input className="rounded-lg border px-3 py-2" value={technical.spn} onChange={(e) => setTechnical((v) => ({ ...v, spn: e.target.value }))} /></Field>
+                  <Field label="ESN"><input className="rounded-lg border px-3 py-2" value={technical.esn} onChange={(e) => setTechnical((v) => ({ ...v, esn: e.target.value }))} /></Field>
                   <Field label="Material Code"><input className="rounded-lg border px-3 py-2" value={technical.materialCode} onChange={(e) => setTechnical((v) => ({ ...v, materialCode: e.target.value }))} /></Field>
                   <Field label="Drawing Number"><input className="rounded-lg border px-3 py-2" value={technical.drawingNumber} onChange={(e) => setTechnical((v) => ({ ...v, drawingNumber: e.target.value }))} /></Field>
                   <Field label="Dimension"><input className="rounded-lg border px-3 py-2" value={technical.dimension} onChange={(e) => setTechnical((v) => ({ ...v, dimension: e.target.value }))} /></Field>
