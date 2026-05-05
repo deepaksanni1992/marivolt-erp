@@ -3,6 +3,7 @@ import Quotation from "../models/Quotation.js";
 import Company from "../models/Company.js";
 import Customer from "../models/Customer.js";
 import Item from "../models/itemModel.js";
+import ItemTechnical from "../models/itemTechnicalModel.js";
 import { applyStockOut } from "../services/stockService.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
 
@@ -63,34 +64,75 @@ async function resolveCustomerFromMaster(req, payload = {}) {
 }
 
 async function autoCreateItemsFromQuotation({ req, quotation }) {
+  const UOM_ALLOWED = ["PCS", "SET", "KG", "NOS", "MTR"];
+  const clean = (v) => String(v ?? "").trim();
+  const normalizeUom = (v) => {
+    const u = clean(v).toUpperCase();
+    return UOM_ALLOWED.includes(u) ? u : "PCS";
+  };
+  const mergeSet = (base, next) => {
+    const a = clean(base);
+    const b = clean(next);
+    if (!a && !b) return "";
+    const set = new Set([
+      ...a.split("|").map((x) => x.trim()).filter(Boolean),
+      ...b.split("|").map((x) => x.trim()).filter(Boolean),
+    ]);
+    return [...set].join(" | ");
+  };
+
   for (const line of quotation.lines || []) {
-    const article = String(line.article || "").trim().toUpperCase();
+    const article = clean(line.article).toUpperCase();
     if (!article) continue;
-    const existing = await Item.findOne({ companyId: req.companyId, itemCode: article }).select("_id").lean();
-    if (existing) continue;
+    const existing = await Item.findOne({ companyId: req.companyId, article });
     try {
-      await Item.create({
+      const payload = {
         companyId: req.companyId,
-        itemCode: article,
-        description: line.description || "",
-        uom: line.uom || "PCS",
-        makerPartNo: line.partNumber || "",
-        materialCode: line.materialCode || "",
-        engine: quotation.engine || "",
-        modelName: quotation.model || "",
-        config: quotation.config || "",
-        esn: quotation.esn || "",
-        source: "quotation",
-        sourceDocumentType: "quotation",
-        sourceDocumentId: quotation._id,
-        sourceDocumentNo: quotation.quotationNo,
-      });
+        article,
+        itemName: clean(line.description) || article,
+        description: clean(line.description),
+        vertical: clean(quotation.vertical),
+        engine: clean(quotation.engine),
+        model: clean(quotation.model),
+        config: clean(quotation.config),
+        uom: normalizeUom(line.uom),
+        status: "Active",
+      };
+
+      if (!existing) {
+        await Item.create(payload);
+      } else {
+        existing.itemName = existing.itemName || payload.itemName;
+        existing.description = mergeSet(existing.description, payload.description);
+        existing.vertical = mergeSet(existing.vertical, payload.vertical);
+        existing.engine = mergeSet(existing.engine, payload.engine);
+        existing.model = mergeSet(existing.model, payload.model);
+        existing.config = mergeSet(existing.config, payload.config);
+        existing.uom = normalizeUom(existing.uom || payload.uom);
+        existing.status = "Active";
+        await existing.save();
+      }
+
+      const technical = await ItemTechnical.findOne({ companyId: req.companyId, article });
+      const nextSpn = clean(line.partNumber);
+      const nextMaterialCode = clean(line.materialCode);
+      if (!technical) {
+        await ItemTechnical.create({
+          companyId: req.companyId,
+          article,
+          spn: nextSpn,
+          materialCode: nextMaterialCode,
+        });
+      } else {
+        technical.spn = mergeSet(technical.spn, nextSpn);
+        technical.materialCode = mergeSet(technical.materialCode, nextMaterialCode);
+        await technical.save();
+      }
     } catch (err) {
       const isDuplicateKey = err?.code === 11000;
-      const duplicateSkuLegacyIndex = String(err?.message || "").includes("index: sku_1");
-      const duplicateItemCode = Boolean(err?.keyPattern?.companyId && err?.keyPattern?.itemCode);
-      if (isDuplicateKey && (duplicateSkuLegacyIndex || duplicateItemCode)) {
-        // Do not block quotation save on legacy or concurrent item-creation duplicate keys.
+      const duplicateArticle = Boolean(err?.keyPattern?.companyId && err?.keyPattern?.article);
+      if (isDuplicateKey && duplicateArticle) {
+        // Concurrent save of same article is safe to ignore.
         continue;
       }
       throw err;
