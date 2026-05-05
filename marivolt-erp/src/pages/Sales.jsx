@@ -584,6 +584,8 @@ function getReportBranding(companyNameRaw = "") {
   const reportEmail = isMarivolt ? "sales@marivolt.co" : isOkeanos ? "Sales@okeanos.pro" : "";
   const reportPhone = isMarivolt ? "+971-543053047" : isOkeanos ? "+971-543050000" : "";
   const reportWebsite = isMarivolt ? "www.marivolt.co" : isOkeanos ? "www.okfze.com" : "";
+  const reportFooterName = isMarivolt ? "Marivolt FZE" : isOkeanos ? "Okeanos FZE" : companyDisplayName;
+  const reportFooterSubline = isMarivolt ? "LV09B" : "";
   return {
     isMarivolt,
     isOkeanos,
@@ -595,6 +597,8 @@ function getReportBranding(companyNameRaw = "") {
     reportEmail,
     reportPhone,
     reportWebsite,
+    reportFooterName,
+    reportFooterSubline,
   };
 }
 
@@ -605,7 +609,7 @@ function renderPrintWindow(data, autoPrint = false) {
   const rows = q.lines || [];
   const hasCompanyLogo = String(company.logo || "").trim().length > 0;
   const companyName = String(company.companyName || "").toLowerCase();
-  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite } = getReportBranding(companyName);
+  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite, reportFooterName, reportFooterSubline } = getReportBranding(companyName);
   const html = `
     <html>
       <head>
@@ -717,8 +721,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             ? `<div class="page-footer">
           <div class="page-footer-top">
             <div>
-              <div>${companyDisplayName || "-"}</div>
-              <div>C1/MV Office</div>
+              <div>${reportFooterName || "-"}</div>
+              ${reportFooterSubline ? `<div>${reportFooterSubline}</div>` : ""}
             </div>
             <div class="page-footer-center">${reportAddress}</div>
             <div class="page-footer-right">
@@ -750,7 +754,7 @@ function renderOrderAcknowledgementPrintWindow(payload, autoPrint = false) {
   const rows = oa.lines || [];
   const hasCompanyLogo = String(company.logo || "").trim().length > 0;
   const companyName = String(company.companyName || "").toLowerCase();
-  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite } = getReportBranding(companyName);
+  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite, reportFooterName, reportFooterSubline } = getReportBranding(companyName);
   const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "-");
 
   const html = `
@@ -861,8 +865,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             ? `<div class="page-footer">
           <div class="page-footer-top">
             <div>
-              <div>${companyDisplayName || "-"}</div>
-              <div>C1/MV Office</div>
+              <div>${reportFooterName || "-"}</div>
+              ${reportFooterSubline ? `<div>${reportFooterSubline}</div>` : ""}
             </div>
             <div class="page-footer-center">${reportAddress}</div>
             <div class="page-footer-right">
@@ -905,7 +909,7 @@ function renderFlowDocPrintWindow({
   const rows = doc?.lines || [];
   const hasCompanyLogo = String(company?.logo || company?.logoUrl || "").trim().length > 0;
   const companyName = String(company?.name || company?.companyName || "").toLowerCase();
-  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite } = getReportBranding(companyName);
+  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite, reportFooterName, reportFooterSubline } = getReportBranding(companyName);
   const lineTableHeaderHtml = salesInvoiceLayout
     ? `
               <th style="width:6%;">Pos.</th>
@@ -1109,8 +1113,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             ? `<div class="page-footer">
           <div class="page-footer-top">
             <div>
-              <div>${companyDisplayName || "-"}</div>
-              <div>C1/MV Office</div>
+              <div>${reportFooterName || "-"}</div>
+              ${reportFooterSubline ? `<div>${reportFooterSubline}</div>` : ""}
             </div>
             <div class="page-footer-center">${reportAddress}</div>
             <div class="page-footer-right">
@@ -1140,7 +1144,7 @@ function renderPackingListPrintWindow({ rts, company, autoPrint = false }) {
   const totalBoxes = boxes.reduce((acc, b) => acc + (Number(b.count || 0) || 0), 0);
   const hasCompanyLogo = String(company?.logo || company?.logoUrl || "").trim().length > 0;
   const companyName = String(company?.name || company?.companyName || "").toLowerCase();
-  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite } = getReportBranding(companyName);
+  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite, reportFooterName, reportFooterSubline } = getReportBranding(companyName);
   const html = `
     <html>
       <head>
@@ -1267,8 +1271,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             ? `<div class="page-footer">
           <div class="page-footer-top">
             <div>
-              <div>${companyDisplayName || "-"}</div>
-              <div>C1/MV Office</div>
+              <div>${reportFooterName || "-"}</div>
+              ${reportFooterSubline ? `<div>${reportFooterSubline}</div>` : ""}
             </div>
             <div class="page-footer-center">${reportAddress}</div>
             <div class="page-footer-right">

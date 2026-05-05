@@ -24,6 +24,8 @@ export function renderOrderAllocationPrintWindow(allocation, company = {}, autoP
   const reportEmail = isMarivolt ? "sales@marivolt.co" : isOkeanos ? "Sales@okeanos.pro" : (company?.email || "");
   const reportPhone = isMarivolt ? "+971-543053047" : isOkeanos ? "+971-543050000" : (company?.phone || "");
   const reportWebsite = isMarivolt ? "www.marivolt.co" : isOkeanos ? "www.okfze.com" : "";
+  const reportFooterName = isMarivolt ? "Marivolt FZE" : isOkeanos ? "Okeanos FZE" : companyDisplayName;
+  const reportFooterSubline = isMarivolt ? "LV09B" : "";
   const html = `
     <html>
       <head>
@@ -125,8 +127,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             ? `<div class="page-footer">
           <div class="page-footer-top">
             <div>
-              <div>${companyDisplayName || "-"}</div>
-              <div>C1/MV Office</div>
+              <div>${reportFooterName || "-"}</div>
+              ${reportFooterSubline ? `<div>${reportFooterSubline}</div>` : ""}
             </div>
             <div class="page-footer-center">${reportAddress}</div>
             <div class="page-footer-right">
