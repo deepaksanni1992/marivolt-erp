@@ -3559,6 +3559,19 @@ export default function Sales() {
                             >
                               Open
                             </button>
+                            {canDeleteQuotations ? (
+                              <button
+                                type="button"
+                                className="rounded-lg border border-rose-300 px-2 py-1 text-xs text-rose-700 disabled:opacity-50"
+                                disabled={deleteQuotationMutation.isPending}
+                                onClick={() => {
+                                  if (!window.confirm("Delete this quotation? This action cannot be undone.")) return;
+                                  deleteQuotationMutation.mutate(r._id);
+                                }}
+                              >
+                                {deleteQuotationMutation.isPending ? "Deleting…" : "Delete"}
+                              </button>
+                            ) : null}
                             {String(r.status || "").toUpperCase() !== "CANCELLED" ? (
                               <button
                                 type="button"
