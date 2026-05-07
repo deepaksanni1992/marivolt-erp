@@ -43,11 +43,21 @@ function normalizeLines(lines = []) {
 function recalcQuotationTotals(doc) {
   doc.lines = normalizeLines(doc.lines);
   doc.subTotal = doc.lines.reduce((acc, line) => acc + (Number(line.totalPrice) || 0), 0);
-  doc.discountTotal = 0;
+  const discountType = String(doc.discountType || "NONE").toUpperCase();
+  const discountValue = Math.max(0, Number(doc.discountValue) || 0);
+  doc.discountType = ["PERCENT", "FLAT"].includes(discountType) ? discountType : "NONE";
+  doc.discountValue = discountValue;
+  if (doc.discountType === "PERCENT") {
+    doc.discountTotal = Math.min(doc.subTotal, (doc.subTotal * discountValue) / 100);
+  } else if (doc.discountType === "FLAT") {
+    doc.discountTotal = Math.min(doc.subTotal, discountValue);
+  } else {
+    doc.discountTotal = 0;
+  }
   doc.taxTotal = 0;
   doc.packingCost = Math.max(0, Number(doc.packingCost) || 0);
   doc.clearanceCost = Math.max(0, Number(doc.clearanceCost) || 0);
-  doc.grandTotal = doc.subTotal + doc.packingCost + doc.clearanceCost;
+  doc.grandTotal = doc.subTotal - doc.discountTotal + doc.packingCost + doc.clearanceCost;
 }
 
 async function resolveCustomerFromMaster(req, payload = {}) {
@@ -324,6 +334,8 @@ export async function updateQuotation(req, res) {
       "shipmentReference",
       "packingCost",
       "clearanceCost",
+      "discountType",
+      "discountValue",
     ];
     for (const k of allowed) {
       if (req.body[k] !== undefined) doc[k] = req.body[k];

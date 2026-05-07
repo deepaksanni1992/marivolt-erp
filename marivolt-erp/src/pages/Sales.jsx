@@ -217,6 +217,8 @@ function quotationDetailToEditableForm(q) {
     paymentTerms: q.paymentTerms || "",
     deliveryTerms: q.deliveryTerms || "",
     incoterm: q.incoterm || "",
+    discountType: q.discountType || "NONE",
+    discountValue: Number(q.discountValue) || 0,
     packingCost: Number(q.packingCost) || 0,
     clearanceCost: Number(q.clearanceCost) || 0,
     currency: q.currency || "USD",
@@ -240,13 +242,22 @@ function quotationDetailToEditableForm(q) {
 
 function calcQuotationTotalsView(src) {
   const subTotal = (src?.lines || []).reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0);
+  const discountType = String(src?.discountType || "NONE").toUpperCase();
+  const discountValue = Math.max(0, Number(src?.discountValue) || 0);
+  const discountTotal =
+    discountType === "PERCENT"
+      ? Math.min(subTotal, (subTotal * discountValue) / 100)
+      : discountType === "FLAT"
+      ? Math.min(subTotal, discountValue)
+      : 0;
   const packingCost = Math.max(0, Number(src?.packingCost) || 0);
   const clearanceCost = Math.max(0, Number(src?.clearanceCost) || 0);
   return {
     subTotal,
+    discountTotal,
     packingCost,
     clearanceCost,
-    grandTotal: subTotal + packingCost + clearanceCost,
+    grandTotal: subTotal - discountTotal + packingCost + clearanceCost,
   };
 }
 
@@ -1456,6 +1467,8 @@ export default function Sales() {
     paymentTerms: "",
     deliveryTerms: "",
     incoterm: "",
+    discountType: "NONE",
+    discountValue: 0,
     packingCost: 0,
     clearanceCost: 0,
     currency: "USD",
@@ -1915,6 +1928,8 @@ export default function Sales() {
         paymentTerms: "",
         deliveryTerms: "",
         incoterm: "",
+        discountType: "NONE",
+        discountValue: 0,
         packingCost: 0,
         clearanceCost: 0,
         currency: "USD",
@@ -4718,6 +4733,26 @@ export default function Sales() {
                   onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, packingCost: Number(e.target.value) || 0 }))}
                 />
               </FormField>
+              <FormField label="Discount Type">
+                <select
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                  value={detailQuotationDraftForm.discountType || "NONE"}
+                  onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, discountType: e.target.value }))}
+                >
+                  <option value="NONE">None</option>
+                  <option value="PERCENT">Percentage (%)</option>
+                  <option value="FLAT">Flat amount</option>
+                </select>
+              </FormField>
+              <FormField label={detailQuotationDraftForm.discountType === "PERCENT" ? "Discount %" : "Discount Amount"}>
+                <TextInput
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={detailQuotationDraftForm.discountValue ?? 0}
+                  onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, discountValue: Number(e.target.value) || 0 }))}
+                />
+              </FormField>
               <FormField label="Clearance Cost">
                 <TextInput
                   type="number"
@@ -4892,7 +4927,7 @@ export default function Sales() {
                   </div>
                   <div className="flex justify-between py-1"><span>Packing Cost</span><span>{money(t.packingCost)}</span></div>
                   <div className="flex justify-between py-1"><span>Clearance Cost</span><span>{money(t.clearanceCost)}</span></div>
-                  <div className="flex justify-between py-1"><span>Discount</span><span>{money(detail.discountTotal)}</span></div>
+                  <div className="flex justify-between py-1"><span>Discount</span><span>{money(t.discountTotal)}</span></div>
                   <div className="flex justify-between py-1"><span>Tax</span><span>{money(detail.taxTotal)}</span></div>
                   <div className="flex justify-between py-1 text-base font-semibold">
                     <span>Grand Total</span>
@@ -6836,6 +6871,26 @@ export default function Sales() {
               step="0.01"
               value={form.packingCost ?? 0}
               onChange={(e) => setForm((f) => ({ ...f, packingCost: Number(e.target.value) || 0 }))}
+            />
+          </FormField>
+          <FormField label="Discount Type">
+            <select
+              className="w-full rounded-xl border px-3 py-2 text-sm"
+              value={form.discountType || "NONE"}
+              onChange={(e) => setForm((f) => ({ ...f, discountType: e.target.value }))}
+            >
+              <option value="NONE">None</option>
+              <option value="PERCENT">Percentage (%)</option>
+              <option value="FLAT">Flat amount</option>
+            </select>
+          </FormField>
+          <FormField label={form.discountType === "PERCENT" ? "Discount %" : "Discount Amount"}>
+            <TextInput
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.discountValue ?? 0}
+              onChange={(e) => setForm((f) => ({ ...f, discountValue: Number(e.target.value) || 0 }))}
             />
           </FormField>
           <FormField label="Clearance Cost">

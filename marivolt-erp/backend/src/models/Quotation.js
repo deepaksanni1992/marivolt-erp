@@ -74,6 +74,8 @@ const quotationSchema = new mongoose.Schema(
 
     lines: { type: [quotationLineSchema], default: [] },
     subTotal: { type: Number, default: 0 },
+    discountType: { type: String, enum: ["NONE", "PERCENT", "FLAT"], default: "NONE", trim: true },
+    discountValue: { type: Number, default: 0, min: 0 },
     discountTotal: { type: Number, default: 0 },
     taxTotal: { type: Number, default: 0 },
     packingCost: { type: Number, default: 0, min: 0 },
