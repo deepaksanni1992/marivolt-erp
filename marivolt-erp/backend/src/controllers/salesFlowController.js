@@ -70,18 +70,19 @@ function normalizeLines(lines = []) {
     .map((line, idx) => ({ ...line, serialNo: idx + 1 }));
 }
 
-function computeTotals(lines = []) {
+function computeTotals(lines = [], source = {}) {
   let subTotal = 0;
-  let discountTotal = 0;
-  let taxTotal = 0;
   for (const line of lines) {
     subTotal += Number(line.totalPrice) || 0;
   }
+  const discountTotal = Math.max(0, Number(source?.discountTotal) || 0);
+  const taxTotal = Math.max(0, Number(source?.taxTotal) || 0);
+  const effectiveDiscount = Math.min(subTotal, discountTotal);
   return {
     subTotal,
-    discountTotal,
+    discountTotal: effectiveDiscount,
     taxTotal,
-    grandTotal: subTotal,
+    grandTotal: subTotal - effectiveDiscount + taxTotal,
   };
 }
 
@@ -1109,7 +1110,7 @@ export async function createOA(req, res) {
         companyCode: req.companyCode,
         docKey: "ORDER_ACK",
       }));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, body);
     const doc = await OrderAcknowledgement.create({
       ...body,
       lines,
@@ -1165,7 +1166,7 @@ export async function updateOA(req, res) {
       doc.status = req.body.status;
     }
     doc.lines = normalizeLines(doc.lines || []);
-    Object.assign(doc, computeTotals(doc.lines));
+    Object.assign(doc, computeTotals(doc.lines, doc));
     doc.updatedBy = req.user?.email || "";
     await doc.save();
     res.json(doc);
@@ -1259,7 +1260,7 @@ export async function createProforma(req, res) {
         companyCode: req.companyCode,
         docKey: "PROFORMA",
       }));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, body);
     const doc = await ProformaInvoice.create({
       ...body,
       lines,
@@ -1309,7 +1310,7 @@ export async function updateProforma(req, res) {
       doc.status = req.body.status;
     }
     doc.lines = normalizeLines(doc.lines || []);
-    Object.assign(doc, computeTotals(doc.lines));
+    Object.assign(doc, computeTotals(doc.lines, doc));
     doc.updatedBy = req.user?.email || "";
     await doc.save();
     res.json(doc);
@@ -1395,7 +1396,7 @@ export async function convertQuotationToOA(req, res) {
       docKey: "ORDER_ACK",
     });
     const lines = normalizeLines(quotation.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, quotation);
     const doc = await OrderAcknowledgement.create({
       companyId: req.companyId,
       oaNo,
@@ -1442,7 +1443,7 @@ export async function convertQuotationToProforma(req, res) {
       docKey: "PROFORMA",
     });
     const lines = normalizeLines(quotation.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, quotation);
     const doc = await ProformaInvoice.create({
       companyId: req.companyId,
       proformaNo,
@@ -1485,7 +1486,7 @@ export async function convertOAToProforma(req, res) {
       docKey: "PROFORMA",
     });
     const lines = normalizeLines(oa.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, oa);
     const doc = await ProformaInvoice.create({
       companyId: req.companyId,
       proformaNo,
@@ -1530,7 +1531,7 @@ export async function convertOAToSalesInvoice(req, res) {
       docKey: "SALES_INVOICE",
     });
     const lines = normalizeLines(oa.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, oa);
     const doc = await SalesInvoice.create({
       companyId: req.companyId,
       invoiceNo,
@@ -1607,7 +1608,7 @@ export async function createSalesInvoice(req, res) {
         companyCode: req.companyCode,
         docKey: "SALES_INVOICE",
       }));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, body);
     const doc = await SalesInvoice.create({
       ...body,
       lines,
@@ -1649,7 +1650,7 @@ export async function updateSalesInvoice(req, res) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
     }
     doc.lines = normalizeLines(doc.lines || []);
-    Object.assign(doc, computeTotals(doc.lines));
+    Object.assign(doc, computeTotals(doc.lines, doc));
     doc.updatedBy = req.user?.email || "";
     await doc.save();
     res.json(doc);
@@ -1876,7 +1877,7 @@ export async function convertSalesInvoiceToSalesDispatch(req, res) {
       docKey: "SALES_DISPATCH",
     });
     const lines = normalizeLines(invoice.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, invoice);
     const doc = await SalesDispatch.create({
       companyId: req.companyId,
       dispatchNo,
@@ -1919,7 +1920,7 @@ export async function convertProformaToSalesInvoice(req, res) {
       docKey: "SALES_INVOICE",
     });
     const lines = normalizeLines(proforma.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, proforma);
     const doc = await SalesInvoice.create({
       companyId: req.companyId,
       invoiceNo,
@@ -1969,7 +1970,7 @@ export async function convertProformaToCipl(req, res) {
       docKey: "CIPL",
     });
     const lines = normalizeLines(proforma.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, proforma);
     const doc = await Cipl.create({
       companyId: req.companyId,
       ciplNo,
@@ -2314,7 +2315,7 @@ export async function convertOAToOrderAllocation(req, res) {
     });
     let lines = normalizeLines(oa.lines.map((line) => line.toObject?.() || line));
     lines = await attachUnitWeightFromItems(req, lines);
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, oa);
     const warehouse = "MAIN";
     const reserveLines = lines.map((l) => ({ article: l.article, qty: Number(l.qty) || 0 })).filter((x) => x.article && x.qty > 0);
 
@@ -2395,7 +2396,7 @@ export async function convertProformaToOrderAllocation(req, res) {
     });
     let lines = normalizeLines(proforma.lines.map((line) => line.toObject?.() || line));
     lines = await attachUnitWeightFromItems(req, lines);
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, proforma);
     const warehouse = "MAIN";
     const reserveLines = lines.map((l) => ({ article: l.article, qty: Number(l.qty) || 0 })).filter((x) => x.article && x.qty > 0);
 
@@ -2535,7 +2536,7 @@ export async function convertOrderAllocationToSalesInvoice(req, res) {
       docKey: "SALES_INVOICE",
     });
     const lines = normalizeLines((allocationPre.lines || []).map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, allocationPre);
     const stockLines = lines.map((l) => ({ article: l.article, qty: Number(l.qty) || 0 })).filter((x) => x.article && x.qty > 0);
     const warehouse = String(allocationPre.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
 
@@ -2844,7 +2845,7 @@ export async function createCipl(req, res) {
         companyCode: req.companyCode,
         docKey: "CIPL",
       }));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, body);
     const doc = await Cipl.create({
       ...body,
       lines,
@@ -2880,7 +2881,7 @@ export async function updateCipl(req, res) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
     }
     doc.lines = normalizeLines(doc.lines || []);
-    Object.assign(doc, computeTotals(doc.lines));
+    Object.assign(doc, computeTotals(doc.lines, doc));
     doc.updatedBy = req.user?.email || "";
     await doc.save();
     res.json(doc);
@@ -2922,7 +2923,7 @@ export async function convertQuotationToCipl(req, res) {
       docKey: "CIPL",
     });
     const lines = normalizeLines(quotation.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, quotation);
     const doc = await Cipl.create({
       companyId: req.companyId,
       ciplNo,
@@ -2963,7 +2964,7 @@ export async function convertOAToCipl(req, res) {
       docKey: "CIPL",
     });
     const lines = normalizeLines(oa.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, oa);
     const doc = await Cipl.create({
       companyId: req.companyId,
       ciplNo,
@@ -3006,7 +3007,7 @@ export async function convertSalesInvoiceToCipl(req, res) {
       docKey: "CIPL",
     });
     const lines = normalizeLines(invoice.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines);
+    const totals = computeTotals(lines, invoice);
     const doc = await Cipl.create({
       companyId: req.companyId,
       ciplNo,
