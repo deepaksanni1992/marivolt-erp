@@ -38,6 +38,14 @@ const proformaInvoiceSchema = new mongoose.Schema(
     discountTotal: { type: Number, default: 0 },
     taxTotal: { type: Number, default: 0 },
     grandTotal: { type: Number, default: 0 },
+    totalReceivedAmount: { type: Number, default: 0, min: 0 },
+    balanceAmount: { type: Number, default: 0, min: 0 },
+    paymentStatus: {
+      type: String,
+      enum: ["UNPAID", "PARTIALLY_PAID", "PAID"],
+      default: "UNPAID",
+      index: true,
+    },
     status: {
       type: String,
       enum: ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "APPROVED", "CONVERTED", "CANCELLED"],

@@ -29,6 +29,7 @@ export async function nextSalesDocNumber({ companyId, companyCode, docKey, refer
     "SALES_DISPATCH",
     "SALES_RETURN",
     "CIPL",
+    "PAYMENT_RECEIPT",
   ]);
   if (!allowed.has(safeKey)) {
     throw new Error(`Unsupported sales docKey: ${safeKey}`);

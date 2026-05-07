@@ -4,7 +4,7 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
-import { apiDelete, apiGetWithQuery, apiPatch, apiPost, apiPut } from "../lib/api.js";
+import { apiDelete, apiGet, apiGetWithQuery, apiPatch, apiPost, apiPut } from "../lib/api.js";
 
 function canManageBankDetails(role) {
   const r = String(role || "").toLowerCase().trim();
@@ -68,6 +68,7 @@ const tabs = [
   { id: "supp", label: "Supplier ledger" },
   { id: "cash", label: "Cash / bank" },
   { id: "bank", label: "Bank details" },
+  { id: "payrcpt", label: "Payment Receipts" },
 ];
 
 const invLine = () => ({
@@ -181,6 +182,11 @@ export default function Accounts() {
     queryFn: () => apiGetWithQuery("/accounts/bank-details", { page, limit }),
     enabled: tab === "bank",
   });
+  const payRcptQ = useQuery({
+    queryKey: ["paymentReceipts", page],
+    queryFn: () => apiGetWithQuery("/payment-receipts", { page, limit }),
+    enabled: tab === "payrcpt",
+  });
 
   const postMut = useMutation({
     mutationFn: ({ path, body }) => apiPost(path, body),
@@ -255,6 +261,7 @@ export default function Accounts() {
     if (tab === "supp") return suppQ.data?.items ?? [];
     if (tab === "cash") return cashQ.data?.items ?? [];
     if (tab === "bank") return bankQ.data?.items ?? [];
+    if (tab === "payrcpt") return payRcptQ.data?.items ?? [];
     return [];
   }
 
@@ -266,6 +273,7 @@ export default function Accounts() {
     if (tab === "supp") return suppQ.data?.total ?? 0;
     if (tab === "cash") return cashQ.data?.total ?? 0;
     if (tab === "bank") return bankQ.data?.total ?? 0;
+    if (tab === "payrcpt") return payRcptQ.data?.total ?? 0;
     return 0;
   }
 
@@ -277,7 +285,28 @@ export default function Accounts() {
     if (tab === "supp") return suppQ.isLoading;
     if (tab === "cash") return cashQ.isLoading;
     if (tab === "bank") return bankQ.isLoading;
+    if (tab === "payrcpt") return payRcptQ.isLoading;
     return false;
+  }
+
+  async function openPaymentReceiptSlip(receiptId, inline = true) {
+    try {
+      const path = inline
+        ? `/payment-receipts/${receiptId}/attachment-url?inline=1`
+        : `/payment-receipts/${receiptId}/attachment-url`;
+      const data = await apiGet(path);
+      if (!data?.url) throw new Error("No signed URL returned");
+      const a = document.createElement("a");
+      a.href = data.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (e) {
+      setErr(e.message || "Could not open payment slip");
+    }
   }
 
   const total = activeTotal();
@@ -354,7 +383,7 @@ export default function Accounts() {
         </div>
       )}
 
-      {(tab !== "bank" || bankDetailsAdmin) && tab !== "sd" && (
+      {(tab !== "bank" || bankDetailsAdmin) && tab !== "sd" && tab !== "payrcpt" && (
         <div className="mb-3 flex justify-end">
           <button
             type="button"
@@ -746,6 +775,65 @@ export default function Accounts() {
                           }}
                         >
                           Del
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          )}
+          {tab === "payrcpt" && (
+            <table className="min-w-full text-left text-sm">
+              <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
+                <tr>
+                  <th className="px-3 py-2">Receipt No</th>
+                  <th className="px-3 py-2">Date</th>
+                  <th className="px-3 py-2">Customer</th>
+                  <th className="px-3 py-2">Proforma No</th>
+                  <th className="px-3 py-2 text-right">Amount</th>
+                  <th className="px-3 py-2">Mode</th>
+                  <th className="px-3 py-2">Account</th>
+                  <th className="px-3 py-2">Reference</th>
+                  <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2 w-24">Slip</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading() ? (
+                  <tr>
+                    <td colSpan={10} className="px-3 py-8 text-center text-gray-500">
+                      Loading…
+                    </td>
+                  </tr>
+                ) : activeRows().length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="px-3 py-8 text-center text-gray-500">
+                      No payment receipts.
+                    </td>
+                  </tr>
+                ) : (
+                  activeRows().map((r) => (
+                    <tr key={r._id} className="border-b border-gray-100">
+                      <td className="px-3 py-2 font-mono text-xs">{r.receiptNo}</td>
+                      <td className="px-3 py-2 text-xs">{r.receivedDate ? new Date(r.receivedDate).toLocaleDateString() : "—"}</td>
+                      <td className="px-3 py-2">{r.customerName || "—"}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{r.proformaInvoiceNo || "—"}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {r.currency} {Number(r.amountReceived || 0).toFixed(2)}
+                      </td>
+                      <td className="px-3 py-2 text-xs">{String(r.paymentMode || "").replaceAll("_", " ")}</td>
+                      <td className="px-3 py-2 text-xs">{r.accountName || "—"}</td>
+                      <td className="px-3 py-2 text-xs">{r.paymentReference || "—"}</td>
+                      <td className="px-3 py-2">{r.status}</td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          className={`rounded border px-2 py-1 text-xs ${r.attachmentKey ? "" : "opacity-40"}`}
+                          disabled={!r.attachmentKey}
+                          onClick={() => openPaymentReceiptSlip(r._id, true)}
+                        >
+                          View Slip
                         </button>
                       </td>
                     </tr>

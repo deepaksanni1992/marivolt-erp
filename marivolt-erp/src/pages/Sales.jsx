@@ -1416,6 +1416,21 @@ export default function Sales() {
     remarks: "",
   });
   const [shippingDownloadBusyId, setShippingDownloadBusyId] = useState(null);
+  const paymentSlipInputRef = useRef(null);
+  const [receivePaymentModal, setReceivePaymentModal] = useState({ open: false, proforma: null });
+  const [viewPaymentsModal, setViewPaymentsModal] = useState({ open: false, proforma: null });
+  const [receivePaymentForm, setReceivePaymentForm] = useState({
+    receivedDate: new Date().toISOString().slice(0, 10),
+    amountReceived: 0,
+    currency: "USD",
+    paymentMode: "BANK_TRANSFER",
+    accountName: "",
+    bankAccountId: "",
+    cashAccountId: "",
+    paymentReference: "",
+    remarks: "",
+    adminOverride: false,
+  });
   const [srCreateOpen, setSrCreateOpen] = useState(false);
   const [srForm, setSrForm] = useState({
     customerName: "",
@@ -1511,6 +1526,18 @@ export default function Sales() {
     queryKey: ["quotation-detail", detailId],
     queryFn: () => apiGet(`/quotations/${detailId}`),
     enabled: !!detailId,
+  });
+
+  const { data: bankDetailsData } = useQuery({
+    queryKey: ["accounts-bank-details-payment"],
+    queryFn: () => apiGetWithQuery("/accounts/bank-details", { page: 1, limit: 200 }),
+    enabled: receivePaymentModal.open,
+  });
+
+  const { data: proformaPaymentsData } = useQuery({
+    queryKey: ["proforma-payments", viewPaymentsModal.proforma?._id],
+    queryFn: () => apiGet(`/payment-receipts/by-proforma/${viewPaymentsModal.proforma._id}`),
+    enabled: viewPaymentsModal.open && !!viewPaymentsModal.proforma?._id,
   });
 
   const { data: customerData, isLoading: customerLoading } = useQuery({
@@ -2262,10 +2289,56 @@ export default function Sales() {
     onError: (e) => setErr(e.message),
   });
 
-  const markProformaPaidMutation = useMutation({
-    mutationFn: (id) => apiPost(`/sales/proformas/${id}/mark-paid`, {}),
+  const createPaymentReceiptMutation = useMutation({
+    mutationFn: async ({ proforma, form }) => {
+      const fd = new FormData();
+      fd.append("proformaInvoiceId", proforma._id);
+      fd.append("receivedDate", form.receivedDate);
+      fd.append("amountReceived", String(Number(form.amountReceived) || 0));
+      fd.append("currency", form.currency || proforma.currency || "USD");
+      fd.append("paymentMode", form.paymentMode || "BANK_TRANSFER");
+      fd.append("accountName", form.accountName || "");
+      fd.append("paymentReference", form.paymentReference || "");
+      fd.append("remarks", form.remarks || "");
+      if (form.bankAccountId) fd.append("bankAccountId", form.bankAccountId);
+      if (form.cashAccountId) fd.append("cashAccountId", form.cashAccountId);
+      if (form.adminOverride) fd.append("adminOverride", "true");
+      const file = paymentSlipInputRef.current?.files?.[0];
+      if (file) fd.append("attachment", file);
+      return apiPostFormData("/payment-receipts", fd);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-proforma"] });
+      qc.invalidateQueries({ queryKey: ["proforma-payments"] });
+      qc.invalidateQueries({ queryKey: ["cashBank"] });
+      qc.invalidateQueries({ queryKey: ["customerLedger"] });
+      setReceivePaymentModal({ open: false, proforma: null });
+      setReceivePaymentForm({
+        receivedDate: new Date().toISOString().slice(0, 10),
+        amountReceived: 0,
+        currency: "USD",
+        paymentMode: "BANK_TRANSFER",
+        accountName: "",
+        bankAccountId: "",
+        cashAccountId: "",
+        paymentReference: "",
+        remarks: "",
+        adminOverride: false,
+      });
+      if (paymentSlipInputRef.current) paymentSlipInputRef.current.value = "";
+      if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
+      setErr("");
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const cancelPaymentReceiptMutation = useMutation({
+    mutationFn: ({ id, reason }) => apiPatch(`/payment-receipts/${id}/cancel`, { cancellationReason: reason }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-proforma"] });
+      qc.invalidateQueries({ queryKey: ["proforma-payments"] });
+      qc.invalidateQueries({ queryKey: ["cashBank"] });
+      qc.invalidateQueries({ queryKey: ["customerLedger"] });
       if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
       setErr("");
     },
@@ -2324,6 +2397,26 @@ export default function Sales() {
       setErr(e.message || "Could not open file.");
     } finally {
       setShippingDownloadBusyId(null);
+    }
+  }, []);
+
+  const openPaymentReceiptAttachment = useCallback(async (receiptId, inline = true) => {
+    try {
+      const path = inline
+        ? `/payment-receipts/${receiptId}/attachment-url?inline=1`
+        : `/payment-receipts/${receiptId}/attachment-url`;
+      const data = await apiGet(path);
+      if (!data?.url) throw new Error("No signed URL returned.");
+      const a = document.createElement("a");
+      a.href = data.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (e) {
+      setErr(e.message || "Could not open payment slip.");
     }
   }, []);
 
@@ -3838,6 +3931,9 @@ export default function Sales() {
                     <th className="px-3 py-2">Customer</th>
                     <th className="px-3 py-2">Date</th>
                     <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Payment</th>
+                    <th className="px-3 py-2 text-right">Received</th>
+                    <th className="px-3 py-2 text-right">Balance</th>
                     <th className="px-3 py-2 text-right">Grand Total</th>
                     <th className="px-3 py-2">Actions</th>
                   </tr>
@@ -3845,13 +3941,13 @@ export default function Sales() {
                 <tbody>
                   {proformaLoading ? (
                     <tr>
-                      <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
                         Loading...
                       </td>
                     </tr>
                   ) : proformaRows.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
                         No Proforma found.
                       </td>
                     </tr>
@@ -3859,7 +3955,10 @@ export default function Sales() {
                     proformaRows.map((r) => {
                       const piApproved = ["APPROVED", "CONVERTED"].includes(String(r.status || "").toUpperCase());
                       const st = String(r.status || "").toUpperCase();
-                      const canMarkPaid = ["DRAFT", "ISSUED"].includes(st);
+                      const paymentStatus = String(r.paymentStatus || "UNPAID").toUpperCase();
+                      const received = Number(r.totalReceivedAmount || 0);
+                      const balance = Number(r.balanceAmount ?? r.grandTotal ?? 0);
+                      const canMarkPaid = !["CANCELLED", "CONVERTED"].includes(st) && paymentStatus !== "PAID";
                       const canCancelPi = !["CANCELLED", "CONVERTED"].includes(st);
                       return (
                       <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
@@ -3873,6 +3972,13 @@ export default function Sales() {
                             {proformaDisplayStatus(r)}
                           </span>
                         </td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(paymentStatus)}`}>
+                            {paymentStatus.replaceAll("_", " ")}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-right">{r.currency} {money(received)}</td>
+                        <td className="px-3 py-2 text-right">{r.currency} {money(balance)}</td>
                         <td className="px-3 py-2 text-right">
                           {r.currency} {money(r.grandTotal)}
                         </td>
@@ -3890,11 +3996,34 @@ export default function Sales() {
                             <button
                               type="button"
                               className={`rounded-lg border px-2 py-1 text-xs ${!canMarkPaid ? "opacity-40" : ""}`}
-                              disabled={!canMarkPaid || markProformaPaidMutation.isPending}
-                              title={!canMarkPaid ? "Only draft/issued proformas can be marked paid here" : "Mark advance payment received"}
-                              onClick={() => markProformaPaidMutation.mutate(r._id)}
+                              disabled={!canMarkPaid}
+                              title={!canMarkPaid ? "Proforma already fully paid or unavailable for payment posting" : "Record payment receipt"}
+                              onClick={() => {
+                                setReceivePaymentModal({ open: true, proforma: r });
+                                setReceivePaymentForm((f) => ({
+                                  ...f,
+                                  receivedDate: new Date().toISOString().slice(0, 10),
+                                  amountReceived: Number(r.balanceAmount ?? r.grandTotal ?? 0),
+                                  currency: r.currency || "USD",
+                                  paymentMode: "BANK_TRANSFER",
+                                  accountName: "",
+                                  bankAccountId: "",
+                                  cashAccountId: "",
+                                  paymentReference: "",
+                                  remarks: "",
+                                  adminOverride: false,
+                                }));
+                                if (paymentSlipInputRef.current) paymentSlipInputRef.current.value = "";
+                              }}
                             >
                               Mark payment received
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              onClick={() => setViewPaymentsModal({ open: true, proforma: r })}
+                            >
+                              View Payments
                             </button>
                             <button
                               type="button"
@@ -6770,6 +6899,192 @@ export default function Sales() {
           >
             {createSalesReturnMutation.isPending ? "Saving…" : "Save draft"}
           </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={receivePaymentModal.open}
+        onClose={() => setReceivePaymentModal({ open: false, proforma: null })}
+        title="Receive Payment"
+        wide
+      >
+        {(() => {
+          const p = receivePaymentModal.proforma;
+          const alreadyReceived = Number(p?.totalReceivedAmount || 0);
+          const balance = Number(p?.balanceAmount ?? p?.grandTotal ?? 0);
+          const selectedFile = paymentSlipInputRef.current?.files?.[0] || null;
+          return (
+            <div className="space-y-3">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <FormField label="Proforma Invoice No.">
+                  <TextInput value={p?.proformaNo || ""} disabled />
+                </FormField>
+                <FormField label="Customer Name">
+                  <TextInput value={p?.customerName || ""} disabled />
+                </FormField>
+                <FormField label="PI Grand Total">
+                  <TextInput value={`${p?.currency || "USD"} ${money(p?.grandTotal)}`} disabled />
+                </FormField>
+                <FormField label="Already Received">
+                  <TextInput value={`${p?.currency || "USD"} ${money(alreadyReceived)}`} disabled />
+                </FormField>
+                <FormField label="Balance Amount">
+                  <TextInput value={`${p?.currency || "USD"} ${money(balance)}`} disabled />
+                </FormField>
+                <FormField label="Payment Received Date *">
+                  <TextInput
+                    type="date"
+                    value={receivePaymentForm.receivedDate}
+                    onChange={(e) => setReceivePaymentForm((f) => ({ ...f, receivedDate: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Amount Received *">
+                  <TextInput
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={receivePaymentForm.amountReceived}
+                    onChange={(e) => setReceivePaymentForm((f) => ({ ...f, amountReceived: Number(e.target.value) || 0 }))}
+                  />
+                </FormField>
+                <FormField label="Currency *">
+                  <TextInput
+                    value={receivePaymentForm.currency}
+                    onChange={(e) => setReceivePaymentForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
+                  />
+                </FormField>
+                <FormField label="Payment Mode *">
+                  <select
+                    className="w-full rounded-xl border px-3 py-2 text-sm"
+                    value={receivePaymentForm.paymentMode}
+                    onChange={(e) => setReceivePaymentForm((f) => ({ ...f, paymentMode: e.target.value }))}
+                  >
+                    <option value="BANK_TRANSFER">Bank Transfer</option>
+                    <option value="CASH">Cash</option>
+                    <option value="CHEQUE">Cheque</option>
+                    <option value="CARD">Card</option>
+                    <option value="OTHER">Other</option>
+                  </select>
+                </FormField>
+                <FormField label="Bank / Cash Account *">
+                  <select
+                    className="w-full rounded-xl border px-3 py-2 text-sm"
+                    value={receivePaymentForm.accountName}
+                    onChange={(e) => setReceivePaymentForm((f) => ({ ...f, accountName: e.target.value }))}
+                  >
+                    <option value="">Select account</option>
+                    {(bankDetailsData?.items || []).map((b) => (
+                      <option key={b._id} value={b.accountName || b.bankName || ""}>
+                        {b.accountName || b.bankName} ({b.currency || "USD"})
+                      </option>
+                    ))}
+                    <option value="Cash">Cash</option>
+                  </select>
+                </FormField>
+                <FormField label="Payment Reference / Txn ID">
+                  <TextInput
+                    value={receivePaymentForm.paymentReference}
+                    onChange={(e) => setReceivePaymentForm((f) => ({ ...f, paymentReference: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Remarks">
+                  <TextInput
+                    value={receivePaymentForm.remarks}
+                    onChange={(e) => setReceivePaymentForm((f) => ({ ...f, remarks: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Payment Slip (PDF/JPG/PNG)">
+                  <input ref={paymentSlipInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" />
+                  {selectedFile ? <div className="mt-1 text-xs text-gray-600">{selectedFile.name}</div> : null}
+                </FormField>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  className="rounded-xl border px-4 py-2 text-sm"
+                  onClick={() => setReceivePaymentModal({ open: false, proforma: null })}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                  disabled={createPaymentReceiptMutation.isPending || !p?._id}
+                  onClick={() => createPaymentReceiptMutation.mutate({ proforma: p, form: receivePaymentForm })}
+                >
+                  {createPaymentReceiptMutation.isPending ? "Posting..." : "Post Payment"}
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+      </Modal>
+
+      <Modal
+        open={viewPaymentsModal.open}
+        onClose={() => setViewPaymentsModal({ open: false, proforma: null })}
+        title={`Payment Receipts${viewPaymentsModal.proforma?.proformaNo ? ` - ${viewPaymentsModal.proforma.proformaNo}` : ""}`}
+        wide
+      >
+        <div className="max-h-[60vh] overflow-auto rounded-xl border">
+          <table className="min-w-full text-left text-xs">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-2 py-2">Receipt No</th>
+                <th className="px-2 py-2">Date</th>
+                <th className="px-2 py-2">Amount</th>
+                <th className="px-2 py-2">Mode</th>
+                <th className="px-2 py-2">Account</th>
+                <th className="px-2 py-2">Reference</th>
+                <th className="px-2 py-2">Status</th>
+                <th className="px-2 py-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(proformaPaymentsData?.items || []).map((r) => (
+                <tr key={r._id} className="border-t">
+                  <td className="px-2 py-1 font-mono">{r.receiptNo}</td>
+                  <td className="px-2 py-1">{r.receivedDate ? new Date(r.receivedDate).toLocaleDateString() : "-"}</td>
+                  <td className="px-2 py-1">{r.currency} {money(r.amountReceived)}</td>
+                  <td className="px-2 py-1">{String(r.paymentMode || "").replaceAll("_", " ")}</td>
+                  <td className="px-2 py-1">{r.accountName || "-"}</td>
+                  <td className="px-2 py-1">{r.paymentReference || "-"}</td>
+                  <td className="px-2 py-1">
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
+                      {r.status}
+                    </span>
+                  </td>
+                  <td className="px-2 py-1">
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        className="rounded-lg border px-2 py-1"
+                        disabled={!r.attachmentKey}
+                        onClick={() => openPaymentReceiptAttachment(r._id, true)}
+                      >
+                        View Slip
+                      </button>
+                      <button
+                        type="button"
+                        className={`rounded-lg border px-2 py-1 ${String(r.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                        disabled={String(r.status || "").toUpperCase() === "CANCELLED" || cancelPaymentReceiptMutation.isPending}
+                        onClick={() => cancelPaymentReceiptMutation.mutate({ id: r._id, reason: "Cancelled by user" })}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!(proformaPaymentsData?.items || []).length ? (
+                <tr>
+                  <td className="px-3 py-6 text-center text-gray-500" colSpan={8}>
+                    No payment receipts found.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
         </div>
       </Modal>
 

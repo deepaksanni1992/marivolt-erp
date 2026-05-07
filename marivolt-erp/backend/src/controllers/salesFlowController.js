@@ -7,6 +7,7 @@ import SalesDispatch from "../models/SalesDispatch.js";
 import Cipl from "../models/Cipl.js";
 import OrderAllocation from "../models/OrderAllocation.js";
 import Rts from "../models/Rts.js";
+import PaymentReceipt from "../models/PaymentReceipt.js";
 import Customer from "../models/Customer.js";
 import Company from "../models/Company.js";
 import Item from "../models/Item.js";
@@ -137,6 +138,30 @@ async function applyLinkedQuotationDiscountFallback(req, docs = [], { persistMod
     if (!doc._discountBackfilled) return doc;
     const { _discountBackfilled, ...rest } = doc;
     return rest;
+  });
+}
+
+async function enrichProformasWithPaymentState(req, docs = []) {
+  const rows = Array.isArray(docs) ? docs : [];
+  if (!rows.length) return rows;
+  const ids = [...new Set(rows.map((x) => String(x._id || "")).filter(Boolean))];
+  if (!ids.length) return rows;
+  const sums = await PaymentReceipt.aggregate([
+    {
+      $match: withCompany(req, {
+        proformaInvoiceId: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) },
+        status: "POSTED",
+      }),
+    },
+    { $group: { _id: "$proformaInvoiceId", total: { $sum: "$amountReceived" } } },
+  ]);
+  const byId = new Map(sums.map((x) => [String(x._id), Math.max(0, Number(x.total) || 0)]));
+  return rows.map((doc) => {
+    const grandTotal = Math.max(0, Number(doc.grandTotal) || 0);
+    const totalReceivedAmount = byId.get(String(doc._id)) ?? Math.max(0, Number(doc.totalReceivedAmount) || 0);
+    const balanceAmount = Math.max(0, grandTotal - totalReceivedAmount);
+    const paymentStatus = totalReceivedAmount >= grandTotal && grandTotal > 0 ? "PAID" : totalReceivedAmount > 0 ? "PARTIALLY_PAID" : "UNPAID";
+    return { ...doc, totalReceivedAmount, balanceAmount, paymentStatus };
   });
 }
 
@@ -1283,10 +1308,11 @@ export async function listProformas(req, res) {
       const q = String(req.query.search).trim();
       filter.$or = [{ proformaNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }];
     }
-    const [items, total] = await Promise.all([
+    const [itemsRaw, total] = await Promise.all([
       ProformaInvoice.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       ProformaInvoice.countDocuments(filter),
     ]);
+    const items = await enrichProformasWithPaymentState(req, itemsRaw);
     res.json({ items, total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -1299,7 +1325,8 @@ export async function getProforma(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const doc = await ProformaInvoice.findOne(withCompany(req, { _id: id })).lean();
     if (!doc) return res.status(404).json({ message: "Not found" });
-    res.json(doc);
+    const [enriched] = await enrichProformasWithPaymentState(req, [doc]);
+    res.json(enriched || doc);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -1412,26 +1439,10 @@ export async function cancelProforma(req, res) {
 }
 
 export async function markProformaPaid(req, res) {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
-    const doc = await ProformaInvoice.findOne(withCompany(req, { _id: id }));
-    if (!doc) return res.status(404).json({ message: "Not found" });
-    if (String(doc.status || "").toUpperCase() === "CANCELLED") {
-      return res.status(400).json({ message: "Cannot mark payment on a cancelled proforma" });
-    }
-    if (["PAID_PENDING_SHIPMENT", "APPROVED", "CONVERTED"].includes(String(doc.status || "").toUpperCase())) {
-      return res.status(400).json({ message: "Proforma is already marked as paid / approved" });
-    }
-    doc.status = "PAID_PENDING_SHIPMENT";
-    doc.paidAt = new Date();
-    doc.paidBy = req.user?.email || "";
-    doc.updatedBy = req.user?.email || "";
-    await doc.save();
-    res.json(doc);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
+  return res.status(400).json({
+    message:
+      "Direct mark-paid is disabled. Use payment receipts workflow: POST /api/payment-receipts with payment details.",
+  });
 }
 
 export async function convertQuotationToOA(req, res) {
