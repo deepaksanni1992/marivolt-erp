@@ -3806,6 +3806,7 @@ export default function Sales() {
                       const converted = Array.isArray(r.convertedTo) ? r.convertedTo.map(String) : [];
                       const hasPIFromOA = converted.includes("PROFORMA");
                       const hasSIFromOA = converted.includes("SALES_INVOICE");
+                      const isCancelled = String(r.status || "").toUpperCase() === "CANCELLED";
                       return (
                       <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
                         <td className="px-3 py-2 font-mono text-xs">{r.oaNo}</td>
@@ -3834,32 +3835,36 @@ export default function Sales() {
                             </button>
                             <button
                               type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${hasPIFromOA ? "opacity-40" : ""}`}
-                              disabled={hasPIFromOA}
-                              title={hasPIFromOA ? "Proforma already created from this OA" : ""}
+                              className={`rounded-lg border px-2 py-1 text-xs ${hasPIFromOA || isCancelled ? "opacity-40" : ""}`}
+                              disabled={hasPIFromOA || isCancelled}
+                              title={isCancelled ? "Cancelled OA cannot be converted" : hasPIFromOA ? "Proforma already created from this OA" : ""}
                               onClick={() => convertToProformaFromOAMutation.mutate(r._id)}
                             >
                               Convert to PI
                             </button>
                             <button
                               type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${hasSIFromOA ? "opacity-40" : ""}`}
-                              disabled={hasSIFromOA}
-                              title={hasSIFromOA ? "Sales invoice already created from this OA" : ""}
+                              className={`rounded-lg border px-2 py-1 text-xs ${hasSIFromOA || isCancelled ? "opacity-40" : ""}`}
+                              disabled={hasSIFromOA || isCancelled}
+                              title={isCancelled ? "Cancelled OA cannot be converted" : hasSIFromOA ? "Sales invoice already created from this OA" : ""}
                               onClick={() => convertToSalesInvoiceFromOAMutation.mutate(r._id)}
                             >
                               Convert to SI
                             </button>
                             <button
                               type="button"
-                              className="rounded-lg border px-2 py-1 text-xs"
+                              className={`rounded-lg border px-2 py-1 text-xs ${isCancelled ? "opacity-40" : ""}`}
+                              disabled={isCancelled}
+                              title={isCancelled ? "Cancelled OA cannot be converted" : ""}
                               onClick={() => convertToCiplFromOAMutation.mutate(r._id)}
                             >
                               Convert to CIPL
                             </button>
                             <button
                               type="button"
-                              className="rounded-lg border px-2 py-1 text-xs"
+                              className={`rounded-lg border px-2 py-1 text-xs ${isCancelled ? "opacity-40" : ""}`}
+                              disabled={isCancelled}
+                              title={isCancelled ? "Cancelled OA cannot be converted" : ""}
                               onClick={() => convertToOrderAllocationFromOAMutation.mutate(r._id)}
                             >
                               Convert to Order Allocation
@@ -3953,8 +3958,10 @@ export default function Sales() {
                     </tr>
                   ) : (
                     proformaRows.map((r) => {
-                      const piApproved = ["APPROVED", "CONVERTED"].includes(String(r.status || "").toUpperCase());
+                      const rowStatus = String(r.status || "").toUpperCase();
+                      const piApproved = ["APPROVED", "CONVERTED"].includes(rowStatus);
                       const st = String(r.status || "").toUpperCase();
+                      const isCancelled = rowStatus === "CANCELLED";
                       const paymentStatus = String(r.paymentStatus || "UNPAID").toUpperCase();
                       const received = Number(r.totalReceivedAmount || 0);
                       const balance = Number(r.balanceAmount ?? r.grandTotal ?? 0);
@@ -4044,18 +4051,18 @@ export default function Sales() {
                             </button>
                             <button
                               type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${piApproved ? "opacity-40" : ""}`}
-                              disabled={piApproved}
-                              title={piApproved ? "Already converted from this PI" : ""}
+                              className={`rounded-lg border px-2 py-1 text-xs ${piApproved || isCancelled ? "opacity-40" : ""}`}
+                              disabled={piApproved || isCancelled}
+                              title={isCancelled ? "Cancelled proforma cannot be converted" : piApproved ? "Already converted from this PI" : ""}
                               onClick={() => convertProformaToSalesInvoiceMutation.mutate(r._id)}
                             >
                               Convert to SI
                             </button>
                             <button
                               type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${piApproved ? "opacity-40" : ""}`}
-                              disabled={piApproved}
-                              title={piApproved ? "Already converted from this PI" : ""}
+                              className={`rounded-lg border px-2 py-1 text-xs ${piApproved || isCancelled ? "opacity-40" : ""}`}
+                              disabled={piApproved || isCancelled}
+                              title={isCancelled ? "Cancelled proforma cannot be converted" : piApproved ? "Already converted from this PI" : ""}
                               onClick={() => convertProformaToCiplMutation.mutate(r._id)}
                             >
                               Convert to CIPL
@@ -4063,11 +4070,13 @@ export default function Sales() {
                             <button
                               type="button"
                               className={`rounded-lg border px-2 py-1 text-xs ${
-                                !["APPROVED", "PAID_PENDING_SHIPMENT"].includes(String(r.status || "").toUpperCase()) ? "opacity-40" : ""
+                                isCancelled || !["APPROVED", "PAID_PENDING_SHIPMENT"].includes(String(r.status || "").toUpperCase()) ? "opacity-40" : ""
                               }`}
-                              disabled={!["APPROVED", "PAID_PENDING_SHIPMENT"].includes(String(r.status || "").toUpperCase())}
+                              disabled={isCancelled || !["APPROVED", "PAID_PENDING_SHIPMENT"].includes(String(r.status || "").toUpperCase())}
                               title={
-                                !["APPROVED", "PAID_PENDING_SHIPMENT"].includes(String(r.status || "").toUpperCase())
+                                isCancelled
+                                  ? "Cancelled proforma cannot be converted"
+                                  : !["APPROVED", "PAID_PENDING_SHIPMENT"].includes(String(r.status || "").toUpperCase())
                                   ? "Proforma must be APPROVED or PAID before allocation"
                                   : ""
                               }
@@ -4161,7 +4170,9 @@ export default function Sales() {
                           <div className="flex flex-wrap gap-1">
                             <button
                               type="button"
-                              className="rounded-lg border px-2 py-1 text-xs"
+                              className={`rounded-lg border px-2 py-1 text-xs ${String(r.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                              disabled={String(r.status || "").toUpperCase() === "CANCELLED"}
+                              title={String(r.status || "").toUpperCase() === "CANCELLED" ? "Cancelled allocation cannot be converted" : ""}
                               onClick={() =>
                                 apiPost(`/sales/order-allocations/${r._id}/to-sales-invoice`, {
                                   rtsId: r.latestApprovedRtsId || undefined,
@@ -5586,22 +5597,23 @@ export default function Sales() {
                   const conv = Array.isArray(oaDetail.convertedTo) ? oaDetail.convertedTo.map(String) : [];
                   const hasPI = conv.includes("PROFORMA");
                   const hasSI = conv.includes("SALES_INVOICE");
+                  const isCancelled = String(oaDetail.status || "").toUpperCase() === "CANCELLED";
                   return (
                     <>
                       <button
                         type="button"
-                        className={`rounded-xl border px-2 py-1 text-xs ${hasPI ? "opacity-40" : ""}`}
-                        disabled={hasPI || convertToProformaFromOAMutation.isPending}
-                        title={hasPI ? "Proforma already linked" : ""}
+                        className={`rounded-xl border px-2 py-1 text-xs ${hasPI || isCancelled ? "opacity-40" : ""}`}
+                        disabled={hasPI || isCancelled || convertToProformaFromOAMutation.isPending}
+                        title={isCancelled ? "Cancelled OA cannot be converted" : hasPI ? "Proforma already linked" : ""}
                         onClick={() => convertToProformaFromOAMutation.mutate(oaDetail._id)}
                       >
                         Convert to PI
                       </button>
                       <button
                         type="button"
-                        className={`rounded-xl border px-2 py-1 text-xs ${hasSI ? "opacity-40" : ""}`}
-                        disabled={hasSI || convertToSalesInvoiceFromOAMutation.isPending}
-                        title={hasSI ? "Sales invoice already linked (from OA)" : ""}
+                        className={`rounded-xl border px-2 py-1 text-xs ${hasSI || isCancelled ? "opacity-40" : ""}`}
+                        disabled={hasSI || isCancelled || convertToSalesInvoiceFromOAMutation.isPending}
+                        title={isCancelled ? "Cancelled OA cannot be converted" : hasSI ? "Sales invoice already linked (from OA)" : ""}
                         onClick={() => convertToSalesInvoiceFromOAMutation.mutate(oaDetail._id)}
                       >
                         Convert to SI
@@ -5611,14 +5623,18 @@ export default function Sales() {
                 })()}
                 <button
                   type="button"
-                  className="rounded-xl border px-2 py-1 text-xs"
+                  className={`rounded-xl border px-2 py-1 text-xs ${String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                  disabled={String(oaDetail.status || "").toUpperCase() === "CANCELLED"}
+                  title={String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "Cancelled OA cannot be converted" : ""}
                   onClick={() => convertToCiplFromOAMutation.mutate(oaDetail._id)}
                 >
                   Convert to CIPL
                 </button>
                 <button
                   type="button"
-                  className="rounded-xl border px-2 py-1 text-xs"
+                  className={`rounded-xl border px-2 py-1 text-xs ${String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                  disabled={String(oaDetail.status || "").toUpperCase() === "CANCELLED"}
+                  title={String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "Cancelled OA cannot be converted" : ""}
                   onClick={() => convertToOrderAllocationFromOAMutation.mutate(oaDetail._id)}
                 >
                   Convert to Order Allocation
@@ -5739,26 +5755,32 @@ export default function Sales() {
               <div className="flex flex-wrap gap-2 opacity-70">
                 <button
                   type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${dupPIOpen ? "opacity-40" : ""}`}
-                  disabled={dupPIOpen}
+                  className={`rounded-xl border px-2 py-1 text-xs ${dupPIOpen || String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                  disabled={dupPIOpen || String(oaDetail.status || "").toUpperCase() === "CANCELLED"}
                   onClick={() => convertToProformaFromOAMutation.mutate(oaDetail._id)}
                 >
                   Convert to PI
                 </button>
                 <button
                   type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${dupSIOpen ? "opacity-40" : ""}`}
-                  disabled={dupSIOpen}
+                  className={`rounded-xl border px-2 py-1 text-xs ${dupSIOpen || String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                  disabled={dupSIOpen || String(oaDetail.status || "").toUpperCase() === "CANCELLED"}
                   onClick={() => convertToSalesInvoiceFromOAMutation.mutate(oaDetail._id)}
                 >
                   Convert to SI
                 </button>
-                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => convertToCiplFromOAMutation.mutate(oaDetail._id)}>
+                <button
+                  type="button"
+                  className={`rounded-xl border px-2 py-1 text-xs ${String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                  disabled={String(oaDetail.status || "").toUpperCase() === "CANCELLED"}
+                  onClick={() => convertToCiplFromOAMutation.mutate(oaDetail._id)}
+                >
                   Convert to CIPL
                 </button>
                 <button
                   type="button"
-                  className="rounded-xl border px-2 py-1 text-xs"
+                  className={`rounded-xl border px-2 py-1 text-xs ${String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                  disabled={String(oaDetail.status || "").toUpperCase() === "CANCELLED"}
                   onClick={() => convertToOrderAllocationFromOAMutation.mutate(oaDetail._id)}
                 >
                   Convert to Order Allocation
@@ -6004,23 +6026,27 @@ export default function Sales() {
                 </button>
                 <button
                   type="button"
-                  className="rounded-xl border px-2 py-1 text-xs"
+                  className={`rounded-xl border px-2 py-1 text-xs ${String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                  disabled={String(proformaDetail.status || "").toUpperCase() === "CANCELLED"}
+                  title={String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "Cancelled proforma cannot be converted" : ""}
                   onClick={() => convertProformaToSalesInvoiceMutation.mutate(proformaDetail._id)}
                 >
                   Convert to SI
                 </button>
                 <button
                   type="button"
-                  className="rounded-xl border px-2 py-1 text-xs"
+                  className={`rounded-xl border px-2 py-1 text-xs ${String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                  disabled={String(proformaDetail.status || "").toUpperCase() === "CANCELLED"}
+                  title={String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "Cancelled proforma cannot be converted" : ""}
                   onClick={() => convertProformaToCiplMutation.mutate(proformaDetail._id)}
                 >
                   Convert to CIPL
                 </button>
                 <button
                   type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED" ? "opacity-40" : ""}`}
-                  disabled={String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED"}
-                  title={String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED" ? "Set PI status to APPROVED first" : ""}
+                  className={`rounded-xl border px-2 py-1 text-xs ${String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED" || String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                  disabled={String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED" || String(proformaDetail.status || "").toUpperCase() === "CANCELLED"}
+                  title={String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "Cancelled proforma cannot be converted" : String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED" ? "Set PI status to APPROVED first" : ""}
                   onClick={() => convertToOrderAllocationFromProformaMutation.mutate(proformaDetail._id)}
                 >
                   Convert to Order Allocation
@@ -6142,24 +6168,24 @@ export default function Sales() {
               <div className="flex flex-wrap gap-2 opacity-80">
                 <button
                   type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${["APPROVED", "CONVERTED"].includes(String(proformaDetail.status || "").toUpperCase()) ? "opacity-40" : ""}`}
-                  disabled={["APPROVED", "CONVERTED"].includes(String(proformaDetail.status || "").toUpperCase())}
+                  className={`rounded-xl border px-2 py-1 text-xs ${["APPROVED", "CONVERTED", "CANCELLED"].includes(String(proformaDetail.status || "").toUpperCase()) ? "opacity-40" : ""}`}
+                  disabled={["APPROVED", "CONVERTED", "CANCELLED"].includes(String(proformaDetail.status || "").toUpperCase())}
                   onClick={() => convertProformaToSalesInvoiceMutation.mutate(proformaDetail._id)}
                 >
                   Convert to SI
                 </button>
                 <button
                   type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${["APPROVED", "CONVERTED"].includes(String(proformaDetail.status || "").toUpperCase()) ? "opacity-40" : ""}`}
-                  disabled={["APPROVED", "CONVERTED"].includes(String(proformaDetail.status || "").toUpperCase())}
+                  className={`rounded-xl border px-2 py-1 text-xs ${["APPROVED", "CONVERTED", "CANCELLED"].includes(String(proformaDetail.status || "").toUpperCase()) ? "opacity-40" : ""}`}
+                  disabled={["APPROVED", "CONVERTED", "CANCELLED"].includes(String(proformaDetail.status || "").toUpperCase())}
                   onClick={() => convertProformaToCiplMutation.mutate(proformaDetail._id)}
                 >
                   Convert to CIPL
                 </button>
                 <button
                   type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${String(proformaDetail.status || "").toUpperCase() !== "APPROVED" ? "opacity-40" : ""}`}
-                  disabled={String(proformaDetail.status || "").toUpperCase() !== "APPROVED"}
+                  className={`rounded-xl border px-2 py-1 text-xs ${String(proformaDetail.status || "").toUpperCase() !== "APPROVED" || String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                  disabled={String(proformaDetail.status || "").toUpperCase() !== "APPROVED" || String(proformaDetail.status || "").toUpperCase() === "CANCELLED"}
                   onClick={() => convertToOrderAllocationFromProformaMutation.mutate(proformaDetail._id)}
                 >
                   Convert to Order Allocation
