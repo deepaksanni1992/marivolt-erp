@@ -2597,6 +2597,7 @@ export default function Sales() {
   const salesReturnRows = salesReturnData?.items ?? [];
   const salesReturnTotalPages = Math.max(1, Math.ceil((salesReturnData?.total ?? 0) / limit));
   const customerTotalPages = Math.max(1, Math.ceil((customerData?.total ?? 0) / limit));
+  const createQuotationTotals = calcQuotationTotalsView(form);
 
   const tabContent = useMemo(() => {
     if (activeTab === "Customer Master") return "customer-master";
@@ -7076,39 +7077,24 @@ export default function Sales() {
                   );
                 })}
               </tbody>
+              <tfoot className="bg-slate-50">
+                <tr className="border-t">
+                  <td colSpan={12} className="px-3 py-2">
+                    <div className="flex flex-wrap items-center justify-end gap-4 text-xs sm:gap-6">
+                      <span>Subtotal: {money(createQuotationTotals.subTotal)}</span>
+                      <span>Discount: {money(createQuotationTotals.discountTotal)}</span>
+                      <span>Packing: {money(createQuotationTotals.packingCost)}</span>
+                      <span>Clearance: {money(createQuotationTotals.clearanceCost)}</span>
+                      <span className="text-sm font-semibold">
+                        Grand Total: {money(createQuotationTotals.grandTotal)} {form.currency || ""}
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         </div>
-
-        {(() => {
-          const t = calcQuotationTotalsView(form);
-          return (
-            <div className="mt-4 ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
-              <div className="flex justify-between py-1">
-                <span>Subtotal</span>
-                <span>{money(t.subTotal)}</span>
-              </div>
-              <div className="flex justify-between py-1">
-                <span>Discount</span>
-                <span>{money(t.discountTotal)}</span>
-              </div>
-              <div className="flex justify-between py-1">
-                <span>Packing Cost</span>
-                <span>{money(t.packingCost)}</span>
-              </div>
-              <div className="flex justify-between py-1">
-                <span>Clearance Cost</span>
-                <span>{money(t.clearanceCost)}</span>
-              </div>
-              <div className="flex justify-between py-1 text-base font-semibold">
-                <span>Grand Total</span>
-                <span>
-                  {money(t.grandTotal)} {form.currency || ""}
-                </span>
-              </div>
-            </div>
-          );
-        })()}
 
         <div className="mt-4 flex justify-end gap-2">
           <button
