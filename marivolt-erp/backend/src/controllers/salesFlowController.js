@@ -86,6 +86,60 @@ function computeTotals(lines = [], source = {}) {
   };
 }
 
+async function applyLinkedQuotationDiscountFallback(req, docs = [], { persistModel = null } = {}) {
+  const rows = Array.isArray(docs) ? docs : [];
+  if (!rows.length) return rows;
+  const needsFallback = rows.filter((doc) => {
+    const subTotal = Number(doc?.subTotal) || 0;
+    const discountTotal = Number(doc?.discountTotal) || 0;
+    return subTotal > 0 && discountTotal <= 0 && doc?.linkedQuotationId;
+  });
+  if (!needsFallback.length) return rows;
+  const quotationIds = [...new Set(needsFallback.map((doc) => String(doc.linkedQuotationId)).filter(Boolean))];
+  if (!quotationIds.length) return rows;
+  const quotations = await Quotation.find(
+    withCompany(req, { _id: { $in: quotationIds } }),
+    { _id: 1, discountTotal: 1, taxTotal: 1 }
+  ).lean();
+  const byQuotationId = new Map(quotations.map((q) => [String(q._id), q]));
+  const out = rows.map((doc) => {
+    const q = byQuotationId.get(String(doc.linkedQuotationId || ""));
+    if (!q) return doc;
+    const subTotal = Number(doc.subTotal) || 0;
+    const currentDiscount = Number(doc.discountTotal) || 0;
+    if (subTotal <= 0 || currentDiscount > 0) return doc;
+    const quoteDiscount = Math.max(0, Number(q.discountTotal) || 0);
+    if (quoteDiscount <= 0) return doc;
+    const discountTotal = Math.min(subTotal, quoteDiscount);
+    const taxTotal = Math.max(0, Number(doc.taxTotal) || Number(q.taxTotal) || 0);
+    const grandTotal = subTotal - discountTotal + taxTotal;
+    return { ...doc, discountTotal, taxTotal, grandTotal, _discountBackfilled: true };
+  });
+  if (persistModel) {
+    const ops = out
+      .filter((doc) => doc._discountBackfilled && doc._id)
+      .map((doc) => ({
+        updateOne: {
+          filter: withCompany(req, { _id: doc._id }),
+          update: {
+            $set: {
+              discountTotal: Number(doc.discountTotal) || 0,
+              taxTotal: Number(doc.taxTotal) || 0,
+              grandTotal: Number(doc.grandTotal) || 0,
+              updatedBy: req.user?.email || "",
+            },
+          },
+        },
+      }));
+    if (ops.length) await persistModel.bulkWrite(ops, { ordered: false });
+  }
+  return out.map((doc) => {
+    if (!doc._discountBackfilled) return doc;
+    const { _discountBackfilled, ...rest } = doc;
+    return rest;
+  });
+}
+
 function validateConversionSource(doc, messagePrefix = "document") {
   if (!doc) throw new Error("Source document not found");
   if (doc.status === "CANCELLED" || doc.status === "REJECTED") {
@@ -1047,10 +1101,11 @@ export async function listOAs(req, res) {
       const q = String(req.query.search).trim();
       filter.$or = [{ oaNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }];
     }
-    const [items, total] = await Promise.all([
+    const [itemsRaw, total] = await Promise.all([
       OrderAcknowledgement.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       OrderAcknowledgement.countDocuments(filter),
     ]);
+    const items = await applyLinkedQuotationDiscountFallback(req, itemsRaw, { persistModel: OrderAcknowledgement });
     res.json({ items, total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -1063,7 +1118,8 @@ export async function getOA(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const doc = await OrderAcknowledgement.findOne(withCompany(req, { _id: id })).lean();
     if (!doc) return res.status(404).json({ message: "Not found" });
-    res.json(doc);
+    const [patched] = await applyLinkedQuotationDiscountFallback(req, [doc], { persistModel: OrderAcknowledgement });
+    res.json(patched || doc);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -1073,11 +1129,12 @@ export async function getOAPrintData(req, res) {
   try {
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
-    const [doc, company] = await Promise.all([
+    const [docRaw, company] = await Promise.all([
       OrderAcknowledgement.findOne(withCompany(req, { _id: id })).lean(),
       Company.findById(req.companyId).lean(),
     ]);
-    if (!doc) return res.status(404).json({ message: "Not found" });
+    if (!docRaw) return res.status(404).json({ message: "Not found" });
+    const [doc] = await applyLinkedQuotationDiscountFallback(req, [docRaw], { persistModel: OrderAcknowledgement });
     res.json({
       orderAcknowledgement: doc,
       company: {
