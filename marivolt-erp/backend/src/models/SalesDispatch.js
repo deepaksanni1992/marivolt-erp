@@ -30,6 +30,8 @@ const salesDispatchSchema = new mongoose.Schema(
     subTotal: { type: Number, default: 0 },
     discountTotal: { type: Number, default: 0 },
     taxTotal: { type: Number, default: 0 },
+    packingCost: { type: Number, default: 0, min: 0 },
+    clearanceCost: { type: Number, default: 0, min: 0 },
     grandTotal: { type: Number, default: 0 },
     status: { type: String, enum: ["DRAFT", "DISPATCHED", "CLOSED", "CANCELLED"], default: "DRAFT" },
     remarks: { type: String, default: "" },

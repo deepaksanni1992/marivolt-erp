@@ -864,6 +864,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </table>
         <div class="totals">
           <div><span>Subtotal</span><span>${money(oa.subTotal)}</span></div>
+          <div><span>Packing Cost</span><span>${money(oa.packingCost)}</span></div>
+          <div><span>Clearance Cost</span><span>${money(oa.clearanceCost)}</span></div>
           <div><span>Discount</span><span>${money(oa.discountTotal)}</span></div>
           <div><span>Tax</span><span>${money(oa.taxTotal)}</span></div>
           <div><b>Grand Total</b><b>${money(oa.grandTotal)} ${oa.currency || ""}</b></div>
@@ -1098,6 +1100,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </table>
         <div class="totals">
           <div><span>Subtotal</span><span>${money(doc?.subTotal)}</span></div>
+          <div><span>Packing Cost</span><span>${money(doc?.packingCost)}</span></div>
+          <div><span>Clearance Cost</span><span>${money(doc?.clearanceCost)}</span></div>
           <div><span>Discount</span><span>${money(doc?.discountTotal)}</span></div>
           <div><span>Tax</span><span>${money(doc?.taxTotal)}</span></div>
           <div><b>Grand Total</b><b>${money(doc?.grandTotal)} ${doc?.currency || ""}</b></div>
@@ -5069,7 +5073,7 @@ export default function Sales() {
                   <div className="flex justify-between py-1"><span>Packing Cost</span><span>{money(t.packingCost)}</span></div>
                   <div className="flex justify-between py-1"><span>Clearance Cost</span><span>{money(t.clearanceCost)}</span></div>
                   <div className="flex justify-between py-1"><span>Discount</span><span>{money(t.discountTotal)}</span></div>
-                  <div className="flex justify-between py-1"><span>Tax</span><span>{money(detail.taxTotal)}</span></div>
+                  <div className="flex justify-between py-1"><span>Tax</span><span>{money(t.taxTotal)}</span></div>
                   <div className="flex justify-between py-1 text-base font-semibold">
                     <span>Grand Total</span>
                     <span>
@@ -5737,6 +5741,8 @@ export default function Sales() {
               </div>
               <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
                 <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(oaDetail.subTotal)}</span></div>
+                <div className="flex justify-between py-1"><span>Packing Cost</span><span>{money(oaDetail.packingCost)}</span></div>
+                <div className="flex justify-between py-1"><span>Clearance Cost</span><span>{money(oaDetail.clearanceCost)}</span></div>
                 <div className="flex justify-between py-1"><span>Discount</span><span>{money(oaDetail.discountTotal)}</span></div>
                 <div className="flex justify-between py-1"><span>Tax</span><span>{money(oaDetail.taxTotal)}</span></div>
                 <div className="flex justify-between py-1 text-base font-semibold">
@@ -6150,6 +6156,8 @@ export default function Sales() {
               </div>
               <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
                 <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(proformaDetail.subTotal)}</span></div>
+                <div className="flex justify-between py-1"><span>Packing Cost</span><span>{money(proformaDetail.packingCost)}</span></div>
+                <div className="flex justify-between py-1"><span>Clearance Cost</span><span>{money(proformaDetail.clearanceCost)}</span></div>
                 <div className="flex justify-between py-1"><span>Discount</span><span>{money(proformaDetail.discountTotal)}</span></div>
                 <div className="flex justify-between py-1"><span>Tax</span><span>{money(proformaDetail.taxTotal)}</span></div>
                 <div className="flex justify-between py-1 text-base font-semibold">

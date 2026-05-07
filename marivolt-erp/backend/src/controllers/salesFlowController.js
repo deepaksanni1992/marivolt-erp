@@ -78,12 +78,16 @@ function computeTotals(lines = [], source = {}) {
   }
   const discountTotal = Math.max(0, Number(source?.discountTotal) || 0);
   const taxTotal = Math.max(0, Number(source?.taxTotal) || 0);
+  const packingCost = Math.max(0, Number(source?.packingCost) || 0);
+  const clearanceCost = Math.max(0, Number(source?.clearanceCost) || 0);
   const effectiveDiscount = Math.min(subTotal, discountTotal);
   return {
     subTotal,
     discountTotal: effectiveDiscount,
     taxTotal,
-    grandTotal: subTotal - effectiveDiscount + taxTotal,
+    packingCost,
+    clearanceCost,
+    grandTotal: subTotal - effectiveDiscount + taxTotal + packingCost + clearanceCost,
   };
 }
 
@@ -93,14 +97,16 @@ async function applyLinkedQuotationDiscountFallback(req, docs = [], { persistMod
   const needsFallback = rows.filter((doc) => {
     const subTotal = Number(doc?.subTotal) || 0;
     const discountTotal = Number(doc?.discountTotal) || 0;
-    return subTotal > 0 && discountTotal <= 0 && doc?.linkedQuotationId;
+    const packingCost = Number(doc?.packingCost) || 0;
+    const clearanceCost = Number(doc?.clearanceCost) || 0;
+    return subTotal > 0 && doc?.linkedQuotationId && (discountTotal <= 0 || packingCost <= 0 || clearanceCost <= 0);
   });
   if (!needsFallback.length) return rows;
   const quotationIds = [...new Set(needsFallback.map((doc) => String(doc.linkedQuotationId)).filter(Boolean))];
   if (!quotationIds.length) return rows;
   const quotations = await Quotation.find(
     withCompany(req, { _id: { $in: quotationIds } }),
-    { _id: 1, discountTotal: 1, taxTotal: 1 }
+    { _id: 1, discountTotal: 1, taxTotal: 1, packingCost: 1, clearanceCost: 1 }
   ).lean();
   const byQuotationId = new Map(quotations.map((q) => [String(q._id), q]));
   const out = rows.map((doc) => {
@@ -108,13 +114,22 @@ async function applyLinkedQuotationDiscountFallback(req, docs = [], { persistMod
     if (!q) return doc;
     const subTotal = Number(doc.subTotal) || 0;
     const currentDiscount = Number(doc.discountTotal) || 0;
-    if (subTotal <= 0 || currentDiscount > 0) return doc;
+    const currentPacking = Math.max(0, Number(doc.packingCost) || 0);
+    const currentClearance = Math.max(0, Number(doc.clearanceCost) || 0);
+    if (subTotal <= 0) return doc;
     const quoteDiscount = Math.max(0, Number(q.discountTotal) || 0);
-    if (quoteDiscount <= 0) return doc;
-    const discountTotal = Math.min(subTotal, quoteDiscount);
+    const discountTotal = currentDiscount > 0 ? Math.min(subTotal, currentDiscount) : Math.min(subTotal, quoteDiscount);
     const taxTotal = Math.max(0, Number(doc.taxTotal) || Number(q.taxTotal) || 0);
-    const grandTotal = subTotal - discountTotal + taxTotal;
-    return { ...doc, discountTotal, taxTotal, grandTotal, _discountBackfilled: true };
+    const packingCost = currentPacking > 0 ? currentPacking : Math.max(0, Number(q.packingCost) || 0);
+    const clearanceCost = currentClearance > 0 ? currentClearance : Math.max(0, Number(q.clearanceCost) || 0);
+    const changed =
+      Math.abs(discountTotal - currentDiscount) > 0.000001 ||
+      Math.abs(taxTotal - (Number(doc.taxTotal) || 0)) > 0.000001 ||
+      Math.abs(packingCost - currentPacking) > 0.000001 ||
+      Math.abs(clearanceCost - currentClearance) > 0.000001;
+    if (!changed) return doc;
+    const grandTotal = subTotal - discountTotal + taxTotal + packingCost + clearanceCost;
+    return { ...doc, discountTotal, taxTotal, packingCost, clearanceCost, grandTotal, _discountBackfilled: true };
   });
   if (persistModel) {
     const ops = out
@@ -126,6 +141,8 @@ async function applyLinkedQuotationDiscountFallback(req, docs = [], { persistMod
             $set: {
               discountTotal: Number(doc.discountTotal) || 0,
               taxTotal: Number(doc.taxTotal) || 0,
+              packingCost: Number(doc.packingCost) || 0,
+              clearanceCost: Number(doc.clearanceCost) || 0,
               grandTotal: Number(doc.grandTotal) || 0,
               updatedBy: req.user?.email || "",
             },
@@ -1230,6 +1247,8 @@ export async function updateOA(req, res) {
       "dispatchTerms",
       "currency",
       "lines",
+      "packingCost",
+      "clearanceCost",
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
@@ -1312,7 +1331,8 @@ export async function listProformas(req, res) {
       ProformaInvoice.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       ProformaInvoice.countDocuments(filter),
     ]);
-    const items = await enrichProformasWithPaymentState(req, itemsRaw);
+    const withPricing = await applyLinkedQuotationDiscountFallback(req, itemsRaw, { persistModel: ProformaInvoice });
+    const items = await enrichProformasWithPaymentState(req, withPricing);
     res.json({ items, total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -1323,10 +1343,11 @@ export async function getProforma(req, res) {
   try {
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
-    const doc = await ProformaInvoice.findOne(withCompany(req, { _id: id })).lean();
-    if (!doc) return res.status(404).json({ message: "Not found" });
-    const [enriched] = await enrichProformasWithPaymentState(req, [doc]);
-    res.json(enriched || doc);
+    const docRaw = await ProformaInvoice.findOne(withCompany(req, { _id: id })).lean();
+    if (!docRaw) return res.status(404).json({ message: "Not found" });
+    const [withPricing] = await applyLinkedQuotationDiscountFallback(req, [docRaw], { persistModel: ProformaInvoice });
+    const [enriched] = await enrichProformasWithPaymentState(req, [withPricing || docRaw]);
+    res.json(enriched || withPricing || docRaw);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -1380,6 +1401,8 @@ export async function updateProforma(req, res) {
       "remarks",
       "currency",
       "lines",
+      "packingCost",
+      "clearanceCost",
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
@@ -1721,6 +1744,8 @@ export async function updateSalesInvoice(req, res) {
       "status",
       "remarks",
       "lines",
+      "packingCost",
+      "clearanceCost",
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
@@ -2964,6 +2989,8 @@ export async function updateCipl(req, res) {
       "status",
       "remarks",
       "lines",
+      "packingCost",
+      "clearanceCost",
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
