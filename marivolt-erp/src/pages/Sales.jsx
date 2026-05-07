@@ -7080,6 +7080,36 @@ export default function Sales() {
           </div>
         </div>
 
+        {(() => {
+          const t = calcQuotationTotalsView(form);
+          return (
+            <div className="mt-4 ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
+              <div className="flex justify-between py-1">
+                <span>Subtotal</span>
+                <span>{money(t.subTotal)}</span>
+              </div>
+              <div className="flex justify-between py-1">
+                <span>Discount</span>
+                <span>{money(t.discountTotal)}</span>
+              </div>
+              <div className="flex justify-between py-1">
+                <span>Packing Cost</span>
+                <span>{money(t.packingCost)}</span>
+              </div>
+              <div className="flex justify-between py-1">
+                <span>Clearance Cost</span>
+                <span>{money(t.clearanceCost)}</span>
+              </div>
+              <div className="flex justify-between py-1 text-base font-semibold">
+                <span>Grand Total</span>
+                <span>
+                  {money(t.grandTotal)} {form.currency || ""}
+                </span>
+              </div>
+            </div>
+          );
+        })()}
+
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"
