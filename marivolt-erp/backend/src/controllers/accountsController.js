@@ -6,6 +6,10 @@ import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
 import SupplierLedgerEntry from "../models/SupplierLedgerEntry.js";
 import CashBankEntry from "../models/CashBankEntry.js";
 import BankDetail from "../models/BankDetail.js";
+import PaymentReceipt from "../models/PaymentReceipt.js";
+import ProformaInvoice from "../models/ProformaInvoice.js";
+import JournalEntry from "../models/JournalEntry.js";
+import Customer from "../models/Customer.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 
 function withCompany(req, filter = {}) {
@@ -527,5 +531,163 @@ export async function deleteBankDetail(req, res) {
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ message: err.message });
+  }
+}
+
+export async function getCustomerLedgerByCustomerId(req, res) {
+  try {
+    const { customerId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(customerId)) return res.status(400).json({ message: "Invalid customerId" });
+    const customer = await Customer.findOne(withCompany(req, { _id: customerId })).lean();
+    if (!customer) return res.status(404).json({ message: "Customer not found" });
+    req.query.customerName = customer.name;
+    return listCustomerLedger(req, res);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getCustomerStatement(req, res) {
+  try {
+    const { customerId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(customerId)) return res.status(400).json({ message: "Invalid customerId" });
+    const customer = await Customer.findOne(withCompany(req, { _id: customerId })).lean();
+    if (!customer) return res.status(404).json({ message: "Customer not found" });
+    const entries = await CustomerLedgerEntry.find(withCompany(req, { customerId: customer._id }))
+      .sort({ entryDate: 1, createdAt: 1 })
+      .lean();
+    let running = 0;
+    const items = entries.map((e) => {
+      running += (Number(e.debit) || 0) - (Number(e.credit) || 0);
+      return { ...e, runningBalance: running };
+    });
+    res.json({ customer: { _id: customer._id, name: customer.name }, items, closingBalance: running });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function listOutstandingReport(req, res) {
+  try {
+    const filter = withCompany(req);
+    if (req.query.customerName) filter.customerName = new RegExp(String(req.query.customerName).trim(), "i");
+    if (req.query.currency) filter.currency = String(req.query.currency).trim().toUpperCase();
+    if (req.query.fromDate || req.query.toDate) {
+      filter.proformaDate = {};
+      if (req.query.fromDate) filter.proformaDate.$gte = new Date(String(req.query.fromDate));
+      if (req.query.toDate) {
+        const d = new Date(String(req.query.toDate));
+        d.setHours(23, 59, 59, 999);
+        filter.proformaDate.$lte = d;
+      }
+    }
+    const proformas = await ProformaInvoice.find(filter).sort({ proformaDate: -1 }).lean();
+    const rows = proformas.map((p) => {
+      const invoiceAmount = Math.max(0, Number(p.grandTotal) || 0);
+      const paidAmount = Math.max(0, Number(p.totalReceivedAmount) || 0);
+      const balanceAmount = Math.max(0, invoiceAmount - paidAmount);
+      const dueDate = p.proformaDate ? new Date(p.proformaDate) : new Date();
+      const agingDays = Math.max(0, Math.floor((Date.now() - dueDate.getTime()) / (1000 * 60 * 60 * 24)));
+      return {
+        customer: p.customerName || "",
+        invoiceNo: p.proformaNo || "",
+        invoiceDate: p.proformaDate || null,
+        dueDate,
+        invoiceAmount,
+        paidAmount,
+        balanceAmount,
+        currency: p.currency || "USD",
+        agingDays,
+        status: balanceAmount <= 0 ? "PAID" : paidAmount > 0 ? "PARTIALLY_PAID" : "UNPAID",
+        sourceType: "PROFORMA_INVOICE",
+        sourceId: p._id,
+      };
+    });
+    res.json({ items: rows });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function listAgingReport(req, res) {
+  try {
+    const out = await ProformaInvoice.find(withCompany(req)).lean();
+    const bucketByCustomer = new Map();
+    for (const p of out) {
+      const total = Math.max(0, Number(p.grandTotal) || 0);
+      const paid = Math.max(0, Number(p.totalReceivedAmount) || 0);
+      const bal = Math.max(0, total - paid);
+      if (bal <= 0) continue;
+      const days = Math.max(0, Math.floor((Date.now() - new Date(p.proformaDate || p.createdAt || Date.now()).getTime()) / (1000 * 60 * 60 * 24)));
+      const key = `${p.customerName || ""}::${p.currency || "USD"}`;
+      if (!bucketByCustomer.has(key)) {
+        bucketByCustomer.set(key, {
+          customer: p.customerName || "",
+          currency: p.currency || "USD",
+          notDue: 0,
+          d0_30: 0,
+          d31_60: 0,
+          d61_90: 0,
+          d90Plus: 0,
+          totalOutstanding: 0,
+        });
+      }
+      const row = bucketByCustomer.get(key);
+      if (days <= 0) row.notDue += bal;
+      else if (days <= 30) row.d0_30 += bal;
+      else if (days <= 60) row.d31_60 += bal;
+      else if (days <= 90) row.d61_90 += bal;
+      else row.d90Plus += bal;
+      row.totalOutstanding += bal;
+    }
+    res.json({ items: Array.from(bucketByCustomer.values()) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function listCashBankLedger(req, res) {
+  try {
+    const filter = withCompany(req);
+    if (req.query.accountName) filter.accountName = new RegExp(String(req.query.accountName).trim(), "i");
+    const itemsRaw = await CashBankEntry.find(filter).sort({ entryDate: 1, createdAt: 1 }).lean();
+    let running = 0;
+    const items = itemsRaw.map((r) => {
+      const debit = String(r.transactionType || "").toUpperCase() === "RECEIPT" ? Math.max(0, Number(r.amount) || 0) : 0;
+      const credit = String(r.transactionType || "").toUpperCase() === "PAYMENT" ? Math.max(0, Number(r.amount) || 0) : 0;
+      running += debit - credit;
+      return { ...r, debit, credit, runningBalance: running };
+    });
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function listJournalEntries(req, res) {
+  try {
+    const { page, limit, skip } = paginate(req);
+    const filter = withCompany(req);
+    if (req.query.status) filter.status = String(req.query.status).trim().toUpperCase();
+    if (req.query.referenceNo) filter.referenceNo = new RegExp(String(req.query.referenceNo).trim(), "i");
+    const [items, total] = await Promise.all([
+      JournalEntry.find(filter).sort({ entryDate: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+      JournalEntry.countDocuments(filter),
+    ]);
+    res.json({ items, total, page, limit });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getJournalEntry(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const row = await JournalEntry.findOne(withCompany(req, { _id: id })).lean();
+    if (!row) return res.status(404).json({ message: "Not found" });
+    res.json(row);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 }

@@ -28,6 +28,7 @@ router.use(...requireErpAccess);
 router.post("/", uploadPaymentSlip, c.createPaymentReceipt);
 router.get("/", c.listPaymentReceipts);
 router.get("/by-proforma/:proformaInvoiceId", c.listPaymentReceiptsByProforma);
+router.get("/:id/print", c.getPaymentReceiptPrintData);
 router.get("/:id/attachment-url", c.getPaymentReceiptAttachmentUrl);
 router.patch("/:id/cancel", c.cancelPaymentReceipt);
 router.get("/:id", c.getPaymentReceipt);

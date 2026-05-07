@@ -3,6 +3,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
+import CustomerLedgerTab from "../components/accounts/CustomerLedgerTab.jsx";
+import OutstandingReportTab from "../components/accounts/OutstandingReportTab.jsx";
+import AgingReportTab from "../components/accounts/AgingReportTab.jsx";
+import CashBankLedgerTab from "../components/accounts/CashBankLedgerTab.jsx";
+import JournalEntriesTab from "../components/accounts/JournalEntriesTab.jsx";
+import PaymentReceiptsTab from "../components/accounts/PaymentReceiptsTab.jsx";
+import PaymentReceiptView from "../components/accounts/PaymentReceiptView.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiDelete, apiGet, apiGetWithQuery, apiPatch, apiPost, apiPut } from "../lib/api.js";
 
@@ -61,14 +68,22 @@ function truncateBankAddressCell(s, max = 56) {
 }
 
 const tabs = [
-  { id: "si", label: "Sales invoices" },
-  { id: "sd", label: "Sales dispatches" },
-  { id: "pi", label: "Purchase invoices" },
-  { id: "cust", label: "Customer ledger" },
-  { id: "supp", label: "Supplier ledger" },
-  { id: "cash", label: "Cash / bank" },
-  { id: "bank", label: "Bank details" },
+  { id: "ar", label: "AR Dashboard" },
+  { id: "ap", label: "AP Dashboard" },
+  { id: "cust", label: "Customer Ledger" },
+  { id: "supp", label: "Supplier Ledger" },
   { id: "payrcpt", label: "Payment Receipts" },
+  { id: "payv", label: "Payment Vouchers" },
+  { id: "si", label: "Sales Invoices" },
+  { id: "pi", label: "Purchase Invoices" },
+  { id: "cash", label: "Cash / Bank Ledger" },
+  { id: "journal", label: "Journal Entries" },
+  { id: "outstanding", label: "Outstanding Report" },
+  { id: "aging", label: "Aging Report" },
+  { id: "alloc", label: "Allocation / Reconciliation" },
+  { id: "reports", label: "Reports" },
+  { id: "sd", label: "Sales Dispatches" },
+  { id: "bank", label: "Bank Details" },
 ];
 
 const invLine = () => ({
@@ -87,9 +102,21 @@ export default function Accounts() {
   const limit = 25;
   const [err, setErr] = useState("");
   const [modal, setModal] = useState(null);
+  const [receiptView, setReceiptView] = useState({ open: false, item: null });
 
   const [filterCustomer, setFilterCustomer] = useState("");
   const [filterSupplier, setFilterSupplier] = useState("");
+  const [payRcptFilters, setPayRcptFilters] = useState({
+    customerName: "",
+    referenceNo: "",
+    proformaNo: "",
+    invoiceNo: "",
+    status: "",
+    paymentMode: "",
+    bankCashAccountName: "",
+    fromDate: "",
+    toDate: "",
+  });
 
   const [siForm, setSiForm] = useState({
     customerName: "",
@@ -183,9 +210,29 @@ export default function Accounts() {
     enabled: tab === "bank",
   });
   const payRcptQ = useQuery({
-    queryKey: ["paymentReceipts", page],
-    queryFn: () => apiGetWithQuery("/payment-receipts", { page, limit }),
+    queryKey: ["paymentReceipts", page, payRcptFilters],
+    queryFn: () => apiGetWithQuery("/payment-receipts", { page, limit, ...payRcptFilters }),
     enabled: tab === "payrcpt",
+  });
+  const outstandingQ = useQuery({
+    queryKey: ["accountsOutstanding", payRcptFilters.customerName, payRcptFilters.fromDate, payRcptFilters.toDate],
+    queryFn: () =>
+      apiGetWithQuery("/accounts/outstanding", {
+        customerName: payRcptFilters.customerName,
+        fromDate: payRcptFilters.fromDate,
+        toDate: payRcptFilters.toDate,
+      }),
+    enabled: tab === "outstanding",
+  });
+  const agingQ = useQuery({
+    queryKey: ["accountsAging"],
+    queryFn: () => apiGet("/accounts/aging"),
+    enabled: tab === "aging",
+  });
+  const journalQ = useQuery({
+    queryKey: ["accountsJournals", page],
+    queryFn: () => apiGetWithQuery("/accounts/journal-entries", { page, limit }),
+    enabled: tab === "journal",
   });
 
   const postMut = useMutation({
@@ -262,6 +309,9 @@ export default function Accounts() {
     if (tab === "cash") return cashQ.data?.items ?? [];
     if (tab === "bank") return bankQ.data?.items ?? [];
     if (tab === "payrcpt") return payRcptQ.data?.items ?? [];
+    if (tab === "outstanding") return outstandingQ.data?.items ?? [];
+    if (tab === "aging") return agingQ.data?.items ?? [];
+    if (tab === "journal") return journalQ.data?.items ?? [];
     return [];
   }
 
@@ -274,6 +324,9 @@ export default function Accounts() {
     if (tab === "cash") return cashQ.data?.total ?? 0;
     if (tab === "bank") return bankQ.data?.total ?? 0;
     if (tab === "payrcpt") return payRcptQ.data?.total ?? 0;
+    if (tab === "outstanding") return outstandingQ.data?.items?.length ?? 0;
+    if (tab === "aging") return agingQ.data?.items?.length ?? 0;
+    if (tab === "journal") return journalQ.data?.total ?? 0;
     return 0;
   }
 
@@ -286,6 +339,9 @@ export default function Accounts() {
     if (tab === "cash") return cashQ.isLoading;
     if (tab === "bank") return bankQ.isLoading;
     if (tab === "payrcpt") return payRcptQ.isLoading;
+    if (tab === "outstanding") return outstandingQ.isLoading;
+    if (tab === "aging") return agingQ.isLoading;
+    if (tab === "journal") return journalQ.isLoading;
     return false;
   }
 
@@ -308,6 +364,55 @@ export default function Accounts() {
       setErr(e.message || "Could not open payment slip");
     }
   }
+
+  async function openPaymentReceiptPrint(receiptId) {
+    try {
+      const data = await apiGet(`/payment-receipts/${receiptId}/print`);
+      const r = data?.receipt || {};
+      const html = `
+        <html><head><title>${r.receiptNo || "Payment Receipt"}</title></head>
+        <body style="font-family:Arial;padding:24px">
+          <h2 style="margin:0 0 16px 0">PAYMENT RECEIPT</h2>
+          <div><b>Receipt No:</b> ${r.receiptNo || "-"}</div>
+          <div><b>Receipt Date:</b> ${r.receiptDate ? new Date(r.receiptDate).toLocaleDateString() : "-"}</div>
+          <div><b>Customer:</b> ${r.customerName || "-"}</div>
+          <div><b>Currency:</b> ${r.currency || "-"}</div>
+          <div><b>Amount:</b> ${Number(r.amountReceived || 0).toFixed(2)}</div>
+          <div><b>Allocated:</b> ${Number(r.allocatedAmount || 0).toFixed(2)}</div>
+          <div><b>Unallocated:</b> ${Number(r.unallocatedAmount || 0).toFixed(2)}</div>
+          <div><b>Mode:</b> ${(r.paymentMode || "").replaceAll("_", " ")}</div>
+          <div><b>Bank/Cash Account:</b> ${r.bankCashAccountName || r.accountName || "-"}</div>
+          <div><b>Reference:</b> ${r.paymentReference || "-"}</div>
+          <div><b>Status:</b> ${r.status || "-"}</div>
+          <div style="margin-top:12px"><b>Remarks:</b> ${r.remarks || "-"}</div>
+        </body></html>`;
+      const w = window.open("", "_blank");
+      if (!w) return;
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+      w.print();
+    } catch (e) {
+      setErr(e.message || "Could not open print");
+    }
+  }
+
+  function openJournalEntry(journalEntryId) {
+    if (!journalEntryId) return;
+    setTab("journal");
+    setPage(1);
+  }
+
+  const cancelPaymentReceiptMut = useMutation({
+    mutationFn: ({ id, reason }) => apiPatch(`/payment-receipts/${id}/cancel`, { cancellationReason: reason }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["paymentReceipts"] });
+      qc.invalidateQueries({ queryKey: ["accountsJournals"] });
+      qc.invalidateQueries({ queryKey: ["cashBank"] });
+      qc.invalidateQueries({ queryKey: ["customerLedger"] });
+    },
+    onError: (e) => setErr(e.message),
+  });
 
   const total = activeTotal();
   const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -609,65 +714,14 @@ export default function Accounts() {
             </table>
           )}
           {tab === "cust" && (
-            <table className="min-w-full text-left text-sm">
-              <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
-                <tr>
-                  <th className="px-3 py-2">Date</th>
-                  <th className="px-3 py-2">Ref</th>
-                  <th className="px-3 py-2 text-right">Debit</th>
-                  <th className="px-3 py-2 text-right">Credit</th>
-                  <th className="px-3 py-2 text-right">Balance</th>
-                  <th className="px-3 py-2 w-16" />
-                </tr>
-              </thead>
-              <tbody>
-                {!filterCustomer.trim() ? (
-                  <tr>
-                    <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
-                      Enter a customer name and click Load.
-                    </td>
-                  </tr>
-                ) : loading() ? (
-                  <tr>
-                    <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
-                      Loading…
-                    </td>
-                  </tr>
-                ) : activeRows().length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
-                      No entries.
-                    </td>
-                  </tr>
-                ) : (
-                  activeRows().map((r) => (
-                    <tr key={r._id} className="border-b border-gray-100">
-                      <td className="px-3 py-2 text-xs">
-                        {r.entryDate ? new Date(r.entryDate).toLocaleDateString() : "—"}
-                      </td>
-                      <td className="px-3 py-2 text-xs">{r.referenceNumber || r.narrative}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{r.debit}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{r.credit}</td>
-                      <td className="px-3 py-2 text-right font-medium tabular-nums">
-                        {Number(r.runningBalance).toFixed(2)}
-                      </td>
-                      <td className="px-3 py-2">
-                        <button
-                          type="button"
-                          className="text-xs text-red-600"
-                          onClick={() => {
-                            if (confirm("Delete entry?"))
-                              delMut.mutate({ path: `/accounts/customer-ledger/${r._id}` });
-                          }}
-                        >
-                          Del
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <CustomerLedgerTab
+              filterCustomer={filterCustomer}
+              loading={loading()}
+              rows={activeRows()}
+              onDelete={(r) => {
+                if (confirm("Delete entry?")) delMut.mutate({ path: `/accounts/customer-ledger/${r._id}` });
+              }}
+            />
           )}
           {tab === "supp" && (
             <table className="min-w-full text-left text-sm">
@@ -731,116 +785,40 @@ export default function Accounts() {
             </table>
           )}
           {tab === "cash" && (
-            <table className="min-w-full text-left text-sm">
-              <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
-                <tr>
-                  <th className="px-3 py-2">Date</th>
-                  <th className="px-3 py-2">Account</th>
-                  <th className="px-3 py-2">Type</th>
-                  <th className="px-3 py-2">Party</th>
-                  <th className="px-3 py-2 text-right">Amount</th>
-                  <th className="px-3 py-2 w-16" />
-                </tr>
-              </thead>
-              <tbody>
-                {loading() ? (
-                  <tr>
-                    <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
-                      Loading…
-                    </td>
-                  </tr>
-                ) : activeRows().length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
-                      No entries.
-                    </td>
-                  </tr>
-                ) : (
-                  activeRows().map((r) => (
-                    <tr key={r._id} className="border-b border-gray-100">
-                      <td className="px-3 py-2 text-xs">
-                        {r.entryDate ? new Date(r.entryDate).toLocaleDateString() : "—"}
-                      </td>
-                      <td className="px-3 py-2">{r.accountName}</td>
-                      <td className="px-3 py-2">{r.transactionType}</td>
-                      <td className="px-3 py-2 text-xs">{r.partyName}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{r.amount}</td>
-                      <td className="px-3 py-2">
-                        <button
-                          type="button"
-                          className="text-xs text-red-600"
-                          onClick={() => {
-                            if (confirm("Delete entry?"))
-                              delMut.mutate({ path: `/accounts/cash-bank/${r._id}` });
-                          }}
-                        >
-                          Del
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <CashBankLedgerTab
+              loading={loading()}
+              rows={activeRows()}
+              onDelete={(r) => {
+                if (confirm("Delete entry?")) delMut.mutate({ path: `/accounts/cash-bank/${r._id}` });
+              }}
+            />
           )}
           {tab === "payrcpt" && (
-            <table className="min-w-full text-left text-sm">
-              <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
-                <tr>
-                  <th className="px-3 py-2">Receipt No</th>
-                  <th className="px-3 py-2">Date</th>
-                  <th className="px-3 py-2">Customer</th>
-                  <th className="px-3 py-2">Proforma No</th>
-                  <th className="px-3 py-2 text-right">Amount</th>
-                  <th className="px-3 py-2">Mode</th>
-                  <th className="px-3 py-2">Account</th>
-                  <th className="px-3 py-2">Reference</th>
-                  <th className="px-3 py-2">Status</th>
-                  <th className="px-3 py-2 w-24">Slip</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading() ? (
-                  <tr>
-                    <td colSpan={10} className="px-3 py-8 text-center text-gray-500">
-                      Loading…
-                    </td>
-                  </tr>
-                ) : activeRows().length === 0 ? (
-                  <tr>
-                    <td colSpan={10} className="px-3 py-8 text-center text-gray-500">
-                      No payment receipts.
-                    </td>
-                  </tr>
-                ) : (
-                  activeRows().map((r) => (
-                    <tr key={r._id} className="border-b border-gray-100">
-                      <td className="px-3 py-2 font-mono text-xs">{r.receiptNo}</td>
-                      <td className="px-3 py-2 text-xs">{r.receivedDate ? new Date(r.receivedDate).toLocaleDateString() : "—"}</td>
-                      <td className="px-3 py-2">{r.customerName || "—"}</td>
-                      <td className="px-3 py-2 font-mono text-xs">{r.proformaInvoiceNo || "—"}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {r.currency} {Number(r.amountReceived || 0).toFixed(2)}
-                      </td>
-                      <td className="px-3 py-2 text-xs">{String(r.paymentMode || "").replaceAll("_", " ")}</td>
-                      <td className="px-3 py-2 text-xs">{r.accountName || "—"}</td>
-                      <td className="px-3 py-2 text-xs">{r.paymentReference || "—"}</td>
-                      <td className="px-3 py-2">{r.status}</td>
-                      <td className="px-3 py-2">
-                        <button
-                          type="button"
-                          className={`rounded border px-2 py-1 text-xs ${r.attachmentKey ? "" : "opacity-40"}`}
-                          disabled={!r.attachmentKey}
-                          onClick={() => openPaymentReceiptSlip(r._id, true)}
-                        >
-                          View Slip
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <PaymentReceiptsTab
+              rows={activeRows()}
+              loading={loading()}
+              summary={payRcptQ.data?.summary || {}}
+              filters={payRcptFilters}
+              setFilters={setPayRcptFilters}
+              onView={(r) => setReceiptView({ open: true, item: r })}
+              onPrint={openPaymentReceiptPrint}
+              onViewSlip={(id) => openPaymentReceiptSlip(id, true)}
+              onViewJournal={openJournalEntry}
+              onCancel={(r) => {
+                const reason = window.prompt("Cancel reason");
+                if (!reason) return;
+                cancelPaymentReceiptMut.mutate({ id: r._id, reason });
+              }}
+              isCancelPending={cancelPaymentReceiptMut.isPending}
+            />
+          )}
+          {tab === "journal" && <JournalEntriesTab rows={activeRows() || []} />}
+          {tab === "outstanding" && <OutstandingReportTab rows={activeRows() || []} />}
+          {tab === "aging" && <AgingReportTab rows={activeRows() || []} />}
+          {["ar", "ap", "payv", "alloc", "reports"].includes(tab) && (
+            <div className="px-4 py-10 text-center text-sm text-gray-500">
+              This tab structure is now ready. Detailed ERP widgets will be added in the next phase.
+            </div>
           )}
           {tab === "bank" && (
             <table className="min-w-full text-left text-sm">
@@ -919,7 +897,7 @@ export default function Accounts() {
             </table>
           )}
         </div>
-        {tab !== "cust" && tab !== "supp" ? (
+        {tab !== "cust" && tab !== "supp" && tab !== "outstanding" && tab !== "aging" && !["ar", "ap", "payv", "alloc", "reports"].includes(tab) ? (
           <div className="flex items-center justify-between border-t px-3 py-2 text-sm text-gray-600">
             <span>
               Page {page}/{totalPages} · {total} rows
@@ -1542,6 +1520,13 @@ export default function Accounts() {
           </button>
         </div>
       </Modal>
+      <PaymentReceiptView
+        open={receiptView.open}
+        onClose={() => setReceiptView({ open: false, item: null })}
+        receipt={receiptView.item}
+        onPrint={openPaymentReceiptPrint}
+        onViewSlip={(id) => openPaymentReceiptSlip(id, true)}
+      />
     </div>
   );
 }

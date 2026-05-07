@@ -4,6 +4,7 @@ import Papa from "papaparse";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
+import ReceivePaymentModal from "../components/accounts/ReceivePaymentModal.jsx";
 import { apiDelete, apiGet, apiGetWithQuery, apiPatch, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "../lib/salesQuotationPrintCss.js";
 import {
@@ -1422,18 +1423,20 @@ export default function Sales() {
   const [shippingDownloadBusyId, setShippingDownloadBusyId] = useState(null);
   const paymentSlipInputRef = useRef(null);
   const [receivePaymentModal, setReceivePaymentModal] = useState({ open: false, proforma: null });
+  const [receiveInvoicePaymentModal, setReceiveInvoicePaymentModal] = useState({ open: false, invoice: null });
   const [viewPaymentsModal, setViewPaymentsModal] = useState({ open: false, proforma: null });
   const [receivePaymentForm, setReceivePaymentForm] = useState({
-    receivedDate: new Date().toISOString().slice(0, 10),
+    receiptDate: new Date().toISOString().slice(0, 10),
     amountReceived: 0,
     currency: "USD",
     paymentMode: "BANK_TRANSFER",
-    accountName: "",
+    bankCashAccountName: "",
     bankAccountId: "",
     cashAccountId: "",
     paymentReference: "",
     remarks: "",
     adminOverride: false,
+    attachmentFile: null,
   });
   const [srCreateOpen, setSrCreateOpen] = useState(false);
   const [srForm, setSrForm] = useState({
@@ -1535,7 +1538,7 @@ export default function Sales() {
   const { data: bankDetailsData } = useQuery({
     queryKey: ["accounts-bank-details-payment"],
     queryFn: () => apiGetWithQuery("/accounts/bank-details", { page: 1, limit: 200 }),
-    enabled: receivePaymentModal.open,
+    enabled: receivePaymentModal.open || receiveInvoicePaymentModal.open,
   });
 
   const { data: proformaPaymentsData } = useQuery({
@@ -2294,40 +2297,46 @@ export default function Sales() {
   });
 
   const createPaymentReceiptMutation = useMutation({
-    mutationFn: async ({ proforma, form }) => {
+    mutationFn: async ({ sourceType, doc, form }) => {
       const fd = new FormData();
-      fd.append("proformaInvoiceId", proforma._id);
-      fd.append("receivedDate", form.receivedDate);
+      if (sourceType === "PROFORMA_INVOICE") fd.append("proformaInvoiceId", doc._id);
+      if (sourceType === "SALES_INVOICE") fd.append("salesInvoiceId", doc._id);
+      fd.append("sourceType", sourceType);
+      fd.append("receiptDate", form.receiptDate);
       fd.append("amountReceived", String(Number(form.amountReceived) || 0));
-      fd.append("currency", form.currency || proforma.currency || "USD");
+      fd.append("currency", form.currency || doc.currency || "USD");
       fd.append("paymentMode", form.paymentMode || "BANK_TRANSFER");
-      fd.append("accountName", form.accountName || "");
+      fd.append("bankCashAccountName", form.bankCashAccountName || "");
+      fd.append("customerName", doc.customerName || "");
       fd.append("paymentReference", form.paymentReference || "");
       fd.append("remarks", form.remarks || "");
       if (form.bankAccountId) fd.append("bankAccountId", form.bankAccountId);
       if (form.cashAccountId) fd.append("cashAccountId", form.cashAccountId);
       if (form.adminOverride) fd.append("adminOverride", "true");
-      const file = paymentSlipInputRef.current?.files?.[0];
+      const file = form.attachmentFile || paymentSlipInputRef.current?.files?.[0];
       if (file) fd.append("attachment", file);
       return apiPostFormData("/payment-receipts", fd);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-proforma"] });
+      qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
       qc.invalidateQueries({ queryKey: ["proforma-payments"] });
       qc.invalidateQueries({ queryKey: ["cashBank"] });
       qc.invalidateQueries({ queryKey: ["customerLedger"] });
       setReceivePaymentModal({ open: false, proforma: null });
+      setReceiveInvoicePaymentModal({ open: false, invoice: null });
       setReceivePaymentForm({
-        receivedDate: new Date().toISOString().slice(0, 10),
+        receiptDate: new Date().toISOString().slice(0, 10),
         amountReceived: 0,
         currency: "USD",
         paymentMode: "BANK_TRANSFER",
-        accountName: "",
+        bankCashAccountName: "",
         bankAccountId: "",
         cashAccountId: "",
         paymentReference: "",
         remarks: "",
         adminOverride: false,
+        attachmentFile: null,
       });
       if (paymentSlipInputRef.current) paymentSlipInputRef.current.value = "";
       if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
@@ -4013,16 +4022,17 @@ export default function Sales() {
                                 setReceivePaymentModal({ open: true, proforma: r });
                                 setReceivePaymentForm((f) => ({
                                   ...f,
-                                  receivedDate: new Date().toISOString().slice(0, 10),
+                                  receiptDate: new Date().toISOString().slice(0, 10),
                                   amountReceived: Number(r.balanceAmount ?? r.grandTotal ?? 0),
                                   currency: r.currency || "USD",
                                   paymentMode: "BANK_TRANSFER",
-                                  accountName: "",
+                                  bankCashAccountName: "",
                                   bankAccountId: "",
                                   cashAccountId: "",
                                   paymentReference: "",
                                   remarks: "",
                                   adminOverride: false,
+                                  attachmentFile: null,
                                 }));
                                 if (paymentSlipInputRef.current) paymentSlipInputRef.current.value = "";
                               }}
@@ -4445,6 +4455,30 @@ export default function Sales() {
                               onClick={() => convertToSalesDispatchFromSalesInvoiceMutation.mutate(r._id)}
                             >
                               Convert to Sales Dispatch
+                            </button>
+                            <button
+                              type="button"
+                              className={`rounded-lg border px-2 py-1 text-xs ${["PAID", "CANCELLED"].includes(String(r.status || "").toUpperCase()) ? "opacity-40" : ""}`}
+                              disabled={["PAID", "CANCELLED"].includes(String(r.status || "").toUpperCase())}
+                              onClick={() => {
+                                setReceiveInvoicePaymentModal({ open: true, invoice: r });
+                                setReceivePaymentForm((f) => ({
+                                  ...f,
+                                  receiptDate: new Date().toISOString().slice(0, 10),
+                                  amountReceived: Number(r.grandTotal ?? 0),
+                                  currency: r.currency || "USD",
+                                  paymentMode: "BANK_TRANSFER",
+                                  bankCashAccountName: "",
+                                  bankAccountId: "",
+                                  cashAccountId: "",
+                                  paymentReference: "",
+                                  remarks: "",
+                                  adminOverride: false,
+                                  attachmentFile: null,
+                                }));
+                              }}
+                            >
+                              Receive Payment
                             </button>
                             <button
                               type="button"
@@ -6936,123 +6970,30 @@ export default function Sales() {
         </div>
       </Modal>
 
-      <Modal
+      <ReceivePaymentModal
         open={receivePaymentModal.open}
         onClose={() => setReceivePaymentModal({ open: false, proforma: null })}
-        title="Receive Payment"
-        wide
-      >
-        {(() => {
-          const p = receivePaymentModal.proforma;
-          const alreadyReceived = Number(p?.totalReceivedAmount || 0);
-          const balance = Number(p?.balanceAmount ?? p?.grandTotal ?? 0);
-          const selectedFile = paymentSlipInputRef.current?.files?.[0] || null;
-          return (
-            <div className="space-y-3">
-              <div className="grid gap-3 sm:grid-cols-3">
-                <FormField label="Proforma Invoice No.">
-                  <TextInput value={p?.proformaNo || ""} disabled />
-                </FormField>
-                <FormField label="Customer Name">
-                  <TextInput value={p?.customerName || ""} disabled />
-                </FormField>
-                <FormField label="PI Grand Total">
-                  <TextInput value={`${p?.currency || "USD"} ${money(p?.grandTotal)}`} disabled />
-                </FormField>
-                <FormField label="Already Received">
-                  <TextInput value={`${p?.currency || "USD"} ${money(alreadyReceived)}`} disabled />
-                </FormField>
-                <FormField label="Balance Amount">
-                  <TextInput value={`${p?.currency || "USD"} ${money(balance)}`} disabled />
-                </FormField>
-                <FormField label="Payment Received Date *">
-                  <TextInput
-                    type="date"
-                    value={receivePaymentForm.receivedDate}
-                    onChange={(e) => setReceivePaymentForm((f) => ({ ...f, receivedDate: e.target.value }))}
-                  />
-                </FormField>
-                <FormField label="Amount Received *">
-                  <TextInput
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={receivePaymentForm.amountReceived}
-                    onChange={(e) => setReceivePaymentForm((f) => ({ ...f, amountReceived: Number(e.target.value) || 0 }))}
-                  />
-                </FormField>
-                <FormField label="Currency *">
-                  <TextInput
-                    value={receivePaymentForm.currency}
-                    onChange={(e) => setReceivePaymentForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
-                  />
-                </FormField>
-                <FormField label="Payment Mode *">
-                  <select
-                    className="w-full rounded-xl border px-3 py-2 text-sm"
-                    value={receivePaymentForm.paymentMode}
-                    onChange={(e) => setReceivePaymentForm((f) => ({ ...f, paymentMode: e.target.value }))}
-                  >
-                    <option value="BANK_TRANSFER">Bank Transfer</option>
-                    <option value="CASH">Cash</option>
-                    <option value="CHEQUE">Cheque</option>
-                    <option value="CARD">Card</option>
-                    <option value="OTHER">Other</option>
-                  </select>
-                </FormField>
-                <FormField label="Bank / Cash Account *">
-                  <select
-                    className="w-full rounded-xl border px-3 py-2 text-sm"
-                    value={receivePaymentForm.accountName}
-                    onChange={(e) => setReceivePaymentForm((f) => ({ ...f, accountName: e.target.value }))}
-                  >
-                    <option value="">Select account</option>
-                    {(bankDetailsData?.items || []).map((b) => (
-                      <option key={b._id} value={b.accountName || b.bankName || ""}>
-                        {b.accountName || b.bankName} ({b.currency || "USD"})
-                      </option>
-                    ))}
-                    <option value="Cash">Cash</option>
-                  </select>
-                </FormField>
-                <FormField label="Payment Reference / Txn ID">
-                  <TextInput
-                    value={receivePaymentForm.paymentReference}
-                    onChange={(e) => setReceivePaymentForm((f) => ({ ...f, paymentReference: e.target.value }))}
-                  />
-                </FormField>
-                <FormField label="Remarks">
-                  <TextInput
-                    value={receivePaymentForm.remarks}
-                    onChange={(e) => setReceivePaymentForm((f) => ({ ...f, remarks: e.target.value }))}
-                  />
-                </FormField>
-                <FormField label="Payment Slip (PDF/JPG/PNG)">
-                  <input ref={paymentSlipInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" />
-                  {selectedFile ? <div className="mt-1 text-xs text-gray-600">{selectedFile.name}</div> : null}
-                </FormField>
-              </div>
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  className="rounded-xl border px-4 py-2 text-sm"
-                  onClick={() => setReceivePaymentModal({ open: false, proforma: null })}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-                  disabled={createPaymentReceiptMutation.isPending || !p?._id}
-                  onClick={() => createPaymentReceiptMutation.mutate({ proforma: p, form: receivePaymentForm })}
-                >
-                  {createPaymentReceiptMutation.isPending ? "Posting..." : "Post Payment"}
-                </button>
-              </div>
-            </div>
-          );
-        })()}
-      </Modal>
+        title="Receive Payment - Proforma"
+        sourceType="PROFORMA_INVOICE"
+        document={receivePaymentModal.proforma}
+        bankDetails={bankDetailsData?.items || []}
+        form={receivePaymentForm}
+        setForm={setReceivePaymentForm}
+        onSubmit={({ sourceType, document, form }) => createPaymentReceiptMutation.mutate({ sourceType, doc: document, form })}
+        isSubmitting={createPaymentReceiptMutation.isPending}
+      />
+      <ReceivePaymentModal
+        open={receiveInvoicePaymentModal.open}
+        onClose={() => setReceiveInvoicePaymentModal({ open: false, invoice: null })}
+        title="Receive Payment - Sales Invoice"
+        sourceType="SALES_INVOICE"
+        document={receiveInvoicePaymentModal.invoice}
+        bankDetails={bankDetailsData?.items || []}
+        form={receivePaymentForm}
+        setForm={setReceivePaymentForm}
+        onSubmit={({ sourceType, document, form }) => createPaymentReceiptMutation.mutate({ sourceType, doc: document, form })}
+        isSubmitting={createPaymentReceiptMutation.isPending}
+      />
 
       <Modal
         open={viewPaymentsModal.open}

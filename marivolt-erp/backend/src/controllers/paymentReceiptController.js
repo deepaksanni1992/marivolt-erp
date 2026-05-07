@@ -1,9 +1,11 @@
 import mongoose from "mongoose";
 import PaymentReceipt from "../models/PaymentReceipt.js";
 import ProformaInvoice from "../models/ProformaInvoice.js";
+import SalesInvoice from "../models/SalesInvoice.js";
 import Customer from "../models/Customer.js";
 import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
 import CashBankEntry from "../models/CashBankEntry.js";
+import JournalEntry from "../models/JournalEntry.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
 import { buildDatedS3Key, getSignedFileUrl, uploadFileToS3 } from "../services/s3UploadService.js";
 
@@ -12,6 +14,12 @@ const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const PAYMENT_SLIP_FOLDER = String(process.env.AWS_S3_PAYMENT_SLIP_FOLDER || "payment-slips").trim() || "payment-slips";
 const CANCEL_ALLOWED_ROLES = new Set(["super_admin", "company_admin", "admin", "accounts_logistics"]);
 const OVERRIDE_ALLOWED_ROLES = new Set(["super_admin", "company_admin", "admin"]);
+const SOURCE_TYPE = {
+  PROFORMA: "PROFORMA_INVOICE",
+  SALES: "SALES_INVOICE",
+  ADVANCE: "ADVANCE_PAYMENT",
+  MULTIPLE: "MULTIPLE_INVOICE",
+};
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -90,16 +98,106 @@ async function recalcProformaPaymentState(req, proformaId) {
   return proforma;
 }
 
+async function recalcSalesInvoicePaymentState(req, salesInvoiceId) {
+  const invoice = await SalesInvoice.findOne(withCompany(req, { _id: salesInvoiceId }));
+  if (!invoice) return null;
+  const postedReceipts = await PaymentReceipt.find(
+    withCompany(req, {
+      status: { $ne: "CANCELLED" },
+      "allocations.targetType": SOURCE_TYPE.SALES,
+      "allocations.targetId": invoice._id,
+    }),
+    { allocations: 1 }
+  ).lean();
+  let paidAmount = 0;
+  for (const r of postedReceipts) {
+    for (const a of r.allocations || []) {
+      if (String(a.targetType || "") === SOURCE_TYPE.SALES && String(a.targetId || "") === String(invoice._id)) {
+        paidAmount += Math.max(0, Number(a.allocatedAmount) || 0);
+      }
+    }
+  }
+  const total = Math.max(0, Number(invoice.grandTotal) || 0);
+  const balance = Math.max(0, total - paidAmount);
+  if (String(invoice.status || "").toUpperCase() !== "CANCELLED") {
+    if (paidAmount <= 0) invoice.status = "ISSUED";
+    else if (paidAmount < total) invoice.status = "PARTIALLY_PAID";
+    else invoice.status = "PAID";
+    invoice.updatedBy = req.user?.email || "";
+    await invoice.save();
+  }
+  return { invoice, paidAmount, balance };
+}
+
+async function createJournalForReceipt(req, receipt, { reverseFromId = null } = {}) {
+  const entryNo = await nextSalesDocNumber({
+    companyId: req.companyId,
+    companyCode: req.companyCode,
+    docKey: "PAYMENT_RECEIPT",
+    referenceDate: receipt.receiptDate || receipt.receivedDate || new Date(),
+  });
+  const allocated = Math.max(0, Number(receipt.allocatedAmount) || 0);
+  const unallocated = Math.max(0, Number(receipt.unallocatedAmount) || 0);
+  const lines = [
+    {
+      accountId: String(receipt.bankCashAccountId || ""),
+      accountName: receipt.bankCashAccountName || receipt.accountName || "Cash/Bank",
+      debit: Math.max(0, Number(receipt.amountReceived) || 0),
+      credit: 0,
+    },
+    {
+      accountId: "ACC_RECEIVABLE",
+      accountName: "Accounts Receivable",
+      debit: 0,
+      credit: allocated,
+    },
+  ];
+  if (unallocated > 0) {
+    lines.push({
+      accountId: "ACC_CUSTOMER_ADVANCE",
+      accountName: "Customer Advance",
+      debit: 0,
+      credit: unallocated,
+    });
+  }
+  return JournalEntry.create({
+    companyId: req.companyId,
+    entryNo,
+    entryDate: receipt.receiptDate || receipt.receivedDate || new Date(),
+    sourceModule: "Accounts",
+    sourceType: reverseFromId ? "Payment Receipt Reversal" : "Payment Receipt",
+    sourceId: receipt._id,
+    referenceNo: receipt.paymentReference || receipt.receiptNo,
+    customerId: receipt.customerId || null,
+    currency: receipt.currency || "USD",
+    narration: reverseFromId
+      ? `Reversal of payment receipt ${receipt.receiptNo}`
+      : `Payment receipt ${receipt.receiptNo}`,
+    lines,
+    status: "POSTED",
+    reversedFromEntryId: reverseFromId || null,
+    createdBy: req.user?.email || "",
+    updatedBy: req.user?.email || "",
+  });
+}
+
+function normalizeAllocations(raw = []) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((a) => ({
+      targetType: String(a?.targetType || "").trim().toUpperCase(),
+      targetId: String(a?.targetId || "").trim(),
+      allocatedAmount: Number(a?.allocatedAmount) || 0,
+    }))
+    .filter((a) => ["PROFORMA_INVOICE", "SALES_INVOICE"].includes(a.targetType) && mongoose.Types.ObjectId.isValid(a.targetId) && a.allocatedAmount > 0);
+}
+
 export async function createPaymentReceipt(req, res) {
   try {
-    const proformaInvoiceId = String(req.body?.proformaInvoiceId || "").trim();
-    if (!mongoose.Types.ObjectId.isValid(proformaInvoiceId)) {
-      return res.status(400).json({ message: "Valid proformaInvoiceId is required." });
-    }
-    const receivedDateRaw = String(req.body?.receivedDate || "").trim();
-    if (!receivedDateRaw) return res.status(400).json({ message: "Payment received date is required." });
-    const receivedDate = new Date(receivedDateRaw);
-    if (Number.isNaN(receivedDate.getTime())) return res.status(400).json({ message: "Invalid payment received date." });
+    const receiptDateRaw = String(req.body?.receiptDate || req.body?.receivedDate || "").trim();
+    if (!receiptDateRaw) return res.status(400).json({ message: "Receipt date is required." });
+    const receiptDate = new Date(receiptDateRaw);
+    if (Number.isNaN(receiptDate.getTime())) return res.status(400).json({ message: "Invalid receipt date." });
 
     const amountReceived = Number(req.body?.amountReceived);
     if (!Number.isFinite(amountReceived) || amountReceived <= 0) {
@@ -111,52 +209,32 @@ export async function createPaymentReceipt(req, res) {
       return res.status(400).json({ message: "Invalid payment mode." });
     }
 
-    const accountName = String(req.body?.accountName || "").trim();
-    if (!accountName) {
+    const bankCashAccountName = String(req.body?.bankCashAccountName || req.body?.accountName || "").trim();
+    if (!bankCashAccountName) {
       return res.status(400).json({ message: "Bank or cash account selection is required." });
+    }
+    if (paymentMode === "BANK_TRANSFER" && !String(req.body?.paymentReference || "").trim()) {
+      return res.status(400).json({ message: "Payment reference is required for bank transfer." });
     }
 
     validateSlipFile(req.file);
 
-    const proforma = await ProformaInvoice.findOne(withCompany(req, { _id: proformaInvoiceId }));
-    if (!proforma) return res.status(404).json({ message: "Proforma invoice not found." });
-    if (String(proforma.status || "").toUpperCase() === "CANCELLED") {
-      return res.status(400).json({ message: "Cannot receive payment for cancelled proforma." });
+    const sourceTypeRaw = String(req.body?.sourceType || "").trim().toUpperCase();
+    let sourceType = sourceTypeRaw;
+    if (!["PROFORMA_INVOICE", "SALES_INVOICE", "ADVANCE_PAYMENT", "MULTIPLE_INVOICE"].includes(sourceType)) {
+      sourceType = SOURCE_TYPE.ADVANCE;
     }
-
-    const postedSum = await PaymentReceipt.aggregate([
-      { $match: withCompany(req, { proformaInvoiceId: proforma._id, status: "POSTED" }) },
-      { $group: { _id: null, total: { $sum: "$amountReceived" } } },
-    ]);
-    const alreadyReceived = Math.max(0, Number(postedSum?.[0]?.total) || 0);
-    const balanceAmount = Math.max(0, (Number(proforma.grandTotal) || 0) - alreadyReceived);
-    if (amountReceived > balanceAmount && !canOverrideAmount(req)) {
-      return res.status(400).json({ message: "Amount received cannot exceed balance amount without admin override." });
-    }
-    if (amountReceived > balanceAmount && canOverrideAmount(req) && req.body?.adminOverride !== true) {
-      return res.status(400).json({ message: "Set adminOverride=true to post over-receipt." });
-    }
+    const proformaInvoiceId = String(req.body?.proformaInvoiceId || "").trim();
+    const salesInvoiceId = String(req.body?.salesInvoiceId || "").trim();
+    const allocationsInput = normalizeAllocations(req.body?.allocations || []);
 
     const paymentReference = sanitizeReference(req.body?.paymentReference);
-    if (paymentReference) {
-      const dup = await PaymentReceipt.findOne(
-        withCompany(req, {
-          customerName: proforma.customerName,
-          accountName,
-          paymentReference,
-          status: "POSTED",
-        })
-      ).lean();
-      if (dup) {
-        return res.status(400).json({ message: "Duplicate payment reference exists for this customer/account." });
-      }
-    }
 
     const receiptNo = await nextSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
       docKey: "PAYMENT_RECEIPT",
-      referenceDate: receivedDate,
+      referenceDate: receiptDate,
     });
 
     let attachment = null;
@@ -169,25 +247,147 @@ export async function createPaymentReceipt(req, res) {
       attachment = await uploadFileToS3(req.file, PAYMENT_SLIP_FOLDER, { key });
     }
 
-    const customerId = await resolveCustomerId(req, proforma.customerName);
+    const allocations = [];
+    let linkedProforma = null;
+    let linkedSalesInvoice = null;
+    let customerName = String(req.body?.customerName || "").trim();
+    let autoBalance = Number.MAX_SAFE_INTEGER;
+
+    if (mongoose.Types.ObjectId.isValid(proformaInvoiceId)) {
+      linkedProforma = await ProformaInvoice.findOne(withCompany(req, { _id: proformaInvoiceId }));
+      if (linkedProforma && String(linkedProforma.status || "").toUpperCase() !== "CANCELLED") {
+        customerName = customerName || linkedProforma.customerName || "";
+        autoBalance = Math.min(autoBalance, Math.max(0, Number(linkedProforma.balanceAmount ?? linkedProforma.grandTotal) || 0));
+      }
+    }
+    if (mongoose.Types.ObjectId.isValid(salesInvoiceId)) {
+      linkedSalesInvoice = await SalesInvoice.findOne(withCompany(req, { _id: salesInvoiceId }));
+      if (linkedSalesInvoice && String(linkedSalesInvoice.status || "").toUpperCase() !== "CANCELLED") {
+        customerName = customerName || linkedSalesInvoice.customerName || "";
+      }
+    }
+    if (!customerName) return res.status(400).json({ message: "Customer is required." });
+    const resolvedCustomerId = (await resolveCustomerId(req, customerName)) || null;
+    if (paymentReference) {
+      const dup = await PaymentReceipt.findOne(
+        withCompany(req, {
+          customerName,
+          accountName: bankCashAccountName,
+          paymentReference,
+          status: { $ne: "CANCELLED" },
+        })
+      ).lean();
+      if (dup) {
+        return res.status(400).json({ message: "Duplicate payment reference exists for this customer/account." });
+      }
+    }
+
+    if (allocationsInput.length) {
+      for (const a of allocationsInput) {
+        if (a.targetType === SOURCE_TYPE.PROFORMA) {
+          const p = await ProformaInvoice.findOne(withCompany(req, { _id: a.targetId }));
+          if (!p) return res.status(400).json({ message: `Proforma not found for allocation: ${a.targetId}` });
+          allocations.push({
+            paymentReceiptId: null,
+            customerId: resolvedCustomerId,
+            targetType: SOURCE_TYPE.PROFORMA,
+            targetId: p._id,
+            targetNo: p.proformaNo || "",
+            invoiceTotal: Number(p.grandTotal) || 0,
+            allocatedAmount: a.allocatedAmount,
+            currency: String(req.body?.currency || p.currency || "USD").trim().toUpperCase(),
+            allocatedAt: receiptDate,
+            allocatedBy: req.user?.email || "",
+          });
+        } else {
+          const s = await SalesInvoice.findOne(withCompany(req, { _id: a.targetId }));
+          if (!s) return res.status(400).json({ message: `Sales invoice not found for allocation: ${a.targetId}` });
+          allocations.push({
+            paymentReceiptId: null,
+            customerId: resolvedCustomerId,
+            targetType: SOURCE_TYPE.SALES,
+            targetId: s._id,
+            targetNo: s.invoiceNo || "",
+            invoiceTotal: Number(s.grandTotal) || 0,
+            allocatedAmount: a.allocatedAmount,
+            currency: String(req.body?.currency || s.currency || "USD").trim().toUpperCase(),
+            allocatedAt: receiptDate,
+            allocatedBy: req.user?.email || "",
+          });
+        }
+      }
+    } else if (linkedProforma) {
+      const alloc = Math.min(amountReceived, Math.max(0, Number(linkedProforma.balanceAmount ?? linkedProforma.grandTotal) || 0));
+      if (alloc > 0) {
+        allocations.push({
+          paymentReceiptId: null,
+          customerId: resolvedCustomerId,
+          targetType: SOURCE_TYPE.PROFORMA,
+          targetId: linkedProforma._id,
+          targetNo: linkedProforma.proformaNo || "",
+          invoiceTotal: Number(linkedProforma.grandTotal) || 0,
+          allocatedAmount: alloc,
+          currency: String(req.body?.currency || linkedProforma.currency || "USD").trim().toUpperCase(),
+          allocatedAt: receiptDate,
+          allocatedBy: req.user?.email || "",
+        });
+      }
+    } else if (linkedSalesInvoice) {
+      const alloc = Math.min(amountReceived, Math.max(0, Number(linkedSalesInvoice.grandTotal) || 0));
+      if (alloc > 0) {
+        allocations.push({
+          paymentReceiptId: null,
+          customerId: resolvedCustomerId,
+          targetType: SOURCE_TYPE.SALES,
+          targetId: linkedSalesInvoice._id,
+          targetNo: linkedSalesInvoice.invoiceNo || "",
+          invoiceTotal: Number(linkedSalesInvoice.grandTotal) || 0,
+          allocatedAmount: alloc,
+          currency: String(req.body?.currency || linkedSalesInvoice.currency || "USD").trim().toUpperCase(),
+          allocatedAt: receiptDate,
+          allocatedBy: req.user?.email || "",
+        });
+      }
+    }
+
+    const allocatedAmount = allocations.reduce((a, x) => a + (Number(x.allocatedAmount) || 0), 0);
+    if (allocatedAmount - amountReceived > 0.0001) {
+      return res.status(400).json({ message: "Allocated amount cannot exceed amount received." });
+    }
+    if (amountReceived > autoBalance && autoBalance !== Number.MAX_SAFE_INTEGER && !canOverrideAmount(req) && req.body?.adminOverride !== true) {
+      return res.status(400).json({ message: "Amount received exceeds balance; admin override required." });
+    }
+    const unallocatedAmount = Math.max(0, amountReceived - allocatedAmount);
+    const resolvedStatus = allocatedAmount <= 0 ? "POSTED" : unallocatedAmount > 0 ? "PARTIALLY_ALLOCATED" : "FULLY_ALLOCATED";
+
     const receipt = await PaymentReceipt.create({
       companyId: req.companyId,
       receiptNo,
-      proformaInvoiceId: proforma._id,
-      proformaInvoiceNo: proforma.proformaNo || "",
-      customerId: customerId || null,
-      customerName: proforma.customerName || "",
-      receivedDate,
+      receiptDate,
+      sourceType,
+      proformaInvoiceId: linkedProforma?._id || null,
+      proformaInvoiceNo: linkedProforma?.proformaNo || "",
+      salesInvoiceId: linkedSalesInvoice?._id || null,
+      salesInvoiceNo: linkedSalesInvoice?.invoiceNo || "",
+      customerId: resolvedCustomerId,
+      customerName,
+      receivedDate: receiptDate,
       amountReceived,
-      currency: String(req.body?.currency || proforma.currency || "USD").trim().toUpperCase(),
+      allocatedAmount,
+      unallocatedAmount,
+      currency: String(req.body?.currency || linkedProforma?.currency || linkedSalesInvoice?.currency || "USD").trim().toUpperCase(),
       paymentMode,
+      bankCashAccountId: mongoose.Types.ObjectId.isValid(String(req.body?.bankCashAccountId || ""))
+        ? new mongoose.Types.ObjectId(String(req.body.bankCashAccountId))
+        : null,
+      bankCashAccountName,
       bankAccountId: mongoose.Types.ObjectId.isValid(String(req.body?.bankAccountId || ""))
         ? new mongoose.Types.ObjectId(String(req.body.bankAccountId))
         : null,
       cashAccountId: mongoose.Types.ObjectId.isValid(String(req.body?.cashAccountId || ""))
         ? new mongoose.Types.ObjectId(String(req.body.cashAccountId))
         : null,
-      accountName,
+      accountName: bankCashAccountName,
       paymentReference,
       remarks: String(req.body?.remarks || ""),
       attachmentProvider: attachment?.provider || "AWS_S3",
@@ -197,28 +397,34 @@ export async function createPaymentReceipt(req, res) {
       attachmentMimeType: attachment?.mimeType || "",
       attachmentSize: Number(attachment?.size || 0),
       attachmentUploadedAt: attachment?.uploadedAt || null,
-      status: "POSTED",
+      allocations,
+      status: resolvedStatus,
+      postedBy: req.user?.email || "",
       createdBy: req.user?.email || "",
       updatedBy: req.user?.email || "",
     });
+    if (allocations.length) {
+      receipt.allocations = receipt.allocations.map((a) => ({ ...a.toObject(), paymentReceiptId: receipt._id }));
+      await receipt.save();
+    }
 
     const customerEntry = await CustomerLedgerEntry.create({
       companyId: req.companyId,
-      entryDate: receivedDate,
-      customerName: proforma.customerName || "",
-      referenceType: "PROFORMA_PAYMENT",
+      entryDate: receiptDate,
+      customerName: customerName || "",
+      referenceType: "PAYMENT_RECEIPT",
       referenceNumber: paymentReference || receipt.receiptNo,
-      sourceModule: "Sales",
-      sourceType: "Proforma Invoice Payment",
+      sourceModule: "Accounts",
+      sourceType: "Payment Receipt",
       sourceId: receipt._id,
-      proformaInvoiceId: proforma._id,
-      proformaInvoiceNo: proforma.proformaNo || "",
-      customerId: customerId || null,
+      proformaInvoiceId: linkedProforma?._id || null,
+      proformaInvoiceNo: linkedProforma?.proformaNo || "",
+      customerId: resolvedCustomerId || null,
       debit: 0,
       credit: amountReceived,
       currency: receipt.currency,
       paymentReference,
-      narrative: `Payment received against Proforma Invoice No. ${proforma.proformaNo || "-"}`,
+      narrative: `Payment receipt ${receipt.receiptNo}`,
       attachmentProvider: "AWS_S3",
       attachmentKey: receipt.attachmentKey || "",
       createdBy: req.user?.email || "",
@@ -226,18 +432,18 @@ export async function createPaymentReceipt(req, res) {
 
     const cashBankEntry = await CashBankEntry.create({
       companyId: req.companyId,
-      entryDate: receivedDate,
-      accountName,
+      entryDate: receiptDate,
+      accountName: bankCashAccountName,
       transactionType: "RECEIPT",
       referenceNumber: paymentReference || receipt.receiptNo,
-      sourceModule: "Sales",
-      sourceType: "Proforma Invoice Payment",
+      sourceModule: "Accounts",
+      sourceType: "Payment Receipt",
       sourceId: receipt._id,
-      proformaInvoiceId: proforma._id,
-      proformaInvoiceNo: proforma.proformaNo || "",
-      customerId: customerId || null,
+      proformaInvoiceId: linkedProforma?._id || null,
+      proformaInvoiceNo: linkedProforma?.proformaNo || "",
+      customerId: resolvedCustomerId || null,
       currency: receipt.currency,
-      partyName: proforma.customerName || "",
+      partyName: customerName || "",
       amount: amountReceived,
       mode: paymentMode,
       paymentReference,
@@ -246,13 +452,17 @@ export async function createPaymentReceipt(req, res) {
       remarks: receipt.remarks || "",
       createdBy: req.user?.email || "",
     });
+    const journal = await createJournalForReceipt(req, receipt);
 
     receipt.linkedCustomerLedgerEntryId = customerEntry._id;
     receipt.linkedCashBankEntryId = cashBankEntry._id;
+    receipt.journalEntryId = journal._id;
     await receipt.save();
 
-    const updatedProforma = await recalcProformaPaymentState(req, proforma._id);
-    res.status(201).json({ receipt, proforma: updatedProforma });
+    let updatedProforma = null;
+    if (linkedProforma?._id) updatedProforma = await recalcProformaPaymentState(req, linkedProforma._id);
+    if (linkedSalesInvoice?._id) await recalcSalesInvoicePaymentState(req, linkedSalesInvoice._id);
+    res.status(201).json({ receipt, proforma: updatedProforma, journalEntry: journal });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -273,12 +483,37 @@ export async function listPaymentReceipts(req, res) {
         { paymentReference: new RegExp(q, "i") },
       ];
     }
+    if (req.query.customerName) filter.customerName = new RegExp(String(req.query.customerName).trim(), "i");
+    if (req.query.referenceNo) filter.paymentReference = new RegExp(String(req.query.referenceNo).trim(), "i");
+    if (req.query.proformaNo) filter.proformaInvoiceNo = new RegExp(String(req.query.proformaNo).trim(), "i");
+    if (req.query.invoiceNo) filter.salesInvoiceNo = new RegExp(String(req.query.invoiceNo).trim(), "i");
+    if (req.query.paymentMode) filter.paymentMode = String(req.query.paymentMode).trim().toUpperCase();
+    if (req.query.bankCashAccountName) filter.bankCashAccountName = new RegExp(String(req.query.bankCashAccountName).trim(), "i");
     if (req.query.status) filter.status = String(req.query.status).trim().toUpperCase();
+    if (req.query.fromDate || req.query.toDate) {
+      filter.receiptDate = {};
+      if (req.query.fromDate) filter.receiptDate.$gte = new Date(String(req.query.fromDate));
+      if (req.query.toDate) {
+        const d = new Date(String(req.query.toDate));
+        d.setHours(23, 59, 59, 999);
+        filter.receiptDate.$lte = d;
+      }
+    }
     const [items, total] = await Promise.all([
       PaymentReceipt.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       PaymentReceipt.countDocuments(filter),
     ]);
-    res.json({ items, total, page, limit });
+    const summary = items.reduce(
+      (acc, r) => {
+        acc.totalReceived += Math.max(0, Number(r.amountReceived) || 0);
+        acc.totalAllocated += Math.max(0, Number(r.allocatedAmount) || 0);
+        acc.totalUnallocated += Math.max(0, Number(r.unallocatedAmount) || 0);
+        if (String(r.status || "").toUpperCase() === "CANCELLED") acc.cancelledCount += 1;
+        return acc;
+      },
+      { totalReceived: 0, totalAllocated: 0, totalUnallocated: 0, cancelledCount: 0 }
+    );
+    res.json({ items, total, page, limit, summary });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -309,6 +544,24 @@ export async function listPaymentReceiptsByProforma(req, res) {
   }
 }
 
+export async function getPaymentReceiptPrintData(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const receipt = await PaymentReceipt.findOne(withCompany(req, { _id: id })).lean();
+    if (!receipt) return res.status(404).json({ message: "Not found" });
+    const customer = receipt.customerId
+      ? await Customer.findOne(withCompany(req, { _id: receipt.customerId })).lean()
+      : null;
+    const journal = receipt.journalEntryId
+      ? await JournalEntry.findOne(withCompany(req, { _id: receipt.journalEntryId })).lean()
+      : null;
+    res.json({ receipt, customer, journal });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
 export async function cancelPaymentReceipt(req, res) {
   try {
     if (!canCancel(req)) return res.status(403).json({ message: "Only Accounts/Admin users can cancel payment receipts." });
@@ -329,8 +582,8 @@ export async function cancelPaymentReceipt(req, res) {
       customerName: receipt.customerName || "",
       referenceType: "PROFORMA_PAYMENT_CANCEL",
       referenceNumber: receipt.paymentReference || receipt.receiptNo,
-      sourceModule: "Sales",
-      sourceType: "Proforma Invoice Payment Reversal",
+      sourceModule: "Accounts",
+      sourceType: "Payment Receipt Reversal",
       sourceId: receipt._id,
       proformaInvoiceId: receipt.proformaInvoiceId || null,
       proformaInvoiceNo: receipt.proformaInvoiceNo || "",
@@ -339,7 +592,7 @@ export async function cancelPaymentReceipt(req, res) {
       credit: 0,
       currency: receipt.currency || "USD",
       paymentReference: receipt.paymentReference || "",
-      narrative: `Reversal of payment receipt ${receipt.receiptNo} for Proforma ${receipt.proformaInvoiceNo || "-"}`,
+      narrative: `Reversal of payment receipt ${receipt.receiptNo}`,
       attachmentProvider: receipt.attachmentProvider || "AWS_S3",
       attachmentKey: receipt.attachmentKey || "",
       reversedFromEntryId: receipt.linkedCustomerLedgerEntryId || null,
@@ -349,11 +602,11 @@ export async function cancelPaymentReceipt(req, res) {
     const reverseCashBank = await CashBankEntry.create({
       companyId: req.companyId,
       entryDate: new Date(),
-      accountName: receipt.accountName || "Cash",
+      accountName: receipt.bankCashAccountName || receipt.accountName || "Cash",
       transactionType: "PAYMENT",
       referenceNumber: receipt.paymentReference || receipt.receiptNo,
-      sourceModule: "Sales",
-      sourceType: "Proforma Invoice Payment Reversal",
+      sourceModule: "Accounts",
+      sourceType: "Payment Receipt Reversal",
       sourceId: receipt._id,
       proformaInvoiceId: receipt.proformaInvoiceId || null,
       proformaInvoiceNo: receipt.proformaInvoiceNo || "",
@@ -369,17 +622,37 @@ export async function cancelPaymentReceipt(req, res) {
       reversedFromEntryId: receipt.linkedCashBankEntryId || null,
       createdBy: req.user?.email || "",
     });
+    if (receipt.journalEntryId) {
+      const original = await JournalEntry.findOne(withCompany(req, { _id: receipt.journalEntryId }));
+      if (original) {
+        original.status = "REVERSED";
+        original.updatedBy = req.user?.email || "";
+        await original.save();
+        const reverseJournal = await createJournalForReceipt(req, receipt, { reverseFromId: original._id });
+        reverseJournal.lines = (original.lines || []).map((l) => ({
+          accountId: l.accountId || "",
+          accountName: l.accountName || "",
+          debit: Number(l.credit) || 0,
+          credit: Number(l.debit) || 0,
+        }));
+        await reverseJournal.save();
+        original.reversedByEntryId = reverseJournal._id;
+        await original.save();
+      }
+    }
 
     receipt.status = "CANCELLED";
     receipt.cancellationReason = reason;
     receipt.cancelledAt = new Date();
     receipt.cancelledBy = req.user?.email || "";
+    receipt.cancelReason = reason;
     receipt.updatedBy = req.user?.email || "";
     receipt.linkedReverseCustomerLedgerEntryId = reverseCustomer._id;
     receipt.linkedReverseCashBankEntryId = reverseCashBank._id;
     await receipt.save();
 
-    const updatedProforma = await recalcProformaPaymentState(req, receipt.proformaInvoiceId);
+    const updatedProforma = receipt.proformaInvoiceId ? await recalcProformaPaymentState(req, receipt.proformaInvoiceId) : null;
+    if (receipt.salesInvoiceId) await recalcSalesInvoicePaymentState(req, receipt.salesInvoiceId);
     res.json({ receipt, proforma: updatedProforma });
   } catch (err) {
     res.status(400).json({ message: err.message });
