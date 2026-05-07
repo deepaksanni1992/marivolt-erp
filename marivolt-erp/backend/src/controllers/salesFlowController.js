@@ -1444,7 +1444,9 @@ export async function convertQuotationToOA(req, res) {
     if (!quotation.lines?.length) {
       return res.status(400).json({ message: "Quotation requires at least one line to convert" });
     }
-    const already = await OrderAcknowledgement.findOne(withCompany(req, { linkedQuotationId: quotation._id }));
+    const already = await OrderAcknowledgement.findOne(
+      withCompany(req, { linkedQuotationId: quotation._id, status: { $ne: "CANCELLED" } })
+    );
     if (already) return res.status(409).json({ message: `OA already exists (${already.oaNo})` });
 
     const oaNo = await nextSalesDocNumber({
@@ -1491,7 +1493,9 @@ export async function convertQuotationToProforma(req, res) {
     if (!quotation.lines?.length) {
       return res.status(400).json({ message: "Quotation requires at least one line to convert" });
     }
-    const already = await ProformaInvoice.findOne(withCompany(req, { linkedQuotationId: quotation._id }));
+    const already = await ProformaInvoice.findOne(
+      withCompany(req, { linkedQuotationId: quotation._id, status: { $ne: "CANCELLED" } })
+    );
     if (already) return res.status(409).json({ message: `Proforma already exists (${already.proformaNo})` });
 
     const proformaNo = await nextSalesDocNumber({
@@ -1534,7 +1538,9 @@ export async function convertOAToProforma(req, res) {
     const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: id }));
     validateConversionSource(oa, "order acknowledgement");
     if (!oa.lines?.length) return res.status(400).json({ message: "OA requires at least one line to convert" });
-    const already = await ProformaInvoice.findOne(withCompany(req, { linkedOAId: oa._id }));
+    const already = await ProformaInvoice.findOne(
+      withCompany(req, { linkedOAId: oa._id, status: { $ne: "CANCELLED" } })
+    );
     if (already) return res.status(409).json({ message: `Proforma already exists (${already.proformaNo})` });
 
     const proformaNo = await nextSalesDocNumber({
@@ -1579,7 +1585,9 @@ export async function convertOAToSalesInvoice(req, res) {
     const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: id }));
     validateConversionSource(oa, "order acknowledgement");
     if (!oa.lines?.length) return res.status(400).json({ message: "OA requires at least one line to convert" });
-    const already = await SalesInvoice.findOne(withCompany(req, { linkedOAId: oa._id, linkedProformaId: null }));
+    const already = await SalesInvoice.findOne(
+      withCompany(req, { linkedOAId: oa._id, linkedProformaId: null, status: { $ne: "CANCELLED" } })
+    );
     if (already) return res.status(409).json({ message: `Sales invoice already exists (${already.invoiceNo})` });
 
     const invoiceNo = await nextSalesDocNumber({
@@ -1926,7 +1934,9 @@ export async function convertSalesInvoiceToSalesDispatch(req, res) {
     if (String(invoice.status || "").toUpperCase() !== "DISPATCHED") {
       return res.status(400).json({ message: "Sales invoice must be DISPATCHED before converting to Sales Dispatch" });
     }
-    const already = await SalesDispatch.findOne(withCompany(req, { linkedSalesInvoiceId: invoice._id }));
+    const already = await SalesDispatch.findOne(
+      withCompany(req, { linkedSalesInvoiceId: invoice._id, status: { $ne: "CANCELLED" } })
+    );
     if (already) return res.status(409).json({ message: `Sales Dispatch already exists (${already.dispatchNo})` });
     const dispatchNo = await nextSalesDocNumber({
       companyId: req.companyId,
@@ -1966,9 +1976,13 @@ export async function convertProformaToSalesInvoice(req, res) {
     const proforma = await ProformaInvoice.findOne(withCompany(req, { _id: id }));
     validateConversionSource(proforma, "proforma");
     if (!proforma.lines?.length) return res.status(400).json({ message: "Proforma requires at least one line to convert" });
-    const already = await SalesInvoice.findOne(withCompany(req, { linkedProformaId: proforma._id }));
+    const already = await SalesInvoice.findOne(
+      withCompany(req, { linkedProformaId: proforma._id, status: { $ne: "CANCELLED" } })
+    );
     if (already) return res.status(409).json({ message: `Sales invoice already exists (${already.invoiceNo})` });
-    const ciplFromPi = await Cipl.findOne(withCompany(req, { linkedProformaId: proforma._id }));
+    const ciplFromPi = await Cipl.findOne(
+      withCompany(req, { linkedProformaId: proforma._id, status: { $ne: "CANCELLED" } })
+    );
     if (ciplFromPi) return res.status(409).json({ message: `CIPL already exists from this proforma (${ciplFromPi.ciplNo})` });
 
     const invoiceNo = await nextSalesDocNumber({
@@ -2016,9 +2030,13 @@ export async function convertProformaToCipl(req, res) {
     const proforma = await ProformaInvoice.findOne(withCompany(req, { _id: id }));
     validateConversionSource(proforma, "proforma");
     if (!proforma.lines?.length) return res.status(400).json({ message: "Proforma requires at least one line to convert" });
-    const si = await SalesInvoice.findOne(withCompany(req, { linkedProformaId: proforma._id }));
+    const si = await SalesInvoice.findOne(
+      withCompany(req, { linkedProformaId: proforma._id, status: { $ne: "CANCELLED" } })
+    );
     if (si) return res.status(409).json({ message: `Sales invoice already exists (${si.invoiceNo}) — cannot create CIPL from proforma` });
-    const already = await Cipl.findOne(withCompany(req, { linkedProformaId: proforma._id }));
+    const already = await Cipl.findOne(
+      withCompany(req, { linkedProformaId: proforma._id, status: { $ne: "CANCELLED" } })
+    );
     if (already) return res.status(409).json({ message: `CIPL already exists (${already.ciplNo})` });
 
     const ciplNo = await nextSalesDocNumber({
@@ -2601,7 +2619,9 @@ export async function convertOrderAllocationToSalesInvoice(req, res) {
     await withTransaction(async (session) => {
       const allocation = await OrderAllocation.findOne(withCompany(req, { _id: id })).session(session);
       if (!allocation) throw new Error("Order allocation not found");
-      const existing = await SalesInvoice.findOne(withCompany(req, { linkedOrderAllocationId: allocation._id })).session(session);
+      const existing = await SalesInvoice.findOne(
+        withCompany(req, { linkedOrderAllocationId: allocation._id, status: { $ne: "CANCELLED" } })
+      ).session(session);
       if (existing) {
         throw new Error(`Sales invoice already exists (${existing.invoiceNo})`);
       }
@@ -2971,7 +2991,9 @@ export async function convertQuotationToCipl(req, res) {
     validateConversionSource(quotation, "quotation");
     requireApprovedQuotationForConversion(quotation);
     if (!quotation.lines?.length) return res.status(400).json({ message: "Quotation requires at least one line to convert" });
-    const already = await Cipl.findOne(withCompany(req, { linkedQuotationId: quotation._id }));
+    const already = await Cipl.findOne(
+      withCompany(req, { linkedQuotationId: quotation._id, status: { $ne: "CANCELLED" } })
+    );
     if (already) return res.status(409).json({ message: `CIPL already exists (${already.ciplNo})` });
 
     const ciplNo = await nextSalesDocNumber({
@@ -3012,7 +3034,7 @@ export async function convertOAToCipl(req, res) {
     const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: id }));
     validateConversionSource(oa, "order acknowledgement");
     if (!oa.lines?.length) return res.status(400).json({ message: "OA requires at least one line to convert" });
-    const already = await Cipl.findOne(withCompany(req, { linkedOAId: oa._id }));
+    const already = await Cipl.findOne(withCompany(req, { linkedOAId: oa._id, status: { $ne: "CANCELLED" } }));
     if (already) return res.status(409).json({ message: `CIPL already exists (${already.ciplNo})` });
 
     const ciplNo = await nextSalesDocNumber({
@@ -3055,7 +3077,9 @@ export async function convertSalesInvoiceToCipl(req, res) {
     const invoice = await SalesInvoice.findOne(withCompany(req, { _id: id }));
     validateConversionSource(invoice, "sales invoice");
     if (!invoice.lines?.length) return res.status(400).json({ message: "Sales invoice requires at least one line to convert" });
-    const already = await Cipl.findOne(withCompany(req, { linkedSalesInvoiceId: invoice._id }));
+    const already = await Cipl.findOne(
+      withCompany(req, { linkedSalesInvoiceId: invoice._id, status: { $ne: "CANCELLED" } })
+    );
     if (already) return res.status(409).json({ message: `CIPL already exists (${already.ciplNo})` });
 
     const ciplNo = await nextSalesDocNumber({
