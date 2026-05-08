@@ -123,7 +123,14 @@ api.interceptors.response.use(
       (typeof err.response?.data === "string" ? err.response.data : null) ||
       err.message ||
       "Request failed";
-    return Promise.reject(new Error(msg));
+    const wrapped = new Error(msg);
+    wrapped.status = err.response?.status || 0;
+    if (err.response?.data && typeof err.response.data === "object") {
+      if (err.response.data.code) wrapped.code = err.response.data.code;
+      if (err.response.data.details) wrapped.details = err.response.data.details;
+      wrapped.body = err.response.data;
+    }
+    return Promise.reject(wrapped);
   }
 );
 

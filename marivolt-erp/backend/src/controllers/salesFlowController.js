@@ -2594,6 +2594,8 @@ export async function convertOAToOrderAllocation(req, res) {
     const totals = computeTotals(lines, oa);
     const warehouse = "MAIN";
     const reserveLines = lines.map((l) => ({ article: l.article, qty: Number(l.qty) || 0 })).filter((x) => x.article && x.qty > 0);
+    const allowNegative = req.body?.allowNegative === true;
+    const negativeReason = String(req.body?.allowNegativeReason || "").trim();
 
     let createdId = null;
     await withTransaction(async (session) => {
@@ -2625,7 +2627,7 @@ export async function convertOAToOrderAllocation(req, res) {
         { session }
       );
       createdId = doc._id;
-      await applySalesReserve({
+      const { negativeArticles } = await applySalesReserve({
         session,
         companyId: req.companyId,
         warehouse,
@@ -2633,9 +2635,20 @@ export async function convertOAToOrderAllocation(req, res) {
         referenceType: "ORDER_ALLOCATION",
         referenceId: doc._id,
         referenceNumber: allocationNo,
-        remarks: "Reserve on OA→allocation",
+        remarks: allowNegative ? "Reserve on OA→allocation (allowNegative)" : "Reserve on OA→allocation",
         createdBy: req.user?.email || "",
+        allowNegative,
       });
+      const negativeSet = new Set(Array.from(negativeArticles?.keys?.() || []));
+      if (negativeSet.size) {
+        for (const line of doc.lines || []) {
+          if (negativeSet.has(String(line.article || "").trim().toUpperCase())) {
+            line.isNegativeAllocation = true;
+          }
+        }
+        doc.hasNegativeAllocation = true;
+        if (negativeReason) doc.negativeAllocationReason = negativeReason;
+      }
       doc.stockReservedAt = new Date();
       doc.updatedBy = req.user?.email || "";
       await doc.save({ session });
@@ -2649,6 +2662,13 @@ export async function convertOAToOrderAllocation(req, res) {
     const doc = await OrderAllocation.findOne(withCompany(req, { _id: createdId })).lean();
     res.status(201).json(doc);
   } catch (err) {
+    if (err?.code === "STOCK_INSUFFICIENT") {
+      return res.status(409).json({
+        message: err.message,
+        code: err.code,
+        details: err.details || null,
+      });
+    }
     res.status(400).json({ message: err.message });
   }
 }
@@ -2791,6 +2811,8 @@ export async function convertProformaToOrderAllocation(req, res) {
     const totals = computeTotals(lines, proforma);
     const warehouse = "MAIN";
     const reserveLines = lines.map((l) => ({ article: l.article, qty: Number(l.qty) || 0 })).filter((x) => x.article && x.qty > 0);
+    const allowNegative = req.body?.allowNegative === true;
+    const negativeReason = String(req.body?.allowNegativeReason || "").trim();
 
     let createdId = null;
     await withTransaction(async (session) => {
@@ -2823,7 +2845,7 @@ export async function convertProformaToOrderAllocation(req, res) {
         { session }
       );
       createdId = doc._id;
-      await applySalesReserve({
+      const { negativeArticles } = await applySalesReserve({
         session,
         companyId: req.companyId,
         warehouse,
@@ -2831,9 +2853,20 @@ export async function convertProformaToOrderAllocation(req, res) {
         referenceType: "ORDER_ALLOCATION",
         referenceId: doc._id,
         referenceNumber: allocationNo,
-        remarks: "Reserve on proforma→allocation",
+        remarks: allowNegative ? "Reserve on proforma→allocation (allowNegative)" : "Reserve on proforma→allocation",
         createdBy: req.user?.email || "",
+        allowNegative,
       });
+      const negativeSet = new Set(Array.from(negativeArticles?.keys?.() || []));
+      if (negativeSet.size) {
+        for (const line of doc.lines || []) {
+          if (negativeSet.has(String(line.article || "").trim().toUpperCase())) {
+            line.isNegativeAllocation = true;
+          }
+        }
+        doc.hasNegativeAllocation = true;
+        if (negativeReason) doc.negativeAllocationReason = negativeReason;
+      }
       doc.stockReservedAt = new Date();
       doc.updatedBy = req.user?.email || "";
       await doc.save({ session });
@@ -2841,6 +2874,13 @@ export async function convertProformaToOrderAllocation(req, res) {
     const doc = await OrderAllocation.findOne(withCompany(req, { _id: createdId })).lean();
     res.status(201).json(doc);
   } catch (err) {
+    if (err?.code === "STOCK_INSUFFICIENT") {
+      return res.status(409).json({
+        message: err.message,
+        code: err.code,
+        details: err.details || null,
+      });
+    }
     res.status(400).json({ message: err.message });
   }
 }

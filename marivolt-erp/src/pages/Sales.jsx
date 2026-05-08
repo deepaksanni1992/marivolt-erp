@@ -1463,6 +1463,13 @@ export default function Sales() {
   const [shippingDownloadBusyId, setShippingDownloadBusyId] = useState(null);
   const paymentSlipInputRef = useRef(null);
   const [receivePaymentModal, setReceivePaymentModal] = useState({ open: false, proforma: null });
+  const [negativeAllocConfirm, setNegativeAllocConfirm] = useState({
+    open: false,
+    source: "",
+    id: "",
+    error: null,
+  });
+  const [negativeAllocReason, setNegativeAllocReason] = useState("");
   const [receiveInvoicePaymentModal, setReceiveInvoicePaymentModal] = useState({ open: false, invoice: null });
   const [viewPaymentsModal, setViewPaymentsModal] = useState({ open: false, proforma: null });
   const [receivePaymentForm, setReceivePaymentForm] = useState({
@@ -2317,23 +2324,43 @@ export default function Sales() {
   });
 
   const convertToOrderAllocationFromOAMutation = useMutation({
-    mutationFn: (id) => apiPost(`/sales/convert/oa/${id}/to-order-allocation`, {}),
+    mutationFn: ({ id, allowNegative = false, reason = "" }) =>
+      apiPost(`/sales/convert/oa/${id}/to-order-allocation`, {
+        allowNegative,
+        allowNegativeReason: reason,
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-oa"] });
       qc.invalidateQueries({ queryKey: ["store-order-allocations"] });
       if (detailId) qc.invalidateQueries({ queryKey: ["oa-detail", detailId] });
     },
-    onError: (e) => setErr(e.message),
+    onError: (e, vars) => {
+      if (e?.code === "STOCK_INSUFFICIENT") {
+        setNegativeAllocConfirm({ open: true, source: "oa", id: vars?.id, error: e });
+        return;
+      }
+      setErr(e.message);
+    },
   });
 
   const convertToOrderAllocationFromProformaMutation = useMutation({
-    mutationFn: (id) => apiPost(`/sales/convert/proforma/${id}/to-order-allocation`, {}),
+    mutationFn: ({ id, allowNegative = false, reason = "" }) =>
+      apiPost(`/sales/convert/proforma/${id}/to-order-allocation`, {
+        allowNegative,
+        allowNegativeReason: reason,
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-proforma"] });
       qc.invalidateQueries({ queryKey: ["store-order-allocations"] });
       if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
     },
-    onError: (e) => setErr(e.message),
+    onError: (e, vars) => {
+      if (e?.code === "STOCK_INSUFFICIENT") {
+        setNegativeAllocConfirm({ open: true, source: "proforma", id: vars?.id, error: e });
+        return;
+      }
+      setErr(e.message);
+    },
   });
 
   const recalcProformaPaymentStateMutation = useMutation({
@@ -4047,7 +4074,7 @@ export default function Sales() {
                               className={`rounded-lg border px-2 py-1 text-xs ${isCancelled ? "opacity-40" : ""}`}
                               disabled={isCancelled}
                               title={isCancelled ? "Cancelled OA cannot be converted" : ""}
-                              onClick={() => convertToOrderAllocationFromOAMutation.mutate(r._id)}
+                              onClick={() => convertToOrderAllocationFromOAMutation.mutate({ id: r._id })}
                             >
                               Convert to Order Allocation
                             </button>
@@ -4277,7 +4304,7 @@ export default function Sales() {
                                       ? "Proforma must be APPROVED or PAID before allocation"
                                       : ""
                                   }
-                                  onClick={() => convertToOrderAllocationFromProformaMutation.mutate(r._id)}
+                                  onClick={() => convertToOrderAllocationFromProformaMutation.mutate({ id: r._id })}
                                 >
                                   Convert to Order Allocation
                                 </button>
@@ -5888,7 +5915,7 @@ export default function Sales() {
                   className={`rounded-xl border px-2 py-1 text-xs ${String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
                   disabled={String(oaDetail.status || "").toUpperCase() === "CANCELLED"}
                   title={String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "Cancelled OA cannot be converted" : ""}
-                  onClick={() => convertToOrderAllocationFromOAMutation.mutate(oaDetail._id)}
+                  onClick={() => convertToOrderAllocationFromOAMutation.mutate({ id: oaDetail._id })}
                 >
                   Convert to Order Allocation
                 </button>
@@ -6042,7 +6069,7 @@ export default function Sales() {
                   type="button"
                   className={`rounded-xl border px-2 py-1 text-xs ${String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
                   disabled={String(oaDetail.status || "").toUpperCase() === "CANCELLED"}
-                  onClick={() => convertToOrderAllocationFromOAMutation.mutate(oaDetail._id)}
+                  onClick={() => convertToOrderAllocationFromOAMutation.mutate({ id: oaDetail._id })}
                 >
                   Convert to Order Allocation
                 </button>
@@ -6338,7 +6365,7 @@ export default function Sales() {
                   className={`rounded-xl border px-2 py-1 text-xs ${String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED" || String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
                   disabled={String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED" || String(proformaDetail.status || "").toUpperCase() === "CANCELLED"}
                   title={String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "Cancelled proforma cannot be converted" : String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED" ? "Set PI status to APPROVED first" : ""}
-                  onClick={() => convertToOrderAllocationFromProformaMutation.mutate(proformaDetail._id)}
+                  onClick={() => convertToOrderAllocationFromProformaMutation.mutate({ id: proformaDetail._id })}
                 >
                   Convert to Order Allocation
                 </button>
@@ -6479,7 +6506,7 @@ export default function Sales() {
                   type="button"
                   className={`rounded-xl border px-2 py-1 text-xs ${String(proformaDetail.status || "").toUpperCase() !== "APPROVED" || String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
                   disabled={String(proformaDetail.status || "").toUpperCase() !== "APPROVED" || String(proformaDetail.status || "").toUpperCase() === "CANCELLED"}
-                  onClick={() => convertToOrderAllocationFromProformaMutation.mutate(proformaDetail._id)}
+                  onClick={() => convertToOrderAllocationFromProformaMutation.mutate({ id: proformaDetail._id })}
                 >
                   Convert to Order Allocation
                 </button>
@@ -7265,6 +7292,94 @@ export default function Sales() {
         onSubmit={({ sourceType, document, form }) => createPaymentReceiptMutation.mutate({ sourceType, doc: document, form })}
         isSubmitting={createPaymentReceiptMutation.isPending}
       />
+
+      <Modal
+        open={negativeAllocConfirm.open}
+        onClose={() => {
+          setNegativeAllocConfirm({ open: false, source: "", id: "", error: null });
+          setNegativeAllocReason("");
+        }}
+        title="Available stock is insufficient"
+        subtitle="Continuing will create a negative allocation (backorder). Stock will move below zero on the affected article(s) until a future GRN replenishes it."
+      >
+        <div className="space-y-3 text-sm text-slate-700">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-900">
+            {negativeAllocConfirm.error?.message ||
+              "There is not enough free stock to fully cover this allocation."}
+            {negativeAllocConfirm.error?.details ? (
+              <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                <div>
+                  <div className="text-amber-700">Article</div>
+                  <div className="font-mono">{negativeAllocConfirm.error.details.article}</div>
+                </div>
+                <div>
+                  <div className="text-amber-700">Needed</div>
+                  <div className="font-mono">{negativeAllocConfirm.error.details.needed}</div>
+                </div>
+                <div>
+                  <div className="text-amber-700">Available</div>
+                  <div className="font-mono">{negativeAllocConfirm.error.details.available}</div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600">
+              Reason / approval note (optional, recorded on the allocation)
+            </label>
+            <textarea
+              className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2 text-sm focus:border-indigo-300 focus:outline-none"
+              rows={3}
+              value={negativeAllocReason}
+              onChange={(e) => setNegativeAllocReason(e.target.value)}
+              placeholder="e.g. Customer urgent — stock arriving Monday"
+            />
+          </div>
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <button
+              type="button"
+              className="rounded-lg border px-3 py-1.5 text-sm hover:bg-slate-50"
+              onClick={() => {
+                setNegativeAllocConfirm({ open: false, source: "", id: "", error: null });
+                setNegativeAllocReason("");
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+              disabled={
+                convertToOrderAllocationFromOAMutation.isPending ||
+                convertToOrderAllocationFromProformaMutation.isPending
+              }
+              onClick={() => {
+                const id = negativeAllocConfirm.id;
+                const source = negativeAllocConfirm.source;
+                const reason = negativeAllocReason;
+                setNegativeAllocConfirm({ open: false, source: "", id: "", error: null });
+                setNegativeAllocReason("");
+                if (!id) return;
+                if (source === "oa") {
+                  convertToOrderAllocationFromOAMutation.mutate({
+                    id,
+                    allowNegative: true,
+                    reason,
+                  });
+                } else if (source === "proforma") {
+                  convertToOrderAllocationFromProformaMutation.mutate({
+                    id,
+                    allowNegative: true,
+                    reason,
+                  });
+                }
+              }}
+            >
+              Continue with negative allocation
+            </button>
+          </div>
+        </div>
+      </Modal>
       <ReceivePaymentModal
         open={receiveInvoicePaymentModal.open}
         onClose={() => setReceiveInvoicePaymentModal({ open: false, invoice: null })}

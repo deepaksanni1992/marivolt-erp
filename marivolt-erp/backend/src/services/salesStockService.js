@@ -36,8 +36,29 @@ async function writeLedger(session, row) {
 }
 
 /**
+ * Build the structured "stock insufficient" error so the frontend can detect
+ * the situation and offer the negative-allocation confirm flow without
+ * relying on string matching.
+ */
+function makeInsufficientStockError({ code, need, available, warehouse }) {
+  const err = new Error(
+    `Insufficient available stock to reserve for ${code} (need ${need} in ${warehouse}, available ${available}). Check physical quantity and existing reservations/RTS.`
+  );
+  err.statusCode = 409;
+  err.code = "STOCK_INSUFFICIENT";
+  err.details = { article: code, needed: need, available, warehouse };
+  return err;
+}
+
+/**
  * Reserve stock for an order allocation (physical unchanged; reservedQty increases).
- * Critical: only increases reserved when free pool (quantity − reserved − rts) ≥ qty.
+ * - When `allowNegative` is false (default), only increases reserved when free pool
+ *   (quantity − reserved − rts) ≥ qty. Otherwise throws a structured
+ *   STOCK_INSUFFICIENT error so the caller can prompt the user.
+ * - When `allowNegative` is true, the reservation is allowed even if it
+ *   pushes available stock below zero. The returned `negativeArticles` map
+ *   records which articles ended up with negative available, so callers can
+ *   flag the allocation lines as backorders.
  */
 export async function applySalesReserve({
   session,
@@ -49,6 +70,7 @@ export async function applySalesReserve({
   referenceNumber,
   remarks = "",
   createdBy = "",
+  allowNegative = false,
 }) {
   const w = normWh(warehouse);
   const cid = String(companyId || "");
@@ -61,17 +83,53 @@ export async function applySalesReserve({
     byArticle.set(code, (byArticle.get(code) || 0) + q);
   }
   const ledgerIds = [];
+  const negativeArticles = new Map();
   for (const [code, q] of byArticle) {
-    const updated = await StockBalance.findOneAndUpdate(
-      { companyId: cid, itemCode: code, warehouse: w, ...availableStockFilter(q) },
-      { $inc: { reservedQty: q } },
-      { session, new: true }
-    );
-    if (!updated) {
-      throw new Error(
-        `Insufficient available stock to reserve for ${code} (need ${q} in ${w}). Check physical quantity and existing reservations/RTS.`
+    let updated;
+    if (allowNegative) {
+      // No availability filter; upsert the row so a reservation can land
+      // even when the article has never received stock.
+      updated = await StockBalance.findOneAndUpdate(
+        { companyId: cid, itemCode: code, warehouse: w },
+        {
+          $inc: { reservedQty: q },
+          $setOnInsert: {
+            companyId: cid,
+            itemCode: code,
+            warehouse: w,
+            article: code,
+            location: w,
+            quantity: 0,
+            onHandQty: 0,
+            allocatedQty: 0,
+            rtsQty: 0,
+          },
+        },
+        { session, new: true, upsert: true, setDefaultsOnInsert: true }
       );
+    } else {
+      updated = await StockBalance.findOneAndUpdate(
+        { companyId: cid, itemCode: code, warehouse: w, ...availableStockFilter(q) },
+        { $inc: { reservedQty: q } },
+        { session, new: true }
+      );
+      if (!updated) {
+        const current = await StockBalance.findOne({ companyId: cid, itemCode: code, warehouse: w })
+          .session(session)
+          .lean();
+        const phys = Math.max(0, Number(current?.quantity) || 0);
+        const res = Math.max(0, Number(current?.reservedQty) || 0);
+        const rts = Math.max(0, Number(current?.rtsQty) || 0);
+        const available = phys - res - rts;
+        throw makeInsufficientStockError({ code, need: q, available, warehouse: w });
+      }
     }
+    const newAvailable =
+      (Number(updated.quantity) || 0) -
+      (Number(updated.reservedQty) || 0) -
+      (Number(updated.rtsQty) || 0);
+    const wentNegative = newAvailable < 0;
+    if (wentNegative) negativeArticles.set(code, { available: newAvailable, qty: q });
     const led = await writeLedger(
       session,
       {
@@ -83,13 +141,15 @@ export async function applySalesReserve({
         referenceType: referenceType || "",
         referenceId: referenceId ? String(referenceId) : "",
         referenceNumber: referenceNumber || "",
-        remarks: remarks || "",
+        remarks: wentNegative
+          ? `${remarks || ""}${remarks ? " " : ""}[NEGATIVE: available ${newAvailable}]`
+          : remarks || "",
         createdBy,
       }
     );
     ledgerIds.push(led._id);
   }
-  return { ledgerIds };
+  return { ledgerIds, negativeArticles };
 }
 
 /** Release reservation back to free pool (allocation cancelled / OA unwind path). */

@@ -14,6 +14,8 @@ const orderAllocationLineSchema = new mongoose.Schema(
     materialCode: { type: String, default: "", trim: true },
     availability: { type: String, default: "", trim: true },
     unitWeightKg: { type: Number, default: null },
+    /** True when this line was reserved while available stock was below 0 (backorder). */
+    isNegativeAllocation: { type: Boolean, default: false },
   },
   { _id: true }
 );
@@ -54,6 +56,10 @@ const orderAllocationSchema = new mongoose.Schema(
     },
     /** Set when SALES_RESERVE was applied for this allocation (legacy rows may be null). */
     stockReservedAt: { type: Date, default: null },
+    /** True when at least one line was reserved while available stock was below 0. */
+    hasNegativeAllocation: { type: Boolean, default: false, index: true },
+    /** Audit trail captured when an admin approved overriding negative stock at allocation time. */
+    negativeAllocationReason: { type: String, default: "" },
     cancelledAt: { type: Date, default: null },
     cancelledBy: { type: String, default: "" },
     cancellationReason: { type: String, default: "" },
