@@ -143,6 +143,10 @@ export async function postGrn(req, res) {
             qtyOut: 0,
             unitCost: Number(line.unitCost) || 0,
             currency: line.currency || "USD",
+            supplierName: grn.supplierName || "",
+            sourceModule: "STORE",
+            warehouse: line.location,
+            locationTo: line.location,
             remarks: line.remarks || "",
             createdBy: req.user?.email || "",
           });
@@ -202,6 +206,10 @@ export async function cancelGrn(req, res) {
           qtyOut: Number(line.acceptedQty),
           unitCost: Number(line.unitCost) || 0,
           currency: line.currency || "USD",
+          supplierName: grn.supplierName || "",
+          sourceModule: "STORE",
+          warehouse: line.location,
+          locationFrom: line.location,
           remarks: `GRN cancelled: ${grn.grnNo}`,
           createdBy: req.user?.email || "",
         });

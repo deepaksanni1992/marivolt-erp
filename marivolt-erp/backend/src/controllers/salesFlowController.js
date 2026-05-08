@@ -1940,6 +1940,7 @@ export async function cancelSalesInvoice(req, res) {
           referenceType: "SALES_INVOICE_CANCEL",
           referenceId: inv._id,
           referenceNumber: inv.invoiceNo,
+          customerName: inv.customerName || "",
           remarks: reason,
           createdBy: req.user?.email || "",
         });
@@ -2533,6 +2534,7 @@ export async function approveRts(req, res) {
           referenceType: "ORDER_ALLOCATION_RESERVE_BACKFILL",
           referenceId: allocation._id,
           referenceNumber: allocation.allocationNo,
+          customerName: allocation.customerName || "",
           remarks: "Backfill reservation for legacy allocation",
           createdBy: req.user?.email || "",
         });
@@ -2546,6 +2548,7 @@ export async function approveRts(req, res) {
         referenceType: "RTS_APPROVED",
         referenceId: doc._id,
         referenceNumber: doc.rtsNo,
+        customerName: doc.customerName || allocation.customerName || "",
         remarks: "RTS approved",
         createdBy: req.user?.email || "",
       });
@@ -2635,6 +2638,7 @@ export async function convertOAToOrderAllocation(req, res) {
         referenceType: "ORDER_ALLOCATION",
         referenceId: doc._id,
         referenceNumber: allocationNo,
+        customerName: oa.customerName || "",
         remarks: allowNegative ? "Reserve on OA→allocation (allowNegative)" : "Reserve on OA→allocation",
         createdBy: req.user?.email || "",
         allowNegative,
@@ -2853,6 +2857,7 @@ export async function convertProformaToOrderAllocation(req, res) {
         referenceType: "ORDER_ALLOCATION",
         referenceId: doc._id,
         referenceNumber: allocationNo,
+        customerName: proforma.customerName || "",
         remarks: allowNegative ? "Reserve on proforma→allocation (allowNegative)" : "Reserve on proforma→allocation",
         createdBy: req.user?.email || "",
         allowNegative,
@@ -3009,6 +3014,7 @@ export async function convertOrderAllocationToSalesInvoice(req, res) {
         referenceType: "SALES_INVOICE",
         referenceId: allocation._id,
         referenceNumber: invoiceNo,
+        customerName: allocation.customerName || "",
         remarks: "Allocation→sales invoice",
         createdBy: req.user?.email || "",
       });
@@ -3148,6 +3154,7 @@ export async function cancelOrderAllocation(req, res) {
           referenceType: "ORDER_ALLOCATION_CANCEL",
           referenceId: alloc._id,
           referenceNumber: alloc.allocationNo,
+          customerName: alloc.customerName || "",
           remarks: reason,
           createdBy: req.user?.email || "",
         });
@@ -3216,6 +3223,7 @@ export async function cancelRtsDocument(req, res) {
         referenceType: "RTS_CANCEL",
         referenceId: doc._id,
         referenceNumber: doc.rtsNo,
+        customerName: doc.customerName || allocation?.customerName || "",
         remarks: reason,
         createdBy: req.user?.email || "",
       });

@@ -14,6 +14,7 @@ import quotationRoutes from "./routes/quotationRoutes.js";
 import inventoryRoutes from "./routes/inventoryRoutes.js";
 import grnRoutes from "./routes/grnRoutes.js";
 import stockRoutes from "./routes/stockRoutes.js";
+import storeRoutes from "./routes/storeRoutes.js";
 import logisticsRoutes from "./routes/logisticsRoutes.js";
 import accountsRoutes from "./routes/accountsRoutes.js";
 import salesRoutes from "./routes/salesRoutes.js";
@@ -98,6 +99,7 @@ async function startServer() {
     app.use("/api/inventory", inventoryRoutes);
     app.use("/api/grn", grnRoutes);
     app.use("/api/stock", stockRoutes);
+    app.use("/api/store", storeRoutes);
     app.use("/api/shipments", logisticsRoutes);
     app.use("/api/accounts", accountsRoutes);
     app.use("/api/sales", salesRoutes);

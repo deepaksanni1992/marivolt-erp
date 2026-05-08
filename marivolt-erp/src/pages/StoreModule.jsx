@@ -64,6 +64,13 @@ export default function StoreModule() {
   const [negativeOnly, setNegativeOnly] = useState(false);
   const [allocatedOnly, setAllocatedOnly] = useState(false);
   const [allocationDrillDown, setAllocationDrillDown] = useState({ open: false, article: "", warehouse: "" });
+
+  // Unified-ledger filters (used only inside the Stock Ledger tab).
+  const [ledgerMovementType, setLedgerMovementType] = useState("");
+  const [ledgerCustomer, setLedgerCustomer] = useState("");
+  const [ledgerSourceModel, setLedgerSourceModel] = useState("");
+  const [ledgerDateFrom, setLedgerDateFrom] = useState("");
+  const [ledgerDateTo, setLedgerDateTo] = useState("");
   const [adj, setAdj] = useState({
     adjustmentNo: "",
     date: new Date().toISOString().slice(0, 10),
@@ -113,16 +120,44 @@ export default function StoreModule() {
     enabled: tab === "Stock View",
   });
 
+  // Unified Stock Ledger (Phase 3) — multi-source projection that merges
+  // StockLedger entries (GRN / Adjustment / Transfer / sales-side stock
+  // movements) with InventoryLedger entries (sales reservation, RTS,
+  // invoicing, cancellations). The Store > Stock Ledger tab now uses
+  // only this endpoint; the legacy /stock/ledger endpoint stays in place
+  // for backward compatibility but is no longer consumed by the UI.
   const { data: ledger } = useQuery({
-    queryKey: ["stock-ledger", article, location, refNo],
+    queryKey: [
+      "stock-ledger-unified",
+      article,
+      location,
+      refNo,
+      ledgerMovementType,
+      ledgerCustomer,
+      ledgerSourceModel,
+      ledgerDateFrom,
+      ledgerDateTo,
+    ],
     queryFn: () =>
-      apiGetWithQuery("/stock/ledger", {
+      apiGetWithQuery("/store/stock-ledger/unified", {
         article: article || undefined,
-        location: location || undefined,
+        warehouse: location || undefined,
         referenceNo: refNo || undefined,
+        movementType: ledgerMovementType || undefined,
+        customerName: ledgerCustomer || undefined,
+        sourceModel: ledgerSourceModel || undefined,
+        dateFrom: ledgerDateFrom || undefined,
+        dateTo: ledgerDateTo || undefined,
         limit: 500,
       }),
     enabled: tab === "Stock Ledger",
+  });
+
+  const { data: stockMeta } = useQuery({
+    queryKey: ["stock-meta"],
+    queryFn: () => apiGet("/stock/meta"),
+    enabled: tab === "Stock Ledger",
+    staleTime: 5 * 60 * 1000,
   });
 
   const { data: locations } = useQuery({
@@ -225,18 +260,27 @@ export default function StoreModule() {
 
   const ledgerColumns = useMemo(
     () => [
-      { key: "transactionDate", header: "Date" },
-      { key: "transactionType", header: "Movement Type" },
-      { key: "referenceType", header: "Reference Type" },
-      { key: "referenceNo", header: "Reference No" },
+      { key: "date", header: "Date" },
       { key: "article", header: "Article" },
       { key: "itemName", header: "Item Name" },
-      { key: "location", header: "Location" },
+      { key: "movementType", header: "Movement Type" },
+      { key: "rawMovementType", header: "Raw Type" },
+      { key: "referenceType", header: "Reference Type" },
+      { key: "referenceNo", header: "Reference No" },
+      { key: "customerName", header: "Customer" },
+      { key: "supplierName", header: "Supplier" },
+      { key: "warehouse", header: "Warehouse" },
+      { key: "locationFrom", header: "Location From" },
+      { key: "locationTo", header: "Location To" },
       { key: "qtyIn", header: "Qty In" },
       { key: "qtyOut", header: "Qty Out" },
-      { key: "balanceQty", header: "On Hand After" },
-      { key: "remarks", header: "Remarks" },
+      { key: "onHandAfter", header: "On Hand After" },
+      { key: "allocatedAfter", header: "Allocated After" },
+      { key: "rtsAfter", header: "RTS After" },
+      { key: "availableAfter", header: "Available After" },
+      { key: "sourceModel", header: "Source" },
       { key: "createdBy", header: "Created By" },
+      { key: "remarks", header: "Remarks" },
     ],
     []
   );
@@ -245,7 +289,11 @@ export default function StoreModule() {
     () =>
       ledgerRows.map((r) => ({
         ...r,
-        transactionDate: r.transactionDate ? new Date(r.transactionDate).toISOString() : "",
+        date: r.date ? new Date(r.date).toISOString() : "",
+        onHandAfter: r.onHandAfter ?? "",
+        allocatedAfter: r.allocatedAfter ?? "",
+        rtsAfter: r.rtsAfter ?? "",
+        availableAfter: r.availableAfter ?? "",
       })),
     [ledgerRows]
   );
@@ -481,6 +529,13 @@ export default function StoreModule() {
       {tab === "Stock Ledger" ? (
         <div className="space-y-3">
           <div className="rounded-2xl border bg-white p-4">
+            <div className="mb-2 text-xs text-slate-500">
+              Unified projection — merges
+              <span className="font-medium"> StockLedger </span>
+              (GRN / Adjustment / Transfer) with
+              <span className="font-medium"> InventoryLedger </span>
+              (Sales reserve / RTS / Invoice / Cancellation).
+            </div>
             <div className="grid gap-3 md:grid-cols-4">
               <input
                 className="rounded border px-3 py-2 text-sm"
@@ -490,7 +545,7 @@ export default function StoreModule() {
               />
               <input
                 className="rounded border px-3 py-2 text-sm"
-                placeholder="Location"
+                placeholder="Warehouse / Location"
                 value={location}
                 onChange={(e) => setLocation(e.target.value.toUpperCase())}
               />
@@ -500,40 +555,112 @@ export default function StoreModule() {
                 value={refNo}
                 onChange={(e) => setRefNo(e.target.value)}
               />
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  className="rounded border px-3 py-2 text-sm hover:bg-slate-50"
-                  onClick={() => downloadCsv("stock-ledger.csv", ledgerColumns, ledgerExportRows)}
-                >
-                  Export CSV
-                </button>
-                <button
-                  type="button"
-                  className="rounded border px-3 py-2 text-sm hover:bg-slate-50"
-                  onClick={() => downloadPdfTable("Stock Ledger", "", ledgerColumns, ledgerExportRows, "stock-ledger")}
-                >
-                  Export PDF
-                </button>
-              </div>
+              <input
+                className="rounded border px-3 py-2 text-sm"
+                placeholder="Customer / Supplier"
+                value={ledgerCustomer}
+                onChange={(e) => setLedgerCustomer(e.target.value)}
+              />
+              <select
+                className="rounded border px-3 py-2 text-sm"
+                value={ledgerMovementType}
+                onChange={(e) => setLedgerMovementType(e.target.value)}
+              >
+                <option value="">All movement types</option>
+                {(stockMeta?.unifiedMovementTypes || []).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="rounded border px-3 py-2 text-sm"
+                value={ledgerSourceModel}
+                onChange={(e) => setLedgerSourceModel(e.target.value)}
+              >
+                <option value="">All sources</option>
+                {(stockMeta?.sourceModels || ["StockLedger", "InventoryLedger"]).map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+              <input
+                className="rounded border px-3 py-2 text-sm"
+                type="date"
+                placeholder="Date from"
+                value={ledgerDateFrom}
+                onChange={(e) => setLedgerDateFrom(e.target.value)}
+              />
+              <input
+                className="rounded border px-3 py-2 text-sm"
+                type="date"
+                placeholder="Date to"
+                value={ledgerDateTo}
+                onChange={(e) => setLedgerDateTo(e.target.value)}
+              />
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="rounded border px-3 py-2 text-sm hover:bg-slate-50"
+                onClick={() => {
+                  setLedgerMovementType("");
+                  setLedgerCustomer("");
+                  setLedgerSourceModel("");
+                  setLedgerDateFrom("");
+                  setLedgerDateTo("");
+                }}
+              >
+                Clear filters
+              </button>
+              <button
+                type="button"
+                className="rounded border px-3 py-2 text-sm hover:bg-slate-50"
+                onClick={() => downloadCsv("stock-ledger.csv", ledgerColumns, ledgerExportRows)}
+              >
+                Export CSV
+              </button>
+              <button
+                type="button"
+                className="rounded border px-3 py-2 text-sm hover:bg-slate-50"
+                onClick={() => downloadPdfTable("Stock Ledger", "Unified projection", ledgerColumns, ledgerExportRows, "stock-ledger")}
+              >
+                Export PDF
+              </button>
+              {ledger?.sources?.capped ? (
+                <span className="text-xs text-amber-700">
+                  Showing the most recent {(ledger.sources.stockLedger || 0) + (ledger.sources.inventoryLedger || 0)} rows — refine filters to drill in further.
+                </span>
+              ) : (
+                <span className="text-xs text-slate-500">
+                  Source counts — StockLedger: {ledger?.sources?.stockLedger ?? 0} · InventoryLedger: {ledger?.sources?.inventoryLedger ?? 0}
+                </span>
+              )}
             </div>
           </div>
           <div className="overflow-auto rounded-2xl border bg-white">
-            <table className="min-w-[1100px] w-full text-sm">
+            <table className="min-w-[1600px] w-full text-sm">
               <thead className="bg-slate-100">
                 <tr>
                   {[
                     "Date",
-                    "Movement Type",
-                    "Reference",
                     "Article",
                     "Item Name",
-                    "Location",
-                    "In",
-                    "Out",
+                    "Movement Type",
+                    "Reference",
+                    "Customer / Supplier",
+                    "Warehouse",
+                    "From → To",
+                    "Qty In",
+                    "Qty Out",
                     "On Hand After",
-                    "Remarks",
+                    "Allocated After",
+                    "RTS After",
+                    "Available After",
+                    "Source",
                     "Created By",
+                    "Remarks",
                   ].map((h) => (
                     <th key={h} className="px-2 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
                       {h}
@@ -544,29 +671,90 @@ export default function StoreModule() {
               <tbody>
                 {ledgerRows.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="px-2 py-6 text-center text-sm text-slate-500">
+                    <td colSpan={17} className="px-2 py-6 text-center text-sm text-slate-500">
                       No ledger entries yet for this filter.
                     </td>
                   </tr>
                 ) : (
-                  ledgerRows.map((r) => (
-                    <tr key={r._id} className="border-t">
-                      <td className="px-2 py-1 whitespace-nowrap">{fmtDate(r.transactionDate)}</td>
-                      <td className="px-2 py-1">{r.transactionType}</td>
-                      <td className="px-2 py-1">
-                        {r.referenceType ? <span className="text-xs text-slate-500">{r.referenceType} / </span> : null}
-                        {r.referenceNo}
-                      </td>
-                      <td className="px-2 py-1 font-mono">{r.article}</td>
-                      <td className="px-2 py-1">{r.itemName || ""}</td>
-                      <td className="px-2 py-1">{r.location}</td>
-                      <td className="px-2 py-1">{r.qtyIn}</td>
-                      <td className="px-2 py-1">{r.qtyOut}</td>
-                      <td className="px-2 py-1">{r.balanceQty}</td>
-                      <td className="px-2 py-1">{r.remarks}</td>
-                      <td className="px-2 py-1 text-xs text-slate-500">{r.createdBy}</td>
-                    </tr>
-                  ))
+                  ledgerRows.map((r) => {
+                    const movementTone =
+                      r.movementType === "ALLOCATION"
+                        ? "indigo"
+                        : r.movementType === "ALLOCATION_CANCEL"
+                          ? "amber"
+                          : r.movementType === "RTS_TRANSFER"
+                            ? "emerald"
+                            : r.movementType === "RTS_CANCEL"
+                              ? "amber"
+                              : r.movementType === "SALES_INVOICE_OUT"
+                                ? "rose"
+                                : r.movementType === "SALES_INVOICE_CANCEL"
+                                  ? "amber"
+                                  : r.movementType === "GRN_IN"
+                                    ? "emerald"
+                                    : "slate";
+                    const fromTo =
+                      r.locationFrom || r.locationTo
+                        ? `${r.locationFrom || "—"} → ${r.locationTo || "—"}`
+                        : "";
+                    const partyName = r.customerName || r.supplierName || "";
+                    const partyKind = r.customerName ? "Customer" : r.supplierName ? "Supplier" : "";
+                    return (
+                      <tr key={`${r.sourceModel}-${r._rowId}`} className="border-t align-top">
+                        <td className="px-2 py-1 whitespace-nowrap">{fmtDate(r.date)}</td>
+                        <td className="px-2 py-1 font-mono">{r.article}</td>
+                        <td className="px-2 py-1">{r.itemName || ""}</td>
+                        <td className="px-2 py-1">
+                          <StatusPill status={r.movementType} tone={movementTone} />
+                          {r.rawMovementType && r.rawMovementType !== r.movementType ? (
+                            <div className="mt-1 text-[10px] text-slate-500">{r.rawMovementType}</div>
+                          ) : null}
+                        </td>
+                        <td className="px-2 py-1">
+                          {r.referenceType ? (
+                            <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                              {r.referenceType}
+                            </span>
+                          ) : null}
+                          <div>{r.referenceNo || ""}</div>
+                        </td>
+                        <td className="px-2 py-1">
+                          {partyName ? (
+                            <>
+                              <div className="text-xs">{partyName}</div>
+                              {partyKind ? (
+                                <div className="text-[10px] uppercase tracking-wide text-slate-500">{partyKind}</div>
+                              ) : null}
+                            </>
+                          ) : null}
+                        </td>
+                        <td className="px-2 py-1">{r.warehouse || ""}</td>
+                        <td className="px-2 py-1 whitespace-nowrap">{fromTo}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{r.qtyIn || 0}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{r.qtyOut || 0}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">
+                          {r.onHandAfter == null ? <span className="text-slate-400">—</span> : r.onHandAfter}
+                        </td>
+                        <td className="px-2 py-1 text-right tabular-nums">
+                          {r.allocatedAfter == null ? <span className="text-slate-400">—</span> : r.allocatedAfter}
+                        </td>
+                        <td className="px-2 py-1 text-right tabular-nums">
+                          {r.rtsAfter == null ? <span className="text-slate-400">—</span> : r.rtsAfter}
+                        </td>
+                        <td className="px-2 py-1 text-right tabular-nums">
+                          {r.availableAfter == null ? <span className="text-slate-400">—</span> : r.availableAfter}
+                        </td>
+                        <td className="px-2 py-1">
+                          <StatusPill
+                            status={r.sourceModel}
+                            tone={r.sourceModel === "InventoryLedger" ? "indigo" : "slate"}
+                          />
+                        </td>
+                        <td className="px-2 py-1 text-xs text-slate-500">{r.createdBy || ""}</td>
+                        <td className="px-2 py-1 text-xs text-slate-600">{r.remarks || ""}</td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
