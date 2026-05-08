@@ -319,6 +319,11 @@ function oaDetailToEditableForm(oa) {
     incoterm: oa.incoterm || "",
     dispatchTerms: oa.dispatchTerms || "",
     currency: String(oa.currency || "USD").toUpperCase(),
+    vertical: oa.vertical || "",
+    engine: oa.engine || "",
+    model: oa.model || "",
+    config: oa.config || "",
+    esn: oa.esn || "",
     oaDate: oad,
     status: oa.status || "DRAFT",
     lines,
@@ -380,6 +385,11 @@ function proformaDetailToEditableForm(p) {
     shipmentTerms: p.shipmentTerms || "",
     remarks: p.remarks || "",
     currency: String(p.currency || "USD").toUpperCase(),
+    vertical: p.vertical || "",
+    engine: p.engine || "",
+    model: p.model || "",
+    config: p.config || "",
+    esn: p.esn || "",
     status: p.status || "DRAFT",
     lines,
   };
@@ -427,6 +437,11 @@ function salesInvoiceDetailToEditableForm(inv) {
     consignee: inv.consignee || "",
     customerVatNo: inv.customerVatNo || "",
     currency: String(inv.currency || "USD").toUpperCase(),
+    vertical: inv.vertical || "",
+    engine: inv.engine || "",
+    model: inv.model || "",
+    config: inv.config || "",
+    esn: inv.esn || "",
     status: inv.status || "DRAFT",
     remarks: inv.remarks || "",
     lines,
@@ -458,16 +473,21 @@ function quotationLockedStatus(status = "") {
   return st === "APPROVED" || st === "CONVERTED" || st === "CANCELLED";
 }
 
+const machineDetailColumns = [
+  ["Vertical", (r) => r.vertical || ""],
+  ["Brand", (r) => r.engine || ""],
+  ["Model", (r) => r.model || ""],
+  ["Config", (r) => r.config || ""],
+  ["ESN", (r) => r.esn || ""],
+];
+
 const reportColumnsById = {
   "quotation-summary": [
     ["Quotation No", (r) => r.quotationNo || ""],
     ["Date", (r) => (r.quotationDate ? new Date(r.quotationDate).toLocaleDateString() : "")],
     ["Customer", (r) => r.customerName || ""],
     ["Customer Ref", (r) => r.customerReference || ""],
-    ["Brand", (r) => r.engine || ""],
-    ["Vertical", (r) => r.vertical || ""],
-    ["Model", (r) => r.model || ""],
-    ["ESN", (r) => r.esn || ""],
+    ...machineDetailColumns,
     ["Line Items", (r) => r.lineItems || 0],
     ["Total", (r) => money(r.totalAmount)],
     ["Status", (r) => r.status || ""],
@@ -476,6 +496,7 @@ const reportColumnsById = {
     ["Quotation No", (r) => r.quotationNo || ""],
     ["Date", (r) => (r.quotationDate ? new Date(r.quotationDate).toLocaleDateString() : "")],
     ["Customer", (r) => r.customerName || ""],
+    ...machineDetailColumns,
     ["Article Count", (r) => r.articleCount || 0],
     ["Total", (r) => money(r.totalAmount)],
     ["Age (Days)", (r) => r.ageDays || 0],
@@ -489,6 +510,7 @@ const reportColumnsById = {
     ["Customer", (r) => r.customerName || ""],
     ["Customer PO Ref", (r) => r.customerPORef || ""],
     ["Delivery Terms", (r) => r.deliveryTerms || ""],
+    ...machineDetailColumns,
     ["Total", (r) => money(r.totalAmount)],
     ["Status", (r) => r.status || ""],
   ],
@@ -496,6 +518,7 @@ const reportColumnsById = {
     ["OA No", (r) => r.oaNo || ""],
     ["Customer", (r) => r.customerName || ""],
     ["Quotation Link", (r) => r.linkedQuotationNo || ""],
+    ...machineDetailColumns,
     ["Amount", (r) => money(r.amount)],
     ["Age (Days)", (r) => r.ageDays || 0],
     ["Status", (r) => r.status || ""],
@@ -506,6 +529,7 @@ const reportColumnsById = {
     ["Linked OA", (r) => r.linkedOANo || ""],
     ["Linked PI", (r) => r.linkedProformaNo || ""],
     ["Customer", (r) => r.customerName || ""],
+    ...machineDetailColumns,
     ["Line Count", (r) => r.lineCount || 0],
     ["Status", (r) => r.status || ""],
   ],
@@ -514,6 +538,7 @@ const reportColumnsById = {
     ["Date", (r) => (r.rtsDate ? new Date(r.rtsDate).toLocaleDateString() : "")],
     ["Allocation No", (r) => r.linkedOrderAllocationNo || ""],
     ["Customer", (r) => r.customerName || ""],
+    ...machineDetailColumns,
     ["Line Count", (r) => r.lineCount || 0],
     ["Box Count", (r) => r.boxCount || 0],
     ["Total Weight Kg", (r) => money(r.totalWeightKg || 0)],
@@ -524,6 +549,7 @@ const reportColumnsById = {
     ["Date", (r) => (r.proformaDate ? new Date(r.proformaDate).toLocaleDateString() : "")],
     ["Linked Quotation/OA", (r) => r.linkedOANo || r.linkedQuotationNo || ""],
     ["Customer", (r) => r.customerName || ""],
+    ...machineDetailColumns,
     ["Amount", (r) => money(r.amount)],
     ["Status", (r) => r.status || ""],
     ["Validity", (r) => r.validity || ""],
@@ -535,6 +561,7 @@ const reportColumnsById = {
     ["Customer", (r) => r.customerName || ""],
     ["Linked Proforma", (r) => r.linkedProformaNo || ""],
     ["Linked OA", (r) => r.linkedOANo || ""],
+    ...machineDetailColumns,
     ["Currency", (r) => r.currency || "USD"],
     ["Invoice Value", (r) => money(r.invoiceValue)],
     ["Paid Amount", (r) => money(r.paidAmount)],
@@ -567,6 +594,7 @@ const reportColumnsById = {
     ["Destination", (r) => r.destination || ""],
     ["Port of Loading", (r) => r.portOfLoading || ""],
     ["Port of Discharge", (r) => r.portOfDischarge || ""],
+    ...machineDetailColumns,
     ["Package Count", (r) => r.packageCount || 0],
     ["Net Weight", (r) => money(r.netWeight)],
     ["Gross Weight", (r) => money(r.grossWeight)],
@@ -830,11 +858,12 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             <div><b>Shipping:</b> -</div>
           </div>
           <div class="info-box muted">
-            <div class="info-box-title">Engine Details</div>
-            <div><b>Engine:</b> -</div>
-            <div><b>Model:</b> -</div>
-            <div><b>Config:</b> -</div>
-            <div><b>ESN:</b> -</div>
+            <div class="info-box-title">Machine Details</div>
+            <div><b>Vertical:</b> ${oa.vertical || "-"}</div>
+            <div><b>Brand:</b> ${oa.engine || "-"}</div>
+            <div><b>Model:</b> ${oa.model || "-"}</div>
+            <div><b>Config:</b> ${oa.config || "-"}</div>
+            <div><b>ESN:</b> ${oa.esn || "-"}</div>
             <div><b>Currency:</b> ${oa.currency || "-"}</div>
           </div>
         </div>
@@ -1032,7 +1061,17 @@ function renderFlowDocPrintWindow({
             <div><b>Currency:</b> ${doc?.currency || "-"}</div>
             <div><b>Remarks:</b> ${doc?.remarks || "-"}</div>
           </div>
-        </div>`;
+        </div>
+        ${
+          doc?.vertical || doc?.engine || doc?.model || doc?.config || doc?.esn
+            ? `<div class="info-grid">
+          <div class="info-box muted" style="grid-column: 1 / -1;">
+            <div class="info-box-title">Machine Details</div>
+            <div><b>Vertical:</b> ${doc?.vertical || "-"} &nbsp;|&nbsp; <b>Brand:</b> ${doc?.engine || "-"} &nbsp;|&nbsp; <b>Model:</b> ${doc?.model || "-"} &nbsp;|&nbsp; <b>Config:</b> ${doc?.config || "-"} &nbsp;|&nbsp; <b>ESN:</b> ${doc?.esn || "-"}</div>
+          </div>
+        </div>`
+            : ""
+        }`;
   const taxInvoiceQuotationHeader = `
         <div class="header">
           <div class="header-left">
@@ -2552,6 +2591,11 @@ export default function Sales() {
     paymentTerms: "",
     deliverySchedule: "",
     currency: "USD",
+    vertical: "",
+    engine: "",
+    model: "",
+    config: "",
+    esn: "",
     lines: [emptyLine()],
   });
 
@@ -2562,6 +2606,11 @@ export default function Sales() {
     shipmentTerms: "",
     bankDetails: "",
     currency: "USD",
+    vertical: "",
+    engine: "",
+    model: "",
+    config: "",
+    esn: "",
     lines: [emptyLine()],
   });
 
@@ -2578,6 +2627,11 @@ export default function Sales() {
     consignee: "",
     customerVatNo: "",
     currency: "USD",
+    vertical: "",
+    engine: "",
+    model: "",
+    config: "",
+    esn: "",
     lines: [emptyLine()],
   });
 
@@ -2619,6 +2673,11 @@ export default function Sales() {
         paymentTerms: "",
         deliverySchedule: "",
         currency: "USD",
+        vertical: "",
+        engine: "",
+        model: "",
+        config: "",
+        esn: "",
         lines: [emptyLine()],
       });
     },
@@ -2637,6 +2696,11 @@ export default function Sales() {
         shipmentTerms: "",
         bankDetails: "",
         currency: "USD",
+        vertical: "",
+        engine: "",
+        model: "",
+        config: "",
+        esn: "",
         lines: [emptyLine()],
       });
     },
@@ -2661,6 +2725,11 @@ export default function Sales() {
         consignee: "",
         customerVatNo: "",
         currency: "USD",
+        vertical: "",
+        engine: "",
+        model: "",
+        config: "",
+        esn: "",
         lines: [emptyLine()],
       });
     },
@@ -3034,9 +3103,10 @@ export default function Sales() {
                               <th className="px-3 py-2">Date</th>
                               <th className="px-3 py-2">Customer</th>
                               <th className="px-3 py-2">Customer Ref</th>
-                              <th className="px-3 py-2">Brand</th>
                               <th className="px-3 py-2">Vertical</th>
+                              <th className="px-3 py-2">Brand</th>
                               <th className="px-3 py-2">Model</th>
+                              <th className="px-3 py-2">Config</th>
                               <th className="px-3 py-2">ESN</th>
                               <th className="px-3 py-2">Line Items</th>
                               <th className="px-3 py-2 text-right">Total</th>
@@ -3048,6 +3118,11 @@ export default function Sales() {
                               <th className="px-3 py-2">Quotation No</th>
                               <th className="px-3 py-2">Date</th>
                               <th className="px-3 py-2">Customer</th>
+                              <th className="px-3 py-2">Vertical</th>
+                              <th className="px-3 py-2">Brand</th>
+                              <th className="px-3 py-2">Model</th>
+                              <th className="px-3 py-2">Config</th>
+                              <th className="px-3 py-2">ESN</th>
                               <th className="px-3 py-2">Article Count</th>
                               <th className="px-3 py-2 text-right">Total</th>
                               <th className="px-3 py-2">Age (Days)</th>
@@ -3063,6 +3138,11 @@ export default function Sales() {
                               <th className="px-3 py-2">Customer</th>
                               <th className="px-3 py-2">Customer PO Ref</th>
                               <th className="px-3 py-2">Delivery Terms</th>
+                              <th className="px-3 py-2">Vertical</th>
+                              <th className="px-3 py-2">Brand</th>
+                              <th className="px-3 py-2">Model</th>
+                              <th className="px-3 py-2">Config</th>
+                              <th className="px-3 py-2">ESN</th>
                               <th className="px-3 py-2 text-right">Total</th>
                               <th className="px-3 py-2">Status</th>
                             </>
@@ -3072,6 +3152,11 @@ export default function Sales() {
                               <th className="px-3 py-2">OA No</th>
                               <th className="px-3 py-2">Customer</th>
                               <th className="px-3 py-2">Quotation Link</th>
+                              <th className="px-3 py-2">Vertical</th>
+                              <th className="px-3 py-2">Brand</th>
+                              <th className="px-3 py-2">Model</th>
+                              <th className="px-3 py-2">Config</th>
+                              <th className="px-3 py-2">ESN</th>
                               <th className="px-3 py-2 text-right">Amount</th>
                               <th className="px-3 py-2">Age (Days)</th>
                               <th className="px-3 py-2">Status</th>
@@ -3084,6 +3169,11 @@ export default function Sales() {
                               <th className="px-3 py-2">Linked OA</th>
                               <th className="px-3 py-2">Linked PI</th>
                               <th className="px-3 py-2">Customer</th>
+                              <th className="px-3 py-2">Vertical</th>
+                              <th className="px-3 py-2">Brand</th>
+                              <th className="px-3 py-2">Model</th>
+                              <th className="px-3 py-2">Config</th>
+                              <th className="px-3 py-2">ESN</th>
                               <th className="px-3 py-2 text-right">Line Count</th>
                               <th className="px-3 py-2">Status</th>
                             </>
@@ -3094,6 +3184,11 @@ export default function Sales() {
                               <th className="px-3 py-2">Date</th>
                               <th className="px-3 py-2">Allocation No</th>
                               <th className="px-3 py-2">Customer</th>
+                              <th className="px-3 py-2">Vertical</th>
+                              <th className="px-3 py-2">Brand</th>
+                              <th className="px-3 py-2">Model</th>
+                              <th className="px-3 py-2">Config</th>
+                              <th className="px-3 py-2">ESN</th>
                               <th className="px-3 py-2 text-right">Line Count</th>
                               <th className="px-3 py-2 text-right">Box Count</th>
                               <th className="px-3 py-2 text-right">Total Weight Kg</th>
@@ -3106,6 +3201,11 @@ export default function Sales() {
                               <th className="px-3 py-2">Date</th>
                               <th className="px-3 py-2">Linked Quotation/OA</th>
                               <th className="px-3 py-2">Customer</th>
+                              <th className="px-3 py-2">Vertical</th>
+                              <th className="px-3 py-2">Brand</th>
+                              <th className="px-3 py-2">Model</th>
+                              <th className="px-3 py-2">Config</th>
+                              <th className="px-3 py-2">ESN</th>
                               <th className="px-3 py-2 text-right">Amount</th>
                               <th className="px-3 py-2">Status</th>
                               <th className="px-3 py-2">Validity</th>
@@ -3119,6 +3219,11 @@ export default function Sales() {
                               <th className="px-3 py-2">Customer</th>
                               <th className="px-3 py-2">Linked Proforma</th>
                               <th className="px-3 py-2">Linked OA</th>
+                              <th className="px-3 py-2">Vertical</th>
+                              <th className="px-3 py-2">Brand</th>
+                              <th className="px-3 py-2">Model</th>
+                              <th className="px-3 py-2">Config</th>
+                              <th className="px-3 py-2">ESN</th>
                               <th className="px-3 py-2">Currency</th>
                               <th className="px-3 py-2 text-right">Invoice Value</th>
                               <th className="px-3 py-2 text-right">Paid</th>
@@ -3157,6 +3262,11 @@ export default function Sales() {
                               <th className="px-3 py-2">Destination</th>
                               <th className="px-3 py-2">Port of Loading</th>
                               <th className="px-3 py-2">Port of Discharge</th>
+                              <th className="px-3 py-2">Vertical</th>
+                              <th className="px-3 py-2">Brand</th>
+                              <th className="px-3 py-2">Model</th>
+                              <th className="px-3 py-2">Config</th>
+                              <th className="px-3 py-2">ESN</th>
                               <th className="px-3 py-2 text-right">Packages</th>
                               <th className="px-3 py-2 text-right">Net Wt</th>
                               <th className="px-3 py-2 text-right">Gross Wt</th>
@@ -3194,9 +3304,10 @@ export default function Sales() {
                                   <td className="px-3 py-2">{row.quotationDate ? new Date(row.quotationDate).toLocaleDateString() : "-"}</td>
                                   <td className="px-3 py-2">{row.customerName}</td>
                                   <td className="px-3 py-2">{row.customerReference || "-"}</td>
-                                  <td className="px-3 py-2">{row.engine || "-"}</td>
                                   <td className="px-3 py-2">{row.vertical || "-"}</td>
+                                  <td className="px-3 py-2">{row.engine || "-"}</td>
                                   <td className="px-3 py-2">{row.model || "-"}</td>
+                                  <td className="px-3 py-2">{row.config || "-"}</td>
                                   <td className="px-3 py-2">{row.esn || "-"}</td>
                                   <td className="px-3 py-2">{row.lineItems || 0}</td>
                                   <td className="px-3 py-2 text-right">USD {money(row.totalAmount)}</td>
@@ -3212,6 +3323,11 @@ export default function Sales() {
                                   <td className="px-3 py-2 font-mono text-xs">{row.quotationNo}</td>
                                   <td className="px-3 py-2">{row.quotationDate ? new Date(row.quotationDate).toLocaleDateString() : "-"}</td>
                                   <td className="px-3 py-2">{row.customerName}</td>
+                                  <td className="px-3 py-2">{row.vertical || "-"}</td>
+                                  <td className="px-3 py-2">{row.engine || "-"}</td>
+                                  <td className="px-3 py-2">{row.model || "-"}</td>
+                                  <td className="px-3 py-2">{row.config || "-"}</td>
+                                  <td className="px-3 py-2">{row.esn || "-"}</td>
                                   <td className="px-3 py-2">{row.articleCount || 0}</td>
                                   <td className="px-3 py-2 text-right">USD {money(row.totalAmount)}</td>
                                   <td className="px-3 py-2">{row.ageDays || 0}</td>
@@ -3231,6 +3347,11 @@ export default function Sales() {
                                   <td className="px-3 py-2">{row.customerName}</td>
                                   <td className="px-3 py-2">{row.customerPORef || "-"}</td>
                                   <td className="px-3 py-2">{row.deliveryTerms || "-"}</td>
+                                  <td className="px-3 py-2">{row.vertical || "-"}</td>
+                                  <td className="px-3 py-2">{row.engine || "-"}</td>
+                                  <td className="px-3 py-2">{row.model || "-"}</td>
+                                  <td className="px-3 py-2">{row.config || "-"}</td>
+                                  <td className="px-3 py-2">{row.esn || "-"}</td>
                                   <td className="px-3 py-2 text-right">USD {money(row.totalAmount)}</td>
                                   <td className="px-3 py-2">
                                     <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(row.status)}`}>
@@ -3244,6 +3365,11 @@ export default function Sales() {
                                   <td className="px-3 py-2 font-mono text-xs">{row.oaNo}</td>
                                   <td className="px-3 py-2">{row.customerName}</td>
                                   <td className="px-3 py-2">{row.linkedQuotationNo || "-"}</td>
+                                  <td className="px-3 py-2">{row.vertical || "-"}</td>
+                                  <td className="px-3 py-2">{row.engine || "-"}</td>
+                                  <td className="px-3 py-2">{row.model || "-"}</td>
+                                  <td className="px-3 py-2">{row.config || "-"}</td>
+                                  <td className="px-3 py-2">{row.esn || "-"}</td>
                                   <td className="px-3 py-2 text-right">USD {money(row.amount)}</td>
                                   <td className="px-3 py-2">{row.ageDays || 0}</td>
                                   <td className="px-3 py-2">
@@ -3260,6 +3386,11 @@ export default function Sales() {
                                   <td className="px-3 py-2">{row.linkedOANo || "-"}</td>
                                   <td className="px-3 py-2">{row.linkedProformaNo || "-"}</td>
                                   <td className="px-3 py-2">{row.customerName || "-"}</td>
+                                  <td className="px-3 py-2">{row.vertical || "-"}</td>
+                                  <td className="px-3 py-2">{row.engine || "-"}</td>
+                                  <td className="px-3 py-2">{row.model || "-"}</td>
+                                  <td className="px-3 py-2">{row.config || "-"}</td>
+                                  <td className="px-3 py-2">{row.esn || "-"}</td>
                                   <td className="px-3 py-2 text-right">{row.lineCount || 0}</td>
                                   <td className="px-3 py-2">
                                     <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(row.status)}`}>
@@ -3274,6 +3405,11 @@ export default function Sales() {
                                   <td className="px-3 py-2">{row.rtsDate ? new Date(row.rtsDate).toLocaleDateString() : "-"}</td>
                                   <td className="px-3 py-2">{row.linkedOrderAllocationNo || "-"}</td>
                                   <td className="px-3 py-2">{row.customerName || "-"}</td>
+                                  <td className="px-3 py-2">{row.vertical || "-"}</td>
+                                  <td className="px-3 py-2">{row.engine || "-"}</td>
+                                  <td className="px-3 py-2">{row.model || "-"}</td>
+                                  <td className="px-3 py-2">{row.config || "-"}</td>
+                                  <td className="px-3 py-2">{row.esn || "-"}</td>
                                   <td className="px-3 py-2 text-right">{row.lineCount || 0}</td>
                                   <td className="px-3 py-2 text-right">{row.boxCount || 0}</td>
                                   <td className="px-3 py-2 text-right">{money(row.totalWeightKg || 0)}</td>
@@ -3290,6 +3426,11 @@ export default function Sales() {
                                   <td className="px-3 py-2">{row.proformaDate ? new Date(row.proformaDate).toLocaleDateString() : "-"}</td>
                                   <td className="px-3 py-2">{row.linkedOANo || row.linkedQuotationNo || "-"}</td>
                                   <td className="px-3 py-2">{row.customerName}</td>
+                                  <td className="px-3 py-2">{row.vertical || "-"}</td>
+                                  <td className="px-3 py-2">{row.engine || "-"}</td>
+                                  <td className="px-3 py-2">{row.model || "-"}</td>
+                                  <td className="px-3 py-2">{row.config || "-"}</td>
+                                  <td className="px-3 py-2">{row.esn || "-"}</td>
                                   <td className="px-3 py-2 text-right">USD {money(row.amount)}</td>
                                   <td className="px-3 py-2">
                                     <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(row.status)}`}>
@@ -3307,6 +3448,11 @@ export default function Sales() {
                                   <td className="px-3 py-2">{row.customerName}</td>
                                   <td className="px-3 py-2">{row.linkedProformaNo || "-"}</td>
                                   <td className="px-3 py-2">{row.linkedOANo || "-"}</td>
+                                  <td className="px-3 py-2">{row.vertical || "-"}</td>
+                                  <td className="px-3 py-2">{row.engine || "-"}</td>
+                                  <td className="px-3 py-2">{row.model || "-"}</td>
+                                  <td className="px-3 py-2">{row.config || "-"}</td>
+                                  <td className="px-3 py-2">{row.esn || "-"}</td>
                                   <td className="px-3 py-2">{row.currency || "USD"}</td>
                                   <td className="px-3 py-2 text-right">{row.currency || "USD"} {money(row.invoiceValue)}</td>
                                   <td className="px-3 py-2 text-right">{row.currency || "USD"} {money(row.paidAmount)}</td>
@@ -3349,6 +3495,11 @@ export default function Sales() {
                                   <td className="px-3 py-2">{row.destination || "-"}</td>
                                   <td className="px-3 py-2">{row.portOfLoading || "-"}</td>
                                   <td className="px-3 py-2">{row.portOfDischarge || "-"}</td>
+                                  <td className="px-3 py-2">{row.vertical || "-"}</td>
+                                  <td className="px-3 py-2">{row.engine || "-"}</td>
+                                  <td className="px-3 py-2">{row.model || "-"}</td>
+                                  <td className="px-3 py-2">{row.config || "-"}</td>
+                                  <td className="px-3 py-2">{row.esn || "-"}</td>
                                   <td className="px-3 py-2 text-right">{row.packageCount || 0}</td>
                                   <td className="px-3 py-2 text-right">{money(row.netWeight)}</td>
                                   <td className="px-3 py-2 text-right">{money(row.grossWeight)}</td>
@@ -5436,6 +5587,36 @@ export default function Sales() {
                     onChange={(e) => setDetailOADraftForm((f) => ({ ...f, dispatchTerms: e.target.value }))}
                   />
                 </FormField>
+                <FormField label="Vertical">
+                  <TextInput
+                    value={detailOADraftForm.vertical || ""}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, vertical: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Brand">
+                  <TextInput
+                    value={detailOADraftForm.engine || ""}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, engine: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Model">
+                  <TextInput
+                    value={detailOADraftForm.model || ""}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, model: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Config">
+                  <TextInput
+                    value={detailOADraftForm.config || ""}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, config: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="ESN">
+                  <TextInput
+                    value={detailOADraftForm.esn || ""}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, esn: e.target.value }))}
+                  />
+                </FormField>
               </div>
               <FormField label="Acknowledgement notes">
                 <textarea
@@ -5727,6 +5908,12 @@ export default function Sales() {
                 </div>
               </div>
               <div className="text-xs text-gray-600">Linked Quotation: {oaDetail.linkedQuotationNo || "-"}</div>
+              {(oaDetail.vertical || oaDetail.engine || oaDetail.model || oaDetail.config || oaDetail.esn) && (
+                <div className="rounded-xl border bg-gray-50 p-3 text-xs">
+                  <span className="font-semibold text-gray-500">Machine:</span>
+                  {" "}Vertical: {oaDetail.vertical || "-"} | Brand: {oaDetail.engine || "-"} | Model: {oaDetail.model || "-"} | Config: {oaDetail.config || "-"} | ESN: {oaDetail.esn || "-"}
+                </div>
+              )}
               {(oaDetail.acknowledgementNotes || oaDetail.deliverySchedule) && (
                 <div className="rounded-xl border bg-gray-50 p-3 text-xs">
                   {oaDetail.deliverySchedule ? (
@@ -5882,6 +6069,36 @@ export default function Sales() {
                   <TextInput
                     value={detailProformaDraftForm.shipmentTerms || ""}
                     onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, shipmentTerms: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Vertical">
+                  <TextInput
+                    value={detailProformaDraftForm.vertical || ""}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, vertical: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Brand">
+                  <TextInput
+                    value={detailProformaDraftForm.engine || ""}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, engine: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Model">
+                  <TextInput
+                    value={detailProformaDraftForm.model || ""}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, model: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Config">
+                  <TextInput
+                    value={detailProformaDraftForm.config || ""}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, config: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="ESN">
+                  <TextInput
+                    value={detailProformaDraftForm.esn || ""}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, esn: e.target.value }))}
                   />
                 </FormField>
               </div>
@@ -6318,6 +6535,38 @@ export default function Sales() {
                   <TextInput
                     value={detailSalesInvoiceDraftForm.dispatchDetails || ""}
                     onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, dispatchDetails: e.target.value }))}
+                  />
+                </FormField>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3 md:grid-cols-5">
+                <FormField label="Vertical">
+                  <TextInput
+                    value={detailSalesInvoiceDraftForm.vertical || ""}
+                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, vertical: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Brand">
+                  <TextInput
+                    value={detailSalesInvoiceDraftForm.engine || ""}
+                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, engine: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Model">
+                  <TextInput
+                    value={detailSalesInvoiceDraftForm.model || ""}
+                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, model: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Config">
+                  <TextInput
+                    value={detailSalesInvoiceDraftForm.config || ""}
+                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, config: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="ESN">
+                  <TextInput
+                    value={detailSalesInvoiceDraftForm.esn || ""}
+                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, esn: e.target.value }))}
                   />
                 </FormField>
               </div>
@@ -7430,6 +7679,23 @@ export default function Sales() {
             <TextInput value={oaForm.currency} onChange={(e) => setOaForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))} />
           </FormField>
         </div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-3 md:grid-cols-5">
+          <FormField label="Vertical">
+            <TextInput value={oaForm.vertical || ""} onChange={(e) => setOaForm((f) => ({ ...f, vertical: e.target.value }))} />
+          </FormField>
+          <FormField label="Brand">
+            <TextInput value={oaForm.engine || ""} onChange={(e) => setOaForm((f) => ({ ...f, engine: e.target.value }))} />
+          </FormField>
+          <FormField label="Model">
+            <TextInput value={oaForm.model || ""} onChange={(e) => setOaForm((f) => ({ ...f, model: e.target.value }))} />
+          </FormField>
+          <FormField label="Config">
+            <TextInput value={oaForm.config || ""} onChange={(e) => setOaForm((f) => ({ ...f, config: e.target.value }))} />
+          </FormField>
+          <FormField label="ESN">
+            <TextInput value={oaForm.esn || ""} onChange={(e) => setOaForm((f) => ({ ...f, esn: e.target.value }))} />
+          </FormField>
+        </div>
         <div className="mt-4">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-sm font-medium">OA Lines</span>
@@ -7556,6 +7822,23 @@ export default function Sales() {
           </FormField>
           <FormField label="Currency">
             <TextInput value={proformaForm.currency} onChange={(e) => setProformaForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))} />
+          </FormField>
+        </div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-3 md:grid-cols-5">
+          <FormField label="Vertical">
+            <TextInput value={proformaForm.vertical || ""} onChange={(e) => setProformaForm((f) => ({ ...f, vertical: e.target.value }))} />
+          </FormField>
+          <FormField label="Brand">
+            <TextInput value={proformaForm.engine || ""} onChange={(e) => setProformaForm((f) => ({ ...f, engine: e.target.value }))} />
+          </FormField>
+          <FormField label="Model">
+            <TextInput value={proformaForm.model || ""} onChange={(e) => setProformaForm((f) => ({ ...f, model: e.target.value }))} />
+          </FormField>
+          <FormField label="Config">
+            <TextInput value={proformaForm.config || ""} onChange={(e) => setProformaForm((f) => ({ ...f, config: e.target.value }))} />
+          </FormField>
+          <FormField label="ESN">
+            <TextInput value={proformaForm.esn || ""} onChange={(e) => setProformaForm((f) => ({ ...f, esn: e.target.value }))} />
           </FormField>
         </div>
         <div className="mt-4">
@@ -7696,6 +7979,38 @@ export default function Sales() {
             <TextInput
               value={salesInvoiceForm.currency}
               onChange={(e) => setSalesInvoiceForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
+            />
+          </FormField>
+        </div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-3 md:grid-cols-5">
+          <FormField label="Vertical">
+            <TextInput
+              value={salesInvoiceForm.vertical || ""}
+              onChange={(e) => setSalesInvoiceForm((f) => ({ ...f, vertical: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Brand">
+            <TextInput
+              value={salesInvoiceForm.engine || ""}
+              onChange={(e) => setSalesInvoiceForm((f) => ({ ...f, engine: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Model">
+            <TextInput
+              value={salesInvoiceForm.model || ""}
+              onChange={(e) => setSalesInvoiceForm((f) => ({ ...f, model: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Config">
+            <TextInput
+              value={salesInvoiceForm.config || ""}
+              onChange={(e) => setSalesInvoiceForm((f) => ({ ...f, config: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="ESN">
+            <TextInput
+              value={salesInvoiceForm.esn || ""}
+              onChange={(e) => setSalesInvoiceForm((f) => ({ ...f, esn: e.target.value }))}
             />
           </FormField>
         </div>

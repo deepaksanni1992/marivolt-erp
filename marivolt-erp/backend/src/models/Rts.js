@@ -40,6 +40,11 @@ const rtsSchema = new mongoose.Schema(
     linkedSalesInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesInvoice", index: true, default: null },
     linkedSalesInvoiceNo: { type: String, default: "", trim: true },
     customerName: { type: String, required: true, trim: true, index: true },
+    vertical: { type: String, default: "", trim: true },
+    engine: { type: String, default: "", trim: true },
+    model: { type: String, default: "", trim: true },
+    config: { type: String, default: "", trim: true },
+    esn: { type: String, default: "", trim: true },
     lines: { type: [rtsLineSchema], default: [] },
     packingDetails: {
       totalWeightKg: { type: Number, default: 0 },
