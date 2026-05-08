@@ -7,6 +7,8 @@ router.use(...requireErpAccess);
 
 router.get("/meta", c.stockMeta);
 router.get("/balance", c.listStockBalance);
+router.get("/customer-allocations", c.listCustomerAllocationsForArticle);
+router.get("/negative-allocations", c.reportNegativeAllocations);
 router.get("/balance/:article", c.getBalanceByArticle);
 router.get("/ledger", c.listStockLedger);
 router.get("/ledger/:article", c.getStockLedgerByArticle);

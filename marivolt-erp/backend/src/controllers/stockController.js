@@ -5,7 +5,34 @@ import StockLedger, { TX_TYPES } from "../models/StockLedger.js";
 import StockLocation from "../models/StockLocation.js";
 import StockAdjustment from "../models/StockAdjustment.js";
 import StockTransfer from "../models/StockTransfer.js";
+import OrderAllocation from "../models/OrderAllocation.js";
 import { postLedgerMovement } from "../services/stockLedgerService.js";
+
+/**
+ * Derives the live stock buckets from a StockBalance row.
+ * We treat onHandQty (legacy `quantity`), reservedQty (legacy alias for
+ * allocatedQty), rtsQty as the source of truth and compute available
+ * fresh on every read, because not every write path keeps `availableQty`
+ * in sync (specifically the sales reserve path increments reservedQty
+ * without touching availableQty).
+ */
+function deriveStockRow(row) {
+  const onHand = Number(row.onHandQty ?? row.quantity ?? 0) || 0;
+  // Some writers used reservedQty, others use allocatedQty — take the larger
+  // so a stale 0 in one of them does not under-report.
+  const allocated = Math.max(Number(row.allocatedQty || 0), Number(row.reservedQty || 0));
+  const rts = Number(row.rtsQty || 0);
+  const available = onHand - allocated - rts;
+  return {
+    ...row,
+    onHandQty: onHand,
+    allocatedQty: allocated,
+    reservedQty: allocated,
+    rtsQty: rts,
+    availableQty: available,
+    isNegativeAvailable: available < 0,
+  };
+}
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -27,20 +54,24 @@ export async function listStockBalance(req, res) {
     const limit = Math.min(500, Math.max(1, Number(req.query.limit || 50)));
     const skip = (page - 1) * limit;
     const search = t(req.query.search);
+    const negativeOnly = req.query.negativeOnly === "true" || req.query.negativeOnly === "1";
+    const allocatedOnly = req.query.allocatedOnly === "true" || req.query.allocatedOnly === "1";
     const filter = withCompany(req);
     if (req.query.location) filter.location = t(req.query.location).toUpperCase();
     if (req.query.batchNo) filter.batchNo = new RegExp(t(req.query.batchNo), "i");
     if (req.query.article) filter.article = t(req.query.article).toUpperCase();
     if (req.query.availableOnly === "true") filter.availableQty = { $gt: 0 };
 
-    const [rows, total] = await Promise.all([
-      StockBalance.find(filter).sort({ article: 1 }).skip(skip).limit(limit).lean(),
-      StockBalance.countDocuments(filter),
-    ]);
+    // When the caller asked for a server-filtered subset (negative or allocated)
+    // we have to pull all matching rows for that filter and paginate after the
+    // derived computation, since availableQty is not a reliable persisted field.
+    const needsClientPager = negativeOnly || allocatedOnly;
+    const baseQuery = StockBalance.find(filter).sort({ article: 1 });
+    const rows = needsClientPager ? await baseQuery.lean() : await baseQuery.skip(skip).limit(limit).lean();
     const articles = [...new Set(rows.map((r) => r.article))];
     const items = await ItemMaster.find(withCompany(req, { article: { $in: articles } })).lean();
     const byArticle = new Map(items.map((it) => [it.article, it]));
-    let merged = rows.map((r) => ({ ...r, item: byArticle.get(r.article) || null }));
+    let merged = rows.map((r) => ({ ...deriveStockRow(r), item: byArticle.get(r.article) || null }));
     if (search) {
       const re = new RegExp(search, "i");
       merged = merged.filter((r) =>
@@ -54,7 +85,166 @@ export async function listStockBalance(req, res) {
         re.test(r.item?.model || "")
       );
     }
+    if (negativeOnly) merged = merged.filter((r) => r.availableQty < 0);
+    if (allocatedOnly) merged = merged.filter((r) => Number(r.allocatedQty) > 0);
+    let total;
+    if (needsClientPager) {
+      total = merged.length;
+      merged = merged.slice(skip, skip + limit);
+    } else {
+      total = await StockBalance.countDocuments(filter);
+    }
     res.json({ items: merged, total, page, limit });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+/**
+ * Drill-down: list every active OrderAllocation line that holds reservation
+ * for a given article (optionally filtered by warehouse/location and customer
+ * search). Sourced from OrderAllocation, which today carries the
+ * customer/reference/qty information for each reservation.
+ */
+export async function listCustomerAllocationsForArticle(req, res) {
+  try {
+    const article = t(req.query.article).toUpperCase();
+    if (!article) return res.status(400).json({ message: "article query param is required" });
+    const warehouse = t(req.query.warehouse || req.query.location).toUpperCase();
+    const customerSearch = t(req.query.customer);
+    const referenceSearch = t(req.query.referenceNo);
+    const filter = withCompany(req, {
+      "lines.article": article,
+      status: { $nin: ["CANCELLED"] },
+    });
+    if (warehouse) filter.warehouse = warehouse;
+    if (customerSearch) filter.customerName = new RegExp(customerSearch, "i");
+    const allocations = await OrderAllocation.find(filter)
+      .sort({ allocationDate: -1, createdAt: -1 })
+      .lean();
+    const items = [];
+    for (const alloc of allocations) {
+      for (const line of alloc.lines || []) {
+        if (String(line.article || "").toUpperCase() !== article) continue;
+        const ref = alloc.linkedProformaNo || alloc.linkedOANo || alloc.linkedQuotationNo || alloc.allocationNo;
+        if (referenceSearch && !new RegExp(referenceSearch, "i").test(ref || "")) continue;
+        items.push({
+          allocationId: alloc._id,
+          allocationNo: alloc.allocationNo,
+          allocationDate: alloc.allocationDate,
+          status: alloc.status,
+          customerName: alloc.customerName,
+          warehouse: alloc.warehouse || "MAIN",
+          article: line.article,
+          partNumber: line.partNumber || "",
+          description: line.description || "",
+          uom: line.uom || "PCS",
+          allocatedQty: Number(line.qty) || 0,
+          isNegativeAllocation: Boolean(line.isNegativeAllocation),
+          referenceType: alloc.linkedProformaId
+            ? "PROFORMA"
+            : alloc.linkedOAId
+              ? "ORDER_ACK"
+              : alloc.linkedQuotationId
+                ? "QUOTATION"
+                : "ORDER_ALLOCATION",
+          referenceNo: ref,
+          createdBy: alloc.createdBy || "",
+          createdAt: alloc.createdAt,
+        });
+      }
+    }
+    res.json({ items, total: items.length });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+/**
+ * Negative allocation / backorder report: returns one row per article+location
+ * whose derived available is below zero, plus the customer allocation lines
+ * that contributed to that negative state. Used by the Store > Negative
+ * Allocation Report tab.
+ */
+export async function reportNegativeAllocations(req, res) {
+  try {
+    const article = t(req.query.article).toUpperCase();
+    const warehouse = t(req.query.warehouse || req.query.location).toUpperCase();
+    const customerSearch = t(req.query.customer);
+    const filter = withCompany(req);
+    if (article) filter.article = article;
+    if (warehouse) filter.location = warehouse;
+    const balances = await StockBalance.find(filter).lean();
+    const articles = [...new Set(balances.map((b) => b.article))];
+    const masters = await ItemMaster.find(withCompany(req, { article: { $in: articles } }))
+      .select("article itemName uom")
+      .lean();
+    const masterByArticle = new Map(masters.map((m) => [m.article, m]));
+    const allocFilter = withCompany(req, {
+      status: { $nin: ["CANCELLED"] },
+      "lines.article": { $in: articles },
+    });
+    if (customerSearch) allocFilter.customerName = new RegExp(customerSearch, "i");
+    const allocs = articles.length
+      ? await OrderAllocation.find(allocFilter).sort({ allocationDate: -1 }).lean()
+      : [];
+    const allocationsByArticleWarehouse = new Map();
+    for (const alloc of allocs) {
+      const wh = String(alloc.warehouse || "MAIN").toUpperCase();
+      for (const line of alloc.lines || []) {
+        const lineArticle = String(line.article || "").toUpperCase();
+        if (!lineArticle) continue;
+        const key = `${lineArticle}::${wh}`;
+        if (!allocationsByArticleWarehouse.has(key)) allocationsByArticleWarehouse.set(key, []);
+        allocationsByArticleWarehouse.get(key).push({
+          allocationId: alloc._id,
+          allocationNo: alloc.allocationNo,
+          allocationDate: alloc.allocationDate,
+          status: alloc.status,
+          customerName: alloc.customerName,
+          referenceNo:
+            alloc.linkedProformaNo ||
+            alloc.linkedOANo ||
+            alloc.linkedQuotationNo ||
+            alloc.allocationNo,
+          referenceType: alloc.linkedProformaId
+            ? "PROFORMA"
+            : alloc.linkedOAId
+              ? "ORDER_ACK"
+              : alloc.linkedQuotationId
+                ? "QUOTATION"
+                : "ORDER_ALLOCATION",
+          allocatedQty: Number(line.qty) || 0,
+          isNegativeAllocation: Boolean(line.isNegativeAllocation),
+          createdBy: alloc.createdBy || "",
+          createdAt: alloc.createdAt,
+        });
+      }
+    }
+    const items = [];
+    for (const balance of balances) {
+      const derived = deriveStockRow(balance);
+      if (derived.availableQty >= 0) continue;
+      const master = masterByArticle.get(derived.article);
+      const allocations = allocationsByArticleWarehouse.get(`${derived.article}::${String(derived.location || "").toUpperCase()}`) || [];
+      // If the user asked for a customer search and this row has no matching
+      // allocations after filtering, skip it.
+      if (customerSearch && !allocations.length) continue;
+      items.push({
+        article: derived.article,
+        itemName: master?.itemName || "",
+        uom: master?.uom || "",
+        location: derived.location || "",
+        onHandQty: derived.onHandQty,
+        allocatedQty: derived.allocatedQty,
+        rtsQty: derived.rtsQty,
+        availableQty: derived.availableQty,
+        shortageQty: Math.max(0, -derived.availableQty),
+        allocations,
+      });
+    }
+    items.sort((a, b) => a.availableQty - b.availableQty);
+    res.json({ items, total: items.length });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
