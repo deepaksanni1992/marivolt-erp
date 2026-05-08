@@ -3,6 +3,7 @@ import GRN from "../models/GRN.js";
 import ItemMaster from "../models/itemMasterModel.js";
 import StockLocation from "../models/StockLocation.js";
 import * as stockService from "../services/stockService.js";
+import { writeAudit } from "../services/auditService.js";
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -150,6 +151,17 @@ export async function postGrn(req, res) {
       grn.status = "Posted";
       grn.postedAt = new Date();
       await grn.save({ session });
+      await writeAudit(req, {
+        action: "POST",
+        module: "STORE",
+        entityType: "GRN",
+        entityId: grn._id,
+        documentNo: grn.grnNo,
+        fromStatus: "Draft",
+        toStatus: "Posted",
+        description: `GRN ${grn.grnNo} posted (${grn.items?.length || 0} lines)`,
+        metadata: { supplierName: grn.supplierName || "" },
+      });
     });
     res.json({ success: true });
   } catch (err) {
@@ -190,6 +202,17 @@ export async function cancelGrn(req, res) {
       grn.status = "Cancelled";
       grn.cancelledAt = new Date();
       await grn.save({ session });
+      await writeAudit(req, {
+        action: "CANCEL",
+        module: "STORE",
+        entityType: "GRN",
+        entityId: grn._id,
+        documentNo: grn.grnNo,
+        fromStatus: "Posted",
+        toStatus: "Cancelled",
+        description: `GRN ${grn.grnNo} cancelled — stock reversed`,
+        metadata: { supplierName: grn.supplierName || "" },
+      });
     });
     res.json({ success: true });
   } catch (err) {

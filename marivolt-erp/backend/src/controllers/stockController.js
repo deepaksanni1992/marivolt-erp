@@ -11,6 +11,7 @@ import GRN from "../models/GRN.js";
 import Rts from "../models/Rts.js";
 import SalesInvoice from "../models/SalesInvoice.js";
 import * as stockService from "../services/stockService.js";
+import { writeAudit } from "../services/auditService.js";
 
 /**
  * Derives the live stock buckets from a StockBalance row.
@@ -1117,6 +1118,22 @@ export async function postAdjustment(req, res) {
       row.status = "Posted";
       row.postedAt = new Date();
       await row.save({ session });
+      await writeAudit(req, {
+        action: "STOCK",
+        module: "STORE",
+        entityType: "STOCK_ADJUSTMENT",
+        entityId: row._id,
+        documentNo: row.adjustmentNo,
+        toStatus: "Posted",
+        description: `Stock adjustment ${row.adjustmentNo} posted (${row.adjustmentType} ${row.quantity})`,
+        metadata: {
+          article: row.article,
+          location: row.location,
+          adjustmentType: row.adjustmentType,
+          quantity: row.quantity,
+          reason: row.reason,
+        },
+      });
     });
     res.json({ success: true });
   } catch (err) {
@@ -1172,6 +1189,21 @@ export async function postTransfer(req, res) {
       row.status = "Posted";
       row.postedAt = new Date();
       await row.save({ session });
+      await writeAudit(req, {
+        action: "STOCK",
+        module: "STORE",
+        entityType: "STOCK_TRANSFER",
+        entityId: row._id,
+        documentNo: row.transferNo,
+        toStatus: "Posted",
+        description: `Stock transfer ${row.transferNo} posted: ${row.fromLocation} → ${row.toLocation} qty ${row.quantity}`,
+        metadata: {
+          article: row.article,
+          fromLocation: row.fromLocation,
+          toLocation: row.toLocation,
+          quantity: row.quantity,
+        },
+      });
     });
     res.json({ success: true });
   } catch (err) {

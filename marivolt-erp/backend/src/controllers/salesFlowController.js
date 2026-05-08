@@ -16,6 +16,13 @@ import Item from "../models/Item.js";
 import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
 import * as stockService from "../services/stockService.js";
+import {
+  DOC_TYPES,
+  assertTransition,
+  blockTransition,
+  canonicalStatus,
+} from "../services/docLifecycle.js";
+import { writeAudit, writeStatusChange } from "../services/auditService.js";
 
 const { withTransaction } = stockService;
 
@@ -1469,14 +1476,32 @@ export async function cancelOA(req, res) {
         message: "OA cancel: no stock movement (no active allocation).",
       });
     }
+    const prevStatus = String(oa.status || "");
+    // OA in this controller maps to the Phase-8 QUOTATION/OA family; we
+    // protect cancellation through the lifecycle for parity with the
+    // other sales documents.
+    assertTransition(DOC_TYPES.QUOTATION, prevStatus, "CANCELLED", { documentNo: oa.oaNumber });
     oa.status = "CANCELLED";
     oa.cancelledAt = new Date();
     oa.cancelledBy = req.user?.email || "";
     oa.cancellationReason = reason;
     oa.updatedBy = req.user?.email || "";
     await oa.save();
+    await writeStatusChange(req, {
+      module: "SALES",
+      entityType: "ORDER_ACKNOWLEDGEMENT",
+      entityId: oa._id,
+      documentNo: oa.oaNumber || "",
+      fromStatus: canonicalStatus(DOC_TYPES.QUOTATION, prevStatus),
+      toStatus: "CANCELLED",
+      description: `OA ${oa.oaNumber || ""} cancelled`,
+      metadata: { reason },
+    });
     res.json(oa);
   } catch (err) {
+    if (err?.code === "INVALID_TRANSITION") {
+      return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
+    }
     res.status(400).json({ message: err.message });
   }
 }
@@ -1917,6 +1942,26 @@ export async function updateSalesInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const doc = await SalesInvoice.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
+    // Phase-8: posted invoices are immutable except for status (which
+    // goes through the lifecycle). Block free-form edits the moment
+    // stock has been posted out so accounts and stock stay consistent.
+    const canon = canonicalStatus(DOC_TYPES.SALES_INVOICE, doc.status);
+    if (["POSTED", "PARTIAL_PAYMENT", "PAID", "CANCELLED"].includes(canon)) {
+      const requestedStatus = req.body?.status;
+      const otherEditedKey = Object.keys(req.body || {}).find((k) => k !== "status" && k !== "remarks");
+      if (otherEditedKey) {
+        blockTransition(
+          DOC_TYPES.SALES_INVOICE,
+          doc.status,
+          doc.status,
+          `Cannot edit field "${otherEditedKey}" on a ${canon} sales invoice (${doc.invoiceNo}). Cancel and re-issue if needed.`,
+          { invoiceNo: doc.invoiceNo, attemptedField: otherEditedKey }
+        );
+      }
+      if (requestedStatus && canonicalStatus(DOC_TYPES.SALES_INVOICE, requestedStatus) !== canon) {
+        assertTransition(DOC_TYPES.SALES_INVOICE, doc.status, requestedStatus, { documentNo: doc.invoiceNo });
+      }
+    }
     const allowed = [
       "invoiceDate",
       "customerName",
@@ -1941,6 +1986,7 @@ export async function updateSalesInvoice(req, res) {
       "config",
       "esn",
     ];
+    const beforeSnapshot = doc.toObject();
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
     }
@@ -1948,8 +1994,21 @@ export async function updateSalesInvoice(req, res) {
     Object.assign(doc, computeTotals(doc.lines, doc));
     doc.updatedBy = req.user?.email || "";
     await doc.save();
+    await writeAudit(req, {
+      action: "UPDATE",
+      module: "SALES",
+      entityType: "SALES_INVOICE",
+      entityId: doc._id,
+      documentNo: doc.invoiceNo,
+      description: `Sales Invoice ${doc.invoiceNo} updated`,
+      beforeData: { status: beforeSnapshot.status, grandTotal: beforeSnapshot.grandTotal },
+      afterData: { status: doc.status, grandTotal: doc.grandTotal },
+    });
     res.json(doc);
   } catch (err) {
+    if (err?.code === "INVALID_TRANSITION") {
+      return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
+    }
     res.status(400).json({ message: err.message });
   }
 }
@@ -1963,9 +2022,35 @@ export async function cancelSalesInvoice(req, res) {
     if (!dryRun && !reason) return res.status(400).json({ message: "cancellationReason is required" });
     const inv = await SalesInvoice.findOne(withCompany(req, { _id: id }));
     if (!inv) return res.status(404).json({ message: "Not found" });
-    if (String(inv.status || "").toUpperCase() === "CANCELLED") {
+    const prevInvStatus = String(inv.status || "");
+    if (canonicalStatus(DOC_TYPES.SALES_INVOICE, prevInvStatus) === "CANCELLED") {
       return res.status(400).json({ message: "Sales invoice is already cancelled" });
     }
+    // Phase-8: block cancel if any payment has been received against this
+    // invoice. The frontend should remove receipts via the Payments tab
+    // first; mirroring the proforma behaviour.
+    const receivedAgg = await PaymentReceipt.aggregate([
+      {
+        $match: withCompany(req, {
+          status: { $ne: "CANCELLED" },
+          "allocations.invoiceId": new mongoose.Types.ObjectId(inv._id),
+        }),
+      },
+      { $unwind: "$allocations" },
+      { $match: { "allocations.invoiceId": new mongoose.Types.ObjectId(inv._id) } },
+      { $group: { _id: null, total: { $sum: "$allocations.allocatedAmount" } } },
+    ]);
+    const receivedAmount = Number(receivedAgg[0]?.total || 0);
+    if (receivedAmount > 0) {
+      blockTransition(
+        DOC_TYPES.SALES_INVOICE,
+        prevInvStatus,
+        "CANCELLED",
+        `Cannot cancel sales invoice ${inv.invoiceNo}: ${receivedAmount.toFixed(2)} ${inv.currency || "USD"} already received. Reverse the payments first.`,
+        { receivedAmount, invoiceNo: inv.invoiceNo }
+      );
+    }
+    assertTransition(DOC_TYPES.SALES_INVOICE, prevInvStatus, "CANCELLED", { documentNo: inv.invoiceNo });
     let warehouse = "MAIN";
     let allocation = null;
     if (inv.linkedOrderAllocationId) {
@@ -2039,9 +2124,22 @@ export async function cancelSalesInvoice(req, res) {
         await allocation.save({ session });
       }
     });
+    await writeStatusChange(req, {
+      module: "SALES",
+      entityType: "SALES_INVOICE",
+      entityId: inv._id,
+      documentNo: inv.invoiceNo,
+      fromStatus: canonicalStatus(DOC_TYPES.SALES_INVOICE, prevInvStatus),
+      toStatus: "CANCELLED",
+      description: `Sales Invoice ${inv.invoiceNo} cancelled`,
+      metadata: { reason, restoredLines: stockImpact },
+    });
     const fresh = await SalesInvoice.findOne(withCompany(req, { _id: id }));
     res.json(fresh);
   } catch (err) {
+    if (err?.code === "INVALID_TRANSITION" || err?.code === "STOCK_INSUFFICIENT") {
+      return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
+    }
     res.status(400).json({ message: err.message });
   }
 }
@@ -2776,6 +2874,8 @@ export async function approveRts(req, res) {
           sourceModule: "SALES",
         });
       }
+      const prevRtsStatus = String(doc.status || "");
+      assertTransition(DOC_TYPES.RTS, prevRtsStatus, "APPROVED", { documentNo: doc.rtsNo });
       doc.status = "APPROVED";
       doc.updatedBy = req.user?.email || "";
       await doc.save({ session });
@@ -2794,10 +2894,22 @@ export async function approveRts(req, res) {
       allocation.updatedBy = req.user?.email || "";
       await allocation.save({ session });
     });
+    await writeStatusChange(req, {
+      module: "SALES",
+      entityType: "RTS",
+      entityId: doc._id,
+      documentNo: doc.rtsNo,
+      fromStatus: "PENDING",
+      toStatus: "APPROVED",
+      description: `RTS ${doc.rtsNo} approved, qty moved Allocated → RTS`,
+    });
 
     const out = await Rts.findOne(withCompany(req, { _id: id })).lean();
     res.json(out);
   } catch (err) {
+    if (err?.code === "INVALID_TRANSITION" || err?.code === "STOCK_INSUFFICIENT") {
+      return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
+    }
     res.status(400).json({ message: err.message });
   }
 }
@@ -2886,10 +2998,23 @@ export async function convertOAToOrderAllocation(req, res) {
       await oa.save({ session });
     });
     const doc = await OrderAllocation.findOne(withCompany(req, { _id: createdId })).lean();
+    await writeAudit(req, {
+      action: "CREATE",
+      module: "SALES",
+      entityType: "ORDER_ALLOCATION",
+      entityId: doc._id,
+      documentNo: doc.allocationNo,
+      toStatus: "ALLOCATED",
+      description: `Order Allocation ${doc.allocationNo} created from OA ${oa.oaNo || ""}`,
+      metadata: {
+        sourceDoc: { type: "ORDER_ACKNOWLEDGEMENT", id: String(oa._id), no: oa.oaNo || "" },
+        hasNegativeAllocation: doc.hasNegativeAllocation === true,
+      },
+    });
     res.status(201).json(doc);
   } catch (err) {
-    if (err?.code === "STOCK_INSUFFICIENT") {
-      return res.status(409).json({
+    if (err?.code === "STOCK_INSUFFICIENT" || err?.code === "INVALID_TRANSITION") {
+      return res.status(err.statusCode || 409).json({
         message: err.message,
         code: err.code,
         details: err.details || null,
@@ -3097,10 +3222,23 @@ export async function convertProformaToOrderAllocation(req, res) {
       await doc.save({ session });
     });
     const doc = await OrderAllocation.findOne(withCompany(req, { _id: createdId })).lean();
+    await writeAudit(req, {
+      action: "CREATE",
+      module: "SALES",
+      entityType: "ORDER_ALLOCATION",
+      entityId: doc._id,
+      documentNo: doc.allocationNo,
+      toStatus: "ALLOCATED",
+      description: `Order Allocation ${doc.allocationNo} created from proforma ${proforma.proformaNo}`,
+      metadata: {
+        sourceDoc: { type: "PROFORMA", id: String(proforma._id), no: proforma.proformaNo },
+        hasNegativeAllocation: doc.hasNegativeAllocation === true,
+      },
+    });
     res.status(201).json(doc);
   } catch (err) {
-    if (err?.code === "STOCK_INSUFFICIENT") {
-      return res.status(409).json({
+    if (err?.code === "STOCK_INSUFFICIENT" || err?.code === "INVALID_TRANSITION") {
+      return res.status(err.statusCode || 409).json({
         message: err.message,
         code: err.code,
         details: err.details || null,
@@ -3302,9 +3440,29 @@ export async function convertOrderAllocationToSalesInvoice(req, res) {
       }
     });
     const doc = await SalesInvoice.findOne(withCompany(req, { _id: createdId })).lean();
+    await writeAudit(req, {
+      action: "CREATE",
+      module: "SALES",
+      entityType: "SALES_INVOICE",
+      entityId: doc._id,
+      documentNo: doc.invoiceNo,
+      toStatus: "POSTED",
+      description: `Sales Invoice ${doc.invoiceNo} created from allocation ${doc.linkedOrderAllocationNo}`,
+      metadata: {
+        sourceDoc: {
+          type: "ORDER_ALLOCATION",
+          id: String(doc.linkedOrderAllocationId),
+          no: doc.linkedOrderAllocationNo,
+        },
+        rtsNo: doc.linkedRtsNo || "",
+      },
+    });
     res.status(201).json(doc);
   } catch (err) {
     const msg = err.message || String(err);
+    if (err?.code === "INVALID_TRANSITION" || err?.code === "STOCK_INSUFFICIENT") {
+      return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
+    }
     if (String(msg).includes("already exists")) return res.status(409).json({ message: msg });
     res.status(400).json({ message: msg });
   }
@@ -3367,6 +3525,8 @@ export async function cancelOrderAllocation(req, res) {
       to: "AVAILABLE",
     }));
     if (dryRun) return res.json({ dryRun: true, stockImpact });
+    const prevStatus = String(alloc.status || "");
+    assertTransition(DOC_TYPES.ORDER_ALLOCATION, prevStatus, "CANCELLED", { documentNo: alloc.allocationNo });
     await withTransaction(async (session) => {
       if (alloc.stockReservedAt && releaseLines.length) {
         for (const [article, qty] of dedupeLines(releaseLines)) {
@@ -3392,9 +3552,22 @@ export async function cancelOrderAllocation(req, res) {
       alloc.updatedBy = req.user?.email || "";
       await alloc.save({ session });
     });
+    await writeStatusChange(req, {
+      module: "SALES",
+      entityType: "ORDER_ALLOCATION",
+      entityId: alloc._id,
+      documentNo: alloc.allocationNo,
+      fromStatus: canonicalStatus(DOC_TYPES.ORDER_ALLOCATION, prevStatus),
+      toStatus: "CANCELLED",
+      description: `Order Allocation ${alloc.allocationNo} cancelled`,
+      metadata: { reason, releasedLines: stockImpact },
+    });
     const fresh = await OrderAllocation.findOne(withCompany(req, { _id: id }));
     res.json(fresh);
   } catch (err) {
+    if (err?.code === "INVALID_TRANSITION" || err?.code === "STOCK_INSUFFICIENT") {
+      return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
+    }
     res.status(400).json({ message: err.message });
   }
 }
@@ -3426,6 +3599,7 @@ export async function cancelRtsDocument(req, res) {
       to: "RESERVED",
     }));
     if (dryRun) return res.json({ dryRun: true, stockImpact });
+    assertTransition(DOC_TYPES.RTS, st, "CANCELLED", { documentNo: doc.rtsNo });
     if (st === "DRAFT") {
       doc.status = "CANCELLED";
       doc.cancelledAt = new Date();
@@ -3433,6 +3607,16 @@ export async function cancelRtsDocument(req, res) {
       doc.cancellationReason = reason;
       doc.updatedBy = req.user?.email || "";
       await doc.save();
+      await writeStatusChange(req, {
+        module: "SALES",
+        entityType: "RTS",
+        entityId: doc._id,
+        documentNo: doc.rtsNo,
+        fromStatus: canonicalStatus(DOC_TYPES.RTS, st),
+        toStatus: "CANCELLED",
+        description: `RTS ${doc.rtsNo} cancelled (no stock impact, was DRAFT)`,
+        metadata: { reason },
+      });
       return res.json(doc);
     }
     if (st !== "APPROVED") {
@@ -3480,9 +3664,22 @@ export async function cancelRtsDocument(req, res) {
         await allocation.save({ session });
       }
     });
+    await writeStatusChange(req, {
+      module: "SALES",
+      entityType: "RTS",
+      entityId: doc._id,
+      documentNo: doc.rtsNo,
+      fromStatus: canonicalStatus(DOC_TYPES.RTS, st),
+      toStatus: "CANCELLED",
+      description: `RTS ${doc.rtsNo} cancelled, qty restored to allocation`,
+      metadata: { reason, restoredLines: stockImpact },
+    });
     const out = await Rts.findOne(withCompany(req, { _id: id }));
     res.json(out);
   } catch (err) {
+    if (err?.code === "INVALID_TRANSITION") {
+      return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
+    }
     res.status(400).json({ message: err.message });
   }
 }

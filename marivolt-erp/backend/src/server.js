@@ -25,6 +25,7 @@ import supplierRoutes from "./routes/supplierRoutes.js";
 import purchaseReturnRoutes from "./routes/purchaseReturnRoutes.js";
 import documentRoutes from "./routes/documentRoutes.js";
 import paymentReceiptRoutes from "./routes/paymentReceiptRoutes.js";
+import auditRoutes from "./routes/auditRoutes.js";
 import { isS3Configured } from "./config/s3.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -108,6 +109,7 @@ async function startServer() {
     app.use("/api/dekitting", dekittingRoutes);
     app.use("/api/documents", documentRoutes);
     app.use("/api/payment-receipts", paymentReceiptRoutes);
+    app.use("/api/audit-logs", auditRoutes);
 
     app.get("/api/health", (req, res) => {
       res.json({ ok: true, message: "Marivoltz API running" });

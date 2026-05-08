@@ -8,6 +8,7 @@ import CashBankEntry from "../models/CashBankEntry.js";
 import JournalEntry from "../models/JournalEntry.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
 import { buildDatedS3Key, getSignedFileUrl, uploadFileToS3 } from "../services/s3UploadService.js";
+import { writeAudit } from "../services/auditService.js";
 
 const ALLOWED_MIME = new Set(["application/pdf", "image/jpeg", "image/png"]);
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
@@ -490,6 +491,21 @@ export async function createPaymentReceipt(req, res) {
     let updatedProforma = null;
     if (linkedProforma?._id) updatedProforma = await recalcProformaPaymentState(req, linkedProforma._id);
     if (linkedSalesInvoice?._id) await recalcSalesInvoicePaymentState(req, linkedSalesInvoice._id);
+    await writeAudit(req, {
+      action: "PAYMENT",
+      module: "ACCOUNTS",
+      entityType: "PAYMENT_RECEIPT",
+      entityId: receipt._id,
+      documentNo: receipt.receiptNo,
+      toStatus: receipt.status,
+      description: `Payment receipt ${receipt.receiptNo} created (${amountReceived} ${receipt.currency || "USD"} from ${customerName || "—"})`,
+      metadata: {
+        proformaInvoiceNo: linkedProforma?.proformaNo || "",
+        salesInvoiceNo: linkedSalesInvoice?.invoiceNo || "",
+        attachment: receipt.attachmentKey || "",
+        allocationCount: allocations.length,
+      },
+    });
     res.status(201).json({ receipt, proforma: updatedProforma, journalEntry: journal });
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -669,6 +685,7 @@ export async function cancelPaymentReceipt(req, res) {
       }
     }
 
+    const prevReceiptStatus = String(receipt.status || "");
     receipt.status = "CANCELLED";
     receipt.cancellationReason = reason;
     receipt.cancelledAt = new Date();
@@ -681,6 +698,21 @@ export async function cancelPaymentReceipt(req, res) {
 
     const updatedProforma = receipt.proformaInvoiceId ? await recalcProformaPaymentState(req, receipt.proformaInvoiceId) : null;
     if (receipt.salesInvoiceId) await recalcSalesInvoicePaymentState(req, receipt.salesInvoiceId);
+    await writeAudit(req, {
+      action: "PAYMENT",
+      module: "ACCOUNTS",
+      entityType: "PAYMENT_RECEIPT",
+      entityId: receipt._id,
+      documentNo: receipt.receiptNo,
+      fromStatus: prevReceiptStatus,
+      toStatus: "CANCELLED",
+      description: `Payment receipt ${receipt.receiptNo} cancelled (${receipt.amountReceived} ${receipt.currency || "USD"})`,
+      metadata: {
+        reason,
+        reverseCustomerLedgerEntryId: String(reverseCustomer._id),
+        reverseCashBankEntryId: String(reverseCashBank._id),
+      },
+    });
     res.json({ receipt, proforma: updatedProforma });
   } catch (err) {
     res.status(400).json({ message: err.message });

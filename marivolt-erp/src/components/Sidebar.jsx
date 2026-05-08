@@ -12,6 +12,7 @@ const links = [
   { to: "/bom", label: "BOM" },
   { to: "/kitting", label: "Kitting" },
   { to: "/dekitting", label: "De-Kitting" },
+  { to: "/audit", label: "Audit Trail" },
 ];
 
 export default function Sidebar({ open, onClose }) {
