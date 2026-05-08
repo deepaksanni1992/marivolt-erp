@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import StockBalance from "../models/StockBalance.js";
 import InventoryLedger from "../models/InventoryLedger.js";
 import * as stockService from "../services/stockService.js";
+import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -151,6 +152,17 @@ export async function postAdjustment(req, res) {
     const { itemCode, warehouse, qtyDelta, remarks } = req.body;
     const delta = Number(qtyDelta) || 0;
     if (!delta) return res.status(400).json({ message: "qtyDelta cannot be zero" });
+    const gate = await ensureApproval(req, {
+      companyId: req.companyId,
+      module: "STORE",
+      actionKey: "adjustment_post",
+      documentType: "STOCK_ADJUSTMENT",
+      documentNo: String(req.body?.referenceNo || itemCode || "INVENTORY_ADJUSTMENT").trim(),
+      amount: Math.abs(delta),
+      currency: "USD",
+      description: `Post inventory adjustment for ${itemCode || "item"}`,
+    });
+    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
     await session.withTransaction(async () => {
       await stockService.stockAdjustment({
         session,

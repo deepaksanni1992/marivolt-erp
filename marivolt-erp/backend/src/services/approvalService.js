@@ -7,11 +7,14 @@
  *   • STORE.adjustment_post
  *   • LOGISTICS.dispatch_close
  *
- * Phase-10.1 only ships the data layer + helper functions. Phase-10.4
- * will wire `requestApproval()` into the relevant controllers so
- * postings block on a PENDING request when a matching ApprovalRule
- * is active. Today they remain unused — controllers continue to
- * post directly.
+ * Controllers call `ensureApproval(req, payload)` before sensitive
+ * actions. It returns:
+ *   { approved: true }                           -> proceed
+ *   { approved: false, request: ApprovalRequest } -> return 202
+ *
+ * A caller can retry an action with `approvalRequestId` in the JSON
+ * body or `x-approval-request-id` header after an approver marks the
+ * request APPROVED.
  */
 import ApprovalRule from "../models/ApprovalRule.js";
 import ApprovalRequest from "../models/ApprovalRequest.js";
@@ -76,6 +79,19 @@ export async function requestApproval(req, payload = {}) {
   });
   if (!rule) return null;
 
+  const existingFilter = {
+    companyId,
+    module: String(module).toUpperCase(),
+    actionKey: String(actionKey).toLowerCase(),
+    status: "PENDING",
+  };
+  if (documentId || documentNo) {
+    if (documentId) existingFilter.documentId = documentId;
+    else existingFilter.documentNo = documentNo;
+    const existing = await ApprovalRequest.findOne(existingFilter).lean();
+    if (existing) return existing;
+  }
+
   const doc = await ApprovalRequest.create({
     companyId,
     module: String(module).toUpperCase(),
@@ -97,6 +113,63 @@ export async function requestApproval(req, payload = {}) {
     history: [],
   });
   return doc;
+}
+
+function approvalRequestIdFromReq(req) {
+  return String(
+    req?.body?.approvalRequestId ||
+      req?.headers?.["x-approval-request-id"] ||
+      ""
+  ).trim();
+}
+
+export async function ensureApproval(req, payload = {}) {
+  const module = String(payload.module || "").toUpperCase();
+  const actionKey = String(payload.actionKey || "").toLowerCase();
+  const companyId = payload.companyId || req?.companyId;
+  const documentId = payload.documentId || null;
+  const documentNo = payload.documentNo || "";
+  const approvalRequestId = approvalRequestIdFromReq(req);
+
+  if (approvalRequestId) {
+    const filter = {
+      _id: approvalRequestId,
+      companyId,
+      module,
+      actionKey,
+      status: "APPROVED",
+    };
+    if (documentId) filter.documentId = documentId;
+    else if (documentNo) filter.documentNo = documentNo;
+    const approved = await ApprovalRequest.findOne(filter).lean();
+    if (!approved) {
+      const err = new Error("Approval request is not approved for this action.");
+      err.code = "APPROVAL_NOT_APPROVED";
+      err.status = 409;
+      throw err;
+    }
+    return { approved: true, request: approved };
+  }
+
+  const request = await requestApproval(req, { ...payload, companyId });
+  if (!request) return { approved: true };
+  return { approved: false, request };
+}
+
+export function approvalRequiredPayload(request) {
+  return {
+    message: "Approval required before this action can be completed.",
+    code: "APPROVAL_REQUIRED",
+    approvalRequest: {
+      id: request?._id,
+      module: request?.module,
+      actionKey: request?.actionKey,
+      documentType: request?.documentType || "",
+      documentId: request?.documentId || null,
+      documentNo: request?.documentNo || "",
+      status: request?.status || "PENDING",
+    },
+  };
 }
 
 export async function decideApproval(req, { id, decision, note = "" } = {}) {
@@ -126,4 +199,4 @@ export async function decideApproval(req, { id, decision, note = "" } = {}) {
   return doc;
 }
 
-export default { findMatchingRule, requestApproval, decideApproval };
+export default { findMatchingRule, requestApproval, ensureApproval, approvalRequiredPayload, decideApproval };

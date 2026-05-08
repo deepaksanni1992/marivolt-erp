@@ -301,7 +301,68 @@ Deferred to the next isolation pass:
 
 ---
 
-## 9. Backward compatibility
+## 9. Phase 10.4 approval gating
+
+Phase 10.4 wires `ApprovalRule` / `ApprovalRequest` into sensitive
+posting, cancellation, and close flows.
+
+Controller contract:
+
+* If no active matching `ApprovalRule` exists, the action proceeds as
+  before.
+* If a rule matches, the controller returns HTTP `202`:
+
+```json
+{
+  "message": "Approval required before this action can be completed.",
+  "code": "APPROVAL_REQUIRED",
+  "approvalRequest": {
+    "id": "...",
+    "module": "SALES",
+    "actionKey": "invoice_cancel",
+    "documentNo": "SI-...",
+    "status": "PENDING"
+  }
+}
+```
+
+* An approver approves/rejects from `Settings → Approval Queue`.
+* The original caller retries the same API call with either:
+  * JSON body field `approvalRequestId`, or
+  * header `x-approval-request-id`
+* The controller proceeds only if the request is `APPROVED` and matches
+  the active company, module, action and document.
+
+Gated flows:
+
+| Module    | actionKey         | Controller flow |
+| --------- | ----------------- | --------------- |
+| SALES     | `invoice_post`    | Direct Sales Invoice creation, OA → SI, Proforma → SI, Order Allocation / RTS → SI |
+| SALES     | `invoice_cancel`  | Sales Invoice cancellation |
+| ACCOUNTS  | `payment_post`    | Payment Receipt creation |
+| ACCOUNTS  | `payment_cancel`  | Payment Receipt cancellation |
+| STORE     | `adjustment_post` | Store Stock Adjustment post and legacy Inventory adjustment post |
+| LOGISTICS | `dispatch_close`  | Shipment close (`DELIVERED` → `CLOSED`) |
+
+Manual approval checklist:
+
+1. Add an active rule `SALES.invoice_cancel` with `minAmount=0`.
+   Cancel a valid unpaid Sales Invoice and confirm HTTP `202` with
+   `APPROVAL_REQUIRED`. Approve the queue row, retry with
+   `approvalRequestId`, and confirm the invoice cancels.
+2. Add `ACCOUNTS.payment_post`; create a receipt and confirm it creates
+   a pending approval without consuming a receipt number or uploading an
+   attachment. Approve and retry to post the receipt.
+3. Add `ACCOUNTS.payment_cancel`; cancel a posted receipt and confirm it
+   blocks until approved.
+4. Add `STORE.adjustment_post`; post a Stock Adjustment and confirm
+   ledger mutation waits for approval.
+5. Add `LOGISTICS.dispatch_close`; close a delivered shipment and
+   confirm close waits for approval.
+
+---
+
+## 10. Backward compatibility
 
 * All previous APIs and schemas remain unchanged.
 * Existing JWT tokens continue to work (`User.role` enum extended,
@@ -315,7 +376,7 @@ Deferred to the next isolation pass:
 
 ---
 
-## 10. Verification checklist
+## 11. Verification checklist
 
 Backend:
 

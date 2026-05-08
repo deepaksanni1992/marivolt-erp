@@ -6,6 +6,7 @@ import SalesInvoice from "../models/SalesInvoice.js";
 import Rts from "../models/Rts.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 import { writeAudit } from "../services/auditService.js";
+import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -324,6 +325,19 @@ export async function updateShipment(req, res) {
       if (String(existing.status || "").toUpperCase() !== "DELIVERED") {
         return res.status(409).json({ message: "Shipment must be delivered before closing.", code: "SHIPMENT_NOT_DELIVERED" });
       }
+      const gate = await ensureApproval(req, {
+        companyId: req.companyId,
+        module: "LOGISTICS",
+        actionKey: "dispatch_close",
+        documentType: "SHIPMENT",
+        documentId: existing._id,
+        documentNo: existing.shipmentRef,
+        customerName: existing.customerName || "",
+        amount: Number(existing.freightCost || 0) + Number(existing.customsCost || 0) + Number(existing.truckingCost || 0) + Number(existing.handlingCost || 0) + Number(existing.courierCost || 0),
+        currency: existing.currency || "USD",
+        description: `Close shipment ${existing.shipmentRef}`,
+      });
+      if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
     }
     const doc = await Shipment.findOneAndUpdate(withCompany(req, { _id: id }), payload, {
       new: true,

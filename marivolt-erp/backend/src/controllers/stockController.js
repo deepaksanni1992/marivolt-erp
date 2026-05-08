@@ -12,6 +12,7 @@ import Rts from "../models/Rts.js";
 import SalesInvoice from "../models/SalesInvoice.js";
 import * as stockService from "../services/stockService.js";
 import { writeAudit } from "../services/auditService.js";
+import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 
 /**
  * Derives the live stock buckets from a StockBalance row.
@@ -1093,6 +1094,23 @@ export async function createAdjustment(req, res) {
 export async function postAdjustment(req, res) {
   const session = await mongoose.startSession();
   try {
+    const rowForApproval = await StockAdjustment.findOne(
+      withCompany(req, { adjustmentNo: t(req.params.adjustmentNo).toUpperCase() })
+    ).lean();
+    if (!rowForApproval) return res.status(404).json({ message: "Adjustment not found" });
+    if (rowForApproval.status !== "Draft") return res.status(400).json({ message: "Adjustment already posted" });
+    const gate = await ensureApproval(req, {
+      companyId: req.companyId,
+      module: "STORE",
+      actionKey: "adjustment_post",
+      documentType: "STOCK_ADJUSTMENT",
+      documentId: rowForApproval._id,
+      documentNo: rowForApproval.adjustmentNo,
+      amount: Math.abs(Number(rowForApproval.quantity || 0)),
+      currency: "USD",
+      description: `Post stock adjustment ${rowForApproval.adjustmentNo}`,
+    });
+    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
     await session.withTransaction(async () => {
       const row = await StockAdjustment.findOne(withCompany(req, { adjustmentNo: t(req.params.adjustmentNo).toUpperCase() })).session(session);
       if (!row) throw new Error("Adjustment not found");

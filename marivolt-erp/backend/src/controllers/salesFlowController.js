@@ -27,6 +27,7 @@ import {
   postSalesInvoiceReceivable,
   reverseSalesInvoiceReceivable,
 } from "../services/customerReceivableService.js";
+import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 
 const { withTransaction } = stockService;
 
@@ -1837,13 +1838,25 @@ export async function convertOAToSalesInvoice(req, res) {
     );
     if (already) return res.status(409).json({ message: `Sales invoice already exists (${already.invoiceNo})` });
 
+    const lines = normalizeLines(oa.lines.map((line) => line.toObject?.() || line));
+    const totals = computeTotals(lines, oa);
+    const gate = await ensureApproval(req, {
+      companyId: req.companyId,
+      module: "SALES",
+      actionKey: "invoice_post",
+      documentType: "SALES_INVOICE",
+      documentNo: "",
+      customerName: oa.customerName || "",
+      amount: totals.grandTotal || 0,
+      currency: oa.currency || "USD",
+      description: `Post sales invoice from OA ${oa.oaNo}`,
+    });
+    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
     const invoiceNo = await nextSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
       docKey: "SALES_INVOICE",
     });
-    const lines = normalizeLines(oa.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines, oa);
     const doc = await SalesInvoice.create({
       companyId: req.companyId,
       invoiceNo,
@@ -1975,6 +1988,19 @@ export async function createSalesInvoice(req, res) {
     const body = { ...req.body };
     const lines = normalizeLines(body.lines || []);
     if (!lines.length) return res.status(400).json({ message: "Sales invoice requires at least one line" });
+    const totals = computeTotals(lines, body);
+    const gate = await ensureApproval(req, {
+      companyId: req.companyId,
+      module: "SALES",
+      actionKey: "invoice_post",
+      documentType: "SALES_INVOICE",
+      documentNo: body.invoiceNo || "",
+      customerName: body.customerName || "",
+      amount: totals.grandTotal || 0,
+      currency: body.currency || "USD",
+      description: `Post sales invoice for ${body.customerName || "customer"}`,
+    });
+    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
     const invoiceNo =
       body.invoiceNo ||
       (await nextSalesDocNumber({
@@ -1982,7 +2008,6 @@ export async function createSalesInvoice(req, res) {
         companyCode: req.companyCode,
         docKey: "SALES_INVOICE",
       }));
-    const totals = computeTotals(lines, body);
     const doc = await SalesInvoice.create({
       ...body,
       lines,
@@ -2144,6 +2169,19 @@ export async function cancelSalesInvoice(req, res) {
     if (dryRun) {
       return res.json({ dryRun: true, stockImpact });
     }
+    const gate = await ensureApproval(req, {
+      companyId: req.companyId,
+      module: "SALES",
+      actionKey: "invoice_cancel",
+      documentType: "SALES_INVOICE",
+      documentId: inv._id,
+      documentNo: inv.invoiceNo,
+      customerName: inv.customerName || "",
+      amount: inv.grandTotal || 0,
+      currency: inv.currency || "USD",
+      description: `Cancel sales invoice ${inv.invoiceNo}`,
+    });
+    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
     await withTransaction(async (session) => {
       if (inv.stockPostedAt) {
         for (const [article, qty] of dedupeLines(lines)) {
@@ -2546,13 +2584,25 @@ export async function convertProformaToSalesInvoice(req, res) {
     );
     if (ciplFromPi) return res.status(409).json({ message: `CIPL already exists from this proforma (${ciplFromPi.ciplNo})` });
 
+    const lines = normalizeLines(proforma.lines.map((line) => line.toObject?.() || line));
+    const totals = computeTotals(lines, proforma);
+    const gate = await ensureApproval(req, {
+      companyId: req.companyId,
+      module: "SALES",
+      actionKey: "invoice_post",
+      documentType: "SALES_INVOICE",
+      documentNo: "",
+      customerName: proforma.customerName || "",
+      amount: totals.grandTotal || 0,
+      currency: proforma.currency || "USD",
+      description: `Post sales invoice from proforma ${proforma.proformaNo}`,
+    });
+    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
     const invoiceNo = await nextSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
       docKey: "SALES_INVOICE",
     });
-    const lines = normalizeLines(proforma.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines, proforma);
     const doc = await SalesInvoice.create({
       companyId: req.companyId,
       invoiceNo,
@@ -3559,13 +3609,25 @@ export async function convertOrderAllocationToSalesInvoice(req, res) {
     } else {
       refRtsPre = approvedPre[0];
     }
+    const lines = normalizeLines((allocationPre.lines || []).map((line) => line.toObject?.() || line));
+    const totals = computeTotals(lines, allocationPre);
+    const gate = await ensureApproval(req, {
+      companyId: req.companyId,
+      module: "SALES",
+      actionKey: "invoice_post",
+      documentType: "SALES_INVOICE",
+      documentNo: "",
+      customerName: allocationPre.customerName || "",
+      amount: totals.grandTotal || 0,
+      currency: allocationPre.currency || "USD",
+      description: `Post sales invoice from allocation ${allocationPre.allocationNo}`,
+    });
+    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
     const invoiceNo = await nextSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
       docKey: "SALES_INVOICE",
     });
-    const lines = normalizeLines((allocationPre.lines || []).map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines, allocationPre);
     const stockLines = lines.map((l) => ({ article: l.article, qty: Number(l.qty) || 0 })).filter((x) => x.article && x.qty > 0);
     const warehouse = String(allocationPre.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
 

@@ -13,6 +13,7 @@ import {
   postPaymentReceiptReceivable,
   reversePaymentReceiptReceivable,
 } from "../services/customerReceivableService.js";
+import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 
 const ALLOWED_MIME = new Set(["application/pdf", "image/jpeg", "image/png"]);
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
@@ -263,23 +264,6 @@ export async function createPaymentReceipt(req, res) {
 
     const paymentReference = sanitizeReference(req.body?.paymentReference);
 
-    const receiptNo = await nextSalesDocNumber({
-      companyId: req.companyId,
-      companyCode: req.companyCode,
-      docKey: "PAYMENT_RECEIPT",
-      referenceDate: receiptDate,
-    });
-
-    let attachment = null;
-    if (req.file) {
-      const key = buildDatedS3Key({
-        folderName: PAYMENT_SLIP_FOLDER,
-        prefix: receiptNo.replace(/[^\w.\-]+/g, "-"),
-        originalFileName: req.file.originalname,
-      });
-      attachment = await uploadFileToS3(req.file, PAYMENT_SLIP_FOLDER, { key });
-    }
-
     const allocations = [];
     let linkedProforma = null;
     let linkedSalesInvoice = null;
@@ -461,6 +445,35 @@ export async function createPaymentReceipt(req, res) {
 
     const unallocatedAmount = Math.max(0, amountReceived - allocatedAmount);
     const resolvedStatus = allocatedAmount <= 0 ? "POSTED" : unallocatedAmount > 0 ? "PARTIALLY_ALLOCATED" : "FULLY_ALLOCATED";
+    const gate = await ensureApproval(req, {
+      companyId: req.companyId,
+      module: "ACCOUNTS",
+      actionKey: "payment_post",
+      documentType: "PAYMENT_RECEIPT",
+      documentNo: "",
+      customerName,
+      amount: amountReceived,
+      currency: String(req.body?.currency || linkedProforma?.currency || linkedSalesInvoice?.currency || "USD").trim().toUpperCase(),
+      description: `Post payment receipt for ${customerName}`,
+    });
+    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
+
+    const receiptNo = await nextSalesDocNumber({
+      companyId: req.companyId,
+      companyCode: req.companyCode,
+      docKey: "PAYMENT_RECEIPT",
+      referenceDate: receiptDate,
+    });
+
+    let attachment = null;
+    if (req.file) {
+      const key = buildDatedS3Key({
+        folderName: PAYMENT_SLIP_FOLDER,
+        prefix: receiptNo.replace(/[^\w.\-]+/g, "-"),
+        originalFileName: req.file.originalname,
+      });
+      attachment = await uploadFileToS3(req.file, PAYMENT_SLIP_FOLDER, { key });
+    }
 
     const receipt = await PaymentReceipt.create({
       companyId: req.companyId,
@@ -734,6 +747,19 @@ export async function cancelPaymentReceipt(req, res) {
     if (String(receipt.status || "").toUpperCase() === "CANCELLED") {
       return res.status(400).json({ message: "Payment receipt is already cancelled." });
     }
+    const gate = await ensureApproval(req, {
+      companyId: req.companyId,
+      module: "ACCOUNTS",
+      actionKey: "payment_cancel",
+      documentType: "PAYMENT_RECEIPT",
+      documentId: receipt._id,
+      documentNo: receipt.receiptNo,
+      customerName: receipt.customerName || "",
+      amount: receipt.amountReceived || receipt.paymentAmount || 0,
+      currency: receipt.currency || "USD",
+      description: `Cancel payment receipt ${receipt.receiptNo}`,
+    });
+    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
 
     const reverseCustomer = await CustomerLedgerEntry.create({
       companyId: req.companyId,
