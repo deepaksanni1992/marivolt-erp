@@ -158,19 +158,92 @@ async function applyLinkedQuotationDiscountFallback(req, docs = [], { persistMod
   });
 }
 
+async function syncProformaPaymentState(req, proforma) {
+  if (!proforma?._id) return proforma;
+  const receipts = await PaymentReceipt.find(
+    withCompany(req, {
+      status: { $ne: "CANCELLED" },
+      "allocations.targetType": "PROFORMA_INVOICE",
+      "allocations.targetId": proforma._id,
+    }),
+    { allocations: 1 }
+  ).lean();
+  let totalReceived = 0;
+  for (const r of receipts) {
+    for (const a of r.allocations || []) {
+      if (
+        String(a.targetType || "") === "PROFORMA_INVOICE" &&
+        String(a.targetId || "") === String(proforma._id)
+      ) {
+        totalReceived += Math.max(0, Number(a.allocatedAmount) || 0);
+      }
+    }
+  }
+  totalReceived = Math.max(0, totalReceived);
+  const grandTotal = Math.max(0, Number(proforma.grandTotal) || 0);
+  const balanceAmount = Math.max(0, grandTotal - totalReceived);
+  let paymentStatus = "UNPAID";
+  if (totalReceived > 0 && totalReceived < grandTotal) paymentStatus = "PARTIALLY_PAID";
+  if (totalReceived >= grandTotal && grandTotal > 0) paymentStatus = "PAID";
+
+  const persisted = String(proforma.paymentStatus || "").toUpperCase();
+  const persistedTotal = Number(proforma.totalReceivedAmount || 0);
+  const status = String(proforma.status || "").toUpperCase();
+  let dirty = false;
+  if (persisted !== paymentStatus || Math.abs(persistedTotal - totalReceived) > 0.0001) {
+    proforma.totalReceivedAmount = totalReceived;
+    proforma.balanceAmount = balanceAmount;
+    proforma.paymentStatus = paymentStatus;
+    dirty = true;
+  }
+  if (paymentStatus === "PAID" && !["PAID_PENDING_SHIPMENT", "CONVERTED", "CANCELLED"].includes(status)) {
+    proforma.status = "PAID_PENDING_SHIPMENT";
+    proforma.paidAt = proforma.paidAt || new Date();
+    proforma.paidBy = proforma.paidBy || req.user?.email || "";
+    dirty = true;
+  } else if (paymentStatus !== "PAID" && status === "PAID_PENDING_SHIPMENT") {
+    proforma.status = "ISSUED";
+    proforma.paidAt = null;
+    proforma.paidBy = "";
+    dirty = true;
+  }
+  if (dirty) {
+    proforma.updatedBy = req.user?.email || proforma.updatedBy || "";
+    await proforma.save();
+  }
+  return proforma;
+}
+
 async function enrichProformasWithPaymentState(req, docs = []) {
   const rows = Array.isArray(docs) ? docs : [];
   if (!rows.length) return rows;
   const ids = [...new Set(rows.map((x) => String(x._id || "")).filter(Boolean))];
   if (!ids.length) return rows;
+  // Sum allocations per proforma across all non-cancelled receipts.
+  // Active receipt statuses are POSTED, PARTIALLY_ALLOCATED, FULLY_ALLOCATED — only CANCELLED is excluded.
+  // We aggregate from allocations[] so multi-allocation receipts contribute only their proforma share.
+  const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id));
   const sums = await PaymentReceipt.aggregate([
     {
       $match: withCompany(req, {
-        proformaInvoiceId: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) },
-        status: "POSTED",
+        status: { $ne: "CANCELLED" },
+        "allocations.targetType": "PROFORMA_INVOICE",
+        "allocations.targetId": { $in: objectIds },
       }),
     },
-    { $group: { _id: "$proformaInvoiceId", total: { $sum: "$amountReceived" } } },
+    { $unwind: "$allocations" },
+    {
+      $match: {
+        "allocations.targetType": "PROFORMA_INVOICE",
+        "allocations.targetId": { $in: objectIds },
+      },
+    },
+    {
+      $group: {
+        _id: "$allocations.targetId",
+        total: { $sum: "$allocations.allocatedAmount" },
+      },
+    },
   ]);
   const byId = new Map(sums.map((x) => [String(x._id), Math.max(0, Number(x.total) || 0)]));
   return rows.map((doc) => {
@@ -2056,6 +2129,11 @@ export async function convertSalesInvoiceToSalesDispatch(req, res) {
       linkedSalesInvoiceNo: invoice.invoiceNo,
       customerName: invoice.customerName,
       currency: invoice.currency || "USD",
+      vertical: invoice.vertical || "",
+      engine: invoice.engine || "",
+      model: invoice.model || "",
+      config: invoice.config || "",
+      esn: invoice.esn || "",
       remarks: invoice.remarks || "",
       lines,
       ...totals,
@@ -2575,12 +2653,45 @@ export async function convertOAToOrderAllocation(req, res) {
   }
 }
 
+export async function recalcAllProformaPaymentStates(req, res) {
+  try {
+    const proformas = await ProformaInvoice.find(
+      withCompany(req, { status: { $nin: ["CANCELLED"] } })
+    );
+    let updated = 0;
+    for (const p of proformas) {
+      const before = {
+        total: Number(p.totalReceivedAmount || 0),
+        paymentStatus: String(p.paymentStatus || "").toUpperCase(),
+        status: String(p.status || "").toUpperCase(),
+      };
+      await syncProformaPaymentState(req, p);
+      const after = {
+        total: Number(p.totalReceivedAmount || 0),
+        paymentStatus: String(p.paymentStatus || "").toUpperCase(),
+        status: String(p.status || "").toUpperCase(),
+      };
+      if (
+        Math.abs(before.total - after.total) > 0.0001 ||
+        before.paymentStatus !== after.paymentStatus ||
+        before.status !== after.status
+      ) {
+        updated += 1;
+      }
+    }
+    res.json({ scanned: proformas.length, updated });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
 export async function convertProformaToOrderAllocation(req, res) {
   try {
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid proforma id" });
-    const proforma = await ProformaInvoice.findOne(withCompany(req, { _id: id }));
+    let proforma = await ProformaInvoice.findOne(withCompany(req, { _id: id }));
     validateConversionSource(proforma, "proforma");
+    proforma = await syncProformaPaymentState(req, proforma);
     const pst = String(proforma?.status || "").toUpperCase();
     if (!["APPROVED", "PAID_PENDING_SHIPMENT"].includes(pst)) {
       return res.status(400).json({

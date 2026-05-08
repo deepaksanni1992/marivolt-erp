@@ -62,15 +62,32 @@ async function resolveCustomerId(req, customerName = "") {
 }
 
 async function recalcProformaPaymentState(req, proformaId) {
-  const [proforma, sums] = await Promise.all([
-    ProformaInvoice.findOne(withCompany(req, { _id: proformaId })),
-    PaymentReceipt.aggregate([
-      { $match: withCompany(req, { proformaInvoiceId: new mongoose.Types.ObjectId(String(proformaId)), status: "POSTED" }) },
-      { $group: { _id: null, total: { $sum: "$amountReceived" } } },
-    ]),
-  ]);
+  const proforma = await ProformaInvoice.findOne(withCompany(req, { _id: proformaId }));
   if (!proforma) throw new Error("Linked proforma not found");
-  const totalReceived = Math.max(0, Number(sums?.[0]?.total) || 0);
+
+  // Sum across all non-cancelled receipts whose allocations target this proforma.
+  // Receipt statuses for active receipts are POSTED, PARTIALLY_ALLOCATED, FULLY_ALLOCATED.
+  // We use the allocation amount (not amountReceived) so multi-allocation receipts are handled correctly.
+  const postedReceipts = await PaymentReceipt.find(
+    withCompany(req, {
+      status: { $ne: "CANCELLED" },
+      "allocations.targetType": SOURCE_TYPE.PROFORMA,
+      "allocations.targetId": proforma._id,
+    }),
+    { allocations: 1 }
+  ).lean();
+  let totalReceived = 0;
+  for (const r of postedReceipts) {
+    for (const a of r.allocations || []) {
+      if (
+        String(a.targetType || "") === SOURCE_TYPE.PROFORMA &&
+        String(a.targetId || "") === String(proforma._id)
+      ) {
+        totalReceived += Math.max(0, Number(a.allocatedAmount) || 0);
+      }
+    }
+  }
+  totalReceived = Math.max(0, totalReceived);
   const grandTotal = Math.max(0, Number(proforma.grandTotal) || 0);
   const balanceAmount = Math.max(0, grandTotal - totalReceived);
 

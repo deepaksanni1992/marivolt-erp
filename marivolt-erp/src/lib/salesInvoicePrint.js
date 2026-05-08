@@ -246,6 +246,12 @@ export function buildTaxInvoiceHeaderHtml({
   const consigneeRaw = String(doc.consignee || "").trim();
   const consigneeHtml = consigneeRaw ? esc(consigneeRaw).replace(/\r?\n/g, "<br/>") : "—";
 
+  const machineRow = `
+        <div class="si-hbox-tax" style="margin-top:6px;">
+          <div class="si-hbox-title">Machine Details</div>
+          <div><b>Vertical:</b> ${esc(doc.vertical || "-")} &nbsp;|&nbsp; <b>Brand:</b> ${esc(doc.engine || "-")} &nbsp;|&nbsp; <b>Model:</b> ${esc(doc.model || "-")} &nbsp;|&nbsp; <b>Config:</b> ${esc(doc.config || "-")} &nbsp;|&nbsp; <b>ESN:</b> ${esc(doc.esn || "-")}</div>
+        </div>`;
+
   return `
     <div class="si-tax-print-wrap">
       <div class="si-header-3col">
@@ -280,5 +286,6 @@ export function buildTaxInvoiceHeaderHtml({
           <div class="si-hbox-body">${consigneeHtml}</div>
         </div>
       </div>
+      ${machineRow}
     </div>`;
 }

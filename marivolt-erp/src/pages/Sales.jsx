@@ -1062,16 +1062,17 @@ function renderFlowDocPrintWindow({
             <div><b>Remarks:</b> ${doc?.remarks || "-"}</div>
           </div>
         </div>
-        ${
-          doc?.vertical || doc?.engine || doc?.model || doc?.config || doc?.esn
-            ? `<div class="info-grid">
-          <div class="info-box muted" style="grid-column: 1 / -1;">
+        <div class="info-grid">
+          <div class="info-box muted">
             <div class="info-box-title">Machine Details</div>
-            <div><b>Vertical:</b> ${doc?.vertical || "-"} &nbsp;|&nbsp; <b>Brand:</b> ${doc?.engine || "-"} &nbsp;|&nbsp; <b>Model:</b> ${doc?.model || "-"} &nbsp;|&nbsp; <b>Config:</b> ${doc?.config || "-"} &nbsp;|&nbsp; <b>ESN:</b> ${doc?.esn || "-"}</div>
+            <div><b>Vertical:</b> ${doc?.vertical || "-"}</div>
+            <div><b>Brand:</b> ${doc?.engine || "-"}</div>
+            <div><b>Model:</b> ${doc?.model || "-"}</div>
+            <div><b>Config:</b> ${doc?.config || "-"}</div>
+            <div><b>ESN:</b> ${doc?.esn || "-"}</div>
+            <div><b>Currency:</b> ${doc?.currency || "-"}</div>
           </div>
-        </div>`
-            : ""
-        }`;
+        </div>`;
   const taxInvoiceQuotationHeader = `
         <div class="header">
           <div class="header-left">
@@ -2331,6 +2332,19 @@ export default function Sales() {
       qc.invalidateQueries({ queryKey: ["sales-proforma"] });
       qc.invalidateQueries({ queryKey: ["store-order-allocations"] });
       if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const recalcProformaPaymentStateMutation = useMutation({
+    mutationFn: () => apiPost(`/sales/proforma-invoices/recalc-payment-state`, {}),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ["sales-proforma"] });
+      qc.invalidateQueries({ queryKey: ["proforma-payments"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
+      const scanned = Number(res?.scanned ?? 0);
+      const updated = Number(res?.updated ?? 0);
+      setErr(`Refreshed payment state for ${scanned} proforma${scanned === 1 ? "" : "s"} (${updated} updated).`);
     },
     onError: (e) => setErr(e.message),
   });
@@ -4090,6 +4104,15 @@ export default function Sales() {
             >
               Export CSV
             </button>
+            <button
+              type="button"
+              className="rounded-xl border px-3 py-2 text-sm disabled:opacity-50"
+              disabled={recalcProformaPaymentStateMutation.isLoading}
+              title="Recompute totalReceived / paymentStatus / status for all proformas from posted receipts"
+              onClick={() => recalcProformaPaymentStateMutation.mutate()}
+            >
+              {recalcProformaPaymentStateMutation.isLoading ? "Refreshing..." : "Refresh payment state"}
+            </button>
           </div>
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
@@ -4232,23 +4255,30 @@ export default function Sales() {
                             >
                               Convert to CIPL
                             </button>
-                            <button
-                              type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${
-                                isCancelled || !["APPROVED", "PAID_PENDING_SHIPMENT"].includes(String(r.status || "").toUpperCase()) ? "opacity-40" : ""
-                              }`}
-                              disabled={isCancelled || !["APPROVED", "PAID_PENDING_SHIPMENT"].includes(String(r.status || "").toUpperCase())}
-                              title={
-                                isCancelled
-                                  ? "Cancelled proforma cannot be converted"
-                                  : !["APPROVED", "PAID_PENDING_SHIPMENT"].includes(String(r.status || "").toUpperCase())
-                                  ? "Proforma must be APPROVED or PAID before allocation"
-                                  : ""
-                              }
-                              onClick={() => convertToOrderAllocationFromProformaMutation.mutate(r._id)}
-                            >
-                              Convert to Order Allocation
-                            </button>
+                            {(() => {
+                              const piStatus = String(r.status || "").toUpperCase();
+                              const allocReady =
+                                ["APPROVED", "PAID_PENDING_SHIPMENT"].includes(piStatus) ||
+                                paymentStatus === "PAID";
+                              const allocDisabled = isCancelled || !allocReady;
+                              return (
+                                <button
+                                  type="button"
+                                  className={`rounded-lg border px-2 py-1 text-xs ${allocDisabled ? "opacity-40" : ""}`}
+                                  disabled={allocDisabled}
+                                  title={
+                                    isCancelled
+                                      ? "Cancelled proforma cannot be converted"
+                                      : !allocReady
+                                      ? "Proforma must be APPROVED or PAID before allocation"
+                                      : ""
+                                  }
+                                  onClick={() => convertToOrderAllocationFromProformaMutation.mutate(r._id)}
+                                >
+                                  Convert to Order Allocation
+                                </button>
+                              );
+                            })()}
                           </div>
                         </td>
                       </tr>

@@ -82,6 +82,15 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             <div><b>Linked Quotation:</b> ${allocation.linkedQuotationNo || "-"}</div>
           </div>
           <div class="info-box muted">
+            <div class="info-box-title">Machine Details</div>
+            <div><b>Vertical:</b> ${allocation.vertical || "-"}</div>
+            <div><b>Brand:</b> ${allocation.engine || "-"}</div>
+            <div><b>Model:</b> ${allocation.model || "-"}</div>
+            <div><b>Config:</b> ${allocation.config || "-"}</div>
+            <div><b>ESN:</b> ${allocation.esn || "-"}</div>
+            <div><b>Currency:</b> ${allocation.currency || "USD"}</div>
+          </div>
+          <div class="info-box muted">
             <div class="info-box-title">Totals</div>
             <div><b>Sub total:</b> ${allocation.currency || "USD"} ${money(allocation.subTotal)}</div>
             <div><b>Grand total:</b> ${allocation.currency || "USD"} ${money(allocation.grandTotal)}</div>

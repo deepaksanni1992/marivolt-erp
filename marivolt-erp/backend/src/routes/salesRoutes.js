@@ -42,6 +42,11 @@ router.patch("/order-acknowledgements/:id/cancel", flow.cancelOA);
 
 router.get("/proforma-invoices", flow.listProformas);
 router.post("/proforma-invoices", flow.createProforma);
+router.post(
+  "/proforma-invoices/recalc-payment-state",
+  requireRole("super_admin", "company_admin", "admin", "accounts_logistics"),
+  flow.recalcAllProformaPaymentStates
+);
 router.get("/proforma-invoices/:id", flow.getProforma);
 router.put("/proforma-invoices/:id", flow.updateProforma);
 router.patch("/proforma-invoices/:id/cancel", flow.cancelProforma);
