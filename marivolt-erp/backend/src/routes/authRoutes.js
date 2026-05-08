@@ -3,7 +3,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import Company from "../models/Company.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireCompanyContext, requireRole } from "../middleware/auth.js";
 import { recordActivity } from "../services/userActivityService.js";
 
 const router = express.Router();
@@ -332,9 +332,13 @@ router.get("/companies", requireAuth, async (req, res) => {
 });
 
 // GET /api/auth/users — list users (admin only)
-router.get("/users", requireAuth, requireRole("super_admin", "company_admin", "admin"), async (req, res) => {
+router.get("/users", requireAuth, requireCompanyContext, requireRole("super_admin", "company_admin", "admin"), async (req, res) => {
   try {
-    const users = await User.find()
+    const filter =
+      String(req.user?.role || "").toLowerCase() === "super_admin"
+        ? {}
+        : { allowedCompanies: req.companyId };
+    const users = await User.find(filter)
       .select("name email username role allowedCompanies defaultCompany createdAt")
       .populate("allowedCompanies", "name code")
       .populate("defaultCompany", "name code")
@@ -349,6 +353,7 @@ router.get("/users", requireAuth, requireRole("super_admin", "company_admin", "a
 router.delete(
   "/users/:id",
   requireAuth,
+  requireCompanyContext,
   requireRole("super_admin", "company_admin", "admin"),
   async (req, res) => {
   try {
@@ -357,9 +362,13 @@ router.delete(
     if (String(targetId) === String(currentId)) {
       return res.status(400).json({ message: "Cannot delete your own account" });
     }
-    const user = await User.findById(targetId);
+    const filter =
+      String(req.user?.role || "").toLowerCase() === "super_admin"
+        ? { _id: targetId }
+        : { _id: targetId, allowedCompanies: req.companyId };
+    const user = await User.findOne(filter);
     if (!user) return res.status(404).json({ message: "User not found" });
-    await User.findByIdAndDelete(targetId);
+    await User.deleteOne(filter);
     res.json({ success: true, message: "User deleted" });
   } catch (err) {
     res.status(400).json({ message: err.message });

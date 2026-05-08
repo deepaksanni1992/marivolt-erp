@@ -241,7 +241,7 @@ export async function deleteBranch(req, res) {
         message: "Branch has linked warehouses. Reassign or deactivate them first.",
       });
     }
-    await Branch.deleteOne({ _id: doc._id });
+    await Branch.deleteOne(withCompany(req, { _id: doc._id }));
     await writeAudit(req, {
       action: "DELETE",
       module: "SETTINGS",
@@ -342,7 +342,7 @@ export async function createWarehouse(req, res) {
     const doc = await Warehouse.create(payload);
     if (payload.branchId) {
       await Branch.updateOne(
-        { _id: payload.branchId },
+        withCompany(req, { _id: payload.branchId }),
         { $addToSet: { warehouses: doc._id } }
       );
     }
@@ -376,12 +376,12 @@ export async function updateWarehouse(req, res) {
     if (payload.branchId && String(payload.branchId) !== String(before.branchId || "")) {
       if (before.branchId) {
         await Branch.updateOne(
-          { _id: before.branchId },
+          withCompany(req, { _id: before.branchId }),
           { $pull: { warehouses: doc._id } }
         );
       }
       await Branch.updateOne(
-        { _id: payload.branchId },
+        withCompany(req, { _id: payload.branchId }),
         { $addToSet: { warehouses: doc._id } }
       );
     }
@@ -405,10 +405,10 @@ export async function deleteWarehouse(req, res) {
   try {
     const doc = await Warehouse.findOne(withCompany(req, { _id: req.params.id }));
     if (!doc) return res.status(404).json({ message: "Warehouse not found" });
-    await Warehouse.deleteOne({ _id: doc._id });
+    await Warehouse.deleteOne(withCompany(req, { _id: doc._id }));
     if (doc.branchId) {
       await Branch.updateOne(
-        { _id: doc.branchId },
+        withCompany(req, { _id: doc.branchId }),
         { $pull: { warehouses: doc._id } }
       );
     }

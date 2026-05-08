@@ -106,7 +106,7 @@ export async function decideApproval(req, { id, decision, note = "" } = {}) {
   if (!allowed.includes(decisionUpper)) {
     throw new Error(`decideApproval: invalid decision ${decision}`);
   }
-  const doc = await ApprovalRequest.findById(id);
+  const doc = await ApprovalRequest.findOne({ _id: id, companyId: req?.companyId });
   if (!doc) throw new Error("Approval request not found");
   if (doc.status !== "PENDING") throw new Error("Approval already finalised");
 

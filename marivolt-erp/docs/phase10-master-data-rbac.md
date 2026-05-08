@@ -245,7 +245,63 @@ Manual module verification checklist:
 
 ---
 
-## 8. Backward compatibility
+## 8. Phase 10.3 company isolation audit
+
+Phase 10.3 hardens company isolation around the new admin surfaces
+without changing API response shapes.
+
+Audit scope:
+
+* Controller and route calls using `findById`, `findByIdAndDelete`,
+  `findOneAndUpdate`, `updateOne`, `deleteOne`, and `aggregate`.
+* Admin user list/delete APIs.
+* Master-data branch/warehouse relation updates.
+* Approval decision service lookup.
+
+Patches applied:
+
+* `/api/auth/users` now requires active company context and lists only
+  users whose `allowedCompanies` includes the selected company, except
+  `super_admin` who can still view all users.
+* `/api/auth/users/:id` deletion now requires active company context
+  and deletes only a user visible inside the selected company, except
+  `super_admin`.
+* Branch deletion now uses a company-scoped delete filter.
+* Warehouse deletion and branch relation updates now include
+  `companyId` in update/delete filters.
+* Role deletion now includes `companyId` and `isSystem:false` in the
+  final delete filter.
+* Approval decisions now re-read the `ApprovalRequest` by both `_id`
+  and `req.companyId` before writing the decision.
+* Backend `npm run verify` now syntax-checks `authRoutes.js` alongside
+  all other route files touched by RBAC/company-scope work.
+
+Manual company-isolation checklist:
+
+1. Log in to Marivolt and call `/api/auth/users`; confirm users are
+   limited to users assigned to Marivolt unless the user is
+   `super_admin`.
+2. Switch to Okeanos and repeat `/api/auth/users`; confirm the result
+   follows Okeanos `allowedCompanies`.
+3. Attempt to delete a user not assigned to the active company; confirm
+   `404 User not found`.
+4. Create Branch/Warehouse data in one company and attempt to update or
+   delete those IDs while switched to another company; confirm `404` or
+   no mutation.
+5. Create an approval request in one company and attempt to decide it
+   from another company; confirm the request is not found.
+
+Deferred to the next isolation pass:
+
+* Branch/warehouse row-level filtering inside high-volume business
+  controllers after `allowedBranches[]` and `allowedWarehouses[]` are
+  actively assigned to users.
+* A dedicated automated integration test suite for cross-company CRUD
+  leakage once a test database harness is introduced.
+
+---
+
+## 9. Backward compatibility
 
 * All previous APIs and schemas remain unchanged.
 * Existing JWT tokens continue to work (`User.role` enum extended,
@@ -259,7 +315,7 @@ Manual module verification checklist:
 
 ---
 
-## 9. Verification checklist
+## 10. Verification checklist
 
 Backend:
 

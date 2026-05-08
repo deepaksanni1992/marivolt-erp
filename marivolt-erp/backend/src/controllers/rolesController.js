@@ -115,7 +115,7 @@ export async function deleteRole(req, res) {
         .status(404)
         .json({ message: "Role not found or cannot be deleted" });
     }
-    await Role.deleteOne({ _id: doc._id });
+    await Role.deleteOne({ _id: doc._id, companyId: req.companyId, isSystem: false });
     await writeAudit(req, {
       action: "DELETE",
       module: "SETTINGS",
