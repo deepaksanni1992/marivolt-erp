@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 import PurchaseOrder from "../models/PurchaseOrder.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
-import { applyStockIn } from "../services/stockService.js";
+import * as stockService from "../services/stockService.js";
 import { applyPurchaseOrderDefaults } from "../constants/purchaseOrderDefaults.js";
 
 function withCompany(req, filter = {}) {
@@ -200,42 +200,46 @@ export async function receivePurchaseOrder(req, res) {
 
     const userEmail = req.user?.email || "";
 
-    for (const row of lines) {
-      const lineId = row.lineId;
-      const q = Number(row.qty);
-      if (!lineId) return res.status(400).json({ message: "Each line needs lineId" });
-      if (!Number.isFinite(q) || q <= 0) return res.status(400).json({ message: "Invalid qty" });
+    await stockService.withTransaction(async (session) => {
+      for (const row of lines) {
+        const lineId = row.lineId;
+        const q = Number(row.qty);
+        if (!lineId) throw new Error("Each line needs lineId");
+        if (!Number.isFinite(q) || q <= 0) throw new Error("Invalid qty");
 
-      const line = po.lines.id(lineId);
-      if (!line) return res.status(400).json({ message: `Invalid lineId ${lineId}` });
+        const line = po.lines.id(lineId);
+        if (!line) throw new Error(`Invalid lineId ${lineId}`);
 
-      const remaining = (Number(line.qty) || 0) - (Number(line.receivedQty) || 0);
-      const take = Math.min(q, remaining);
-      if (take <= 0) continue;
+        const remaining = (Number(line.qty) || 0) - (Number(line.receivedQty) || 0);
+        const take = Math.min(q, remaining);
+        if (take <= 0) continue;
 
-      await applyStockIn({
-        companyId: req.companyId,
-        itemCode: line.itemCode,
-        warehouse,
-        qty: take,
-        movementType: "IN_PURCHASE",
-        referenceType: "PURCHASE_ORDER",
-        referenceId: po._id,
-        referenceNumber: po.poNumber,
-        unitCost: line.unitPrice,
-        remarks: row.remarks || "",
-        createdBy: userEmail,
-      });
+        await stockService.grnReceive({
+          session,
+          companyId: req.companyId,
+          article: line.itemCode,
+          warehouse,
+          qty: take,
+          referenceType: "PURCHASE_ORDER",
+          referenceNo: po.poNumber,
+          supplierName: po.supplierName || "",
+          unitCost: line.unitPrice,
+          remarks: row.remarks || "",
+          createdBy: userEmail,
+          sourceModule: "PURCHASE",
+        });
 
-      line.receivedQty = (Number(line.receivedQty) || 0) + take;
-    }
+        line.receivedQty = (Number(line.receivedQty) || 0) + take;
+      }
 
-    const allReceived = po.lines.length > 0 && po.lines.every((l) => (l.receivedQty || 0) >= (l.qty || 0));
-    const anyReceived = po.lines.some((l) => (l.receivedQty || 0) > 0);
-    if (allReceived) po.status = "RECEIVED";
-    else if (anyReceived) po.status = "PARTIAL_RECEIVED";
+      const allReceived =
+        po.lines.length > 0 && po.lines.every((l) => (l.receivedQty || 0) >= (l.qty || 0));
+      const anyReceived = po.lines.some((l) => (l.receivedQty || 0) > 0);
+      if (allReceived) po.status = "RECEIVED";
+      else if (anyReceived) po.status = "PARTIAL_RECEIVED";
 
-    await po.save();
+      await po.save({ session });
+    });
     res.json(po);
   } catch (err) {
     res.status(400).json({ message: err.message });

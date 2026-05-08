@@ -5,7 +5,7 @@ import Customer from "../models/Customer.js";
 import Item from "../models/itemModel.js";
 import ItemTechnical from "../models/itemTechnicalModel.js";
 import OrderAcknowledgement from "../models/OrderAcknowledgement.js";
-import { applyStockOut } from "../services/stockService.js";
+import * as stockService from "../services/stockService.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
 
 function withCompany(req, filter = {}) {
@@ -416,31 +416,35 @@ export async function stockOutFromQuotation(req, res) {
 
     const userEmail = req.user?.email || "";
 
-    for (const row of lines) {
-      const lineId = row.lineId;
-      const qty = Number(row.qty);
-      if (!lineId) return res.status(400).json({ message: "Each line needs lineId" });
-      if (!Number.isFinite(qty) || qty <= 0) return res.status(400).json({ message: "Invalid qty" });
+    await stockService.withTransaction(async (session) => {
+      for (const row of lines) {
+        const lineId = row.lineId;
+        const qty = Number(row.qty);
+        if (!lineId) throw new Error("Each line needs lineId");
+        if (!Number.isFinite(qty) || qty <= 0) throw new Error("Invalid qty");
 
-      const line = q.lines.id(lineId);
-      if (!line) return res.status(400).json({ message: `Invalid lineId ${lineId}` });
-      if (qty > (Number(line.qty) || 0)) {
-        return res.status(400).json({ message: "qty exceeds quotation line qty" });
+        const line = q.lines.id(lineId);
+        if (!line) throw new Error(`Invalid lineId ${lineId}`);
+        if (qty > (Number(line.qty) || 0)) {
+          throw new Error("qty exceeds quotation line qty");
+        }
+
+        await stockService.stockAdjustment({
+          session,
+          companyId: req.companyId,
+          article: line.article,
+          warehouse,
+          qty,
+          direction: "Decrease",
+          referenceType: "QUOTATION",
+          referenceNo: q.quotationNo,
+          remarks: row.remarks || "",
+          createdBy: userEmail,
+          sourceModule: "SALES",
+          allowNegative: true,
+        });
       }
-
-      await applyStockOut({
-        companyId: req.companyId,
-        itemCode: line.article,
-        warehouse,
-        qty,
-        movementType: "OUT_SALE",
-        referenceType: "QUOTATION",
-        referenceId: q._id,
-        referenceNumber: q.quotationNo,
-        remarks: row.remarks || "",
-        createdBy: userEmail,
-      });
-    }
+    });
 
     res.json({ success: true, quotationId: q._id });
   } catch (err) {

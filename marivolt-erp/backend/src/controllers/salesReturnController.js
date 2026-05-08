@@ -3,7 +3,7 @@ import SalesReturn from "../models/SalesReturn.js";
 import SalesDispatch from "../models/SalesDispatch.js";
 import SalesInvoice from "../models/SalesInvoice.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
-import { applyStockIn } from "../services/stockService.js";
+import * as stockService from "../services/stockService.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -129,28 +129,30 @@ export async function postSalesReturn(req, res) {
 
     const userEmail = req.user?.email || "";
     const wh = String(sr.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
-    const refId = String(sr._id);
 
-    for (const line of sr.lines) {
-      const q = Number(line.qty) || 0;
-      if (q <= 0) continue;
-      await applyStockIn({
-        companyId: req.companyId,
-        itemCode: line.article,
-        warehouse: wh,
-        qty: q,
-        movementType: "IN_RETURN",
-        referenceType: "SALES_RETURN",
-        referenceId: refId,
-        referenceNumber: sr.returnNo,
-        remarks: line.reason || sr.remarks || "",
-        createdBy: userEmail,
-      });
-    }
+    await stockService.withTransaction(async (session) => {
+      for (const line of sr.lines) {
+        const q = Number(line.qty) || 0;
+        if (q <= 0) continue;
+        await stockService.stockAdjustment({
+          session,
+          companyId: req.companyId,
+          article: line.article,
+          warehouse: wh,
+          qty: q,
+          direction: "Increase",
+          referenceType: "SALES_RETURN",
+          referenceNo: sr.returnNo,
+          remarks: line.reason || sr.remarks || "",
+          createdBy: userEmail,
+          sourceModule: "SALES",
+        });
+      }
 
-    sr.status = "POSTED";
-    sr.updatedBy = userEmail;
-    await sr.save();
+      sr.status = "POSTED";
+      sr.updatedBy = userEmail;
+      await sr.save({ session });
+    });
     res.json(sr);
   } catch (err) {
     res.status(400).json({ message: err.message });

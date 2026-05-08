@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 import PurchaseReturn from "../models/PurchaseReturn.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
-import { applyStockOut } from "../services/stockService.js";
+import * as stockService from "../services/stockService.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -134,27 +134,29 @@ export async function postPurchaseReturn(req, res) {
 
     const userEmail = req.user?.email || "";
     const wh = String(pr.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
-    const refId = String(pr._id);
 
-    for (const line of pr.lines) {
-      const q = Number(line.qty) || 0;
-      if (q <= 0) continue;
-      await applyStockOut({
-        companyId: req.companyId,
-        itemCode: line.itemCode,
-        warehouse: wh,
-        qty: q,
-        movementType: "OUT_RETURN",
-        referenceType: "PURCHASE_RETURN",
-        referenceId: refId,
-        referenceNumber: pr.returnNumber,
-        remarks: line.reason || pr.remarks || "",
-        createdBy: userEmail,
-      });
-    }
+    await stockService.withTransaction(async (session) => {
+      for (const line of pr.lines) {
+        const q = Number(line.qty) || 0;
+        if (q <= 0) continue;
+        await stockService.stockAdjustment({
+          session,
+          companyId: req.companyId,
+          article: line.itemCode,
+          warehouse: wh,
+          qty: q,
+          direction: "Decrease",
+          referenceType: "PURCHASE_RETURN",
+          referenceNo: pr.returnNumber,
+          remarks: line.reason || pr.remarks || "",
+          createdBy: userEmail,
+          sourceModule: "PURCHASE",
+        });
+      }
 
-    pr.status = "POSTED";
-    await pr.save();
+      pr.status = "POSTED";
+      await pr.save({ session });
+    });
     res.json(pr);
   } catch (err) {
     res.status(400).json({ message: err.message });
