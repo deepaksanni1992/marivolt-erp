@@ -57,6 +57,17 @@ const salesInvoiceSchema = new mongoose.Schema(
     packingCost: { type: Number, default: 0, min: 0 },
     clearanceCost: { type: Number, default: 0, min: 0 },
     grandTotal: { type: Number, default: 0 },
+    /** Sum of allocations[].allocatedAmount across all non-cancelled receipts. Recomputed on every receipt change. */
+    totalReceivedAmount: { type: Number, default: 0, min: 0 },
+    /** Always grandTotal − totalReceivedAmount (clamped at 0). Phase-8.2. */
+    balanceAmount: { type: Number, default: 0, min: 0 },
+    /** Phase-8.2 canonical UNPAID / PARTIAL / PAID, derived from received vs grandTotal. */
+    paymentStatus: {
+      type: String,
+      enum: ["UNPAID", "PARTIAL", "PAID"],
+      default: "UNPAID",
+      index: true,
+    },
     status: {
       type: String,
       enum: ["DRAFT", "ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID", "CANCELLED"],
@@ -78,5 +89,6 @@ const salesInvoiceSchema = new mongoose.Schema(
 
 salesInvoiceSchema.index({ companyId: 1, invoiceNo: 1 }, { unique: true });
 salesInvoiceSchema.index({ companyId: 1, invoiceDate: -1 });
+salesInvoiceSchema.index({ companyId: 1, paymentStatus: 1, invoiceDate: -1 });
 
 export default mongoose.model("SalesInvoice", salesInvoiceSchema);

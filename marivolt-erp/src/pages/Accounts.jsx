@@ -403,6 +403,51 @@ export default function Accounts() {
     setPage(1);
   }
 
+  function exportPaymentReceiptsCsv(rows = []) {
+    if (!rows || !rows.length) {
+      setErr("No rows to export.");
+      return;
+    }
+    const csvSafe = (v) => {
+      const s = v == null ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = [
+      "Receipt No", "Date", "Customer",
+      "Proforma No", "Sales Invoice No",
+      "Currency", "Amount Received", "Allocated", "Unallocated",
+      "Mode", "Bank/Cash Account", "Reference", "Status", "Has Attachment",
+    ];
+    const lines = [header.map(csvSafe).join(",")];
+    for (const r of rows) {
+      lines.push([
+        r.receiptNo || "",
+        r.receiptDate ? new Date(r.receiptDate).toISOString().slice(0, 10) : "",
+        r.customerName || "",
+        r.proformaInvoiceNo || "",
+        r.salesInvoiceNo || "",
+        r.currency || "",
+        Number(r.amountReceived || 0).toFixed(2),
+        Number(r.allocatedAmount || 0).toFixed(2),
+        Number(r.unallocatedAmount || 0).toFixed(2),
+        String(r.paymentMode || "").replaceAll("_", " "),
+        r.bankCashAccountName || r.accountName || "",
+        r.paymentReference || "",
+        r.status || "",
+        r.attachmentKey ? "yes" : "no",
+      ].map(csvSafe).join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `payment-receipts-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   const cancelPaymentReceiptMut = useMutation({
     mutationFn: ({ id, reason }) => apiPatch(`/payment-receipts/${id}/cancel`, { cancellationReason: reason }),
     onSuccess: () => {
@@ -803,7 +848,9 @@ export default function Accounts() {
               onView={(r) => setReceiptView({ open: true, item: r })}
               onPrint={openPaymentReceiptPrint}
               onViewSlip={(id) => openPaymentReceiptSlip(id, true)}
+              onDownloadSlip={(id) => openPaymentReceiptSlip(id, false)}
               onViewJournal={openJournalEntry}
+              onExportCsv={() => exportPaymentReceiptsCsv(activeRows())}
               onCancel={(r) => {
                 const reason = window.prompt("Cancel reason");
                 if (!reason) return;

@@ -461,8 +461,11 @@ function statusBadgeClass(status = "") {
   if (["APPROVED", "PAID", "CLOSED", "CONFIRMED", "CONVERTED", "ISSUED", "SHIPPED"].includes(key)) {
     return "bg-emerald-50 text-emerald-700 ring-emerald-200";
   }
-  if (["DRAFT", "SENT", "PARTIALLY_PAID", "PAID_PENDING_SHIPMENT"].includes(key)) {
+  if (["DRAFT", "SENT", "PARTIALLY_PAID", "PAID_PENDING_SHIPMENT", "PARTIAL"].includes(key)) {
     return "bg-amber-50 text-amber-700 ring-amber-200";
+  }
+  if (["UNPAID"].includes(key)) {
+    return "bg-slate-100 text-slate-700 ring-slate-300";
   }
   if (["CANCELLED", "REJECTED", "EXPIRED"].includes(key)) {
     return "bg-rose-50 text-rose-700 ring-rose-200";
@@ -2423,9 +2426,36 @@ export default function Sales() {
       if (form.bankAccountId) fd.append("bankAccountId", form.bankAccountId);
       if (form.cashAccountId) fd.append("cashAccountId", form.cashAccountId);
       if (form.adminOverride) fd.append("adminOverride", "true");
+      if (form.allowOverpayment) fd.append("allowOverpayment", "true");
       const file = form.attachmentFile || paymentSlipInputRef.current?.files?.[0];
       if (file) fd.append("attachment", file);
-      return apiPostFormData("/payment-receipts", fd);
+      try {
+        return await apiPostFormData("/payment-receipts", fd);
+      } catch (err) {
+        // Phase-8.2 — overpayment confirm-and-continue flow.
+        const code = err?.code || err?.response?.data?.code;
+        if (code === "OVERPAYMENT") {
+          const detail = err?.details || err?.response?.data?.details || [];
+          const message =
+            err?.message ||
+            "This payment exceeds the document balance.";
+          const lines = Array.isArray(detail)
+            ? detail
+                .map(
+                  (d) =>
+                    `• ${d.targetNo}: invoice ${Number(d.invoiceTotal || 0).toFixed(2)}, would become ${Number(d.wouldBecome || 0).toFixed(2)} (over by ${Number(d.overBy || 0).toFixed(2)})`
+                )
+                .join("\n")
+            : "";
+          if (typeof window !== "undefined") {
+            const ok = window.confirm(`${message}\n\n${lines}\n\nProceed and record the overpayment?`);
+            if (!ok) throw err;
+          }
+          fd.append("allowOverpayment", "true");
+          return apiPostFormData("/payment-receipts", fd);
+        }
+        throw err;
+      }
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-proforma"] });
@@ -2446,6 +2476,7 @@ export default function Sales() {
         paymentReference: "",
         remarks: "",
         adminOverride: false,
+        allowOverpayment: false,
         attachmentFile: null,
       });
       if (paymentSlipInputRef.current) paymentSlipInputRef.current.value = "";
@@ -4676,20 +4707,23 @@ export default function Sales() {
                     <th className="px-3 py-2">Customer</th>
                     <th className="px-3 py-2">Date</th>
                     <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Payment</th>
                     <th className="px-3 py-2 text-right">Grand Total</th>
+                    <th className="px-3 py-2 text-right">Received</th>
+                    <th className="px-3 py-2 text-right">Balance</th>
                     <th className="px-3 py-2">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {salesInvoiceLoading ? (
                     <tr>
-                      <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
                         Loading...
                       </td>
                     </tr>
                   ) : salesInvoiceRows.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
                         No Sales Invoice found.
                       </td>
                     </tr>
@@ -4704,8 +4738,19 @@ export default function Sales() {
                             {r.status}
                           </span>
                         </td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.paymentStatus || "UNPAID")}`}>
+                            {r.paymentStatus || "UNPAID"}
+                          </span>
+                        </td>
                         <td className="px-3 py-2 text-right">
                           {r.currency} {money(r.grandTotal)}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          {r.currency} {money(r.totalReceivedAmount || 0)}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          {r.currency} {money(r.balanceAmount ?? r.grandTotal ?? 0)}
                         </td>
                         <td className="px-3 py-2">
                           <div className="flex flex-wrap gap-1">
@@ -4728,14 +4773,15 @@ export default function Sales() {
                             </button>
                             <button
                               type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${["PAID", "CANCELLED"].includes(String(r.status || "").toUpperCase()) ? "opacity-40" : ""}`}
-                              disabled={["PAID", "CANCELLED"].includes(String(r.status || "").toUpperCase())}
+                              className={`rounded-lg border px-2 py-1 text-xs ${["PAID", "CANCELLED"].includes(String(r.status || "").toUpperCase()) || String(r.paymentStatus || "").toUpperCase() === "PAID" ? "opacity-40" : ""}`}
+                              disabled={["PAID", "CANCELLED"].includes(String(r.status || "").toUpperCase()) || String(r.paymentStatus || "").toUpperCase() === "PAID"}
                               onClick={() => {
+                                const balance = Number(r.balanceAmount ?? r.grandTotal ?? 0);
                                 setReceiveInvoicePaymentModal({ open: true, invoice: r });
                                 setReceivePaymentForm((f) => ({
                                   ...f,
                                   receiptDate: new Date().toISOString().slice(0, 10),
-                                  amountReceived: Number(r.grandTotal ?? 0),
+                                  amountReceived: balance > 0 ? balance : Number(r.grandTotal ?? 0),
                                   currency: r.currency || "USD",
                                   paymentMode: "BANK_TRANSFER",
                                   bankCashAccountName: "",
@@ -4744,6 +4790,7 @@ export default function Sales() {
                                   paymentReference: "",
                                   remarks: "",
                                   adminOverride: false,
+                                  allowOverpayment: false,
                                   attachmentFile: null,
                                 }));
                               }}

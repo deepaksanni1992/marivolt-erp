@@ -1,5 +1,13 @@
 import { FormField, SelectInput, TextInput } from "../erp/FormField.jsx";
 
+function statusBadgeClass(status = "") {
+  const k = String(status || "").toUpperCase();
+  if (["FULLY_ALLOCATED"].includes(k)) return "bg-emerald-50 text-emerald-700 ring-emerald-200";
+  if (["PARTIALLY_ALLOCATED", "POSTED"].includes(k)) return "bg-amber-50 text-amber-700 ring-amber-200";
+  if (["CANCELLED"].includes(k)) return "bg-rose-50 text-rose-700 ring-rose-200";
+  return "bg-slate-100 text-slate-700 ring-slate-200";
+}
+
 export default function PaymentReceiptsTab({
   rows = [],
   loading = false,
@@ -9,8 +17,10 @@ export default function PaymentReceiptsTab({
   onView,
   onPrint,
   onViewSlip,
+  onDownloadSlip,
   onViewJournal,
   onCancel,
+  onExportCsv,
   isCancelPending = false,
 }) {
   return (
@@ -22,7 +32,7 @@ export default function PaymentReceiptsTab({
           <div className="rounded-xl border bg-white p-3 text-sm"><div className="text-gray-500">Total Unallocated</div><div className="text-lg font-semibold">{Number(summary.totalUnallocated || 0).toFixed(2)}</div></div>
           <div className="rounded-xl border bg-white p-3 text-sm"><div className="text-gray-500">Cancelled Receipts</div><div className="text-lg font-semibold">{Number(summary.cancelledCount || 0)}</div></div>
         </div>
-        <div className="grid gap-3 rounded-2xl border bg-white p-4 md:grid-cols-5">
+        <div className="grid gap-3 rounded-2xl border bg-white p-4 md:grid-cols-6">
           <FormField label="Customer"><TextInput value={filters.customerName} onChange={(e) => setFilters((f) => ({ ...f, customerName: e.target.value }))} /></FormField>
           <FormField label="Reference"><TextInput value={filters.referenceNo} onChange={(e) => setFilters((f) => ({ ...f, referenceNo: e.target.value }))} /></FormField>
           <FormField label="Proforma No"><TextInput value={filters.proformaNo} onChange={(e) => setFilters((f) => ({ ...f, proformaNo: e.target.value }))} /></FormField>
@@ -36,6 +46,17 @@ export default function PaymentReceiptsTab({
               <option value="CANCELLED">Cancelled</option>
             </SelectInput>
           </FormField>
+          <div className="flex items-end justify-end gap-2">
+            <button
+              type="button"
+              className="rounded border bg-white px-3 py-1.5 text-xs font-medium hover:bg-gray-50"
+              onClick={() => onExportCsv?.(rows)}
+              disabled={!rows.length}
+              title="Export current results to CSV"
+            >
+              Export CSV
+            </button>
+          </div>
         </div>
       </div>
       <table className="min-w-full text-left text-sm">
@@ -65,12 +86,33 @@ export default function PaymentReceiptsTab({
               <td className="px-3 py-2 text-xs">{String(r.paymentMode || "").replaceAll("_", " ")}</td>
               <td className="px-3 py-2 text-xs">{r.bankCashAccountName || r.accountName || "—"}</td>
               <td className="px-3 py-2 text-xs">{r.paymentReference || "—"}</td>
-              <td className="px-3 py-2">{r.status}</td>
+              <td className="px-3 py-2">
+                <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
+                  {r.status}
+                </span>
+              </td>
               <td className="px-3 py-2">
                 <div className="flex flex-wrap gap-1">
                   <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => onView?.(r)}>View</button>
                   <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => onPrint?.(r._id)}>Print</button>
-                  <button type="button" className={`rounded border px-2 py-1 text-xs ${r.attachmentKey ? "" : "opacity-40"}`} disabled={!r.attachmentKey} onClick={() => onViewSlip?.(r._id)}>Slip</button>
+                  <button
+                    type="button"
+                    className={`rounded border px-2 py-1 text-xs ${r.attachmentKey ? "" : "opacity-40"}`}
+                    disabled={!r.attachmentKey}
+                    onClick={() => onViewSlip?.(r._id)}
+                    title="Preview payment slip in new tab"
+                  >
+                    Preview
+                  </button>
+                  <button
+                    type="button"
+                    className={`rounded border px-2 py-1 text-xs ${r.attachmentKey ? "" : "opacity-40"}`}
+                    disabled={!r.attachmentKey}
+                    onClick={() => onDownloadSlip?.(r._id)}
+                    title="Download payment slip"
+                  >
+                    Download
+                  </button>
                   <button type="button" className={`rounded border px-2 py-1 text-xs ${r.journalEntryId ? "" : "opacity-40"}`} disabled={!r.journalEntryId} onClick={() => onViewJournal?.(r.journalEntryId)}>Journal</button>
                   <button type="button" className={`rounded border px-2 py-1 text-xs text-red-600 ${String(r.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`} disabled={String(r.status || "").toUpperCase() === "CANCELLED" || isCancelPending} onClick={() => onCancel?.(r)}>Cancel</button>
                 </div>

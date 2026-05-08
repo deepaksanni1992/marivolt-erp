@@ -135,16 +135,27 @@ async function recalcSalesInvoicePaymentState(req, salesInvoiceId) {
       }
     }
   }
+  paidAmount = Math.max(0, paidAmount);
   const total = Math.max(0, Number(invoice.grandTotal) || 0);
   const balance = Math.max(0, total - paidAmount);
+
+  // Phase-8.2 canonical buckets — written even when the invoice is
+  // cancelled so the audit history shows the final state.
+  invoice.totalReceivedAmount = paidAmount;
+  invoice.balanceAmount = balance;
+  let paymentStatus = "UNPAID";
+  if (paidAmount > 0 && paidAmount < total) paymentStatus = "PARTIAL";
+  if (paidAmount >= total && total > 0) paymentStatus = "PAID";
+  invoice.paymentStatus = paymentStatus;
+
   if (String(invoice.status || "").toUpperCase() !== "CANCELLED") {
     if (paidAmount <= 0) invoice.status = "ISSUED";
     else if (paidAmount < total) invoice.status = "PARTIALLY_PAID";
     else invoice.status = "PAID";
-    invoice.updatedBy = req.user?.email || "";
-    await invoice.save();
   }
-  return { invoice, paidAmount, balance };
+  invoice.updatedBy = req.user?.email || "";
+  await invoice.save();
+  return { invoice, paidAmount, balance, paymentStatus };
 }
 
 async function createJournalForReceipt(req, receipt, { reverseFromId = null } = {}) {
@@ -386,6 +397,64 @@ export async function createPaymentReceipt(req, res) {
     if (amountReceived > autoBalance && autoBalance !== Number.MAX_SAFE_INTEGER && !canOverrideAmount(req) && req.body?.adminOverride !== true) {
       return res.status(400).json({ message: "Amount received exceeds balance; admin override required." });
     }
+
+    // Phase-8.2 per-document overpayment guard. We compute the live
+    // balance for each allocation target (sum of existing non-cancelled
+    // allocations + this new allocation) and reject when any document
+    // would be overpaid unless the caller opts in explicitly via
+    // `allowOverpayment: true`. Admins can bypass via existing
+    // `adminOverride`/role permission, mirroring how the other amount
+    // override works above.
+    const allowOverpayment =
+      req.body?.allowOverpayment === true || req.body?.adminOverride === true || canOverrideAmount(req);
+    if (!allowOverpayment && allocations.length) {
+      const overpaidDocs = [];
+      for (const a of allocations) {
+        const targetTotal = Math.max(0, Number(a.invoiceTotal) || 0);
+        if (!targetTotal) continue;
+        // Sum existing non-cancelled allocations for the same target.
+        const agg = await PaymentReceipt.aggregate([
+          {
+            $match: withCompany(req, {
+              status: { $ne: "CANCELLED" },
+              "allocations.targetType": a.targetType,
+              "allocations.targetId": new mongoose.Types.ObjectId(String(a.targetId)),
+            }),
+          },
+          { $unwind: "$allocations" },
+          {
+            $match: {
+              "allocations.targetType": a.targetType,
+              "allocations.targetId": new mongoose.Types.ObjectId(String(a.targetId)),
+            },
+          },
+          { $group: { _id: null, total: { $sum: "$allocations.allocatedAmount" } } },
+        ]);
+        const existing = Math.max(0, Number(agg[0]?.total || 0));
+        const projected = existing + (Number(a.allocatedAmount) || 0);
+        if (projected - targetTotal > 0.0001) {
+          overpaidDocs.push({
+            targetType: a.targetType,
+            targetNo: a.targetNo || String(a.targetId),
+            invoiceTotal: targetTotal,
+            existing,
+            attempted: a.allocatedAmount,
+            wouldBecome: projected,
+            overBy: projected - targetTotal,
+          });
+        }
+      }
+      if (overpaidDocs.length) {
+        return res.status(409).json({
+          message: `Overpayment detected for ${overpaidDocs
+            .map((d) => `${d.targetNo} (over by ${d.overBy.toFixed(2)})`)
+            .join(", ")}. Resubmit with allowOverpayment:true to confirm.`,
+          code: "OVERPAYMENT",
+          details: overpaidDocs,
+        });
+      }
+    }
+
     const unallocatedAmount = Math.max(0, amountReceived - allocatedAmount);
     const resolvedStatus = allocatedAmount <= 0 ? "POSTED" : unallocatedAmount > 0 ? "PARTIALLY_ALLOCATED" : "FULLY_ALLOCATED";
 
@@ -504,8 +573,27 @@ export async function createPaymentReceipt(req, res) {
         salesInvoiceNo: linkedSalesInvoice?.invoiceNo || "",
         attachment: receipt.attachmentKey || "",
         allocationCount: allocations.length,
+        allowedOverpayment: !!allowOverpayment,
+        paymentMode: receipt.paymentMode || "",
+        bankCashAccountName: receipt.bankCashAccountName || receipt.accountName || "",
       },
     });
+    if (receipt.attachmentKey) {
+      await writeAudit(req, {
+        action: "ATTACHMENT",
+        module: "ACCOUNTS",
+        entityType: "PAYMENT_RECEIPT",
+        entityId: receipt._id,
+        documentNo: receipt.receiptNo,
+        description: `Attachment uploaded (${receipt.attachmentOriginalName || receipt.attachmentKey})`,
+        metadata: {
+          mode: "upload",
+          attachmentKey: receipt.attachmentKey,
+          mimeType: receipt.attachmentMimeType || "",
+          size: receipt.attachmentSize || 0,
+        },
+      });
+    }
     res.status(201).json({ receipt, proforma: updatedProforma, journalEntry: journal });
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -734,6 +822,19 @@ export async function getPaymentReceiptAttachmentUrl(req, res) {
       .slice(0, 200);
     const disposition = inline ? `inline; filename="${safeName}"` : `attachment; filename="${safeName}"`;
     const signed = await getSignedFileUrl(receipt.attachmentKey, { expiresIn: 300, contentDisposition: disposition });
+    await writeAudit(req, {
+      action: "ATTACHMENT",
+      module: "ACCOUNTS",
+      entityType: "PAYMENT_RECEIPT",
+      entityId: receipt._id,
+      documentNo: receipt.receiptNo,
+      description: `Attachment ${inline ? "previewed" : "downloaded"} (${receipt.attachmentOriginalName || receipt.attachmentKey})`,
+      metadata: {
+        mode: inline ? "preview" : "download",
+        attachmentKey: receipt.attachmentKey,
+        mimeType: receipt.attachmentMimeType || "",
+      },
+    });
     res.json({
       url: signed.url,
       expiresIn: signed.expiresIn,

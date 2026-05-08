@@ -1887,14 +1887,67 @@ export async function listSalesInvoices(req, res) {
       const q = String(req.query.search).trim();
       filter.$or = [{ invoiceNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }];
     }
-    const [items, total] = await Promise.all([
+    if (req.query.paymentStatus) {
+      filter.paymentStatus = String(req.query.paymentStatus).trim().toUpperCase();
+    }
+    const [itemsRaw, total] = await Promise.all([
       SalesInvoice.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       SalesInvoice.countDocuments(filter),
     ]);
+    // Phase-8.2 — recompute live payment buckets for any rows that
+    // pre-date the persisted fields (and refresh slightly stale ones)
+    // so the UI reads consistent numbers without a separate roundtrip.
+    const items = await enrichSalesInvoicesWithPaymentState(req, itemsRaw);
     res.json({ items, total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
+}
+
+async function enrichSalesInvoicesWithPaymentState(req, docs = []) {
+  const rows = Array.isArray(docs) ? docs : [];
+  if (!rows.length) return rows;
+  const ids = [...new Set(rows.map((x) => String(x._id || "")).filter(Boolean))];
+  if (!ids.length) return rows;
+  const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id));
+  // Sum allocations[].allocatedAmount per SI across all non-cancelled receipts.
+  const sums = await PaymentReceipt.aggregate([
+    {
+      $match: withCompany(req, {
+        status: { $ne: "CANCELLED" },
+        "allocations.targetType": "SALES_INVOICE",
+        "allocations.targetId": { $in: objectIds },
+      }),
+    },
+    { $unwind: "$allocations" },
+    {
+      $match: {
+        "allocations.targetType": "SALES_INVOICE",
+        "allocations.targetId": { $in: objectIds },
+      },
+    },
+    {
+      $group: {
+        _id: "$allocations.targetId",
+        total: { $sum: "$allocations.allocatedAmount" },
+      },
+    },
+  ]);
+  const sumByInvoiceId = new Map(sums.map((s) => [String(s._id), Number(s.total) || 0]));
+  return rows.map((r) => {
+    const total = Math.max(0, Number(r.grandTotal) || 0);
+    const received = Math.max(0, sumByInvoiceId.get(String(r._id)) || 0);
+    const balance = Math.max(0, total - received);
+    let paymentStatus = "UNPAID";
+    if (received > 0 && received < total) paymentStatus = "PARTIAL";
+    if (received >= total && total > 0) paymentStatus = "PAID";
+    return {
+      ...r,
+      totalReceivedAmount: received,
+      balanceAmount: balance,
+      paymentStatus,
+    };
+  });
 }
 
 export async function getSalesInvoice(req, res) {
@@ -1903,7 +1956,8 @@ export async function getSalesInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const doc = await SalesInvoice.findOne(withCompany(req, { _id: id })).lean();
     if (!doc) return res.status(404).json({ message: "Not found" });
-    res.json(doc);
+    const [enriched] = await enrichSalesInvoicesWithPaymentState(req, [doc]);
+    res.json(enriched);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
