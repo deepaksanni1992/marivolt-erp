@@ -2653,18 +2653,96 @@ export async function convertOAToOrderAllocation(req, res) {
   }
 }
 
+/**
+ * Backfill: legacy receipts that were linked to a proforma but never got an
+ * allocation row (because the old auto-allocation logic capped at the
+ * persisted balanceAmount which defaulted to 0). For each such non-cancelled
+ * receipt linked to this proforma, create the missing allocation entry,
+ * recompute allocatedAmount/unallocatedAmount/status, and save.
+ * Returns the number of receipts patched.
+ */
+async function backfillProformaReceiptAllocations(req, proforma) {
+  if (!proforma?._id) return 0;
+  const receipts = await PaymentReceipt.find(
+    withCompany(req, {
+      proformaInvoiceId: proforma._id,
+      status: { $ne: "CANCELLED" },
+    })
+  );
+  let patched = 0;
+  // Run capacity from grand total minus what is already allocated to this proforma elsewhere.
+  let allocatedSoFar = 0;
+  for (const r of receipts) {
+    for (const a of r.allocations || []) {
+      if (
+        String(a.targetType || "") === "PROFORMA_INVOICE" &&
+        String(a.targetId || "") === String(proforma._id)
+      ) {
+        allocatedSoFar += Math.max(0, Number(a.allocatedAmount) || 0);
+      }
+    }
+  }
+  for (const r of receipts) {
+    const hasMatch = (r.allocations || []).some(
+      (a) =>
+        String(a.targetType || "") === "PROFORMA_INVOICE" &&
+        String(a.targetId || "") === String(proforma._id)
+    );
+    if (hasMatch) continue;
+    const grandTotal = Math.max(0, Number(proforma.grandTotal) || 0);
+    const remaining = Math.max(0, grandTotal - allocatedSoFar);
+    if (remaining <= 0) continue;
+    const amountReceived = Math.max(0, Number(r.amountReceived) || 0);
+    const alreadyAllocatedOnReceipt = Math.max(0, Number(r.allocatedAmount) || 0);
+    const unallocatedHeadroom = Math.max(0, amountReceived - alreadyAllocatedOnReceipt);
+    const cap = Math.min(remaining, unallocatedHeadroom);
+    if (cap <= 0) continue;
+    r.allocations.push({
+      paymentReceiptId: r._id,
+      customerId: r.customerId || null,
+      targetType: "PROFORMA_INVOICE",
+      targetId: proforma._id,
+      targetNo: proforma.proformaNo || "",
+      invoiceTotal: grandTotal,
+      allocatedAmount: cap,
+      currency: r.currency || proforma.currency || "USD",
+      allocatedAt: r.receiptDate || r.receivedDate || new Date(),
+      allocatedBy: req.user?.email || r.createdBy || "",
+    });
+    const newAllocatedAmount = (r.allocations || []).reduce(
+      (acc, a) => acc + (Math.max(0, Number(a.allocatedAmount) || 0)),
+      0
+    );
+    r.allocatedAmount = newAllocatedAmount;
+    r.unallocatedAmount = Math.max(0, amountReceived - newAllocatedAmount);
+    r.status =
+      newAllocatedAmount <= 0
+        ? "POSTED"
+        : r.unallocatedAmount > 0
+        ? "PARTIALLY_ALLOCATED"
+        : "FULLY_ALLOCATED";
+    r.updatedBy = req.user?.email || r.updatedBy || "";
+    await r.save();
+    allocatedSoFar += cap;
+    patched += 1;
+  }
+  return patched;
+}
+
 export async function recalcAllProformaPaymentStates(req, res) {
   try {
     const proformas = await ProformaInvoice.find(
       withCompany(req, { status: { $nin: ["CANCELLED"] } })
     );
     let updated = 0;
+    let receiptsPatched = 0;
     for (const p of proformas) {
       const before = {
         total: Number(p.totalReceivedAmount || 0),
         paymentStatus: String(p.paymentStatus || "").toUpperCase(),
         status: String(p.status || "").toUpperCase(),
       };
+      receiptsPatched += await backfillProformaReceiptAllocations(req, p);
       await syncProformaPaymentState(req, p);
       const after = {
         total: Number(p.totalReceivedAmount || 0),
@@ -2679,7 +2757,7 @@ export async function recalcAllProformaPaymentStates(req, res) {
         updated += 1;
       }
     }
-    res.json({ scanned: proformas.length, updated });
+    res.json({ scanned: proformas.length, updated, receiptsPatched });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

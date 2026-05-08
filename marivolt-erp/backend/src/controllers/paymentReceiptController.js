@@ -274,7 +274,13 @@ export async function createPaymentReceipt(req, res) {
       linkedProforma = await ProformaInvoice.findOne(withCompany(req, { _id: proformaInvoiceId }));
       if (linkedProforma && String(linkedProforma.status || "").toUpperCase() !== "CANCELLED") {
         customerName = customerName || linkedProforma.customerName || "";
-        autoBalance = Math.min(autoBalance, Math.max(0, Number(linkedProforma.balanceAmount ?? linkedProforma.grandTotal) || 0));
+        // Compute balance fresh from totals so we never rely on a stale persisted balanceAmount
+        // (default schema value is 0, which would zero-out auto-allocation on first payment).
+        const proformaBalanceLive = Math.max(
+          0,
+          (Number(linkedProforma.grandTotal) || 0) - (Number(linkedProforma.totalReceivedAmount) || 0)
+        );
+        autoBalance = Math.min(autoBalance, proformaBalanceLive);
       }
     }
     if (mongoose.Types.ObjectId.isValid(salesInvoiceId)) {
@@ -334,7 +340,12 @@ export async function createPaymentReceipt(req, res) {
         }
       }
     } else if (linkedProforma) {
-      const alloc = Math.min(amountReceived, Math.max(0, Number(linkedProforma.balanceAmount ?? linkedProforma.grandTotal) || 0));
+      const proformaBalanceLive = Math.max(
+        0,
+        (Number(linkedProforma.grandTotal) || 0) - (Number(linkedProforma.totalReceivedAmount) || 0)
+      );
+      const cap = proformaBalanceLive > 0 ? proformaBalanceLive : Math.max(0, Number(linkedProforma.grandTotal) || 0);
+      const alloc = Math.min(amountReceived, cap);
       if (alloc > 0) {
         allocations.push({
           paymentReceiptId: null,

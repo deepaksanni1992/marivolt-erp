@@ -2344,7 +2344,11 @@ export default function Sales() {
       if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
       const scanned = Number(res?.scanned ?? 0);
       const updated = Number(res?.updated ?? 0);
-      setErr(`Refreshed payment state for ${scanned} proforma${scanned === 1 ? "" : "s"} (${updated} updated).`);
+      const receiptsPatched = Number(res?.receiptsPatched ?? 0);
+      setErr(
+        `Refreshed payment state for ${scanned} proforma${scanned === 1 ? "" : "s"} ` +
+          `(${updated} updated, ${receiptsPatched} legacy receipt${receiptsPatched === 1 ? "" : "s"} relinked).`
+      );
     },
     onError: (e) => setErr(e.message),
   });
