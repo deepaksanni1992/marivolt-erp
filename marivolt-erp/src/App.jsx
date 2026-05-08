@@ -17,6 +17,7 @@ import Kitting from "./pages/Kitting.jsx";
 import DeKitting from "./pages/DeKitting.jsx";
 import Documents from "./pages/Documents.jsx";
 import AuditTrail from "./pages/AuditTrail.jsx";
+import Settings from "./pages/Settings.jsx";
 
 export default function App() {
   return (
@@ -40,6 +41,7 @@ export default function App() {
           <Route path="kitting" element={<Kitting />} />
           <Route path="dekitting" element={<DeKitting />} />
           <Route path="audit" element={<AuditTrail />} />
+          <Route path="settings" element={<Settings />} />
         </Route>
       </Route>
 

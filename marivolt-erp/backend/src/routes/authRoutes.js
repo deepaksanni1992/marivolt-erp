@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import Company from "../models/Company.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { recordActivity } from "../services/userActivityService.js";
 
 const router = express.Router();
 
@@ -28,6 +29,43 @@ function signCompanySelectionTicket(user) {
     process.env.JWT_SECRET,
     { expiresIn: "10m" }
   );
+}
+
+async function recordLoginSuccess(req, user, company, action = "LOGIN_SUCCESS") {
+  try {
+    user.lastLoginAt = new Date();
+    user.lastLoginIp =
+      req.headers?.["x-forwarded-for"]?.split(",")[0]?.trim() ||
+      req.ip ||
+      req.connection?.remoteAddress ||
+      "";
+    user.lastLoginAgent = req.headers?.["user-agent"] || "";
+    await User.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          lastLoginAt: user.lastLoginAt,
+          lastLoginIp: user.lastLoginIp,
+          lastLoginAgent: user.lastLoginAgent,
+        },
+      }
+    );
+  } catch {
+    // best-effort metadata; never block login response
+  }
+  await recordActivity(req, {
+    action,
+    success: true,
+    userId: user._id,
+    userEmail: user.email,
+    userName: user.name || "",
+    companyId: company?._id || null,
+    description:
+      action === "COMPANY_SWITCH"
+        ? `Company switched to ${company?.code || ""}`
+        : `Login successful for ${user.email}`,
+    metadata: { companyCode: company?.code || "" },
+  });
 }
 
 function normalizeCompany(company) {
@@ -105,10 +143,28 @@ router.post("/login", async (req, res) => {
     if (!user) {
       user = await User.findOne({ email: identifier.toLowerCase() });
     }
-    if (!user) return res.status(401).json({ message: "Invalid credentials" });
+    if (!user) {
+      await recordActivity(req, {
+        action: "LOGIN_FAILED",
+        success: false,
+        userEmail: identifier.toLowerCase(),
+        description: `Login failed for ${identifier}: user not found`,
+      });
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
     const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) return res.status(401).json({ message: "Invalid credentials" });
+    if (!ok) {
+      await recordActivity(req, {
+        action: "LOGIN_FAILED",
+        success: false,
+        userId: user._id,
+        userEmail: user.email,
+        userName: user.name || "",
+        description: `Login failed for ${user.email}: wrong password`,
+      });
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
     const allowedIds = Array.isArray(user.allowedCompanies)
       ? user.allowedCompanies.map((x) => String(x))
@@ -126,6 +182,7 @@ router.post("/login", async (req, res) => {
       const selected = companies.find((c) => String(c._id) === requestedCompanyId);
       if (!selected) return res.status(403).json({ message: "Invalid company access" });
       const token = signToken(user, selected, companies);
+      await recordLoginSuccess(req, user, selected);
       return res.json({
         token,
         user: { id: user._id, name: user.name, email: user.email, role: user.role },
@@ -137,6 +194,7 @@ router.post("/login", async (req, res) => {
     if (companies.length === 1) {
       const selected = companies[0];
       const token = signToken(user, selected, companies);
+      await recordLoginSuccess(req, user, selected);
       return res.json({
         token,
         user: { id: user._id, name: user.name, email: user.email, role: user.role },
@@ -150,6 +208,7 @@ router.post("/login", async (req, res) => {
       : null;
     if (defaultCompany) {
       const token = signToken(user, defaultCompany, companies);
+      await recordLoginSuccess(req, user, defaultCompany);
       return res.json({
         token,
         user: { id: user._id, name: user.name, email: user.email, role: user.role },
@@ -195,6 +254,7 @@ router.post("/select-company", async (req, res) => {
     const selected = companies.find((c) => String(c._id) === companyId);
     if (!selected) return res.status(403).json({ message: "Company inactive or unavailable" });
     const token = signToken(user, selected, companies);
+    await recordLoginSuccess(req, user, selected, "COMPANY_SELECT");
     res.json({
       token,
       user: { id: user._id, name: user.name, email: user.email, role: user.role },
@@ -224,12 +284,31 @@ router.post("/switch-company", requireAuth, async (req, res) => {
     const selected = companies.find((c) => String(c._id) === companyId);
     if (!selected) return res.status(403).json({ message: "Company inactive or unavailable" });
     const token = signToken(user, selected, companies);
+    const fullUser = await User.findById(user._id);
+    if (fullUser) {
+      await recordLoginSuccess(req, fullUser, selected, "COMPANY_SWITCH");
+    }
     res.json({
       token,
       user: { id: user._id, name: user.name, email: user.email, role: user.role },
       company: normalizeCompany(selected),
       companies: companies.map(normalizeCompany),
     });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+router.post("/logout", requireAuth, async (req, res) => {
+  try {
+    await recordActivity(req, {
+      action: "LOGOUT",
+      success: true,
+      userId: req.user?.id,
+      userEmail: req.user?.email || "",
+      description: "User logged out",
+    });
+    res.json({ success: true });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
