@@ -36,14 +36,33 @@ const emptyShipment = {
   destination: "",
   weightKg: 0,
   freightCost: 0,
+  customsCost: 0,
+  truckingCost: 0,
+  handlingCost: 0,
+  courierCost: 0,
   insuranceCost: 0,
   dutyCost: 0,
   otherCharges: 0,
   currency: "USD",
   trackingUrl: "",
   packages: [],
+  exportDocuments: [],
+  expenses: [],
+  plannedEta: "",
+  actualEta: "",
   remarks: "",
 };
+
+const shipmentStatuses = ["READY", "BOOKED", "PICKED_UP", "CUSTOMS_CLEARANCE", "IN_TRANSIT", "ARRIVED", "DELIVERED", "CLOSED", "CANCELLED"];
+const exportDocTypes = ["COO", "WEIGHT_LIST", "CONTAINER_LOAD_PLAN", "EXPORT_CHECKLIST", "COMMERCIAL_INVOICE", "PACKING_LIST"];
+
+function statusBadgeClass(status = "") {
+  const s = String(status || "").toUpperCase();
+  if (["DELIVERED", "CLOSED"].includes(s)) return "bg-emerald-50 text-emerald-700 ring-emerald-200";
+  if (["IN_TRANSIT", "ARRIVED", "CUSTOMS_CLEARANCE"].includes(s)) return "bg-blue-50 text-blue-700 ring-blue-200";
+  if (["CANCELLED"].includes(s)) return "bg-rose-50 text-rose-700 ring-rose-200";
+  return "bg-amber-50 text-amber-700 ring-amber-200";
+}
 
 export default function Logistics() {
   const qc = useQueryClient();
@@ -53,10 +72,11 @@ export default function Logistics() {
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyShipment);
   const [err, setErr] = useState("");
+  const [filters, setFilters] = useState({ status: "", customerName: "", awbNo: "", blNo: "", delayedOnly: false });
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["shipments", page],
-    queryFn: () => apiGetWithQuery("/shipments", { page, limit }),
+    queryKey: ["shipments", page, filters],
+    queryFn: () => apiGetWithQuery("/shipments", { page, limit, ...filters, delayedOnly: filters.delayedOnly ? "1" : undefined }),
   });
 
   const { data: dashboardData } = useQuery({
@@ -76,6 +96,10 @@ export default function Logistics() {
       else delete payload.etd;
       if (payload.eta) payload.eta = new Date(payload.eta).toISOString();
       else delete payload.eta;
+      if (payload.plannedEta) payload.plannedEta = new Date(payload.plannedEta).toISOString();
+      else delete payload.plannedEta;
+      if (payload.actualEta) payload.actualEta = new Date(payload.actualEta).toISOString();
+      else delete payload.actualEta;
       if (!payload.linkedDispatchId) delete payload.linkedDispatchId;
       return editingId
         ? apiPut(`/shipments/${editingId}`, payload)
@@ -111,11 +135,15 @@ export default function Logistics() {
     const row = await apiGet(`/shipments/${id}`);
     const etdStr = row.etd ? String(row.etd).slice(0, 10) : "";
     const etaStr = row.eta ? String(row.eta).slice(0, 10) : "";
+    const plannedEtaStr = row.plannedEta ? String(row.plannedEta).slice(0, 10) : "";
+    const actualEtaStr = row.actualEta ? String(row.actualEta).slice(0, 10) : "";
     setForm({
       ...emptyShipment,
       ...row,
       etd: etdStr,
       eta: etaStr,
+      plannedEta: plannedEtaStr,
+      actualEta: actualEtaStr,
     });
     setModalOpen(true);
   }
@@ -158,13 +186,32 @@ export default function Logistics() {
       const s = v == null ? "" : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const header = ["Shipment Ref", "Dispatch", "Customer", "Status", "Tracking", "AWB", "BL", "Courier", "ETA", "Tracking URL"];
-    const body = rows.map((r) => [r.shipmentRef, r.linkedDispatchNo, r.customerName, r.status, r.trackingStatus, r.awbNo, r.blNo, r.courier, r.eta ? new Date(r.eta).toISOString().slice(0, 10) : "", r.trackingUrl].map(safe).join(","));
+    const header = ["Shipment Ref", "Dispatch", "Customer", "Status", "Tracking", "AWB", "BL", "Courier", "ETA", "Delayed Days", "Tracking URL"];
+    const body = rows.map((r) => [r.shipmentRef, r.linkedDispatchNo, r.customerName, r.status, r.trackingStatus, r.awbNo, r.blNo, r.courier, r.eta ? new Date(r.eta).toISOString().slice(0, 10) : "", r.delayedDays || 0, r.trackingUrl].map(safe).join(","));
     const blob = new Blob([[header.map(safe).join(","), ...body].join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = `shipment-report-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function exportDispatchCsv() {
+    if (!dispatchRows.length) return;
+    const safe = (v) => {
+      const s = v == null ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = ["Dispatch", "Customer", "Invoice", "RTS", "Status", "Dispatched Qty", "Pending Qty", "AWB", "BL"];
+    const body = dispatchRows.map((d) => [d.dispatchNo, d.customerName, d.linkedSalesInvoiceNo, d.linkedRtsNo, d.status, d.dispatchedQty || 0, d.pendingQty || 0, d.awbNo, d.blNo].map(safe).join(","));
+    const blob = new Blob([[header.map(safe).join(","), ...body].join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `dispatch-summary-${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -181,6 +228,14 @@ export default function Logistics() {
           disabled={!rows.length}
         >
           Export shipment CSV
+        </button>
+        <button
+          type="button"
+          onClick={exportDispatchCsv}
+          className="rounded-xl border px-3 py-2 text-sm font-semibold"
+          disabled={!dispatchRows.length}
+        >
+          Export dispatch CSV
         </button>
         <button
           type="button"
@@ -212,6 +267,28 @@ export default function Logistics() {
         ))}
       </div>
 
+      <div className="mb-4 grid gap-3 rounded-2xl border bg-white p-4 md:grid-cols-5">
+        <FormField label="Shipment Status">
+          <SelectInput value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}>
+            <option value="">All</option>
+            {shipmentStatuses.map((s) => <option key={s} value={s}>{s}</option>)}
+          </SelectInput>
+        </FormField>
+        <FormField label="Customer">
+          <TextInput value={filters.customerName} onChange={(e) => setFilters((f) => ({ ...f, customerName: e.target.value }))} />
+        </FormField>
+        <FormField label="AWB">
+          <TextInput value={filters.awbNo} onChange={(e) => setFilters((f) => ({ ...f, awbNo: e.target.value }))} />
+        </FormField>
+        <FormField label="BL">
+          <TextInput value={filters.blNo} onChange={(e) => setFilters((f) => ({ ...f, blNo: e.target.value }))} />
+        </FormField>
+        <label className="flex items-end gap-2 pb-2 text-sm">
+          <input type="checkbox" checked={filters.delayedOnly} onChange={(e) => setFilters((f) => ({ ...f, delayedOnly: e.target.checked }))} />
+          Delayed only
+        </label>
+      </div>
+
       <div className="mb-4 overflow-hidden rounded-2xl border bg-white">
         <div className="border-b px-4 py-3">
           <div className="font-semibold">Dispatch Summary</div>
@@ -241,7 +318,11 @@ export default function Logistics() {
                   <td className="px-3 py-2">{d.customerName}</td>
                   <td className="px-3 py-2 font-mono text-xs">{d.linkedSalesInvoiceNo || "—"}</td>
                   <td className="px-3 py-2 font-mono text-xs">{d.linkedRtsNo || "—"}</td>
-                  <td className="px-3 py-2">{d.status}</td>
+                  <td className="px-3 py-2">
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(d.status)}`}>
+                      {d.status}
+                    </span>
+                  </td>
                   <td className="px-3 py-2 text-right tabular-nums">{Number(d.dispatchedQty || 0).toFixed(2)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{Number(d.pendingQty || 0).toFixed(2)}</td>
                   <td className="px-3 py-2 text-xs">{d.awbNo || d.blNo || d.containerNo || "—"}</td>
@@ -311,14 +392,24 @@ export default function Logistics() {
                     <td className="px-3 py-2">{r.direction}</td>
                     <td className="px-3 py-2">{r.mode}</td>
                     <td className="px-3 py-2">
-                      <div>{r.status}</div>
-                      <div className="text-xs text-gray-500">{r.trackingStatus || "booked"}</div>
+                      <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
+                        {r.status}
+                      </span>
+                      <div className="mt-1 text-xs text-gray-500">{r.trackingStatus || "booked"}</div>
+                      {Number(r.delayedDays || 0) > 0 ? (
+                        <div className="mt-1 text-xs font-semibold text-rose-700">Delayed {r.delayedDays}d</div>
+                      ) : null}
                     </td>
                     <td className="px-3 py-2 text-xs text-gray-600 max-w-[200px] truncate">
                       {r.origin} → {r.destination}
                       {r.trackingUrl ? (
                         <a className="ml-2 text-blue-600 underline" href={r.trackingUrl} target="_blank" rel="noreferrer">Track</a>
                       ) : null}
+                      <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-gray-500">
+                        {["READY", "BOOKED", "PICKED_UP", "CUSTOMS_CLEARANCE", "IN_TRANSIT", "ARRIVED", "DELIVERED"].map((s) => (
+                          <span key={s} className={String(r.status || "").toUpperCase() === s ? "font-semibold text-gray-900" : ""}>{s.replaceAll("_", " ")}</span>
+                        ))}
+                      </div>
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
@@ -423,15 +514,7 @@ export default function Logistics() {
               value={form.status}
               onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
             >
-              {[
-                "PLANNED",
-                "BOOKED",
-                "IN_TRANSIT",
-                "ARRIVED",
-                "DELIVERED",
-                "CLOSED",
-                "CANCELLED",
-              ].map((s) => (
+              {shipmentStatuses.map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>
@@ -548,6 +631,20 @@ export default function Logistics() {
               onChange={(e) => setForm((f) => ({ ...f, eta: e.target.value }))}
             />
           </FormField>
+          <FormField label="Planned ETA">
+            <TextInput
+              type="date"
+              value={form.plannedEta || ""}
+              onChange={(e) => setForm((f) => ({ ...f, plannedEta: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Actual ETA / arrival">
+            <TextInput
+              type="date"
+              value={form.actualEta || ""}
+              onChange={(e) => setForm((f) => ({ ...f, actualEta: e.target.value }))}
+            />
+          </FormField>
           <FormField label="Vessel / flight">
             <TextInput
               value={form.vesselOrFlight}
@@ -625,6 +722,38 @@ export default function Logistics() {
               }
             />
           </FormField>
+          <FormField label="Customs">
+            <TextInput
+              type="number"
+              step="0.01"
+              value={form.customsCost || 0}
+              onChange={(e) => setForm((f) => ({ ...f, customsCost: Number(e.target.value) }))}
+            />
+          </FormField>
+          <FormField label="Trucking">
+            <TextInput
+              type="number"
+              step="0.01"
+              value={form.truckingCost || 0}
+              onChange={(e) => setForm((f) => ({ ...f, truckingCost: Number(e.target.value) }))}
+            />
+          </FormField>
+          <FormField label="Handling">
+            <TextInput
+              type="number"
+              step="0.01"
+              value={form.handlingCost || 0}
+              onChange={(e) => setForm((f) => ({ ...f, handlingCost: Number(e.target.value) }))}
+            />
+          </FormField>
+          <FormField label="Courier cost">
+            <TextInput
+              type="number"
+              step="0.01"
+              value={form.courierCost || 0}
+              onChange={(e) => setForm((f) => ({ ...f, courierCost: Number(e.target.value) }))}
+            />
+          </FormField>
           <FormField label="Insurance">
             <TextInput
               type="number"
@@ -659,6 +788,29 @@ export default function Logistics() {
               onChange={(e) => setForm((f) => ({ ...f, remarks: e.target.value }))}
             />
           </FormField>
+          <div className="sm:col-span-2 rounded-xl border bg-gray-50 p-3">
+            <div className="mb-2 text-sm font-semibold">Export Documents</div>
+            <div className="grid gap-2 sm:grid-cols-3">
+              {exportDocTypes.map((docType) => {
+                const current = (form.exportDocuments || []).find((d) => d.documentType === docType) || { documentType: docType, status: "PENDING" };
+                return (
+                  <FormField key={docType} label={docType.replaceAll("_", " ")}>
+                    <SelectInput
+                      value={current.status || "PENDING"}
+                      onChange={(e) => {
+                        const others = (form.exportDocuments || []).filter((d) => d.documentType !== docType);
+                        setForm((f) => ({ ...f, exportDocuments: [...others, { documentType: docType, status: e.target.value }] }));
+                      }}
+                    >
+                      <option value="PENDING">Pending</option>
+                      <option value="GENERATED">Generated</option>
+                      <option value="UPLOADED">Uploaded</option>
+                    </SelectInput>
+                  </FormField>
+                );
+              })}
+            </div>
+          </div>
         </div>
         <div className="mt-4 flex justify-end gap-2 border-t pt-4">
           <button
