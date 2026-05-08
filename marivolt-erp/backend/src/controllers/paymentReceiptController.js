@@ -9,6 +9,10 @@ import JournalEntry from "../models/JournalEntry.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
 import { buildDatedS3Key, getSignedFileUrl, uploadFileToS3 } from "../services/s3UploadService.js";
 import { writeAudit } from "../services/auditService.js";
+import {
+  postPaymentReceiptReceivable,
+  reversePaymentReceiptReceivable,
+} from "../services/customerReceivableService.js";
 
 const ALLOWED_MIME = new Set(["application/pdf", "image/jpeg", "image/png"]);
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
@@ -551,6 +555,7 @@ export async function createPaymentReceipt(req, res) {
       createdBy: req.user?.email || "",
     });
     const journal = await createJournalForReceipt(req, receipt);
+    const receivableLedger = await postPaymentReceiptReceivable({ req, receipt });
 
     receipt.linkedCustomerLedgerEntryId = customerEntry._id;
     receipt.linkedCashBankEntryId = cashBankEntry._id;
@@ -576,6 +581,7 @@ export async function createPaymentReceipt(req, res) {
         allowedOverpayment: !!allowOverpayment,
         paymentMode: receipt.paymentMode || "",
         bankCashAccountName: receipt.bankCashAccountName || receipt.accountName || "",
+        customerLedgerId: receivableLedger?._id ? String(receivableLedger._id) : "",
       },
     });
     if (receipt.attachmentKey) {
@@ -676,6 +682,27 @@ export async function listPaymentReceiptsByProforma(req, res) {
   }
 }
 
+export async function listPaymentReceiptsBySalesInvoice(req, res) {
+  try {
+    const { salesInvoiceId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(salesInvoiceId)) return res.status(400).json({ message: "Invalid salesInvoiceId" });
+    const oid = new mongoose.Types.ObjectId(salesInvoiceId);
+    const items = await PaymentReceipt.find(
+      withCompany(req, {
+        $or: [
+          { salesInvoiceId: oid },
+          { "allocations.targetType": SOURCE_TYPE.SALES, "allocations.targetId": oid },
+        ],
+      })
+    )
+      .sort({ receiptDate: -1, receivedDate: -1, createdAt: -1 })
+      .lean();
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
 export async function getPaymentReceiptPrintData(req, res) {
   try {
     const { id } = req.params;
@@ -730,6 +757,7 @@ export async function cancelPaymentReceipt(req, res) {
       reversedFromEntryId: receipt.linkedCustomerLedgerEntryId || null,
       createdBy: req.user?.email || "",
     });
+    const receivableLedger = await reversePaymentReceiptReceivable({ req, receipt, reason });
 
     const reverseCashBank = await CashBankEntry.create({
       companyId: req.companyId,
@@ -799,6 +827,7 @@ export async function cancelPaymentReceipt(req, res) {
         reason,
         reverseCustomerLedgerEntryId: String(reverseCustomer._id),
         reverseCashBankEntryId: String(reverseCashBank._id),
+        customerLedgerId: receivableLedger?._id ? String(receivableLedger._id) : "",
       },
     });
     res.json({ receipt, proforma: updatedProforma });

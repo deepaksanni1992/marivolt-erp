@@ -2,12 +2,12 @@ import mongoose from "mongoose";
 import SalesInvoice from "../models/SalesInvoice.js";
 import SalesDispatch from "../models/SalesDispatch.js";
 import PurchaseInvoice from "../models/PurchaseInvoice.js";
+import CustomerLedger from "../models/CustomerLedger.js";
 import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
 import SupplierLedgerEntry from "../models/SupplierLedgerEntry.js";
 import CashBankEntry from "../models/CashBankEntry.js";
 import BankDetail from "../models/BankDetail.js";
 import PaymentReceipt from "../models/PaymentReceipt.js";
-import ProformaInvoice from "../models/ProformaInvoice.js";
 import JournalEntry from "../models/JournalEntry.js";
 import Customer from "../models/Customer.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
@@ -20,6 +20,36 @@ function paginate(req) {
   const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
   return { page, limit, skip: (page - 1) * limit };
+}
+
+function dateRangeFromQuery(req, fieldName) {
+  const range = {};
+  if (req.query.fromDate) range.$gte = new Date(String(req.query.fromDate));
+  if (req.query.toDate) {
+    const d = new Date(String(req.query.toDate));
+    d.setHours(23, 59, 59, 999);
+    range.$lte = d;
+  }
+  return Object.keys(range).length ? { [fieldName]: range } : {};
+}
+
+function dueDateForInvoice(inv) {
+  const base = new Date(inv.invoiceDate || inv.createdAt || Date.now());
+  const terms = String(inv.paymentTerms || "");
+  const match = terms.match(/(\d+)\s*(day|days|net)?/i);
+  const days = match ? Number(match[1]) || 0 : 0;
+  const due = new Date(base);
+  due.setDate(due.getDate() + days);
+  return due;
+}
+
+function ageingBucketFromDueDate(dueDate) {
+  const days = Math.max(0, Math.floor((Date.now() - dueDate.getTime()) / (1000 * 60 * 60 * 24)));
+  if (dueDate.getTime() > Date.now()) return { bucket: "Current", days: 0 };
+  if (days <= 30) return { bucket: "0-30", days };
+  if (days <= 60) return { bucket: "31-60", days };
+  if (days <= 90) return { bucket: "61-90", days };
+  return { bucket: "90+", days };
 }
 
 function sumInvoiceLines(lines, rateField) {
@@ -154,6 +184,15 @@ export async function deleteSalesInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
+    const existing = await SalesInvoice.findOne(withCompany(req, { _id: id }));
+    if (!existing) return res.status(404).json({ message: "Not found" });
+    const status = String(existing.status || "").toUpperCase();
+    if (!["DRAFT", ""].includes(status)) {
+      return res.status(409).json({
+        message: "Posted sales invoices cannot be deleted. Cancel/reverse the invoice instead.",
+        code: "POSTED_DELETE_BLOCKED",
+      });
+    }
     const row = await SalesInvoice.findOneAndDelete(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
     res.json({ success: true });
@@ -270,26 +309,50 @@ export async function listCustomerLedger(req, res) {
     if (!name) {
       return res.status(400).json({ message: "customerName query required" });
     }
+    const filter = withCompany(req, { customerName: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") });
+    if (req.query.currency) filter.currency = String(req.query.currency).trim().toUpperCase();
+    Object.assign(filter, dateRangeFromQuery(req, "transactionDate"));
+    const [entries, total] = await Promise.all([
+      CustomerLedger.find(filter)
+        .sort({ transactionDate: 1, createdAt: 1, _id: 1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      CustomerLedger.countDocuments(filter),
+    ]);
+    if (entries.length || total > 0) {
+      return res.json({ items: entries, total, page, limit, sourceModel: "CustomerLedger" });
+    }
+
+    // Backward-compatible fallback for historical rows created before
+    // Phase-8.3. New financial movements are written to CustomerLedger.
     const prior = await CustomerLedgerEntry.find(withCompany(req, { customerName: name }))
       .sort({ entryDate: 1, createdAt: 1 })
       .limit(skip)
       .select("debit credit")
       .lean();
-    let running = prior.reduce(
-      (acc, e) => acc + (Number(e.debit) || 0) - (Number(e.credit) || 0),
-      0
-    );
-    const entries = await CustomerLedgerEntry.find(withCompany(req, { customerName: name }))
+    let running = prior.reduce((acc, e) => acc + (Number(e.debit) || 0) - (Number(e.credit) || 0), 0);
+    const legacyEntries = await CustomerLedgerEntry.find(withCompany(req, { customerName: name }))
       .sort({ entryDate: 1, createdAt: 1 })
       .skip(skip)
       .limit(limit)
       .lean();
-    const total = await CustomerLedgerEntry.countDocuments(withCompany(req, { customerName: name }));
-    const withBal = entries.map((e) => {
+    const legacyTotal = await CustomerLedgerEntry.countDocuments(withCompany(req, { customerName: name }));
+    const withBal = legacyEntries.map((e) => {
       running += (Number(e.debit) || 0) - (Number(e.credit) || 0);
-      return { ...e, runningBalance: running };
+      return {
+        ...e,
+        transactionDate: e.entryDate,
+        documentNo: e.referenceNumber,
+        movementType: e.referenceType || e.sourceType || "JOURNAL",
+        debitAmount: Number(e.debit) || 0,
+        creditAmount: Number(e.credit) || 0,
+        remarks: e.narrative || "",
+        runningBalance: running,
+        sourceModel: "CustomerLedgerEntry",
+      };
     });
-    res.json({ items: withBal, total, page, limit });
+    res.json({ items: withBal, total: legacyTotal, page, limit, sourceModel: "CustomerLedgerEntry" });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -311,8 +374,15 @@ export async function deleteCustomerLedgerEntry(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await CustomerLedgerEntry.findOneAndDelete(withCompany(req, { _id: id }));
+    const row = await CustomerLedgerEntry.findOne(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
+    if (row.sourceId || row.proformaInvoiceId) {
+      return res.status(409).json({
+        message: "Posted customer ledger rows cannot be deleted. Post a reversing entry instead.",
+        code: "POSTED_DELETE_BLOCKED",
+      });
+    }
+    await row.deleteOne();
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -549,19 +619,31 @@ export async function getCustomerLedgerByCustomerId(req, res) {
 
 export async function getCustomerStatement(req, res) {
   try {
-    const { customerId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(customerId)) return res.status(400).json({ message: "Invalid customerId" });
-    const customer = await Customer.findOne(withCompany(req, { _id: customerId })).lean();
-    if (!customer) return res.status(404).json({ message: "Customer not found" });
-    const entries = await CustomerLedgerEntry.find(withCompany(req, { customerId: customer._id }))
-      .sort({ entryDate: 1, createdAt: 1 })
+    const customerId = req.params.customerId || req.query.customerId || "";
+    const customerName = String(req.query.customerName || req.query.customer || "").trim();
+    const filter = withCompany(req);
+    let customer = null;
+    if (mongoose.Types.ObjectId.isValid(customerId)) {
+      customer = await Customer.findOne(withCompany(req, { _id: customerId })).lean();
+      if (!customer) return res.status(404).json({ message: "Customer not found" });
+      filter.customerId = customer._id;
+    } else if (customerName) {
+      filter.customerName = new RegExp(`^${customerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
+    } else {
+      return res.status(400).json({ message: "customerName or customerId query required" });
+    }
+    if (req.query.currency) filter.currency = String(req.query.currency).trim().toUpperCase();
+    Object.assign(filter, dateRangeFromQuery(req, "transactionDate"));
+    const entries = await CustomerLedger.find(filter)
+      .sort({ transactionDate: 1, createdAt: 1, _id: 1 })
       .lean();
-    let running = 0;
-    const items = entries.map((e) => {
-      running += (Number(e.debit) || 0) - (Number(e.credit) || 0);
-      return { ...e, runningBalance: running };
+    const closingBalance = Number(entries[entries.length - 1]?.runningBalance || 0);
+    res.json({
+      customer: customer ? { _id: customer._id, name: customer.name } : { _id: null, name: customerName },
+      items: entries,
+      closingBalance,
+      currency: req.query.currency || entries[0]?.currency || "USD",
     });
-    res.json({ customer: { _id: customer._id, name: customer.name }, items, closingBalance: running });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -572,37 +654,66 @@ export async function listOutstandingReport(req, res) {
     const filter = withCompany(req);
     if (req.query.customerName) filter.customerName = new RegExp(String(req.query.customerName).trim(), "i");
     if (req.query.currency) filter.currency = String(req.query.currency).trim().toUpperCase();
-    if (req.query.fromDate || req.query.toDate) {
-      filter.proformaDate = {};
-      if (req.query.fromDate) filter.proformaDate.$gte = new Date(String(req.query.fromDate));
-      if (req.query.toDate) {
-        const d = new Date(String(req.query.toDate));
-        d.setHours(23, 59, 59, 999);
-        filter.proformaDate.$lte = d;
-      }
-    }
-    const proformas = await ProformaInvoice.find(filter).sort({ proformaDate: -1 }).lean();
-    const rows = proformas.map((p) => {
-      const invoiceAmount = Math.max(0, Number(p.grandTotal) || 0);
-      const paidAmount = Math.max(0, Number(p.totalReceivedAmount) || 0);
-      const balanceAmount = Math.max(0, invoiceAmount - paidAmount);
-      const dueDate = p.proformaDate ? new Date(p.proformaDate) : new Date();
-      const agingDays = Math.max(0, Math.floor((Date.now() - dueDate.getTime()) / (1000 * 60 * 60 * 24)));
-      return {
-        customer: p.customerName || "",
-        invoiceNo: p.proformaNo || "",
-        invoiceDate: p.proformaDate || null,
-        dueDate,
-        invoiceAmount,
-        paidAmount,
-        balanceAmount,
-        currency: p.currency || "USD",
-        agingDays,
-        status: balanceAmount <= 0 ? "PAID" : paidAmount > 0 ? "PARTIALLY_PAID" : "UNPAID",
-        sourceType: "PROFORMA_INVOICE",
-        sourceId: p._id,
-      };
-    });
+    Object.assign(filter, dateRangeFromQuery(req, "invoiceDate"));
+    filter.status = { $ne: "CANCELLED" };
+    const invoices = await SalesInvoice.find(filter).sort({ invoiceDate: -1, createdAt: -1 }).lean();
+    const invoiceIds = invoices.map((x) => x._id);
+    const latestPayments = invoiceIds.length
+      ? await PaymentReceipt.aggregate([
+          {
+            $match: withCompany(req, {
+              status: { $ne: "CANCELLED" },
+              "allocations.targetType": "SALES_INVOICE",
+              "allocations.targetId": { $in: invoiceIds },
+            }),
+          },
+          { $unwind: "$allocations" },
+          {
+            $match: {
+              "allocations.targetType": "SALES_INVOICE",
+              "allocations.targetId": { $in: invoiceIds },
+            },
+          },
+          {
+            $group: {
+              _id: "$allocations.targetId",
+              received: { $sum: "$allocations.allocatedAmount" },
+              latestPaymentDate: { $max: "$receiptDate" },
+            },
+          },
+        ])
+      : [];
+    const payByInvoice = new Map(latestPayments.map((x) => [String(x._id), x]));
+    const rows = invoices
+      .map((inv) => {
+        const invoiceAmount = Math.max(0, Number(inv.grandTotal) || 0);
+        const payment = payByInvoice.get(String(inv._id));
+        const received = Math.max(0, Number(payment?.received ?? inv.totalReceivedAmount) || 0);
+        const balance = Math.max(0, invoiceAmount - received);
+        const dueDate = dueDateForInvoice(inv);
+        const ageing = ageingBucketFromDueDate(dueDate);
+        return {
+          customer: inv.customerName || "",
+          totalInvoice: invoiceAmount,
+          invoiceAmount,
+          invoiceNo: inv.invoiceNo || "",
+          invoiceDate: inv.invoiceDate || null,
+          dueDate,
+          received,
+          paidAmount: received,
+          balance,
+          balanceAmount: balance,
+          overdue: dueDate.getTime() < Date.now() && balance > 0,
+          latestPaymentDate: payment?.latestPaymentDate || null,
+          ageingBucket: ageing.bucket,
+          agingDays: ageing.days,
+          currency: inv.currency || "USD",
+          status: balance <= 0 ? "PAID" : received > 0 ? "PARTIAL" : "UNPAID",
+          sourceType: "SALES_INVOICE",
+          sourceId: inv._id,
+        };
+      })
+      .filter((r) => r.balance > 0 || req.query.includePaid === "1");
     res.json({ items: rows });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -611,20 +722,24 @@ export async function listOutstandingReport(req, res) {
 
 export async function listAgingReport(req, res) {
   try {
-    const out = await ProformaInvoice.find(withCompany(req)).lean();
+    const filter = withCompany(req, { status: { $ne: "CANCELLED" } });
+    if (req.query.customerName) filter.customerName = new RegExp(String(req.query.customerName).trim(), "i");
+    if (req.query.currency) filter.currency = String(req.query.currency).trim().toUpperCase();
+    const out = await SalesInvoice.find(filter).lean();
     const bucketByCustomer = new Map();
-    for (const p of out) {
-      const total = Math.max(0, Number(p.grandTotal) || 0);
-      const paid = Math.max(0, Number(p.totalReceivedAmount) || 0);
+    for (const inv of out) {
+      const total = Math.max(0, Number(inv.grandTotal) || 0);
+      const paid = Math.max(0, Number(inv.totalReceivedAmount) || 0);
       const bal = Math.max(0, total - paid);
       if (bal <= 0) continue;
-      const days = Math.max(0, Math.floor((Date.now() - new Date(p.proformaDate || p.createdAt || Date.now()).getTime()) / (1000 * 60 * 60 * 24)));
-      const key = `${p.customerName || ""}::${p.currency || "USD"}`;
+      const dueDate = dueDateForInvoice(inv);
+      const { bucket, days } = ageingBucketFromDueDate(dueDate);
+      const key = `${inv.customerName || ""}::${inv.currency || "USD"}`;
       if (!bucketByCustomer.has(key)) {
         bucketByCustomer.set(key, {
-          customer: p.customerName || "",
-          currency: p.currency || "USD",
-          notDue: 0,
+          customer: inv.customerName || "",
+          currency: inv.currency || "USD",
+          current: 0,
           d0_30: 0,
           d31_60: 0,
           d61_90: 0,
@@ -633,7 +748,7 @@ export async function listAgingReport(req, res) {
         });
       }
       const row = bucketByCustomer.get(key);
-      if (days <= 0) row.notDue += bal;
+      if (bucket === "Current") row.current += bal;
       else if (days <= 30) row.d0_30 += bal;
       else if (days <= 60) row.d31_60 += bal;
       else if (days <= 90) row.d61_90 += bal;

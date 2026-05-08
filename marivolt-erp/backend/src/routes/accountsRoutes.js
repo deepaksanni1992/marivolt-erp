@@ -25,6 +25,7 @@ router.delete("/purchase-invoices/:id", c.deletePurchaseInvoice);
 
 router.get("/customer-ledger", c.listCustomerLedger);
 router.get("/customer-ledger/:customerId", c.getCustomerLedgerByCustomerId);
+router.get("/customer-statement", c.getCustomerStatement);
 router.get("/customer-statement/:customerId", c.getCustomerStatement);
 router.post("/customer-ledger", c.createCustomerLedgerEntry);
 router.delete("/customer-ledger/:id", c.deleteCustomerLedgerEntry);

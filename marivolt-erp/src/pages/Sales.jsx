@@ -2006,6 +2006,12 @@ export default function Sales() {
     enabled: !!detailId && activeTab === "Sales Invoice",
   });
 
+  const { data: salesInvoicePaymentsData } = useQuery({
+    queryKey: ["sales-invoice-payments", detailId],
+    queryFn: () => apiGet(`/payment-receipts/by-sales-invoice/${detailId}`),
+    enabled: !!detailId && activeTab === "Sales Invoice",
+  });
+
   const { data: salesDispatchDetail } = useQuery({
     queryKey: ["sales-dispatch-detail", detailId],
     queryFn: () => apiGet(`/sales/sales-dispatches/${detailId}`),
@@ -6788,7 +6794,65 @@ export default function Sales() {
                 <div><div className="text-gray-500">Customer</div><div>{salesInvoiceDetail.customerName}</div></div>
                 <div><div className="text-gray-500">Status</div><div><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesInvoiceDetail.status)}`}>{salesInvoiceDetail.status}</span></div></div>
               </div>
+              <div className="grid gap-2 sm:grid-cols-4">
+                <div className="rounded-xl border bg-white p-3">
+                  <div className="text-xs text-gray-500">Invoice Amount</div>
+                  <div className="font-semibold tabular-nums">{salesInvoiceDetail.currency || "USD"} {money(salesInvoiceDetail.grandTotal)}</div>
+                </div>
+                <div className="rounded-xl border bg-white p-3">
+                  <div className="text-xs text-gray-500">Received</div>
+                  <div className="font-semibold tabular-nums">{salesInvoiceDetail.currency || "USD"} {money(salesInvoiceDetail.totalReceivedAmount || 0)}</div>
+                </div>
+                <div className="rounded-xl border bg-white p-3">
+                  <div className="text-xs text-gray-500">Outstanding</div>
+                  <div className="font-semibold tabular-nums">{salesInvoiceDetail.currency || "USD"} {money(salesInvoiceDetail.balanceAmount ?? salesInvoiceDetail.grandTotal ?? 0)}</div>
+                </div>
+                <div className="rounded-xl border bg-white p-3">
+                  <div className="text-xs text-gray-500">Payment / Ageing</div>
+                  <div className="flex flex-wrap gap-1">
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesInvoiceDetail.paymentStatus || "UNPAID")}`}>
+                      {salesInvoiceDetail.paymentStatus || "UNPAID"}
+                    </span>
+                    <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
+                      {(() => {
+                        const d = new Date(salesInvoiceDetail.invoiceDate || salesInvoiceDetail.createdAt || Date.now());
+                        const days = Math.max(0, Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24)));
+                        if (days <= 30) return "0-30";
+                        if (days <= 60) return "31-60";
+                        if (days <= 90) return "61-90";
+                        return "90+";
+                      })()}
+                    </span>
+                  </div>
+                </div>
+              </div>
               <div className="text-xs text-gray-600">Linked PI: {salesInvoiceDetail.linkedProformaNo || "-"} | Linked OA: {salesInvoiceDetail.linkedOANo || "-"}</div>
+              <div className="overflow-x-auto rounded-xl border">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-100 text-xs uppercase tracking-wide text-gray-600">
+                    <tr><th className="px-3 py-2 text-left">Payment No</th><th className="px-3 py-2 text-left">Date</th><th className="px-3 py-2 text-right">Amount</th><th className="px-3 py-2 text-left">Mode</th><th className="px-3 py-2 text-left">Reference</th><th className="px-3 py-2 text-left">Status</th><th className="px-3 py-2 text-left">Slip</th></tr>
+                  </thead>
+                  <tbody>
+                    {(salesInvoicePaymentsData?.items || []).length === 0 ? (
+                      <tr><td colSpan={7} className="px-3 py-4 text-center text-gray-500">No payment history.</td></tr>
+                    ) : (salesInvoicePaymentsData?.items || []).map((p) => (
+                      <tr key={p._id} className="border-t">
+                        <td className="px-3 py-2 font-mono text-xs">{p.receiptNo || "—"}</td>
+                        <td className="px-3 py-2 text-xs">{p.receiptDate ? new Date(p.receiptDate).toLocaleDateString() : "—"}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{p.currency || "USD"} {money(p.amountReceived || 0)}</td>
+                        <td className="px-3 py-2 text-xs">{String(p.paymentMode || "").replaceAll("_", " ")}</td>
+                        <td className="px-3 py-2 text-xs">{p.paymentReference || "—"}</td>
+                        <td className="px-3 py-2 text-xs">{p.status || "—"}</td>
+                        <td className="px-3 py-2">
+                          <button type="button" className="rounded border px-2 py-1 text-xs" disabled={!p.attachmentKey} onClick={() => openPaymentReceiptAttachment(p._id, true)}>
+                            Preview
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-invoice", salesInvoiceDetail._id)}>Print</button>
                 <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-invoice", salesInvoiceDetail._id, true)}>Export PDF</button>

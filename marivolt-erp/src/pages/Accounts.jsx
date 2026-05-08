@@ -4,6 +4,7 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
 import CustomerLedgerTab from "../components/accounts/CustomerLedgerTab.jsx";
+import CustomerStatementTab from "../components/accounts/CustomerStatementTab.jsx";
 import OutstandingReportTab from "../components/accounts/OutstandingReportTab.jsx";
 import AgingReportTab from "../components/accounts/AgingReportTab.jsx";
 import CashBankLedgerTab from "../components/accounts/CashBankLedgerTab.jsx";
@@ -71,6 +72,7 @@ const tabs = [
   { id: "ar", label: "AR Dashboard" },
   { id: "ap", label: "AP Dashboard" },
   { id: "cust", label: "Customer Ledger" },
+  { id: "statement", label: "Customer Statement" },
   { id: "supp", label: "Supplier Ledger" },
   { id: "payrcpt", label: "Payment Receipts" },
   { id: "payv", label: "Payment Vouchers" },
@@ -116,6 +118,12 @@ export default function Accounts() {
     bankCashAccountName: "",
     fromDate: "",
     toDate: "",
+  });
+  const [statementFilters, setStatementFilters] = useState({
+    customerName: "",
+    fromDate: "",
+    toDate: "",
+    currency: "",
   });
 
   const [siForm, setSiForm] = useState({
@@ -188,6 +196,17 @@ export default function Accounts() {
         limit,
       }),
     enabled: tab === "cust" && filterCustomer.trim().length > 0,
+  });
+  const statementQ = useQuery({
+    queryKey: ["customerStatement", statementFilters],
+    queryFn: () =>
+      apiGetWithQuery("/accounts/customer-statement", {
+        customerName: statementFilters.customerName.trim(),
+        fromDate: statementFilters.fromDate || undefined,
+        toDate: statementFilters.toDate || undefined,
+        currency: statementFilters.currency || undefined,
+      }),
+    enabled: tab === "statement" && statementFilters.customerName.trim().length > 0,
   });
   const suppQ = useQuery({
     queryKey: ["supplierLedger", filterSupplier, page],
@@ -305,6 +324,7 @@ export default function Accounts() {
     if (tab === "sd") return sdQ.data?.items ?? [];
     if (tab === "pi") return piQ.data?.items ?? [];
     if (tab === "cust") return custQ.data?.items ?? [];
+    if (tab === "statement") return statementQ.data?.items ?? [];
     if (tab === "supp") return suppQ.data?.items ?? [];
     if (tab === "cash") return cashQ.data?.items ?? [];
     if (tab === "bank") return bankQ.data?.items ?? [];
@@ -320,6 +340,7 @@ export default function Accounts() {
     if (tab === "sd") return sdQ.data?.total ?? 0;
     if (tab === "pi") return piQ.data?.total ?? 0;
     if (tab === "cust") return custQ.data?.total ?? 0;
+    if (tab === "statement") return statementQ.data?.items?.length ?? 0;
     if (tab === "supp") return suppQ.data?.total ?? 0;
     if (tab === "cash") return cashQ.data?.total ?? 0;
     if (tab === "bank") return bankQ.data?.total ?? 0;
@@ -335,6 +356,7 @@ export default function Accounts() {
     if (tab === "sd") return sdQ.isLoading;
     if (tab === "pi") return piQ.isLoading;
     if (tab === "cust") return custQ.isLoading;
+    if (tab === "statement") return statementQ.isLoading;
     if (tab === "supp") return suppQ.isLoading;
     if (tab === "cash") return cashQ.isLoading;
     if (tab === "bank") return bankQ.isLoading;
@@ -446,6 +468,75 @@ export default function Accounts() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  }
+
+  function exportCustomerStatementCsv(rows = activeRows()) {
+    if (!rows || !rows.length) {
+      setErr("No statement rows to export.");
+      return;
+    }
+    const csvSafe = (v) => {
+      const s = v == null ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = ["Date", "Document No", "Movement Type", "Debit", "Credit", "Running Balance", "Currency", "Remarks"];
+    const lines = [header.map(csvSafe).join(",")];
+    for (const r of rows) {
+      lines.push([
+        r.transactionDate ? new Date(r.transactionDate).toISOString().slice(0, 10) : "",
+        r.documentNo || "",
+        r.movementType || "",
+        Number(r.debitAmount || 0).toFixed(2),
+        Number(r.creditAmount || 0).toFixed(2),
+        Number(r.runningBalance || 0).toFixed(2),
+        r.currency || "",
+        r.remarks || "",
+      ].map(csvSafe).join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `customer-statement-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function printCustomerStatement(rows = activeRows()) {
+    const customer = statementFilters.customerName || "Customer";
+    const htmlRows = rows
+      .map(
+        (r) => `<tr>
+          <td>${r.transactionDate ? new Date(r.transactionDate).toLocaleDateString() : ""}</td>
+          <td>${r.documentNo || ""}</td>
+          <td>${String(r.movementType || "").replaceAll("_", " ")}</td>
+          <td style="text-align:right">${Number(r.debitAmount || 0).toFixed(2)}</td>
+          <td style="text-align:right">${Number(r.creditAmount || 0).toFixed(2)}</td>
+          <td style="text-align:right">${Number(r.runningBalance || 0).toFixed(2)}</td>
+          <td>${r.remarks || ""}</td>
+        </tr>`
+      )
+      .join("");
+    const w = window.open("", "_blank");
+    if (!w) return;
+    w.document.write(`
+      <html><head><title>Customer Statement</title></head>
+      <body style="font-family:Arial;padding:24px">
+        <h2 style="margin:0 0 8px 0">Customer Statement</h2>
+        <div><b>Customer:</b> ${customer}</div>
+        <div><b>Currency:</b> ${statementFilters.currency || statementQ.data?.currency || "All"}</div>
+        <div><b>Period:</b> ${statementFilters.fromDate || "Start"} to ${statementFilters.toDate || "Today"}</div>
+        <table width="100%" cellspacing="0" cellpadding="6" border="1" style="margin-top:16px;border-collapse:collapse;font-size:12px">
+          <thead><tr><th>Date</th><th>Document No</th><th>Movement</th><th>Debit</th><th>Credit</th><th>Balance</th><th>Remarks</th></tr></thead>
+          <tbody>${htmlRows}</tbody>
+        </table>
+      </body></html>
+    `);
+    w.document.close();
+    w.focus();
+    w.print();
   }
 
   const cancelPaymentReceiptMut = useMutation({
@@ -766,6 +857,28 @@ export default function Accounts() {
               onDelete={(r) => {
                 if (confirm("Delete entry?")) delMut.mutate({ path: `/accounts/customer-ledger/${r._id}` });
               }}
+            />
+          )}
+          {tab === "statement" && (
+            <CustomerStatementTab
+              rows={activeRows()}
+              loading={loading()}
+              filters={statementFilters}
+              setFilters={setStatementFilters}
+              closingBalance={statementQ.data?.closingBalance || 0}
+              onExportCsv={() => exportCustomerStatementCsv(activeRows())}
+              onPrint={() => printCustomerStatement(activeRows())}
+              onOpenInvoice={(id) => {
+                if (!id) return;
+                setTab("si");
+                setPage(1);
+              }}
+              onOpenPayment={(id) => {
+                if (!id) return;
+                setTab("payrcpt");
+                setPage(1);
+              }}
+              onPreviewAttachment={(id) => openPaymentReceiptSlip(id, true)}
             />
           )}
           {tab === "supp" && (

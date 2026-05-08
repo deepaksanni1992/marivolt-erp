@@ -23,6 +23,10 @@ import {
   canonicalStatus,
 } from "../services/docLifecycle.js";
 import { writeAudit, writeStatusChange } from "../services/auditService.js";
+import {
+  postSalesInvoiceReceivable,
+  reverseSalesInvoiceReceivable,
+} from "../services/customerReceivableService.js";
 
 const { withTransaction } = stockService;
 
@@ -1867,6 +1871,9 @@ export async function convertOAToSalesInvoice(req, res) {
       status: "DRAFT",
       createdBy: req.user?.email || "",
     });
+    if (canonicalStatus(DOC_TYPES.SALES_INVOICE, doc.status) !== "DRAFT") {
+      await postSalesInvoiceReceivable({ req, invoice: doc });
+    }
     if (!oa.convertedTo?.includes("SALES_INVOICE")) oa.convertedTo = [...(oa.convertedTo || []), "SALES_INVOICE"];
     oa.status = "APPROVED";
     oa.updatedBy = req.user?.email || "";
@@ -1984,6 +1991,9 @@ export async function createSalesInvoice(req, res) {
       companyId: req.companyId,
       createdBy: req.user?.email || "",
     });
+    if (canonicalStatus(DOC_TYPES.SALES_INVOICE, doc.status) !== "DRAFT") {
+      await postSalesInvoiceReceivable({ req, invoice: doc });
+    }
     res.status(201).json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -2041,6 +2051,7 @@ export async function updateSalesInvoice(req, res) {
       "esn",
     ];
     const beforeSnapshot = doc.toObject();
+    const beforeCanon = canonicalStatus(DOC_TYPES.SALES_INVOICE, beforeSnapshot.status);
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
     }
@@ -2048,6 +2059,10 @@ export async function updateSalesInvoice(req, res) {
     Object.assign(doc, computeTotals(doc.lines, doc));
     doc.updatedBy = req.user?.email || "";
     await doc.save();
+    const afterCanon = canonicalStatus(DOC_TYPES.SALES_INVOICE, doc.status);
+    if (beforeCanon === "DRAFT" && ["POSTED", "PARTIAL_PAYMENT", "PAID"].includes(afterCanon)) {
+      await postSalesInvoiceReceivable({ req, invoice: doc });
+    }
     await writeAudit(req, {
       action: "UPDATE",
       module: "SALES",
@@ -2087,11 +2102,17 @@ export async function cancelSalesInvoice(req, res) {
       {
         $match: withCompany(req, {
           status: { $ne: "CANCELLED" },
-          "allocations.invoiceId": new mongoose.Types.ObjectId(inv._id),
+          "allocations.targetType": "SALES_INVOICE",
+          "allocations.targetId": new mongoose.Types.ObjectId(inv._id),
         }),
       },
       { $unwind: "$allocations" },
-      { $match: { "allocations.invoiceId": new mongoose.Types.ObjectId(inv._id) } },
+      {
+        $match: {
+          "allocations.targetType": "SALES_INVOICE",
+          "allocations.targetId": new mongoose.Types.ObjectId(inv._id),
+        },
+      },
       { $group: { _id: null, total: { $sum: "$allocations.allocatedAmount" } } },
     ]);
     const receivedAmount = Number(receivedAgg[0]?.total || 0);
@@ -2147,6 +2168,7 @@ export async function cancelSalesInvoice(req, res) {
       inv.cancellationReason = reason;
       inv.updatedBy = req.user?.email || "";
       await inv.save({ session });
+      await reverseSalesInvoiceReceivable({ req, invoice: inv, reason, session });
       if (inv.linkedRtsId) {
         await Rts.findOneAndUpdate(
           withCompany(req, { _id: inv.linkedRtsId }),
@@ -3473,6 +3495,7 @@ export async function convertOrderAllocationToSalesInvoice(req, res) {
         { session }
       );
       createdId = doc._id;
+      await postSalesInvoiceReceivable({ req, invoice: doc, session });
       allocation.status = "CLOSED";
       allocation.linkedSalesInvoiceId = doc._id;
       allocation.linkedSalesInvoiceNo = doc.invoiceNo;
