@@ -441,13 +441,21 @@ export async function allocateStock({
   if (!(q > 0)) throw new Error("allocateStock: qty must be > 0");
 
   let updated;
+  // Note: we deliberately mutate only `reservedQty` and NOT
+  // `allocatedQty` here. Legacy rows (created before Phase-3) carry
+  // their reservation only on `reservedQty` while `allocatedQty`
+  // remained 0. Touching both buckets symmetrically would push
+  // `allocatedQty` negative when the matching cancellation runs on
+  // those legacy rows. The unified Stock View already takes
+  // `Math.max(allocatedQty, reservedQty)` so the read-side picks up
+  // the canonical value either way.
   if (allowNegative) {
     updated = await bumpBuckets({
       session,
       companyId,
       article,
       warehouse,
-      inc: { allocatedQty: q, reservedQty: q },
+      inc: { reservedQty: q },
       upsert: true,
     });
   } else {
@@ -457,7 +465,7 @@ export async function allocateStock({
       companyId,
       article,
       warehouse,
-      inc: { allocatedQty: q, reservedQty: q },
+      inc: { reservedQty: q },
       guard: {
         $expr: {
           $gte: [
@@ -535,12 +543,14 @@ export async function cancelAllocation({
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
   if (!(q > 0)) throw new Error("cancelAllocation: qty must be > 0");
+  // See note in `allocateStock`: only mutate the `reservedQty` bucket
+  // so legacy rows do not push `allocatedQty` negative.
   const updated = await bumpBuckets({
     session,
     companyId,
     article,
     warehouse,
-    inc: { allocatedQty: -q, reservedQty: -q },
+    inc: { reservedQty: -q },
     guard: { $expr: { $gte: [{ $ifNull: ["$reservedQty", 0] }, q] } },
   });
   if (!updated) {
@@ -587,12 +597,13 @@ export async function moveAllocationToRTS({
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
   if (!(q > 0)) throw new Error("moveAllocationToRTS: qty must be > 0");
+  // See note in `allocateStock`: only mutate the `reservedQty` bucket.
   const updated = await bumpBuckets({
     session,
     companyId,
     article,
     warehouse,
-    inc: { allocatedQty: -q, reservedQty: -q, rtsQty: q },
+    inc: { reservedQty: -q, rtsQty: q },
     guard: { $expr: { $gte: [{ $ifNull: ["$reservedQty", 0] }, q] } },
   });
   if (!updated) {
@@ -634,12 +645,13 @@ export async function cancelRTS({
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
   if (!(q > 0)) throw new Error("cancelRTS: qty must be > 0");
+  // See note in `allocateStock`: only mutate the `reservedQty` bucket.
   const updated = await bumpBuckets({
     session,
     companyId,
     article,
     warehouse,
-    inc: { rtsQty: -q, allocatedQty: q, reservedQty: q },
+    inc: { rtsQty: -q, reservedQty: q },
     guard: { $expr: { $gte: [{ $ifNull: ["$rtsQty", 0] }, q] } },
   });
   if (!updated) {
@@ -716,8 +728,9 @@ export async function invoiceFromRTS({
         quantity: -q,
         onHandQty: -q,
         rtsQty: -fromRts,
+        // See note in `allocateStock`: legacy rows track allocation
+        // only on `reservedQty`, so we only decrement that.
         reservedQty: -fromAllocated,
-        allocatedQty: -fromAllocated,
       },
     },
     { session, new: true }

@@ -13,15 +13,67 @@ import Company from "../models/Company.js";
 import Item from "../models/Item.js";
 import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
-import {
-  applySalesReserve,
-  applySalesReleaseReserve,
-  applyReservedToRts,
-  applyRtsToReserved,
-  applySalesInvoiceOut,
-  applySalesInvoiceCancelRestore,
-  withTransaction,
-} from "../services/salesStockService.js";
+import * as stockService from "../services/stockService.js";
+
+const { withTransaction } = stockService;
+
+/**
+ * Phase-4 helpers — wrap the per-line stockService calls used by the
+ * sales flow controllers. These keep the existing controller code
+ * concise while allowing each flow to enforce article-level dedup
+ * (matching the legacy salesStockService behaviour).
+ */
+function dedupeLines(lines) {
+  const byArticle = new Map();
+  for (const ln of lines || []) {
+    const code = String(ln?.article || "").trim().toUpperCase();
+    const q = Number(ln?.qty) || 0;
+    if (!code || !(q > 0)) continue;
+    byArticle.set(code, (byArticle.get(code) || 0) + q);
+  }
+  return byArticle;
+}
+
+/**
+ * Reserves stock for every line, dedup-by-article, and returns a Set
+ * of articles whose available bucket dropped below zero so the caller
+ * can stamp `OrderAllocation.lines[i].isNegativeAllocation`.
+ */
+async function reserveAllocationLines({
+  session,
+  companyId,
+  warehouse,
+  lines,
+  referenceType,
+  referenceNo,
+  customerName,
+  remarks,
+  createdBy,
+  allowNegative,
+  sourceModule = "SALES",
+}) {
+  const negativeArticles = new Set();
+  const ledgerIds = [];
+  for (const [article, qty] of dedupeLines(lines)) {
+    const ledger = await stockService.allocateStock({
+      session,
+      companyId,
+      article,
+      warehouse,
+      qty,
+      customerName,
+      referenceType,
+      referenceNo,
+      remarks,
+      createdBy,
+      sourceModule,
+      allowNegative,
+    });
+    ledgerIds.push(ledger._id);
+    if (ledger.isNegativeAllocation) negativeArticles.add(article);
+  }
+  return { ledgerIds, negativeArticles };
+}
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -1932,18 +1984,21 @@ export async function cancelSalesInvoice(req, res) {
     }
     await withTransaction(async (session) => {
       if (inv.stockPostedAt) {
-        await applySalesInvoiceCancelRestore({
-          session,
-          companyId: req.companyId,
-          warehouse,
-          lines,
-          referenceType: "SALES_INVOICE_CANCEL",
-          referenceId: inv._id,
-          referenceNumber: inv.invoiceNo,
-          customerName: inv.customerName || "",
-          remarks: reason,
-          createdBy: req.user?.email || "",
-        });
+        for (const [article, qty] of dedupeLines(lines)) {
+          await stockService.cancelInvoice({
+            session,
+            companyId: req.companyId,
+            article,
+            warehouse,
+            qty,
+            customerName: inv.customerName || "",
+            referenceType: "SALES_INVOICE_CANCEL",
+            referenceNo: inv.invoiceNo,
+            remarks: reason,
+            createdBy: req.user?.email || "",
+            sourceModule: "SALES",
+          });
+        }
       }
       inv.status = "CANCELLED";
       inv.cancelledAt = new Date();
@@ -2526,32 +2581,39 @@ export async function approveRts(req, res) {
         const reserveLines = (allocation.lines || [])
           .map((l) => ({ article: l.article, qty: Number(l.qty) || 0 }))
           .filter((x) => x.article && x.qty > 0);
-        await applySalesReserve({
+        // Legacy allocations did not record a SALES_RESERVE on creation —
+        // backfill the reservation now so the RTS approval can move qty
+        // from reserved → RTS. We allow negative since these allocations
+        // were already accepted before the negative-stock policy existed.
+        await reserveAllocationLines({
           session,
           companyId: req.companyId,
           warehouse,
           lines: reserveLines,
           referenceType: "ORDER_ALLOCATION_RESERVE_BACKFILL",
-          referenceId: allocation._id,
-          referenceNumber: allocation.allocationNo,
+          referenceNo: allocation.allocationNo,
           customerName: allocation.customerName || "",
           remarks: "Backfill reservation for legacy allocation",
           createdBy: req.user?.email || "",
+          allowNegative: true,
         });
         allocation.stockReservedAt = new Date();
       }
-      await applyReservedToRts({
-        session,
-        companyId: req.companyId,
-        warehouse,
-        lines: rtsLines,
-        referenceType: "RTS_APPROVED",
-        referenceId: doc._id,
-        referenceNumber: doc.rtsNo,
-        customerName: doc.customerName || allocation.customerName || "",
-        remarks: "RTS approved",
-        createdBy: req.user?.email || "",
-      });
+      for (const [article, qty] of dedupeLines(rtsLines)) {
+        await stockService.moveAllocationToRTS({
+          session,
+          companyId: req.companyId,
+          article,
+          warehouse,
+          qty,
+          customerName: doc.customerName || allocation.customerName || "",
+          referenceType: "RTS_APPROVED",
+          referenceNo: doc.rtsNo,
+          remarks: "RTS approved",
+          createdBy: req.user?.email || "",
+          sourceModule: "SALES",
+        });
+      }
       doc.status = "APPROVED";
       doc.updatedBy = req.user?.email || "";
       await doc.save({ session });
@@ -2630,23 +2692,21 @@ export async function convertOAToOrderAllocation(req, res) {
         { session }
       );
       createdId = doc._id;
-      const { negativeArticles } = await applySalesReserve({
+      const { negativeArticles } = await reserveAllocationLines({
         session,
         companyId: req.companyId,
         warehouse,
         lines: reserveLines,
         referenceType: "ORDER_ALLOCATION",
-        referenceId: doc._id,
-        referenceNumber: allocationNo,
+        referenceNo: allocationNo,
         customerName: oa.customerName || "",
         remarks: allowNegative ? "Reserve on OA→allocation (allowNegative)" : "Reserve on OA→allocation",
         createdBy: req.user?.email || "",
         allowNegative,
       });
-      const negativeSet = new Set(Array.from(negativeArticles?.keys?.() || []));
-      if (negativeSet.size) {
+      if (negativeArticles.size) {
         for (const line of doc.lines || []) {
-          if (negativeSet.has(String(line.article || "").trim().toUpperCase())) {
+          if (negativeArticles.has(String(line.article || "").trim().toUpperCase())) {
             line.isNegativeAllocation = true;
           }
         }
@@ -2849,23 +2909,21 @@ export async function convertProformaToOrderAllocation(req, res) {
         { session }
       );
       createdId = doc._id;
-      const { negativeArticles } = await applySalesReserve({
+      const { negativeArticles } = await reserveAllocationLines({
         session,
         companyId: req.companyId,
         warehouse,
         lines: reserveLines,
         referenceType: "ORDER_ALLOCATION",
-        referenceId: doc._id,
-        referenceNumber: allocationNo,
+        referenceNo: allocationNo,
         customerName: proforma.customerName || "",
         remarks: allowNegative ? "Reserve on proforma→allocation (allowNegative)" : "Reserve on proforma→allocation",
         createdBy: req.user?.email || "",
         allowNegative,
       });
-      const negativeSet = new Set(Array.from(negativeArticles?.keys?.() || []));
-      if (negativeSet.size) {
+      if (negativeArticles.size) {
         for (const line of doc.lines || []) {
-          if (negativeSet.has(String(line.article || "").trim().toUpperCase())) {
+          if (negativeArticles.has(String(line.article || "").trim().toUpperCase())) {
             line.isNegativeAllocation = true;
           }
         }
@@ -3006,18 +3064,21 @@ export async function convertOrderAllocationToSalesInvoice(req, res) {
       } else {
         refRts = approvedDocs[0];
       }
-      await applySalesInvoiceOut({
-        session,
-        companyId: req.companyId,
-        warehouse,
-        lines: stockLines,
-        referenceType: "SALES_INVOICE",
-        referenceId: allocation._id,
-        referenceNumber: invoiceNo,
-        customerName: allocation.customerName || "",
-        remarks: "Allocation→sales invoice",
-        createdBy: req.user?.email || "",
-      });
+      for (const [article, qty] of dedupeLines(stockLines)) {
+        await stockService.invoiceFromRTS({
+          session,
+          companyId: req.companyId,
+          article,
+          warehouse,
+          qty,
+          customerName: allocation.customerName || "",
+          referenceType: "SALES_INVOICE",
+          referenceNo: invoiceNo,
+          remarks: "Allocation→sales invoice",
+          createdBy: req.user?.email || "",
+          sourceModule: "SALES",
+        });
+      }
       const [doc] = await SalesInvoice.create(
         [
           {
@@ -3146,18 +3207,21 @@ export async function cancelOrderAllocation(req, res) {
     if (dryRun) return res.json({ dryRun: true, stockImpact });
     await withTransaction(async (session) => {
       if (alloc.stockReservedAt && releaseLines.length) {
-        await applySalesReleaseReserve({
-          session,
-          companyId: req.companyId,
-          warehouse,
-          lines: releaseLines,
-          referenceType: "ORDER_ALLOCATION_CANCEL",
-          referenceId: alloc._id,
-          referenceNumber: alloc.allocationNo,
-          customerName: alloc.customerName || "",
-          remarks: reason,
-          createdBy: req.user?.email || "",
-        });
+        for (const [article, qty] of dedupeLines(releaseLines)) {
+          await stockService.cancelAllocation({
+            session,
+            companyId: req.companyId,
+            article,
+            warehouse,
+            qty,
+            customerName: alloc.customerName || "",
+            referenceType: "ORDER_ALLOCATION_CANCEL",
+            referenceNo: alloc.allocationNo,
+            remarks: reason,
+            createdBy: req.user?.email || "",
+            sourceModule: "SALES",
+          });
+        }
       }
       alloc.status = "CANCELLED";
       alloc.cancelledAt = new Date();
@@ -3215,18 +3279,21 @@ export async function cancelRtsDocument(req, res) {
     await withTransaction(async (session) => {
       const allocation = await OrderAllocation.findOne(withCompany(req, { _id: doc.linkedOrderAllocationId })).session(session);
       const warehouse = String(allocation?.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
-      await applyRtsToReserved({
-        session,
-        companyId: req.companyId,
-        warehouse,
-        lines: rtsLines,
-        referenceType: "RTS_CANCEL",
-        referenceId: doc._id,
-        referenceNumber: doc.rtsNo,
-        customerName: doc.customerName || allocation?.customerName || "",
-        remarks: reason,
-        createdBy: req.user?.email || "",
-      });
+      for (const [article, qty] of dedupeLines(rtsLines)) {
+        await stockService.cancelRTS({
+          session,
+          companyId: req.companyId,
+          article,
+          warehouse,
+          qty,
+          customerName: doc.customerName || allocation?.customerName || "",
+          referenceType: "RTS_CANCEL",
+          referenceNo: doc.rtsNo,
+          remarks: reason,
+          createdBy: req.user?.email || "",
+          sourceModule: "SALES",
+        });
+      }
       doc.status = "CANCELLED";
       doc.cancelledAt = new Date();
       doc.cancelledBy = req.user?.email || "";
