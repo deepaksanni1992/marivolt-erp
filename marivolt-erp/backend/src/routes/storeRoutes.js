@@ -1,5 +1,6 @@
 import express from "express";
 import { requireErpAccess } from "../middleware/erpAccess.js";
+import { requirePermission } from "../middleware/permissions.js";
 import * as stock from "../controllers/stockController.js";
 
 /**
@@ -11,19 +12,20 @@ import * as stock from "../controllers/stockController.js";
  */
 const router = express.Router();
 router.use(...requireErpAccess);
+const storeView = requirePermission("STORE", "view");
 
 // GET /api/store/stock-ledger/unified — multi-source projection of
 // StockLedger (GRN / Adjustment / Transfer / sales) and InventoryLedger
 // (sales reservation / RTS / invoice / cancellation).
-router.get("/stock-ledger/unified", stock.listUnifiedStockLedger);
+router.get("/stock-ledger/unified", storeView, stock.listUnifiedStockLedger);
 
 // Convenience aliases so the Store frontend does not have to know about
 // the legacy `/api/stock` namespace.
-router.get("/stock-ledger", stock.listStockLedger);
-router.get("/stock-summary", stock.listStockSummary);
-router.get("/stock-balance", stock.listStockBalance);
-router.get("/customer-allocations", stock.listCustomerAllocationsForArticle);
-router.get("/negative-allocations", stock.reportNegativeAllocations);
-router.get("/meta", stock.stockMeta);
+router.get("/stock-ledger", storeView, stock.listStockLedger);
+router.get("/stock-summary", storeView, stock.listStockSummary);
+router.get("/stock-balance", storeView, stock.listStockBalance);
+router.get("/customer-allocations", storeView, stock.listCustomerAllocationsForArticle);
+router.get("/negative-allocations", storeView, stock.reportNegativeAllocations);
+router.get("/meta", storeView, stock.stockMeta);
 
 export default router;

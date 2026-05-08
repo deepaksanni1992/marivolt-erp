@@ -10,14 +10,17 @@
  *       flow.cancelOrderAllocation);
  *
  * Backward compatibility:
- *   - Super admin / company admin / admin always pass.
+ *   - SUPER_ADMIN always passes.
+ *   - ADMIN / COMPANY_ADMIN are granted full access by the default
+ *     permission matrix in roleService, but they no longer hard-bypass
+ *     this middleware. That keeps them configurable in Phase-10.
  *   - When the resolved permission matrix grants the action, the
  *     middleware lets the request proceed.
  *   - Otherwise it returns 403 with code `PERMISSION_DENIED`.
  */
 import { hasPermission, normaliseRoleCode } from "../services/roleService.js";
 
-const ALWAYS_ALLOW = new Set(["SUPER_ADMIN", "ADMIN", "COMPANY_ADMIN"]);
+const ALWAYS_ALLOW = new Set(["SUPER_ADMIN"]);
 
 export function requirePermission(moduleName, action) {
   return async function permissionGuard(req, res, next) {

@@ -1,6 +1,7 @@
 import express from "express";
 import multer from "multer";
 import { requireErpAccess } from "../middleware/erpAccess.js";
+import { requirePermission } from "../middleware/permissions.js";
 import { getS3EnvPresence, isS3Configured } from "../config/s3.js";
 import * as doc from "../controllers/documentController.js";
 
@@ -13,6 +14,10 @@ const upload = multer({
 });
 
 router.use(...requireErpAccess);
+const reportsView = requirePermission("REPORTS", "view");
+const reportsCreate = requirePermission("REPORTS", "create");
+const reportsExport = requirePermission("REPORTS", "export");
+const reportsDelete = requirePermission("REPORTS", "delete");
 
 /** Multer wrapper: map LIMIT_FILE_SIZE to a clear API message. */
 function uploadSingleFile(req, res, next) {
@@ -28,18 +33,18 @@ function uploadSingleFile(req, res, next) {
   });
 }
 
-router.post("/upload", uploadSingleFile, doc.uploadDocument);
-router.get("/", doc.listDocuments);
+router.post("/upload", reportsCreate, uploadSingleFile, doc.uploadDocument);
+router.get("/", reportsView, doc.listDocuments);
 /** Before /:id — lets the UI show why View/Download may fail on a given server */
-router.get("/s3-status", (req, res) => {
+router.get("/s3-status", reportsView, (req, res) => {
   res.json({
     s3Configured: isS3Configured(),
     awsEnvPresence: getS3EnvPresence(),
   });
 });
 /** More specific routes before /:id */
-router.get("/:id/download", doc.downloadDocument);
-router.get("/:id", doc.getDocument);
-router.delete("/:id", doc.deleteDocument);
+router.get("/:id/download", reportsExport, doc.downloadDocument);
+router.get("/:id", reportsView, doc.getDocument);
+router.delete("/:id", reportsDelete, doc.deleteDocument);
 
 export default router;

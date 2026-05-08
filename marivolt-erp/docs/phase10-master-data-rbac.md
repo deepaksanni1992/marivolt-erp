@@ -172,7 +172,80 @@ allowed.
 
 ---
 
-## 7. Backward compatibility
+## 7. Phase 10.2 route-level permission gating
+
+Phase 10.2 mounts `requirePermission(module, action)` on ERP route
+groups module by module. Login, company selection, and health-check
+routes are intentionally untouched.
+
+Permission action rules:
+
+* `GET` list/detail routes require `module:view`.
+* `POST` create routes require `module:create`.
+* `PUT` / general `PATCH` edit routes require `module:edit`.
+* Cancel routes require `module:cancel`.
+* Approval/post/execute routes require `module:approve`.
+* Print/download/export routes require `module:export`.
+* Delete routes require `module:delete`.
+
+Bypass rule:
+
+* `SUPER_ADMIN` hard-bypasses permission checks.
+* `ADMIN` and `COMPANY_ADMIN` no longer hard-bypass the middleware;
+  they pass through the configured/default permission matrix. The
+  shipped default matrix still grants them full access.
+
+Module mapping:
+
+* **Sales** — `/api/sales`, `/api/quotations`
+* **Store** — `/api/store`, `/api/stock`, `/api/grn`, `/api/inventory`
+* **Accounts** — `/api/accounts`, `/api/payment-receipts`
+* **Logistics** — `/api/shipments`
+* **Reports** — sales/purchase/accounts/logistics report endpoints
+  and documents where treated as exported report artifacts.
+* **Item Master** — `/api/items`, `/api/boms`, `/api/kitting`,
+  `/api/dekitting`
+* **Purchase** — `/api/purchase-orders`, `/api/suppliers`,
+  `/api/purchase-returns`
+* **Settings** — `/api/admin` master-data, roles, number series,
+  approval rules, and approval queue endpoints
+* **Audit** — `/api/audit-logs` and `/api/admin/activity`
+
+Manual module verification checklist:
+
+1. **Sales** — create a role with only `SALES.view`; confirm Sales
+   lists open, create/update/cancel/convert calls return 403 with
+   `PERMISSION_DENIED`.
+2. **Store** — create a role with only `STORE.view`; confirm Stock
+   View/Ledger loads and GRN post, adjustment post, transfer post and
+   location mutation routes return 403.
+3. **Accounts** — create a role with only `ACCOUNTS.view`; confirm
+   ledgers/invoices load and payment create/cancel, bank detail
+   mutation, manual ledger deletes return 403.
+4. **Logistics** — create a role with only `LOGISTICS.view`; confirm
+   shipments/dashboard load and create/update/delete/tracking/document
+   updates return 403.
+5. **Reports** — remove `REPORTS.view`; confirm Sales/Purchase/
+   Accounts/Logistics report endpoints return 403 while normal module
+   list routes still follow their own module permission.
+6. **Item Master** — create a role with only `ITEM_MASTER.view`;
+   confirm item/BOM/kitting lists load and import/create/update/delete/
+   execute/cancel routes return 403.
+7. **Purchase** — create a role with only `PURCHASE.view`; confirm PO,
+   supplier and purchase-return lists load and create/edit/approve/
+   receive/delete routes return 403.
+8. **Settings** — create a role with only `SETTINGS.view`; confirm
+   Settings lists load and role/branch/warehouse/number-series/
+   approval-rule mutations return 403.
+9. **SUPER_ADMIN** — confirm the same restricted routes still succeed
+   for a `super_admin` user.
+10. **Auth and health** — confirm `/api/auth/login`,
+    `/api/auth/select-company`, `/api/auth/switch-company`, and
+    `/api/health` remain callable without permission gating changes.
+
+---
+
+## 8. Backward compatibility
 
 * All previous APIs and schemas remain unchanged.
 * Existing JWT tokens continue to work (`User.role` enum extended,
@@ -186,7 +259,7 @@ allowed.
 
 ---
 
-## 8. Verification checklist
+## 9. Verification checklist
 
 Backend:
 
