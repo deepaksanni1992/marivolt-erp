@@ -141,15 +141,39 @@ function deriveBalanceShape(row, fallback = {}) {
  * Captures the Stock Balance state AFTER a mutation has been
  * applied. Returned shape is the four `*After` fields the new
  * ledger schemas require.
+ *
+ * Aggregates across all batch/serial sub-rows for the same
+ * (article, warehouse) so callers always see warehouse-level
+ * running balances on the ledger row, regardless of whether the
+ * write was on a specific batched sub-row.
  */
 async function snapshotAfter({ companyId, article, warehouse, session }) {
-  const view = await getStockBalance({ companyId, article, warehouse, session });
+  const code = normArticle(article);
+  const wh = normWarehouse(warehouse);
+  const query = StockBalance.find({
+    companyId,
+    $or: [
+      { itemCode: code, warehouse: wh },
+      { article: code, location: wh },
+    ],
+  });
+  if (session) query.session(session);
+  const rows = await query.lean();
+  let onHand = 0;
+  let allocated = 0;
+  let rts = 0;
+  for (const r of rows) {
+    onHand += Number(r?.onHandQty ?? r?.quantity ?? 0) || 0;
+    allocated += Math.max(Number(r?.allocatedQty || 0), Number(r?.reservedQty || 0));
+    rts += Number(r?.rtsQty || 0);
+  }
+  const available = onHand - allocated - rts;
   return {
-    onHandAfter: view.onHandQty,
-    allocatedAfter: view.allocatedQty,
-    rtsAfter: view.rtsQty,
-    availableAfter: view.availableQty,
-    isNegativeAvailable: view.availableQty < 0,
+    onHandAfter: onHand,
+    allocatedAfter: allocated,
+    rtsAfter: rts,
+    availableAfter: available,
+    isNegativeAvailable: available < 0,
   };
 }
 
@@ -217,6 +241,8 @@ function buildLedgerRow({
   allocatedAfter = null,
   rtsAfter = null,
   availableAfter = null,
+  batchNo = "",
+  serialNo = "",
 }) {
   const code = normArticle(article);
   const wh = normWarehouse(warehouse);
@@ -237,6 +263,8 @@ function buildLedgerRow({
     locationTo: up(locationTo),
     customerName: s(customerName),
     supplierName: s(supplierName),
+    batchNo: s(batchNo),
+    serialNo: s(serialNo),
     qtyIn: Math.max(0, Number(qtyIn) || 0),
     qtyOut: Math.max(0, Number(qtyOut) || 0),
     balanceQty: onHandAfter == null ? 0 : Number(onHandAfter),
@@ -284,19 +312,37 @@ async function bumpBuckets({
   inc,
   guard = null,
   upsert = false,
+  batchNo = "",
+  serialNo = "",
 }) {
   const code = normArticle(article);
   const wh = normWarehouse(warehouse);
-  const filter = { companyId, itemCode: code, warehouse: wh };
+  const bn = s(batchNo);
+  const sn = s(serialNo);
+  // The StockBalance unique index is (companyId, article, location,
+  // batchNo, serialNo). We filter by that canonical key so any legacy
+  // row written by GRN / Sales / Inventory paths is found regardless
+  // of which alias pair (itemCode/warehouse vs article/location) the
+  // older writer used. The $setOnInsert below seeds both pairs for
+  // brand-new rows so every consumer sees the same data.
+  const filter = {
+    companyId,
+    article: code,
+    location: wh,
+    batchNo: bn,
+    serialNo: sn,
+  };
   if (guard) Object.assign(filter, guard);
   const update = { $inc: inc };
   if (upsert) {
     update.$setOnInsert = {
       companyId,
-      itemCode: code,
-      warehouse: wh,
       article: code,
       location: wh,
+      itemCode: code,
+      warehouse: wh,
+      batchNo: bn,
+      serialNo: sn,
       quantity: 0,
       onHandQty: 0,
       allocatedQty: 0,
@@ -335,6 +381,9 @@ export async function grnReceive({
   sourceModule = "STORE",
   unitCost = 0,
   currency = "USD",
+  batchNo = "",
+  serialNo = "",
+  transactionDate = null,
 }) {
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
@@ -344,6 +393,8 @@ export async function grnReceive({
     companyId,
     article,
     warehouse,
+    batchNo,
+    serialNo,
     inc: { quantity: q, onHandQty: q },
     upsert: true,
   });
@@ -351,6 +402,7 @@ export async function grnReceive({
   return createStockLedgerEntry({
     session,
     companyId,
+    transactionDate,
     movementType: MOVEMENT_TYPES.GRN_IN,
     article,
     warehouse,
@@ -364,6 +416,98 @@ export async function grnReceive({
     sourceModule,
     unitCost,
     currency,
+    batchNo,
+    serialNo,
+    ...after,
+  });
+}
+
+/**
+ * GRN_CANCEL — undo a previously-posted GRN line. Only allowed if
+ * the qty hasn't already been allocated/sold (we guard against
+ * negative on-hand or available). Writes a STOCK_ADJUSTMENT
+ * ledger row tagged with `referenceType: "GRN_CANCEL"` so it
+ * stays distinct from manual adjustments in reports.
+ */
+export async function cancelGrn({
+  session,
+  companyId,
+  article,
+  warehouse,
+  qty,
+  referenceNo,
+  supplierName = "",
+  remarks = "",
+  createdBy = "",
+  sourceModule = "STORE",
+  unitCost = 0,
+  currency = "USD",
+  batchNo = "",
+  serialNo = "",
+  transactionDate = null,
+}) {
+  requireCompanyId(companyId);
+  const q = Number(qty) || 0;
+  if (!(q > 0)) throw new Error("cancelGrn: qty must be > 0");
+  // Guard: the canonical row must have at least `q` on-hand AND at
+  // least `q` Available (on-hand − reserved − rts). This matches the
+  // legacy `cancelGrn` controller's own pre-check but does it
+  // atomically inside the transaction.
+  const updated = await bumpBuckets({
+    session,
+    companyId,
+    article,
+    warehouse,
+    batchNo,
+    serialNo,
+    inc: { quantity: -q, onHandQty: -q },
+    guard: {
+      $expr: {
+        $and: [
+          { $gte: [{ $ifNull: ["$onHandQty", 0] }, q] },
+          {
+            $gte: [
+              {
+                $subtract: [
+                  { $ifNull: ["$onHandQty", 0] },
+                  { $add: [{ $ifNull: ["$reservedQty", 0] }, { $ifNull: ["$rtsQty", 0] }] },
+                ],
+              },
+              q,
+            ],
+          },
+        ],
+      },
+    },
+  });
+  if (!updated) {
+    throw new Error(
+      `cancelGrn: cannot reduce ${normArticle(article)} by ${q} in ${normWarehouse(warehouse)} — stock already allocated/sold.`
+    );
+  }
+  const after = await snapshotAfter({ companyId, article, warehouse, session });
+  return createStockLedgerEntry({
+    session,
+    companyId,
+    transactionDate,
+    // Tag the row as STOCK_ADJUSTMENT so it lands in the same bucket
+    // as other manual adjustments; the `referenceType: GRN_CANCEL`
+    // filter still lets reports separate them when needed.
+    movementType: MOVEMENT_TYPES.STOCK_ADJUSTMENT,
+    article,
+    warehouse,
+    locationFrom: warehouse,
+    qtyOut: q,
+    referenceType: "GRN_CANCEL",
+    referenceNo,
+    supplierName,
+    remarks,
+    createdBy,
+    sourceModule,
+    unitCost,
+    currency,
+    batchNo,
+    serialNo,
     ...after,
   });
 }
@@ -823,6 +967,7 @@ export async function stockTransfer({
   createdBy = "",
   sourceModule = "STORE",
   allowNegative = false,
+  transactionDate = null,
 }) {
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
@@ -871,6 +1016,7 @@ export async function stockTransfer({
   const outRow = await createStockLedgerEntry({
     session,
     companyId,
+    transactionDate,
     movementType: MOVEMENT_TYPES.STOCK_TRANSFER_OUT,
     article,
     warehouse: fromWh,
@@ -888,6 +1034,7 @@ export async function stockTransfer({
   const inRow = await createStockLedgerEntry({
     session,
     companyId,
+    transactionDate,
     movementType: MOVEMENT_TYPES.STOCK_TRANSFER_IN,
     article,
     warehouse: toWh,
@@ -921,6 +1068,7 @@ export async function stockAdjustment({
   createdBy = "",
   sourceModule = "STORE",
   allowNegative = false,
+  transactionDate = null,
 }) {
   requireCompanyId(companyId);
   const q = Math.abs(Number(qty) || 0);
@@ -961,6 +1109,7 @@ export async function stockAdjustment({
   return createStockLedgerEntry({
     session,
     companyId,
+    transactionDate,
     movementType: MOVEMENT_TYPES.STOCK_ADJUSTMENT,
     article,
     warehouse,

@@ -26,6 +26,7 @@ router.get("/reports/sales-branch-wise", flow.reportSalesBranchWise);
 router.get("/reports/cipl", flow.reportCipl);
 router.get("/reports/order-allocation", flow.reportOrderAllocation);
 router.get("/reports/rts", flow.reportRts);
+router.get("/reports/backorder", flow.reportBackorder);
 
 router.get("/customers", flow.listCustomers);
 router.post("/customers", flow.createCustomer);

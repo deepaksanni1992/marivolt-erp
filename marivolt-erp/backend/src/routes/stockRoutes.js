@@ -6,6 +6,7 @@ const router = express.Router();
 router.use(...requireErpAccess);
 
 router.get("/meta", c.stockMeta);
+router.get("/summary", c.listStockSummary);
 router.get("/balance", c.listStockBalance);
 router.get("/customer-allocations", c.listCustomerAllocationsForArticle);
 router.get("/negative-allocations", c.reportNegativeAllocations);

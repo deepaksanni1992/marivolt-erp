@@ -51,6 +51,7 @@ const reportsCatalog = [
       { id: "pending-order-acknowledgement", title: "Pending Order Acknowledgement Report", desc: "OA records pending closure or downstream conversion." },
       { id: "order-allocation", title: "Order Allocation Report", desc: "Allocation register for Store processing (without pricing)." },
       { id: "rts", title: "RTS Report", desc: "Ready-to-Ship register with packing information (without pricing)." },
+      { id: "backorder", title: "Backorder Report", desc: "Customer-level shortage report for allocated lines still waiting for stock." },
     ],
   },
   {
@@ -84,6 +85,7 @@ const reportStatusOptionsById = {
   "pending-order-acknowledgement": oaStatusOptions,
   "order-allocation": orderAllocationStatusOptions,
   rts: rtsStatusOptions,
+  backorder: orderAllocationStatusOptions,
   proforma: proformaStatusOptions,
   "sales-invoice-summary": salesInvoiceStatusOptions,
   "sales-invoice-article-wise": salesInvoiceStatusOptions,
@@ -543,6 +545,18 @@ const reportColumnsById = {
     ["Box Count", (r) => r.boxCount || 0],
     ["Total Weight Kg", (r) => money(r.totalWeightKg || 0)],
     ["Status", (r) => r.status || ""],
+  ],
+  backorder: [
+    ["Customer", (r) => r.customer || r.customerName || ""],
+    ["Article", (r) => r.article || ""],
+    ["Ref No", (r) => r.refNo || r.referenceNo || ""],
+    ["Ordered Qty", (r) => r.orderedQty || 0],
+    ["Allocated Qty", (r) => r.allocatedQty || 0],
+    ["Pending Qty", (r) => r.pendingQty || 0],
+    ["RTS Qty", (r) => r.rtsQty || 0],
+    ["Invoice Qty", (r) => r.invoiceQty || 0],
+    ["Available", (r) => r.available ?? ""],
+    ["Expected GRN", (r) => r.expectedGrn || ""],
   ],
   proforma: [
     ["Proforma No", (r) => r.proformaNo || ""],
@@ -1430,6 +1444,13 @@ export default function Sales() {
   /** Auth persists `company.id` (not `_id`); align with `getActiveCompanyId()` in api.js */
   const activeCompanyId = activeCompany?.id ?? activeCompany?._id ?? null;
   const summaryCurrency = String(activeCompany?.currency || "USD").trim().toUpperCase() || "USD";
+  const invalidateStockViews = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ["stock-summary"] });
+    qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+    qc.invalidateQueries({ queryKey: ["stock-negative-allocations"] });
+    qc.invalidateQueries({ queryKey: ["stock-customer-allocations"] });
+    qc.invalidateQueries({ queryKey: ["sales-report"] });
+  }, [qc]);
   const [activeTab, setActiveTab] = useState("Quotation");
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
@@ -1716,6 +1737,7 @@ export default function Sales() {
     "sales-invoice-article-wise": "/sales/reports/sales-invoice-article-wise",
     "sales-branch-wise": "/sales/reports/sales-branch-wise",
     cipl: "/sales/reports/cipl",
+    backorder: "/sales/reports/backorder",
   };
   const reportApiPath = reportEndpointById[activeReportId] || null;
   const activeReportTitle = reportTitleById[activeReportId] || "Selected Report";
@@ -2298,6 +2320,7 @@ export default function Sales() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
       qc.invalidateQueries({ queryKey: ["sales-oa"] });
+      invalidateStockViews();
       if (detailId) qc.invalidateQueries({ queryKey: ["oa-detail", detailId] });
     },
     onError: (e) => setErr(e.message),
@@ -2308,6 +2331,7 @@ export default function Sales() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
       qc.invalidateQueries({ queryKey: ["sales-proforma"] });
+      invalidateStockViews();
       if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
     },
     onError: (e) => setErr(e.message),
@@ -2332,6 +2356,7 @@ export default function Sales() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-oa"] });
       qc.invalidateQueries({ queryKey: ["store-order-allocations"] });
+      invalidateStockViews();
       if (detailId) qc.invalidateQueries({ queryKey: ["oa-detail", detailId] });
     },
     onError: (e, vars) => {
@@ -2352,6 +2377,7 @@ export default function Sales() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-proforma"] });
       qc.invalidateQueries({ queryKey: ["store-order-allocations"] });
+      invalidateStockViews();
       if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
     },
     onError: (e, vars) => {
@@ -2468,6 +2494,7 @@ export default function Sales() {
       qc.invalidateQueries({ queryKey: ["sales-proforma"] });
       qc.invalidateQueries({ queryKey: ["stockBalances"] });
       qc.invalidateQueries({ queryKey: ["inventoryLedger"] });
+      invalidateStockViews();
       setErr("");
     },
     onError: (e) => setErr(e.message),
@@ -3240,6 +3267,20 @@ export default function Sales() {
                               <th className="px-3 py-2">Status</th>
                             </>
                           )}
+                          {activeReportId === "backorder" && (
+                            <>
+                              <th className="px-3 py-2">Customer</th>
+                              <th className="px-3 py-2">Article</th>
+                              <th className="px-3 py-2">Ref No</th>
+                              <th className="px-3 py-2 text-right">Ordered Qty</th>
+                              <th className="px-3 py-2 text-right">Allocated Qty</th>
+                              <th className="px-3 py-2 text-right">Pending Qty</th>
+                              <th className="px-3 py-2 text-right">RTS Qty</th>
+                              <th className="px-3 py-2 text-right">Invoice Qty</th>
+                              <th className="px-3 py-2 text-right">Available</th>
+                              <th className="px-3 py-2">Expected GRN</th>
+                            </>
+                          )}
                           {activeReportId === "proforma" && (
                             <>
                               <th className="px-3 py-2">Proforma No</th>
@@ -3463,6 +3504,22 @@ export default function Sales() {
                                       {row.status}
                                     </span>
                                   </td>
+                                </>
+                              )}
+                              {activeReportId === "backorder" && (
+                                <>
+                                  <td className="px-3 py-2">{row.customer || row.customerName || "-"}</td>
+                                  <td className="px-3 py-2 font-mono text-xs">{row.article || "-"}</td>
+                                  <td className="px-3 py-2 font-mono text-xs">{row.refNo || row.referenceNo || "-"}</td>
+                                  <td className="px-3 py-2 text-right">{row.orderedQty || 0}</td>
+                                  <td className="px-3 py-2 text-right">{row.allocatedQty || 0}</td>
+                                  <td className="px-3 py-2 text-right font-semibold text-amber-700">{row.pendingQty || 0}</td>
+                                  <td className="px-3 py-2 text-right">{row.rtsQty || 0}</td>
+                                  <td className="px-3 py-2 text-right">{row.invoiceQty || 0}</td>
+                                  <td className={`px-3 py-2 text-right font-semibold ${Number(row.available || 0) < 0 ? "text-rose-700" : ""}`}>
+                                    {row.available ?? ""}
+                                  </td>
+                                  <td className="px-3 py-2">{row.expectedGrn || "-"}</td>
                                 </>
                               )}
                               {activeReportId === "proforma" && (
@@ -4407,6 +4464,7 @@ export default function Sales() {
                                     qc.invalidateQueries({ queryKey: ["sales-order-allocation"] });
                                     qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
                                     qc.invalidateQueries({ queryKey: ["store-rts"] });
+                                    invalidateStockViews();
                                   })
                                   .catch((e) => setErr(e.message))
                               }

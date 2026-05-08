@@ -25,5 +25,9 @@ const stockBalanceSchema = new mongoose.Schema(
 );
 
 stockBalanceSchema.index({ companyId: 1, article: 1, location: 1, batchNo: 1, serialNo: 1 }, { unique: true });
+stockBalanceSchema.index({ companyId: 1, article: 1, location: 1 });
+stockBalanceSchema.index({ companyId: 1, warehouse: 1, itemCode: 1 });
+stockBalanceSchema.index({ companyId: 1, availableQty: 1 });
+stockBalanceSchema.index({ companyId: 1, lastTransactionDate: -1 });
 
 export default mongoose.model("StockBalance", stockBalanceSchema);

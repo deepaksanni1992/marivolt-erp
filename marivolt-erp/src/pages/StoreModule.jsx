@@ -58,9 +58,12 @@ export default function StoreModule() {
   const qc = useQueryClient();
   const [tab, setTab] = useState("GRN");
   const [article, setArticle] = useState("");
+  const [warehouse, setWarehouse] = useState("");
   const [location, setLocation] = useState("");
   const [refNo, setRefNo] = useState("");
   const [search, setSearch] = useState("");
+  const [stockCustomer, setStockCustomer] = useState("");
+  const [stockReferenceNo, setStockReferenceNo] = useState("");
   const [negativeOnly, setNegativeOnly] = useState(false);
   const [allocatedOnly, setAllocatedOnly] = useState(false);
   const [allocationDrillDown, setAllocationDrillDown] = useState({ open: false, article: "", warehouse: "" });
@@ -107,17 +110,31 @@ export default function StoreModule() {
   });
 
   const { data: balance } = useQuery({
-    queryKey: ["stock-balance", article, location, search, negativeOnly, allocatedOnly],
+    queryKey: [
+      "stock-summary",
+      article,
+      warehouse,
+      location,
+      search,
+      stockCustomer,
+      stockReferenceNo,
+      negativeOnly,
+      allocatedOnly,
+    ],
     queryFn: () =>
-      apiGetWithQuery("/stock/balance", {
+      apiGetWithQuery("/store/stock-summary", {
         article: article || undefined,
+        warehouse: warehouse || undefined,
         location: location || undefined,
         search: search || undefined,
+        customer: stockCustomer || undefined,
+        referenceNo: stockReferenceNo || undefined,
         negativeOnly: negativeOnly ? "true" : undefined,
         allocatedOnly: allocatedOnly ? "true" : undefined,
         limit: 500,
       }),
     enabled: tab === "Stock View",
+    refetchInterval: tab === "Stock View" ? 30000 : false,
   });
 
   // Unified Stock Ledger (Phase 3) — multi-source projection that merges
@@ -130,6 +147,7 @@ export default function StoreModule() {
     queryKey: [
       "stock-ledger-unified",
       article,
+      warehouse,
       location,
       refNo,
       ledgerMovementType,
@@ -141,7 +159,7 @@ export default function StoreModule() {
     queryFn: () =>
       apiGetWithQuery("/store/stock-ledger/unified", {
         article: article || undefined,
-        warehouse: location || undefined,
+        warehouse: warehouse || location || undefined,
         referenceNo: refNo || undefined,
         movementType: ledgerMovementType || undefined,
         customerName: ledgerCustomer || undefined,
@@ -167,10 +185,11 @@ export default function StoreModule() {
   });
 
   const { data: negativeReport } = useQuery({
-    queryKey: ["stock-negative-allocations", article, location, search],
+    queryKey: ["stock-negative-allocations", article, warehouse, location, search],
     queryFn: () =>
-      apiGetWithQuery("/stock/negative-allocations", {
+      apiGetWithQuery("/store/negative-allocations", {
         article: article || undefined,
+        warehouse: warehouse || undefined,
         location: location || undefined,
         customer: search || undefined,
       }),
@@ -184,7 +203,7 @@ export default function StoreModule() {
       allocationDrillDown.warehouse,
     ],
     queryFn: () =>
-      apiGetWithQuery("/stock/customer-allocations", {
+      apiGetWithQuery("/store/customer-allocations", {
         article: allocationDrillDown.article,
         warehouse: allocationDrillDown.warehouse || undefined,
       }),
@@ -193,26 +212,28 @@ export default function StoreModule() {
 
   const createAdj = useMutation({
     mutationFn: () => apiPost("/stock/adjustment", adj),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["stock-ledger"] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] }),
   });
   const postAdj = useMutation({
     mutationFn: () => apiPost(`/stock/adjustment/${adj.adjustmentNo}/post`, {}),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["stock-ledger"] });
-      qc.invalidateQueries({ queryKey: ["stock-balance"] });
+      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+      qc.invalidateQueries({ queryKey: ["stock-summary"] });
       qc.invalidateQueries({ queryKey: ["stock-negative-allocations"] });
+      qc.invalidateQueries({ queryKey: ["stock-customer-allocations"] });
     },
   });
   const createTrf = useMutation({
     mutationFn: () => apiPost("/stock/transfer", trf),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["stock-ledger"] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] }),
   });
   const postTrf = useMutation({
     mutationFn: () => apiPost(`/stock/transfer/${trf.transferNo}/post`, {}),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["stock-ledger"] });
-      qc.invalidateQueries({ queryKey: ["stock-balance"] });
+      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+      qc.invalidateQueries({ queryKey: ["stock-summary"] });
       qc.invalidateQueries({ queryKey: ["stock-negative-allocations"] });
+      qc.invalidateQueries({ queryKey: ["stock-customer-allocations"] });
     },
   });
   const saveLoc = useMutation({
@@ -236,6 +257,7 @@ export default function StoreModule() {
     () => [
       { key: "article", header: "Article" },
       { key: "itemName", header: "Item Name" },
+      { key: "warehouse", header: "Warehouse" },
       { key: "location", header: "Location" },
       { key: "onHandQty", header: "On Hand" },
       { key: "allocatedQty", header: "Allocated" },
@@ -243,6 +265,7 @@ export default function StoreModule() {
       { key: "availableQty", header: "Available" },
       { key: "uom", header: "UOM" },
       { key: "negativeStatus", header: "Negative Status" },
+      { key: "lastMovementDate", header: "Last Movement Date" },
     ],
     []
   );
@@ -251,9 +274,10 @@ export default function StoreModule() {
     () =>
       stockRows.map((r) => ({
         ...r,
-        itemName: r.item?.itemName || "",
-        uom: r.item?.uom || "",
-        negativeStatus: Number(r.availableQty) < 0 ? "BACKORDER" : "OK",
+        itemName: r.itemName || r.item?.itemName || "",
+        uom: r.uom || r.item?.uom || "",
+        negativeStatus: r.negativeStatus || (Number(r.availableQty) < 0 ? "NEGATIVE / BACKORDER" : Number(r.availableQty) === 0 ? "ZERO STOCK" : "OK"),
+        lastMovementDate: r.lastMovementDate ? new Date(r.lastMovementDate).toISOString() : "",
       })),
     [stockRows]
   );
@@ -305,12 +329,14 @@ export default function StoreModule() {
       { key: "customerName", header: "Customer" },
       { key: "referenceNo", header: "Reference No" },
       { key: "referenceType", header: "Reference Type" },
-      { key: "allocatedQty", header: "Allocated Qty" },
-      { key: "onHandQty", header: "On Hand" },
-      { key: "availableQty", header: "Available" },
+      { key: "warehouse", header: "Warehouse" },
       { key: "location", header: "Location" },
-      { key: "allocationDate", header: "Allocation Date" },
-      { key: "status", header: "Status" },
+      { key: "onHandQty", header: "On Hand" },
+      { key: "allocatedQty", header: "Allocated" },
+      { key: "rtsQty", header: "RTS" },
+      { key: "availableQty", header: "Available" },
+      { key: "negativeQty", header: "Negative Qty" },
+      { key: "lastMovementDate", header: "Last Movement Date" },
     ],
     []
   );
@@ -325,13 +351,14 @@ export default function StoreModule() {
           customerName: "",
           referenceNo: "",
           referenceType: "",
+          warehouse: r.warehouse || r.location,
+          location: r.location,
           allocatedQty: "",
           onHandQty: r.onHandQty,
+          rtsQty: r.rtsQty,
           availableQty: r.availableQty,
-          location: r.location,
-          allocationDate: "",
-          status: "",
-          shortageQty: r.shortageQty,
+          negativeQty: r.negativeQty ?? r.shortageQty,
+          lastMovementDate: r.lastMovementDate ? new Date(r.lastMovementDate).toISOString() : "",
         });
       } else {
         for (const a of r.allocations) {
@@ -341,13 +368,14 @@ export default function StoreModule() {
             customerName: a.customerName,
             referenceNo: a.referenceNo,
             referenceType: a.referenceType,
+            warehouse: r.warehouse || a.warehouse || r.location,
+            location: r.location,
             allocatedQty: a.allocatedQty,
             onHandQty: r.onHandQty,
+            rtsQty: r.rtsQty,
             availableQty: r.availableQty,
-            location: r.location,
-            allocationDate: a.allocationDate ? new Date(a.allocationDate).toISOString().slice(0, 10) : "",
-            status: a.status,
-            shortageQty: r.shortageQty,
+            negativeQty: r.negativeQty ?? r.shortageQty,
+            lastMovementDate: r.lastMovementDate ? new Date(r.lastMovementDate).toISOString() : "",
           });
         }
       }
@@ -399,12 +427,18 @@ export default function StoreModule() {
       {tab === "Stock View" ? (
         <div className="space-y-3">
           <div className="rounded-2xl border bg-white p-4">
-            <div className="grid gap-3 md:grid-cols-4">
+            <div className="grid gap-3 md:grid-cols-4 xl:grid-cols-6">
               <input
                 className="rounded border px-3 py-2 text-sm"
                 placeholder="Article"
                 value={article}
                 onChange={(e) => setArticle(e.target.value.toUpperCase())}
+              />
+              <input
+                className="rounded border px-3 py-2 text-sm"
+                placeholder="Warehouse"
+                value={warehouse}
+                onChange={(e) => setWarehouse(e.target.value.toUpperCase())}
               />
               <input
                 className="rounded border px-3 py-2 text-sm"
@@ -417,6 +451,18 @@ export default function StoreModule() {
                 placeholder="Search article/item/location"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
+              />
+              <input
+                className="rounded border px-3 py-2 text-sm"
+                placeholder="Customer"
+                value={stockCustomer}
+                onChange={(e) => setStockCustomer(e.target.value)}
+              />
+              <input
+                className="rounded border px-3 py-2 text-sm"
+                placeholder="Reference No"
+                value={stockReferenceNo}
+                onChange={(e) => setStockReferenceNo(e.target.value)}
               />
               <div className="flex flex-wrap items-center gap-3 text-sm">
                 <label className="inline-flex items-center gap-2">
@@ -454,13 +500,14 @@ export default function StoreModule() {
               </button>
             </div>
           </div>
-          <div className="overflow-auto rounded-2xl border bg-white">
+          <div className="overflow-auto rounded-2xl border bg-white shadow-sm">
             <table className="min-w-[1100px] w-full text-sm">
-              <thead className="bg-slate-100">
+              <thead className="sticky top-0 z-10 bg-slate-100 shadow-sm">
                 <tr>
                   {[
                     "Article",
                     "Item Name",
+                    "Warehouse",
                     "Location",
                     "On Hand",
                     "Allocated",
@@ -468,6 +515,7 @@ export default function StoreModule() {
                     "Available",
                     "UOM",
                     "Negative Status",
+                    "Last Movement",
                     "Actions",
                   ].map((h) => (
                     <th key={h} className="px-2 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
@@ -479,28 +527,38 @@ export default function StoreModule() {
               <tbody>
                 {stockRows.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-2 py-6 text-center text-sm text-slate-500">
+                    <td colSpan={12} className="px-2 py-6 text-center text-sm text-slate-500">
                       No stock balance rows match the current filters.
                     </td>
                   </tr>
                 ) : (
                   stockRows.map((r) => {
-                    const negative = Number(r.availableQty) < 0;
+                    const available = Number(r.availableQty) || 0;
+                    const negative = available < 0;
+                    const zero = available === 0;
                     return (
-                      <tr key={r._id} className={`border-t ${negative ? "bg-rose-50/60" : ""}`}>
+                      <tr key={r._id} className={`border-t ${negative ? "bg-rose-50/60" : zero ? "bg-amber-50/50" : "hover:bg-slate-50"}`}>
                         <td className="px-2 py-1 font-mono">{r.article}</td>
-                        <td className="px-2 py-1">{r.item?.itemName || ""}</td>
+                        <td className="px-2 py-1">{r.itemName || r.item?.itemName || ""}</td>
+                        <td className="px-2 py-1">{r.warehouse || r.location}</td>
                         <td className="px-2 py-1">{r.location}</td>
                         <td className="px-2 py-1">{r.onHandQty}</td>
                         <td className="px-2 py-1">{r.allocatedQty}</td>
                         <td className="px-2 py-1">{r.rtsQty}</td>
-                        <td className={`px-2 py-1 font-semibold ${negative ? "text-rose-700" : ""}`}>
+                        <td className={`px-2 py-1 font-semibold ${negative ? "text-rose-700" : zero ? "text-amber-700" : ""}`}>
                           {r.availableQty}
                         </td>
-                        <td className="px-2 py-1">{r.item?.uom || ""}</td>
+                        <td className="px-2 py-1">{r.uom || r.item?.uom || ""}</td>
                         <td className="px-2 py-1">
-                          {negative ? <StatusPill status="Backorder" tone="rose" /> : <StatusPill status="OK" tone="emerald" />}
+                          {negative ? (
+                            <StatusPill status="NEGATIVE / BACKORDER" tone="rose" />
+                          ) : zero ? (
+                            <StatusPill status="ZERO STOCK" tone="amber" />
+                          ) : (
+                            <StatusPill status="OK" tone="emerald" />
+                          )}
                         </td>
+                        <td className="px-2 py-1 text-xs text-slate-600">{fmtDate(r.lastMovementDate)}</td>
                         <td className="px-2 py-1">
                           <button
                             type="button"
@@ -536,7 +594,7 @@ export default function StoreModule() {
               <span className="font-medium"> InventoryLedger </span>
               (Sales reserve / RTS / Invoice / Cancellation).
             </div>
-            <div className="grid gap-3 md:grid-cols-4">
+            <div className="grid gap-3 md:grid-cols-5">
               <input
                 className="rounded border px-3 py-2 text-sm"
                 placeholder="Article"
@@ -545,9 +603,9 @@ export default function StoreModule() {
               />
               <input
                 className="rounded border px-3 py-2 text-sm"
-                placeholder="Warehouse / Location"
-                value={location}
-                onChange={(e) => setLocation(e.target.value.toUpperCase())}
+                placeholder="Warehouse"
+                value={warehouse}
+                onChange={(e) => setWarehouse(e.target.value.toUpperCase())}
               />
               <input
                 className="rounded border px-3 py-2 text-sm"
@@ -1028,6 +1086,12 @@ export default function StoreModule() {
               />
               <input
                 className="rounded border px-3 py-2 text-sm"
+                placeholder="Warehouse"
+                value={warehouse}
+                onChange={(e) => setWarehouse(e.target.value.toUpperCase())}
+              />
+              <input
+                className="rounded border px-3 py-2 text-sm"
                 placeholder="Location"
                 value={location}
                 onChange={(e) => setLocation(e.target.value.toUpperCase())}
@@ -1067,8 +1131,8 @@ export default function StoreModule() {
             </div>
           </div>
           <div className="overflow-auto rounded-2xl border bg-white">
-            <table className="min-w-[1200px] w-full text-sm">
-              <thead className="bg-slate-100">
+            <table className="min-w-[1400px] w-full text-sm">
+              <thead className="sticky top-0 z-10 bg-slate-100 shadow-sm">
                 <tr>
                   {[
                     "Article",
@@ -1076,12 +1140,14 @@ export default function StoreModule() {
                     "Customer",
                     "Reference No",
                     "Reference Type",
-                    "Allocated Qty",
-                    "On Hand",
-                    "Available",
+                    "Warehouse",
                     "Location",
-                    "Allocation Date",
-                    "Status",
+                    "On Hand",
+                    "Allocated",
+                    "RTS",
+                    "Available",
+                    "Negative Qty",
+                    "Last Movement",
                   ].map((h) => (
                     <th key={h} className="px-2 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
                       {h}
@@ -1092,7 +1158,7 @@ export default function StoreModule() {
               <tbody>
                 {negativeReportFlatRows.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="px-2 py-6 text-center text-sm text-slate-500">
+                    <td colSpan={13} className="px-2 py-6 text-center text-sm text-slate-500">
                       No negative allocations found.
                     </td>
                   </tr>
@@ -1104,12 +1170,14 @@ export default function StoreModule() {
                       <td className="px-2 py-1">{r.customerName}</td>
                       <td className="px-2 py-1 font-mono text-xs">{r.referenceNo}</td>
                       <td className="px-2 py-1">{r.referenceType}</td>
-                      <td className="px-2 py-1">{r.allocatedQty}</td>
-                      <td className="px-2 py-1">{r.onHandQty}</td>
-                      <td className="px-2 py-1 font-semibold text-rose-700">{r.availableQty}</td>
+                      <td className="px-2 py-1">{r.warehouse}</td>
                       <td className="px-2 py-1">{r.location}</td>
-                      <td className="px-2 py-1">{fmtDateOnly(r.allocationDate)}</td>
-                      <td className="px-2 py-1">{r.status}</td>
+                      <td className="px-2 py-1">{r.onHandQty}</td>
+                      <td className="px-2 py-1">{r.allocatedQty}</td>
+                      <td className="px-2 py-1">{r.rtsQty}</td>
+                      <td className="px-2 py-1 font-semibold text-rose-700">{r.availableQty}</td>
+                      <td className="px-2 py-1">{r.negativeQty}</td>
+                      <td className="px-2 py-1 text-xs text-slate-600">{fmtDate(r.lastMovementDate)}</td>
                     </tr>
                   ))
                 )}
@@ -1143,7 +1211,10 @@ export default function StoreModule() {
                     { key: "referenceNo", header: "Reference No" },
                     { key: "referenceType", header: "Reference Type" },
                     { key: "allocatedQty", header: "Allocated Qty" },
-                    { key: "warehouse", header: "Location" },
+                    { key: "rtsQty", header: "RTS Qty" },
+                    { key: "invoiceQty", header: "Invoice Qty" },
+                    { key: "warehouse", header: "Warehouse" },
+                    { key: "location", header: "Location" },
                     { key: "allocationDate", header: "Allocation Date" },
                     { key: "status", header: "Status" },
                     { key: "createdBy", header: "Created By" },
@@ -1169,7 +1240,10 @@ export default function StoreModule() {
                     { key: "referenceNo", header: "Reference No" },
                     { key: "referenceType", header: "Reference Type" },
                     { key: "allocatedQty", header: "Allocated Qty" },
-                    { key: "warehouse", header: "Location" },
+                    { key: "rtsQty", header: "RTS Qty" },
+                    { key: "invoiceQty", header: "Invoice Qty" },
+                    { key: "warehouse", header: "Warehouse" },
+                    { key: "location", header: "Location" },
                     { key: "allocationDate", header: "Allocation Date" },
                     { key: "status", header: "Status" },
                     { key: "createdBy", header: "Created By" },
@@ -1194,6 +1268,9 @@ export default function StoreModule() {
                     "Reference",
                     "Type",
                     "Allocated Qty",
+                    "RTS Qty",
+                    "Invoice Qty",
+                    "Warehouse",
                     "Location",
                     "Date",
                     "Status",
@@ -1209,7 +1286,7 @@ export default function StoreModule() {
               <tbody>
                 {(customerAllocations?.items || []).length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-2 py-6 text-center text-sm text-slate-500">
+                    <td colSpan={12} className="px-2 py-6 text-center text-sm text-slate-500">
                       No active allocations against this article.
                     </td>
                   </tr>
@@ -1220,7 +1297,10 @@ export default function StoreModule() {
                       <td className="px-2 py-1 font-mono text-xs">{it.referenceNo}</td>
                       <td className="px-2 py-1">{it.referenceType}</td>
                       <td className="px-2 py-1">{it.allocatedQty}</td>
+                      <td className="px-2 py-1">{it.rtsQty || 0}</td>
+                      <td className="px-2 py-1">{it.invoiceQty || 0}</td>
                       <td className="px-2 py-1">{it.warehouse}</td>
+                      <td className="px-2 py-1">{it.location || it.warehouse}</td>
                       <td className="px-2 py-1">{fmtDateOnly(it.allocationDate)}</td>
                       <td className="px-2 py-1">{it.status}</td>
                       <td className="px-2 py-1">

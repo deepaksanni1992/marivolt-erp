@@ -7,6 +7,8 @@ import SalesDispatch from "../models/SalesDispatch.js";
 import Cipl from "../models/Cipl.js";
 import OrderAllocation from "../models/OrderAllocation.js";
 import Rts from "../models/Rts.js";
+import StockBalance from "../models/StockBalance.js";
+import GRN from "../models/GRN.js";
 import PaymentReceipt from "../models/PaymentReceipt.js";
 import Customer from "../models/Customer.js";
 import Company from "../models/Company.js";
@@ -2454,6 +2456,166 @@ export async function reportRts(req, res) {
       lineCount: Array.isArray(r.lines) ? r.lines.length : 0,
     }));
     res.json({ rows: rowsOut, total, page, limit, totals: { totalRTS: total } });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportBackorder(req, res) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
+    const skip = (page - 1) * limit;
+    const search = String(req.query.search || "").trim();
+    const customer = String(req.query.customer || "").trim();
+    const articleFilter = String(req.query.article || "").trim().toUpperCase();
+    const referenceNo = String(req.query.referenceNo || "").trim();
+
+    const filter = withCompany(req, { status: { $nin: ["CANCELLED", "CLOSED"] } });
+    if (customer) filter.customerName = new RegExp(customer, "i");
+    if (search) {
+      const re = new RegExp(search, "i");
+      filter.$or = [{ allocationNo: re }, { customerName: re }, { linkedProformaNo: re }, { linkedOANo: re }];
+    }
+    if (articleFilter) filter["lines.article"] = articleFilter;
+
+    const allocations = await OrderAllocation.find(filter)
+      .sort({ allocationDate: -1, createdAt: -1 })
+      .lean();
+    const allocationIds = allocations.map((a) => a._id);
+    const [rtsRows, invoiceRows] = allocationIds.length
+      ? await Promise.all([
+          Rts.find(withCompany(req, { linkedOrderAllocationId: { $in: allocationIds }, status: { $nin: ["CANCELLED"] } }))
+            .select("linkedOrderAllocationId status lines")
+            .lean(),
+          SalesInvoice.find(withCompany(req, { linkedOrderAllocationId: { $in: allocationIds }, status: { $ne: "CANCELLED" } }))
+            .select("linkedOrderAllocationId status lines")
+            .lean(),
+        ])
+      : [[], []];
+
+    const rtsByAllocationArticle = new Map();
+    for (const rts of rtsRows) {
+      if (String(rts.status || "").toUpperCase() !== "APPROVED") continue;
+      const allocationId = String(rts.linkedOrderAllocationId || "");
+      for (const line of rts.lines || []) {
+        const article = String(line.article || "").trim().toUpperCase();
+        const qty = Number(line.qty) || 0;
+        if (!article || !(qty > 0)) continue;
+        const key = `${allocationId}::${article}`;
+        rtsByAllocationArticle.set(key, (rtsByAllocationArticle.get(key) || 0) + qty);
+      }
+    }
+    const invoiceByAllocationArticle = new Map();
+    for (const inv of invoiceRows) {
+      const allocationId = String(inv.linkedOrderAllocationId || "");
+      for (const line of inv.lines || []) {
+        const article = String(line.article || "").trim().toUpperCase();
+        const qty = Number(line.qty) || 0;
+        if (!article || !(qty > 0)) continue;
+        const key = `${allocationId}::${article}`;
+        invoiceByAllocationArticle.set(key, (invoiceByAllocationArticle.get(key) || 0) + qty);
+      }
+    }
+
+    const rows = [];
+    for (const alloc of allocations) {
+      const refNo = alloc.linkedProformaNo || alloc.linkedOANo || alloc.linkedQuotationNo || alloc.allocationNo || "";
+      if (referenceNo && !new RegExp(referenceNo, "i").test(refNo)) continue;
+      const warehouse = String(alloc.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
+      for (const line of alloc.lines || []) {
+        const article = String(line.article || "").trim().toUpperCase();
+        if (!article || (articleFilter && article !== articleFilter)) continue;
+        const orderedQty = Number(line.qty) || 0;
+        const key = `${String(alloc._id)}::${article}`;
+        const rtsQty = Number(rtsByAllocationArticle.get(key) || 0);
+        const invoiceQty = Number(invoiceByAllocationArticle.get(key) || 0);
+        const pendingQty = Math.max(0, orderedQty - rtsQty - invoiceQty);
+        if (!(pendingQty > 0)) continue;
+        rows.push({
+          customer: alloc.customerName || "",
+          customerName: alloc.customerName || "",
+          article,
+          description: line.description || "",
+          refNo,
+          referenceNo: refNo,
+          referenceType: alloc.linkedProformaId ? "PROFORMA" : alloc.linkedOAId ? "ORDER_ACK" : "ORDER_ALLOCATION",
+          orderedQty,
+          allocatedQty: orderedQty,
+          pendingQty,
+          rtsQty,
+          invoiceQty,
+          warehouse,
+          location: warehouse,
+          allocationDate: alloc.allocationDate,
+          status: alloc.status || "",
+        });
+      }
+    }
+
+    const articles = [...new Set(rows.map((r) => r.article))];
+    const warehouses = [...new Set(rows.map((r) => r.warehouse))];
+    const [balances, draftGrns] = await Promise.all([
+      articles.length
+        ? StockBalance.find(
+            withCompany(req, {
+              article: { $in: articles },
+              location: { $in: warehouses },
+            })
+          ).lean()
+        : [],
+      articles.length
+        ? GRN.find(
+            withCompany(req, {
+              status: "Draft",
+              "items.article": { $in: articles },
+            })
+          )
+            .select("grnNo grnDate items")
+            .sort({ grnDate: 1, createdAt: 1 })
+            .lean()
+        : [],
+    ]);
+    const availableByArticleWarehouse = new Map();
+    for (const bal of balances) {
+      const article = String(bal.article || bal.itemCode || "").toUpperCase();
+      const warehouse = String(bal.location || bal.warehouse || "MAIN").toUpperCase();
+      const key = `${article}::${warehouse}`;
+      const onHand = Number(bal.onHandQty ?? bal.quantity ?? 0) || 0;
+      const allocated = Math.max(Number(bal.allocatedQty || 0), Number(bal.reservedQty || 0));
+      const rts = Number(bal.rtsQty || 0);
+      availableByArticleWarehouse.set(key, (availableByArticleWarehouse.get(key) || 0) + onHand - allocated - rts);
+    }
+    const expectedGrnByArticleWarehouse = new Map();
+    for (const grn of draftGrns) {
+      for (const line of grn.items || []) {
+        const article = String(line.article || "").toUpperCase();
+        const warehouse = String(line.location || "MAIN").toUpperCase();
+        const qty = Number(line.acceptedQty || line.receivedQty || 0);
+        if (!article || !(qty > 0)) continue;
+        const key = `${article}::${warehouse}`;
+        if (!expectedGrnByArticleWarehouse.has(key)) {
+          expectedGrnByArticleWarehouse.set(key, `${grn.grnNo} (${qty})`);
+        }
+      }
+    }
+
+    const enriched = rows.map((row) => {
+      const key = `${row.article}::${row.warehouse}`;
+      return {
+        ...row,
+        available: Number(availableByArticleWarehouse.get(key) || 0),
+        expectedGrn: expectedGrnByArticleWarehouse.get(key) || "",
+      };
+    });
+    const total = enriched.length;
+    res.json({
+      rows: enriched.slice(skip, skip + limit),
+      total,
+      page,
+      limit,
+      totals: { totalBackorders: total },
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

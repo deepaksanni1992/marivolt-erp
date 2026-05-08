@@ -1,6 +1,7 @@
+import mongoose from "mongoose";
 import StockBalance from "../models/StockBalance.js";
 import InventoryLedger from "../models/InventoryLedger.js";
-import { applyStockIn, applyStockOut, applyAdjustment } from "../services/stockService.js";
+import * as stockService from "../services/stockService.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -85,30 +86,23 @@ export async function listLedger(req, res) {
 }
 
 export async function postStockIn(req, res) {
+  const session = await mongoose.startSession();
   try {
-    const {
-      itemCode,
-      warehouse,
-      qty,
-      movementType,
-      referenceType,
-      referenceId,
-      referenceNumber,
-      unitCost,
-      remarks,
-    } = req.body;
-    await applyStockIn({
-      companyId: req.companyId,
-      itemCode,
-      warehouse,
-      qty,
-      movementType: movementType || "IN_PURCHASE",
-      referenceType,
-      referenceId,
-      referenceNumber,
-      unitCost,
-      remarks,
-      createdBy: req.user?.email || "",
+    const { itemCode, warehouse, qty, referenceType, referenceNumber, unitCost, remarks } = req.body;
+    await session.withTransaction(async () => {
+      await stockService.grnReceive({
+        session,
+        companyId: req.companyId,
+        article: itemCode,
+        warehouse,
+        qty,
+        referenceType: referenceType || "GRN",
+        referenceNo: referenceNumber || "",
+        unitCost,
+        remarks,
+        createdBy: req.user?.email || "",
+        sourceModule: "INVENTORY",
+      });
     });
     const w = String(warehouse || "MAIN").trim().toUpperCase() || "MAIN";
     const code = String(itemCode || "").trim().toUpperCase();
@@ -116,41 +110,29 @@ export async function postStockIn(req, res) {
     res.status(201).json(bal);
   } catch (err) {
     res.status(400).json({ message: err.message });
+  } finally {
+    await session.endSession();
   }
 }
 
 export async function postStockOut(req, res) {
+  const session = await mongoose.startSession();
   try {
-    const { itemCode, warehouse, qty, movementType, referenceType, referenceId, referenceNumber, remarks } =
-      req.body;
-    const bal = await applyStockOut({
-      companyId: req.companyId,
-      itemCode,
-      warehouse,
-      qty,
-      movementType: movementType || "OUT_SALE",
-      referenceType,
-      referenceId,
-      referenceNumber,
-      remarks,
-      createdBy: req.user?.email || "",
-    });
-    res.status(201).json(bal);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
-}
-
-export async function postAdjustment(req, res) {
-  try {
-    const { itemCode, warehouse, qtyDelta, remarks } = req.body;
-    await applyAdjustment({
-      companyId: req.companyId,
-      itemCode,
-      warehouse,
-      qtyDelta,
-      remarks,
-      createdBy: req.user?.email || "",
+    const { itemCode, warehouse, qty, referenceType, referenceNumber, remarks } = req.body;
+    await session.withTransaction(async () => {
+      await stockService.stockAdjustment({
+        session,
+        companyId: req.companyId,
+        article: itemCode,
+        warehouse,
+        qty,
+        direction: "Decrease",
+        referenceType: referenceType || "STOCK_OUT",
+        referenceNo: referenceNumber || "",
+        remarks,
+        createdBy: req.user?.email || "",
+        sourceModule: "INVENTORY",
+      });
     });
     const w = String(warehouse || "MAIN").trim().toUpperCase() || "MAIN";
     const code = String(itemCode || "").trim().toUpperCase();
@@ -158,10 +140,44 @@ export async function postAdjustment(req, res) {
     res.status(201).json(bal);
   } catch (err) {
     res.status(400).json({ message: err.message });
+  } finally {
+    await session.endSession();
+  }
+}
+
+export async function postAdjustment(req, res) {
+  const session = await mongoose.startSession();
+  try {
+    const { itemCode, warehouse, qtyDelta, remarks } = req.body;
+    const delta = Number(qtyDelta) || 0;
+    if (!delta) return res.status(400).json({ message: "qtyDelta cannot be zero" });
+    await session.withTransaction(async () => {
+      await stockService.stockAdjustment({
+        session,
+        companyId: req.companyId,
+        article: itemCode,
+        warehouse,
+        qty: Math.abs(delta),
+        direction: delta > 0 ? "Increase" : "Decrease",
+        referenceType: "STOCK_ADJUSTMENT",
+        remarks,
+        createdBy: req.user?.email || "",
+        sourceModule: "INVENTORY",
+      });
+    });
+    const w = String(warehouse || "MAIN").trim().toUpperCase() || "MAIN";
+    const code = String(itemCode || "").trim().toUpperCase();
+    const bal = await StockBalance.findOne(withCompany(req, { itemCode: code, warehouse: w })).lean();
+    res.status(201).json(bal);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  } finally {
+    await session.endSession();
   }
 }
 
 export async function postOpening(req, res) {
+  const session = await mongoose.startSession();
   try {
     const { itemCode, warehouse, quantity, unitCost, remarks } = req.body;
     const q = Number(quantity);
@@ -172,38 +188,54 @@ export async function postOpening(req, res) {
     const w = String(warehouse || "MAIN").trim().toUpperCase() || "MAIN";
 
     const existing = await StockBalance.findOne(withCompany(req, { itemCode: code, warehouse: w }));
-    if (existing && (existing.quantity || 0) !== 0) {
+    if (existing && (Number(existing.onHandQty || existing.quantity || 0) !== 0)) {
       return res.status(400).json({ message: "Balance already exists; use adjustment instead" });
     }
 
-    await InventoryLedger.create({
-      companyId: req.companyId,
-      itemCode: code,
-      warehouse: w,
-      movementType: "OPENING",
-      qtyDelta: q,
-      referenceType: "OPENING",
-      referenceNumber: "OPENING",
-      unitCost: Number(unitCost) || 0,
-      remarks: remarks || "",
-      createdBy: req.user?.email || "",
+    await session.withTransaction(async () => {
+      if (q > 0) {
+        await stockService.openingBalance({
+          session,
+          companyId: req.companyId,
+          article: code,
+          warehouse: w,
+          qty: q,
+          unitCost,
+          remarks: remarks || "",
+          createdBy: req.user?.email || "",
+          sourceModule: "INVENTORY",
+        });
+      } else {
+        // Zero opening — seed an empty StockBalance row without
+        // writing a ledger entry so subsequent reads find a row.
+        await StockBalance.findOneAndUpdate(
+          { companyId: req.companyId, itemCode: code, warehouse: w },
+          {
+            $setOnInsert: {
+              companyId: req.companyId,
+              itemCode: code,
+              warehouse: w,
+              article: code,
+              location: w,
+              batchNo: "",
+              serialNo: "",
+              quantity: 0,
+              onHandQty: 0,
+              allocatedQty: 0,
+              rtsQty: 0,
+              unitCost: Number(unitCost) || 0,
+            },
+          },
+          { upsert: true, new: true, session }
+        );
+      }
     });
-
-    await StockBalance.findOneAndUpdate(
-      { companyId: req.companyId, itemCode: code, warehouse: w },
-      {
-        $set: {
-          quantity: q,
-          reservedQty: 0,
-          unitCost: Number(unitCost) || 0,
-        },
-      },
-      { upsert: true, new: true }
-    );
 
     const bal = await StockBalance.findOne(withCompany(req, { itemCode: code, warehouse: w })).lean();
     res.status(201).json(bal);
   } catch (err) {
     res.status(400).json({ message: err.message });
+  } finally {
+    await session.endSession();
   }
 }

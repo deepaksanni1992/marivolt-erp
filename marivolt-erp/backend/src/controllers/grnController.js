@@ -1,9 +1,8 @@
 import mongoose from "mongoose";
 import GRN from "../models/GRN.js";
 import ItemMaster from "../models/itemMasterModel.js";
-import StockBalance from "../models/StockBalance.js";
 import StockLocation from "../models/StockLocation.js";
-import { postLedgerMovement } from "../services/stockLedgerService.js";
+import * as stockService from "../services/stockService.js";
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -128,27 +127,23 @@ export async function postGrn(req, res) {
         const loc = await StockLocation.findOne(withCompany(req, { locationCode: t(line.location).toUpperCase(), status: "Active" })).session(session);
         if (!loc) throw new Error(`Invalid location: ${line.location}`);
         if (Number(line.acceptedQty) > 0) {
-          await postLedgerMovement({
+          await stockService.grnReceive({
             session,
             companyId: req.companyId,
-            transactionDate: grn.grnDate,
-            transactionType: "GRN",
+            article,
+            warehouse: line.location,
+            qty: Number(line.acceptedQty),
             referenceType: "GRN",
             referenceNo: grn.grnNo,
-            article,
-            location: line.location,
-            batchNo: line.batchNo,
-            serialNo: line.serialNo,
-            qtyIn: Number(line.acceptedQty),
-            qtyOut: 0,
+            supplierName: grn.supplierName || "",
             unitCost: Number(line.unitCost) || 0,
             currency: line.currency || "USD",
-            supplierName: grn.supplierName || "",
-            sourceModule: "STORE",
-            warehouse: line.location,
-            locationTo: line.location,
+            batchNo: line.batchNo || "",
+            serialNo: line.serialNo || "",
             remarks: line.remarks || "",
             createdBy: req.user?.email || "",
+            sourceModule: "STORE",
+            transactionDate: grn.grnDate,
           });
         }
       }
@@ -175,43 +170,21 @@ export async function cancelGrn(req, res) {
 
       for (const line of grn.items) {
         if (!(Number(line.acceptedQty) > 0)) continue;
-        const bal = await StockBalance.findOne(
-          withCompany(req, {
-            article: t(line.article).toUpperCase(),
-            location: t(line.location).toUpperCase(),
-            batchNo: t(line.batchNo),
-            serialNo: t(line.serialNo),
-          })
-        ).session(session);
-        const reqQty = Number(line.acceptedQty);
-        if (!bal || Number(bal.onHandQty || 0) < reqQty || Number(bal.availableQty || 0) < reqQty) {
-          throw new Error(`Cannot cancel GRN. Stock already allocated/sold for article ${line.article}`);
-        }
-      }
-
-      for (const line of grn.items) {
-        if (!(Number(line.acceptedQty) > 0)) continue;
-        await postLedgerMovement({
+        await stockService.cancelGrn({
           session,
           companyId: req.companyId,
-          transactionDate: new Date(),
-          transactionType: "STOCK_ADJUSTMENT",
-          referenceType: "GRN_CANCEL",
+          article: t(line.article).toUpperCase(),
+          warehouse: t(line.location).toUpperCase(),
+          qty: Number(line.acceptedQty),
           referenceNo: grn.grnNo,
-          article: line.article,
-          location: line.location,
-          batchNo: line.batchNo,
-          serialNo: line.serialNo,
-          qtyIn: 0,
-          qtyOut: Number(line.acceptedQty),
+          supplierName: grn.supplierName || "",
           unitCost: Number(line.unitCost) || 0,
           currency: line.currency || "USD",
-          supplierName: grn.supplierName || "",
-          sourceModule: "STORE",
-          warehouse: line.location,
-          locationFrom: line.location,
+          batchNo: line.batchNo || "",
+          serialNo: line.serialNo || "",
           remarks: `GRN cancelled: ${grn.grnNo}`,
           createdBy: req.user?.email || "",
+          sourceModule: "STORE",
         });
       }
       grn.status = "Cancelled";

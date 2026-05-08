@@ -10,7 +10,7 @@ import OrderAllocation from "../models/OrderAllocation.js";
 import GRN from "../models/GRN.js";
 import Rts from "../models/Rts.js";
 import SalesInvoice from "../models/SalesInvoice.js";
-import { postLedgerMovement } from "../services/stockLedgerService.js";
+import * as stockService from "../services/stockService.js";
 
 /**
  * Derives the live stock buckets from a StockBalance row.
@@ -36,6 +36,96 @@ function deriveStockRow(row) {
     availableQty: available,
     isNegativeAvailable: available < 0,
   };
+}
+
+function stockStatusFromAvailable(available) {
+  const n = Number(available) || 0;
+  if (n < 0) return "NEGATIVE / BACKORDER";
+  if (n === 0) return "ZERO STOCK";
+  return "OK";
+}
+
+function refForAllocation(alloc) {
+  return alloc.linkedProformaNo || alloc.linkedOANo || alloc.linkedQuotationNo || alloc.allocationNo || "";
+}
+
+function referenceTypeForAllocation(alloc) {
+  if (alloc.linkedProformaId) return "PROFORMA";
+  if (alloc.linkedOAId) return "ORDER_ACK";
+  if (alloc.linkedQuotationId) return "QUOTATION";
+  return "ORDER_ALLOCATION";
+}
+
+function lineQtyByArticle(lines = []) {
+  const out = new Map();
+  for (const line of lines || []) {
+    const article = t(line?.article).toUpperCase();
+    const qty = Number(line?.qty) || 0;
+    if (!article || !(qty > 0)) continue;
+    out.set(article, (out.get(article) || 0) + qty);
+  }
+  return out;
+}
+
+async function latestMovementMap(companyId, summaryRows) {
+  const articles = [...new Set(summaryRows.map((r) => r.article).filter(Boolean))];
+  const scopes = [
+    ...new Set(
+      summaryRows
+        .flatMap((r) => [r.warehouse, r.location])
+        .map((v) => t(v).toUpperCase())
+        .filter(Boolean)
+    ),
+  ];
+  if (!articles.length) return new Map();
+  const filter = { companyId, article: { $in: articles } };
+  if (scopes.length) {
+    filter.$or = [{ warehouse: { $in: scopes } }, { location: { $in: scopes } }];
+  }
+  const ledgers = await StockLedger.find(filter)
+    .sort({ transactionDate: -1, createdAt: -1 })
+    .limit(Math.max(1000, summaryRows.length * 10))
+    .lean();
+  const map = new Map();
+  for (const row of ledgers) {
+    const article = t(row.article).toUpperCase();
+    const warehouse = t(row.warehouse || row.location).toUpperCase();
+    const location = t(row.location || row.warehouse).toUpperCase();
+    for (const key of [`${article}::${warehouse}::${location}`, `${article}::${warehouse}::${warehouse}`]) {
+      if (!map.has(key)) {
+        map.set(key, {
+          lastMovementDate: row.transactionDate || row.createdAt || null,
+          lastMovementType: row.movementType || row.transactionType || "",
+          lastReferenceNo: row.referenceNo || "",
+        });
+      }
+    }
+  }
+  return map;
+}
+
+async function allocationPairsForFilters(req) {
+  const customer = t(req.query.customer);
+  const referenceNo = t(req.query.referenceNo);
+  if (!customer && !referenceNo) return null;
+  const filter = withCompany(req, { status: { $nin: ["CANCELLED"] } });
+  if (customer) filter.customerName = new RegExp(customer, "i");
+  const allocations = await OrderAllocation.find(filter)
+    .select("allocationNo linkedProformaNo linkedOANo linkedQuotationNo warehouse lines customerName")
+    .lean();
+  const pairs = new Set();
+  const refRe = referenceNo ? new RegExp(referenceNo, "i") : null;
+  for (const alloc of allocations) {
+    const ref = refForAllocation(alloc);
+    if (refRe && !refRe.test(ref)) continue;
+    const warehouse = t(alloc.warehouse || "MAIN").toUpperCase() || "MAIN";
+    for (const line of alloc.lines || []) {
+      const article = t(line.article).toUpperCase();
+      if (!article) continue;
+      pairs.add(`${article}::${warehouse}`);
+    }
+  }
+  return pairs;
 }
 
 function withCompany(req, filter = {}) {
@@ -104,6 +194,167 @@ export async function listStockBalance(req, res) {
   }
 }
 
+export async function listStockSummary(req, res) {
+  try {
+    const page = Math.max(1, Number(req.query.page || 1));
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit || 100)));
+    const skip = (page - 1) * limit;
+    const article = t(req.query.article).toUpperCase();
+    const warehouse = t(req.query.warehouse || req.query.location).toUpperCase();
+    const location = t(req.query.location).toUpperCase();
+    const search = t(req.query.search);
+    const negativeOnly = req.query.negativeOnly === "true" || req.query.negativeOnly === "1";
+    const allocatedOnly = req.query.allocatedOnly === "true" || req.query.allocatedOnly === "1";
+    const allocationPairs = await allocationPairsForFilters(req);
+    if (allocationPairs && allocationPairs.size === 0) {
+      return res.json({ items: [], total: 0, page, limit });
+    }
+    const allocationArticles = allocationPairs
+      ? [...new Set([...allocationPairs].map((key) => key.split("::")[0]).filter(Boolean))]
+      : [];
+
+    const match = { companyId: new mongoose.Types.ObjectId(String(req.companyId)) };
+    if (article) match.article = article;
+    else if (allocationArticles.length) match.article = { $in: allocationArticles };
+    if (warehouse) {
+      match.$or = [{ warehouse }, { location: warehouse }];
+    }
+    if (location && location !== warehouse) {
+      match.location = location;
+    }
+    if (search) {
+      const re = new RegExp(search, "i");
+      const itemHits = await ItemMaster.find(
+        withCompany(req, {
+          $or: [
+            { article: re },
+            { itemName: re },
+            { description: re },
+            { engine: re },
+            { model: re },
+            { config: re },
+          ],
+        })
+      )
+        .select("article")
+        .limit(500)
+        .lean();
+      const hitArticles = itemHits.map((it) => it.article);
+      const searchOr = [
+        { article: re },
+        { itemCode: re },
+        { location: re },
+        { warehouse: re },
+      ];
+      if (hitArticles.length) searchOr.push({ article: { $in: hitArticles } });
+      if (match.$or) {
+        match.$and = [{ $or: match.$or }, { $or: searchOr }];
+        delete match.$or;
+      } else {
+        match.$or = searchOr;
+      }
+    }
+
+    const pipeline = [
+      { $match: match },
+      {
+        $group: {
+          _id: {
+            article: "$article",
+            warehouse: { $ifNull: ["$warehouse", "$location"] },
+            location: "$location",
+          },
+          onHandQty: { $sum: { $ifNull: ["$onHandQty", "$quantity"] } },
+          quantity: { $sum: { $ifNull: ["$quantity", 0] } },
+          allocatedQty: { $sum: { $max: ["$allocatedQty", "$reservedQty"] } },
+          rtsQty: { $sum: { $ifNull: ["$rtsQty", 0] } },
+          lastTransactionDate: { $max: "$lastTransactionDate" },
+          rowIds: { $addToSet: "$_id" },
+        },
+      },
+      {
+        $project: {
+          _id: {
+            $concat: [
+              "$_id.article",
+              "::",
+              { $ifNull: ["$_id.warehouse", ""] },
+              "::",
+              { $ifNull: ["$_id.location", ""] },
+            ],
+          },
+          article: "$_id.article",
+          warehouse: { $ifNull: ["$_id.warehouse", "$_id.location"] },
+          location: "$_id.location",
+          onHandQty: "$onHandQty",
+          allocatedQty: "$allocatedQty",
+          rtsQty: "$rtsQty",
+          availableQty: { $subtract: ["$onHandQty", { $add: ["$allocatedQty", "$rtsQty"] }] },
+          pairKey: {
+            $concat: [
+              "$_id.article",
+              "::",
+              { $ifNull: ["$_id.warehouse", "$_id.location"] },
+            ],
+          },
+          lastTransactionDate: "$lastTransactionDate",
+          rowIds: "$rowIds",
+        },
+      },
+    ];
+    const exprFilters = [];
+    if (negativeOnly) exprFilters.push({ availableQty: { $lt: 0 } });
+    if (allocatedOnly) exprFilters.push({ allocatedQty: { $gt: 0 } });
+    if (exprFilters.length) pipeline.push({ $match: Object.assign({}, ...exprFilters) });
+    if (allocationPairs) pipeline.push({ $match: { pairKey: { $in: [...allocationPairs] } } });
+    pipeline.push({ $sort: { article: 1, warehouse: 1, location: 1 } });
+
+    const [result] = await StockBalance.aggregate([
+      ...pipeline,
+      {
+        $facet: {
+          items: [{ $skip: skip }, { $limit: limit }],
+          meta: [{ $count: "total" }],
+        },
+      },
+    ]);
+
+    let items = result?.items || [];
+    const articles = [...new Set(items.map((r) => r.article).filter(Boolean))];
+    const masters = articles.length
+      ? await ItemMaster.find(withCompany(req, { article: { $in: articles } }))
+          .select("article itemName description uom engine model config")
+          .lean()
+      : [];
+    const masterByArticle = new Map(masters.map((m) => [m.article, m]));
+    const movementByKey = await latestMovementMap(req.companyId, items);
+    items = items.map((r) => {
+      const wh = t(r.warehouse || r.location).toUpperCase();
+      const loc = t(r.location || wh).toUpperCase();
+      const movement =
+        movementByKey.get(`${r.article}::${wh}::${loc}`) ||
+        movementByKey.get(`${r.article}::${wh}::${wh}`) ||
+        {};
+      const item = masterByArticle.get(r.article) || null;
+      return {
+        ...r,
+        item,
+        itemName: item?.itemName || "",
+        uom: item?.uom || "",
+        negativeStatus: stockStatusFromAvailable(r.availableQty),
+        lastMovementDate: movement.lastMovementDate || r.lastTransactionDate || null,
+        lastMovementType: movement.lastMovementType || "",
+        lastReferenceNo: movement.lastReferenceNo || "",
+      };
+    });
+
+    const total = Number(result?.meta?.[0]?.total || 0);
+    res.json({ items, total, page, limit });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
 /**
  * Drill-down: list every active OrderAllocation line that holds reservation
  * for a given article (optionally filtered by warehouse/location and customer
@@ -126,12 +377,54 @@ export async function listCustomerAllocationsForArticle(req, res) {
     const allocations = await OrderAllocation.find(filter)
       .sort({ allocationDate: -1, createdAt: -1 })
       .lean();
+    const allocationIds = allocations.map((a) => a._id);
+    const [rtsRows, invoiceRows] = allocationIds.length
+      ? await Promise.all([
+          Rts.find(
+            withCompany(req, {
+              linkedOrderAllocationId: { $in: allocationIds },
+              status: { $nin: ["CANCELLED"] },
+            })
+          )
+            .select("linkedOrderAllocationId status lines")
+            .lean(),
+          SalesInvoice.find(
+            withCompany(req, {
+              linkedOrderAllocationId: { $in: allocationIds },
+              status: { $ne: "CANCELLED" },
+            })
+          )
+            .select("linkedOrderAllocationId status lines")
+            .lean(),
+        ])
+      : [[], []];
+    const rtsQtyByAllocationArticle = new Map();
+    for (const rts of rtsRows) {
+      if (String(rts.status || "").toUpperCase() !== "APPROVED") continue;
+      const allocationId = String(rts.linkedOrderAllocationId || "");
+      for (const [lineArticle, qty] of lineQtyByArticle(rts.lines || [])) {
+        const key = `${allocationId}::${lineArticle}`;
+        rtsQtyByAllocationArticle.set(key, (rtsQtyByAllocationArticle.get(key) || 0) + qty);
+      }
+    }
+    const invoiceQtyByAllocationArticle = new Map();
+    for (const inv of invoiceRows) {
+      const allocationId = String(inv.linkedOrderAllocationId || "");
+      for (const [lineArticle, qty] of lineQtyByArticle(inv.lines || [])) {
+        const key = `${allocationId}::${lineArticle}`;
+        invoiceQtyByAllocationArticle.set(key, (invoiceQtyByAllocationArticle.get(key) || 0) + qty);
+      }
+    }
     const items = [];
     for (const alloc of allocations) {
       for (const line of alloc.lines || []) {
         if (String(line.article || "").toUpperCase() !== article) continue;
         const ref = alloc.linkedProformaNo || alloc.linkedOANo || alloc.linkedQuotationNo || alloc.allocationNo;
         if (referenceSearch && !new RegExp(referenceSearch, "i").test(ref || "")) continue;
+        const allocationArticleKey = `${String(alloc._id)}::${article}`;
+        const allocatedQty = Number(line.qty) || 0;
+        const rtsQty = Number(rtsQtyByAllocationArticle.get(allocationArticleKey) || 0);
+        const invoiceQty = Number(invoiceQtyByAllocationArticle.get(allocationArticleKey) || 0);
         items.push({
           allocationId: alloc._id,
           allocationNo: alloc.allocationNo,
@@ -139,19 +432,17 @@ export async function listCustomerAllocationsForArticle(req, res) {
           status: alloc.status,
           customerName: alloc.customerName,
           warehouse: alloc.warehouse || "MAIN",
+          location: alloc.warehouse || "MAIN",
           article: line.article,
           partNumber: line.partNumber || "",
           description: line.description || "",
           uom: line.uom || "PCS",
-          allocatedQty: Number(line.qty) || 0,
+          allocatedQty,
+          rtsQty,
+          invoiceQty,
+          pendingQty: Math.max(0, allocatedQty - rtsQty - invoiceQty),
           isNegativeAllocation: Boolean(line.isNegativeAllocation),
-          referenceType: alloc.linkedProformaId
-            ? "PROFORMA"
-            : alloc.linkedOAId
-              ? "ORDER_ACK"
-              : alloc.linkedQuotationId
-                ? "QUOTATION"
-                : "ORDER_ALLOCATION",
+          referenceType: referenceTypeForAllocation(alloc),
           referenceNo: ref,
           createdBy: alloc.createdBy || "",
           createdAt: alloc.createdAt,
@@ -238,16 +529,28 @@ export async function reportNegativeAllocations(req, res) {
         article: derived.article,
         itemName: master?.itemName || "",
         uom: master?.uom || "",
+        warehouse: derived.warehouse || derived.location || "",
         location: derived.location || "",
         onHandQty: derived.onHandQty,
         allocatedQty: derived.allocatedQty,
         rtsQty: derived.rtsQty,
         availableQty: derived.availableQty,
+        negativeQty: Math.max(0, -derived.availableQty),
         shortageQty: Math.max(0, -derived.availableQty),
         allocations,
       });
     }
     items.sort((a, b) => a.availableQty - b.availableQty);
+    const movementByKey = await latestMovementMap(req.companyId, items);
+    for (const item of items) {
+      const wh = t(item.warehouse || item.location).toUpperCase();
+      const loc = t(item.location || wh).toUpperCase();
+      const movement =
+        movementByKey.get(`${item.article}::${wh}::${loc}`) ||
+        movementByKey.get(`${item.article}::${wh}::${wh}`) ||
+        {};
+      item.lastMovementDate = movement.lastMovementDate || null;
+    }
     res.json({ items, total: items.length });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -797,21 +1100,19 @@ export async function postAdjustment(req, res) {
       if (!item) throw new Error("Article not found");
       const loc = await StockLocation.findOne(withCompany(req, { locationCode: row.location, status: "Active" })).session(session);
       if (!loc) throw new Error("Location not found");
-      await postLedgerMovement({
+      await stockService.stockAdjustment({
         session,
         companyId: req.companyId,
-        transactionDate: row.date,
-        transactionType: "STOCK_ADJUSTMENT",
+        article: row.article,
+        warehouse: row.location,
+        qty: row.quantity,
+        direction: row.adjustmentType,
         referenceType: "STOCK_ADJUSTMENT",
         referenceNo: row.adjustmentNo,
-        article: row.article,
-        location: row.location,
-        warehouse: row.location,
-        sourceModule: "STORE",
-        qtyIn: row.adjustmentType === "Increase" ? row.quantity : 0,
-        qtyOut: row.adjustmentType === "Decrease" ? row.quantity : 0,
         remarks: `${row.reason}${row.remarks ? ` | ${row.remarks}` : ""}`,
         createdBy: req.user?.email || "",
+        sourceModule: "STORE",
+        transactionDate: row.date,
       });
       row.status = "Posted";
       row.postedAt = new Date();
@@ -852,45 +1153,21 @@ export async function postTransfer(req, res) {
       if (!row) throw new Error("Transfer not found");
       if (row.status !== "Draft") throw new Error("Transfer already posted");
       if (row.fromLocation === row.toLocation) throw new Error("From/To location must differ");
-      const fromBal = await StockBalance.findOne(withCompany(req, { article: row.article, location: row.fromLocation, batchNo: "", serialNo: "" })).session(session);
-      if (!fromBal || Number(fromBal.availableQty || 0) < Number(row.quantity || 0)) {
-        throw new Error("Insufficient available quantity for transfer");
-      }
-      await postLedgerMovement({
+      // stockService.stockTransfer guards available qty atomically
+      // inside the transaction; no separate pre-check needed.
+      await stockService.stockTransfer({
         session,
         companyId: req.companyId,
-        transactionDate: row.date,
-        transactionType: "TRANSFER_OUT",
+        article: row.article,
+        fromWarehouse: row.fromLocation,
+        toWarehouse: row.toLocation,
+        qty: row.quantity,
         referenceType: "TRANSFER",
         referenceNo: row.transferNo,
-        article: row.article,
-        location: row.fromLocation,
-        warehouse: row.fromLocation,
-        locationFrom: row.fromLocation,
-        locationTo: row.toLocation,
-        sourceModule: "STORE",
-        qtyIn: 0,
-        qtyOut: row.quantity,
         remarks: row.remarks,
         createdBy: req.user?.email || "",
-      });
-      await postLedgerMovement({
-        session,
-        companyId: req.companyId,
+        sourceModule: "STORE",
         transactionDate: row.date,
-        transactionType: "TRANSFER_IN",
-        referenceType: "TRANSFER",
-        referenceNo: row.transferNo,
-        article: row.article,
-        location: row.toLocation,
-        warehouse: row.toLocation,
-        locationFrom: row.fromLocation,
-        locationTo: row.toLocation,
-        sourceModule: "STORE",
-        qtyIn: row.quantity,
-        qtyOut: 0,
-        remarks: row.remarks,
-        createdBy: req.user?.email || "",
       });
       row.status = "Posted";
       row.postedAt = new Date();

@@ -20,6 +20,7 @@ router.get("/stock-ledger/unified", stock.listUnifiedStockLedger);
 // Convenience aliases so the Store frontend does not have to know about
 // the legacy `/api/stock` namespace.
 router.get("/stock-ledger", stock.listStockLedger);
+router.get("/stock-summary", stock.listStockSummary);
 router.get("/stock-balance", stock.listStockBalance);
 router.get("/customer-allocations", stock.listCustomerAllocationsForArticle);
 router.get("/negative-allocations", stock.reportNegativeAllocations);

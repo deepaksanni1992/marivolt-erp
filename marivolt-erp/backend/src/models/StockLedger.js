@@ -84,6 +84,9 @@ stockLedgerSchema.index({ companyId: 1, transactionDate: -1, article: 1 });
 stockLedgerSchema.index({ companyId: 1, referenceNo: 1, transactionType: 1 });
 stockLedgerSchema.index({ companyId: 1, movementType: 1, createdAt: -1 });
 stockLedgerSchema.index({ companyId: 1, customerName: 1, createdAt: -1 });
+stockLedgerSchema.index({ companyId: 1, article: 1, warehouse: 1, location: 1, transactionDate: -1 });
+stockLedgerSchema.index({ companyId: 1, warehouse: 1, location: 1, transactionDate: -1 });
+stockLedgerSchema.index({ companyId: 1, referenceNo: 1, createdAt: -1 });
 
 export { TX_TYPES, UNIFIED_MOVEMENT_TYPES };
 export default mongoose.model("StockLedger", stockLedgerSchema);
