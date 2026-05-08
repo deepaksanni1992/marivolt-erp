@@ -362,7 +362,43 @@ Manual approval checklist:
 
 ---
 
-## 10. Backward compatibility
+## 10. Phase 10.5 configurable number-series adoption
+
+Phase 10.5 adopts the configurable number-series engine in the existing
+generators while preserving legacy output if no config row exists.
+
+Adoption points:
+
+* `nextSalesDocNumber(...)` now checks `NumberSeriesConfig` for the
+  active company/docKey. If a config exists, it delegates to
+  `numberSeriesService.nextNumber(...)`; otherwise it keeps the legacy
+  `{COMPANY_INITIAL}/{YYMMDD}.{SEQ}` behavior.
+* `nextSequentialNumber(...)` now infers common docKeys from prefixes
+  (`-PO`, `-PI`, `-PR`, `-SI`, `-SH`, `-KIT`, `-DK`). If a matching
+  config exists, it uses the configured format; otherwise it keeps the
+  legacy `PREFIX-YYYYMMDD-0001` format.
+* GRN generation now checks `NumberSeriesConfig` for `docKey=GRN` and
+  uses configured formats when present; otherwise it keeps
+  `GRN-YYYY-00001`.
+* `numberSeriesService.nextNumber(...)` now creates the first counter
+  row without mixing `$inc` and `$setOnInsert` on `seq`, avoiding a
+  Mongo update conflict on first use.
+
+Manual number-series checklist:
+
+1. With no `NumberSeriesConfig` rows, create Quotation/PI/SI/GRN/PO and
+   confirm legacy numbering still appears.
+2. Add a `SALES_INVOICE` config such as `SI-{YYYY}-{SEQ}` and create a
+   direct Sales Invoice; confirm the new format is used.
+3. Add a `GRN` config such as `GRN-{YYYY}-{SEQ}` and create a GRN;
+   confirm the new format is used.
+4. Add a `PURCHASE_ORDER` config such as `PO-{YYYY}-{SEQ}` and create a
+   PO; confirm the new format is used.
+5. Delete/deactivate the config and confirm legacy formats resume.
+
+---
+
+## 11. Backward compatibility
 
 * All previous APIs and schemas remain unchanged.
 * Existing JWT tokens continue to work (`User.role` enum extended,
@@ -376,7 +412,7 @@ Manual approval checklist:
 
 ---
 
-## 11. Verification checklist
+## 12. Verification checklist
 
 Backend:
 

@@ -82,6 +82,18 @@ function defaultFormatFor(docKey) {
       return "ADJ-{YYYYMMDD}-{SEQ}";
     case "STOCK_TRANSFER":
       return "TRF-{YYYYMMDD}-{SEQ}";
+    case "PURCHASE_ORDER":
+      return "PO-{YYYYMMDD}-{SEQ}";
+    case "PURCHASE_INVOICE":
+      return "PI-{YYYYMMDD}-{SEQ}";
+    case "PURCHASE_RETURN":
+      return "PR-{YYYYMMDD}-{SEQ}";
+    case "SHIPMENT":
+      return "SH-{YYYYMMDD}-{SEQ}";
+    case "KITTING":
+      return "KIT-{YYYYMMDD}-{SEQ}";
+    case "DEKITTING":
+      return "DK-{YYYYMMDD}-{SEQ}";
     default:
       return `${upper}-{YYYYMMDD}-{SEQ}`;
   }
@@ -120,15 +132,28 @@ export async function nextNumber({
   const period = periodToken(resetCycle, referenceDate);
   const counter = counterKey({ branchId, docKey: safeKey, period });
 
-  const row = await DocCounter.findOneAndUpdate(
+  let row = await DocCounter.findOneAndUpdate(
     { companyId, docKey: counter },
-    { $inc: { seq: 1 }, $setOnInsert: { seq: Math.max(startSeq, 1) - 1 + 1 } },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
+    { $inc: { seq: 1 } },
+    { new: true }
   );
+  if (!row) {
+    try {
+      row = await DocCounter.create({
+        companyId,
+        docKey: counter,
+        seq: Math.max(startSeq, 1),
+      });
+    } catch (err) {
+      if (err?.code !== 11000) throw err;
+      row = await DocCounter.findOneAndUpdate(
+        { companyId, docKey: counter },
+        { $inc: { seq: 1 } },
+        { new: true }
+      );
+    }
+  }
 
-  // The first $inc on a fresh upsert turns 0 → 1. If startSeq > 1 the
-  // operator should reseed the counter manually; we still return the
-  // generated sequence faithfully.
   const seq = row.seq;
   const composed = formatTokens({
     format: `${config?.prefix || ""}${format}${config?.suffix || ""}`,

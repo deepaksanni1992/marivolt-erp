@@ -1,4 +1,6 @@
 import DocCounter from "../models/DocCounter.js";
+import NumberSeriesConfig from "../models/NumberSeriesConfig.js";
+import { nextNumber } from "../services/numberSeriesService.js";
 
 function formatDatePrefix(value) {
   const date = value ? new Date(value) : new Date();
@@ -33,6 +35,21 @@ export async function nextSalesDocNumber({ companyId, companyCode, docKey, refer
   ]);
   if (!allowed.has(safeKey)) {
     throw new Error(`Unsupported sales docKey: ${safeKey}`);
+  }
+  const configured = await NumberSeriesConfig.exists({
+    companyId,
+    branchId: null,
+    docKey: safeKey,
+    isActive: true,
+  });
+  if (configured) {
+    const generated = await nextNumber({
+      companyId,
+      companyCode: companyInitial(companyCode),
+      docKey: safeKey,
+      referenceDate,
+    });
+    return generated.number;
   }
   const datePrefix = formatDatePrefix(referenceDate);
   const scopedDocKey = `${safeKey}:${datePrefix}`;

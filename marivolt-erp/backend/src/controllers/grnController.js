@@ -2,8 +2,10 @@ import mongoose from "mongoose";
 import GRN from "../models/GRN.js";
 import ItemMaster from "../models/itemMasterModel.js";
 import StockLocation from "../models/StockLocation.js";
+import NumberSeriesConfig from "../models/NumberSeriesConfig.js";
 import * as stockService from "../services/stockService.js";
 import { writeAudit } from "../services/auditService.js";
+import { nextNumber } from "../services/numberSeriesService.js";
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -12,7 +14,22 @@ function t(v) {
   return String(v ?? "").trim();
 }
 
-async function nextGrnNo(companyId) {
+async function nextGrnNo(companyId, companyCode = "") {
+  const configured = await NumberSeriesConfig.exists({
+    companyId,
+    branchId: null,
+    docKey: "GRN",
+    isActive: true,
+  });
+  if (configured) {
+    const generated = await nextNumber({
+      companyId,
+      companyCode,
+      docKey: "GRN",
+      referenceDate: new Date(),
+    });
+    return generated.number;
+  }
   const y = new Date().getFullYear();
   const prefix = `GRN-${y}-`;
   const latest = await GRN.findOne({ companyId, grnNo: new RegExp(`^${prefix}`) }).sort({ createdAt: -1 }).lean();
@@ -44,7 +61,7 @@ function normalizeItems(items = []) {
 export async function createGrn(req, res) {
   try {
     const items = normalizeItems(req.body.items || []);
-    const grnNo = t(req.body.grnNo) || (await nextGrnNo(req.companyId));
+    const grnNo = t(req.body.grnNo) || (await nextGrnNo(req.companyId, req.companyCode));
     const doc = await GRN.create({
       companyId: req.companyId,
       grnNo,
