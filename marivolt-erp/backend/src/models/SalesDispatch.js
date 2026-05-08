@@ -13,6 +13,40 @@ const salesDispatchLineSchema = new mongoose.Schema(
     remarks: { type: String, default: "" },
     materialCode: { type: String, default: "", trim: true },
     availability: { type: String, default: "", trim: true },
+    sourceLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    dispatchedQty: { type: Number, default: 0, min: 0 },
+    pendingQty: { type: Number, default: 0, min: 0 },
+    weightKg: { type: Number, default: 0, min: 0 },
+    dimensions: { type: String, default: "", trim: true },
+    packageCount: { type: Number, default: 0, min: 0 },
+    marksAndNumbers: { type: String, default: "", trim: true },
+    countryOfOrigin: { type: String, default: "", trim: true },
+  },
+  { _id: true }
+);
+
+const dispatchPackageSchema = new mongoose.Schema(
+  {
+    packageNo: { type: String, default: "", trim: true },
+    packageType: { type: String, default: "", trim: true },
+    weightKg: { type: Number, default: 0, min: 0 },
+    dimensions: { type: String, default: "", trim: true },
+    marksAndNumbers: { type: String, default: "", trim: true },
+    remarks: { type: String, default: "", trim: true },
+  },
+  { _id: true }
+);
+
+const dispatchTrackingSchema = new mongoose.Schema(
+  {
+    status: {
+      type: String,
+      enum: ["booked", "picked_up", "customs", "in_transit", "delivered"],
+      default: "booked",
+    },
+    note: { type: String, default: "", trim: true },
+    updatedAt: { type: Date, default: () => new Date() },
+    updatedBy: { type: String, default: "" },
   },
   { _id: true }
 );
@@ -24,6 +58,8 @@ const salesDispatchSchema = new mongoose.Schema(
     dispatchDate: { type: Date, default: () => new Date(), index: true },
     linkedSalesInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesInvoice", required: true, index: true },
     linkedSalesInvoiceNo: { type: String, default: "", trim: true },
+    linkedRtsId: { type: mongoose.Schema.Types.ObjectId, ref: "Rts", default: null, index: true },
+    linkedRtsNo: { type: String, default: "", trim: true },
     customerName: { type: String, required: true, trim: true, index: true },
     currency: { type: String, default: "USD", trim: true, uppercase: true },
     vertical: { type: String, default: "", trim: true },
@@ -38,7 +74,37 @@ const salesDispatchSchema = new mongoose.Schema(
     packingCost: { type: Number, default: 0, min: 0 },
     clearanceCost: { type: Number, default: 0, min: 0 },
     grandTotal: { type: Number, default: 0 },
-    status: { type: String, enum: ["DRAFT", "DISPATCHED", "CLOSED", "CANCELLED"], default: "DRAFT" },
+    status: {
+      type: String,
+      enum: ["DRAFT", "READY", "DISPATCHED", "IN_TRANSIT", "DELIVERED", "CLOSED", "CANCELLED"],
+      default: "DRAFT",
+      index: true,
+    },
+    totalQty: { type: Number, default: 0, min: 0 },
+    dispatchedQty: { type: Number, default: 0, min: 0 },
+    pendingQty: { type: Number, default: 0, min: 0 },
+    packingListNo: { type: String, default: "", trim: true, index: true },
+    packingListGeneratedAt: { type: Date, default: null },
+    packages: { type: [dispatchPackageSchema], default: [] },
+    awbNo: { type: String, default: "", trim: true },
+    blNo: { type: String, default: "", trim: true },
+    courier: { type: String, default: "", trim: true },
+    shippingLine: { type: String, default: "", trim: true },
+    vessel: { type: String, default: "", trim: true },
+    voyage: { type: String, default: "", trim: true },
+    containerNo: { type: String, default: "", trim: true },
+    etd: { type: Date, default: null },
+    eta: { type: Date, default: null },
+    trackingUrl: { type: String, default: "", trim: true },
+    trackingStatus: {
+      type: String,
+      enum: ["booked", "picked_up", "customs", "in_transit", "delivered"],
+      default: "booked",
+      index: true,
+    },
+    trackingUpdates: { type: [dispatchTrackingSchema], default: [] },
+    deliveredAt: { type: Date, default: null },
+    deliveredBy: { type: String, default: "" },
     remarks: { type: String, default: "" },
     closedAt: { type: Date, default: null },
     closedBy: { type: String, default: "" },
@@ -51,7 +117,10 @@ const salesDispatchSchema = new mongoose.Schema(
 );
 
 salesDispatchSchema.index({ companyId: 1, dispatchNo: 1 }, { unique: true });
-salesDispatchSchema.index({ companyId: 1, linkedSalesInvoiceId: 1 }, { unique: true });
+salesDispatchSchema.index({ companyId: 1, linkedSalesInvoiceId: 1 });
+salesDispatchSchema.index({ companyId: 1, linkedRtsId: 1, status: 1 });
+salesDispatchSchema.index({ companyId: 1, status: 1, dispatchDate: -1 });
+salesDispatchSchema.index({ companyId: 1, eta: 1, status: 1 });
 
 export default mongoose.model("SalesDispatch", salesDispatchSchema);
 

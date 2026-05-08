@@ -9,6 +9,7 @@ const emptyShipment = {
   direction: "EXPORT",
   mode: "SEA",
   status: "PLANNED",
+  trackingStatus: "booked",
   customerName: "",
   supplierName: "",
   docType: "",
@@ -17,10 +18,19 @@ const emptyShipment = {
   linkedQuotationNumber: "",
   linkedSalesInvoiceNumber: "",
   linkedPurchaseInvoiceNumber: "",
+  linkedDispatchId: "",
+  linkedDispatchNo: "",
+  linkedRtsNo: "",
   incoterm: "",
   vesselOrFlight: "",
   voyageOrFlightNo: "",
   blAwbNo: "",
+  awbNo: "",
+  blNo: "",
+  courier: "",
+  shippingLine: "",
+  vessel: "",
+  voyage: "",
   containerNo: "",
   origin: "",
   destination: "",
@@ -30,6 +40,8 @@ const emptyShipment = {
   dutyCost: 0,
   otherCharges: 0,
   currency: "USD",
+  trackingUrl: "",
+  packages: [],
   remarks: "",
 };
 
@@ -47,6 +59,16 @@ export default function Logistics() {
     queryFn: () => apiGetWithQuery("/shipments", { page, limit }),
   });
 
+  const { data: dashboardData } = useQuery({
+    queryKey: ["logistics-dashboard"],
+    queryFn: () => apiGet("/shipments/dashboard"),
+  });
+
+  const { data: dispatchData } = useQuery({
+    queryKey: ["logistics-dispatches"],
+    queryFn: () => apiGetWithQuery("/shipments/dispatches", { page: 1, limit: 50 }),
+  });
+
   const saveMutation = useMutation({
     mutationFn: () => {
       const payload = { ...form };
@@ -54,6 +76,7 @@ export default function Logistics() {
       else delete payload.etd;
       if (payload.eta) payload.eta = new Date(payload.eta).toISOString();
       else delete payload.eta;
+      if (!payload.linkedDispatchId) delete payload.linkedDispatchId;
       return editingId
         ? apiPut(`/shipments/${editingId}`, payload)
         : apiPost("/shipments", payload);
@@ -70,6 +93,16 @@ export default function Logistics() {
   const deleteMutation = useMutation({
     mutationFn: (id) => apiDelete(`/shipments/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["shipments"] }),
+  });
+
+  const trackingMutation = useMutation({
+    mutationFn: ({ id, status }) => apiPut(`/shipments/${id}`, { status: status === "delivered" ? "DELIVERED" : "IN_TRANSIT", trackingStatus: status }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["shipments"] });
+      qc.invalidateQueries({ queryKey: ["logistics-dashboard"] });
+      qc.invalidateQueries({ queryKey: ["logistics-dispatches"] });
+    },
+    onError: (e) => setErr(e.message),
   });
 
   async function openEdit(id) {
@@ -95,12 +128,60 @@ export default function Logistics() {
   }
 
   const rows = data?.items ?? [];
+  const dispatchRows = dispatchData?.items ?? [];
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / limit));
+
+  async function printPackingList(dispatchId) {
+    try {
+      const data = await apiGet(`/shipments/dispatches/${dispatchId}/packing-list`);
+      const p = data?.packingList || {};
+      const lineRows = (p.lines || [])
+        .map(
+          (l) => `<tr><td>${l.article || ""}</td><td>${l.description || ""}</td><td style="text-align:right">${l.qty || 0}</td><td>${l.uom || ""}</td><td>${l.weight || ""}</td><td>${l.dimensions || ""}</td><td>${l.packageCount || ""}</td><td>${l.marksAndNumbers || ""}</td><td>${l.countryOfOrigin || ""}</td></tr>`
+        )
+        .join("");
+      const w = window.open("", "_blank");
+      if (!w) return;
+      w.document.write(`<html><head><title>${p.packingListNo || "Packing List"}</title></head><body style="font-family:Arial;padding:24px"><h2>Packing List</h2><div><b>No:</b> ${p.packingListNo || ""}</div><div><b>Customer:</b> ${p.customerName || ""}</div><div><b>Invoice:</b> ${p.invoiceNo || ""}</div><div><b>RTS:</b> ${p.rtsNo || ""}</div><table border="1" cellspacing="0" cellpadding="6" width="100%" style="margin-top:16px;border-collapse:collapse;font-size:12px"><thead><tr><th>Article</th><th>Description</th><th>Qty</th><th>UOM</th><th>Weight</th><th>Dimensions</th><th>Packages</th><th>Marks</th><th>COO</th></tr></thead><tbody>${lineRows}</tbody></table></body></html>`);
+      w.document.close();
+      w.focus();
+      w.print();
+    } catch (e) {
+      setErr(e.message || "Could not print packing list");
+    }
+  }
+
+  function exportShipmentsCsv() {
+    if (!rows.length) return;
+    const safe = (v) => {
+      const s = v == null ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = ["Shipment Ref", "Dispatch", "Customer", "Status", "Tracking", "AWB", "BL", "Courier", "ETA", "Tracking URL"];
+    const body = rows.map((r) => [r.shipmentRef, r.linkedDispatchNo, r.customerName, r.status, r.trackingStatus, r.awbNo, r.blNo, r.courier, r.eta ? new Date(r.eta).toISOString().slice(0, 10) : "", r.trackingUrl].map(safe).join(","));
+    const blob = new Blob([[header.map(safe).join(","), ...body].join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `shipment-report-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <div>
       <PageHeader title="Logistics" subtitle="Shipments and transport links to trade docs.">
+        <button
+          type="button"
+          onClick={exportShipmentsCsv}
+          className="rounded-xl border px-3 py-2 text-sm font-semibold"
+          disabled={!rows.length}
+        >
+          Export shipment CSV
+        </button>
         <button
           type="button"
           onClick={openCreate}
@@ -115,6 +196,87 @@ export default function Logistics() {
           {error?.message || err}
         </div>
       )}
+
+      <div className="mb-4 grid gap-3 md:grid-cols-5">
+        {[
+          ["Pending dispatch", dashboardData?.pendingDispatch || 0],
+          ["In transit", dashboardData?.inTransit || 0],
+          ["Delayed", dashboardData?.delayedShipments || 0],
+          ["Delivered", dashboardData?.delivered || 0],
+          ["Backorders", dashboardData?.backorders || 0],
+        ].map(([label, value]) => (
+          <div key={label} className="rounded-2xl border bg-white p-4">
+            <div className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mb-4 overflow-hidden rounded-2xl border bg-white">
+        <div className="border-b px-4 py-3">
+          <div className="font-semibold">Dispatch Summary</div>
+          <div className="text-xs text-gray-500">Sales dispatches linked to invoice/RTS with packing-list access.</div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-left text-sm">
+            <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
+              <tr>
+                <th className="px-3 py-2">Dispatch</th>
+                <th className="px-3 py-2">Customer</th>
+                <th className="px-3 py-2">Invoice</th>
+                <th className="px-3 py-2">RTS</th>
+                <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2 text-right">Dispatched</th>
+                <th className="px-3 py-2 text-right">Pending</th>
+                <th className="px-3 py-2">Shipment</th>
+                <th className="px-3 py-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {dispatchRows.length === 0 ? (
+                <tr><td colSpan={9} className="px-3 py-6 text-center text-gray-500">No dispatches.</td></tr>
+              ) : dispatchRows.map((d) => (
+                <tr key={d._id} className="border-b border-gray-100">
+                  <td className="px-3 py-2 font-mono text-xs">{d.dispatchNo}</td>
+                  <td className="px-3 py-2">{d.customerName}</td>
+                  <td className="px-3 py-2 font-mono text-xs">{d.linkedSalesInvoiceNo || "—"}</td>
+                  <td className="px-3 py-2 font-mono text-xs">{d.linkedRtsNo || "—"}</td>
+                  <td className="px-3 py-2">{d.status}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{Number(d.dispatchedQty || 0).toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{Number(d.pendingQty || 0).toFixed(2)}</td>
+                  <td className="px-3 py-2 text-xs">{d.awbNo || d.blNo || d.containerNo || "—"}</td>
+                  <td className="px-3 py-2">
+                    <div className="flex flex-wrap gap-1">
+                      <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => printPackingList(d._id)}>Packing List</button>
+                      <button
+                        type="button"
+                        className="rounded border px-2 py-1 text-xs"
+                        onClick={() => {
+                          setEditingId(null);
+                          setForm((f) => ({
+                            ...emptyShipment,
+                            ...f,
+                            customerName: d.customerName || "",
+                            docType: "SALES_DISPATCH",
+                            docNo: d.dispatchNo || "",
+                            linkedDispatchId: d._id,
+                            linkedDispatchNo: d.dispatchNo || "",
+                            linkedSalesInvoiceNumber: d.linkedSalesInvoiceNo || "",
+                            linkedRtsNo: d.linkedRtsNo || "",
+                          }));
+                          setModalOpen(true);
+                        }}
+                      >
+                        Create Shipment
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       <div className="overflow-hidden rounded-2xl border bg-white">
         <div className="overflow-x-auto">
@@ -148,9 +310,15 @@ export default function Logistics() {
                     <td className="px-3 py-2 font-mono text-xs">{r.shipmentRef}</td>
                     <td className="px-3 py-2">{r.direction}</td>
                     <td className="px-3 py-2">{r.mode}</td>
-                    <td className="px-3 py-2">{r.status}</td>
+                    <td className="px-3 py-2">
+                      <div>{r.status}</div>
+                      <div className="text-xs text-gray-500">{r.trackingStatus || "booked"}</div>
+                    </td>
                     <td className="px-3 py-2 text-xs text-gray-600 max-w-[200px] truncate">
                       {r.origin} → {r.destination}
+                      {r.trackingUrl ? (
+                        <a className="ml-2 text-blue-600 underline" href={r.trackingUrl} target="_blank" rel="noreferrer">Track</a>
+                      ) : null}
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
@@ -160,6 +328,22 @@ export default function Logistics() {
                           onClick={() => openEdit(r._id)}
                         >
                           Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-lg border px-2 py-1 text-xs"
+                          disabled={trackingMutation.isPending}
+                          onClick={() => trackingMutation.mutate({ id: r._id, status: "in_transit" })}
+                        >
+                          Transit
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-lg border px-2 py-1 text-xs"
+                          disabled={trackingMutation.isPending}
+                          onClick={() => trackingMutation.mutate({ id: r._id, status: "delivered" })}
+                        >
+                          Delivered
                         </button>
                         <button
                           type="button"
@@ -254,6 +438,18 @@ export default function Logistics() {
               ))}
             </SelectInput>
           </FormField>
+          <FormField label="Tracking status">
+            <SelectInput
+              value={form.trackingStatus}
+              onChange={(e) => setForm((f) => ({ ...f, trackingStatus: e.target.value }))}
+            >
+              <option value="booked">booked</option>
+              <option value="picked_up">picked up</option>
+              <option value="customs">customs</option>
+              <option value="in_transit">in transit</option>
+              <option value="delivered">delivered</option>
+            </SelectInput>
+          </FormField>
           <FormField label="Currency">
             <TextInput
               value={form.currency}
@@ -282,6 +478,18 @@ export default function Logistics() {
             <TextInput
               value={form.docNo}
               onChange={(e) => setForm((f) => ({ ...f, docNo: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Linked dispatch #">
+            <TextInput
+              value={form.linkedDispatchNo || ""}
+              onChange={(e) => setForm((f) => ({ ...f, linkedDispatchNo: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Linked RTS #">
+            <TextInput
+              value={form.linkedRtsNo || ""}
+              onChange={(e) => setForm((f) => ({ ...f, linkedRtsNo: e.target.value }))}
             />
           </FormField>
           <FormField label="Linked PO #">
@@ -346,6 +554,18 @@ export default function Logistics() {
               onChange={(e) => setForm((f) => ({ ...f, vesselOrFlight: e.target.value }))}
             />
           </FormField>
+          <FormField label="Shipping line">
+            <TextInput
+              value={form.shippingLine || ""}
+              onChange={(e) => setForm((f) => ({ ...f, shippingLine: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Courier">
+            <TextInput
+              value={form.courier || ""}
+              onChange={(e) => setForm((f) => ({ ...f, courier: e.target.value }))}
+            />
+          </FormField>
           <FormField label="Voyage / flight no">
             <TextInput
               value={form.voyageOrFlightNo}
@@ -358,10 +578,28 @@ export default function Logistics() {
               onChange={(e) => setForm((f) => ({ ...f, blAwbNo: e.target.value }))}
             />
           </FormField>
+          <FormField label="AWB No">
+            <TextInput
+              value={form.awbNo || ""}
+              onChange={(e) => setForm((f) => ({ ...f, awbNo: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="BL No">
+            <TextInput
+              value={form.blNo || ""}
+              onChange={(e) => setForm((f) => ({ ...f, blNo: e.target.value }))}
+            />
+          </FormField>
           <FormField label="Container">
             <TextInput
               value={form.containerNo}
               onChange={(e) => setForm((f) => ({ ...f, containerNo: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Tracking URL" className="sm:col-span-2">
+            <TextInput
+              value={form.trackingUrl || ""}
+              onChange={(e) => setForm((f) => ({ ...f, trackingUrl: e.target.value }))}
             />
           </FormField>
           <FormField label="Incoterm">

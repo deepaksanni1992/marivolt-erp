@@ -2274,16 +2274,85 @@ export async function patchSalesDispatch(req, res) {
     const cur = String(dispatch.status || "").toUpperCase();
 
     if (nextStatus) {
-      if (nextStatus === "DISPATCHED" && cur === "DRAFT") {
-        dispatch.status = "DISPATCHED";
+      if (nextStatus === "READY" && cur === "DRAFT") {
+        dispatch.status = "READY";
         dispatch.updatedBy = req.user?.email || "";
         await dispatch.save();
+        await writeStatusChange(req, {
+          module: "LOGISTICS",
+          entityType: "SALES_DISPATCH",
+          entityId: dispatch._id,
+          documentNo: dispatch.dispatchNo,
+          fromStatus: cur,
+          toStatus: "READY",
+          description: `Dispatch ${dispatch.dispatchNo} marked ready`,
+        });
         const lean = dispatch.toObject();
         const [enriched] = await enrichSalesDispatchesWithInvoiceStatus(req.companyId, [lean]);
         return res.json(enriched);
       }
 
-      if (nextStatus === "CLOSED" && cur === "DISPATCHED") {
+      if (nextStatus === "DISPATCHED" && ["DRAFT", "READY"].includes(cur)) {
+        dispatch.status = "DISPATCHED";
+        dispatch.dispatchedQty = Number(dispatch.dispatchedQty || dispatch.totalQty || 0);
+        dispatch.pendingQty = Math.max(0, Number(dispatch.totalQty || 0) - Number(dispatch.dispatchedQty || 0));
+        dispatch.updatedBy = req.user?.email || "";
+        await dispatch.save();
+        await writeStatusChange(req, {
+          module: "LOGISTICS",
+          entityType: "SALES_DISPATCH",
+          entityId: dispatch._id,
+          documentNo: dispatch.dispatchNo,
+          fromStatus: cur,
+          toStatus: "DISPATCHED",
+          description: `Dispatch ${dispatch.dispatchNo} posted`,
+        });
+        const lean = dispatch.toObject();
+        const [enriched] = await enrichSalesDispatchesWithInvoiceStatus(req.companyId, [lean]);
+        return res.json(enriched);
+      }
+
+      if (nextStatus === "IN_TRANSIT" && cur === "DISPATCHED") {
+        dispatch.status = "IN_TRANSIT";
+        dispatch.trackingStatus = "in_transit";
+        dispatch.updatedBy = req.user?.email || "";
+        await dispatch.save();
+        await writeStatusChange(req, {
+          module: "LOGISTICS",
+          entityType: "SALES_DISPATCH",
+          entityId: dispatch._id,
+          documentNo: dispatch.dispatchNo,
+          fromStatus: cur,
+          toStatus: "IN_TRANSIT",
+          description: `Dispatch ${dispatch.dispatchNo} marked in transit`,
+        });
+        const lean = dispatch.toObject();
+        const [enriched] = await enrichSalesDispatchesWithInvoiceStatus(req.companyId, [lean]);
+        return res.json(enriched);
+      }
+
+      if (nextStatus === "DELIVERED" && ["DISPATCHED", "IN_TRANSIT"].includes(cur)) {
+        dispatch.status = "DELIVERED";
+        dispatch.trackingStatus = "delivered";
+        dispatch.deliveredAt = new Date();
+        dispatch.deliveredBy = req.user?.email || "";
+        dispatch.updatedBy = req.user?.email || "";
+        await dispatch.save();
+        await writeStatusChange(req, {
+          module: "LOGISTICS",
+          entityType: "SALES_DISPATCH",
+          entityId: dispatch._id,
+          documentNo: dispatch.dispatchNo,
+          fromStatus: cur,
+          toStatus: "DELIVERED",
+          description: `Dispatch ${dispatch.dispatchNo} delivered`,
+        });
+        const lean = dispatch.toObject();
+        const [enriched] = await enrichSalesDispatchesWithInvoiceStatus(req.companyId, [lean]);
+        return res.json(enriched);
+      }
+
+      if (nextStatus === "CLOSED" && ["DISPATCHED", "IN_TRANSIT", "DELIVERED"].includes(cur)) {
         const inv = await SalesInvoice.findOne(withCompany(req, { _id: dispatch.linkedSalesInvoiceId }));
         if (!inv) return res.status(400).json({ message: "Linked sales invoice not found" });
         if (String(inv.status || "").toUpperCase() !== "PAID") {
@@ -2314,6 +2383,34 @@ export async function patchSalesDispatch(req, res) {
         }
         dispatch.updatedBy = req.user?.email || "";
         await dispatch.save();
+        await writeStatusChange(req, {
+          module: "LOGISTICS",
+          entityType: "SALES_DISPATCH",
+          entityId: dispatch._id,
+          documentNo: dispatch.dispatchNo,
+          fromStatus: cur,
+          toStatus: "CLOSED",
+          description: `Dispatch ${dispatch.dispatchNo} closed`,
+        });
+        const lean = dispatch.toObject();
+        const [enriched] = await enrichSalesDispatchesWithInvoiceStatus(req.companyId, [lean]);
+        return res.json(enriched);
+      }
+
+      if (nextStatus === "CANCELLED" && !["DELIVERED", "CLOSED", "CANCELLED"].includes(cur)) {
+        dispatch.status = "CANCELLED";
+        dispatch.updatedBy = req.user?.email || "";
+        await dispatch.save();
+        await writeStatusChange(req, {
+          module: "LOGISTICS",
+          entityType: "SALES_DISPATCH",
+          entityId: dispatch._id,
+          documentNo: dispatch.dispatchNo,
+          fromStatus: cur,
+          toStatus: "CANCELLED",
+          description: `Dispatch ${dispatch.dispatchNo} cancelled`,
+          metadata: { reason: req.body.reason || req.body.remarks || "" },
+        });
         const lean = dispatch.toObject();
         const [enriched] = await enrichSalesDispatchesWithInvoiceStatus(req.companyId, [lean]);
         return res.json(enriched);
@@ -2342,23 +2439,59 @@ export async function convertSalesInvoiceToSalesDispatch(req, res) {
     if (String(invoice.status || "").toUpperCase() !== "DISPATCHED") {
       return res.status(400).json({ message: "Sales invoice must be DISPATCHED before converting to Sales Dispatch" });
     }
-    const already = await SalesDispatch.findOne(
+    const existingDispatches = await SalesDispatch.find(
       withCompany(req, { linkedSalesInvoiceId: invoice._id, status: { $ne: "CANCELLED" } })
-    );
-    if (already) return res.status(409).json({ message: `Sales Dispatch already exists (${already.dispatchNo})` });
+    ).lean();
     const dispatchNo = await nextSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
       docKey: "SALES_DISPATCH",
     });
-    const lines = normalizeLines(invoice.lines.map((line) => line.toObject?.() || line));
+    const invoiceLines = normalizeLines(invoice.lines.map((line) => line.toObject?.() || line));
+    const requestedLines = Array.isArray(req.body?.lines) ? req.body.lines : [];
+    const alreadyDispatched = new Map();
+    for (const dispatch of existingDispatches) {
+      for (const line of dispatch.lines || []) {
+        const key = String(line.sourceLineId || line.article || "");
+        alreadyDispatched.set(key, (alreadyDispatched.get(key) || 0) + (Number(line.qty) || 0));
+      }
+    }
+    const requestedByKey = new Map(
+      requestedLines
+        .map((l) => [String(l.sourceLineId || l._id || l.article || ""), Number(l.qty) || 0])
+        .filter(([, qty]) => qty > 0)
+    );
+    const lines = invoiceLines
+      .map((line) => {
+        const key = String(line._id || line.article || "");
+        const articleKey = String(line.article || "");
+        const requestedQty = requestedByKey.size ? requestedByKey.get(key) ?? requestedByKey.get(articleKey) ?? 0 : Number(line.qty) || 0;
+        const used = alreadyDispatched.get(key) || alreadyDispatched.get(articleKey) || 0;
+        const pending = Math.max(0, (Number(line.qty) || 0) - used);
+        const qty = Math.min(pending, Math.max(0, requestedQty));
+        return {
+          ...line,
+          sourceLineId: line._id || null,
+          qty,
+          dispatchedQty: qty,
+          pendingQty: Math.max(0, pending - qty),
+          countryOfOrigin: line.coo || line.countryOfOrigin || "",
+        };
+      })
+      .filter((line) => Number(line.qty) > 0);
+    if (!lines.length) {
+      return res.status(409).json({ message: "No pending dispatch quantity remains for this sales invoice." });
+    }
     const totals = computeTotals(lines, invoice);
+    const qtyTotal = lines.reduce((sum, line) => sum + (Number(line.qty) || 0), 0);
     const doc = await SalesDispatch.create({
       companyId: req.companyId,
       dispatchNo,
       dispatchDate: new Date(),
       linkedSalesInvoiceId: invoice._id,
       linkedSalesInvoiceNo: invoice.invoiceNo,
+      linkedRtsId: invoice.linkedRtsId || null,
+      linkedRtsNo: invoice.linkedRtsNo || "",
       customerName: invoice.customerName,
       currency: invoice.currency || "USD",
       vertical: invoice.vertical || "",
@@ -2369,13 +2502,28 @@ export async function convertSalesInvoiceToSalesDispatch(req, res) {
       remarks: invoice.remarks || "",
       lines,
       ...totals,
-      status: "DRAFT",
+      totalQty: qtyTotal,
+      dispatchedQty: qtyTotal,
+      pendingQty: 0,
+      packingListNo: `${dispatchNo}-PL`,
+      packingListGeneratedAt: new Date(),
+      status: "READY",
       createdBy: req.user?.email || "",
     });
     invoice.linkedSalesDispatchId = doc._id;
     invoice.linkedSalesDispatchNo = doc.dispatchNo;
     invoice.updatedBy = req.user?.email || "";
     await invoice.save();
+    await writeAudit(req, {
+      action: "CREATE",
+      module: "LOGISTICS",
+      entityType: "SALES_DISPATCH",
+      entityId: doc._id,
+      documentNo: doc.dispatchNo,
+      toStatus: doc.status,
+      description: `Dispatch ${doc.dispatchNo} created from sales invoice ${invoice.invoiceNo}`,
+      metadata: { invoiceNo: invoice.invoiceNo, rtsNo: doc.linkedRtsNo || "", partial: existingDispatches.length > 0 },
+    });
     res.status(201).json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
