@@ -2,14 +2,19 @@ import mongoose from "mongoose";
 
 const poLineSchema = new mongoose.Schema(
   {
+    article: { type: String, default: "", trim: true, uppercase: true },
     articleNo: { type: String, default: "", trim: true },
     itemCode: { type: String, required: true, trim: true, uppercase: true },
     description: { type: String, default: "" },
     partNo: { type: String, default: "", trim: true },
+    orderedQty: { type: Number, default: 0, min: 0 },
+    pendingQty: { type: Number, default: 0, min: 0 },
+    cancelledQty: { type: Number, default: 0, min: 0 },
     qty: { type: Number, required: true, min: 0 },
     uom: { type: String, default: "PCS", trim: true },
     unitPrice: { type: Number, default: 0, min: 0 },
     currency: { type: String, default: "USD", trim: true },
+    lineAmount: { type: Number, default: 0, min: 0 },
     lineTotal: { type: Number, default: 0, min: 0 },
     expectedDeliveryDate: { type: Date },
     receivedQty: { type: Number, default: 0, min: 0 },
@@ -22,8 +27,22 @@ const poLineSchema = new mongoose.Schema(
 const purchaseOrderSchema = new mongoose.Schema(
   {
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
+    branchId: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null, index: true },
+    warehouseId: { type: mongoose.Schema.Types.ObjectId, ref: "Warehouse", default: null, index: true },
+    poNo: { type: String, required: true, trim: true },
     poNumber: { type: String, required: true, trim: true },
     orderDate: { type: Date, default: () => new Date() },
+    supplierId: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", default: null, index: true },
+    exchangeRate: { type: Number, default: 1, min: 0 },
+    paymentTerms: { type: String, default: "" },
+    expectedDeliveryDate: { type: Date, default: null },
+    linkedPRs: { type: [mongoose.Schema.Types.ObjectId], ref: "PurchaseRequisition", default: [] },
+    approvalStatus: {
+      type: String,
+      enum: ["NOT_REQUIRED", "PENDING", "APPROVED", "REJECTED"],
+      default: "NOT_REQUIRED",
+      index: true,
+    },
 
     buyerLegalName: { type: String, default: "Marivolt FZE", trim: true },
     buyerAddressLine: {
@@ -68,7 +87,7 @@ const purchaseOrderSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["DRAFT", "SAVED", "SENT", "PARTIAL_RECEIVED", "RECEIVED", "CANCELLED"],
+      enum: ["DRAFT", "SAVED", "SENT", "REJECTED", "PARTIAL_RECEIVED", "RECEIVED", "CLOSED", "CANCELLED"],
       default: "DRAFT",
     },
     remarks: { type: String, default: "" },
@@ -78,5 +97,6 @@ const purchaseOrderSchema = new mongoose.Schema(
 );
 
 purchaseOrderSchema.index({ companyId: 1, poNumber: 1 }, { unique: true });
+purchaseOrderSchema.index({ companyId: 1, poNo: 1 }, { unique: true });
 
 export default mongoose.model("PurchaseOrder", purchaseOrderSchema);

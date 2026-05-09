@@ -1,8 +1,11 @@
 import mongoose from "mongoose";
 import PurchaseOrder from "../models/PurchaseOrder.js";
+import Supplier from "../models/Supplier.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 import * as stockService from "../services/stockService.js";
 import { applyPurchaseOrderDefaults } from "../constants/purchaseOrderDefaults.js";
+import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
+import { writeAudit, writeStatusChange } from "../services/auditService.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -19,10 +22,14 @@ function normalizePoLines(lines = []) {
       return {
         ...l,
         itemCode,
+        article: String(l.article || itemCode).trim().toUpperCase(),
         articleNo,
         partNo: l.partNo != null ? String(l.partNo).trim() : "",
         uom: l.uom || "PCS",
-        qty: Number(l.qty) || 0,
+        qty: Number(l.orderedQty ?? l.qty) || 0,
+        orderedQty: Number(l.orderedQty ?? l.qty) || 0,
+        receivedQty: Number(l.receivedQty) || 0,
+        cancelledQty: Number(l.cancelledQty) || 0,
         unitPrice: Number(l.unitPrice) || 0,
         description: l.description ?? "",
         remarks: l.remarks ?? "",
@@ -37,11 +44,49 @@ function recalcPoTotals(doc) {
   const cur = doc.currency || "USD";
   for (const line of doc.lines) {
     line.currency = line.currency || cur;
-    line.lineTotal = (Number(line.qty) || 0) * (Number(line.unitPrice) || 0);
+    line.qty = Number(line.orderedQty ?? line.qty) || 0;
+    line.orderedQty = Number(line.orderedQty ?? line.qty) || 0;
+    line.receivedQty = Number(line.receivedQty) || 0;
+    line.cancelledQty = Number(line.cancelledQty) || 0;
+    line.pendingQty = Math.max(0, line.orderedQty - line.receivedQty - line.cancelledQty);
+    line.lineAmount = line.orderedQty * (Number(line.unitPrice) || 0);
+    line.lineTotal = line.lineAmount;
     sub += line.lineTotal;
   }
   doc.subTotal = sub;
   doc.grandTotal = sub;
+}
+
+async function resolveSupplierSnapshot(req, body = {}) {
+  const supplierId = body.supplierId && mongoose.Types.ObjectId.isValid(String(body.supplierId))
+    ? new mongoose.Types.ObjectId(String(body.supplierId))
+    : null;
+  let supplierDoc = null;
+  if (supplierId) {
+    supplierDoc = await Supplier.findOne(withCompany(req, { _id: supplierId })).lean();
+  } else if (body.supplierName) {
+    supplierDoc = await Supplier.findOne(withCompany(req, { supplierName: String(body.supplierName).trim() })).lean();
+  }
+  if (!supplierDoc) {
+    return {
+      supplierId: null,
+      supplierName: String(body.supplierName || "").trim(),
+      supplierAddress: String(body.supplierAddress || "").trim(),
+      supplierPhone: String(body.supplierPhone || "").trim(),
+      supplierEmail: String(body.supplierEmail || "").trim(),
+      paymentTerms: String(body.paymentTerms || body.payment || "").trim(),
+      currency: String(body.currency || "USD").trim().toUpperCase(),
+    };
+  }
+  return {
+    supplierId: supplierDoc._id,
+    supplierName: supplierDoc.supplierName || supplierDoc.name || "",
+    supplierAddress: supplierDoc.address || "",
+    supplierPhone: supplierDoc.phone || "",
+    supplierEmail: supplierDoc.email || "",
+    paymentTerms: String(body.paymentTerms || supplierDoc.paymentTerms || body.payment || "").trim(),
+    currency: String(body.currency || supplierDoc.currency || "USD").trim().toUpperCase(),
+  };
 }
 
 export async function listPurchaseOrders(req, res) {
@@ -51,6 +96,7 @@ export async function listPurchaseOrders(req, res) {
     const skip = (page - 1) * limit;
     const filter = withCompany(req);
     if (req.query.status) filter.status = req.query.status;
+    if (req.query.approvalStatus) filter.approvalStatus = String(req.query.approvalStatus).trim().toUpperCase();
     if (req.query.supplierName) {
       filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
     }
@@ -88,17 +134,42 @@ export async function createPurchaseOrder(req, res) {
       });
     }
     body = applyPurchaseOrderDefaults(body);
-    if (!body.poNumber) {
-      const prefix = `${req.companyCode || "CMP"}-PO`;
-      body.poNumber = await nextSequentialNumber(PurchaseOrder, "poNumber", prefix, {
+    if (!body.poNo && !body.poNumber) {
+      body.poNo = await nextSequentialNumber(PurchaseOrder, "poNo", "PO", {
         companyId: req.companyId,
+        branchId: body.branchId || null,
+        docKey: "PURCHASE_ORDER",
+        companyCode: req.companyCode || "",
       });
     }
+    body.poNumber = body.poNumber || body.poNo;
+    body.poNo = body.poNo || body.poNumber;
+    const supplierSnapshot = await resolveSupplierSnapshot(req, body);
+    body.supplierId = supplierSnapshot.supplierId;
+    body.supplierName = supplierSnapshot.supplierName;
+    body.supplierAddress = supplierSnapshot.supplierAddress;
+    body.supplierPhone = supplierSnapshot.supplierPhone;
+    body.supplierEmail = supplierSnapshot.supplierEmail;
+    body.paymentTerms = supplierSnapshot.paymentTerms;
+    body.currency = supplierSnapshot.currency;
+    body.exchangeRate = Number(body.exchangeRate) || 1;
+    body.approvalStatus = "NOT_REQUIRED";
+    body.expectedDeliveryDate = body.expectedDeliveryDate ? new Date(body.expectedDeliveryDate) : null;
+    body.linkedPRs = Array.isArray(body.linkedPRs) ? body.linkedPRs.filter((x) => mongoose.Types.ObjectId.isValid(String(x))) : [];
     body.createdBy = req.user?.email || "";
     body.companyId = req.companyId;
     const doc = new PurchaseOrder(body);
     recalcPoTotals(doc);
     await doc.save();
+    await writeAudit(req, {
+      action: "CREATE",
+      module: "PURCHASE",
+      entityType: "PURCHASE_ORDER",
+      entityId: doc._id,
+      documentNo: doc.poNo,
+      description: `PO ${doc.poNo} created`,
+      metadata: { supplierName: doc.supplierName, lineCount: doc.lines.length },
+    });
     res.status(201).json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -113,7 +184,7 @@ export async function updatePurchaseOrder(req, res) {
     }
     const doc = await PurchaseOrder.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
-    if (!["DRAFT", "SAVED"].includes(doc.status)) {
+    if (!["DRAFT", "SAVED", "REJECTED"].includes(doc.status)) {
       return res.status(400).json({ message: "Only draft or saved purchase orders can be modified." });
     }
 
@@ -131,6 +202,13 @@ export async function updatePurchaseOrder(req, res) {
       "ref",
       "intRef",
       "contactPerson",
+      "supplierId",
+      "branchId",
+      "warehouseId",
+      "expectedDeliveryDate",
+      "exchangeRate",
+      "paymentTerms",
+      "linkedPRs",
       "offerDate",
       "currency",
       "lines",
@@ -156,8 +234,28 @@ export async function updatePurchaseOrder(req, res) {
         return res.status(400).json({ message: "At least one valid line is required" });
       }
     }
+    if (req.body.supplierId !== undefined || req.body.supplierName !== undefined) {
+      const supplierSnapshot = await resolveSupplierSnapshot(req, doc);
+      doc.supplierId = supplierSnapshot.supplierId;
+      doc.supplierName = supplierSnapshot.supplierName;
+      doc.supplierAddress = supplierSnapshot.supplierAddress;
+      doc.supplierPhone = supplierSnapshot.supplierPhone;
+      doc.supplierEmail = supplierSnapshot.supplierEmail;
+      doc.paymentTerms = supplierSnapshot.paymentTerms || doc.paymentTerms;
+      doc.currency = supplierSnapshot.currency || doc.currency;
+    }
+    if (doc.poNo && !doc.poNumber) doc.poNumber = doc.poNo;
+    if (doc.poNumber && !doc.poNo) doc.poNo = doc.poNumber;
     recalcPoTotals(doc);
     await doc.save();
+    await writeAudit(req, {
+      action: "UPDATE",
+      module: "PURCHASE",
+      entityType: "PURCHASE_ORDER",
+      entityId: doc._id,
+      documentNo: doc.poNo,
+      description: `PO ${doc.poNo} updated`,
+    });
     res.json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -172,12 +270,53 @@ export async function patchPurchaseStatus(req, res) {
     }
     const { status } = req.body;
     if (!status) return res.status(400).json({ message: "status required" });
+    const nextStatus = String(status || "").trim().toUpperCase();
+    if (nextStatus === "SENT") {
+      const gate = await ensureApproval(req, {
+        companyId: req.companyId,
+        module: "PURCHASE",
+        actionKey: "po_submit",
+        documentType: "PURCHASE_ORDER",
+        documentId: id,
+        description: `Submit PO ${id}`,
+      });
+      if (!gate.approved) {
+        const pending = await PurchaseOrder.findOneAndUpdate(
+          withCompany(req, { _id: id }),
+          { status: "SENT", approvalStatus: "PENDING" },
+          { new: true, runValidators: true }
+        );
+        if (!pending) return res.status(404).json({ message: "Not found" });
+        await writeStatusChange(req, {
+          module: "PURCHASE",
+          entityType: "PURCHASE_ORDER",
+          entityId: pending._id,
+          documentNo: pending.poNo || pending.poNumber,
+          fromStatus: pending.status,
+          toStatus: "SENT",
+          description: `PO ${pending.poNo || pending.poNumber} submitted and pending approval`,
+        });
+        return res.status(202).json(approvalRequiredPayload(gate.request));
+      }
+    }
     const doc = await PurchaseOrder.findOneAndUpdate(
       withCompany(req, { _id: id }),
-      { status },
+      {
+        status: nextStatus,
+        approvalStatus: nextStatus === "SENT" ? "APPROVED" : undefined,
+      },
       { new: true, runValidators: true }
     );
     if (!doc) return res.status(404).json({ message: "Not found" });
+    await writeStatusChange(req, {
+      module: "PURCHASE",
+      entityType: "PURCHASE_ORDER",
+      entityId: doc._id,
+      documentNo: doc.poNo || doc.poNumber,
+      fromStatus: "UNKNOWN",
+      toStatus: nextStatus,
+      description: `PO ${doc.poNo || doc.poNumber} moved to ${nextStatus}`,
+    });
     res.json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -221,7 +360,7 @@ export async function receivePurchaseOrder(req, res) {
           warehouse,
           qty: take,
           referenceType: "PURCHASE_ORDER",
-          referenceNo: po.poNumber,
+          referenceNo: po.poNo || po.poNumber,
           supplierName: po.supplierName || "",
           unitCost: line.unitPrice,
           remarks: row.remarks || "",
@@ -260,11 +399,103 @@ export async function deletePurchaseOrder(req, res) {
     }
     const row = await PurchaseOrder.findOne(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
-    if (!["DRAFT", "SAVED"].includes(row.status)) {
+    if (!["DRAFT", "SAVED", "REJECTED"].includes(row.status)) {
       return res.status(400).json({ message: "Only draft or saved purchase orders can be deleted." });
     }
     await PurchaseOrder.deleteOne(withCompany(req, { _id: id }));
+    await writeAudit(req, {
+      action: "DELETE",
+      module: "PURCHASE",
+      entityType: "PURCHASE_ORDER",
+      entityId: row._id,
+      documentNo: row.poNo || row.poNumber,
+      description: `PO ${row.poNo || row.poNumber} deleted`,
+    });
     res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function submitPurchaseOrder(req, res) {
+  req.body = { ...(req.body || {}), status: "SENT" };
+  return patchPurchaseStatus(req, res);
+}
+
+export async function approvePurchaseOrder(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const doc = await PurchaseOrder.findOne(withCompany(req, { _id: id }));
+    if (!doc) return res.status(404).json({ message: "Not found" });
+    if (!["SENT", "REJECTED"].includes(doc.status)) return res.status(409).json({ message: "Only sent/rejected PO can be approved." });
+    const prev = doc.status;
+    doc.status = "SENT";
+    doc.approvalStatus = "APPROVED";
+    await doc.save();
+    await writeStatusChange(req, {
+      module: "PURCHASE",
+      entityType: "PURCHASE_ORDER",
+      entityId: doc._id,
+      documentNo: doc.poNo || doc.poNumber,
+      fromStatus: prev,
+      toStatus: "SENT",
+      description: `PO ${doc.poNo || doc.poNumber} approved`,
+    });
+    res.json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function rejectPurchaseOrder(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const doc = await PurchaseOrder.findOne(withCompany(req, { _id: id }));
+    if (!doc) return res.status(404).json({ message: "Not found" });
+    if (doc.status !== "SENT") return res.status(409).json({ message: "Only sent PO can be rejected." });
+    doc.status = "REJECTED";
+    doc.approvalStatus = "REJECTED";
+    await doc.save();
+    await writeStatusChange(req, {
+      module: "PURCHASE",
+      entityType: "PURCHASE_ORDER",
+      entityId: doc._id,
+      documentNo: doc.poNo || doc.poNumber,
+      fromStatus: "SENT",
+      toStatus: "REJECTED",
+      description: `PO ${doc.poNo || doc.poNumber} rejected`,
+      metadata: { reason: String(req.body?.reason || "").trim() },
+    });
+    res.json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function cancelPurchaseOrder(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const doc = await PurchaseOrder.findOne(withCompany(req, { _id: id }));
+    if (!doc) return res.status(404).json({ message: "Not found" });
+    if (["RECEIVED", "PARTIAL_RECEIVED", "CLOSED", "CANCELLED"].includes(doc.status)) {
+      return res.status(409).json({ message: "PO cannot be cancelled in current status." });
+    }
+    const prev = doc.status;
+    doc.status = "CANCELLED";
+    await doc.save();
+    await writeStatusChange(req, {
+      module: "PURCHASE",
+      entityType: "PURCHASE_ORDER",
+      entityId: doc._id,
+      documentNo: doc.poNo || doc.poNumber,
+      fromStatus: prev,
+      toStatus: "CANCELLED",
+      description: `PO ${doc.poNo || doc.poNumber} cancelled`,
+    });
+    res.json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }

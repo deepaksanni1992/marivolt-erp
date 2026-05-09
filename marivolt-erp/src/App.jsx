@@ -6,7 +6,7 @@ import Login from "./pages/Login.jsx";
 import CompanySelect from "./pages/CompanySelect.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import ItemMaster from "./pages/ItemMaster.jsx";
-import Purchase from "./pages/Purchase.jsx";
+import ProcurementFoundation from "./pages/ProcurementFoundation.jsx";
 import Sales from "./pages/Sales.jsx";
 import Inventory from "./pages/Inventory.jsx";
 import Store from "./pages/StoreModule.jsx";
@@ -30,7 +30,7 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="items" element={<ItemMaster />} />
-          <Route path="purchase" element={<Purchase />} />
+          <Route path="purchase" element={<ProcurementFoundation />} />
           <Route path="sales" element={<Sales />} />
           <Route path="store" element={<Store />} />
           <Route path="inventory" element={<Inventory />} />
