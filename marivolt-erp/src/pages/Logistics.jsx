@@ -72,6 +72,7 @@ export default function Logistics() {
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyShipment);
   const [err, setErr] = useState("");
+  const [dashboardWarehouse, setDashboardWarehouse] = useState("");
   const [filters, setFilters] = useState({ status: "", customerName: "", awbNo: "", blNo: "", delayedOnly: false });
 
   const { data, isLoading, error } = useQuery({
@@ -80,8 +81,8 @@ export default function Logistics() {
   });
 
   const { data: dashboardData } = useQuery({
-    queryKey: ["logistics-dashboard"],
-    queryFn: () => apiGet("/shipments/dashboard"),
+    queryKey: ["logistics-dashboard", dashboardWarehouse],
+    queryFn: () => apiGetWithQuery("/shipments/dashboard", { warehouse: dashboardWarehouse || undefined }),
   });
 
   const { data: dispatchData } = useQuery({
@@ -265,6 +266,15 @@ export default function Logistics() {
             <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
           </div>
         ))}
+      </div>
+      <div className="mb-4 grid gap-3 rounded-2xl border bg-white p-4 md:grid-cols-4">
+        <FormField label="Dashboard Warehouse">
+          <TextInput
+            value={dashboardWarehouse}
+            onChange={(e) => setDashboardWarehouse(e.target.value.toUpperCase())}
+            placeholder="ALL / MAIN / BRANCH..."
+          />
+        </FormField>
       </div>
 
       <div className="mb-4 grid gap-3 rounded-2xl border bg-white p-4 md:grid-cols-5">

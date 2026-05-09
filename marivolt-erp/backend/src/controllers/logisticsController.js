@@ -4,12 +4,45 @@ import ShipmentContainer from "../models/ShipmentContainer.js";
 import SalesDispatch from "../models/SalesDispatch.js";
 import SalesInvoice from "../models/SalesInvoice.js";
 import Rts from "../models/Rts.js";
+import OrderAllocation from "../models/OrderAllocation.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 import { writeAudit } from "../services/auditService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
+}
+
+async function resolveWarehouseScopedLogisticsIds(req, warehouseRaw) {
+  const warehouse = String(warehouseRaw || "").trim().toUpperCase();
+  if (!warehouse) return null;
+
+  const oaRows = await OrderAllocation.find(withCompany(req, { warehouse }))
+    .select("_id")
+    .lean();
+  const oaIds = oaRows.map((r) => r._id);
+  if (!oaIds.length) {
+    return { hasFilter: true, invoiceIds: [], rtsIds: [], dispatchIds: [] };
+  }
+
+  const [invoices, rtsRows] = await Promise.all([
+    SalesInvoice.find(withCompany(req, { linkedOrderAllocationId: { $in: oaIds } }))
+      .select("_id")
+      .lean(),
+    Rts.find(withCompany(req, { linkedOrderAllocationId: { $in: oaIds } }))
+      .select("_id")
+      .lean(),
+  ]);
+
+  const invoiceIds = invoices.map((r) => r._id);
+  const rtsIds = rtsRows.map((r) => r._id);
+  const dispatchRows = invoiceIds.length
+    ? await SalesDispatch.find(withCompany(req, { linkedSalesInvoiceId: { $in: invoiceIds } }))
+        .select("_id")
+        .lean()
+    : [];
+  const dispatchIds = dispatchRows.map((r) => r._id);
+  return { hasFilter: true, invoiceIds, rtsIds, dispatchIds };
 }
 
 function normalizeTrackingStatus(v = "") {
@@ -98,12 +131,6 @@ function hydrateShipmentCommercialFields(body = {}, userEmail = "") {
   return payload;
 }
 
-function dispatchQtyTotals(lines = []) {
-  const totalQty = (lines || []).reduce((sum, l) => sum + (Number(l.qty) || 0), 0);
-  const dispatchedQty = (lines || []).reduce((sum, l) => sum + (Number(l.dispatchedQty ?? l.qty) || 0), 0);
-  return { totalQty, dispatchedQty, pendingQty: Math.max(0, totalQty - dispatchedQty) };
-}
-
 function normalizePackages(packages = []) {
   return Array.isArray(packages)
     ? packages
@@ -132,17 +159,49 @@ export async function getLogisticsDashboard(req, res) {
   try {
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
+    const scoped = await resolveWarehouseScopedLogisticsIds(req, req.query.warehouse);
+
+    const shipmentBaseFilter = withCompany(req);
+    if (scoped?.hasFilter) {
+      shipmentBaseFilter.linkedDispatchId = { $in: scoped.dispatchIds };
+    }
+
+    const rtsFilter = scoped?.hasFilter
+      ? withCompany(req, {
+          _id: { $in: scoped.rtsIds },
+          status: { $in: ["APPROVED", "CONVERTED_TO_INVOICE"] },
+        })
+      : withCompany(req, { status: { $in: ["APPROVED", "CONVERTED_TO_INVOICE"] } });
+
+    const backordersFilter = scoped?.hasFilter
+      ? withCompany(req, {
+          _id: { $in: scoped.invoiceIds },
+          paymentStatus: { $ne: "PAID" },
+          balanceAmount: { $gt: 0 },
+        })
+      : withCompany(req, { paymentStatus: { $ne: "PAID" }, balanceAmount: { $gt: 0 } });
+
     const [pendingDispatch, inTransit, delayedShipments, delivered, backorders, ready, booked, customs] = await Promise.all([
-      Rts.countDocuments(withCompany(req, { status: { $in: ["APPROVED", "CONVERTED_TO_INVOICE"] } })),
-      Shipment.countDocuments(withCompany(req, { status: { $in: ["IN_TRANSIT"] } })),
-      Shipment.countDocuments(withCompany(req, { status: { $nin: ["DELIVERED", "CLOSED", "CANCELLED"] }, plannedEta: { $lt: todayEnd } })),
-      Shipment.countDocuments(withCompany(req, { status: { $in: ["DELIVERED", "CLOSED"] } })),
-      SalesInvoice.countDocuments(withCompany(req, { paymentStatus: { $ne: "PAID" }, balanceAmount: { $gt: 0 } })),
-      Shipment.countDocuments(withCompany(req, { status: "READY" })),
-      Shipment.countDocuments(withCompany(req, { status: "BOOKED" })),
-      Shipment.countDocuments(withCompany(req, { status: "CUSTOMS_CLEARANCE" })),
+      Rts.countDocuments(rtsFilter),
+      Shipment.countDocuments({ ...shipmentBaseFilter, status: { $in: ["IN_TRANSIT"] } }),
+      Shipment.countDocuments({ ...shipmentBaseFilter, status: { $nin: ["DELIVERED", "CLOSED", "CANCELLED"] }, plannedEta: { $lt: todayEnd } }),
+      Shipment.countDocuments({ ...shipmentBaseFilter, status: { $in: ["DELIVERED", "CLOSED"] } }),
+      SalesInvoice.countDocuments(backordersFilter),
+      Shipment.countDocuments({ ...shipmentBaseFilter, status: "READY" }),
+      Shipment.countDocuments({ ...shipmentBaseFilter, status: "BOOKED" }),
+      Shipment.countDocuments({ ...shipmentBaseFilter, status: "CUSTOMS_CLEARANCE" }),
     ]);
-    res.json({ pendingDispatch, inTransit, delayedShipments, delivered, backorders, ready, booked, customs });
+    res.json({
+      pendingDispatch,
+      inTransit,
+      delayedShipments,
+      delivered,
+      backorders,
+      ready,
+      booked,
+      customs,
+      warehouse: String(req.query.warehouse || "").trim().toUpperCase(),
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
