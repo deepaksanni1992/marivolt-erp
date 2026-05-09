@@ -28,6 +28,7 @@ import paymentReceiptRoutes from "./routes/paymentReceiptRoutes.js";
 import auditRoutes from "./routes/auditRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import analyticsRoutes from "./routes/analyticsRoutes.js";
+import communicationRoutes from "./routes/communicationRoutes.js";
 import { isS3Configured } from "./config/s3.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -114,6 +115,7 @@ async function startServer() {
     app.use("/api/audit-logs", auditRoutes);
     app.use("/api/admin", adminRoutes);
     app.use("/api/analytics", analyticsRoutes);
+    app.use("/api/communication", communicationRoutes);
 
     app.get("/api/health", (req, res) => {
       res.json({ ok: true, message: "Marivoltz API running" });
