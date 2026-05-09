@@ -6,6 +6,7 @@ import Modal from "../components/erp/Modal.jsx";
 
 const TABS = [
   "GRN",
+  "Landed Cost Allocation",
   "Stock View",
   "Stock Ledger",
   "Stock Adjustment",
@@ -52,6 +53,11 @@ function fmtDateOnly(d) {
   } catch {
     return String(d);
   }
+}
+
+function fmtMoney(n) {
+  const x = Number(n) || 0;
+  return x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 export default function StoreModule() {
@@ -102,11 +108,54 @@ export default function StoreModule() {
     status: "Active",
   });
   const [editLoc, setEditLoc] = useState("");
+  const [selectedLandedCostId, setSelectedLandedCostId] = useState("");
+  const [landedCostForm, setLandedCostForm] = useState({
+    grnNo: "",
+    allocationMethod: "LINE_VALUE",
+    purchaseInvoiceNo: "",
+    shipmentRef: "",
+    containerNo: "",
+    remarks: "",
+    components: [
+      { componentType: "FREIGHT", amount: 0, currency: "USD", exchangeRate: 1, remarks: "" },
+      { componentType: "CUSTOMS_DUTY", amount: 0, currency: "USD", exchangeRate: 1, remarks: "" },
+      { componentType: "TRUCKING", amount: 0, currency: "USD", exchangeRate: 1, remarks: "" },
+      { componentType: "INSURANCE", amount: 0, currency: "USD", exchangeRate: 1, remarks: "" },
+      { componentType: "HANDLING", amount: 0, currency: "USD", exchangeRate: 1, remarks: "" },
+      { componentType: "CLEARANCE", amount: 0, currency: "USD", exchangeRate: 1, remarks: "" },
+      { componentType: "MISC_CHARGES", amount: 0, currency: "USD", exchangeRate: 1, remarks: "" },
+    ],
+    lines: [],
+  });
 
   const { data: grns } = useQuery({
     queryKey: ["grn"],
     queryFn: () => apiGetWithQuery("/grn", { limit: 200 }),
     enabled: tab === "GRN",
+  });
+
+  const { data: landedCostRows } = useQuery({
+    queryKey: ["landed-cost-list"],
+    queryFn: () => apiGetWithQuery("/store/landed-cost", { limit: 200 }),
+    enabled: tab === "Landed Cost Allocation",
+  });
+
+  const { data: landedCostSummary } = useQuery({
+    queryKey: ["landed-cost-summary"],
+    queryFn: () => apiGet("/store/reports/landed-cost-summary"),
+    enabled: tab === "Landed Cost Allocation",
+  });
+
+  const { data: valuationAdjustments } = useQuery({
+    queryKey: ["stock-valuation-adjustments"],
+    queryFn: () => apiGet("/store/reports/stock-valuation-adjustments"),
+    enabled: tab === "Landed Cost Allocation",
+  });
+
+  const { data: grnCostAnalysis } = useQuery({
+    queryKey: ["grn-cost-analysis"],
+    queryFn: () => apiGet("/store/reports/grn-cost-analysis"),
+    enabled: tab === "Landed Cost Allocation",
   });
 
   const { data: balance } = useQuery({
@@ -247,11 +296,47 @@ export default function StoreModule() {
     mutationFn: (code) => apiDelete(`/stock/locations/${code}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["stock-locations"] }),
   });
+  const createLandedCost = useMutation({
+    mutationFn: () => apiPost("/store/landed-cost", landedCostForm),
+    onSuccess: (row) => {
+      qc.invalidateQueries({ queryKey: ["landed-cost-list"] });
+      qc.invalidateQueries({ queryKey: ["landed-cost-summary"] });
+      if (row?._id) setSelectedLandedCostId(row._id);
+    },
+  });
+  const updateLandedCost = useMutation({
+    mutationFn: () => apiPut(`/store/landed-cost/${selectedLandedCostId}`, landedCostForm),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["landed-cost-list"] });
+      qc.invalidateQueries({ queryKey: ["landed-cost-summary"] });
+    },
+  });
+  const applyLandedCost = useMutation({
+    mutationFn: (id) => apiPost(`/store/landed-cost/${id}/apply`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["landed-cost-list"] });
+      qc.invalidateQueries({ queryKey: ["landed-cost-summary"] });
+      qc.invalidateQueries({ queryKey: ["stock-valuation-adjustments"] });
+      qc.invalidateQueries({ queryKey: ["grn-cost-analysis"] });
+      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+    },
+  });
+  const cancelLandedCost = useMutation({
+    mutationFn: (id) => apiPost(`/store/landed-cost/${id}/cancel`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["landed-cost-list"] });
+      qc.invalidateQueries({ queryKey: ["landed-cost-summary"] });
+    },
+  });
 
   const stockRows = useMemo(() => balance?.items || [], [balance]);
   const ledgerRows = useMemo(() => ledger?.items || [], [ledger]);
   const locationRows = locations || [];
   const negativeRows = useMemo(() => negativeReport?.items || [], [negativeReport]);
+  const landedCostDetail = useMemo(
+    () => (landedCostRows?.items || []).find((x) => String(x._id) === String(selectedLandedCostId)) || null,
+    [landedCostRows, selectedLandedCostId]
+  );
 
   const stockViewColumns = useMemo(
     () => [
@@ -388,7 +473,7 @@ export default function StoreModule() {
       <div className="rounded-2xl border bg-white p-4">
         <h1 className="text-2xl font-semibold">Store</h1>
         <p className="text-sm text-slate-600">
-          GRN, Stock View, Stock Ledger, Adjustment, Transfer, Locations, Negative Allocation Report
+          GRN, Landed Cost Allocation, Stock View, Stock Ledger, Adjustment, Transfer, Locations, Negative Allocation Report
         </p>
       </div>
 
@@ -420,6 +505,348 @@ export default function StoreModule() {
                 {g.grnNo} ({g.status})
               </span>
             ))}
+          </div>
+        </div>
+      ) : null}
+
+      {tab === "Landed Cost Allocation" ? (
+        <div className="space-y-3">
+          <div className="rounded-2xl border bg-white p-4">
+            <div className="grid gap-3 md:grid-cols-4">
+              <select
+                className="rounded border px-3 py-2 text-sm"
+                value={landedCostForm.grnNo}
+                onChange={(e) => setLandedCostForm((s) => ({ ...s, grnNo: e.target.value }))}
+              >
+                <option value="">Select GRN</option>
+                {(grns?.items || [])
+                  .filter((g) => ["RECEIVED", "PARTIAL_RECEIVED", "CLOSED"].includes(g.status))
+                  .map((g) => (
+                    <option key={g._id} value={g.grnNo}>
+                      {g.grnNo} - {g.supplierName || "Supplier"}
+                    </option>
+                  ))}
+              </select>
+              <select
+                className="rounded border px-3 py-2 text-sm"
+                value={landedCostForm.allocationMethod}
+                onChange={(e) => setLandedCostForm((s) => ({ ...s, allocationMethod: e.target.value }))}
+              >
+                <option value="QUANTITY">Allocate by Quantity</option>
+                <option value="LINE_VALUE">Allocate by Line Value</option>
+                <option value="WEIGHT">Allocate by Weight</option>
+                <option value="VOLUME">Allocate by Volume</option>
+              </select>
+              <input
+                className="rounded border px-3 py-2 text-sm"
+                placeholder="Purchase Invoice No"
+                value={landedCostForm.purchaseInvoiceNo}
+                onChange={(e) => setLandedCostForm((s) => ({ ...s, purchaseInvoiceNo: e.target.value }))}
+              />
+              <input
+                className="rounded border px-3 py-2 text-sm"
+                placeholder="Shipment Ref"
+                value={landedCostForm.shipmentRef}
+                onChange={(e) => setLandedCostForm((s) => ({ ...s, shipmentRef: e.target.value }))}
+              />
+              <input
+                className="rounded border px-3 py-2 text-sm"
+                placeholder="Container No"
+                value={landedCostForm.containerNo}
+                onChange={(e) => setLandedCostForm((s) => ({ ...s, containerNo: e.target.value }))}
+              />
+              <input
+                className="rounded border px-3 py-2 text-sm md:col-span-3"
+                placeholder="Allocation remarks"
+                value={landedCostForm.remarks}
+                onChange={(e) => setLandedCostForm((s) => ({ ...s, remarks: e.target.value }))}
+              />
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              {landedCostForm.components.map((c, i) => (
+                <div key={c.componentType} className="rounded border p-2">
+                  <div className="mb-1 text-xs font-semibold text-slate-700">{c.componentType.replaceAll("_", " ")}</div>
+                  <div className="grid gap-2 md:grid-cols-4">
+                    <input
+                      className="rounded border px-2 py-1 text-sm"
+                      type="number"
+                      placeholder="Amount"
+                      value={c.amount}
+                      onChange={(e) =>
+                        setLandedCostForm((s) => ({
+                          ...s,
+                          components: s.components.map((row, idx) =>
+                            idx === i ? { ...row, amount: Number(e.target.value) } : row
+                          ),
+                        }))
+                      }
+                    />
+                    <input
+                      className="rounded border px-2 py-1 text-sm"
+                      placeholder="Currency"
+                      value={c.currency}
+                      onChange={(e) =>
+                        setLandedCostForm((s) => ({
+                          ...s,
+                          components: s.components.map((row, idx) =>
+                            idx === i ? { ...row, currency: e.target.value.toUpperCase() } : row
+                          ),
+                        }))
+                      }
+                    />
+                    <input
+                      className="rounded border px-2 py-1 text-sm"
+                      type="number"
+                      placeholder="Exch Rate"
+                      value={c.exchangeRate}
+                      onChange={(e) =>
+                        setLandedCostForm((s) => ({
+                          ...s,
+                          components: s.components.map((row, idx) =>
+                            idx === i ? { ...row, exchangeRate: Number(e.target.value) || 1 } : row
+                          ),
+                        }))
+                      }
+                    />
+                    <input
+                      className="rounded border px-2 py-1 text-sm"
+                      placeholder="Remarks"
+                      value={c.remarks}
+                      onChange={(e) =>
+                        setLandedCostForm((s) => ({
+                          ...s,
+                          components: s.components.map((row, idx) =>
+                            idx === i ? { ...row, remarks: e.target.value } : row
+                          ),
+                        }))
+                      }
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button type="button" className="rounded bg-slate-900 px-3 py-2 text-sm text-white" onClick={() => createLandedCost.mutate()}>
+                Create Draft From GRN
+              </button>
+              <button
+                type="button"
+                className="rounded border px-3 py-2 text-sm"
+                disabled={!selectedLandedCostId}
+                onClick={() => updateLandedCost.mutate()}
+              >
+                Save Draft
+              </button>
+              <button
+                type="button"
+                className="rounded border px-3 py-2 text-sm"
+                disabled={!selectedLandedCostId}
+                onClick={() => applyLandedCost.mutate(selectedLandedCostId)}
+              >
+                Apply (Approval)
+              </button>
+              <button
+                type="button"
+                className="rounded border px-3 py-2 text-sm text-rose-700"
+                disabled={!selectedLandedCostId}
+                onClick={() => cancelLandedCost.mutate(selectedLandedCostId)}
+              >
+                Cancel
+              </button>
+              <span className="text-sm text-slate-600">
+                Total landed additions:{" "}
+                <strong>
+                  {fmtMoney(
+                    landedCostForm.components.reduce(
+                      (n, c) => n + (Number(c.amount) || 0) * (Number(c.exchangeRate) || 1),
+                      0
+                    )
+                  )}
+                </strong>
+              </span>
+            </div>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <div className="overflow-auto rounded-2xl border bg-white">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-100">
+                  <tr>
+                    {["Allocation", "GRN", "Supplier", "Method", "Total", "Status", "Action"].map((h) => (
+                      <th key={h} className="px-2 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(landedCostRows?.items || []).length === 0 ? (
+                    <tr><td colSpan={7} className="px-2 py-6 text-center text-sm text-slate-500">No landed cost allocations yet.</td></tr>
+                  ) : (
+                    (landedCostRows?.items || []).map((r) => (
+                      <tr key={r._id} className="border-t">
+                        <td className="px-2 py-1 font-mono">{r.allocationNo}</td>
+                        <td className="px-2 py-1">{r.grnNo}</td>
+                        <td className="px-2 py-1">{r.supplierName || "—"}</td>
+                        <td className="px-2 py-1">{r.allocationMethod}</td>
+                        <td className="px-2 py-1">{fmtMoney(r.totalLandedCost)}</td>
+                        <td className="px-2 py-1"><StatusPill status={r.status} tone={r.status === "APPLIED" ? "emerald" : r.status === "CANCELLED" ? "rose" : "amber"} /></td>
+                        <td className="px-2 py-1">
+                          <button
+                            type="button"
+                            className="rounded border px-2 py-1 text-xs"
+                            onClick={() => {
+                              setSelectedLandedCostId(r._id);
+                              setLandedCostForm({
+                                grnNo: r.grnNo || "",
+                                allocationMethod: r.allocationMethod || "LINE_VALUE",
+                                purchaseInvoiceNo: r.purchaseInvoiceNo || "",
+                                shipmentRef: r.shipmentRef || "",
+                                containerNo: r.containerNo || "",
+                                remarks: r.remarks || "",
+                                components: Array.isArray(r.components) && r.components.length
+                                  ? r.components.map((c) => ({
+                                      componentType: c.componentType || "FREIGHT",
+                                      amount: Number(c.amount) || 0,
+                                      currency: c.currency || "USD",
+                                      exchangeRate: Number(c.exchangeRate) || 1,
+                                      remarks: c.remarks || "",
+                                    }))
+                                  : landedCostForm.components,
+                                lines: (r.lines || []).map((ln) => ({
+                                  article: ln.article,
+                                  location: ln.location,
+                                  batchNo: ln.batchNo || "",
+                                  serialNo: ln.serialNo || "",
+                                  weight: Number(ln.weight) || 0,
+                                  volume: Number(ln.volume) || 0,
+                                  remarks: ln.remarks || "",
+                                })),
+                              });
+                            }}
+                          >
+                            Open
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="rounded-2xl border bg-white p-4">
+              <h3 className="mb-2 text-sm font-semibold">Allocation Preview</h3>
+              {(landedCostDetail?.lines || []).length === 0 ? (
+                <p className="text-sm text-slate-500">Select an allocation to preview line-level cost impact.</p>
+              ) : (
+                <div className="space-y-2">
+                  {(landedCostDetail?.lines || []).map((ln, i) => (
+                    <details key={`${ln.article}-${i}`} className="rounded border p-2">
+                      <summary className="cursor-pointer text-sm">
+                        {ln.article} @ {ln.location} — before {fmtMoney(ln.oldCost ?? ln.baseUnitCost)} + landed{" "}
+                        {fmtMoney(ln.allocatedCost)} = final {fmtMoney(ln.newCost ?? ln.finalUnitCost)}
+                      </summary>
+                      <div className="mt-2 grid gap-2 md:grid-cols-4 text-xs">
+                        <div>Before Cost: <strong>{fmtMoney(ln.oldCost ?? ln.baseUnitCost)}</strong></div>
+                        <div>Landed Additions: <strong>{fmtMoney(ln.allocatedCost)}</strong></div>
+                        <div>Final Cost: <strong>{fmtMoney(ln.newCost ?? ln.finalUnitCost)}</strong></div>
+                        <div>Valuation Impact: <strong>{fmtMoney(ln.valuationDelta)}</strong></div>
+                        <input
+                          className="rounded border px-2 py-1 text-sm"
+                          type="number"
+                          placeholder="Weight"
+                          value={Number(
+                            (landedCostForm.lines || []).find((x) => x.article === ln.article && x.location === ln.location)?.weight ??
+                              ln.weight ??
+                              0
+                          )}
+                          onChange={(e) =>
+                            setLandedCostForm((s) => {
+                              const lines = [...(s.lines || [])];
+                              const idx = lines.findIndex((x) => x.article === ln.article && x.location === ln.location);
+                              const next = {
+                                article: ln.article,
+                                location: ln.location,
+                                batchNo: ln.batchNo || "",
+                                serialNo: ln.serialNo || "",
+                                volume: Number(ln.volume) || 0,
+                                weight: Number(e.target.value) || 0,
+                                remarks: ln.remarks || "",
+                              };
+                              if (idx >= 0) lines[idx] = { ...lines[idx], weight: next.weight };
+                              else lines.push(next);
+                              return { ...s, lines };
+                            })
+                          }
+                        />
+                        <input
+                          className="rounded border px-2 py-1 text-sm"
+                          type="number"
+                          placeholder="Volume"
+                          value={Number(
+                            (landedCostForm.lines || []).find((x) => x.article === ln.article && x.location === ln.location)?.volume ??
+                              ln.volume ??
+                              0
+                          )}
+                          onChange={(e) =>
+                            setLandedCostForm((s) => {
+                              const lines = [...(s.lines || [])];
+                              const idx = lines.findIndex((x) => x.article === ln.article && x.location === ln.location);
+                              const next = {
+                                article: ln.article,
+                                location: ln.location,
+                                batchNo: ln.batchNo || "",
+                                serialNo: ln.serialNo || "",
+                                weight: Number(ln.weight) || 0,
+                                volume: Number(e.target.value) || 0,
+                                remarks: ln.remarks || "",
+                              };
+                              if (idx >= 0) lines[idx] = { ...lines[idx], volume: next.volume };
+                              else lines.push(next);
+                              return { ...s, lines };
+                            })
+                          }
+                        />
+                      </div>
+                    </details>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-3">
+            <div className="rounded-2xl border bg-white p-3">
+              <div className="mb-2 text-sm font-semibold">Landed Cost Summary</div>
+              <div className="max-h-60 overflow-auto text-xs">
+                {(landedCostSummary?.items || []).map((r) => (
+                  <div key={r.allocationNo} className="border-b py-1">
+                    {r.allocationNo} / {r.grnNo} / {r.status} / {fmtMoney(r.totalLandedCost)}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-2xl border bg-white p-3">
+              <div className="mb-2 text-sm font-semibold">Stock Valuation Adjustment Report</div>
+              <div className="max-h-60 overflow-auto text-xs">
+                {(valuationAdjustments?.items || []).map((r) => (
+                  <div key={r._id} className="border-b py-1">
+                    {r.referenceNo} / {r.article} / old {fmtMoney(r.oldCost)} / new {fmtMoney(r.newCost)} / delta {fmtMoney(r.valuationDelta)}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-2xl border bg-white p-3">
+              <div className="mb-2 text-sm font-semibold">GRN Cost Analysis</div>
+              <div className="max-h-60 overflow-auto text-xs">
+                {(grnCostAnalysis?.items || []).map((r) => (
+                  <div key={r.allocationNo} className="border-b py-1">
+                    {r.grnNo} / base {fmtMoney(r.baseValue)} / landed {fmtMoney(r.landedCost)} / final {fmtMoney(r.finalValue)}
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       ) : null}
@@ -750,6 +1177,8 @@ export default function StoreModule() {
                                   ? "amber"
                                   : r.movementType === "GRN_IN"
                                     ? "emerald"
+                                    : r.movementType === "LANDED_COST_ADJUSTMENT"
+                                      ? "indigo"
                                     : "slate";
                     const fromTo =
                       r.locationFrom || r.locationTo

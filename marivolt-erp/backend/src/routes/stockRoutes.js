@@ -31,5 +31,14 @@ router.post("/locations", storeCreate, c.createLocation);
 router.get("/locations", storeView, c.listLocations);
 router.put("/locations/:locationCode", storeEdit, c.updateLocation);
 router.delete("/locations/:locationCode", storeDelete, c.deleteLocation);
+router.get("/landed-cost", storeView, c.listLandedCostAllocations);
+router.post("/landed-cost", storeCreate, c.createLandedCostAllocation);
+router.get("/landed-cost/:id", storeView, c.getLandedCostAllocation);
+router.put("/landed-cost/:id", storeEdit, c.updateLandedCostAllocation);
+router.post("/landed-cost/:id/apply", storeApprove, c.applyLandedCostAllocation);
+router.post("/landed-cost/:id/cancel", storeApprove, c.cancelLandedCostAllocation);
+router.get("/reports/landed-cost-summary", storeView, c.landedCostSummaryReport);
+router.get("/reports/stock-valuation-adjustments", storeView, c.stockValuationAdjustmentReport);
+router.get("/reports/grn-cost-analysis", storeView, c.grnCostAnalysisReport);
 
 export default router;

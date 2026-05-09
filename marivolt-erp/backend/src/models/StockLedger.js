@@ -25,6 +25,7 @@ const TX_TYPES = [
  */
 const UNIFIED_MOVEMENT_TYPES = [
   "GRN_IN",
+  "LANDED_COST_ADJUSTMENT",
   "ALLOCATION",
   "ALLOCATION_CANCEL",
   "RTS_TRANSFER",
@@ -52,6 +53,10 @@ const stockLedgerSchema = new mongoose.Schema(
     qtyOut: { type: Number, default: 0, min: 0 },
     balanceQty: { type: Number, default: 0 },
     unitCost: { type: Number, default: 0, min: 0 },
+    oldCost: { type: Number, default: null },
+    newCost: { type: Number, default: null },
+    valuationDelta: { type: Number, default: null },
+    allocationId: { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
     currency: { type: String, default: "USD", trim: true, uppercase: true },
     remarks: { type: String, default: "", trim: true },
     createdBy: { type: String, default: "", trim: true },

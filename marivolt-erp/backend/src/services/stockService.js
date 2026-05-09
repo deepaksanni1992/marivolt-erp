@@ -35,6 +35,7 @@ import InventoryLedger from "../models/InventoryLedger.js";
 /** Unified Phase-3 movement-type vocabulary. */
 export const MOVEMENT_TYPES = Object.freeze({
   GRN_IN: "GRN_IN",
+  LANDED_COST_ADJUSTMENT: "LANDED_COST_ADJUSTMENT",
   ALLOCATION: "ALLOCATION",
   ALLOCATION_CANCEL: "ALLOCATION_CANCEL",
   RTS_TRANSFER: "RTS_TRANSFER",
@@ -55,6 +56,7 @@ export const MOVEMENT_TYPES = Object.freeze({
  */
 const UNIFIED_TO_LEGACY_TX = Object.freeze({
   GRN_IN: "GRN",
+  LANDED_COST_ADJUSTMENT: "STOCK_ADJUSTMENT",
   ALLOCATION: "SALES_ALLOCATION",
   ALLOCATION_CANCEL: "ORDER_ALLOCATION_CANCEL",
   RTS_TRANSFER: "RTS",
@@ -234,6 +236,10 @@ function buildLedgerRow({
   remarks = "",
   createdBy = "",
   unitCost = 0,
+  oldCost = null,
+  newCost = null,
+  valuationDelta = null,
+  allocationId = null,
   currency = "USD",
   sourceModule = "",
   isNegativeAllocation = false,
@@ -274,6 +280,10 @@ function buildLedgerRow({
     availableAfter,
     isNegativeAllocation: Boolean(isNegativeAllocation),
     unitCost: Number(unitCost) || 0,
+    oldCost: oldCost == null ? null : Number(oldCost),
+    newCost: newCost == null ? null : Number(newCost),
+    valuationDelta: valuationDelta == null ? null : Number(valuationDelta),
+    allocationId: allocationId || null,
     currency: up(currency) || "USD",
     remarks: s(remarks),
     createdBy: s(createdBy),

@@ -8,8 +8,11 @@ import StockAdjustment from "../models/StockAdjustment.js";
 import StockTransfer from "../models/StockTransfer.js";
 import OrderAllocation from "../models/OrderAllocation.js";
 import GRN from "../models/GRN.js";
+import LandedCostAllocation from "../models/LandedCostAllocation.js";
 import Rts from "../models/Rts.js";
 import SalesInvoice from "../models/SalesInvoice.js";
+import PurchaseInvoice from "../models/PurchaseInvoice.js";
+import Shipment from "../models/Shipment.js";
 import * as stockService from "../services/stockService.js";
 import { writeAudit } from "../services/auditService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
@@ -142,6 +145,16 @@ async function nextNo(model, companyId, prefix) {
   const latest = await model.findOne({ companyId, [Object.keys(model.schema.paths).includes("adjustmentNo") ? "adjustmentNo" : "transferNo"]: new RegExp(`^${key}`) }).sort({ createdAt: -1 }).lean();
   const value = latest ? Number(String((latest.adjustmentNo || latest.transferNo)).split("-").pop()) + 1 : 1;
   return `${key}${String(value).padStart(5, "0")}`;
+}
+
+async function nextLandedCostNo(companyId) {
+  const y = new Date().getFullYear();
+  const prefix = `LC-${y}-`;
+  const latest = await LandedCostAllocation.findOne({ companyId, allocationNo: new RegExp(`^${prefix}`) })
+    .sort({ createdAt: -1 })
+    .lean();
+  const n = latest ? Number(String(latest.allocationNo).split("-").pop()) + 1 : 1;
+  return `${prefix}${String(n).padStart(5, "0")}`;
 }
 
 export async function listStockBalance(req, res) {
@@ -1297,6 +1310,7 @@ export async function stockMeta(req, res) {
     ...new Set([
       ...Object.values(STOCK_LEDGER_TYPE_TO_UNIFIED),
       ...Object.values(INVENTORY_LEDGER_TYPE_TO_UNIFIED),
+      "LANDED_COST_ADJUSTMENT",
     ]),
   ].sort();
   res.json({
@@ -1304,4 +1318,479 @@ export async function stockMeta(req, res) {
     unifiedMovementTypes,
     sourceModels: ["StockLedger", "InventoryLedger"],
   });
+}
+
+function normalizeLandedCostPayload(body = {}) {
+  const allowed = new Set(["QUANTITY", "LINE_VALUE", "WEIGHT", "VOLUME"]);
+  const method = t(body.allocationMethod || "LINE_VALUE").toUpperCase();
+  const allocationMethod = allowed.has(method) ? method : "LINE_VALUE";
+  const components = (Array.isArray(body.components) ? body.components : [])
+    .map((row) => {
+      const componentType = t(row?.componentType).toUpperCase();
+      const amount = Number(row?.amount) || 0;
+      const currency = t(row?.currency || body.currency || "USD").toUpperCase() || "USD";
+      const exchangeRate = Number(row?.exchangeRate ?? body.exchangeRate) || 1;
+      return {
+        componentType,
+        amount,
+        currency,
+        exchangeRate,
+        baseAmount: amount * exchangeRate,
+        remarks: t(row?.remarks),
+      };
+    })
+    .filter((row) =>
+      ["FREIGHT", "CUSTOMS_DUTY", "TRUCKING", "INSURANCE", "HANDLING", "CLEARANCE", "MISC_CHARGES"].includes(
+        row.componentType
+      )
+    );
+  const lineInputs = (Array.isArray(body.lines) ? body.lines : []).map((ln) => ({
+    article: t(ln?.article).toUpperCase(),
+    location: t(ln?.location).toUpperCase(),
+    batchNo: t(ln?.batchNo),
+    serialNo: t(ln?.serialNo),
+    weight: Number(ln?.weight) || 0,
+    volume: Number(ln?.volume) || 0,
+    remarks: t(ln?.remarks),
+  }));
+  const totalLandedCost = components.reduce((n, row) => n + (Number(row.baseAmount) || 0), 0);
+  return {
+    allocationMethod,
+    currency: t(body.currency || "USD").toUpperCase() || "USD",
+    exchangeRate: Number(body.exchangeRate) || 1,
+    remarks: t(body.remarks),
+    components,
+    totalLandedCost,
+    purchaseInvoiceNo: t(body.purchaseInvoiceNo),
+    shipmentRef: t(body.shipmentRef),
+    containerNo: t(body.containerNo),
+    lineInputs,
+  };
+}
+
+function buildLandedCostLinesFromGrn(grn, payload, existing = []) {
+  const source = (grn.items || []).filter((ln) => (Number(ln.acceptedQty) || 0) > 0);
+  if (!source.length) return [];
+  const manualByKey = new Map(
+    (payload.lineInputs || []).map((row) => [
+      String([row.article, row.location, row.batchNo || "", row.serialNo || ""].join("::")),
+      row,
+    ])
+  );
+  const existingByKey = new Map(
+    (existing || []).map((row) => [String([row.article, row.location, row.batchNo || "", row.serialNo || ""].join("::")), row])
+  );
+  const totalByQty = source.reduce((n, ln) => n + (Number(ln.acceptedQty || 0) || 0), 0);
+  const totalByValue = source.reduce((n, ln) => n + (Number(ln.acceptedQty || 0) * Number(ln.unitCost || 0)), 0);
+  const totalByWeight = source.reduce((n, ln) => n + (Number(ln.weight) || Number(ln.acceptedQty) || 0), 0);
+  const totalByVolume = source.reduce((n, ln) => n + (Number(ln.volume) || Number(ln.acceptedQty) || 0), 0);
+  return source.map((ln) => {
+    const receivedQty = Number(ln.acceptedQty || 0);
+    const baseUnitCost = Number(ln.unitCost || 0);
+    const baseLineCost = receivedQty * baseUnitCost;
+    const key = String([t(ln.article).toUpperCase(), t(ln.location || ln.warehouse).toUpperCase() || "MAIN", t(ln.batchNo), t(ln.serialNo)].join("::"));
+    const existingLine = existingByKey.get(key);
+    const manualLine = manualByKey.get(key);
+    const weightMetric = Number(manualLine?.weight ?? existingLine?.weight ?? ln.weight ?? ln.acceptedQty) || 0;
+    const volumeMetric = Number(manualLine?.volume ?? existingLine?.volume ?? ln.volume ?? ln.acceptedQty) || 0;
+    const weight =
+      payload.allocationMethod === "QUANTITY"
+        ? totalByQty > 0
+          ? receivedQty / totalByQty
+          : 0
+        : payload.allocationMethod === "WEIGHT"
+          ? totalByWeight > 0
+            ? weightMetric / totalByWeight
+            : 0
+          : payload.allocationMethod === "VOLUME"
+            ? totalByVolume > 0
+              ? volumeMetric / totalByVolume
+              : 0
+            : totalByValue > 0
+              ? baseLineCost / totalByValue
+              : 0;
+    const allocatedCost = payload.totalLandedCost * weight;
+    return {
+      article: t(ln.article).toUpperCase(),
+      location: t(ln.location || ln.warehouse).toUpperCase() || "MAIN",
+      batchNo: t(ln.batchNo),
+      serialNo: t(ln.serialNo),
+      receivedQty,
+      baseUnitCost,
+      baseLineCost,
+      weight: weightMetric,
+      volume: volumeMetric,
+      allocatedCost,
+      finalUnitCost: receivedQty > 0 ? baseUnitCost + allocatedCost / receivedQty : baseUnitCost,
+      valuationDelta: allocatedCost,
+      oldCost: baseUnitCost,
+      newCost: receivedQty > 0 ? baseUnitCost + allocatedCost / receivedQty : baseUnitCost,
+      remarks: t(manualLine?.remarks || existingLine?.remarks || ""),
+    };
+  });
+}
+
+export async function createLandedCostAllocation(req, res) {
+  try {
+    const grnNo = t(req.body.grnNo).toUpperCase();
+    if (!grnNo) return res.status(400).json({ message: "grnNo is required" });
+    const grn = await GRN.findOne(withCompany(req, { grnNo })).lean();
+    if (!grn) return res.status(404).json({ message: "GRN not found" });
+    if (!["RECEIVED", "PARTIAL_RECEIVED", "CLOSED"].includes(String(grn.status || "").toUpperCase())) {
+      return res.status(409).json({ message: "Landed cost can only be created for received GRN." });
+    }
+    const payload = normalizeLandedCostPayload(req.body);
+    const [purchaseInvoice, shipment] = await Promise.all([
+      payload.purchaseInvoiceNo
+        ? PurchaseInvoice.findOne(withCompany(req, { invoiceNumber: payload.purchaseInvoiceNo }))
+            .select("_id invoiceNumber")
+            .lean()
+        : null,
+      payload.shipmentRef
+        ? Shipment.findOne(withCompany(req, { shipmentRef: payload.shipmentRef }))
+            .select("_id shipmentRef containerNo")
+            .lean()
+        : null,
+    ]);
+    const lines = buildLandedCostLinesFromGrn(grn, payload);
+    if (!lines.length) return res.status(400).json({ message: "No receipted GRN lines available for cost allocation." });
+    const allocationNo = await nextLandedCostNo(req.companyId);
+    const doc = await LandedCostAllocation.create({
+      companyId: req.companyId,
+      allocationNo,
+      grnId: grn._id,
+      grnNo: grn.grnNo,
+      supplierName: grn.supplierName || "",
+      purchaseInvoiceId: purchaseInvoice?._id || null,
+      purchaseInvoiceNo: purchaseInvoice?.invoiceNumber || "",
+      shipmentId: shipment?._id || null,
+      shipmentRef: shipment?.shipmentRef || "",
+      containerNo: payload.containerNo || shipment?.containerNo || "",
+      ...payload,
+      lines,
+      status: "DRAFT",
+      createdBy: req.user?.email || "",
+      updatedBy: req.user?.email || "",
+    });
+    await writeAudit(req, {
+      action: "CREATE",
+      module: "STORE",
+      entityType: "LANDED_COST",
+      entityId: doc._id,
+      documentNo: doc.allocationNo,
+      description: `Landed cost allocation ${doc.allocationNo} created for ${doc.grnNo}`,
+      metadata: { totalLandedCost: doc.totalLandedCost, allocationMethod: doc.allocationMethod },
+    });
+    res.status(201).json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function listLandedCostAllocations(req, res) {
+  try {
+    const page = Math.max(1, Number(req.query.page || 1));
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit || 50)));
+    const skip = (page - 1) * limit;
+    const filter = withCompany(req);
+    if (req.query.status) filter.status = t(req.query.status).toUpperCase();
+    if (req.query.grnNo) filter.grnNo = new RegExp(t(req.query.grnNo), "i");
+    const [items, total] = await Promise.all([
+      LandedCostAllocation.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      LandedCostAllocation.countDocuments(filter),
+    ]);
+    res.json({ items, total, page, limit });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getLandedCostAllocation(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const row = await LandedCostAllocation.findOne(withCompany(req, { _id: id })).lean();
+    if (!row) return res.status(404).json({ message: "Landed cost allocation not found" });
+    res.json(row);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function updateLandedCostAllocation(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const row = await LandedCostAllocation.findOne(withCompany(req, { _id: id }));
+    if (!row) return res.status(404).json({ message: "Landed cost allocation not found" });
+    if (!["DRAFT", "PENDING_APPROVAL"].includes(row.status)) {
+      return res.status(409).json({ message: "Only DRAFT/PENDING_APPROVAL allocation can be edited" });
+    }
+    const payload = normalizeLandedCostPayload(req.body);
+    const grn = await GRN.findOne(withCompany(req, { _id: row.grnId })).lean();
+    if (!grn) return res.status(404).json({ message: "Linked GRN not found" });
+    const [purchaseInvoice, shipment] = await Promise.all([
+      payload.purchaseInvoiceNo
+        ? PurchaseInvoice.findOne(withCompany(req, { invoiceNumber: payload.purchaseInvoiceNo }))
+            .select("_id invoiceNumber")
+            .lean()
+        : null,
+      payload.shipmentRef
+        ? Shipment.findOne(withCompany(req, { shipmentRef: payload.shipmentRef }))
+            .select("_id shipmentRef containerNo")
+            .lean()
+        : null,
+    ]);
+    row.allocationMethod = payload.allocationMethod;
+    row.currency = payload.currency;
+    row.exchangeRate = payload.exchangeRate;
+    row.components = payload.components;
+    row.totalLandedCost = payload.totalLandedCost;
+    row.remarks = payload.remarks;
+    row.purchaseInvoiceId = purchaseInvoice?._id || null;
+    row.purchaseInvoiceNo = purchaseInvoice?.invoiceNumber || "";
+    row.shipmentId = shipment?._id || null;
+    row.shipmentRef = shipment?.shipmentRef || "";
+    row.containerNo = payload.containerNo || shipment?.containerNo || "";
+    row.lines = buildLandedCostLinesFromGrn(grn, payload, row.lines || []);
+    row.updatedBy = req.user?.email || "";
+    await row.save();
+    await writeAudit(req, {
+      action: "UPDATE",
+      module: "STORE",
+      entityType: "LANDED_COST",
+      entityId: row._id,
+      documentNo: row.allocationNo,
+      description: `Landed cost allocation ${row.allocationNo} updated`,
+      metadata: { totalLandedCost: row.totalLandedCost, allocationMethod: row.allocationMethod },
+    });
+    res.json(row);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function cancelLandedCostAllocation(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const row = await LandedCostAllocation.findOne(withCompany(req, { _id: id }));
+    if (!row) return res.status(404).json({ message: "Landed cost allocation not found" });
+    if (row.status === "APPLIED") return res.status(409).json({ message: "Applied allocation cannot be cancelled." });
+    const prevStatus = row.status;
+    row.status = "CANCELLED";
+    row.cancelledAt = new Date();
+    row.updatedBy = req.user?.email || "";
+    await row.save();
+    await writeAudit(req, {
+      action: "CANCEL",
+      module: "STORE",
+      entityType: "LANDED_COST",
+      entityId: row._id,
+      documentNo: row.allocationNo,
+      fromStatus: prevStatus,
+      toStatus: "CANCELLED",
+      description: `Landed cost allocation ${row.allocationNo} cancelled`,
+      metadata: { grnNo: row.grnNo },
+    });
+    res.json(row);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function applyLandedCostAllocation(req, res) {
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) throw new Error("Invalid id");
+      const row = await LandedCostAllocation.findOne(withCompany(req, { _id: id })).session(session);
+      if (!row) throw new Error("Landed cost allocation not found");
+      if (!["DRAFT", "APPROVED", "PENDING_APPROVAL"].includes(row.status)) throw new Error("Allocation cannot be applied");
+
+      const gate = await ensureApproval(req, {
+        companyId: req.companyId,
+        module: "STORE",
+        actionKey: "landed_cost_apply",
+        documentType: "LANDED_COST",
+        documentId: row._id,
+        documentNo: row.allocationNo,
+        amount: Number(row.totalLandedCost) || 0,
+        currency: row.currency || "USD",
+        description: `Apply landed cost allocation ${row.allocationNo}`,
+      });
+      if (!gate.approved) {
+        row.status = "PENDING_APPROVAL";
+        row.approvalStatus = "PENDING_APPLY";
+        row.updatedBy = req.user?.email || "";
+        await row.save({ session });
+        throw Object.assign(new Error("APPROVAL_REQUIRED"), { _approval: approvalRequiredPayload(gate.request) });
+      }
+
+      row.status = "APPROVED";
+      row.approvalStatus = "APPROVED";
+      row.updatedBy = req.user?.email || "";
+      await row.save({ session });
+      for (const ln of row.lines || []) {
+        const balanceRows = await StockBalance.find(
+          withCompany(req, {
+            article: ln.article,
+            location: ln.location,
+            ...(ln.batchNo ? { batchNo: ln.batchNo } : {}),
+            ...(ln.serialNo ? { serialNo: ln.serialNo } : {}),
+          })
+        ).session(session);
+        if (!balanceRows.length) continue;
+        const totalOnHand = balanceRows.reduce((n, b) => n + (Number(b.onHandQty ?? b.quantity ?? 0) || 0), 0);
+        if (!(totalOnHand > 0)) continue;
+        const addPerUnit = (Number(ln.allocatedCost) || 0) / totalOnHand;
+        let oldWeighted = 0;
+        let newWeighted = 0;
+        for (const b of balanceRows) {
+          const onHand = Number(b.onHandQty ?? b.quantity ?? 0) || 0;
+          const oldCost = Number(b.avgCost ?? b.unitCost ?? 0) || 0;
+          const newCost = Math.max(0, oldCost + addPerUnit);
+          oldWeighted += oldCost * onHand;
+          newWeighted += newCost * onHand;
+          b.unitCost = newCost;
+          b.avgCost = newCost;
+          await b.save({ session });
+        }
+        const oldCost = totalOnHand > 0 ? oldWeighted / totalOnHand : Number(ln.baseUnitCost || 0);
+        const newCost = totalOnHand > 0 ? newWeighted / totalOnHand : Number(ln.finalUnitCost || ln.baseUnitCost || 0);
+        const valuationDelta = newWeighted - oldWeighted;
+        const balView = await stockService.getStockBalance({
+          companyId: req.companyId,
+          article: ln.article,
+          warehouse: ln.location,
+          session,
+        });
+        await stockService.createStockLedgerEntry({
+          session,
+          companyId: req.companyId,
+          movementType: "LANDED_COST_ADJUSTMENT",
+          article: ln.article,
+          warehouse: ln.location,
+          referenceType: "LANDED_COST",
+          referenceNo: row.allocationNo,
+          qtyIn: 0,
+          qtyOut: 0,
+          unitCost: newCost,
+          oldCost,
+          newCost,
+          valuationDelta,
+          allocationId: row._id,
+          currency: row.currency || "USD",
+          remarks: `Landed cost allocated from ${row.grnNo}`,
+          createdBy: req.user?.email || "",
+          sourceModule: "STORE",
+          onHandAfter: balView.onHandQty,
+          allocatedAfter: balView.allocatedQty,
+          rtsAfter: balView.rtsQty,
+          availableAfter: balView.availableQty,
+        });
+        ln.oldCost = oldCost;
+        ln.newCost = newCost;
+        ln.valuationDelta = valuationDelta;
+      }
+      row.status = "APPLIED";
+      row.appliedAt = new Date();
+      row.updatedBy = req.user?.email || "";
+      await row.save({ session });
+      await writeAudit(req, {
+        action: "POST",
+        module: "STORE",
+        entityType: "LANDED_COST",
+        entityId: row._id,
+        documentNo: row.allocationNo,
+        fromStatus: "APPROVED",
+        toStatus: "APPLIED",
+        description: `Landed cost allocation ${row.allocationNo} applied`,
+        metadata: { grnNo: row.grnNo, totalLandedCost: row.totalLandedCost },
+      });
+      await writeAudit(req, {
+        action: "VALUATION_UPDATE",
+        module: "STORE",
+        entityType: "LANDED_COST",
+        entityId: row._id,
+        documentNo: row.allocationNo,
+        description: `Stock valuation updated by landed cost allocation ${row.allocationNo}`,
+        metadata: {
+          valuationByLine: (row.lines || []).map((ln) => ({
+            article: ln.article,
+            oldCost: ln.oldCost,
+            newCost: ln.newCost,
+            valuationDelta: ln.valuationDelta,
+          })),
+        },
+      });
+    });
+    res.json({ success: true });
+  } catch (err) {
+    if (err?._approval) return res.status(202).json(err._approval);
+    res.status(400).json({ message: err.message });
+  } finally {
+    await session.endSession();
+  }
+}
+
+export async function landedCostSummaryReport(req, res) {
+  try {
+    const filter = withCompany(req);
+    if (req.query.status) filter.status = t(req.query.status).toUpperCase();
+    const rows = await LandedCostAllocation.find(filter).sort({ createdAt: -1 }).lean();
+    const items = rows.map((r) => ({
+      allocationNo: r.allocationNo,
+      grnNo: r.grnNo,
+      supplierName: r.supplierName || "",
+      allocationMethod: r.allocationMethod,
+      totalLandedCost: Number(r.totalLandedCost || 0),
+      lineCount: (r.lines || []).length,
+      status: r.status,
+      createdAt: r.createdAt,
+      appliedAt: r.appliedAt,
+    }));
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function stockValuationAdjustmentReport(req, res) {
+  try {
+    const filter = withCompany(req, {
+      movementType: "LANDED_COST_ADJUSTMENT",
+      referenceType: "LANDED_COST",
+    });
+    if (req.query.allocationNo) filter.referenceNo = new RegExp(t(req.query.allocationNo), "i");
+    const items = await StockLedger.find(filter).sort({ createdAt: -1 }).lean();
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function grnCostAnalysisReport(req, res) {
+  try {
+    const filter = withCompany(req);
+    if (req.query.grnNo) filter.grnNo = new RegExp(t(req.query.grnNo), "i");
+    const rows = await LandedCostAllocation.find(filter).sort({ createdAt: -1 }).lean();
+    const items = rows.map((row) => {
+      const baseValue = (row.lines || []).reduce((n, ln) => n + (Number(ln.baseLineCost) || 0), 0);
+      const finalValue = (row.lines || []).reduce((n, ln) => n + (Number(ln.baseLineCost) || 0) + (Number(ln.allocatedCost) || 0), 0);
+      return {
+        allocationNo: row.allocationNo,
+        grnNo: row.grnNo,
+        supplierName: row.supplierName || "",
+        baseValue,
+        landedCost: Number(row.totalLandedCost || 0),
+        finalValue,
+        status: row.status,
+      };
+    });
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 }
