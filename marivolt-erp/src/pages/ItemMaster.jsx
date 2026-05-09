@@ -25,6 +25,12 @@ const emptyTechnical = {
   oeMarkings: "",
   extRemarks: "",
   internalRemarks: "",
+  modelMappingsText: "",
+  configurationMappingsText: "",
+  oemCrossReferencesText: "",
+  supplierReferencesText: "",
+  technicalSpecificationsText: "",
+  interchangeablePartsText: "",
 };
 
 const emptySupplier = {
@@ -50,9 +56,82 @@ const EXPORT_COLUMNS = [
   { key: "Drawing Number", header: "Drawing Number" },
   { key: "Dimension", header: "Dimension" },
   { key: "OE Markings", header: "OE Markings" },
+  { key: "Model Mappings", header: "Model Mappings" },
+  { key: "Configuration Mappings", header: "Configuration Mappings" },
+  { key: "OEM Cross References", header: "OEM Cross References" },
+  { key: "Interchangeable Parts", header: "Interchangeable Parts" },
   { key: "Suppliers", header: "Suppliers" },
   { key: "Status", header: "Status" },
 ];
+
+function parseTextRows(value, keys) {
+  return String(value || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split("|").map((x) => x.trim());
+      const out = {};
+      keys.forEach((key, i) => {
+        out[key] = parts[i] || "";
+      });
+      return out;
+    });
+}
+
+function formatTextRows(rows, keys) {
+  if (!Array.isArray(rows) || !rows.length) return "";
+  return rows
+    .map((row) => keys.map((k) => String(row?.[k] ?? "").trim()).join(" | ").replace(/\s+\|\s+$/, ""))
+    .join("\n");
+}
+
+function technicalToPayload(technical) {
+  return {
+    spn: technical.spn,
+    esn: technical.esn,
+    materialCode: technical.materialCode,
+    drawingNumber: technical.drawingNumber,
+    dimension: technical.dimension,
+    oeMarkings: technical.oeMarkings,
+    extRemarks: technical.extRemarks,
+    internalRemarks: technical.internalRemarks,
+    modelMappings: parseTextRows(technical.modelMappingsText, ["modelCode", "modelName", "variant", "notes"]),
+    configurationMappings: parseTextRows(technical.configurationMappingsText, [
+      "configurationCode",
+      "configurationName",
+      "applicability",
+      "notes",
+    ]),
+    oemCrossReferences: parseTextRows(technical.oemCrossReferencesText, [
+      "oemName",
+      "oemPartNumber",
+      "oemDescription",
+      "notes",
+    ]),
+    supplierReferences: parseTextRows(technical.supplierReferencesText, [
+      "supplierName",
+      "supplierPartNumber",
+      "preferred",
+      "notes",
+    ]).map((row) => ({ ...row, preferred: String(row.preferred).toLowerCase() === "true" })),
+    technicalSpecifications: parseTextRows(technical.technicalSpecificationsText, [
+      "specName",
+      "specValue",
+      "specUnit",
+      "notes",
+    ]),
+    interchangeableParts: parseTextRows(technical.interchangeablePartsText, [
+      "article",
+      "partNumber",
+      "description",
+      "interchangeType",
+      "replacementPriority",
+      "replacementNotes",
+      "notes",
+    ]).map((row) => ({ ...row, replacementPriority: Number(row.replacementPriority) || 0 })),
+  };
+}
 
 function StatusBadge({ status }) {
   const active = status === "Active";
@@ -79,7 +158,17 @@ export default function ItemMaster() {
   const [search, setSearch] = useState("");
   const [vertical, setVertical] = useState("");
   const [engine, setEngine] = useState("");
+  const [engineModel, setEngineModel] = useState("");
+  const [configuration, setConfiguration] = useState("");
   const [esn, setEsn] = useState("");
+  const [spnFilter, setSpnFilter] = useState("");
+  const [cylinderCount, setCylinderCount] = useState("");
+  const [oemReference, setOemReference] = useState("");
+  const [supplierReference, setSupplierReference] = useState("");
+  const [materialCodeFilter, setMaterialCodeFilter] = useState("");
+  const [drawingNumberFilter, setDrawingNumberFilter] = useState("");
+  const [advancedSearchOpen, setAdvancedSearchOpen] = useState(false);
+  const [compatibilityArticle, setCompatibilityArticle] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [tab, setTab] = useState("basic");
   const [selectedArticle, setSelectedArticle] = useState("");
@@ -90,15 +179,38 @@ export default function ItemMaster() {
   const [editingSupplierId, setEditingSupplierId] = useState("");
 
   const { data: listData, isLoading } = useQuery({
-    queryKey: ["items", page, search, vertical, engine, esn],
+    queryKey: [
+      "items",
+      page,
+      search,
+      vertical,
+      engine,
+      engineModel,
+      configuration,
+      esn,
+      spnFilter,
+      cylinderCount,
+      oemReference,
+      supplierReference,
+      materialCodeFilter,
+      drawingNumberFilter,
+    ],
     queryFn: () =>
       apiGetWithQuery("/items", {
         page,
         limit: 25,
         search: search || undefined,
         vertical: vertical || undefined,
-        engine: engine || undefined,
+        engineBrand: engine || undefined,
+        engineModel: engineModel || undefined,
+        configuration: configuration || undefined,
         esn: esn || undefined,
+        spn: spnFilter || undefined,
+        cylinderCount: cylinderCount || undefined,
+        oemReference: oemReference || undefined,
+        supplierReference: supplierReference || undefined,
+        materialCode: materialCodeFilter || undefined,
+        drawingNumber: drawingNumberFilter || undefined,
       }),
   });
 
@@ -111,6 +223,12 @@ export default function ItemMaster() {
     queryKey: ["item-details", selectedArticle],
     enabled: Boolean(selectedArticle),
     queryFn: () => apiGet(`/items/${encodeURIComponent(selectedArticle)}`),
+  });
+
+  const { data: compatibilityData } = useQuery({
+    queryKey: ["item-compatibility", compatibilityArticle],
+    enabled: Boolean(compatibilityArticle),
+    queryFn: () => apiGet(`/items/${encodeURIComponent(compatibilityArticle)}/compatibility`),
   });
 
   const saveItem = useMutation({
@@ -127,7 +245,7 @@ export default function ItemMaster() {
   });
 
   const saveTechnical = useMutation({
-    mutationFn: () => apiPut(`/items/${selectedArticle}/technical`, technical),
+    mutationFn: () => apiPut(`/items/${selectedArticle}/technical`, technicalToPayload(technical)),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["item-details", selectedArticle] });
       setError("");
@@ -199,7 +317,43 @@ export default function ItemMaster() {
       status: row.status || "Active",
     });
     const full = await apiGet(`/items/${encodeURIComponent(row.article)}`);
-    setTechnical({ ...emptyTechnical, ...(full.technical || {}) });
+    const t = full.technical || {};
+    setTechnical({
+      ...emptyTechnical,
+      ...t,
+      modelMappingsText: formatTextRows(t.modelMappings, ["modelCode", "modelName", "variant", "notes"]),
+      configurationMappingsText: formatTextRows(t.configurationMappings, [
+        "configurationCode",
+        "configurationName",
+        "applicability",
+        "notes",
+      ]),
+      oemCrossReferencesText: formatTextRows(t.oemCrossReferences, [
+        "oemName",
+        "oemPartNumber",
+        "oemDescription",
+        "notes",
+      ]),
+      supplierReferencesText: formatTextRows(
+        (t.supplierReferences || []).map((row) => ({ ...row, preferred: row.preferred ? "true" : "false" })),
+        ["supplierName", "supplierPartNumber", "preferred", "notes"]
+      ),
+      technicalSpecificationsText: formatTextRows(t.technicalSpecifications, [
+        "specName",
+        "specValue",
+        "specUnit",
+        "notes",
+      ]),
+      interchangeablePartsText: formatTextRows(t.interchangeableParts, [
+        "article",
+        "partNumber",
+        "description",
+        "interchangeType",
+        "replacementPriority",
+        "replacementNotes",
+        "notes",
+      ]),
+    });
     setDrawerOpen(true);
     setTab("basic");
     setError("");
@@ -257,9 +411,26 @@ export default function ItemMaster() {
             <input className="rounded-lg border px-3 py-2" value={esn} onChange={(e) => setEsn(e.target.value)} placeholder="Filter by ESN" />
           </Field>
           <div className="flex items-end">
-            <button onClick={() => { setPage(1); qc.invalidateQueries({ queryKey: ["items"] }); }} className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white">Apply</button>
+            <div className="flex gap-2">
+              <button onClick={() => setAdvancedSearchOpen((v) => !v)} className="rounded-xl border px-4 py-2 text-sm">
+                Advanced Filters
+              </button>
+              <button onClick={() => { setPage(1); qc.invalidateQueries({ queryKey: ["items"] }); }} className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white">Apply</button>
+            </div>
           </div>
         </div>
+        {advancedSearchOpen ? (
+          <div className="mt-3 grid gap-3 rounded-xl border bg-slate-50 p-3 md:grid-cols-5">
+            <Field label="SPN"><input className="rounded-lg border px-3 py-2" value={spnFilter} onChange={(e) => setSpnFilter(e.target.value)} /></Field>
+            <Field label="Engine Model"><input className="rounded-lg border px-3 py-2" value={engineModel} onChange={(e) => setEngineModel(e.target.value)} /></Field>
+            <Field label="Configuration"><input className="rounded-lg border px-3 py-2" value={configuration} onChange={(e) => setConfiguration(e.target.value)} /></Field>
+            <Field label="Cylinder Count"><input className="rounded-lg border px-3 py-2" type="number" value={cylinderCount} onChange={(e) => setCylinderCount(e.target.value)} /></Field>
+            <Field label="OEM Reference"><input className="rounded-lg border px-3 py-2" value={oemReference} onChange={(e) => setOemReference(e.target.value)} /></Field>
+            <Field label="Supplier Reference"><input className="rounded-lg border px-3 py-2" value={supplierReference} onChange={(e) => setSupplierReference(e.target.value)} /></Field>
+            <Field label="Material Code"><input className="rounded-lg border px-3 py-2" value={materialCodeFilter} onChange={(e) => setMaterialCodeFilter(e.target.value)} /></Field>
+            <Field label="Drawing Number"><input className="rounded-lg border px-3 py-2" value={drawingNumberFilter} onChange={(e) => setDrawingNumberFilter(e.target.value)} /></Field>
+          </div>
+        ) : null}
       </div>
 
       {error ? <div className="rounded-xl border border-rose-300 bg-rose-50 p-3 text-sm text-rose-700">{error}</div> : null}
@@ -285,6 +456,10 @@ export default function ItemMaster() {
                 <th className="px-3 py-3">Internal Remarks</th>
                 <th className="px-3 py-3">OE Markings</th>
                 <th className="px-3 py-3">Dimension</th>
+                <th className="px-3 py-3">Model Maps</th>
+                <th className="px-3 py-3">Config Maps</th>
+                <th className="px-3 py-3">OEM XRef</th>
+                <th className="px-3 py-3">Interchange</th>
                 <th className="px-3 py-3">Supplier 1</th>
                 <th className="px-3 py-3">Supplier 1 P/N</th>
                 <th className="px-3 py-3">Supplier 2</th>
@@ -294,7 +469,7 @@ export default function ItemMaster() {
               </tr>
             </thead>
             <tbody>
-              {isLoading ? <tr><td className="px-3 py-8" colSpan={22}>Loading...</td></tr> : list.map((row) => (
+              {isLoading ? <tr><td className="px-3 py-8" colSpan={26}>Loading...</td></tr> : list.map((row) => (
                 <tr key={row._id} className="border-t">
                   <td className="px-3 py-2">{row.vertical || "-"}</td>
                   <td className="px-3 py-2">{row.engine || "-"}</td>
@@ -312,6 +487,10 @@ export default function ItemMaster() {
                   <td className="px-3 py-2">{row.internalRemarks || "-"}</td>
                   <td className="px-3 py-2">{row.oeMarkings || "-"}</td>
                   <td className="px-3 py-2">{row.dimension || "-"}</td>
+                  <td className="px-3 py-2">{Number(row.modelMapCount || 0)}</td>
+                  <td className="px-3 py-2">{Number(row.configMapCount || 0)}</td>
+                  <td className="px-3 py-2">{Number(row.oemRefCount || 0)}</td>
+                  <td className="px-3 py-2">{Number(row.interchangeCount || 0)}</td>
                   <td className="px-3 py-2">{row.supplier1 || "-"}</td>
                   <td className="px-3 py-2">{row.supplier1PartNumber || "-"}</td>
                   <td className="px-3 py-2">{row.supplier2 || "-"}</td>
@@ -319,6 +498,7 @@ export default function ItemMaster() {
                   <td className="px-3 py-2"><StatusBadge status={row.status} /></td>
                   <td className="px-3 py-2">
                     <div className="flex justify-end gap-2">
+                      <button onClick={() => setCompatibilityArticle(row.article)} className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs">Compatibility</button>
                       <button onClick={() => openEdit(row)} className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs"><Pencil size={14} />View / Edit</button>
                       <button onClick={() => window.confirm(`Delete ${row.article}?`) && removeItem.mutate(row.article)} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2 py-1 text-xs text-rose-700"><Trash2 size={14} />Delete</button>
                     </div>
@@ -336,6 +516,52 @@ export default function ItemMaster() {
           </div>
         </div>
       </div>
+
+      {compatibilityArticle ? (
+        <div className="fixed inset-0 z-40 bg-black/30">
+          <div className="absolute left-1/2 top-10 w-[95vw] max-w-4xl -translate-x-1/2 rounded-2xl bg-white p-4 shadow-xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-lg font-semibold">Compatibility — {compatibilityArticle}</h3>
+              <button onClick={() => setCompatibilityArticle("")} className="rounded border px-3 py-1 text-sm">Close</button>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2 text-sm">
+              <div className="rounded-xl border p-3">
+                <div className="mb-2 font-semibold">Engine Models</div>
+                {(compatibilityData?.compatibleEngineModels || []).map((x, i) => (
+                  <div key={`${x.modelCode}-${i}`} className="border-b py-1">{x.modelCode} {x.modelName ? `- ${x.modelName}` : ""} {x.variant ? `(${x.variant})` : ""}</div>
+                ))}
+              </div>
+              <div className="rounded-xl border p-3">
+                <div className="mb-2 font-semibold">Configurations</div>
+                {(compatibilityData?.compatibleConfigs || []).map((x, i) => (
+                  <div key={`${x.configurationCode}-${i}`} className="border-b py-1">{x.configurationCode} {x.configurationName ? `- ${x.configurationName}` : ""}</div>
+                ))}
+              </div>
+              <div className="rounded-xl border p-3">
+                <div className="mb-2 font-semibold">ESNs</div>
+                {(compatibilityData?.esns || []).map((x, i) => <div key={`${x}-${i}`} className="border-b py-1">{x}</div>)}
+              </div>
+              <div className="rounded-xl border p-3">
+                <div className="mb-2 font-semibold">OEM References</div>
+                {(compatibilityData?.oemRefs || []).map((x, i) => <div key={`${x.oemPartNumber}-${i}`} className="border-b py-1">{x.oemName ? `${x.oemName}: ` : ""}{x.oemPartNumber}</div>)}
+              </div>
+              <div className="rounded-xl border p-3">
+                <div className="mb-2 font-semibold">Supplier References</div>
+                {(compatibilityData?.supplierRefs || []).map((x, i) => <div key={`${x.supplierName}-${x.supplierPartNumber}-${i}`} className="border-b py-1">{x.supplierName}: {x.supplierPartNumber}</div>)}
+              </div>
+              <div className="rounded-xl border p-3">
+                <div className="mb-2 font-semibold">Interchangeable Parts</div>
+                {(compatibilityData?.interchangeableParts || []).map((x, i) => (
+                  <div key={`${x.article}-${x.partNumber}-${i}`} className="border-b py-1">
+                    {x.article || x.partNumber} - {x.interchangeType} (Priority {Number(x.replacementPriority || 0)})
+                    {x.replacementNotes ? ` | ${x.replacementNotes}` : ""}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {drawerOpen ? (
         <div className="fixed inset-0 z-40 bg-black/30">
@@ -369,16 +595,51 @@ export default function ItemMaster() {
 
             {tab === "technical" ? (
               <div className="space-y-4">
-                <div className="grid gap-3 md:grid-cols-2">
-                  <Field label="SPN"><input className="rounded-lg border px-3 py-2" value={technical.spn} onChange={(e) => setTechnical((v) => ({ ...v, spn: e.target.value }))} /></Field>
-                  <Field label="ESN"><input className="rounded-lg border px-3 py-2" value={technical.esn} onChange={(e) => setTechnical((v) => ({ ...v, esn: e.target.value }))} /></Field>
-                  <Field label="Material Code"><input className="rounded-lg border px-3 py-2" value={technical.materialCode} onChange={(e) => setTechnical((v) => ({ ...v, materialCode: e.target.value }))} /></Field>
-                  <Field label="Drawing Number"><input className="rounded-lg border px-3 py-2" value={technical.drawingNumber} onChange={(e) => setTechnical((v) => ({ ...v, drawingNumber: e.target.value }))} /></Field>
-                  <Field label="Dimension"><input className="rounded-lg border px-3 py-2" value={technical.dimension} onChange={(e) => setTechnical((v) => ({ ...v, dimension: e.target.value }))} /></Field>
-                  <Field label="OE Markings"><input className="rounded-lg border px-3 py-2" value={technical.oeMarkings} onChange={(e) => setTechnical((v) => ({ ...v, oeMarkings: e.target.value }))} /></Field>
-                  <Field label="Ext Remarks"><input className="rounded-lg border px-3 py-2" value={technical.extRemarks} onChange={(e) => setTechnical((v) => ({ ...v, extRemarks: e.target.value }))} /></Field>
-                  <Field label="Internal Remarks"><input className="rounded-lg border px-3 py-2" value={technical.internalRemarks} onChange={(e) => setTechnical((v) => ({ ...v, internalRemarks: e.target.value }))} /></Field>
+                <details open className="rounded-xl border p-3">
+                  <summary className="cursor-pointer text-sm font-semibold">Core Technical Fields</summary>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <Field label="SPN"><input className="rounded-lg border px-3 py-2" value={technical.spn} onChange={(e) => setTechnical((v) => ({ ...v, spn: e.target.value }))} /></Field>
+                    <Field label="ESN"><input className="rounded-lg border px-3 py-2" value={technical.esn} onChange={(e) => setTechnical((v) => ({ ...v, esn: e.target.value }))} /></Field>
+                    <Field label="Material Code"><input className="rounded-lg border px-3 py-2" value={technical.materialCode} onChange={(e) => setTechnical((v) => ({ ...v, materialCode: e.target.value }))} /></Field>
+                    <Field label="Drawing Number"><input className="rounded-lg border px-3 py-2" value={technical.drawingNumber} onChange={(e) => setTechnical((v) => ({ ...v, drawingNumber: e.target.value }))} /></Field>
+                    <Field label="Dimension"><input className="rounded-lg border px-3 py-2" value={technical.dimension} onChange={(e) => setTechnical((v) => ({ ...v, dimension: e.target.value }))} /></Field>
+                    <Field label="Cylinder Count"><input className="rounded-lg border px-3 py-2" type="number" value={technical.cylinderCount || ""} onChange={(e) => setTechnical((v) => ({ ...v, cylinderCount: e.target.value }))} /></Field>
+                    <Field label="Weight"><input className="rounded-lg border px-3 py-2" value={technical.specWeight || ""} onChange={(e) => setTechnical((v) => ({ ...v, specWeight: e.target.value }))} /></Field>
+                    <Field label="Material"><input className="rounded-lg border px-3 py-2" value={technical.specMaterial || ""} onChange={(e) => setTechnical((v) => ({ ...v, specMaterial: e.target.value }))} /></Field>
+                    <Field label="Tolerances"><input className="rounded-lg border px-3 py-2" value={technical.specTolerances || ""} onChange={(e) => setTechnical((v) => ({ ...v, specTolerances: e.target.value }))} /></Field>
+                    <Field label="Markings"><input className="rounded-lg border px-3 py-2" value={technical.specMarkings || ""} onChange={(e) => setTechnical((v) => ({ ...v, specMarkings: e.target.value }))} /></Field>
+                    <Field label="Revision No"><input className="rounded-lg border px-3 py-2" value={technical.revisionNo || ""} onChange={(e) => setTechnical((v) => ({ ...v, revisionNo: e.target.value }))} /></Field>
+                    <Field label="OE Markings"><input className="rounded-lg border px-3 py-2" value={technical.oeMarkings} onChange={(e) => setTechnical((v) => ({ ...v, oeMarkings: e.target.value }))} /></Field>
+                    <Field label="Ext Remarks"><input className="rounded-lg border px-3 py-2" value={technical.extRemarks} onChange={(e) => setTechnical((v) => ({ ...v, extRemarks: e.target.value }))} /></Field>
+                    <Field label="Internal Remarks"><input className="rounded-lg border px-3 py-2" value={technical.internalRemarks} onChange={(e) => setTechnical((v) => ({ ...v, internalRemarks: e.target.value }))} /></Field>
+                  </div>
+                </details>
+                <div className="rounded-xl border bg-slate-50 p-3 text-xs text-slate-600">
+                  Multi-row mapping format uses one record per line, fields separated by <code>|</code>.
                 </div>
+                <details open className="rounded-xl border p-3">
+                  <summary className="cursor-pointer text-sm font-semibold">Mappings and Interchangeability</summary>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <Field label="Model Mapping (modelCode | modelName | variant | notes)">
+                    <textarea className="min-h-24 rounded-lg border px-3 py-2" value={technical.modelMappingsText} onChange={(e) => setTechnical((v) => ({ ...v, modelMappingsText: e.target.value }))} />
+                  </Field>
+                  <Field label="Configuration Mapping (configCode | configName | applicability | notes)">
+                    <textarea className="min-h-24 rounded-lg border px-3 py-2" value={technical.configurationMappingsText} onChange={(e) => setTechnical((v) => ({ ...v, configurationMappingsText: e.target.value }))} />
+                  </Field>
+                  <Field label="OEM Cross Reference (oemName | oemPartNo | description | notes)">
+                    <textarea className="min-h-24 rounded-lg border px-3 py-2" value={technical.oemCrossReferencesText} onChange={(e) => setTechnical((v) => ({ ...v, oemCrossReferencesText: e.target.value }))} />
+                  </Field>
+                  <Field label="Supplier Reference (supplierName | supplierPartNo | preferred(true/false) | notes)">
+                    <textarea className="min-h-24 rounded-lg border px-3 py-2" value={technical.supplierReferencesText} onChange={(e) => setTechnical((v) => ({ ...v, supplierReferencesText: e.target.value }))} />
+                  </Field>
+                  <Field label="Technical Specifications (specName | specValue | unit | notes)">
+                    <textarea className="min-h-24 rounded-lg border px-3 py-2" value={technical.technicalSpecificationsText} onChange={(e) => setTechnical((v) => ({ ...v, technicalSpecificationsText: e.target.value }))} />
+                  </Field>
+                  <Field label="Interchangeable Parts (article | partNo | description | type | replacementPriority | replacementNotes | notes)">
+                    <textarea className="min-h-24 rounded-lg border px-3 py-2" value={technical.interchangeablePartsText} onChange={(e) => setTechnical((v) => ({ ...v, interchangeablePartsText: e.target.value }))} />
+                  </Field>
+                  </div>
+                </details>
                 <button disabled={!selectedArticle} onClick={() => saveTechnical.mutate()} className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white disabled:opacity-50">Save Technical</button>
               </div>
             ) : null}

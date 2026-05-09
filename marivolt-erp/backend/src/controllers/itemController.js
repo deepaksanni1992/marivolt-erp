@@ -46,6 +46,139 @@ function normalizeDimension(value) {
   return raw.replace(/\s*mm$/i, "").replace(/\s*x\s*/gi, "x");
 }
 
+function normalizeTechnicalArrayRows(rows, mapFn) {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => mapFn(row || {}))
+    .filter((row) => Object.values(row).some((v) => (typeof v === "boolean" ? v : trim(v))));
+}
+
+function parseImportList(raw, mapFn, fieldName) {
+  const value = trim(raw);
+  if (!value) return [];
+  return value
+    .split(";")
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const tokens = entry.split("|").map((x) => x.trim());
+      if (tokens.length < 1) throw new Error(`Invalid ${fieldName} mapping format`);
+      return mapFn(tokens);
+    });
+}
+
+async function validateNoCircularInterchange({ req, article, interchangeableParts, excludeId = null }) {
+  const rows = await ItemTechnical.find(withCompany(req, excludeId ? { _id: { $ne: excludeId } } : {}))
+    .select("article interchangeableParts")
+    .lean();
+  const graph = new Map();
+  for (const row of rows) {
+    const key = trim(row.article).toUpperCase();
+    if (!key) continue;
+    const refs = (row.interchangeableParts || [])
+      .map((r) => trim(r.article).toUpperCase())
+      .filter(Boolean);
+    graph.set(key, refs);
+  }
+  const src = trim(article).toUpperCase();
+  graph.set(
+    src,
+    (interchangeableParts || [])
+      .map((r) => trim(r.article).toUpperCase())
+      .filter(Boolean)
+  );
+  const seen = new Set();
+  const stack = new Set();
+  function dfs(node) {
+    if (stack.has(node)) return true;
+    if (seen.has(node)) return false;
+    seen.add(node);
+    stack.add(node);
+    const next = graph.get(node) || [];
+    for (const n of next) {
+      if (dfs(n)) return true;
+    }
+    stack.delete(node);
+    return false;
+  }
+  if (dfs(src)) {
+    throw new Error(`Circular interchangeable mapping detected for article ${src}`);
+  }
+}
+
+function normalizeTechnicalPayload(body = {}) {
+  const cylinderCount = body.cylinderCount == null || body.cylinderCount === "" ? null : Number(body.cylinderCount);
+  const modelMappings = normalizeTechnicalArrayRows(body.modelMappings, (row) => ({
+    modelCode: trim(row.modelCode),
+    modelName: trim(row.modelName),
+    variant: trim(row.variant),
+    notes: trim(row.notes),
+  }));
+  const esn = trim(body.esn);
+  if (esn && !modelMappings.length && !trim(body.model)) {
+    throw new Error("Invalid ESN/model combination: model mapping is required when ESN is provided");
+  }
+  return {
+    spn: trim(body.spn),
+    esn,
+    materialCode: trim(body.materialCode),
+    drawingNumber: trim(body.drawingNumber),
+    dimension: normalizeDimension(body.dimension),
+    cylinderCount: Number.isFinite(cylinderCount) ? cylinderCount : null,
+    specDimensions: trim(body.specDimensions || body.dimension),
+    specWeight: trim(body.specWeight),
+    specMaterial: trim(body.specMaterial),
+    specTolerances: trim(body.specTolerances),
+    specMarkings: trim(body.specMarkings || body.oeMarkings),
+    revisionNo: trim(body.revisionNo),
+    oeMarkings: trim(body.oeMarkings),
+    extRemarks: trim(body.extRemarks),
+    internalRemarks: trim(body.internalRemarks),
+    technicalDocuments: normalizeTechnicalArrayRows(body.technicalDocuments, (row) => ({
+      documentId: row.documentId || null,
+      fileName: trim(row.fileName),
+      documentType: trim(row.documentType),
+      notes: trim(row.notes),
+    })),
+    modelMappings,
+    configurationMappings: normalizeTechnicalArrayRows(body.configurationMappings, (row) => ({
+      configurationCode: trim(row.configurationCode),
+      configurationName: trim(row.configurationName),
+      applicability: trim(row.applicability),
+      notes: trim(row.notes),
+    })),
+    oemCrossReferences: normalizeTechnicalArrayRows(body.oemCrossReferences, (row) => ({
+      oemName: trim(row.oemName),
+      oemPartNumber: trim(row.oemPartNumber),
+      oemDescription: trim(row.oemDescription),
+      notes: trim(row.notes),
+    })),
+    supplierReferences: normalizeTechnicalArrayRows(body.supplierReferences, (row) => ({
+      supplierName: trim(row.supplierName),
+      supplierPartNumber: trim(row.supplierPartNumber),
+      preferred: Boolean(row.preferred),
+      notes: trim(row.notes),
+    })),
+    technicalSpecifications: normalizeTechnicalArrayRows(body.technicalSpecifications, (row) => ({
+      specName: trim(row.specName),
+      specValue: trim(row.specValue),
+      specUnit: trim(row.specUnit),
+      notes: trim(row.notes),
+    })),
+    interchangeableParts: normalizeTechnicalArrayRows(body.interchangeableParts, (row) => ({
+      article: trim(row.article).toUpperCase(),
+      partNumber: trim(row.partNumber),
+      description: trim(row.description),
+      interchangeType: ["INTERCHANGEABLE", "SUPERSEDED", "REPLACEMENT"].includes(trim(row.interchangeType).toUpperCase())
+        ? trim(row.interchangeType).toUpperCase()
+        : "INTERCHANGEABLE",
+      replacementPriority: Number(row.replacementPriority) || 0,
+      replacementNotes: trim(row.replacementNotes),
+      notes: trim(row.notes),
+    })),
+  };
+}
+
 async function ensureItemExists(req, article) {
   const item = await ItemMaster.findOne(withCompany(req, { article })).select("_id article").lean();
   if (!item) throw new Error("Article not found in ItemMaster");
@@ -80,14 +213,30 @@ export async function listItems(req, res) {
   try {
     const { page, limit, skip } = parsePaging(req);
     const filter = withCompany(req);
+    let scopedArticles = null;
+    const applyArticleScope = (articles) => {
+      const next = new Set((articles || []).map((x) => trim(x).toUpperCase()).filter(Boolean));
+      if (scopedArticles == null) scopedArticles = next;
+      else scopedArticles = new Set([...scopedArticles].filter((x) => next.has(x)));
+    };
 
     const status = trim(req.query.status);
     if (status && ["Active", "Inactive"].includes(status)) filter.status = status;
     const vertical = trim(req.query.vertical);
     if (vertical) filter.vertical = new RegExp(`^${escRe(vertical)}$`, "i");
-    const engine = trim(req.query.engine);
+    const engine = trim(req.query.engineBrand || req.query.engine);
     if (engine) filter.engine = new RegExp(`^${escRe(engine)}$`, "i");
+    const model = trim(req.query.engineModel || req.query.model);
+    if (model) filter.model = new RegExp(`^${escRe(model)}$`, "i");
+    const config = trim(req.query.configuration || req.query.config);
+    if (config) filter.config = new RegExp(`^${escRe(config)}$`, "i");
+    const spn = trim(req.query.spn);
     const esn = trim(req.query.esn);
+    const cylinderCount = trim(req.query.cylinderCount);
+    const oemReference = trim(req.query.oemReference);
+    const supplierReference = trim(req.query.supplierReference);
+    const materialCode = trim(req.query.materialCode);
+    const drawingNumber = trim(req.query.drawingNumber);
 
     const search = trim(req.query.search);
     if (search) {
@@ -95,7 +244,22 @@ export async function listItems(req, res) {
       const [technicalArticles, supplierArticles] = await Promise.all([
         ItemTechnical.find(
           withCompany(req, {
-            $or: [{ spn: re }, { esn: re }, { materialCode: re }, { drawingNumber: re }, { dimension: re }],
+            $or: [
+              { spn: re },
+              { esn: re },
+              { materialCode: re },
+              { drawingNumber: re },
+              { dimension: re },
+              { "modelMappings.modelCode": re },
+              { "modelMappings.modelName": re },
+              { "configurationMappings.configurationCode": re },
+              { "configurationMappings.configurationName": re },
+              { "oemCrossReferences.oemPartNumber": re },
+              { "supplierReferences.supplierPartNumber": re },
+              { "interchangeableParts.article": re },
+              { "interchangeableParts.partNumber": re },
+              { "interchangeableParts.replacementNotes": re },
+            ],
           })
         )
           .distinct("article"),
@@ -117,17 +281,52 @@ export async function listItems(req, res) {
         ...(articleHits.length ? [{ article: { $in: articleHits } }] : []),
       ];
     }
+    const technicalFilter = withCompany(req, {});
+    let hasTechnicalFilter = false;
+    if (spn) {
+      technicalFilter.spn = new RegExp(escRe(spn), "i");
+      hasTechnicalFilter = true;
+    }
     if (esn) {
-      const re = new RegExp(escRe(esn), "i");
-      const esnArticles = await ItemTechnical.find(withCompany(req, { esn: re })).distinct("article");
-      if (!esnArticles.length) {
-        return res.json({ items: [], total: 0, page, limit });
-      }
-      if (filter.$or) {
-        filter.$and = [{ $or: filter.$or }, { article: { $in: esnArticles } }];
-        delete filter.$or;
+      technicalFilter.esn = new RegExp(escRe(esn), "i");
+      hasTechnicalFilter = true;
+    }
+    if (cylinderCount) {
+      technicalFilter.cylinderCount = Number(cylinderCount);
+      hasTechnicalFilter = true;
+    }
+    if (oemReference) {
+      technicalFilter["oemCrossReferences.oemPartNumber"] = new RegExp(escRe(oemReference), "i");
+      hasTechnicalFilter = true;
+    }
+    if (materialCode) {
+      technicalFilter.materialCode = new RegExp(escRe(materialCode), "i");
+      hasTechnicalFilter = true;
+    }
+    if (drawingNumber) {
+      technicalFilter.drawingNumber = new RegExp(escRe(drawingNumber), "i");
+      hasTechnicalFilter = true;
+    }
+    if (hasTechnicalFilter) {
+      const technicalArticles = await ItemTechnical.find(technicalFilter).distinct("article");
+      applyArticleScope(technicalArticles);
+    }
+    if (supplierReference) {
+      const supplierRe = new RegExp(escRe(supplierReference), "i");
+      const [supplierArticlesFromMaster, supplierArticlesFromTech] = await Promise.all([
+        ItemSupplier.find(withCompany(req, { supplierPartNumber: supplierRe })).distinct("article"),
+        ItemTechnical.find(withCompany(req, { "supplierReferences.supplierPartNumber": supplierRe })).distinct("article"),
+      ]);
+      applyArticleScope([...supplierArticlesFromMaster, ...supplierArticlesFromTech]);
+    }
+    if (scopedArticles != null) {
+      const scoped = [...scopedArticles];
+      if (!scoped.length) return res.json({ items: [], total: 0, page, limit });
+      if (filter.article?.$in) {
+        const current = new Set(filter.article.$in.map((x) => trim(x).toUpperCase()));
+        filter.article = { $in: scoped.filter((x) => current.has(x)) };
       } else {
-        filter.article = { $in: esnArticles };
+        filter.article = { $in: scoped };
       }
     }
 
@@ -166,9 +365,14 @@ export async function listItems(req, res) {
         esn: technical?.esn || "",
         materialCode: technical?.materialCode || "",
         drawingNumber: technical?.drawingNumber || "",
+        cylinderCount: technical?.cylinderCount ?? "",
         extRemarks: technical?.extRemarks || "",
         internalRemarks: technical?.internalRemarks || "",
         oeMarkings: technical?.oeMarkings || "",
+        modelMapCount: (technical?.modelMappings || []).length,
+        configMapCount: (technical?.configurationMappings || []).length,
+        oemRefCount: (technical?.oemCrossReferences || []).length,
+        interchangeCount: (technical?.interchangeableParts || []).length,
         supplier1: supplierList[0]?.supplierName || "",
         supplier1PartNumber: supplierList[0]?.supplierPartNumber || "",
         supplier2: supplierList[1]?.supplierName || "",
@@ -266,15 +470,9 @@ export async function createItemTechnical(req, res) {
     const payload = {
       companyId: req.companyId,
       article,
-      spn: trim(req.body.spn),
-      esn: trim(req.body.esn),
-      materialCode: trim(req.body.materialCode),
-      drawingNumber: trim(req.body.drawingNumber),
-      dimension: normalizeDimension(req.body.dimension),
-      oeMarkings: trim(req.body.oeMarkings),
-      extRemarks: trim(req.body.extRemarks),
-      internalRemarks: trim(req.body.internalRemarks),
+      ...normalizeTechnicalPayload(req.body),
     };
+    await validateNoCircularInterchange({ req, article, interchangeableParts: payload.interchangeableParts });
     const row = await ItemTechnical.findOneAndUpdate(withCompany(req, { article }), payload, {
       new: true,
       upsert: true,
@@ -301,16 +499,14 @@ export async function updateItemTechnical(req, res) {
   try {
     const article = trim(req.params.article).toUpperCase();
     await ensureItemExists(req, article);
-    const payload = {
-      spn: trim(req.body.spn),
-      esn: trim(req.body.esn),
-      materialCode: trim(req.body.materialCode),
-      drawingNumber: trim(req.body.drawingNumber),
-      dimension: normalizeDimension(req.body.dimension),
-      oeMarkings: trim(req.body.oeMarkings),
-      extRemarks: trim(req.body.extRemarks),
-      internalRemarks: trim(req.body.internalRemarks),
-    };
+    const payload = normalizeTechnicalPayload(req.body);
+    const existing = await ItemTechnical.findOne(withCompany(req, { article })).select("_id").lean();
+    await validateNoCircularInterchange({
+      req,
+      article,
+      interchangeableParts: payload.interchangeableParts,
+      excludeId: existing?._id || null,
+    });
     const row = await ItemTechnical.findOneAndUpdate(withCompany(req, { article }), payload, {
       new: true,
       upsert: true,
@@ -405,6 +601,7 @@ export async function importItems(req, res) {
     const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
     result.total = rows.length;
 
+    const seenArticles = new Set();
     for (let index = 0; index < rows.length; index += 1) {
       const raw = rows[index];
       try {
@@ -415,6 +612,10 @@ export async function importItems(req, res) {
         if (!article) {
           throw new Error("Article missing");
         }
+        if (seenArticles.has(article)) {
+          throw new Error("Duplicate article in import file");
+        }
+        seenArticles.add(article);
 
         const uom = normalizeUom(pick(row, "UOM", "Uom", "uom"));
         const dimension = normalizeDimension(pick(row, "Dimension", "DIMENSION"));
@@ -437,19 +638,77 @@ export async function importItems(req, res) {
         );
         result.upsertedItems += 1;
 
+        const importedTechnicalPayload = normalizeTechnicalPayload({
+          spn: pick(row, "SPN"),
+          esn: pick(row, "ESN"),
+          materialCode: pick(row, "Material Code", "Material code"),
+          drawingNumber: pick(row, "Drawing Number", "Drawing number"),
+          extRemarks: pick(row, "Ext Remarks", "Ext remarks"),
+          internalRemarks: pick(row, "Internal Remarks", "Internal remarks"),
+          oeMarkings: pick(row, "OE Markings", "OE Markings"),
+          dimension,
+          cylinderCount: pick(row, "Cylinder Count", "CYLINDER COUNT"),
+          revisionNo: pick(row, "Revision No", "Revision"),
+          modelMappings: parseImportList(
+            pick(row, "Model Mappings", "Model Mapping"),
+            ([modelCode = "", modelName = "", variant = "", notes = ""]) => ({ modelCode, modelName, variant, notes }),
+            "Model Mappings"
+          ),
+          configurationMappings: parseImportList(
+            pick(row, "Configuration Mappings", "Config Mappings"),
+            ([configurationCode = "", configurationName = "", applicability = "", notes = ""]) => ({
+              configurationCode,
+              configurationName,
+              applicability,
+              notes,
+            }),
+            "Configuration Mappings"
+          ),
+          oemCrossReferences: parseImportList(
+            pick(row, "OEM Cross References", "OEM Refs"),
+            ([oemName = "", oemPartNumber = "", oemDescription = "", notes = ""]) => ({
+              oemName,
+              oemPartNumber,
+              oemDescription,
+              notes,
+            }),
+            "OEM Cross References"
+          ),
+          supplierReferences: parseImportList(
+            pick(row, "Supplier References", "Supplier Refs"),
+            ([supplierName = "", supplierPartNumber = "", preferred = "", notes = ""]) => ({
+              supplierName,
+              supplierPartNumber,
+              preferred: String(preferred).toLowerCase() === "true",
+              notes,
+            }),
+            "Supplier References"
+          ),
+          interchangeableParts: parseImportList(
+            pick(row, "Interchangeable References", "Interchangeable Refs"),
+            ([itArticle = "", partNumber = "", description = "", interchangeType = "", replacementPriority = "", replacementNotes = "", notes = ""]) => ({
+              article: itArticle,
+              partNumber,
+              description,
+              interchangeType,
+              replacementPriority: Number(replacementPriority) || 0,
+              replacementNotes,
+              notes,
+            }),
+            "Interchangeable References"
+          ),
+        });
+        await validateNoCircularInterchange({
+          req,
+          article,
+          interchangeableParts: importedTechnicalPayload.interchangeableParts,
+        });
         await ItemTechnical.findOneAndUpdate(
           withCompany(req, { article }),
           {
             companyId: req.companyId,
             article,
-            spn: pick(row, "SPN"),
-            esn: pick(row, "ESN"),
-            materialCode: pick(row, "Material Code", "Material code"),
-            drawingNumber: pick(row, "Drawing Number", "Drawing number"),
-            extRemarks: pick(row, "Ext Remarks", "Ext remarks"),
-            internalRemarks: pick(row, "Internal Remarks", "Internal remarks"),
-            oeMarkings: pick(row, "OE Markings", "OE Markings"),
-            dimension,
+            ...importedTechnicalPayload,
           },
           { upsert: true, new: true, runValidators: true }
         );
@@ -528,8 +787,28 @@ export async function exportItems(req, res) {
         ESN: tech?.esn || "",
         "Material Code": tech?.materialCode || "",
         "Drawing Number": tech?.drawingNumber || "",
+        "Cylinder Count": tech?.cylinderCount ?? "",
         Dimension: tech?.dimension || "",
         "OE Markings": tech?.oeMarkings || "",
+        "Model Mappings": (tech?.modelMappings || [])
+          .map((x) => `${x.modelCode}${x.modelName ? `:${x.modelName}` : ""}`)
+          .join("; "),
+        "Configuration Mappings": (tech?.configurationMappings || [])
+          .map((x) => `${x.configurationCode}${x.configurationName ? `:${x.configurationName}` : ""}`)
+          .join("; "),
+        "OEM Cross References": (tech?.oemCrossReferences || [])
+          .map((x) => `${x.oemName ? `${x.oemName}:` : ""}${x.oemPartNumber}`)
+          .join("; "),
+        "Interchangeable Parts": (tech?.interchangeableParts || [])
+          .map((x) => `${x.article || x.partNumber}${x.interchangeType ? ` (${x.interchangeType})` : ""}`)
+          .join("; "),
+        "Supplier References": (tech?.supplierReferences || [])
+          .map((x) => `${x.supplierName}${x.supplierPartNumber ? `:${x.supplierPartNumber}` : ""}`)
+          .join("; "),
+        "Technical Specifications": (tech?.technicalSpecifications || [])
+          .map((x) => `${x.specName}:${x.specValue}${x.specUnit ? ` ${x.specUnit}` : ""}`)
+          .join("; "),
+        "Revision No": tech?.revisionNo || "",
         Suppliers: (suppliersByArticle.get(item.article) || []).join("; "),
         Status: item.status,
       };
@@ -538,5 +817,56 @@ export async function exportItems(req, res) {
     res.json({ items: merged });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getItemCompatibility(req, res) {
+  try {
+    const article = trim(req.params.article).toUpperCase();
+    await ensureItemExists(req, article);
+    const technical = await ItemTechnical.findOne(withCompany(req, { article })).lean();
+    if (!technical) {
+      return res.json({
+        article,
+        compatibleEngineModels: [],
+        compatibleConfigs: [],
+        esns: [],
+        oemRefs: [],
+        supplierRefs: [],
+        interchangeableParts: [],
+      });
+    }
+    res.json({
+      article,
+      compatibleEngineModels: (technical.modelMappings || []).map((x) => ({
+        modelCode: x.modelCode,
+        modelName: x.modelName,
+        variant: x.variant,
+      })),
+      compatibleConfigs: (technical.configurationMappings || []).map((x) => ({
+        configurationCode: x.configurationCode,
+        configurationName: x.configurationName,
+        applicability: x.applicability,
+      })),
+      esns: technical.esn ? [technical.esn] : [],
+      oemRefs: (technical.oemCrossReferences || []).map((x) => ({
+        oemName: x.oemName,
+        oemPartNumber: x.oemPartNumber,
+      })),
+      supplierRefs: (technical.supplierReferences || []).map((x) => ({
+        supplierName: x.supplierName,
+        supplierPartNumber: x.supplierPartNumber,
+      })),
+      interchangeableParts: (technical.interchangeableParts || []).map((x) => ({
+        article: x.article,
+        partNumber: x.partNumber,
+        description: x.description,
+        interchangeType: x.interchangeType,
+        replacementPriority: x.replacementPriority,
+        replacementNotes: x.replacementNotes,
+      })),
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
   }
 }

@@ -19,6 +19,7 @@ router.get("/", itemView, c.listItems);
 router.post("/import", itemCreate, upload.single("file"), c.importItems);
 router.get("/export", itemExport, c.exportItems);
 router.get("/:article", itemView, c.getItem);
+router.get("/:article/compatibility", itemView, c.getItemCompatibility);
 router.post("/", itemCreate, c.createItem);
 router.put("/:article", itemEdit, c.updateItem);
 router.delete("/:article", itemDelete, c.deleteItem);
