@@ -2,15 +2,19 @@ import mongoose from "mongoose";
 import SalesInvoice from "../models/SalesInvoice.js";
 import SalesDispatch from "../models/SalesDispatch.js";
 import PurchaseInvoice from "../models/PurchaseInvoice.js";
+import GRN from "../models/GRN.js";
 import CustomerLedger from "../models/CustomerLedger.js";
 import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
 import SupplierLedgerEntry from "../models/SupplierLedgerEntry.js";
+import SupplierPayment from "../models/SupplierPayment.js";
 import CashBankEntry from "../models/CashBankEntry.js";
 import BankDetail from "../models/BankDetail.js";
 import PaymentReceipt from "../models/PaymentReceipt.js";
 import JournalEntry from "../models/JournalEntry.js";
 import Customer from "../models/Customer.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
+import { writeAudit } from "../services/auditService.js";
+import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -34,6 +38,16 @@ function dateRangeFromQuery(req, fieldName) {
 }
 
 function dueDateForInvoice(inv) {
+  const base = new Date(inv.invoiceDate || inv.createdAt || Date.now());
+  const terms = String(inv.paymentTerms || "");
+  const match = terms.match(/(\d+)\s*(day|days|net)?/i);
+  const days = match ? Number(match[1]) || 0 : 0;
+  const due = new Date(base);
+  due.setDate(due.getDate() + days);
+  return due;
+}
+
+function dueDateForPurchaseInvoice(inv) {
   const base = new Date(inv.invoiceDate || inv.createdAt || Date.now());
   const terms = String(inv.paymentTerms || "");
   const match = terms.match(/(\d+)\s*(day|days|net)?/i);
@@ -237,6 +251,20 @@ export async function getPurchaseInvoice(req, res) {
 export async function createPurchaseInvoice(req, res) {
   try {
     const body = { ...req.body };
+    if ((!body.lines || !body.lines.length) && body.grnNo) {
+      const grn = await GRN.findOne(withCompany(req, { grnNo: String(body.grnNo).trim().toUpperCase() })).lean();
+      if (!grn) return res.status(404).json({ message: "Linked GRN not found" });
+      body.supplierName = body.supplierName || grn.supplierName || "";
+      body.currency = body.currency || grn.currency || "USD";
+      body.linkedPoNumber = body.linkedPoNumber || grn.poNo || "";
+      body.lines = (grn.items || []).map((ln) => ({
+        itemCode: ln.article || "",
+        description: ln.description || "",
+        qty: Number(ln.acceptedQty || ln.receivedQty || 0),
+        rate: Number(ln.unitCost || 0),
+      }));
+      body.remarks = body.remarks || `Created from GRN ${grn.grnNo}`;
+    }
     if (!body.invoiceNumber) {
       body.invoiceNumber = await nextSequentialNumber(
         PurchaseInvoice,
@@ -245,12 +273,57 @@ export async function createPurchaseInvoice(req, res) {
         { companyId: req.companyId }
       );
     }
+    const gate = await ensureApproval(req, {
+      companyId: req.companyId,
+      module: "ACCOUNTS",
+      actionKey: "purchase_invoice_post",
+      documentType: "PURCHASE_INVOICE",
+      documentNo: body.invoiceNumber || "",
+      customerName: body.supplierName || "",
+      amount: Number(body.totalAmount || 0),
+      currency: String(body.currency || "USD").trim().toUpperCase(),
+      description: `Post purchase invoice for ${body.supplierName || ""}`,
+    });
+    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
     body.createdBy = req.user?.email || "";
     body.companyId = req.companyId;
     const doc = new PurchaseInvoice(body);
     doc.subTotal = sumInvoiceLines(doc.lines, "rate");
     doc.totalAmount = (doc.subTotal || 0) + (Number(doc.taxAmount) || 0);
+    doc.totalPaidAmount = 0;
+    doc.balanceAmount = doc.totalAmount;
+    doc.status = "POSTED";
+    doc.dueDate = body.dueDate ? new Date(body.dueDate) : dueDateForPurchaseInvoice(body);
     await doc.save();
+    await SupplierLedgerEntry.create({
+      companyId: req.companyId,
+      entryDate: doc.invoiceDate || new Date(),
+      supplierName: doc.supplierName,
+      referenceType: "PURCHASE_INVOICE",
+      referenceNumber: doc.invoiceNumber,
+      debit: Number(doc.totalAmount) || 0,
+      credit: 0,
+      narrative: `Purchase invoice ${doc.invoiceNumber}`,
+      createdBy: req.user?.email || "",
+    });
+    await writeAudit(req, {
+      action: "CREATE",
+      module: "ACCOUNTS",
+      entityType: "PURCHASE_INVOICE",
+      entityId: doc._id,
+      documentNo: doc.invoiceNumber,
+      description: `Purchase invoice ${doc.invoiceNumber} posted for ${doc.supplierName}`,
+      metadata: { linkedPoNumber: doc.linkedPoNumber || "", lineCount: doc.lines.length },
+    });
+    await writeAudit(req, {
+      action: "POST",
+      module: "ACCOUNTS",
+      entityType: "PURCHASE_INVOICE",
+      entityId: doc._id,
+      documentNo: doc.invoiceNumber,
+      description: `Purchase invoice ${doc.invoiceNumber} posted`,
+      metadata: { supplierName: doc.supplierName, totalAmount: doc.totalAmount },
+    });
     res.status(201).json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -268,10 +341,14 @@ export async function updatePurchaseInvoice(req, res) {
     const allowed = [
       "supplierName",
       "linkedPoNumber",
+      "paymentTerms",
+      "dueDate",
+      "grnNo",
       "currency",
       "lines",
       "taxAmount",
       "paymentStatus",
+      "attachments",
       "remarks",
       "invoiceDate",
     ];
@@ -280,7 +357,17 @@ export async function updatePurchaseInvoice(req, res) {
     }
     doc.subTotal = sumInvoiceLines(doc.lines, "rate");
     doc.totalAmount = (doc.subTotal || 0) + (Number(doc.taxAmount) || 0);
+    doc.balanceAmount = Math.max(0, (Number(doc.totalAmount) || 0) - (Number(doc.totalPaidAmount) || 0));
+    doc.updatedBy = req.user?.email || "";
     await doc.save();
+    await writeAudit(req, {
+      action: "UPDATE",
+      module: "ACCOUNTS",
+      entityType: "PURCHASE_INVOICE",
+      entityId: doc._id,
+      documentNo: doc.invoiceNumber,
+      description: `Purchase invoice ${doc.invoiceNumber} updated`,
+    });
     res.json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -293,9 +380,52 @@ export async function deletePurchaseInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const row = await PurchaseInvoice.findOneAndDelete(withCompany(req, { _id: id }));
+    const row = await PurchaseInvoice.findOne(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
-    res.json({ success: true });
+    return res.status(409).json({
+      message: "Hard delete is not allowed for purchase invoices. Use cancel endpoint.",
+      code: "HARD_DELETE_BLOCKED",
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function cancelPurchaseInvoice(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const inv = await PurchaseInvoice.findOne(withCompany(req, { _id: id }));
+    if (!inv) return res.status(404).json({ message: "Not found" });
+    if (String(inv.status || "").toUpperCase() === "CANCELLED") {
+      return res.status(400).json({ message: "Invoice already cancelled" });
+    }
+    await SupplierLedgerEntry.create({
+      companyId: req.companyId,
+      entryDate: new Date(),
+      supplierName: inv.supplierName,
+      referenceType: "PURCHASE_INVOICE_CANCEL",
+      referenceNumber: inv.invoiceNumber,
+      debit: 0,
+      credit: Number(inv.totalAmount) || 0,
+      narrative: `Reversal of purchase invoice ${inv.invoiceNumber}`,
+      createdBy: req.user?.email || "",
+    });
+    inv.status = "CANCELLED";
+    inv.balanceAmount = 0;
+    inv.updatedBy = req.user?.email || "";
+    await inv.save();
+    await writeAudit(req, {
+      action: "CANCEL",
+      module: "ACCOUNTS",
+      entityType: "PURCHASE_INVOICE",
+      entityId: inv._id,
+      documentNo: inv.invoiceNumber,
+      fromStatus: "POSTED",
+      toStatus: "CANCELLED",
+      description: `Purchase invoice ${inv.invoiceNumber} cancelled`,
+    });
+    res.json(inv);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -443,6 +573,391 @@ export async function deleteSupplierLedgerEntry(req, res) {
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ message: err.message });
+  }
+}
+
+async function recalcPurchaseInvoicePaymentState(req, purchaseInvoiceId) {
+  const inv = await PurchaseInvoice.findOne(withCompany(req, { _id: purchaseInvoiceId }));
+  if (!inv) return null;
+  const paidAgg = await SupplierPayment.aggregate([
+    {
+      $match: withCompany(req, {
+        status: { $ne: "CANCELLED" },
+        "allocations.purchaseInvoiceId": inv._id,
+      }),
+    },
+    { $unwind: "$allocations" },
+    { $match: { "allocations.purchaseInvoiceId": inv._id } },
+    { $group: { _id: null, paid: { $sum: "$allocations.allocatedAmount" } } },
+  ]);
+  const paid = Math.max(0, Number(paidAgg[0]?.paid || 0));
+  const total = Math.max(0, Number(inv.totalAmount) || 0);
+  inv.totalPaidAmount = paid;
+  inv.balanceAmount = Math.max(0, total - paid);
+  inv.paymentStatus = paid <= 0 ? "UNPAID" : paid < total ? "PARTIAL" : "PAID";
+  await inv.save();
+  return inv;
+}
+
+export async function listSupplierPayments(req, res) {
+  try {
+    const { page, limit, skip } = paginate(req);
+    const filter = withCompany(req);
+    if (req.query.supplierName) filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
+    if (req.query.status) filter.status = String(req.query.status).trim().toUpperCase();
+    const [items, total] = await Promise.all([
+      SupplierPayment.find(filter).sort({ paymentDate: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+      SupplierPayment.countDocuments(filter),
+    ]);
+    res.json({ items, total, page, limit });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getSupplierPayment(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const row = await SupplierPayment.findOne(withCompany(req, { _id: id })).lean();
+    if (!row) return res.status(404).json({ message: "Not found" });
+    res.json(row);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function createSupplierPayment(req, res) {
+  try {
+    const supplierName = String(req.body?.supplierName || "").trim();
+    if (!supplierName) return res.status(400).json({ message: "supplierName is required" });
+    const amountPaid = Number(req.body?.amountPaid);
+    if (!Number.isFinite(amountPaid) || amountPaid <= 0) {
+      return res.status(400).json({ message: "amountPaid must be greater than zero" });
+    }
+    const allocationsInput = Array.isArray(req.body?.allocations) ? req.body.allocations : [];
+    const allocations = [];
+    for (const row of allocationsInput) {
+      if (!mongoose.Types.ObjectId.isValid(String(row?.purchaseInvoiceId || ""))) continue;
+      const allocatedAmount = Number(row?.allocatedAmount) || 0;
+      if (!(allocatedAmount > 0)) continue;
+      const inv = await PurchaseInvoice.findOne(withCompany(req, { _id: row.purchaseInvoiceId }));
+      if (!inv) continue;
+      allocations.push({
+        purchaseInvoiceId: inv._id,
+        purchaseInvoiceNo: inv.invoiceNumber || "",
+        allocatedAmount,
+      });
+    }
+    const allocatedAmount = allocations.reduce((n, x) => n + (Number(x.allocatedAmount) || 0), 0);
+    if (allocatedAmount - amountPaid > 0.0001) {
+      return res.status(400).json({ message: "Allocated amount cannot exceed amount paid" });
+    }
+    const paymentNo = await nextSequentialNumber(
+      SupplierPayment,
+      "paymentNo",
+      `${req.companyCode || "CMP"}-SP`,
+      { companyId: req.companyId }
+    );
+    const status = allocatedAmount <= 0 ? "POSTED" : allocatedAmount < amountPaid ? "PARTIALLY_ALLOCATED" : "FULLY_ALLOCATED";
+    const gate = await ensureApproval(req, {
+      companyId: req.companyId,
+      module: "ACCOUNTS",
+      actionKey: "supplier_payment_post",
+      documentType: "SUPPLIER_PAYMENT",
+      documentNo: paymentNo,
+      customerName: supplierName,
+      amount: amountPaid,
+      currency: String(req.body?.currency || "USD").trim().toUpperCase(),
+      description: `Post supplier payment for ${supplierName}`,
+    });
+    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
+    const payment = await SupplierPayment.create({
+      companyId: req.companyId,
+      paymentNo,
+      paymentDate: req.body?.paymentDate ? new Date(req.body.paymentDate) : new Date(),
+      supplierName,
+      currency: String(req.body?.currency || "USD").trim().toUpperCase(),
+      amountPaid,
+      allocatedAmount,
+      unallocatedAmount: Math.max(0, amountPaid - allocatedAmount),
+      paymentMode: String(req.body?.paymentMode || "BANK_TRANSFER").trim().toUpperCase(),
+      bankCashAccountName: String(req.body?.bankCashAccountName || req.body?.accountName || "").trim(),
+      paymentReference: String(req.body?.paymentReference || "").trim(),
+      remarks: String(req.body?.remarks || "").trim(),
+      attachments: Array.isArray(req.body?.attachments) ? req.body.attachments : [],
+      allocations,
+      status,
+      createdBy: req.user?.email || "",
+      updatedBy: req.user?.email || "",
+    });
+    const cashBank = await CashBankEntry.create({
+      companyId: req.companyId,
+      entryDate: payment.paymentDate,
+      accountName: payment.bankCashAccountName || "Bank/Cash",
+      transactionType: "PAYMENT",
+      referenceNumber: payment.paymentReference || payment.paymentNo,
+      sourceModule: "Accounts",
+      sourceType: "Supplier Payment",
+      sourceId: payment._id,
+      currency: payment.currency,
+      partyName: payment.supplierName,
+      amount: payment.amountPaid,
+      mode: payment.paymentMode,
+      paymentReference: payment.paymentReference || "",
+      remarks: payment.remarks || "",
+      createdBy: req.user?.email || "",
+    });
+    const supplierLedger = await SupplierLedgerEntry.create({
+      companyId: req.companyId,
+      entryDate: payment.paymentDate,
+      supplierName: payment.supplierName,
+      referenceType: "SUPPLIER_PAYMENT",
+      referenceNumber: payment.paymentNo,
+      debit: 0,
+      credit: payment.amountPaid,
+      narrative: `Supplier payment ${payment.paymentNo}`,
+      createdBy: req.user?.email || "",
+    });
+    payment.linkedCashBankEntryId = cashBank._id;
+    payment.linkedSupplierLedgerEntryId = supplierLedger._id;
+    await payment.save();
+    for (const row of allocations) {
+      await recalcPurchaseInvoicePaymentState(req, row.purchaseInvoiceId);
+    }
+    await writeAudit(req, {
+      action: "PAYMENT",
+      module: "ACCOUNTS",
+      entityType: "SUPPLIER_PAYMENT",
+      entityId: payment._id,
+      documentNo: payment.paymentNo,
+      description: `Supplier payment ${payment.paymentNo} posted for ${payment.supplierName}`,
+      metadata: { amountPaid: payment.amountPaid, allocationCount: allocations.length },
+    });
+    res.status(201).json(payment);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function updateSupplierPayment(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const row = await SupplierPayment.findOne(withCompany(req, { _id: id }));
+    if (!row) return res.status(404).json({ message: "Not found" });
+    if (String(row.status || "").toUpperCase() === "CANCELLED") {
+      return res.status(409).json({ message: "Cancelled payment cannot be edited" });
+    }
+    if (Array.isArray(req.body?.attachments)) row.attachments = req.body.attachments;
+    if (req.body?.remarks !== undefined) row.remarks = String(req.body.remarks || "");
+    row.updatedBy = req.user?.email || "";
+    await row.save();
+    await writeAudit(req, {
+      action: "UPDATE",
+      module: "ACCOUNTS",
+      entityType: "SUPPLIER_PAYMENT",
+      entityId: row._id,
+      documentNo: row.paymentNo,
+      description: `Supplier payment ${row.paymentNo} updated`,
+      metadata: { attachmentCount: row.attachments?.length || 0 },
+    });
+    res.json(row);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function cancelSupplierPayment(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const reason = String(req.body?.reason || req.body?.cancellationReason || "").trim();
+    if (!reason) return res.status(400).json({ message: "cancellationReason is required" });
+    const row = await SupplierPayment.findOne(withCompany(req, { _id: id }));
+    if (!row) return res.status(404).json({ message: "Not found" });
+    if (String(row.status || "").toUpperCase() === "CANCELLED") {
+      return res.status(400).json({ message: "Payment already cancelled" });
+    }
+    const gate = await ensureApproval(req, {
+      companyId: req.companyId,
+      module: "ACCOUNTS",
+      actionKey: "supplier_payment_cancel",
+      documentType: "SUPPLIER_PAYMENT",
+      documentId: row._id,
+      documentNo: row.paymentNo,
+      customerName: row.supplierName,
+      amount: row.amountPaid,
+      currency: row.currency,
+      description: `Cancel supplier payment ${row.paymentNo}`,
+    });
+    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
+
+    await SupplierLedgerEntry.create({
+      companyId: req.companyId,
+      entryDate: new Date(),
+      supplierName: row.supplierName,
+      referenceType: "SUPPLIER_PAYMENT_CANCEL",
+      referenceNumber: row.paymentNo,
+      debit: Number(row.amountPaid) || 0,
+      credit: 0,
+      narrative: `Reversal of supplier payment ${row.paymentNo}`,
+      createdBy: req.user?.email || "",
+    });
+    await CashBankEntry.create({
+      companyId: req.companyId,
+      entryDate: new Date(),
+      accountName: row.bankCashAccountName || "Bank/Cash",
+      transactionType: "RECEIPT",
+      referenceNumber: row.paymentReference || row.paymentNo,
+      sourceModule: "Accounts",
+      sourceType: "Supplier Payment Reversal",
+      sourceId: row._id,
+      currency: row.currency || "USD",
+      partyName: row.supplierName || "",
+      amount: Number(row.amountPaid) || 0,
+      mode: row.paymentMode || "",
+      paymentReference: row.paymentReference || "",
+      remarks: `Reversal of supplier payment ${row.paymentNo}`,
+      createdBy: req.user?.email || "",
+    });
+    row.status = "CANCELLED";
+    row.updatedBy = req.user?.email || "";
+    row.remarks = `${row.remarks || ""}${row.remarks ? " " : ""}[CANCELLED: ${reason}]`;
+    await row.save();
+    for (const a of row.allocations || []) {
+      await recalcPurchaseInvoicePaymentState(req, a.purchaseInvoiceId);
+    }
+    await writeAudit(req, {
+      action: "CANCEL",
+      module: "ACCOUNTS",
+      entityType: "SUPPLIER_PAYMENT",
+      entityId: row._id,
+      documentNo: row.paymentNo,
+      fromStatus: "POSTED",
+      toStatus: "CANCELLED",
+      description: `Supplier payment ${row.paymentNo} cancelled`,
+      metadata: { reason, reversal: true },
+    });
+    await writeAudit(req, {
+      action: "STATUS_CHANGE",
+      module: "ACCOUNTS",
+      entityType: "AP_LEDGER",
+      entityId: row._id,
+      documentNo: row.paymentNo,
+      description: `AP ledger reversal posted for ${row.paymentNo}`,
+      metadata: { reason },
+    });
+    res.json(row);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function supplierOutstandingReport(req, res) {
+  try {
+    const filter = withCompany(req, { status: { $ne: "CANCELLED" } });
+    if (req.query.supplierName) filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
+    const invoices = await PurchaseInvoice.find(filter).sort({ invoiceDate: -1 }).lean();
+    const rows = invoices
+      .map((inv) => {
+        const invoiceAmount = Math.max(0, Number(inv.totalAmount) || 0);
+        const paidAmount = Math.max(0, Number(inv.totalPaidAmount) || 0);
+        const balance = Math.max(0, invoiceAmount - paidAmount);
+        const dueDate = inv.dueDate ? new Date(inv.dueDate) : dueDateForPurchaseInvoice(inv);
+        const ageing = ageingBucketFromDueDate(dueDate);
+        return {
+          supplier: inv.supplierName || "",
+          invoiceNo: inv.invoiceNumber || "",
+          invoiceAmount,
+          paidAmount,
+          balance,
+          dueDate,
+          ageingBucket: ageing.bucket,
+          currency: inv.currency || "USD",
+        };
+      })
+      .filter((x) => x.balance > 0 || req.query.includePaid === "1");
+    res.json({ items: rows });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function apAgeingReport(req, res) {
+  try {
+    const filter = withCompany(req, { status: { $ne: "CANCELLED" } });
+    if (req.query.supplierName) filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
+    const invs = await PurchaseInvoice.find(filter).lean();
+    const bucketBySupplier = new Map();
+    for (const inv of invs) {
+      const total = Math.max(0, Number(inv.totalAmount) || 0);
+      const paid = Math.max(0, Number(inv.totalPaidAmount) || 0);
+      const bal = Math.max(0, total - paid);
+      if (bal <= 0) continue;
+      const dueDate = inv.dueDate ? new Date(inv.dueDate) : dueDateForPurchaseInvoice(inv);
+      const { bucket, days } = ageingBucketFromDueDate(dueDate);
+      const key = `${inv.supplierName || ""}::${inv.currency || "USD"}`;
+      if (!bucketBySupplier.has(key)) {
+        bucketBySupplier.set(key, {
+          supplier: inv.supplierName || "",
+          currency: inv.currency || "USD",
+          current: 0,
+          d0_30: 0,
+          d31_60: 0,
+          d61_90: 0,
+          d90Plus: 0,
+          totalOutstanding: 0,
+        });
+      }
+      const row = bucketBySupplier.get(key);
+      if (bucket === "Current") row.current += bal;
+      else if (days <= 30) row.d0_30 += bal;
+      else if (days <= 60) row.d31_60 += bal;
+      else if (days <= 90) row.d61_90 += bal;
+      else row.d90Plus += bal;
+      row.totalOutstanding += bal;
+    }
+    res.json({ items: Array.from(bucketBySupplier.values()) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function supplierPaymentSummaryReport(req, res) {
+  try {
+    const filter = withCompany(req, {});
+    if (req.query.status) filter.status = String(req.query.status).trim().toUpperCase();
+    const payments = await SupplierPayment.find(filter).sort({ paymentDate: -1 }).lean();
+    const bySupplier = new Map();
+    for (const p of payments) {
+      const key = p.supplierName || "—";
+      if (!bySupplier.has(key)) bySupplier.set(key, { supplier: key, paymentCount: 0, amountPaid: 0, allocatedAmount: 0, cancelledCount: 0, currency: p.currency || "USD" });
+      const row = bySupplier.get(key);
+      row.paymentCount += 1;
+      row.amountPaid += Number(p.amountPaid) || 0;
+      row.allocatedAmount += Number(p.allocatedAmount) || 0;
+      if (String(p.status || "").toUpperCase() === "CANCELLED") row.cancelledCount += 1;
+    }
+    res.json({ items: Array.from(bySupplier.values()).sort((a, b) => b.amountPaid - a.amountPaid) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function supplierLedgerSummaryReport(req, res) {
+  try {
+    const filter = withCompany(req, {});
+    if (req.query.supplierName) filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
+    const rows = await SupplierLedgerEntry.find(filter).sort({ entryDate: 1, createdAt: 1 }).lean();
+    let running = 0;
+    const items = rows.map((r) => {
+      running += (Number(r.debit) || 0) - (Number(r.credit) || 0);
+      return { ...r, runningBalance: running };
+    });
+    res.json({ items, closingBalance: running });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 }
 

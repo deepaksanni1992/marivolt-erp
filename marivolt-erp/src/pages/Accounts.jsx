@@ -12,7 +12,8 @@ import JournalEntriesTab from "../components/accounts/JournalEntriesTab.jsx";
 import PaymentReceiptsTab from "../components/accounts/PaymentReceiptsTab.jsx";
 import PaymentReceiptView from "../components/accounts/PaymentReceiptView.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
-import { apiDelete, apiGet, apiGetWithQuery, apiPatch, apiPost, apiPut } from "../lib/api.js";
+import { apiDelete, apiGet, apiGetWithQuery, apiPatch, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
+import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 
 function canManageBankDetails(role) {
   const r = String(role || "").toLowerCase().trim();
@@ -75,7 +76,7 @@ const tabs = [
   { id: "statement", label: "Customer Statement" },
   { id: "supp", label: "Supplier Ledger" },
   { id: "payrcpt", label: "Payment Receipts" },
-  { id: "payv", label: "Payment Vouchers" },
+  { id: "payv", label: "Supplier Payments" },
   { id: "si", label: "Sales Invoices" },
   { id: "pi", label: "Purchase Invoices" },
   { id: "cash", label: "Cash / Bank Ledger" },
@@ -169,6 +170,20 @@ export default function Accounts() {
     mode: "",
     remarks: "",
   });
+  const [supplierPaymentForm, setSupplierPaymentForm] = useState({
+    supplierName: "",
+    paymentDate: "",
+    currency: "USD",
+    amountPaid: 0,
+    paymentMode: "BANK_TRANSFER",
+    bankCashAccountName: "",
+    paymentReference: "",
+    remarks: "",
+    allocations: [],
+  });
+  const [supplierPaymentFilter, setSupplierPaymentFilter] = useState("");
+  const [supplierPaymentDocType, setSupplierPaymentDocType] = useState("Supplier Invoice");
+  const [supplierPaymentFile, setSupplierPaymentFile] = useState(null);
   const [bankForm, setBankForm] = useState(() => emptyBankForm());
   const [bankEditId, setBankEditId] = useState(null);
 
@@ -218,6 +233,39 @@ export default function Accounts() {
       }),
     enabled: tab === "supp" && filterSupplier.trim().length > 0,
   });
+  const suppLedgerSummaryQ = useQuery({
+    queryKey: ["supplierLedgerSummary", filterSupplier],
+    queryFn: () =>
+      apiGetWithQuery("/accounts/supplier-ledger-summary", {
+        supplierName: filterSupplier.trim() || undefined,
+      }),
+    enabled: tab === "supp",
+  });
+  const supplierPaymentsQ = useQuery({
+    queryKey: ["supplierPayments", page, supplierPaymentFilter],
+    queryFn: () =>
+      apiGetWithQuery("/accounts/supplier-payments", {
+        page,
+        limit,
+        supplierName: supplierPaymentFilter || undefined,
+      }),
+    enabled: tab === "payv",
+  });
+  const supplierOutstandingQ = useQuery({
+    queryKey: ["supplierOutstanding"],
+    queryFn: () => apiGet("/accounts/supplier-outstanding"),
+    enabled: tab === "ap",
+  });
+  const apAgingQ = useQuery({
+    queryKey: ["apAging"],
+    queryFn: () => apiGet("/accounts/ap-aging"),
+    enabled: tab === "ap",
+  });
+  const supplierPaymentSummaryQ = useQuery({
+    queryKey: ["supplierPaymentSummary"],
+    queryFn: () => apiGet("/accounts/supplier-payment-summary"),
+    enabled: tab === "reports",
+  });
   const cashQ = useQuery({
     queryKey: ["cashBank", page],
     queryFn: () => apiGetWithQuery("/accounts/cash-bank", { page, limit }),
@@ -264,6 +312,8 @@ export default function Accounts() {
         qc.invalidateQueries({ queryKey: ["customerLedger"] });
       if (v.path.includes("supplier-ledger"))
         qc.invalidateQueries({ queryKey: ["supplierLedger"] });
+      if (v.path.includes("supplier-payments"))
+        qc.invalidateQueries({ queryKey: ["supplierPayments"] });
       if (v.path.includes("cash-bank")) qc.invalidateQueries({ queryKey: ["cashBank"] });
       if (v.path.includes("bank-details")) {
         qc.invalidateQueries({ queryKey: ["bankDetails"] });
@@ -326,6 +376,7 @@ export default function Accounts() {
     if (tab === "cust") return custQ.data?.items ?? [];
     if (tab === "statement") return statementQ.data?.items ?? [];
     if (tab === "supp") return suppQ.data?.items ?? [];
+    if (tab === "payv") return supplierPaymentsQ.data?.items ?? [];
     if (tab === "cash") return cashQ.data?.items ?? [];
     if (tab === "bank") return bankQ.data?.items ?? [];
     if (tab === "payrcpt") return payRcptQ.data?.items ?? [];
@@ -342,6 +393,7 @@ export default function Accounts() {
     if (tab === "cust") return custQ.data?.total ?? 0;
     if (tab === "statement") return statementQ.data?.items?.length ?? 0;
     if (tab === "supp") return suppQ.data?.total ?? 0;
+    if (tab === "payv") return supplierPaymentsQ.data?.total ?? 0;
     if (tab === "cash") return cashQ.data?.total ?? 0;
     if (tab === "bank") return bankQ.data?.total ?? 0;
     if (tab === "payrcpt") return payRcptQ.data?.total ?? 0;
@@ -358,6 +410,7 @@ export default function Accounts() {
     if (tab === "cust") return custQ.isLoading;
     if (tab === "statement") return statementQ.isLoading;
     if (tab === "supp") return suppQ.isLoading;
+    if (tab === "payv") return supplierPaymentsQ.isLoading;
     if (tab === "cash") return cashQ.isLoading;
     if (tab === "bank") return bankQ.isLoading;
     if (tab === "payrcpt") return payRcptQ.isLoading;
@@ -549,6 +602,79 @@ export default function Accounts() {
     },
     onError: (e) => setErr(e.message),
   });
+  const cancelSupplierPaymentMut = useMutation({
+    mutationFn: ({ id, reason }) => apiPatch(`/accounts/supplier-payments/${id}/cancel`, { cancellationReason: reason }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["supplierPayments"] });
+      qc.invalidateQueries({ queryKey: ["supplierLedger"] });
+      qc.invalidateQueries({ queryKey: ["supplierLedgerSummary"] });
+      qc.invalidateQueries({ queryKey: ["supplierOutstanding"] });
+      qc.invalidateQueries({ queryKey: ["apAging"] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const uploadSupplierPaymentDocMut = useMutation({
+    mutationFn: async ({ payment }) => {
+      if (!supplierPaymentFile) throw new Error("Select a file first");
+      const fd = new FormData();
+      fd.append("file", supplierPaymentFile);
+      fd.append("documentType", supplierPaymentDocType);
+      fd.append("moduleName", "ACCOUNTS");
+      fd.append("relatedId", String(payment._id));
+      fd.append("refNo", payment.paymentNo || "");
+      fd.append("partyName", payment.supplierName || "");
+      const doc = await apiPostFormData("/documents/upload", fd);
+      const nextAttachments = [...(payment.attachments || []), {
+        documentId: doc._id,
+        documentType: doc.documentType,
+        fileName: doc.originalFileName,
+        uploadedAt: doc.uploadedAt,
+      }];
+      await apiPut(`/accounts/supplier-payments/${payment._id}`, { attachments: nextAttachments });
+      return doc;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["supplierPayments"] });
+      setSupplierPaymentFile(null);
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  async function openDocumentById(id, inline = true) {
+    try {
+      const data = await apiGet(`/documents/${id}/download${inline ? "?inline=1" : ""}`);
+      if (!data?.url) throw new Error("No signed URL");
+      window.open(data.url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      setErr(e.message || "Could not open attachment");
+    }
+  }
+
+  function exportSupplierLedger(rows = [], supplierName = "supplier-ledger") {
+    const exportRows = rows.map((r) => ({
+      date: r.entryDate ? new Date(r.entryDate).toISOString().slice(0, 10) : "",
+      supplier: r.supplierName || "",
+      refType: r.referenceType || "",
+      refNo: r.referenceNumber || "",
+      debit: Number(r.debit || 0).toFixed(2),
+      credit: Number(r.credit || 0).toFixed(2),
+      runningBalance: Number(r.runningBalance || 0).toFixed(2),
+      remarks: r.narrative || "",
+    }));
+    const cols = [
+      { key: "date", header: "Date" },
+      { key: "supplier", header: "Supplier" },
+      { key: "refType", header: "Reference Type" },
+      { key: "refNo", header: "Reference No" },
+      { key: "debit", header: "Debit" },
+      { key: "credit", header: "Credit" },
+      { key: "runningBalance", header: "Running Balance" },
+      { key: "remarks", header: "Remarks" },
+    ];
+    downloadCsv(`${supplierName}-ledger.csv`, cols, exportRows);
+    downloadPdfTable("Supplier Ledger", supplierName, cols, exportRows, `${supplierName}-ledger`);
+  }
 
   const total = activeTotal();
   const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -591,7 +717,7 @@ export default function Accounts() {
         </div>
       ) : null}
 
-      {(tab === "cust" || tab === "supp") && (
+      {(tab === "cust" || tab === "supp" || tab === "payv") && (
         <div className="mb-4 flex flex-wrap items-end gap-3 rounded-2xl border bg-white p-4">
           {tab === "cust" ? (
             <FormField label="Customer name (exact)" className="min-w-[220px] flex-1">
@@ -601,12 +727,20 @@ export default function Accounts() {
                 placeholder="Required to load ledger"
               />
             </FormField>
-          ) : (
+          ) : tab === "supp" ? (
             <FormField label="Supplier name (exact)" className="min-w-[220px] flex-1">
               <TextInput
                 value={filterSupplier}
                 onChange={(e) => setFilterSupplier(e.target.value)}
                 placeholder="Required to load ledger"
+              />
+            </FormField>
+          ) : (
+            <FormField label="Supplier filter" className="min-w-[220px] flex-1">
+              <TextInput
+                value={supplierPaymentFilter}
+                onChange={(e) => setSupplierPaymentFilter(e.target.value)}
+                placeholder="Filter supplier payments"
               />
             </FormField>
           )}
@@ -616,7 +750,8 @@ export default function Accounts() {
             onClick={() => {
               setPage(1);
               if (tab === "cust") qc.invalidateQueries({ queryKey: ["customerLedger"] });
-              else qc.invalidateQueries({ queryKey: ["supplierLedger"] });
+              else if (tab === "supp") qc.invalidateQueries({ queryKey: ["supplierLedger"] });
+              else qc.invalidateQueries({ queryKey: ["supplierPayments"] });
             }}
           >
             Load
@@ -644,6 +779,7 @@ export default function Accounts() {
             {tab === "supp" && "New supplier entry"}
             {tab === "cash" && "New cash / bank entry"}
             {tab === "bank" && "New bank detail"}
+            {tab === "payv" && "New supplier payment"}
           </button>
         </div>
       )}
@@ -882,59 +1018,112 @@ export default function Accounts() {
             />
           )}
           {tab === "supp" && (
+            <div>
+              <div className="mb-2 flex justify-end">
+                <button
+                  type="button"
+                  className="rounded border px-3 py-1 text-xs"
+                  onClick={() => exportSupplierLedger(activeRows(), filterSupplier || "supplier")}
+                >
+                  Export CSV/PDF
+                </button>
+              </div>
+              <table className="min-w-full text-left text-sm">
+                <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
+                  <tr>
+                    <th className="px-3 py-2">Date</th>
+                    <th className="px-3 py-2">Ref Type</th>
+                    <th className="px-3 py-2">Ref No</th>
+                    <th className="px-3 py-2 text-right">Debit</th>
+                    <th className="px-3 py-2 text-right">Credit</th>
+                    <th className="px-3 py-2 text-right">Balance</th>
+                    <th className="px-3 py-2">Remarks</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {!filterSupplier.trim() ? (
+                    <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-500">Enter a supplier name and click Load.</td></tr>
+                  ) : loading() ? (
+                    <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-500">Loading…</td></tr>
+                  ) : activeRows().length === 0 ? (
+                    <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-500">No entries.</td></tr>
+                  ) : (
+                    activeRows().map((r) => (
+                      <tr key={r._id} className="border-b border-gray-100">
+                        <td className="px-3 py-2 text-xs">{r.entryDate ? new Date(r.entryDate).toLocaleDateString() : "—"}</td>
+                        <td className="px-3 py-2 text-xs">{r.referenceType || "—"}</td>
+                        <td className="px-3 py-2 text-xs">{r.referenceNumber || "—"}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{Number(r.debit || 0).toFixed(2)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{Number(r.credit || 0).toFixed(2)}</td>
+                        <td className="px-3 py-2 text-right font-medium tabular-nums">{Number(r.runningBalance).toFixed(2)}</td>
+                        <td className="px-3 py-2 text-xs">{r.narrative || "—"}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+              {suppLedgerSummaryQ.data ? (
+                <div className="border-t px-3 py-2 text-xs text-gray-600">
+                  Closing balance: <span className="font-semibold">{Number(suppLedgerSummaryQ.data.closingBalance || 0).toFixed(2)}</span>
+                </div>
+              ) : null}
+            </div>
+          )}
+          {tab === "payv" && (
             <table className="min-w-full text-left text-sm">
               <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
                 <tr>
+                  <th className="px-3 py-2">Payment No</th>
+                  <th className="px-3 py-2">Supplier</th>
                   <th className="px-3 py-2">Date</th>
-                  <th className="px-3 py-2">Ref</th>
-                  <th className="px-3 py-2 text-right">Debit</th>
-                  <th className="px-3 py-2 text-right">Credit</th>
-                  <th className="px-3 py-2 text-right">Balance</th>
-                  <th className="px-3 py-2 w-16" />
+                  <th className="px-3 py-2 text-right">Paid</th>
+                  <th className="px-3 py-2 text-right">Allocated</th>
+                  <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Attachments</th>
                 </tr>
               </thead>
               <tbody>
-                {!filterSupplier.trim() ? (
-                  <tr>
-                    <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
-                      Enter a supplier name and click Load.
-                    </td>
-                  </tr>
-                ) : loading() ? (
-                  <tr>
-                    <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
-                      Loading…
-                    </td>
-                  </tr>
+                {loading() ? (
+                  <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-500">Loading…</td></tr>
                 ) : activeRows().length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
-                      No entries.
-                    </td>
-                  </tr>
+                  <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-500">No supplier payments.</td></tr>
                 ) : (
                   activeRows().map((r) => (
-                    <tr key={r._id} className="border-b border-gray-100">
+                    <tr key={r._id} className="border-b border-gray-100 align-top">
+                      <td className="px-3 py-2 font-mono text-xs">{r.paymentNo}</td>
+                      <td className="px-3 py-2">{r.supplierName}</td>
+                      <td className="px-3 py-2 text-xs">{r.paymentDate ? new Date(r.paymentDate).toLocaleDateString() : "—"}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{Number(r.amountPaid || 0).toFixed(2)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{Number(r.allocatedAmount || 0).toFixed(2)}</td>
+                      <td className="px-3 py-2">{r.status}</td>
                       <td className="px-3 py-2 text-xs">
-                        {r.entryDate ? new Date(r.entryDate).toLocaleDateString() : "—"}
-                      </td>
-                      <td className="px-3 py-2 text-xs">{r.referenceNumber || r.narrative}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{r.debit}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{r.credit}</td>
-                      <td className="px-3 py-2 text-right font-medium tabular-nums">
-                        {Number(r.runningBalance).toFixed(2)}
-                      </td>
-                      <td className="px-3 py-2">
-                        <button
-                          type="button"
-                          className="text-xs text-red-600"
-                          onClick={() => {
-                            if (confirm("Delete entry?"))
-                              delMut.mutate({ path: `/accounts/supplier-ledger/${r._id}` });
-                          }}
-                        >
-                          Del
-                        </button>
+                        <div className="space-y-1">
+                          {(r.attachments || []).slice(0, 3).map((a) => (
+                            <div key={String(a._id || a.documentId)} className="flex gap-2">
+                              <button type="button" className="underline" onClick={() => openDocumentById(a.documentId, true)}>Preview</button>
+                              <span>{a.fileName || a.documentType || "Attachment"}</span>
+                            </div>
+                          ))}
+                          <div className="mt-1 flex flex-wrap items-center gap-1">
+                            <SelectInput value={supplierPaymentDocType} onChange={(e) => setSupplierPaymentDocType(e.target.value)}>
+                              <option>Supplier Invoice</option>
+                              <option>Packing List</option>
+                              <option>BL/AWB</option>
+                              <option>Customs Docs</option>
+                              <option>Inspection Report</option>
+                              <option>Bank Transfer Proof</option>
+                              <option>Supplier Receipt</option>
+                              <option>SWIFT Copy</option>
+                            </SelectInput>
+                            <input type="file" className="max-w-[170px] text-[10px]" onChange={(e) => setSupplierPaymentFile(e.target.files?.[0] || null)} />
+                            <button type="button" className="rounded border px-2 py-0.5 text-[10px]" onClick={() => uploadSupplierPaymentDocMut.mutate({ payment: r })}>Upload</button>
+                            <button type="button" className="rounded border px-2 py-0.5 text-[10px]" onClick={() => {
+                              const reason = window.prompt("Cancel reason");
+                              if (!reason) return;
+                              cancelSupplierPaymentMut.mutate({ id: r._id, reason });
+                            }}>Cancel</button>
+                          </div>
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -975,9 +1164,44 @@ export default function Accounts() {
           {tab === "journal" && <JournalEntriesTab rows={activeRows() || []} />}
           {tab === "outstanding" && <OutstandingReportTab rows={activeRows() || []} />}
           {tab === "aging" && <AgingReportTab rows={activeRows() || []} />}
-          {["ar", "ap", "payv", "alloc", "reports"].includes(tab) && (
+          {["ar", "alloc"].includes(tab) && (
             <div className="px-4 py-10 text-center text-sm text-gray-500">
               This tab structure is now ready. Detailed ERP widgets will be added in the next phase.
+            </div>
+          )}
+          {tab === "ap" && (
+            <div className="space-y-3 p-3">
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-xl border p-3">
+                  <div className="mb-2 text-sm font-semibold">Supplier Outstanding</div>
+                  <div className="overflow-auto">
+                    <table className="min-w-full text-xs">
+                      <thead className="bg-gray-50"><tr><th className="px-2 py-1 text-left">Supplier</th><th className="px-2 py-1 text-left">Invoice No</th><th className="px-2 py-1 text-left">Invoice Amount</th><th className="px-2 py-1 text-left">Paid Amount</th><th className="px-2 py-1 text-left">Balance</th><th className="px-2 py-1 text-left">Due Date</th><th className="px-2 py-1 text-left">Ageing Bucket</th><th className="px-2 py-1 text-left">Currency</th></tr></thead>
+                      <tbody>{(supplierOutstandingQ.data?.items || []).map((r, idx) => <tr key={`${r.invoiceNo}-${idx}`} className="border-t"><td className="px-2 py-1">{r.supplier}</td><td className="px-2 py-1">{r.invoiceNo}</td><td className="px-2 py-1">{Number(r.invoiceAmount || 0).toFixed(2)}</td><td className="px-2 py-1">{Number(r.paidAmount || 0).toFixed(2)}</td><td className="px-2 py-1 font-semibold">{Number(r.balance || 0).toFixed(2)}</td><td className="px-2 py-1">{r.dueDate ? new Date(r.dueDate).toLocaleDateString() : "—"}</td><td className="px-2 py-1">{r.ageingBucket}</td><td className="px-2 py-1">{r.currency}</td></tr>)}</tbody>
+                    </table>
+                  </div>
+                </div>
+                <div className="rounded-xl border p-3">
+                  <div className="mb-2 text-sm font-semibold">AP Ageing</div>
+                  <div className="overflow-auto">
+                    <table className="min-w-full text-xs">
+                      <thead className="bg-gray-50"><tr><th className="px-2 py-1 text-left">Supplier</th><th className="px-2 py-1 text-left">Current</th><th className="px-2 py-1 text-left">0-30</th><th className="px-2 py-1 text-left">31-60</th><th className="px-2 py-1 text-left">61-90</th><th className="px-2 py-1 text-left">90+</th><th className="px-2 py-1 text-left">Total</th><th className="px-2 py-1 text-left">Currency</th></tr></thead>
+                      <tbody>{(apAgingQ.data?.items || []).map((r) => <tr key={`${r.supplier}-${r.currency}`} className="border-t"><td className="px-2 py-1">{r.supplier}</td><td className="px-2 py-1">{Number(r.current || 0).toFixed(2)}</td><td className="px-2 py-1">{Number(r.d0_30 || 0).toFixed(2)}</td><td className="px-2 py-1">{Number(r.d31_60 || 0).toFixed(2)}</td><td className="px-2 py-1">{Number(r.d61_90 || 0).toFixed(2)}</td><td className="px-2 py-1">{Number(r.d90Plus || 0).toFixed(2)}</td><td className="px-2 py-1 font-semibold">{Number(r.totalOutstanding || 0).toFixed(2)}</td><td className="px-2 py-1">{r.currency}</td></tr>)}</tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          {tab === "reports" && (
+            <div className="p-3">
+              <div className="mb-2 text-sm font-semibold">Supplier Payment Summary</div>
+              <div className="overflow-auto">
+                <table className="min-w-full text-xs">
+                  <thead className="bg-gray-50"><tr><th className="px-2 py-1 text-left">Supplier</th><th className="px-2 py-1 text-left">Payments</th><th className="px-2 py-1 text-left">Amount Paid</th><th className="px-2 py-1 text-left">Allocated</th><th className="px-2 py-1 text-left">Cancelled</th><th className="px-2 py-1 text-left">Currency</th></tr></thead>
+                  <tbody>{(supplierPaymentSummaryQ.data?.items || []).map((r) => <tr key={`${r.supplier}-${r.currency}`} className="border-t"><td className="px-2 py-1">{r.supplier}</td><td className="px-2 py-1">{r.paymentCount}</td><td className="px-2 py-1">{Number(r.amountPaid || 0).toFixed(2)}</td><td className="px-2 py-1">{Number(r.allocatedAmount || 0).toFixed(2)}</td><td className="px-2 py-1">{r.cancelledCount}</td><td className="px-2 py-1">{r.currency}</td></tr>)}</tbody>
+                </table>
+              </div>
             </div>
           )}
           {tab === "bank" && (
@@ -1533,6 +1757,51 @@ export default function Accounts() {
             className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
             disabled={postMut.isPending}
             onClick={() => postMut.mutate({ path: "/accounts/cash-bank", body: cashForm })}
+          >
+            Save
+          </button>
+        </div>
+      </Modal>
+      <Modal open={modal === "payv"} onClose={() => setModal(null)} title="Supplier payment" wide>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <FormField label="Supplier *">
+            <TextInput value={supplierPaymentForm.supplierName} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, supplierName: e.target.value }))} />
+          </FormField>
+          <FormField label="Payment Date">
+            <TextInput type="date" value={supplierPaymentForm.paymentDate} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, paymentDate: e.target.value }))} />
+          </FormField>
+          <FormField label="Currency">
+            <TextInput value={supplierPaymentForm.currency} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))} />
+          </FormField>
+          <FormField label="Amount Paid *">
+            <TextInput type="number" step="0.01" value={supplierPaymentForm.amountPaid} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, amountPaid: Number(e.target.value) }))} />
+          </FormField>
+          <FormField label="Mode">
+            <SelectInput value={supplierPaymentForm.paymentMode} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, paymentMode: e.target.value }))}>
+              <option value="BANK_TRANSFER">BANK_TRANSFER</option>
+              <option value="CASH">CASH</option>
+              <option value="CHEQUE">CHEQUE</option>
+              <option value="CARD">CARD</option>
+              <option value="OTHER">OTHER</option>
+            </SelectInput>
+          </FormField>
+          <FormField label="Bank/Cash Account">
+            <TextInput value={supplierPaymentForm.bankCashAccountName} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, bankCashAccountName: e.target.value }))} />
+          </FormField>
+          <FormField label="Payment Reference">
+            <TextInput value={supplierPaymentForm.paymentReference} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, paymentReference: e.target.value }))} />
+          </FormField>
+          <FormField label="Remarks" className="sm:col-span-2">
+            <TextInput value={supplierPaymentForm.remarks} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, remarks: e.target.value }))} />
+          </FormField>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={() => setModal(null)}>Cancel</button>
+          <button
+            type="button"
+            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
+            disabled={postMut.isPending}
+            onClick={() => postMut.mutate({ path: "/accounts/supplier-payments", body: supplierPaymentForm })}
           >
             Save
           </button>

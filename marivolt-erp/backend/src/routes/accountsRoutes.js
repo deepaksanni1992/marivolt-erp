@@ -28,7 +28,14 @@ router.get("/purchase-invoices", accountsView, c.listPurchaseInvoices);
 router.get("/purchase-invoices/:id", accountsView, c.getPurchaseInvoice);
 router.post("/purchase-invoices", accountsCreate, c.createPurchaseInvoice);
 router.put("/purchase-invoices/:id", accountsEdit, c.updatePurchaseInvoice);
+router.patch("/purchase-invoices/:id/cancel", accountsEdit, c.cancelPurchaseInvoice);
 router.delete("/purchase-invoices/:id", accountsDelete, c.deletePurchaseInvoice);
+
+router.get("/supplier-payments", accountsView, c.listSupplierPayments);
+router.get("/supplier-payments/:id", accountsView, c.getSupplierPayment);
+router.post("/supplier-payments", accountsCreate, c.createSupplierPayment);
+router.put("/supplier-payments/:id", accountsEdit, c.updateSupplierPayment);
+router.patch("/supplier-payments/:id/cancel", accountsEdit, c.cancelSupplierPayment);
 
 router.get("/customer-ledger", accountsView, c.listCustomerLedger);
 router.get("/customer-ledger/:customerId", accountsView, c.getCustomerLedgerByCustomerId);
@@ -48,6 +55,10 @@ router.delete("/cash-bank/:id", accountsDelete, c.deleteCashBankEntry);
 
 router.get("/outstanding", reportsView, c.listOutstandingReport);
 router.get("/aging", reportsView, c.listAgingReport);
+router.get("/supplier-outstanding", reportsView, c.supplierOutstandingReport);
+router.get("/ap-aging", reportsView, c.apAgeingReport);
+router.get("/supplier-payment-summary", reportsView, c.supplierPaymentSummaryReport);
+router.get("/supplier-ledger-summary", reportsView, c.supplierLedgerSummaryReport);
 router.get("/journal-entries", accountsView, requireRole(...journalViewRoles), c.listJournalEntries);
 router.get("/journal-entries/:id", accountsView, requireRole(...journalViewRoles), c.getJournalEntry);
 
