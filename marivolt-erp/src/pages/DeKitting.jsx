@@ -15,6 +15,8 @@ export default function DeKitting() {
     parentItemCode: "",
     warehouse: "MAIN",
     quantity: 1,
+    kitBatch: "",
+    disassemblyReason: "",
     remarks: "",
   });
   const [err, setErr] = useState("");
@@ -29,13 +31,17 @@ export default function DeKitting() {
     queryFn: () => apiGet(`/dekitting/${detailId}`),
     enabled: !!detailId,
   });
+  const { data: dekitReport } = useQuery({
+    queryKey: ["dekitReport"],
+    queryFn: () => apiGet("/dekitting/reports/dekit"),
+  });
 
   const createMutation = useMutation({
     mutationFn: () => apiPost("/dekitting", form),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["dekittingOrders"] });
       setCreateOpen(false);
-      setForm({ parentItemCode: "", warehouse: "MAIN", quantity: 1, remarks: "" });
+      setForm({ parentItemCode: "", warehouse: "MAIN", quantity: 1, kitBatch: "", disassemblyReason: "", remarks: "" });
     },
     onError: (e) => setErr(e.message),
   });
@@ -96,6 +102,7 @@ export default function DeKitting() {
                 <th className="px-3 py-2">De-kit #</th>
                 <th className="px-3 py-2">Parent</th>
                 <th className="px-3 py-2">Wh</th>
+                <th className="px-3 py-2">Batch</th>
                 <th className="px-3 py-2 text-right">Qty</th>
                 <th className="px-3 py-2">Status</th>
                 <th className="px-3 py-2 w-24" />
@@ -104,13 +111,13 @@ export default function DeKitting() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                  <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
                     Loading…
                   </td>
                 </tr>
               ) : rows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                  <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
                     No de-kitting orders.
                   </td>
                 </tr>
@@ -120,6 +127,7 @@ export default function DeKitting() {
                     <td className="px-3 py-2 font-mono text-xs">{r.dekitNumber}</td>
                     <td className="px-3 py-2 font-mono text-xs">{r.parentItemCode}</td>
                     <td className="px-3 py-2">{r.warehouse}</td>
+                    <td className="px-3 py-2 font-mono text-xs">{r.kitBatch || "—"}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{r.quantity}</td>
                     <td className="px-3 py-2">{r.status}</td>
                     <td className="px-3 py-2">
@@ -187,6 +195,9 @@ export default function DeKitting() {
               </div>
               <div>
                 <span className="text-gray-500">Status</span> {detail.status}
+              </div>
+              <div>
+                <span className="text-gray-500">Revision</span> {detail.linkedBomRevision || "—"}
               </div>
             </div>
             {detail.linesSnapshot?.length > 0 && (
@@ -281,6 +292,18 @@ export default function DeKitting() {
               onChange={(e) => setForm((f) => ({ ...f, quantity: Number(e.target.value) }))}
             />
           </FormField>
+          <FormField label="Kit Batch">
+            <TextInput
+              value={form.kitBatch}
+              onChange={(e) => setForm((f) => ({ ...f, kitBatch: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Disassembly Reason">
+            <TextInput
+              value={form.disassemblyReason}
+              onChange={(e) => setForm((f) => ({ ...f, disassemblyReason: e.target.value }))}
+            />
+          </FormField>
           <FormField label="Remarks" className="sm:col-span-2">
             <TextInput
               value={form.remarks}
@@ -309,6 +332,16 @@ export default function DeKitting() {
           </button>
         </div>
       </Modal>
+      <div className="mt-4 rounded-2xl border bg-white p-4">
+        <h3 className="mb-2 text-sm font-semibold">De-kit Report</h3>
+        <div className="max-h-56 overflow-auto text-xs">
+          {(dekitReport?.items || []).slice(0, 50).map((r) => (
+            <div key={r._id} className="border-b py-1">
+              {r.dekitNumber} / {r.parentItemCode} / {r.status} / batch {r.kitBatch || "—"} / rev {r.linkedBomRevision || "—"}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

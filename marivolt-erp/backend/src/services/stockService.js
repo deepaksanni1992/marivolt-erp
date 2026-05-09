@@ -36,6 +36,10 @@ import InventoryLedger from "../models/InventoryLedger.js";
 export const MOVEMENT_TYPES = Object.freeze({
   GRN_IN: "GRN_IN",
   LANDED_COST_ADJUSTMENT: "LANDED_COST_ADJUSTMENT",
+  KIT_ASSEMBLY_OUT: "KIT_ASSEMBLY_OUT",
+  KIT_ASSEMBLY_IN: "KIT_ASSEMBLY_IN",
+  DEKIT_OUT: "DEKIT_OUT",
+  DEKIT_IN: "DEKIT_IN",
   ALLOCATION: "ALLOCATION",
   ALLOCATION_CANCEL: "ALLOCATION_CANCEL",
   RTS_TRANSFER: "RTS_TRANSFER",
@@ -57,6 +61,10 @@ export const MOVEMENT_TYPES = Object.freeze({
 const UNIFIED_TO_LEGACY_TX = Object.freeze({
   GRN_IN: "GRN",
   LANDED_COST_ADJUSTMENT: "STOCK_ADJUSTMENT",
+  KIT_ASSEMBLY_OUT: "STOCK_ADJUSTMENT",
+  KIT_ASSEMBLY_IN: "STOCK_ADJUSTMENT",
+  DEKIT_OUT: "STOCK_ADJUSTMENT",
+  DEKIT_IN: "STOCK_ADJUSTMENT",
   ALLOCATION: "SALES_ALLOCATION",
   ALLOCATION_CANCEL: "ORDER_ALLOCATION_CANCEL",
   RTS_TRANSFER: "RTS",
@@ -1078,6 +1086,7 @@ export async function stockAdjustment({
   createdBy = "",
   sourceModule = "STORE",
   allowNegative = false,
+  movementType = MOVEMENT_TYPES.STOCK_ADJUSTMENT,
   transactionDate = null,
 }) {
   requireCompanyId(companyId);
@@ -1120,7 +1129,7 @@ export async function stockAdjustment({
     session,
     companyId,
     transactionDate,
-    movementType: MOVEMENT_TYPES.STOCK_ADJUSTMENT,
+    movementType,
     article,
     warehouse,
     qtyIn: isIncrease ? q : 0,

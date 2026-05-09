@@ -15,8 +15,10 @@ export default function Kitting() {
     parentItemCode: "",
     warehouse: "MAIN",
     quantity: 1,
+    kitBatch: "",
     remarks: "",
   });
+  const [shortageOpen, setShortageOpen] = useState(false);
   const [err, setErr] = useState("");
 
   const { data, isLoading, error } = useQuery({
@@ -29,13 +31,27 @@ export default function Kitting() {
     queryFn: () => apiGet(`/kitting/${detailId}`),
     enabled: !!detailId,
   });
+  const { data: shortageData } = useQuery({
+    queryKey: ["kittingShortage", form.parentItemCode, form.warehouse, form.quantity, shortageOpen],
+    queryFn: () =>
+      apiGetWithQuery("/kitting/shortage-analysis", {
+        parentItemCode: form.parentItemCode || undefined,
+        warehouse: form.warehouse || undefined,
+        quantity: form.quantity || undefined,
+      }),
+    enabled: shortageOpen && Boolean(form.parentItemCode) && Number(form.quantity) > 0,
+  });
+  const { data: assemblyHistory } = useQuery({
+    queryKey: ["kittingAssemblyHistory"],
+    queryFn: () => apiGet("/kitting/reports/assembly-history"),
+  });
 
   const createMutation = useMutation({
     mutationFn: () => apiPost("/kitting", form),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["kittingOrders"] });
       setCreateOpen(false);
-      setForm({ parentItemCode: "", warehouse: "MAIN", quantity: 1, remarks: "" });
+      setForm({ parentItemCode: "", warehouse: "MAIN", quantity: 1, kitBatch: "", remarks: "" });
     },
     onError: (e) => setErr(e.message),
   });
@@ -96,6 +112,7 @@ export default function Kitting() {
                 <th className="px-3 py-2">Kit #</th>
                 <th className="px-3 py-2">Parent</th>
                 <th className="px-3 py-2">Wh</th>
+                <th className="px-3 py-2">Batch</th>
                 <th className="px-3 py-2 text-right">Qty</th>
                 <th className="px-3 py-2">Status</th>
                 <th className="px-3 py-2 w-24" />
@@ -104,13 +121,13 @@ export default function Kitting() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                  <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
                     Loading…
                   </td>
                 </tr>
               ) : rows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                  <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
                     No kitting orders.
                   </td>
                 </tr>
@@ -120,6 +137,7 @@ export default function Kitting() {
                     <td className="px-3 py-2 font-mono text-xs">{r.kitNumber}</td>
                     <td className="px-3 py-2 font-mono text-xs">{r.parentItemCode}</td>
                     <td className="px-3 py-2">{r.warehouse}</td>
+                    <td className="px-3 py-2 font-mono text-xs">{r.kitBatch || "—"}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{r.quantity}</td>
                     <td className="px-3 py-2">{r.status}</td>
                     <td className="px-3 py-2">
@@ -187,6 +205,12 @@ export default function Kitting() {
               </div>
               <div>
                 <span className="text-gray-500">Status</span> {detail.status}
+              </div>
+              <div>
+                <span className="text-gray-500">Revision</span> {detail.linkedBomRevision || "—"}
+              </div>
+              <div>
+                <span className="text-gray-500">Assembled Cost</span> {Number(detail.assembledCost || 0).toFixed(2)}
               </div>
             </div>
             {detail.linesSnapshot?.length > 0 && (
@@ -281,6 +305,12 @@ export default function Kitting() {
               onChange={(e) => setForm((f) => ({ ...f, quantity: Number(e.target.value) }))}
             />
           </FormField>
+          <FormField label="Kit Batch">
+            <TextInput
+              value={form.kitBatch}
+              onChange={(e) => setForm((f) => ({ ...f, kitBatch: e.target.value }))}
+            />
+          </FormField>
           <FormField label="Remarks" className="sm:col-span-2">
             <TextInput
               value={form.remarks}
@@ -289,6 +319,13 @@ export default function Kitting() {
           </FormField>
         </div>
         <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            className="rounded-xl border px-4 py-2 text-sm"
+            onClick={() => setShortageOpen(true)}
+          >
+            Shortage Analysis
+          </button>
           <button
             type="button"
             className="rounded-xl border px-4 py-2 text-sm"
@@ -309,6 +346,51 @@ export default function Kitting() {
           </button>
         </div>
       </Modal>
+      <Modal open={shortageOpen} onClose={() => setShortageOpen(false)} title="Shortage Analysis" wide>
+        {!shortageData ? (
+          <p className="text-sm text-gray-500">Enter parent/warehouse/qty and open shortage analysis.</p>
+        ) : (
+          <div className="space-y-2">
+            <div className="text-xs text-slate-600">
+              BOM {shortageData.bomCode || "—"} / Rev {shortageData.bomRevision || "—"} / Blocking shortage:{" "}
+              <strong>{shortageData.hasBlockingShortage ? "YES" : "NO"}</strong>
+            </div>
+            <div className="max-h-72 overflow-auto rounded border">
+              <table className="min-w-full text-xs">
+                <thead className="bg-slate-50">
+                  <tr>
+                    {["Article", "Required", "Available", "Missing", "Optional", "Substitute availability"].map((h) => (
+                      <th key={h} className="px-2 py-1 text-left">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(shortageData.lines || []).map((ln, i) => (
+                    <tr key={`${ln.article}-${i}`} className={`border-t ${ln.short ? "bg-rose-50" : ""}`}>
+                      <td className="px-2 py-1 font-mono">{ln.article}</td>
+                      <td className="px-2 py-1">{ln.requiredQty}</td>
+                      <td className="px-2 py-1">{ln.availableQty}</td>
+                      <td className="px-2 py-1">{ln.missingQty}</td>
+                      <td className="px-2 py-1">{ln.optionalFlag ? "Yes" : "No"}</td>
+                      <td className="px-2 py-1">{(ln.substituteAvailability || []).map((x) => `${x.article}(${x.availableQty})`).join(", ") || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </Modal>
+      <div className="mt-4 rounded-2xl border bg-white p-4">
+        <h3 className="mb-2 text-sm font-semibold">Kit Assembly History</h3>
+        <div className="max-h-56 overflow-auto text-xs">
+          {(assemblyHistory?.items || []).slice(0, 50).map((r) => (
+            <div key={r._id} className="border-b py-1">
+              {r.kitNumber} / {r.parentItemCode} / {r.status} / batch {r.kitBatch || "—"} / rev {r.linkedBomRevision || "—"} / cost {Number(r.assembledCost || 0).toFixed(2)}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

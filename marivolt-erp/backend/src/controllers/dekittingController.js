@@ -22,6 +22,9 @@ export async function listDeKittingOrders(req, res) {
     if (req.query.parentItemCode) {
       filter.parentItemCode = String(req.query.parentItemCode).trim().toUpperCase();
     }
+    if (req.query.kitType) {
+      filter.kitType = String(req.query.kitType).trim().toUpperCase();
+    }
     const [items, total] = await Promise.all([
       DeKittingOrder.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       DeKittingOrder.countDocuments(filter),
@@ -68,11 +71,22 @@ export async function createDeKittingOrder(req, res) {
       { companyId: req.companyId }
     );
     const warehouse = String(req.body.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
+    const kitType = String(req.body.kitType || bom.kitType || "CUSTOM_KIT").trim().toUpperCase();
+    const disassemblyMode = String(req.body.disassemblyMode || "STANDARD_DISASSEMBLY").trim().toUpperCase();
+    const kitBatch = String(req.body.kitBatch || `${dekitNumber}-B1`).trim().toUpperCase();
 
     const doc = await DeKittingOrder.create({
       companyId: req.companyId,
       dekitNumber,
       parentItemCode,
+      kitType,
+      disassemblyMode,
+      disassemblyReason: String(req.body.disassemblyReason || "").trim(),
+      linkedEngineModel: String(req.body.linkedEngineModel || "").trim(),
+      linkedEngineESN: String(req.body.linkedEngineESN || "").trim(),
+      sourceReference: String(req.body.sourceReference || "").trim(),
+      kitBatch,
+      linkedBomRevision: bom.revisionNo || "",
       warehouse,
       quantity,
       bomId: bom._id,
@@ -101,10 +115,26 @@ export async function executeDeKittingOrder(req, res) {
     const userEmail = req.user?.email || "";
     await runDeKit(order, userEmail, req.companyId);
     order.status = "COMPLETED";
+    order.assemblyDate = new Date();
+    order.assembledBy = userEmail;
     await order.save();
     res.json(order);
   } catch (err) {
     res.status(400).json({ message: err.message });
+  }
+}
+
+export async function dekittingReport(req, res) {
+  try {
+    const rows = await DeKittingOrder.find(
+      withCompany(req, { status: { $in: ["COMPLETED", "CANCELLED"] } })
+    )
+      .sort({ updatedAt: -1 })
+      .limit(500)
+      .lean();
+    res.json({ items: rows });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 }
 

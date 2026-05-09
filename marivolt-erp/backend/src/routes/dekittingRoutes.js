@@ -12,6 +12,7 @@ const itemApprove = requirePermission("ITEM_MASTER", "approve");
 const itemCancel = requirePermission("ITEM_MASTER", "cancel");
 
 router.get("/", itemView, c.listDeKittingOrders);
+router.get("/reports/dekit", itemView, c.dekittingReport);
 router.get("/:id", itemView, c.getDeKittingOrder);
 router.post("/", itemCreate, c.createDeKittingOrder);
 router.post("/:id/execute", itemApprove, c.executeDeKittingOrder);

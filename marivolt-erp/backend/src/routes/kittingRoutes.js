@@ -12,6 +12,9 @@ const itemApprove = requirePermission("ITEM_MASTER", "approve");
 const itemCancel = requirePermission("ITEM_MASTER", "cancel");
 
 router.get("/", itemView, c.listKittingOrders);
+router.get("/reports/assembly-history", itemView, c.kittingAssemblyHistoryReport);
+router.get("/reports/component-consumption", itemView, c.componentConsumptionReport);
+router.get("/shortage-analysis", itemView, c.getKittingShortage);
 router.get("/:id", itemView, c.getKittingOrder);
 router.post("/", itemCreate, c.createKittingOrder);
 router.post("/:id/execute", itemApprove, c.executeKittingOrder);

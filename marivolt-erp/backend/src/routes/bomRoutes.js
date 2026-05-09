@@ -12,6 +12,7 @@ const itemEdit = requirePermission("ITEM_MASTER", "edit");
 const itemDelete = requirePermission("ITEM_MASTER", "delete");
 
 router.get("/", itemView, c.listBoms);
+router.get("/reports/summary", itemView, c.bomSummaryReport);
 router.get("/by-parent/:parentCode", itemView, c.getBomByParentCode);
 router.get("/:id", itemView, c.getBom);
 router.post("/", itemCreate, c.createBom);

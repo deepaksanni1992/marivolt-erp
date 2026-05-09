@@ -2,10 +2,17 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
-import { FormField, TextInput } from "../components/erp/FormField.jsx";
+import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
 import { apiDelete, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
 
-const emptyLine = () => ({ componentItemCode: "", qty: 1, description: "" });
+const emptyLine = () => ({
+  article: "",
+  qty: 1,
+  optionalFlag: false,
+  interchangeableGroup: "",
+  alternativeArticles: "",
+  remarks: "",
+});
 
 export default function BOM() {
   const qc = useQueryClient();
@@ -15,9 +22,15 @@ export default function BOM() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState({
+    bomCode: "",
+    bomName: "",
     parentItemCode: "",
-    name: "",
-    description: "",
+    kitType: "CUSTOM_KIT",
+    engineModel: "",
+    configuration: "",
+    revisionNo: "R1",
+    workflowMode: "BOTH",
+    remarks: "",
     isActive: true,
     lines: [emptyLine()],
   });
@@ -37,9 +50,15 @@ export default function BOM() {
       setModalOpen(false);
       setEditingId(null);
       setForm({
+        bomCode: "",
+        bomName: "",
         parentItemCode: "",
-        name: "",
-        description: "",
+        kitType: "CUSTOM_KIT",
+        engineModel: "",
+        configuration: "",
+        revisionNo: "R1",
+        workflowMode: "BOTH",
+        remarks: "",
         isActive: true,
         lines: [emptyLine()],
       });
@@ -55,9 +74,15 @@ export default function BOM() {
   function openCreate() {
     setEditingId(null);
     setForm({
+      bomCode: "",
+      bomName: "",
       parentItemCode: "",
-      name: "",
-      description: "",
+      kitType: "CUSTOM_KIT",
+      engineModel: "",
+      configuration: "",
+      revisionNo: "R1",
+      workflowMode: "BOTH",
+      remarks: "",
       isActive: true,
       lines: [emptyLine()],
     });
@@ -68,16 +93,25 @@ export default function BOM() {
   function openEdit(row) {
     setEditingId(row._id);
     setForm({
+      bomCode: row.bomCode || "",
+      bomName: row.bomName || row.name || "",
       parentItemCode: row.parentItemCode || "",
-      name: row.name || "",
-      description: row.description || "",
+      kitType: row.kitType || "CUSTOM_KIT",
+      engineModel: row.engineModel || "",
+      configuration: row.configuration || "",
+      revisionNo: row.revisionNo || "R1",
+      workflowMode: row.workflowMode || "BOTH",
+      remarks: row.remarks || row.description || "",
       isActive: row.isActive !== false,
       lines:
         row.lines?.length > 0
           ? row.lines.map((l) => ({
-              componentItemCode: l.componentItemCode || "",
+              article: l.article || l.componentItemCode || "",
               qty: l.qty ?? 1,
-              description: l.description || "",
+              optionalFlag: Boolean(l.optionalFlag),
+              interchangeableGroup: l.interchangeableGroup || "",
+              alternativeArticles: Array.isArray(l.alternativeArticles) ? l.alternativeArticles.join(", ") : "",
+              remarks: l.remarks || l.description || "",
             }))
           : [emptyLine()],
     });
@@ -93,7 +127,7 @@ export default function BOM() {
     <div>
       <PageHeader
         title="BOM"
-        subtitle="Bill of materials: parent kit SKU and component quantities per kit."
+        subtitle="Marine kit BOM with revision, compatibility context, optional/alternative components."
       >
         <button
           type="button"
@@ -138,7 +172,8 @@ export default function BOM() {
             <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
               <tr>
                 <th className="px-3 py-2">Parent</th>
-                <th className="px-3 py-2">Name</th>
+                <th className="px-3 py-2">BOM</th>
+                <th className="px-3 py-2">Kit Type</th>
                 <th className="px-3 py-2 text-center">Lines</th>
                 <th className="px-3 py-2">Active</th>
                 <th className="px-3 py-2 w-28" />
@@ -147,13 +182,13 @@ export default function BOM() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={5} className="px-3 py-8 text-center text-gray-500">
+                  <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
                     Loading…
                   </td>
                 </tr>
               ) : items.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-3 py-8 text-center text-gray-500">
+                  <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
                     No BOMs yet.
                   </td>
                 </tr>
@@ -161,7 +196,8 @@ export default function BOM() {
                 items.map((row) => (
                   <tr key={row._id} className="border-b border-gray-100 hover:bg-gray-50/80">
                     <td className="px-3 py-2 font-mono text-xs">{row.parentItemCode}</td>
-                    <td className="px-3 py-2">{row.name}</td>
+                    <td className="px-3 py-2">{row.bomCode || row.bomName || row.name || "—"}</td>
+                    <td className="px-3 py-2">{row.kitType || "—"}</td>
                     <td className="px-3 py-2 text-center">{row.lines?.length ?? 0}</td>
                     <td className="px-3 py-2">{row.isActive ? "Yes" : "No"}</td>
                     <td className="px-3 py-2">
@@ -230,6 +266,18 @@ export default function BOM() {
           <div className="mb-2 text-sm text-red-600">{saveMutation.error.message}</div>
         )}
         <div className="grid gap-3 sm:grid-cols-2">
+          <FormField label="BOM Code">
+            <TextInput
+              value={form.bomCode}
+              onChange={(e) => setForm((f) => ({ ...f, bomCode: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="BOM Name">
+            <TextInput
+              value={form.bomName}
+              onChange={(e) => setForm((f) => ({ ...f, bomName: e.target.value }))}
+            />
+          </FormField>
           <FormField label="Parent item code (kit SKU) *">
             <TextInput
               value={form.parentItemCode}
@@ -237,17 +285,29 @@ export default function BOM() {
               disabled={!!editingId}
             />
           </FormField>
-          <FormField label="Name">
-            <TextInput
-              value={form.name}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-            />
+          <FormField label="Kit Type">
+            <SelectInput value={form.kitType} onChange={(e) => setForm((f) => ({ ...f, kitType: e.target.value }))}>
+              {["ENGINE_OVERHAUL_KIT", "SERVICE_KIT", "CYLINDER_HEAD_KIT", "FUEL_PUMP_KIT", "CUSTOM_KIT"].map((x) => (
+                <option key={x} value={x}>{x}</option>
+              ))}
+            </SelectInput>
           </FormField>
-          <FormField label="Description" className="sm:col-span-2">
-            <TextInput
-              value={form.description}
-              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-            />
+          <FormField label="Engine Model">
+            <TextInput value={form.engineModel} onChange={(e) => setForm((f) => ({ ...f, engineModel: e.target.value }))} />
+          </FormField>
+          <FormField label="Configuration">
+            <TextInput value={form.configuration} onChange={(e) => setForm((f) => ({ ...f, configuration: e.target.value }))} />
+          </FormField>
+          <FormField label="Revision No">
+            <TextInput value={form.revisionNo} onChange={(e) => setForm((f) => ({ ...f, revisionNo: e.target.value }))} />
+          </FormField>
+          <FormField label="Workflow">
+            <SelectInput value={form.workflowMode} onChange={(e) => setForm((f) => ({ ...f, workflowMode: e.target.value }))}>
+              {["ASSEMBLY", "DISASSEMBLY", "BOTH"].map((x) => <option key={x} value={x}>{x}</option>)}
+            </SelectInput>
+          </FormField>
+          <FormField label="Remarks" className="sm:col-span-2">
+            <TextInput value={form.remarks} onChange={(e) => setForm((f) => ({ ...f, remarks: e.target.value }))} />
           </FormField>
           <label className="flex items-center gap-2 text-sm sm:col-span-2">
             <input
@@ -273,14 +333,14 @@ export default function BOM() {
             {form.lines.map((line, idx) => (
               <div
                 key={idx}
-                className="grid grid-cols-2 gap-2 rounded-xl border p-2 sm:grid-cols-4"
+                className="grid grid-cols-2 gap-2 rounded-xl border p-2 sm:grid-cols-6"
               >
                 <TextInput
-                  placeholder="Component code"
-                  value={line.componentItemCode}
+                  placeholder="Article"
+                  value={line.article}
                   onChange={(e) => {
                     const lines = [...form.lines];
-                    lines[idx] = { ...lines[idx], componentItemCode: e.target.value };
+                    lines[idx] = { ...lines[idx], article: e.target.value };
                     setForm((f) => ({ ...f, lines }));
                   }}
                 />
@@ -296,15 +356,57 @@ export default function BOM() {
                   }}
                 />
                 <TextInput
-                  placeholder="Note"
-                  className="sm:col-span-2"
-                  value={line.description}
+                  placeholder="Interchange group"
+                  value={line.interchangeableGroup}
                   onChange={(e) => {
                     const lines = [...form.lines];
-                    lines[idx] = { ...lines[idx], description: e.target.value };
+                    lines[idx] = { ...lines[idx], interchangeableGroup: e.target.value };
                     setForm((f) => ({ ...f, lines }));
                   }}
                 />
+                <TextInput
+                  placeholder="Alternatives (comma)"
+                  value={line.alternativeArticles}
+                  onChange={(e) => {
+                    const lines = [...form.lines];
+                    lines[idx] = { ...lines[idx], alternativeArticles: e.target.value };
+                    setForm((f) => ({ ...f, lines }));
+                  }}
+                />
+                <TextInput
+                  placeholder="Remarks"
+                  value={line.remarks}
+                  onChange={(e) => {
+                    const lines = [...form.lines];
+                    lines[idx] = { ...lines[idx], remarks: e.target.value };
+                    setForm((f) => ({ ...f, lines }));
+                  }}
+                />
+                <label className="inline-flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={line.optionalFlag}
+                    onChange={(e) => {
+                      const lines = [...form.lines];
+                      lines[idx] = { ...lines[idx], optionalFlag: e.target.checked };
+                      setForm((f) => ({ ...f, lines }));
+                    }}
+                  />
+                  Optional
+                </label>
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 text-xs text-rose-700"
+                  onClick={() => {
+                    const lines = form.lines.filter((_, i) => i !== idx);
+                    setForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
+                  }}
+                >
+                  Remove
+                </button>
+                <div className="sm:col-span-6 text-[11px] text-slate-500">
+                  Qty x order quantity is consumed; alternative articles are checked as substitute availability.
+                </div>
               </div>
             ))}
           </div>
