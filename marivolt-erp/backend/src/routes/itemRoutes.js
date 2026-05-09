@@ -16,6 +16,10 @@ const itemDelete = requirePermission("ITEM_MASTER", "delete");
 
 router.get("/facets", itemView, c.listItemFacets);
 router.get("/", itemView, c.listItems);
+router.get("/resolve", itemView, c.resolveItemByTechnicalLookup);
+router.post("/resolve", itemView, c.resolveItemByTechnicalLookup);
+router.post("/resolve/bulk-import", itemView, upload.single("file"), c.bulkResolveItemLookup);
+router.post("/resolve/override", itemEdit, c.recordResolutionOverride);
 router.post("/import", itemCreate, upload.single("file"), c.importItems);
 router.get("/export", itemExport, c.exportItems);
 router.get("/:article", itemView, c.getItem);

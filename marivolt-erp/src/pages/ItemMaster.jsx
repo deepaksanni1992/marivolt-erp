@@ -154,6 +154,7 @@ function Field({ label, children }) {
 export default function ItemMaster() {
   const qc = useQueryClient();
   const importRef = useRef(null);
+  const lookupImportRef = useRef(null);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [vertical, setVertical] = useState("");
@@ -173,6 +174,7 @@ export default function ItemMaster() {
   const [tab, setTab] = useState("basic");
   const [selectedArticle, setSelectedArticle] = useState("");
   const [error, setError] = useState("");
+  const [lookupRows, setLookupRows] = useState([]);
   const [item, setItem] = useState(emptyItem);
   const [technical, setTechnical] = useState(emptyTechnical);
   const [supplierDraft, setSupplierDraft] = useState(emptySupplier);
@@ -277,6 +279,44 @@ export default function ItemMaster() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["items"] }),
   });
 
+  const bulkLookupImport = useMutation({
+    mutationFn: (file) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      return apiPostFormData("/items/resolve/bulk-import", fd);
+    },
+    onSuccess: (data) => {
+      setLookupRows(data?.items || []);
+      setError("");
+    },
+    onError: (e) => setError(e.message),
+  });
+
+  const manualOverride = useMutation({
+    mutationFn: ({ selectedArticle, row }) =>
+      apiPost("/items/resolve/override", {
+        source: "MANUAL_REVIEW",
+        selectedArticle,
+        input: row?.input || {},
+        alternatives: row?.alternatives || [],
+      }),
+    onSuccess: (_, vars) => {
+      setLookupRows((prev) =>
+        prev.map((r) =>
+          r.row === vars.row.row
+            ? {
+                ...r,
+                matchedArticle: vars.selectedArticle,
+                confidence: "MANUAL_OVERRIDE",
+                reason: `Manual override selected ${vars.selectedArticle}`,
+              }
+            : r
+        )
+      );
+    },
+    onError: (e) => setError(e.message),
+  });
+
   const importMutation = useMutation({
     mutationFn: (file) => {
       const fd = new FormData();
@@ -369,6 +409,28 @@ export default function ItemMaster() {
     downloadPdfTable("Item Master Export", "", EXPORT_COLUMNS, rows, "item-master-export");
   }
 
+  function exportLookupResults(kind) {
+    const rows = lookupRows.map((r) => ({
+      Row: r.row,
+      ESN: r.input?.ESN || r.input?.esn || "",
+      SPN: r.input?.SPN || r.input?.spn || "",
+      "Material Code": r.input?.["Material Code"] || r.input?.materialCode || "",
+      "Drawing No": r.input?.["Drawing Number"] || r.input?.drawingNumber || "",
+      "OEM Ref": r.input?.["OEM Ref"] || r.input?.oemReference || "",
+      "Matched Article": r.matchedArticle || "",
+      Confidence: r.confidence || "",
+      Reason: r.reason || "",
+      "Possible Duplicate Mapping": r.duplicateWarning ? "YES" : "NO",
+      Alternatives: (r.alternatives || []).map((a) => `${a.article}:${a.confidence}`).join("; "),
+    }));
+    const columns = Object.keys(rows[0] || {}).map((k) => ({ key: k, header: k }));
+    if (kind === "csv") {
+      downloadCsv("technical-lookup-resolution.csv", columns, rows);
+      return;
+    }
+    downloadPdfTable("Technical Lookup Resolution Results", "", columns, rows, "technical-lookup-resolution");
+  }
+
   return (
     <div className="space-y-4">
       <div className="rounded-2xl border bg-white p-4">
@@ -384,6 +446,109 @@ export default function ItemMaster() {
             <button onClick={() => runExport("pdf")} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm"><Download size={16} />Export PDF</button>
             <button onClick={openCreate} className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><Plus size={16} />New Item</button>
           </div>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border bg-white p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-lg font-semibold">Technical Lookup Import</h2>
+            <p className="text-sm text-slate-600">Upload ESN/SPN/material/drawing/OEM sheet to resolve matched articles automatically.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <input
+              ref={lookupImportRef}
+              type="file"
+              className="hidden"
+              accept=".csv,.xlsx,.xls"
+              onChange={(e) => e.target.files?.[0] && bulkLookupImport.mutate(e.target.files[0])}
+            />
+            <button onClick={() => lookupImportRef.current?.click()} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm">
+              <FileUp size={16} />Upload Lookup File
+            </button>
+            <button disabled={!lookupRows.length} onClick={() => exportLookupResults("csv")} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm disabled:opacity-50">
+              <Download size={16} />Export CSV
+            </button>
+            <button disabled={!lookupRows.length} onClick={() => exportLookupResults("pdf")} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm disabled:opacity-50">
+              <Download size={16} />Export PDF
+            </button>
+          </div>
+        </div>
+        <div className="overflow-auto rounded-xl border">
+          <table className="min-w-[1300px] w-full text-sm">
+            <thead className="bg-slate-100">
+              <tr>
+                {["Row", "ESN", "SPN", "Material", "Drawing", "OEM Ref", "Matched Article", "Confidence", "Reason", "Alternatives", "Actions"].map((h) => (
+                  <th key={h} className="px-2 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {lookupRows.length === 0 ? (
+                <tr><td colSpan={11} className="px-2 py-6 text-center text-sm text-slate-500">No lookup results yet.</td></tr>
+              ) : (
+                lookupRows.map((r) => {
+                  const tone =
+                    r.confidence === "HIGH"
+                      ? "bg-emerald-50"
+                      : r.confidence === "MEDIUM"
+                        ? "bg-amber-50"
+                        : r.confidence === "LOW"
+                          ? "bg-rose-50"
+                          : "";
+                  return (
+                    <tr key={r.row} className={`border-t ${tone}`}>
+                      <td className="px-2 py-1">{r.row}</td>
+                      <td className="px-2 py-1">{r.input?.ESN || r.input?.esn || "-"}</td>
+                      <td className="px-2 py-1">{r.input?.SPN || r.input?.spn || "-"}</td>
+                      <td className="px-2 py-1">{r.input?.["Material Code"] || r.input?.materialCode || "-"}</td>
+                      <td className="px-2 py-1">{r.input?.["Drawing Number"] || r.input?.drawingNumber || "-"}</td>
+                      <td className="px-2 py-1">{r.input?.["OEM Ref"] || r.input?.oemReference || "-"}</td>
+                      <td className="px-2 py-1 font-mono">{r.matchedArticle || "—"}</td>
+                      <td className="px-2 py-1">
+                        <span className={`rounded-full px-2 py-0.5 text-xs ${
+                          r.confidence === "HIGH"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : r.confidence === "MEDIUM"
+                              ? "bg-amber-100 text-amber-800"
+                              : r.confidence === "LOW"
+                                ? "bg-rose-100 text-rose-800"
+                                : "bg-slate-100 text-slate-800"
+                        }`}>
+                          {r.confidence}
+                        </span>
+                      </td>
+                      <td className="px-2 py-1 text-xs">
+                        {r.reason || "-"}
+                        {r.duplicateWarning ? (
+                          <div className="mt-1 rounded bg-rose-100 px-2 py-0.5 text-[10px] text-rose-800">Possible duplicate mapping</div>
+                        ) : null}
+                      </td>
+                      <td className="px-2 py-1 text-xs">
+                        {(r.alternatives || []).slice(0, 3).map((a) => (
+                          <div key={`${r.row}-${a.article}`} className="mb-1 rounded border px-1 py-0.5">
+                            {a.article} ({a.confidence})
+                          </div>
+                        ))}
+                      </td>
+                      <td className="px-2 py-1">
+                        {(r.alternatives || []).slice(0, 2).map((a) => (
+                          <button
+                            key={`${r.row}-${a.article}-act`}
+                            type="button"
+                            className="mb-1 mr-1 rounded border px-2 py-1 text-[10px]"
+                            onClick={() => manualOverride.mutate({ selectedArticle: a.article, row: r })}
+                          >
+                            Accept {a.article}
+                          </button>
+                        ))}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 

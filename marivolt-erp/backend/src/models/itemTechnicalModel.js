@@ -111,6 +111,9 @@ const itemTechnicalSchema = new mongoose.Schema(
 itemTechnicalSchema.index({ companyId: 1, article: 1 }, { unique: true });
 itemTechnicalSchema.index({ companyId: 1, spn: 1, materialCode: 1, drawingNumber: 1 });
 itemTechnicalSchema.index({ companyId: 1, esn: 1 });
+itemTechnicalSchema.index({ companyId: 1, spn: 1 });
+itemTechnicalSchema.index({ companyId: 1, materialCode: 1 });
+itemTechnicalSchema.index({ companyId: 1, drawingNumber: 1 });
 itemTechnicalSchema.index({ companyId: 1, "modelMappings.modelCode": 1 });
 itemTechnicalSchema.index({ companyId: 1, "configurationMappings.configurationCode": 1 });
 itemTechnicalSchema.index({ companyId: 1, "oemCrossReferences.oemPartNumber": 1 });

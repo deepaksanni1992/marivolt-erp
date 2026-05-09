@@ -4,6 +4,8 @@ import ItemMaster, { UOM_VALUES } from "../models/itemMasterModel.js";
 import ItemTechnical from "../models/itemTechnicalModel.js";
 import ItemSupplier from "../models/itemSupplierModel.js";
 import StockBalance from "../models/StockBalance.js";
+import { writeAudit } from "../services/auditService.js";
+import { resolveLookup, resolveLookupBatch } from "../services/itemResolutionService.js";
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -191,6 +193,10 @@ function mapMerged(item, technical, suppliers) {
     suppliers: suppliers || [],
     dimension: technical?.dimension || "",
   };
+}
+
+async function resolveItemByLookupInput(req, input = {}) {
+  return resolveLookup({ companyId: req.companyId, input });
 }
 
 export async function listItemFacets(req, res) {
@@ -866,6 +872,119 @@ export async function getItemCompatibility(req, res) {
         replacementNotes: x.replacementNotes,
       })),
     });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function resolveItemByTechnicalLookup(req, res) {
+  try {
+    const payload = req.method === "GET" ? req.query : req.body;
+    const resolved = await resolveItemByLookupInput(req, payload || {});
+    await writeAudit(req, {
+      action: "LOOKUP",
+      module: "ITEM_MASTER",
+      entityType: "ITEM_RESOLUTION",
+      entityId: resolved.matchedArticle || "",
+      documentNo: resolved.matchedArticle || "",
+      description: `Item lookup requested (${resolved.confidence})`,
+      metadata: {
+        input: payload || {},
+        matchedArticle: resolved.matchedArticle || "",
+        confidence: resolved.confidence || "",
+        duplicateWarning: Boolean(resolved.duplicateWarning),
+      },
+    });
+    res.json(resolved);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function bulkResolveItemLookup(req, res) {
+  try {
+    if (!req.file?.buffer) return res.status(400).json({ message: "Upload CSV/Excel with file field" });
+    const workbook = XLSX.read(req.file.buffer, { type: "buffer", raw: false });
+    const ws = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+    const normalizedRows = rows.map((raw) => {
+      const row = Object.fromEntries(Object.entries(raw).map(([k, v]) => [trim(k), trim(v)]));
+      return {
+        _raw: row,
+        article: pick(row, "Article", "ARTICLE"),
+        esn: pick(row, "ESN"),
+        spn: pick(row, "SPN"),
+        materialCode: pick(row, "Material Code", "MaterialCode", "MATERIAL CODE"),
+        drawingNumber: pick(row, "Drawing Number", "DRAWING NUMBER"),
+        oemReference: pick(row, "OEM Ref", "OEM Reference", "OEM"),
+        supplierReference: pick(row, "Supplier Ref", "Supplier Reference"),
+        engineModel: pick(row, "Engine Model", "Model"),
+        configuration: pick(row, "Configuration", "Config"),
+      };
+    });
+    const resolutions = await resolveLookupBatch({ companyId: req.companyId, rows: normalizedRows });
+    const out = normalizedRows.map((row, index) => {
+      const resolved = resolutions[index] || {};
+      return {
+        row: index + 2,
+        input: row._raw,
+        matchedArticle: resolved.matchedArticle || "",
+        confidence: resolved.confidence || "NO_MATCH",
+        candidateCount: (resolved.alternativeCandidates || []).length + (resolved.matchedArticle ? 1 : 0),
+        reason: resolved.matchedReason || "",
+        duplicateWarning: Boolean(resolved.duplicateWarning),
+        alternatives: resolved.alternativeCandidates || [],
+      };
+    });
+    await writeAudit(req, {
+      action: "IMPORT",
+      module: "ITEM_MASTER",
+      entityType: "ITEM_RESOLUTION_BULK",
+      entityId: "",
+      documentNo: "",
+      description: `Bulk technical resolution import processed (${out.length} rows)`,
+      metadata: {
+        total: out.length,
+        matched: out.filter((x) => Boolean(x.matchedArticle)).length,
+        lowConfidence: out.filter((x) => x.confidence === "LOW").length,
+        duplicateWarnings: out.filter((x) => x.duplicateWarning).length,
+      },
+    });
+    res.json({
+      total: out.length,
+      matched: out.filter((x) => Boolean(x.matchedArticle)).length,
+      noMatch: out.filter((x) => !x.matchedArticle).length,
+      errors: 0,
+      items: out,
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+export async function recordResolutionOverride(req, res) {
+  try {
+    const source = req.body?.source || "MANUAL";
+    const selectedArticle = trim(req.body?.selectedArticle).toUpperCase();
+    const input = req.body?.input || {};
+    const alternatives = Array.isArray(req.body?.alternatives) ? req.body.alternatives : [];
+    if (!selectedArticle) return res.status(400).json({ message: "selectedArticle is required" });
+    await ensureItemExists(req, selectedArticle);
+    await writeAudit(req, {
+      action: "OVERRIDE",
+      module: "ITEM_MASTER",
+      entityType: "ITEM_RESOLUTION_OVERRIDE",
+      entityId: selectedArticle,
+      documentNo: selectedArticle,
+      description: `Item resolution override accepted for ${selectedArticle}`,
+      metadata: {
+        source,
+        input,
+        selectedArticle,
+        alternatives,
+      },
+    });
+    res.json({ success: true });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
