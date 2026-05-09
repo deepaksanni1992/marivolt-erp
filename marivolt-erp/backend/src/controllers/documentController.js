@@ -5,6 +5,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import Document, { DOCUMENT_TYPES } from "../models/Document.js";
 import { getS3Client, getS3Bucket, buildS3ObjectPublicUrl } from "../config/s3.js";
 import { scopeToCompany } from "../middleware/auth.js";
+import { writeAudit } from "../services/auditService.js";
 
 /** Map UI document type → S3 prefix folder (no leading/trailing slashes). */
 const DOCUMENT_TYPE_TO_FOLDER = {
@@ -13,6 +14,9 @@ const DOCUMENT_TYPE_TO_FOLDER = {
   "Purchase Order": "purchase-orders",
   "Sales Invoice": "sales-invoices",
   "Packing List": "packing-lists",
+  "BL/AWB": "bl-awb",
+  "Customs Docs": "customs-docs",
+  "Inspection Report": "inspection-reports",
   "Shipping Document": "shipping-documents",
   "GRN Document": "grn-documents",
   Other: "others",
@@ -121,6 +125,20 @@ export async function uploadDocument(req, res) {
       uploadedBy,
       uploadedAt: new Date(),
     });
+    await writeAudit(req, {
+      action: "UPLOAD",
+      module: moduleName || "DOCUMENTS",
+      entityType: "DOCUMENT",
+      entityId: doc._id,
+      documentNo: refNo || doc._id,
+      description: `${documentType} uploaded: ${doc.originalFileName}`,
+      metadata: {
+        documentType,
+        relatedId,
+        moduleName,
+        size: doc.size,
+      },
+    });
 
     res.status(201).json(doc.toObject());
   } catch (err) {
@@ -204,6 +222,18 @@ export async function deleteDocument(req, res) {
     );
 
     await doc.deleteOne();
+    await writeAudit(req, {
+      action: "DELETE",
+      module: doc.moduleName || "DOCUMENTS",
+      entityType: "DOCUMENT",
+      entityId: doc._id,
+      documentNo: doc.refNo || doc._id,
+      description: `${doc.documentType} deleted: ${doc.originalFileName}`,
+      metadata: {
+        documentType: doc.documentType,
+        relatedId: doc.relatedId || "",
+      },
+    });
     res.json({ ok: true, message: "Document deleted" });
   } catch (err) {
     console.error("[documents] delete error:", err);

@@ -18,6 +18,8 @@ const reportsView = requirePermission("REPORTS", "view");
 
 router.get("/reports/summary", reportsView, c.purchaseSummaryReport);
 router.get("/reports/pending", reportsView, c.pendingPurchaseReport);
+router.get("/reports/open", reportsView, c.openPurchaseReport);
+router.get("/reports/dashboard", reportsView, c.procurementDashboard);
 router.get("/export", purchaseExport, c.listPurchaseOrders);
 
 router.get("/requisitions", purchaseView, pr.listPurchaseRequisitions);

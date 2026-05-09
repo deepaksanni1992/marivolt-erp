@@ -1,8 +1,8 @@
 import mongoose from "mongoose";
 import PurchaseOrder from "../models/PurchaseOrder.js";
+import GRN from "../models/GRN.js";
 import Supplier from "../models/Supplier.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
-import * as stockService from "../services/stockService.js";
 import { applyPurchaseOrderDefaults } from "../constants/purchaseOrderDefaults.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 import { writeAudit, writeStatusChange } from "../services/auditService.js";
@@ -118,6 +118,27 @@ export async function getPurchaseOrder(req, res) {
     }
     const row = await PurchaseOrder.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
+    const grns = await GRN.find(withCompany(req, { poId: row._id }))
+      .select("grnNo grnDate status items")
+      .sort({ createdAt: -1 })
+      .lean();
+    const lineHistory = {};
+    for (const g of grns) {
+      for (const ln of g.items || []) {
+        const key = String(ln.poLineId || "");
+        if (!key) continue;
+        if (!lineHistory[key]) lineHistory[key] = [];
+        lineHistory[key].push({
+          grnNo: g.grnNo,
+          grnDate: g.grnDate,
+          status: g.status,
+          receivedQty: Number(ln.receivedQty) || 0,
+          rejectedQty: Number(ln.rejectedQty) || 0,
+          cancelledQty: Number(ln.cancelledQty) || 0,
+        });
+      }
+    }
+    row._grnLineHistory = lineHistory;
     res.json(row);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -332,54 +353,100 @@ export async function receivePurchaseOrder(req, res) {
     const po = await PurchaseOrder.findOne(withCompany(req, { _id: id }));
     if (!po) return res.status(404).json({ message: "Not found" });
 
-    const { warehouse = "MAIN", lines } = req.body;
+    const { warehouse = "MAIN", warehouseId = null, branchId = null, lines } = req.body;
     if (!Array.isArray(lines) || lines.length === 0) {
       return res.status(400).json({ message: "lines array required" });
     }
 
-    const userEmail = req.user?.email || "";
-
-    await stockService.withTransaction(async (session) => {
-      for (const row of lines) {
-        const lineId = row.lineId;
-        const q = Number(row.qty);
-        if (!lineId) throw new Error("Each line needs lineId");
-        if (!Number.isFinite(q) || q <= 0) throw new Error("Invalid qty");
-
-        const line = po.lines.id(lineId);
-        if (!line) throw new Error(`Invalid lineId ${lineId}`);
-
-        const remaining = (Number(line.qty) || 0) - (Number(line.receivedQty) || 0);
-        const take = Math.min(q, remaining);
-        if (take <= 0) continue;
-
-        await stockService.grnReceive({
-          session,
-          companyId: req.companyId,
-          article: line.itemCode,
-          warehouse,
-          qty: take,
-          referenceType: "PURCHASE_ORDER",
-          referenceNo: po.poNo || po.poNumber,
-          supplierName: po.supplierName || "",
-          unitCost: line.unitPrice,
-          remarks: row.remarks || "",
-          createdBy: userEmail,
-          sourceModule: "PURCHASE",
+    const receiveLines = [];
+    for (const row of lines) {
+      const lineId = row.lineId;
+      const q = Number(row.qty);
+      if (!lineId) throw new Error("Each line needs lineId");
+      if (!Number.isFinite(q) || q <= 0) throw new Error("Invalid qty");
+      const line = po.lines.id(lineId);
+      if (!line) throw new Error(`Invalid lineId ${lineId}`);
+      const ordered = Number(line.orderedQty ?? line.qty) || 0;
+      const received = Number(line.receivedQty) || 0;
+      const cancelled = Number(line.cancelledQty) || 0;
+      const remaining = Math.max(0, ordered - received - cancelled);
+      if (q > remaining) {
+        return res.status(400).json({
+          message: `Receive qty exceeds pending for ${line.itemCode || line.article || line.articleNo || "line"}`,
         });
-
-        line.receivedQty = (Number(line.receivedQty) || 0) + take;
       }
+      receiveLines.push({
+        article: line.itemCode || line.article,
+        description: line.description || "",
+        orderedQty: ordered,
+        receivedQty: q,
+        pendingQty: Math.max(0, remaining - q),
+        acceptedQty: q,
+        rejectedQty: 0,
+        cancelledQty: 0,
+        unitCost: Number(line.unitPrice) || 0,
+        lineAmount: q * (Number(line.unitPrice) || 0),
+        currency: po.currency || "USD",
+        exchangeRate: Number(po.exchangeRate) || 1,
+        freight: Number(row.freight) || 0,
+        customs: Number(row.customs) || 0,
+        landedAdjustment: Number(row.landedAdjustment) || 0,
+        location: String(row.location || warehouse || "").trim().toUpperCase(),
+        warehouse: String(row.location || warehouse || "").trim().toUpperCase(),
+        warehouseId: row.warehouseId || warehouseId || po.warehouseId || null,
+        batchNo: String(row.batchNo || "").trim(),
+        serialNo: String(row.serialNo || "").trim(),
+        manufacturingDate: row.manufacturingDate || null,
+        expiryDate: row.expiryDate || null,
+        poId: po._id,
+        poLineId: line._id,
+        poNo: po.poNo || po.poNumber,
+        remarks: String(row.remarks || "").trim(),
+      });
+    }
 
-      const allReceived =
-        po.lines.length > 0 && po.lines.every((l) => (l.receivedQty || 0) >= (l.qty || 0));
-      const anyReceived = po.lines.some((l) => (l.receivedQty || 0) > 0);
-      if (allReceived) po.status = "RECEIVED";
-      else if (anyReceived) po.status = "PARTIAL_RECEIVED";
-
-      await po.save({ session });
+    const grnNo = await nextSequentialNumber(req, "GRN", {
+      fallbackPrefix: "GRN",
+      width: 4,
+      referenceDate: new Date(),
+      branchId: branchId || po.branchId || null,
     });
-    res.json(po);
+    const grn = await GRN.create({
+      companyId: req.companyId,
+      branchId: branchId || po.branchId || null,
+      warehouseId: warehouseId || po.warehouseId || null,
+      grnNo,
+      grnDate: req.body.grnDate || new Date(),
+      poId: po._id,
+      poNo: po.poNo || po.poNumber,
+      supplierId: po.supplierId || null,
+      supplierName: po.supplierName || "",
+      supplierInvoiceNo: String(req.body.supplierInvoiceNo || "").trim(),
+      packingListNo: String(req.body.packingListNo || "").trim(),
+      blAwbNo: String(req.body.blAwbNo || "").trim(),
+      customsDocRef: String(req.body.customsDocRef || "").trim(),
+      currency: po.currency || "USD",
+      exchangeRate: Number(po.exchangeRate) || 1,
+      freight: Number(req.body.freight) || 0,
+      customs: Number(req.body.customs) || 0,
+      landedAdjustment: Number(req.body.landedAdjustment) || 0,
+      remarks: String(req.body.remarks || "").trim(),
+      status: "DRAFT",
+      approvalStatus: "NOT_REQUIRED",
+      items: receiveLines,
+      attachments: Array.isArray(req.body.attachments) ? req.body.attachments : [],
+      createdBy: req.user?.email || "",
+      updatedBy: req.user?.email || "",
+    });
+    await writeAudit(req, {
+      action: "CREATE",
+      module: "PURCHASE",
+      entityType: "GRN",
+      entityId: grn._id,
+      documentNo: grn.grnNo,
+      description: `Draft GRN ${grn.grnNo} created from PO ${po.poNo || po.poNumber}`,
+    });
+    res.status(201).json(grn);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -539,9 +606,10 @@ export async function purchaseSummaryReport(req, res) {
 }
 
 function linePendingQty(line) {
-  const q = Number(line.qty) || 0;
+  const q = Number(line.orderedQty ?? line.qty) || 0;
   const r = Number(line.receivedQty) || 0;
-  return Math.max(0, q - r);
+  const c = Number(line.cancelledQty) || 0;
+  return Math.max(0, q - r - c);
 }
 
 function poHasPendingLines(po) {
@@ -573,7 +641,7 @@ export async function pendingPurchaseReport(req, res) {
         let ordered = 0;
         let received = 0;
         for (const l of po.lines || []) {
-          ordered += Number(l.qty) || 0;
+          ordered += Number(l.orderedQty ?? l.qty) || 0;
           received += Number(l.receivedQty) || 0;
           if (linePendingQty(l) > 0) pendingLines += 1;
         }
@@ -588,6 +656,8 @@ export async function pendingPurchaseReport(req, res) {
             totalReceivedQty: received,
             pendingQty,
             receiptPercent: pct,
+            eta: po.expectedDeliveryDate || null,
+            warehouse: po.warehouse || po.warehouseName || "",
           },
         };
       });
@@ -595,6 +665,66 @@ export async function pendingPurchaseReport(req, res) {
     const total = enriched.length;
     const items = enriched.slice(skip, skip + limit);
     res.json({ items, total, page, limit });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function openPurchaseReport(req, res) {
+  try {
+    const filter = withCompany(req, { status: { $nin: ["CANCELLED", "CLOSED"] } });
+    if (req.query.supplierName) filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
+    const rows = await PurchaseOrder.find(filter).sort({ createdAt: -1 }).lean();
+    const items = rows.map((po) => {
+      const ordered = (po.lines || []).reduce((n, l) => n + (Number(l.orderedQty ?? l.qty) || 0), 0);
+      const received = (po.lines || []).reduce((n, l) => n + (Number(l.receivedQty) || 0), 0);
+      const pending = Math.max(0, ordered - received);
+      return {
+        _id: po._id,
+        poNo: po.poNo || po.poNumber,
+        supplier: po.supplierName || "",
+        ordered,
+        received,
+        pending,
+        eta: po.expectedDeliveryDate || null,
+        status: po.status || "DRAFT",
+        warehouse: po.warehouse || po.warehouseName || "",
+      };
+    });
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function procurementDashboard(req, res) {
+  try {
+    const [poRows, grnRows] = await Promise.all([
+      PurchaseOrder.find(withCompany(req)).lean(),
+      GRN.find(withCompany(req)).lean(),
+    ]);
+    const today = new Date();
+    const openPos = poRows.filter((x) => !["RECEIVED", "CANCELLED", "CLOSED"].includes(String(x.status || ""))).length;
+    const pendingReceipts = poRows.filter((x) => ["SENT", "PARTIAL_RECEIVED"].includes(String(x.status || ""))).length;
+    const delayedSuppliers = poRows.filter((x) => x.expectedDeliveryDate && new Date(x.expectedDeliveryDate) < today && !["RECEIVED", "CANCELLED", "CLOSED"].includes(String(x.status || ""))).length;
+    const partialGrns = grnRows.filter((x) => String(x.status || "") === "PARTIAL_RECEIVED").length;
+    const outstandingBySupplier = {};
+    for (const po of poRows) {
+      const supplierName = po.supplierName || "—";
+      const ordered = (po.lines || []).reduce((n, l) => n + (Number(l.orderedQty ?? l.qty) || 0), 0);
+      const received = (po.lines || []).reduce((n, l) => n + (Number(l.receivedQty) || 0), 0);
+      const pending = Math.max(0, ordered - received);
+      if (!(pending > 0)) continue;
+      outstandingBySupplier[supplierName] = (outstandingBySupplier[supplierName] || 0) + pending;
+    }
+    const supplierOutstanding = Object.entries(outstandingBySupplier)
+      .map(([supplierName, pendingQty]) => ({ supplierName, pendingQty }))
+      .sort((a, b) => b.pendingQty - a.pendingQty)
+      .slice(0, 10);
+    res.json({
+      widgets: { openPos, pendingReceipts, delayedSuppliers, partialGrns },
+      supplierOutstanding,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
