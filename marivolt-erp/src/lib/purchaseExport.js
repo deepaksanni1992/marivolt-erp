@@ -48,6 +48,6 @@ export function downloadPdfTable(title, subtitle, columns, rows, fileBaseName, c
     alternateRowStyles: { fillColor: [248, 248, 248] },
     margin: { left: 14, right: 14 },
   });
-  const name = (fileBaseName || title).replace(/[^\w\-]+/g, "-").replace(/^-|-$/g, "");
+  const name = (fileBaseName || title).replace(/[^\w-]+/g, "-").replace(/^-|-$/g, "");
   doc.save(`${name || "export"}.pdf`);
 }

@@ -69,7 +69,6 @@ export async function writeAudit(req, entry = {}) {
   } catch (err) {
     // Logging must never break the user's transaction — surface to
     // server console only.
-    // eslint-disable-next-line no-console
     console.warn("[audit] failed to persist log entry:", err.message);
   }
 }

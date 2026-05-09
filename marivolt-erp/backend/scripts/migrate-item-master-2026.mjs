@@ -56,7 +56,6 @@ async function main() {
   const db = mongoose.connection.db;
 
   const defaultVerticalId = await getOrCreateDefaultVertical(db);
-  // eslint-disable-next-line no-console
   console.log("Default vertical id for legacy rows:", String(defaultVerticalId));
 
   const spns = db.collection("spns");
@@ -66,7 +65,6 @@ async function main() {
     },
     { $set: { vertical: defaultVerticalId } }
   );
-  // eslint-disable-next-line no-console
   console.log("SPN: assigned default vertical where missing", spnResult.modifiedCount);
 
   const compat = db.collection("materialcompatibilities");
@@ -85,7 +83,6 @@ async function main() {
     },
     [{ $set: { brand: "$engineMake" } }]
   );
-  // eslint-disable-next-line no-console
   console.log("Compatibility: copied engineMake -> brand", compatResult.modifiedCount);
 
   await compat.updateMany(
@@ -113,7 +110,6 @@ async function main() {
     },
     [{ $set: { price: "$purchasePrice" } }]
   );
-  // eslint-disable-next-line no-console
   console.log("Suppliers: copied purchasePrice -> price", supResult.modifiedCount);
 
   await suppliers.updateMany({}, { $unset: { purchasePrice: "" } });
@@ -138,25 +134,21 @@ async function main() {
     await materials.updateOne({ _id: m._id }, { $set: { vertical: verticalId } });
     materialFixed += 1;
   }
-  // eslint-disable-next-line no-console
   console.log("Materials: assigned vertical where missing", materialFixed);
 
   const { ensureDefaultBrandsForEveryVertical, ensureBrandsFromCompatibilityRows } =
     await import("../src/utils/ensureDefaultBrands.js");
   await ensureDefaultBrandsForEveryVertical();
   await ensureBrandsFromCompatibilityRows();
-  // eslint-disable-next-line no-console
   console.log(
     "Brands: default catalog per vertical + any brands referenced on compatibility rows"
   );
 
-  // eslint-disable-next-line no-console
   console.log("Migration finished.");
   await mongoose.disconnect();
 }
 
 main().catch((e) => {
-  // eslint-disable-next-line no-console
   console.error(e);
   process.exit(1);
 });

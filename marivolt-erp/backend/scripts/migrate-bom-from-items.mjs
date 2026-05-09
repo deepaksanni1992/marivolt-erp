@@ -102,13 +102,11 @@ async function main() {
     }
   }
 
-  // eslint-disable-next-line no-console
   console.log(`BOM migration: updated ${updated} document(s).`);
   await mongoose.disconnect();
 }
 
 main().catch((e) => {
-  // eslint-disable-next-line no-console
   console.error(e);
   process.exit(1);
 });

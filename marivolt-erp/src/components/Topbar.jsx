@@ -17,7 +17,6 @@ export default function Topbar({ onMenuClick }) {
       await selectCompany(nextCompanyId);
       nav("/dashboard");
     } catch (err) {
-      // eslint-disable-next-line no-alert
       window.alert(err.message || "Failed to switch company");
     }
   }

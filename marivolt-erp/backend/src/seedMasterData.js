@@ -170,7 +170,6 @@ async function seed() {
       { upsert: true, new: true }
     );
 
-    // eslint-disable-next-line no-console
     console.log("Master data seed completed (vertical, SPN, material, article, supplier demo).");
   } finally {
     await mongoose.disconnect();
@@ -178,7 +177,6 @@ async function seed() {
 }
 
 seed().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error("Master data seed failed:", err);
   process.exit(1);
 });

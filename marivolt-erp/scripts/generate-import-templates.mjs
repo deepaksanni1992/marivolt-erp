@@ -250,5 +250,4 @@ writeTemplate(
   ]
 );
 
-// eslint-disable-next-line no-console
 console.log("Wrote Excel templates to:", outDir);

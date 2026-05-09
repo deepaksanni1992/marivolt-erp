@@ -248,10 +248,10 @@ export default function StoreModule() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["stock-locations"] }),
   });
 
-  const stockRows = balance?.items || [];
-  const ledgerRows = ledger?.items || [];
+  const stockRows = useMemo(() => balance?.items || [], [balance]);
+  const ledgerRows = useMemo(() => ledger?.items || [], [ledger]);
   const locationRows = locations || [];
-  const negativeRows = negativeReport?.items || [];
+  const negativeRows = useMemo(() => negativeReport?.items || [], [negativeReport]);
 
   const stockViewColumns = useMemo(
     () => [

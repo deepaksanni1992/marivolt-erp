@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useContext, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, AUTH_KEY } from "../lib/api.js";
 
@@ -57,21 +57,19 @@ export function AuthProvider({ children }) {
     persist(null);
   }
 
-  const value = useMemo(
-    () => ({
-      auth,
-      isLoggedIn: !!auth?.token && !!auth?.user,
-      requiresCompanySelection: !!auth?.requiresCompanySelection && !auth?.token,
-      login,
-      selectCompany,
-      logout,
-    }),
-    [auth]
-  );
+  const value = {
+    auth,
+    isLoggedIn: !!auth?.token && !!auth?.user,
+    requiresCompanySelection: !!auth?.requiresCompanySelection && !auth?.token,
+    login,
+    selectCompany,
+    logout,
+  };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used inside AuthProvider");

@@ -64,7 +64,6 @@ export async function recordActivity(req, entry = {}) {
       metadata: entry.metadata ?? null,
     });
   } catch (err) {
-    // eslint-disable-next-line no-console
     console.warn("[user-activity] failed to persist:", err.message);
   }
 }
