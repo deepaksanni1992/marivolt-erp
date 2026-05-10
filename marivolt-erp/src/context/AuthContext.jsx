@@ -1,15 +1,11 @@
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { api, AUTH_KEY } from "../lib/api.js";
+import { api, loadStoredAuth, persistStoredAuth } from "../lib/api.js";
 
 const AuthContext = createContext(null);
 
 function loadAuth() {
-  try {
-    return JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
-  } catch {
-    return null;
-  }
+  return loadStoredAuth();
 }
 
 export function AuthProvider({ children }) {
@@ -18,8 +14,7 @@ export function AuthProvider({ children }) {
   const [authReady, setAuthReady] = useState(() => !loadAuth()?.token);
 
   const persist = useCallback((next) => {
-    if (next) localStorage.setItem(AUTH_KEY, JSON.stringify({ ...next, ts: Date.now() }));
-    else localStorage.removeItem(AUTH_KEY);
+    persistStoredAuth(next);
     setAuth(next);
   }, []);
 

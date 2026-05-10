@@ -78,22 +78,48 @@ export function isUsingSameOriginApiProxy() {
 
 export const AUTH_KEY = "marivoltz_auth_v1";
 
-function getToken() {
+/**
+ * Auth lives in sessionStorage (tab scope). Opening the ERP in a new tab or from a
+ * shared link does not inherit another tab’s login. legacy localStorage entries are removed.
+ */
+if (typeof window !== "undefined") {
   try {
-    const auth = JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
-    return auth?.token || null;
+    localStorage.removeItem(AUTH_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function loadStoredAuth() {
+  if (typeof window === "undefined") return null;
+  try {
+    return JSON.parse(sessionStorage.getItem(AUTH_KEY) || "null");
   } catch {
     return null;
   }
 }
 
-function getActiveCompanyId() {
+export function persistStoredAuth(next) {
+  if (typeof window === "undefined") return;
   try {
-    const auth = JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
-    return auth?.company?.id || null;
+    if (next) {
+      sessionStorage.setItem(AUTH_KEY, JSON.stringify({ ...next, ts: Date.now() }));
+    } else {
+      sessionStorage.removeItem(AUTH_KEY);
+    }
+    localStorage.removeItem(AUTH_KEY);
   } catch {
-    return null;
+    /* quota / private mode */
   }
+}
+
+function getToken() {
+  return loadStoredAuth()?.token || null;
+}
+
+function getActiveCompanyId() {
+  const id = loadStoredAuth()?.company?.id;
+  return id || null;
 }
 
 /** Shared axios instance: base URL includes `/api`, Bearer token on each request. */

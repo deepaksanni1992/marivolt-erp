@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AUTH_KEY, apiGetWithQuery } from "../lib/api.js";
+import { apiGetWithQuery, loadStoredAuth } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import Modal from "../components/erp/Modal.jsx";
 
 function getUserLabel() {
   try {
-    const auth = JSON.parse(localStorage.getItem(AUTH_KEY) || "null");
+    const auth = loadStoredAuth();
     const u = auth?.user;
     if (!u) return "";
     return u.name || u.email || u.username || "";
