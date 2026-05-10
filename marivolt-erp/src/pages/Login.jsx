@@ -4,7 +4,7 @@ import { useAuth } from "../context/AuthContext.jsx";
 
 export default function Login() {
   const nav = useNavigate();
-  const { login } = useAuth();
+  const { login, authReady, isLoggedIn, requiresCompanySelection } = useAuth();
   const [form, setForm] = useState({ email: "", password: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -12,6 +12,20 @@ export default function Login() {
   useEffect(() => {
     setForm({ email: "", password: "" });
   }, []);
+
+  useEffect(() => {
+    if (!authReady) return;
+    if (requiresCompanySelection) nav("/select-company", { replace: true });
+    else if (isLoggedIn) nav("/dashboard", { replace: true });
+  }, [authReady, requiresCompanySelection, isLoggedIn, nav]);
+
+  if (!authReady) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gray-50 text-sm text-gray-600">
+        Checking session…
+      </div>
+    );
+  }
 
   function onChange(e) {
     setForm((p) => ({ ...p, [e.target.name]: e.target.value }));

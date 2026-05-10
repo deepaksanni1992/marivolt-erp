@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import AppLayout from "./components/AppLayout.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
+import { useAuth } from "./context/AuthContext.jsx";
 
 import Login from "./pages/Login.jsx";
 import CompanySelect from "./pages/CompanySelect.jsx";
@@ -18,6 +19,20 @@ import DeKitting from "./pages/DeKitting.jsx";
 import Documents from "./pages/Documents.jsx";
 import AuditTrail from "./pages/AuditTrail.jsx";
 import Settings from "./pages/Settings.jsx";
+
+function CatchAllRedirect() {
+  const { isLoggedIn, requiresCompanySelection, authReady } = useAuth();
+  if (!authReady) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gray-50 text-sm text-gray-600">
+        Checking session…
+      </div>
+    );
+  }
+  if (requiresCompanySelection) return <Navigate to="/select-company" replace />;
+  if (isLoggedIn) return <Navigate to="/dashboard" replace />;
+  return <Navigate to="/login" replace />;
+}
 
 export default function App() {
   return (
@@ -45,7 +60,7 @@ export default function App() {
         </Route>
       </Route>
 
-      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      <Route path="*" element={<CatchAllRedirect />} />
     </Routes>
   );
 }

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, AUTH_KEY } from "../lib/api.js";
 
@@ -14,13 +14,48 @@ function loadAuth() {
 
 export function AuthProvider({ children }) {
   const queryClient = useQueryClient();
-  const [auth, setAuth] = useState(loadAuth);
+  const [auth, setAuth] = useState(() => loadAuth());
+  const [authReady, setAuthReady] = useState(() => !loadAuth()?.token);
 
-  function persist(next) {
+  const persist = useCallback((next) => {
     if (next) localStorage.setItem(AUTH_KEY, JSON.stringify({ ...next, ts: Date.now() }));
     else localStorage.removeItem(AUTH_KEY);
     setAuth(next);
-  }
+  }, []);
+
+  useEffect(() => {
+    const stored = loadAuth();
+    if (!stored?.token) {
+      setAuthReady(true);
+      return;
+    }
+    if (!stored?.user) {
+      queryClient.clear();
+      persist(null);
+      setAuthReady(true);
+      return;
+    }
+
+    let cancelled = false;
+    api
+      .get("/auth/companies")
+      .then(() => {
+        if (!cancelled) setAuthReady(true);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          const status = err?.status ?? err?.response?.status ?? 0;
+          if (status === 401 || status === 403) {
+            queryClient.clear();
+            persist(null);
+          }
+          setAuthReady(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [queryClient, persist]);
 
   async function login(identifier, password) {
     const { data } = await api.post("/auth/login", { email: identifier, password });
@@ -59,6 +94,7 @@ export function AuthProvider({ children }) {
 
   const value = {
     auth,
+    authReady,
     isLoggedIn: !!auth?.token && !!auth?.user,
     requiresCompanySelection: !!auth?.requiresCompanySelection && !auth?.token,
     login,
