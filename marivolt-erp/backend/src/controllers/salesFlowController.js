@@ -15,6 +15,7 @@ import Company from "../models/Company.js";
 import Item from "../models/Item.js";
 import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
+import { formatDuplicateKeyError } from "../utils/mongoErrors.js";
 import * as stockService from "../services/stockService.js";
 import {
   DOC_TYPES,
@@ -1264,7 +1265,7 @@ export async function createCustomer(req, res) {
     const doc = await Customer.create(body);
     res.status(201).json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(400).json({ message: formatDuplicateKeyError(err, "Customer") });
   }
 }
 
@@ -1286,7 +1287,7 @@ export async function updateCustomer(req, res) {
     if (!doc) return res.status(404).json({ message: "Not found" });
     res.json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(400).json({ message: formatDuplicateKeyError(err, "Customer") });
   }
 }
 

@@ -10,6 +10,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "seed:companies": "node src/seedCompanies.js",
     "seed:clone-item-master-okeanos": "node scripts/clone-item-master-mar-to-oke.mjs",
+    "sync:masters-mar-oke": "node scripts/sync-suppliers-customers-mar-oke.mjs",
+    "migrate:isolate-masters": "node scripts/migrate-supplier-customer-isolation.mjs",
     "migrate:company-marivolt": "node scripts/migrate-company-marivolt.mjs",
     "migrate:item-master": "node scripts/migrate-item-master-2026.mjs",
     "migrate:bom-from-items": "node scripts/migrate-bom-from-items.mjs"

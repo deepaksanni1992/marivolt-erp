@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import Supplier from "../models/Supplier.js";
 import { writeAudit } from "../services/auditService.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
+import { formatDuplicateKeyError } from "../utils/mongoErrors.js";
 
 function pagination(req) {
   const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
@@ -136,7 +137,7 @@ export async function createSupplier(req, res) {
     });
     res.status(201).json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(400).json({ message: formatDuplicateKeyError(err, "Supplier") });
   }
 }
 
@@ -176,7 +177,7 @@ export async function updateSupplier(req, res) {
     });
     res.json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(400).json({ message: formatDuplicateKeyError(err, "Supplier") });
   }
 }
 
