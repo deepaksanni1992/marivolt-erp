@@ -49,7 +49,8 @@ const supplierSchema = new mongoose.Schema(
 supplierSchema.index({ companyId: 1, supplierCode: 1 }, { unique: true, sparse: true });
 supplierSchema.index({ companyId: 1, supplierName: 1 });
 
-supplierSchema.pre("validate", function syncLegacyFields(next) {
+// Mongoose 9+: pre middleware no longer receives `next`; use sync or async/await.
+supplierSchema.pre("validate", function syncLegacyFields() {
   if (!this.supplierName && this.name) this.supplierName = String(this.name);
   if (!this.name && this.supplierName) this.name = String(this.supplierName);
   if (!this.contactPerson && this.contactName) this.contactPerson = String(this.contactName);
@@ -57,7 +58,6 @@ supplierSchema.pre("validate", function syncLegacyFields(next) {
   if (!this.remarks && this.notes) this.remarks = String(this.notes);
   if (!this.notes && this.remarks) this.notes = String(this.remarks);
   this.activeStatus = this.activeStatus !== false;
-  next();
 });
 
 export default mongoose.model("Supplier", supplierSchema);
