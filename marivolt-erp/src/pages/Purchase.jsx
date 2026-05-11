@@ -380,69 +380,140 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
     ? b.companySubtitle || "Buyer reference document — quotation-style layout"
     : "Buyer reference document — quotation-style layout";
 
-  const thCell = "border border-[#1f3a5f] px-2 py-2.5 text-left text-[11px] font-bold uppercase tracking-wide text-white";
+  /** Okeanos purchase preview matches sales quotation print header (logo | title + meta | company block). */
+  const isOkeanosQuotationStyle = b.isOkeanos;
+  const poDateLocale =
+    doc.orderDate != null && String(doc.orderDate).trim() !== ""
+      ? new Date(doc.orderDate).toLocaleDateString()
+      : "—";
+  const rightAddress = buyer.address !== "—" ? buyer.address : b.reportAddress;
+  const rightEmail = buyer.email !== "—" ? buyer.email : b.reportEmail;
+  const rightPhone = buyer.phone !== "—" ? buyer.phone : b.reportPhone;
+
+  const thCellNavy =
+    "border border-[#1f3a5f] px-2 py-2.5 text-left text-[11px] font-bold uppercase tracking-wide text-white";
+  const thCellQuotationGrey =
+    "border border-[#ddd] bg-[#f5f5f5] px-2 py-2 text-left text-[11px] font-bold uppercase tracking-wide text-[#374151]";
+  const thCell = isOkeanosQuotationStyle ? thCellQuotationGrey : thCellNavy;
   const tdCell = "border border-[#e5e7eb] px-2 py-2 text-[12px] text-[#111827]";
 
   return (
     <div className="max-h-[75vh] overflow-y-auto bg-[#f3f4f6] p-3 sm:p-4">
       <div className="mx-auto max-w-5xl rounded-lg border border-[#e5e7eb] bg-white p-5 shadow-sm">
-        <header className="grid grid-cols-1 gap-5 border-b-2 border-[#e5e7eb] pb-5 sm:grid-cols-3 sm:items-center">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="flex h-[100px] w-[120px] shrink-0 items-center justify-center">
+        {isOkeanosQuotationStyle ? (
+          <header className="grid grid-cols-1 items-center gap-6 border-b-2 border-[#e5e7eb] pb-5 pt-1 sm:grid-cols-3 sm:gap-4">
+            <div className="flex min-h-[118px] items-center justify-start">
               {logoSrc ? (
                 <img
                   src={logoSrc}
-                  alt={b.companyDisplayName || auth?.company?.name || "Company"}
-                  className="max-h-[100px] w-full max-w-[208px] object-contain"
+                  alt={b.companyDisplayName || "Okeanos"}
+                  className="max-h-[118px] w-full max-w-[208px] object-contain"
                 />
               ) : (
-                <div className="text-2xl font-extrabold tracking-tight text-[#1f5a96]">
-                  {String(auth?.company?.code || "MV").slice(0, 4)}
-                </div>
+                <div className="text-2xl font-extrabold tracking-tight text-[#1f3a5f]">OKE</div>
               )}
             </div>
-            <div className="min-w-0 pt-0.5">
-              <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#6b7280]">Purchase order</p>
-              <p className="mt-1 font-mono text-lg font-bold tracking-tight text-[#111827]">{poNo}</p>
-              <div className="mt-2 space-y-0.5 text-[13px] text-[#555]">
+            <div className="min-w-0 text-center">
+              <h1 className="text-[22px] font-bold text-[#111]">Purchase order</h1>
+              <div className="mt-2 space-y-1 text-[13px] leading-relaxed text-[#555]">
                 <div>
-                  <span className="font-semibold text-[#6b7280]">Date: </span>
-                  {formatPoDate(doc.orderDate)}
+                  <b>No:</b> {poNo}
                 </div>
                 <div>
-                  <span className="font-semibold text-[#6b7280]">Currency: </span>
-                  {cur}
+                  <b>Date:</b> {poDateLocale}
+                </div>
+                <div>
+                  <b>Currency:</b> {cur}
                 </div>
                 {doc.ref ? (
                   <div>
-                    <span className="font-semibold text-[#6b7280]">Ref: </span>
-                    {doc.ref}
+                    <b>Ref:</b> {doc.ref}
                   </div>
                 ) : null}
               </div>
+              <div className="mt-3 flex justify-center">
+                {unsaved ? (
+                  <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-800 ring-1 ring-gray-200">
+                    Unsaved draft
+                  </span>
+                ) : doc.status ? (
+                  <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold uppercase text-gray-800 ring-1 ring-gray-200">
+                    {doc.status}
+                  </span>
+                ) : null}
+              </div>
             </div>
-          </div>
-          <div className="flex flex-col items-center justify-center text-center">
-            <h1 className="text-[26px] font-bold tracking-tight text-[#1f3a5f]">PURCHASE ORDER</h1>
-            <p className="mt-1 text-[13px] font-semibold text-[#2c5282]">{docSubtitle}</p>
-            <div className="mt-3">
-              {unsaved ? (
-                <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-800 ring-1 ring-gray-200">
-                  Unsaved draft
-                </span>
-              ) : doc.status ? (
-                <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold uppercase text-gray-800 ring-1 ring-gray-200">
-                  {doc.status}
-                </span>
+            <div className="min-w-0 text-right text-[12px] leading-relaxed text-[#4a5568]">
+              <p className="text-[32px] font-extrabold leading-none tracking-tight text-[#1f3a5f]">{b.companyDisplayName}</p>
+              {b.companySubtitle ? (
+                <p className="mt-1 text-[14px] font-semibold text-[#2c5282]">{b.companySubtitle}</p>
               ) : null}
+              <div className="mt-3 space-y-1">
+                {rightAddress ? <p>{rightAddress}</p> : null}
+                {rightEmail ? <p>{rightEmail}</p> : null}
+                {rightPhone ? <p>{rightPhone}</p> : null}
+              </div>
             </div>
-          </div>
-          <div className="text-right sm:min-w-0 sm:pl-2">
-            <p className="text-[28px] font-extrabold leading-tight tracking-tight text-[#1f3a5f]">
-              {buyer.name !== "—" ? buyer.name : b.companyDisplayName || auth?.company?.name || "—"}
-            </p>
-          </div>
-        </header>
+          </header>
+        ) : (
+          <header className="grid grid-cols-1 gap-5 border-b-2 border-[#e5e7eb] pb-5 sm:grid-cols-3 sm:items-center">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="flex h-[100px] w-[120px] shrink-0 items-center justify-center">
+                {logoSrc ? (
+                  <img
+                    src={logoSrc}
+                    alt={b.companyDisplayName || auth?.company?.name || "Company"}
+                    className="max-h-[100px] w-full max-w-[208px] object-contain"
+                  />
+                ) : (
+                  <div className="text-2xl font-extrabold tracking-tight text-[#1f5a96]">
+                    {String(auth?.company?.code || "MV").slice(0, 4)}
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0 pt-0.5">
+                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#6b7280]">Purchase order</p>
+                <p className="mt-1 font-mono text-lg font-bold tracking-tight text-[#111827]">{poNo}</p>
+                <div className="mt-2 space-y-0.5 text-[13px] text-[#555]">
+                  <div>
+                    <span className="font-semibold text-[#6b7280]">Date: </span>
+                    {formatPoDate(doc.orderDate)}
+                  </div>
+                  <div>
+                    <span className="font-semibold text-[#6b7280]">Currency: </span>
+                    {cur}
+                  </div>
+                  {doc.ref ? (
+                    <div>
+                      <span className="font-semibold text-[#6b7280]">Ref: </span>
+                      {doc.ref}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-col items-center justify-center text-center">
+              <h1 className="text-[26px] font-bold tracking-tight text-[#1f3a5f]">PURCHASE ORDER</h1>
+              <p className="mt-1 text-[13px] font-semibold text-[#2c5282]">{docSubtitle}</p>
+              <div className="mt-3">
+                {unsaved ? (
+                  <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-800 ring-1 ring-gray-200">
+                    Unsaved draft
+                  </span>
+                ) : doc.status ? (
+                  <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold uppercase text-gray-800 ring-1 ring-gray-200">
+                    {doc.status}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+            <div className="text-right sm:min-w-0 sm:pl-2">
+              <p className="text-[28px] font-extrabold leading-tight tracking-tight text-[#1f3a5f]">
+                {buyer.name !== "—" ? buyer.name : b.companyDisplayName || auth?.company?.name || "—"}
+              </p>
+            </div>
+          </header>
+        )}
 
         <div className="mt-5 grid gap-3 md:grid-cols-2">
           <div className="min-h-[140px] rounded-[10px] border border-[#e5e7eb] bg-[#fafafa] p-3">
