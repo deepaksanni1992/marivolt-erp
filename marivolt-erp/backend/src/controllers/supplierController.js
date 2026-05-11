@@ -51,7 +51,7 @@ export async function listSuppliersAll(req, res) {
   try {
     const items = await Supplier.find(withCompany(req))
       .sort({ supplierName: 1, name: 1 })
-      .select("supplierCode supplierName shortName supplierType contactPerson contactName phone email address vatNo registrationNo paymentTerms currency activeStatus")
+      .select("supplierCode supplierName name shortName supplierType contactPerson contactName phone email address vatNo registrationNo paymentTerms currency activeStatus")
       .lean();
     res.json({ items });
   } catch (err) {

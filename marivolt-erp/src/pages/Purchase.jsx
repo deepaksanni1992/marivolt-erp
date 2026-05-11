@@ -324,6 +324,11 @@ const defaultPrLine = () => ({
   reason: "",
 });
 
+/** Supplier Master rows use supplierName; legacy rows may use name only. */
+function supplierMasterDisplayName(s) {
+  return String(s?.supplierName || s?.name || "").trim();
+}
+
 function StatusBadge({ status }) {
   const map = {
     DRAFT: "bg-slate-100 text-slate-800 ring-slate-200",
@@ -775,14 +780,17 @@ export default function Purchase({ procurementEmbed = false } = {}) {
   function applySupplierMasterDefaults(name) {
     const n = name.trim().toLowerCase();
     if (!n) return;
-    const s = (suppliersAll?.items ?? []).find((x) => String(x.name || "").trim().toLowerCase() === n);
+    const s = (suppliersAll?.items ?? []).find((x) => supplierMasterDisplayName(x).toLowerCase() === n);
     if (!s) return;
+    const cur = String(s.currency || "").trim().toUpperCase();
     setForm((f) => ({
       ...f,
+      supplierName: supplierMasterDisplayName(s) || f.supplierName,
       supplierAddress: f.supplierAddress || s.address || "",
       supplierPhone: f.supplierPhone || s.phone || "",
       supplierEmail: f.supplierEmail || s.email || "",
-      contactPerson: f.contactPerson || s.contactName || "",
+      contactPerson: f.contactPerson || s.contactPerson || s.contactName || "",
+      currency: cur || f.currency,
     }));
   }
 
@@ -2247,16 +2255,23 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               <div className="text-[10px] font-bold uppercase text-gray-500">Supplier</div>
               <FormField label="Supplier name *">
                 <TextInput
-                  list="supplier-pick"
+                  list="supplier-pick-po"
+                  autoComplete="off"
                   value={form.supplierName}
                   onChange={(e) => setForm((f) => ({ ...f, supplierName: e.target.value }))}
                   onBlur={(e) => applySupplierMasterDefaults(e.target.value)}
+                  placeholder="Type or pick from Supplier Master"
                 />
-                <datalist id="supplier-pick">
-                  {(suppliersAll?.items ?? []).map((s) => (
-                    <option key={s._id} value={s.name} />
-                  ))}
+                <datalist id="supplier-pick-po">
+                  {(suppliersAll?.items ?? [])
+                    .filter((s) => s.activeStatus !== false && supplierMasterDisplayName(s))
+                    .map((s) => (
+                      <option key={s._id} value={supplierMasterDisplayName(s)} />
+                    ))}
                 </datalist>
+                <p className="mt-1 text-xs text-gray-500">
+                  List is loaded from Supplier Master for your active company (Marivolt / Okeanos).
+                </p>
               </FormField>
               <FormField label="Address" className="mt-2">
                 <textarea
@@ -2719,9 +2734,11 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               onChange={(e) => setRetForm((f) => ({ ...f, supplierName: e.target.value }))}
             />
             <datalist id="supplier-pick-ret">
-              {(suppliersAll?.items ?? []).map((s) => (
-                <option key={s._id} value={s.name} />
-              ))}
+              {(suppliersAll?.items ?? [])
+                .filter((s) => s.activeStatus !== false && supplierMasterDisplayName(s))
+                .map((s) => (
+                  <option key={s._id} value={supplierMasterDisplayName(s)} />
+                ))}
             </datalist>
           </FormField>
           <FormField label="Linked PO #">
