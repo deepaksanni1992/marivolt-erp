@@ -4,6 +4,7 @@ import Papa from "papaparse";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
+import { openPurchaseOrderDocumentWindow } from "../lib/purchaseOrderDocumentPrint.js";
 import {
   COMMERCIAL_DEFAULTS,
   DEFAULT_CLOSING_NOTE,
@@ -723,6 +724,21 @@ export default function Purchase({ procurementEmbed = false } = {}) {
   const poLineCsvImportRef = useRef(null);
   const supImportRef = useRef(null);
   const [poPreview, setPoPreview] = useState(null);
+  const [poCopyBusyId, setPoCopyBusyId] = useState(null);
+
+  async function loadPurchaseOrderCopy(poId, mode) {
+    setErr("");
+    setPoCopyBusyId(poId);
+    try {
+      const full = await apiGet(`/purchase-orders/${poId}`);
+      if (mode === "view") setPoPreview({ unsaved: false, doc: full });
+      else openPurchaseOrderDocumentWindow(full, auth?.company, { autoPrint: true });
+    } catch (e) {
+      setErr(e.message || "Could not load purchase order");
+    } finally {
+      setPoCopyBusyId(null);
+    }
+  }
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["purchaseOrders", page, poFilterSupplier, poFilterStatus, auth?.company?.id],
@@ -1099,13 +1115,15 @@ export default function Purchase({ procurementEmbed = false } = {}) {
   }
 
   function draftDocSnapshotForExport() {
+    const isNewDraft = !editPoId;
     return {
       ...form,
       orderDate: form.orderDate,
       lines: form.lines,
       subTotal: poPreviewTotals.subTotal,
       grandTotal: poPreviewTotals.grandTotal,
-      status: "DRAFT",
+      status: form.status || "DRAFT",
+      __unsavedDraft: isNewDraft,
     };
   }
 
@@ -1406,7 +1424,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                   <th className="px-4 py-3">Date</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3 text-right">Total</th>
-                  <th className="px-4 py-3 min-w-[220px] text-left">Actions</th>
+                  <th className="px-4 py-3 min-w-[280px] text-left">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -1449,6 +1467,24 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                             }}
                           >
                             Open
+                          </button>
+                          <button
+                            type="button"
+                            title="Formatted PO — same as preview"
+                            className="rounded-md border border-gray-300 bg-white px-2.5 py-1 text-xs font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+                            disabled={poCopyBusyId === r._id}
+                            onClick={() => loadPurchaseOrderCopy(r._id, "view")}
+                          >
+                            {poCopyBusyId === r._id ? "…" : "View PO"}
+                          </button>
+                          <button
+                            type="button"
+                            title="Opens print dialog — choose Save as PDF"
+                            className="rounded-md border border-gray-300 bg-white px-2.5 py-1 text-xs font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+                            disabled={poCopyBusyId === r._id}
+                            onClick={() => loadPurchaseOrderCopy(r._id, "print")}
+                          >
+                            Save PDF
                           </button>
                           {canModifyPoStatus(r.status) ? (
                             <button
@@ -2186,7 +2222,15 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                 className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
                 onClick={() => setPoPreview({ unsaved: false, doc: detail })}
               >
-                Preview
+                View PO copy
+              </button>
+              <button
+                type="button"
+                title="Opens print dialog — choose Save as PDF"
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
+                onClick={() => openPurchaseOrderDocumentWindow(detail, auth?.company, { autoPrint: true })}
+              >
+                Download PO (PDF)
               </button>
               <button
                 type="button"
@@ -2494,10 +2538,20 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                   type="button"
                   className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
                   onClick={() => {
-                    setPoPreview({ unsaved: true, doc: draftDocSnapshotForExport() });
+                    setPoPreview({ unsaved: !editPoId, doc: draftDocSnapshotForExport() });
                   }}
                 >
-                  Preview
+                  View PO copy
+                </button>
+                <button
+                  type="button"
+                  title="Opens print dialog — choose Save as PDF"
+                  className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+                  onClick={() =>
+                    openPurchaseOrderDocumentWindow(draftDocSnapshotForExport(), auth?.company, { autoPrint: true })
+                  }
+                >
+                  Download PO (PDF)
                 </button>
                 <button
                   type="button"
