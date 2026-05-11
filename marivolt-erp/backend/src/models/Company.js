@@ -38,6 +38,8 @@ const companySchema = new mongoose.Schema(
     country: { type: String, default: "", trim: true },
     email: { type: String, default: "", trim: true, lowercase: true },
     phone: { type: String, default: "", trim: true },
+    /** Public website shown on PO / quotation buyer block. */
+    website: { type: String, default: "", trim: true },
     /** Tax registration / TRN shown on Tax invoice shipper block. */
     trnNo: { type: String, default: "", trim: true },
     /** Optional company registration number (CR/SRN/etc.). */

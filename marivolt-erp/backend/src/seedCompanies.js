@@ -12,22 +12,24 @@ if (!process.env.MONGO_URI) {
 
 const COMPANIES = [
   {
-    name: "Marivolt",
+    name: "Marivolt FZE",
     code: "MAR",
     logoUrl: "/marivolt-logo.png",
     address: "LV09B, Hamriyah freezone phase 2, Sharjah, UAE",
     email: "sales@marivolt.co",
     phone: "+971-543053047",
+    website: "www.marivolt.co",
     currency: "USD",
     isActive: true,
   },
   {
-    name: "Okeanos",
+    name: "Okeanos FZE",
     code: "OKE",
     logoUrl: "",
     address: "",
-    email: "",
-    phone: "",
+    email: "Sales@okeanos.pro",
+    phone: "+971-543050000",
+    website: "www.okfze.com",
     currency: "USD",
     isActive: true,
   },

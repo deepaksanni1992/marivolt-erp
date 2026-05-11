@@ -1,16 +1,16 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Papa from "papaparse";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import {
-  BUYER_DEFAULTS,
   COMMERCIAL_DEFAULTS,
   DEFAULT_CLOSING_NOTE,
   DEFAULT_PURCHASE_TERMS,
   DEFAULT_SPECIAL_REMARKS,
 } from "../constants/purchaseOrderDefaults.js";
+import { buyerDefaultsFromCompany } from "../lib/companyBuyer.js";
 import {
   apiDelete,
   apiGet,
@@ -48,9 +48,11 @@ function todayDateInput() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function initialPoForm() {
+function initialPoForm(company) {
+  const buyer = buyerDefaultsFromCompany(company);
+  const cur = String(company?.currency || "USD").trim().toUpperCase() || "USD";
   return {
-    ...BUYER_DEFAULTS,
+    ...buyer,
     ...COMMERCIAL_DEFAULTS,
     supplierName: "",
     supplierAddress: "",
@@ -61,7 +63,7 @@ function initialPoForm() {
     contactPerson: "",
     supplierReference: "",
     offerDate: "",
-    currency: "USD",
+    currency: cur,
     orderDate: todayDateInput(),
     remarks: "",
     specialRemarks: DEFAULT_SPECIAL_REMARKS,
@@ -104,6 +106,7 @@ function buildPoPayload(form) {
     buyerPhone: form.buyerPhone,
     buyerEmail: form.buyerEmail,
     buyerWeb: form.buyerWeb,
+    buyerTrnNo: form.buyerTrnNo ?? "",
     supplierName: String(form.supplierName || "").trim(),
     supplierAddress: form.supplierAddress ?? "",
     supplierPhone: form.supplierPhone ?? "",
@@ -156,13 +159,14 @@ function purchaseOrderApiToForm(po) {
         }))
       : [defaultLine()];
   return {
-    ...BUYER_DEFAULTS,
+    ...buyerDefaultsFromCompany(null),
     ...COMMERCIAL_DEFAULTS,
-    buyerLegalName: po.buyerLegalName || BUYER_DEFAULTS.buyerLegalName,
-    buyerAddressLine: po.buyerAddressLine || BUYER_DEFAULTS.buyerAddressLine,
-    buyerPhone: po.buyerPhone || BUYER_DEFAULTS.buyerPhone,
-    buyerEmail: po.buyerEmail || BUYER_DEFAULTS.buyerEmail,
-    buyerWeb: po.buyerWeb || BUYER_DEFAULTS.buyerWeb,
+    buyerLegalName: po.buyerLegalName ?? "",
+    buyerAddressLine: po.buyerAddressLine ?? "",
+    buyerPhone: po.buyerPhone ?? "",
+    buyerEmail: po.buyerEmail ?? "",
+    buyerWeb: po.buyerWeb ?? "",
+    buyerTrnNo: po.buyerTrnNo ?? "",
     supplierName: po.supplierName || "",
     supplierAddress: po.supplierAddress || "",
     supplierPhone: po.supplierPhone || "",
@@ -360,11 +364,12 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
   const grand = doc.grandTotal != null ? Number(doc.grandTotal) : subTotal;
   const cur = doc.currency || "USD";
   const buyer = {
-    name: doc.buyerLegalName || BUYER_DEFAULTS.buyerLegalName,
-    address: doc.buyerAddressLine || BUYER_DEFAULTS.buyerAddressLine,
-    phone: doc.buyerPhone || BUYER_DEFAULTS.buyerPhone,
-    email: doc.buyerEmail || BUYER_DEFAULTS.buyerEmail,
-    web: doc.buyerWeb || BUYER_DEFAULTS.buyerWeb,
+    name: doc.buyerLegalName || "—",
+    address: doc.buyerAddressLine || "—",
+    phone: doc.buyerPhone || "—",
+    email: doc.buyerEmail || "—",
+    web: doc.buyerWeb || "",
+    trn: doc.buyerTrnNo || "",
   };
   const poNo = unsaved ? "Draft (not saved)" : doc.poNumber || "—";
 
@@ -413,12 +418,12 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
             </div>
           </div>
           <div className="text-right text-xs leading-relaxed text-slate-600 sm:max-w-[220px] sm:pt-1">
-            <p className="text-[28px] font-extrabold leading-none text-[#e85d3f]">MariVolt</p>
-            <p className="mt-1 text-[11px] font-bold uppercase tracking-wide text-[#1f4e79]">Marine Engine Spares</p>
+            <p className="text-lg font-extrabold leading-tight text-slate-900">{buyer.name}</p>
+            {buyer.web ? <p className="mt-1 text-[11px] text-slate-500">{buyer.web}</p> : null}
             <p className="mt-2 text-[11px] text-slate-600">{buyer.address}</p>
             <p className="mt-1">{buyer.phone}</p>
             <p>{buyer.email}</p>
-            <p className="text-slate-500">{buyer.web}</p>
+            {buyer.trn ? <p className="mt-1 text-slate-500">TRN: {buyer.trn}</p> : null}
           </div>
         </header>
 
@@ -429,6 +434,7 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
             <p className="mt-1 whitespace-pre-line text-xs leading-relaxed text-slate-600">{buyer.address}</p>
             <p className="mt-2 text-xs text-slate-600">Tel: {buyer.phone}</p>
             <p className="text-xs">{buyer.email}</p>
+            {buyer.trn ? <p className="mt-1 text-xs text-slate-600">TRN: {buyer.trn}</p> : null}
           </div>
           <div className="min-h-[140px] rounded-lg border border-slate-200 bg-[#fafafa] p-3">
             <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Supplier</p>
@@ -614,7 +620,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
   const [editPoId, setEditPoId] = useState(null);
   const [detailId, setDetailId] = useState(null);
   const [receiveOpen, setReceiveOpen] = useState(false);
-  const [form, setForm] = useState(() => initialPoForm());
+  const [form, setForm] = useState(() => initialPoForm(null));
   const [receiveWarehouse, setReceiveWarehouse] = useState("MAIN");
   const [receiveLines, setReceiveLines] = useState([]);
   const [err, setErr] = useState("");
@@ -625,7 +631,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
   const [poPreview, setPoPreview] = useState(null);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["purchaseOrders", page, poFilterSupplier, poFilterStatus],
+    queryKey: ["purchaseOrders", page, poFilterSupplier, poFilterStatus, auth?.company?.id],
     queryFn: () =>
       apiGetWithQuery("/purchase-orders", {
         page,
@@ -636,13 +642,13 @@ export default function Purchase({ procurementEmbed = false } = {}) {
   });
 
   const { data: summary } = useQuery({
-    queryKey: ["purchaseSummary"],
+    queryKey: ["purchaseSummary", auth?.company?.id],
     queryFn: () => apiGet("/purchase-orders/reports/summary"),
     staleTime: 20_000,
   });
 
   const { data: suppliersAll } = useQuery({
-    queryKey: ["suppliersAll"],
+    queryKey: ["suppliersAll", auth?.company?.id],
     queryFn: () => apiGet("/suppliers/all"),
     staleTime: 60_000,
   });
@@ -659,7 +665,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
   });
 
   const { data: pendingData, isLoading: pendLoading } = useQuery({
-    queryKey: ["pendingPoReport", pendPage],
+    queryKey: ["pendingPoReport", pendPage, auth?.company?.id],
     queryFn: () =>
       apiGetWithQuery("/purchase-orders/reports/pending", { page: pendPage, limit: 25 }),
     enabled: tab === "pending",
@@ -684,6 +690,18 @@ export default function Purchase({ procurementEmbed = false } = {}) {
     enabled: !!retDetailId,
   });
 
+  useEffect(() => {
+    if (!createOpen || editPoId) return;
+    const b = buyerDefaultsFromCompany(auth?.company);
+    setForm((prev) => ({
+      ...prev,
+      ...b,
+      currency: String(auth?.company?.currency || prev.currency || "USD")
+        .trim()
+        .toUpperCase(),
+    }));
+  }, [auth?.company?.id, createOpen, editPoId]);
+
   const createMutation = useMutation({
     mutationFn: (body) => apiPost("/purchase-orders", body),
     onSuccess: () => {
@@ -693,7 +711,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       setErr("");
       setCreateOpen(false);
       setEditPoId(null);
-      setForm(initialPoForm());
+      setForm(initialPoForm(auth?.company));
     },
     onError: (e) => setErr(e.message || "Could not create purchase order"),
   });
@@ -708,7 +726,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       setErr("");
       setCreateOpen(false);
       setEditPoId(null);
-      setForm(initialPoForm());
+      setForm(initialPoForm(auth?.company));
     },
     onError: (e) => setErr(e.message || "Could not update purchase order"),
   });
@@ -1239,7 +1257,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                   createMutation.reset();
                   updatePoMutation.reset();
                   setEditPoId(null);
-                  setForm(initialPoForm());
+                  setForm(initialPoForm(auth?.company));
                   setCreateOpen(true);
                 }}
               >
@@ -1903,16 +1921,15 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               <div className="mt-4 grid gap-6 md:grid-cols-2">
                 <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-3">
                   <div className="text-[10px] font-bold uppercase text-gray-500">Buyer</div>
-                  <div className="mt-1 font-semibold text-gray-900">
-                    {detail.buyerLegalName || BUYER_DEFAULTS.buyerLegalName}
-                  </div>
+                  <div className="mt-1 font-semibold text-gray-900">{detail.buyerLegalName || "—"}</div>
                   <div className="mt-1 whitespace-pre-line text-xs leading-relaxed text-gray-600">
-                    {detail.buyerAddressLine || BUYER_DEFAULTS.buyerAddressLine}
+                    {detail.buyerAddressLine || "—"}
                   </div>
                   <div className="mt-2 space-y-0.5 text-xs text-gray-600">
-                    <div>Tel: {detail.buyerPhone || BUYER_DEFAULTS.buyerPhone}</div>
-                    <div>{detail.buyerEmail || BUYER_DEFAULTS.buyerEmail}</div>
-                    <div>{detail.buyerWeb || BUYER_DEFAULTS.buyerWeb}</div>
+                    <div>Tel: {detail.buyerPhone || "—"}</div>
+                    <div>{detail.buyerEmail || "—"}</div>
+                    <div>{detail.buyerWeb || ""}</div>
+                    {detail.buyerTrnNo ? <div>TRN: {detail.buyerTrnNo}</div> : null}
                   </div>
                 </div>
                 <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-3">
@@ -2216,6 +2233,12 @@ export default function Purchase({ procurementEmbed = false } = {}) {
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <div className="rounded-lg border border-gray-100 bg-gray-50/90 p-3">
               <div className="text-[10px] font-bold uppercase text-gray-500">Buyer</div>
+              {!String(form.buyerLegalName || "").trim() ? (
+                <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
+                  Buyer company details are not configured for the selected company. Update Company master or fill in
+                  manually.
+                </p>
+              ) : null}
               <FormField label="Legal name">
                 <TextInput
                   value={form.buyerLegalName}
@@ -2247,6 +2270,12 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                   <TextInput
                     value={form.buyerWeb}
                     onChange={(e) => setForm((f) => ({ ...f, buyerWeb: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="TRN / VAT (buyer)" className="sm:col-span-2">
+                  <TextInput
+                    value={form.buyerTrnNo || ""}
+                    onChange={(e) => setForm((f) => ({ ...f, buyerTrnNo: e.target.value }))}
                   />
                 </FormField>
               </div>

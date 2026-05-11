@@ -74,12 +74,13 @@ function normalizeCompany(company) {
     name: company.name,
     code: company.code,
     logoUrl: company.logoUrl || "",
-    currency: company.currency || "USD",
+    currency: company.currency || company.defaultCurrency || "USD",
     isActive: !!company.isActive,
     address: company.address || "",
     email: company.email || "",
     phone: company.phone || "",
     trnNo: company.trnNo || "",
+    website: company.website || "",
   };
 }
 

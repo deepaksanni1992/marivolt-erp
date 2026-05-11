@@ -2,8 +2,10 @@ import mongoose from "mongoose";
 import PurchaseOrder from "../models/PurchaseOrder.js";
 import GRN from "../models/GRN.js";
 import Supplier from "../models/Supplier.js";
+import Company from "../models/Company.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 import { applyPurchaseOrderDefaults } from "../constants/purchaseOrderDefaults.js";
+import { buyerSnapshotFromCompany } from "../utils/companyBuyer.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 import { writeAudit, writeStatusChange } from "../services/auditService.js";
 
@@ -154,6 +156,8 @@ export async function createPurchaseOrder(req, res) {
         message: "At least one line with Article Nr. (or item / part code) and quantity is required",
       });
     }
+    const company = await Company.findById(req.companyId).lean();
+    Object.assign(body, buyerSnapshotFromCompany(company));
     body = applyPurchaseOrderDefaults(body);
     if (!body.poNo && !body.poNumber) {
       body.poNo = await nextSequentialNumber(PurchaseOrder, "poNo", "PO", {
@@ -215,6 +219,7 @@ export async function updatePurchaseOrder(req, res) {
       "buyerPhone",
       "buyerEmail",
       "buyerWeb",
+      "buyerTrnNo",
       "supplierName",
       "supplierAddress",
       "supplierPhone",
@@ -743,6 +748,8 @@ export async function importPurchaseOrders(req, res) {
     const created = [];
     const errors = [];
     const userEmail = req.user?.email || "";
+    const company = await Company.findById(req.companyId).lean();
+    const buyerSnap = buyerSnapshotFromCompany(company);
 
     for (let i = 0; i < orders.length; i++) {
       const row = orders[i];
@@ -760,6 +767,7 @@ export async function importPurchaseOrders(req, res) {
             { companyId: req.companyId }
           ));
         let payload = applyPurchaseOrderDefaults({
+          ...buyerSnap,
           ...row,
           companyId: req.companyId,
           poNumber,

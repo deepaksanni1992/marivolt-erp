@@ -100,6 +100,7 @@ function sanitiseCompanyPayload(body) {
     "country",
     "email",
     "phone",
+    "website",
     "trnNo",
     "registrationNo",
     "currency",

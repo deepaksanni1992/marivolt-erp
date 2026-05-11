@@ -44,15 +44,12 @@ const purchaseOrderSchema = new mongoose.Schema(
       index: true,
     },
 
-    buyerLegalName: { type: String, default: "Marivolt FZE", trim: true },
-    buyerAddressLine: {
-      type: String,
-      default: "LV09B, Hamriyah freezone phase 2, Sharjah, UAE",
-      trim: true,
-    },
-    buyerPhone: { type: String, default: "+971-543053047", trim: true },
-    buyerEmail: { type: String, default: "sales@marivolt.co", trim: true },
-    buyerWeb: { type: String, default: "www.marivolt.co", trim: true },
+    buyerLegalName: { type: String, default: "", trim: true },
+    buyerAddressLine: { type: String, default: "", trim: true },
+    buyerPhone: { type: String, default: "", trim: true },
+    buyerEmail: { type: String, default: "", trim: true },
+    buyerWeb: { type: String, default: "", trim: true },
+    buyerTrnNo: { type: String, default: "", trim: true },
 
     supplierName: { type: String, required: true, trim: true },
     supplierAddress: { type: String, default: "", trim: true },
