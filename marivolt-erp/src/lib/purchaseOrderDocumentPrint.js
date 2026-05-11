@@ -295,28 +295,36 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
 }
 
 /**
- * Opens a new tab with the full PO document. Optionally triggers the print dialog (Save as PDF).
+ * Writes the PO HTML into an existing window (e.g. opened synchronously on click to avoid pop-up blocking).
  */
-export function openPurchaseOrderDocumentWindow(doc, company, { autoPrint = false } = {}) {
+export function writePurchaseOrderDocumentToWindow(win, doc, company, { autoPrint = false } = {}) {
+  if (!win || win.closed) return;
   const html = buildPurchaseOrderDocumentHtml(doc, company);
-  const w = window.open("", "_blank", "noopener,noreferrer");
-  if (!w) {
-    window.alert("Pop-up blocked. Allow pop-ups for this site to view or print the PO.");
-    return;
-  }
-  w.document.open();
-  w.document.write(html);
-  w.document.close();
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
   if (autoPrint) {
     const run = () => {
       try {
-        w.focus();
-        w.print();
+        win.focus();
+        win.print();
       } catch {
         /* ignore */
       }
     };
-    if (w.document.readyState === "complete") setTimeout(run, 300);
-    else w.onload = () => setTimeout(run, 300);
+    if (win.document.readyState === "complete") setTimeout(run, 300);
+    else win.onload = () => setTimeout(run, 300);
   }
+}
+
+/**
+ * Opens a new tab with the full PO document. Call synchronously from a click handler so the browser allows the tab.
+ */
+export function openPurchaseOrderDocumentWindow(doc, company, { autoPrint = false } = {}) {
+  const w = window.open("about:blank", "_blank");
+  if (!w) {
+    window.alert("Pop-up blocked. Allow pop-ups for this site to view or print the PO.");
+    return;
+  }
+  writePurchaseOrderDocumentToWindow(w, doc, company, { autoPrint });
 }

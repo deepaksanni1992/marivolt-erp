@@ -4,7 +4,10 @@ import Papa from "papaparse";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
-import { openPurchaseOrderDocumentWindow } from "../lib/purchaseOrderDocumentPrint.js";
+import {
+  openPurchaseOrderDocumentWindow,
+  writePurchaseOrderDocumentToWindow,
+} from "../lib/purchaseOrderDocumentPrint.js";
 import {
   COMMERCIAL_DEFAULTS,
   DEFAULT_CLOSING_NOTE,
@@ -726,18 +729,49 @@ export default function Purchase({ procurementEmbed = false } = {}) {
   const [poPreview, setPoPreview] = useState(null);
   const [poCopyBusyId, setPoCopyBusyId] = useState(null);
 
-  async function loadPurchaseOrderCopy(poId, mode) {
+  function loadPurchaseOrderCopy(poId, mode) {
     setErr("");
-    setPoCopyBusyId(poId);
-    try {
-      const full = await apiGet(`/purchase-orders/${poId}`);
-      if (mode === "view") setPoPreview({ unsaved: false, doc: full });
-      else openPurchaseOrderDocumentWindow(full, auth?.company, { autoPrint: true });
-    } catch (e) {
-      setErr(e.message || "Could not load purchase order");
-    } finally {
-      setPoCopyBusyId(null);
+    if (mode === "view") {
+      setPoCopyBusyId(poId);
+      void (async () => {
+        try {
+          const full = await apiGet(`/purchase-orders/${poId}`);
+          setPoPreview({ unsaved: false, doc: full });
+        } catch (e) {
+          setErr(e.message || "Could not load purchase order");
+        } finally {
+          setPoCopyBusyId(null);
+        }
+      })();
+      return;
     }
+    /** Pop-up must open in the same synchronous click turn; opening after `await apiGet` is blocked. */
+    const w = window.open("about:blank", "_blank");
+    if (!w) {
+      setErr("Pop-up blocked. Allow pop-ups for this site to save the PO as PDF.");
+      return;
+    }
+    w.document.open();
+    w.document.write(
+      `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Loading…</title></head><body style="font-family:system-ui,sans-serif;padding:24px;color:#374151"><p>Loading purchase order…</p></body></html>`,
+    );
+    w.document.close();
+    setPoCopyBusyId(poId);
+    void (async () => {
+      try {
+        const full = await apiGet(`/purchase-orders/${poId}`);
+        writePurchaseOrderDocumentToWindow(w, full, auth?.company, { autoPrint: true });
+      } catch (e) {
+        try {
+          w.close();
+        } catch {
+          /* ignore */
+        }
+        setErr(e.message || "Could not load purchase order");
+      } finally {
+        setPoCopyBusyId(null);
+      }
+    })();
   }
 
   const { data, isLoading, error } = useQuery({
