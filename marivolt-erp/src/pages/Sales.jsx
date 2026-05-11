@@ -180,6 +180,94 @@ function quotationLinesFromCsvRows(csvRows) {
   return out;
 }
 
+/** Same Article + same Part number = one logical line (trimmed, case-insensitive part). */
+function quotationLineDuplicateKey(line) {
+  const art = String(line?.article ?? "")
+    .trim()
+    .toUpperCase();
+  const part = String(line?.partNumber ?? "")
+    .trim()
+    .toUpperCase();
+  return `${art}||${part}`;
+}
+
+/** Repeated Article+Part in the CSV: keep the last row for each key (spreadsheet-style). */
+function dedupeQuotationCsvRowsByArticlePartLastWins(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    map.set(quotationLineDuplicateKey(row), row);
+  }
+  return Array.from(map.values());
+}
+
+function findQuotationImportConflicts(baseLines, dedupedImported) {
+  const keyToIndex = new Map();
+  for (let i = 0; i < (baseLines || []).length; i++) {
+    const l = baseLines[i];
+    if (String(l?.article ?? "").trim() === "") continue;
+    const k = quotationLineDuplicateKey(l);
+    if (!keyToIndex.has(k)) keyToIndex.set(k, i);
+  }
+  const conflicts = [];
+  for (const row of dedupedImported) {
+    const k = quotationLineDuplicateKey(row);
+    if (keyToIndex.has(k)) {
+      conflicts.push({ key: k, existingIndex: keyToIndex.get(k), importedRow: row });
+    }
+  }
+  return conflicts;
+}
+
+function renumberQuotationSerialLines(lines) {
+  const arr = lines?.length ? lines : [emptyLine()];
+  return arr.map((l, i) => {
+    const qty = Number(l.qty) || 0;
+    const price = Number(l.price) || 0;
+    return { ...l, serialNo: i + 1, totalPrice: qty * price };
+  });
+}
+
+/**
+ * @param {"override"|"skip"} mode — override replaces matching rows; skip only appends rows whose Article+Part are new.
+ */
+function mergeQuotationCsvLinesIntoBase(baseIn, dedupedImported, mode) {
+  const base = (baseIn || []).map((l) => ({ ...l }));
+  const keyToIndex = new Map();
+  for (let i = 0; i < base.length; i++) {
+    if (String(base[i]?.article ?? "").trim() === "") continue;
+    const k = quotationLineDuplicateKey(base[i]);
+    if (!keyToIndex.has(k)) keyToIndex.set(k, i);
+  }
+
+  if (mode === "skip") {
+    const out = [...base];
+    for (const row of dedupedImported) {
+      const k = quotationLineDuplicateKey(row);
+      if (keyToIndex.has(k)) continue;
+      const qty = Number(row.qty) || 0;
+      const price = Number(row.price) || 0;
+      out.push({ ...row, serialNo: out.length + 1, totalPrice: qty * price });
+      keyToIndex.set(k, out.length - 1);
+    }
+    return renumberQuotationSerialLines(out.length ? out : [emptyLine()]);
+  }
+
+  for (const row of dedupedImported) {
+    const k = quotationLineDuplicateKey(row);
+    const qty = Number(row.qty) || 0;
+    const price = Number(row.price) || 0;
+    const totalPrice = qty * price;
+    const idx = keyToIndex.get(k);
+    if (idx !== undefined) {
+      base[idx] = { ...row, serialNo: idx + 1, totalPrice };
+    } else {
+      base.push({ ...row, serialNo: base.length + 1, totalPrice });
+      keyToIndex.set(k, base.length - 1);
+    }
+  }
+  return renumberQuotationSerialLines(base.length ? base : [emptyLine()]);
+}
+
 function quotationDetailToEditableForm(q) {
   if (!q) return null;
   const linesSrc = Array.isArray(q.lines) && q.lines.length ? q.lines : [];
@@ -1462,6 +1550,10 @@ export default function Sales() {
   const [verticalFilter, setVerticalFilter] = useState("");
   const limit = 20;
   const quotationCsvInputRef = useRef(null);
+  /** Latest quotation line grid for CSV import (Papa.parse completes async). */
+  const quotationFormLinesRef = useRef([]);
+  /** { base, dedupedImported, conflicts, internalDupRemoved } */
+  const [quotationCsvDupModal, setQuotationCsvDupModal] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [isQuotationNoEdited, setIsQuotationNoEdited] = useState(false);
   const [customerCreateOpen, setCustomerCreateOpen] = useState(false);
@@ -1581,6 +1673,10 @@ export default function Sales() {
     },
     lines: [emptyLine()],
   });
+
+  useEffect(() => {
+    quotationFormLinesRef.current = form.lines;
+  }, [form.lines]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["sales-quotations", page, search, status, brandFilter, verticalFilter],
@@ -2087,23 +2183,30 @@ export default function Sales() {
       skipEmptyLines: "greedy",
       dynamicTyping: false,
       complete: (results) => {
-        const imported = quotationLinesFromCsvRows(results.data || []);
-        if (!imported.length) {
+        const importedRaw = quotationLinesFromCsvRows(results.data || []);
+        if (!importedRaw.length) {
           setErr(
             "No valid CSV rows. Each row needs Article (or Item/SKU), Description, and a positive QTY. Optional: Part number, UOM, Price, Remarks, Material code, Availability.",
           );
           return;
         }
         setErr("");
-        setForm((f) => {
-          const prev = f.lines || [];
-          const hasRealLine = prev.some(
-            (l) => String(l.article || "").trim() !== "" || String(l.description || "").trim() !== "",
-          );
-          const base = hasRealLine ? prev : [];
-          const merged = [...base, ...imported].map((line, i) => ({ ...line, serialNo: i + 1 }));
-          return { ...f, lines: merged.length ? merged : [emptyLine()] };
-        });
+        const prev = quotationFormLinesRef.current || [];
+        const hasRealLine = prev.some(
+          (l) => String(l.article || "").trim() !== "" || String(l.description || "").trim() !== "",
+        );
+        const base = hasRealLine ? prev.map((l) => ({ ...l })) : [];
+        const dedupedImported = dedupeQuotationCsvRowsByArticlePartLastWins(importedRaw);
+        const internalDupRemoved = importedRaw.length - dedupedImported.length;
+        const conflicts = findQuotationImportConflicts(base, dedupedImported);
+        if (conflicts.length > 0) {
+          setQuotationCsvDupModal({ base, dedupedImported, conflicts, internalDupRemoved });
+          return;
+        }
+        setForm((f) => ({
+          ...f,
+          lines: mergeQuotationCsvLinesIntoBase(base, dedupedImported, "skip"),
+        }));
       },
       error: (parseErr) => setErr(parseErr.message || "Could not read CSV file"),
     });
@@ -7635,9 +7738,10 @@ export default function Sales() {
         onClose={() => {
           setIsQuotationNoEdited(false);
           setCreateOpen(false);
+          setQuotationCsvDupModal(null);
         }}
         title="New Quotation"
-        subtitle="Enter header details, add lines manually or import from CSV. Required per line: Article, Description, quantity."
+        subtitle="Enter header details, add lines manually or import from CSV. Required per line: Article, Description, quantity. CSV import matches Article + Part number (in-file duplicates use the last row; grid conflicts prompt to replace or skip)."
         xlarge
       >
         <div className="grid gap-3 sm:grid-cols-4">
@@ -7980,6 +8084,94 @@ export default function Sales() {
             {createMutation.isPending ? "Saving..." : "Create Quotation"}
           </button>
         </div>
+      </Modal>
+
+      <Modal
+        open={!!quotationCsvDupModal}
+        onClose={() => setQuotationCsvDupModal(null)}
+        title="Duplicate lines in CSV import"
+        subtitle="Rows match on Article and Part number (case-insensitive). The same pair cannot be added twice unless you replace the existing row."
+        wide
+      >
+        {quotationCsvDupModal ? (
+          <div className="space-y-4 text-sm text-slate-800">
+            {quotationCsvDupModal.internalDupRemoved > 0 ? (
+              <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
+                Your file had {quotationCsvDupModal.internalDupRemoved} extra row
+                {quotationCsvDupModal.internalDupRemoved === 1 ? "" : "s"} with the same Article and Part number as another row in
+                the file. Only the <strong>last</strong> occurrence of each pair was kept.
+              </p>
+            ) : null}
+            <p>
+              {quotationCsvDupModal.conflicts.length === 1
+                ? "One imported line conflicts"
+                : `${quotationCsvDupModal.conflicts.length} imported lines conflict`}{" "}
+              with the quotation grid (same Article and Part number).
+            </p>
+            <div className="max-h-56 overflow-auto rounded-lg border border-slate-200">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-slate-100 text-left text-slate-600">
+                  <tr>
+                    <th className="px-2 py-2">Article</th>
+                    <th className="px-2 py-2">Part number</th>
+                    <th className="px-2 py-2">Description (import)</th>
+                    <th className="px-2 py-2 text-right">Grid row</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {quotationCsvDupModal.conflicts.slice(0, 40).map((c, i) => (
+                    <tr key={`${c.key}-${i}`} className="border-t border-slate-100">
+                      <td className="px-2 py-1.5 font-mono">{c.importedRow.article}</td>
+                      <td className="px-2 py-1.5 font-mono">{c.importedRow.partNumber || "—"}</td>
+                      <td className="px-2 py-1.5">{c.importedRow.description}</td>
+                      <td className="px-2 py-1.5 text-right tabular-nums">{c.existingIndex + 1}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {quotationCsvDupModal.conflicts.length > 40 ? (
+              <p className="text-xs text-slate-500">Showing first 40 conflicts.</p>
+            ) : null}
+            <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-3">
+              <button
+                type="button"
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
+                onClick={() => setQuotationCsvDupModal(null)}
+              >
+                Cancel import
+              </button>
+              <button
+                type="button"
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
+                onClick={() => {
+                  const { base, dedupedImported } = quotationCsvDupModal;
+                  setQuotationCsvDupModal(null);
+                  setForm((f) => ({
+                    ...f,
+                    lines: mergeQuotationCsvLinesIntoBase(base, dedupedImported, "skip"),
+                  }));
+                }}
+              >
+                Skip duplicates
+              </button>
+              <button
+                type="button"
+                className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
+                onClick={() => {
+                  const { base, dedupedImported } = quotationCsvDupModal;
+                  setQuotationCsvDupModal(null);
+                  setForm((f) => ({
+                    ...f,
+                    lines: mergeQuotationCsvLinesIntoBase(base, dedupedImported, "override"),
+                  }));
+                }}
+              >
+                Replace matching rows
+              </button>
+            </div>
+          </div>
+        ) : null}
       </Modal>
 
       <Modal open={oaCreateOpen} onClose={() => setOaCreateOpen(false)} title="New Order Acknowledgement" wide>
