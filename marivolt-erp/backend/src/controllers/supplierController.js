@@ -83,7 +83,8 @@ function normalizeSupplierPayload(payload = {}) {
   const supplierName = String(payload.supplierName || payload.name || "").trim();
   const contactPerson = String(payload.contactPerson || payload.contactName || "").trim();
   const remarks = String(payload.remarks || payload.notes || "").trim();
-  return {
+  const supplierCodeIn = String(payload.supplierCode || "").trim();
+  const out = {
     supplierName,
     name: supplierName,
     shortName: String(payload.shortName || "").trim(),
@@ -106,6 +107,10 @@ function normalizeSupplierPayload(payload = {}) {
     notes: remarks,
     activeStatus: payload.activeStatus !== false,
   };
+  if (supplierCodeIn) {
+    out.supplierCode = supplierCodeIn.toUpperCase();
+  }
+  return out;
 }
 
 export async function createSupplier(req, res) {
@@ -114,9 +119,7 @@ export async function createSupplier(req, res) {
     if (!body.supplierName) {
       return res.status(400).json({ message: "supplierName is required" });
     }
-    if (body.supplierCode) {
-      body.supplierCode = String(body.supplierCode).trim().toUpperCase();
-    } else {
+    if (!body.supplierCode) {
       body.supplierCode = await nextSupplierCode(req);
     }
     body.createdBy = req.user?.email || "";
@@ -147,9 +150,7 @@ export async function updateSupplier(req, res) {
     delete payload._id;
     const before = await Supplier.findOne(withCompany(req, { _id: id })).lean();
     if (!before) return res.status(404).json({ message: "Not found" });
-    if (payload.supplierCode) {
-      payload.supplierCode = String(payload.supplierCode).trim().toUpperCase();
-    } else {
+    if (!payload.supplierCode) {
       payload.supplierCode = before.supplierCode;
     }
     const doc = await Supplier.findOneAndUpdate(withCompany(req, { _id: id }), payload, {

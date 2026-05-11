@@ -44,6 +44,7 @@ function SupplierMasterTab() {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
+  const [saveError, setSaveError] = useState("");
   const { data, isLoading } = useQuery({
     queryKey: ["procurement-suppliers", search],
     queryFn: () => apiGetWithQuery("/suppliers", { search: search || undefined, limit: 200 }),
@@ -53,9 +54,11 @@ function SupplierMasterTab() {
   const save = useMutation({
     mutationFn: (payload) => (payload._id ? apiPut(`/suppliers/${payload._id}`, payload) : apiPost("/suppliers", payload)),
     onSuccess: () => {
+      setSaveError("");
       qc.invalidateQueries({ queryKey: ["procurement-suppliers"] });
       setEditing(null);
     },
+    onError: (e) => setSaveError(e.message || "Save failed"),
   });
 
   function exportCsv() {
@@ -94,7 +97,16 @@ function SupplierMasterTab() {
         </FormField>
         <button className="rounded-lg border px-3 py-2 text-sm font-semibold" onClick={exportCsv} type="button">Export CSV</button>
         <button className="rounded-lg border px-3 py-2 text-sm font-semibold" onClick={exportPdf} type="button">Export PDF</button>
-        <button className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white" onClick={() => setEditing({ supplierName: "", supplierType: "LOCAL", currency: "USD", activeStatus: true })} type="button">New Supplier</button>
+        <button
+          className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
+          onClick={() => {
+            setSaveError("");
+            setEditing({ supplierName: "", supplierType: "LOCAL", currency: "USD", activeStatus: true });
+          }}
+          type="button"
+        >
+          New Supplier
+        </button>
       </div>
       <div className="overflow-auto rounded-2xl border bg-white">
         <table className="min-w-full text-sm">
@@ -120,20 +132,28 @@ function SupplierMasterTab() {
                 <td className="px-3 py-2">{s.contactPerson || "—"}</td>
                 <td className="px-3 py-2">{s.currency || "USD"}</td>
                 <td className="px-3 py-2"><StatusBadge status={s.activeStatus ? "APPROVED" : "CANCELLED"} /></td>
-                <td className="px-3 py-2"><button className="text-xs underline" type="button" onClick={() => setEditing(s)}>Edit</button></td>
+                <td className="px-3 py-2"><button className="text-xs underline" type="button" onClick={() => { setSaveError(""); setEditing(s); }}>Edit</button></td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      <Modal open={!!editing} onClose={() => setEditing(null)} title={editing?._id ? "Edit Supplier" : "New Supplier"} wide>
-        {editing ? <SupplierForm initial={editing} onSave={(payload) => save.mutate(payload)} saving={save.isPending} /> : null}
+      <Modal open={!!editing} onClose={() => { setSaveError(""); setEditing(null); }} title={editing?._id ? "Edit Supplier" : "New Supplier"} wide>
+        {editing ? (
+          <SupplierForm
+            initial={editing}
+            onSave={(payload) => save.mutate(payload)}
+            saving={save.isPending}
+            error={saveError}
+            onDismissError={() => setSaveError("")}
+          />
+        ) : null}
       </Modal>
     </div>
   );
 }
 
-function SupplierForm({ initial, onSave, saving }) {
+function SupplierForm({ initial, onSave, saving, error, onDismissError }) {
   const [form, setForm] = useState({
     _id: initial._id,
     supplierCode: initial.supplierCode || "",
@@ -152,9 +172,24 @@ function SupplierForm({ initial, onSave, saving }) {
     remarks: initial.remarks || "",
     activeStatus: initial.activeStatus !== false,
   });
-  const set = (k) => (e) => setForm((p) => ({ ...p, [k]: e.target.value }));
+  const set = (k) => (e) => {
+    onDismissError?.();
+    setForm((p) => ({ ...p, [k]: e.target.value }));
+  };
   return (
-    <form className="grid grid-cols-1 gap-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); onSave(form); }}>
+    <form
+      className="grid grid-cols-1 gap-3 sm:grid-cols-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onDismissError?.();
+        onSave(form);
+      }}
+    >
+      {error ? (
+        <div className="sm:col-span-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800" role="alert">
+          {error}
+        </div>
+      ) : null}
       <FormField label="Supplier Code"><TextInput value={form.supplierCode} onChange={set("supplierCode")} /></FormField>
       <FormField label="Supplier Name"><TextInput value={form.supplierName} onChange={set("supplierName")} required /></FormField>
       <FormField label="Short Name"><TextInput value={form.shortName} onChange={set("shortName")} /></FormField>
