@@ -11,6 +11,7 @@ import {
   DEFAULT_SPECIAL_REMARKS,
 } from "../constants/purchaseOrderDefaults.js";
 import { buyerDefaultsFromCompany } from "../lib/companyBuyer.js";
+import { getReportBranding } from "../lib/reportBranding.js";
 import {
   apiDelete,
   apiGet,
@@ -20,9 +21,6 @@ import {
   apiPut,
 } from "../lib/api.js";
 import { useAuth } from "../context/AuthContext.jsx";
-
-/** Same path as sales quotation print branding. */
-const MARIVOLT_PO_LOGO = "/brand/marivolt-icon.png";
 
 const TABS = [
   { id: "orders", label: "Purchase order" },
@@ -355,6 +353,7 @@ function StatusBadge({ status }) {
 }
 
 function PurchaseOrderPreviewPanel({ doc, unsaved }) {
+  const { auth } = useAuth();
   if (!doc) return null;
   const lines = doc.lines || [];
   const subTotal =
@@ -373,76 +372,94 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
   };
   const poNo = unsaved ? "Draft (not saved)" : doc.poNumber || "—";
 
+  const brandingName = String(doc.buyerLegalName || auth?.company?.name || "").trim();
+  const b = getReportBranding(brandingName);
+  const companyLogo = String(auth?.company?.logoUrl || auth?.company?.logo || "").trim();
+  const logoSrc = b.useBrandedLayout ? b.printLogo : companyLogo;
+  const docSubtitle = b.useBrandedLayout
+    ? b.companySubtitle || "Buyer reference document — quotation-style layout"
+    : "Buyer reference document — quotation-style layout";
+
+  const thCell = "border border-[#1f3a5f] px-2 py-2.5 text-left text-[11px] font-bold uppercase tracking-wide text-white";
+  const tdCell = "border border-[#e5e7eb] px-2 py-2 text-[12px] text-[#111827]";
+
   return (
-    <div className="max-h-[75vh] overflow-y-auto bg-slate-50/80 p-3 sm:p-4">
-      <div className="mx-auto max-w-5xl rounded-lg border border-slate-200 bg-white p-5 shadow-sm ring-1 ring-slate-100">
-        <header className="flex flex-col gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex shrink-0 items-start gap-3">
-            <img
-              src={MARIVOLT_PO_LOGO}
-              alt="Marivolt"
-              className="h-[88px] w-[100px] object-contain"
-            />
-            <div className="min-w-0 pt-1">
-              <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-500">Purchase order</p>
-              <p className="mt-1 font-mono text-xl font-bold tracking-tight text-slate-900">{poNo}</p>
-              <div className="mt-2 space-y-0.5 text-xs text-slate-600">
+    <div className="max-h-[75vh] overflow-y-auto bg-[#f3f4f6] p-3 sm:p-4">
+      <div className="mx-auto max-w-5xl rounded-lg border border-[#e5e7eb] bg-white p-5 shadow-sm">
+        <header className="grid grid-cols-1 gap-5 border-b-2 border-[#e5e7eb] pb-5 sm:grid-cols-3 sm:items-center">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="flex h-[100px] w-[120px] shrink-0 items-center justify-center">
+              {logoSrc ? (
+                <img
+                  src={logoSrc}
+                  alt={b.companyDisplayName || auth?.company?.name || "Company"}
+                  className="max-h-[100px] w-full max-w-[208px] object-contain"
+                />
+              ) : (
+                <div className="text-2xl font-extrabold tracking-tight text-[#1f5a96]">
+                  {String(auth?.company?.code || "MV").slice(0, 4)}
+                </div>
+              )}
+            </div>
+            <div className="min-w-0 pt-0.5">
+              <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#6b7280]">Purchase order</p>
+              <p className="mt-1 font-mono text-lg font-bold tracking-tight text-[#111827]">{poNo}</p>
+              <div className="mt-2 space-y-0.5 text-[13px] text-[#555]">
                 <div>
-                  <span className="font-semibold text-slate-500">Date: </span>
+                  <span className="font-semibold text-[#6b7280]">Date: </span>
                   {formatPoDate(doc.orderDate)}
                 </div>
                 <div>
-                  <span className="font-semibold text-slate-500">Currency: </span>
+                  <span className="font-semibold text-[#6b7280]">Currency: </span>
                   {cur}
                 </div>
                 {doc.ref ? (
                   <div>
-                    <span className="font-semibold text-slate-500">Ref: </span>
+                    <span className="font-semibold text-[#6b7280]">Ref: </span>
                     {doc.ref}
                   </div>
                 ) : null}
               </div>
             </div>
           </div>
-          <div className="flex flex-1 flex-col items-center text-center sm:items-center sm:pt-1">
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900">PURCHASE ORDER</h1>
-            <p className="mt-1 text-xs text-slate-500">Buyer reference document — quotation-style layout</p>
+          <div className="flex flex-col items-center justify-center text-center">
+            <h1 className="text-[26px] font-bold tracking-tight text-[#1f3a5f]">PURCHASE ORDER</h1>
+            <p className="mt-1 text-[13px] font-semibold text-[#2c5282]">{docSubtitle}</p>
             <div className="mt-3">
               {unsaved ? (
-                <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-900 ring-1 ring-amber-200">
+                <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-800 ring-1 ring-gray-200">
                   Unsaved draft
                 </span>
               ) : doc.status ? (
-                <StatusBadge status={doc.status} />
+                <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold uppercase text-gray-800 ring-1 ring-gray-200">
+                  {doc.status}
+                </span>
               ) : null}
             </div>
           </div>
-          <div className="text-right text-xs leading-relaxed text-slate-600 sm:max-w-[220px] sm:pt-1">
-            <p className="text-lg font-extrabold leading-tight text-slate-900">{buyer.name}</p>
-            {buyer.web ? <p className="mt-1 text-[11px] text-slate-500">{buyer.web}</p> : null}
-            <p className="mt-2 text-[11px] text-slate-600">{buyer.address}</p>
-            <p className="mt-1">{buyer.phone}</p>
-            <p>{buyer.email}</p>
-            {buyer.trn ? <p className="mt-1 text-slate-500">TRN: {buyer.trn}</p> : null}
+          <div className="text-right sm:min-w-0 sm:pl-2">
+            <p className="text-[28px] font-extrabold leading-tight tracking-tight text-[#1f3a5f]">
+              {buyer.name !== "—" ? buyer.name : b.companyDisplayName || auth?.company?.name || "—"}
+            </p>
           </div>
         </header>
 
         <div className="mt-5 grid gap-3 md:grid-cols-2">
-          <div className="min-h-[140px] rounded-lg border border-slate-200 bg-[#fafafa] p-3">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Buyer</p>
-            <p className="mt-1 text-sm font-semibold text-slate-900">{buyer.name}</p>
-            <p className="mt-1 whitespace-pre-line text-xs leading-relaxed text-slate-600">{buyer.address}</p>
-            <p className="mt-2 text-xs text-slate-600">Tel: {buyer.phone}</p>
+          <div className="min-h-[140px] rounded-[10px] border border-[#e5e7eb] bg-[#fafafa] p-3">
+            <p className="text-[11px] font-bold uppercase tracking-[0.3px] text-[#6b7280]">Buyer</p>
+            <p className="mt-1 text-sm font-semibold text-[#111827]">{buyer.name}</p>
+            <p className="mt-1 whitespace-pre-line text-xs leading-relaxed text-[#4a5568]">{buyer.address}</p>
+            <p className="mt-2 text-xs text-[#4a5568]">Tel: {buyer.phone}</p>
             <p className="text-xs">{buyer.email}</p>
-            {buyer.trn ? <p className="mt-1 text-xs text-slate-600">TRN: {buyer.trn}</p> : null}
+            {buyer.trn ? <p className="mt-1 text-xs text-[#4a5568]">TRN: {buyer.trn}</p> : null}
           </div>
-          <div className="min-h-[140px] rounded-lg border border-slate-200 bg-[#fafafa] p-3">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Supplier</p>
-            <p className="mt-1 text-sm font-semibold text-slate-900">{doc.supplierName || "—"}</p>
+          <div className="min-h-[140px] rounded-[10px] border border-[#e5e7eb] bg-[#fafafa] p-3">
+            <p className="text-[11px] font-bold uppercase tracking-[0.3px] text-[#6b7280]">Supplier</p>
+            <p className="mt-1 text-sm font-semibold text-[#111827]">{doc.supplierName || "—"}</p>
             {doc.supplierAddress ? (
-              <p className="mt-1 whitespace-pre-line text-xs leading-relaxed text-slate-600">{doc.supplierAddress}</p>
+              <p className="mt-1 whitespace-pre-line text-xs leading-relaxed text-[#4a5568]">{doc.supplierAddress}</p>
             ) : null}
-            <div className="mt-2 space-y-0.5 text-xs text-slate-600">
+            <div className="mt-2 space-y-0.5 text-xs text-[#4a5568]">
               {doc.supplierPhone ? <p>Tel: {doc.supplierPhone}</p> : null}
               {doc.supplierEmail ? <p>{doc.supplierEmail}</p> : null}
             </div>
@@ -450,22 +467,22 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
         </div>
 
         {(doc.delivery || doc.payment || doc.contactPerson) && (
-          <div className="mt-4 grid gap-2 border-t border-slate-100 pt-4 text-[11px] text-slate-600 sm:grid-cols-3">
+          <div className="mt-4 grid gap-2 border-t border-[#e5e7eb] pt-4 text-[12px] text-[#555] sm:grid-cols-3">
             {doc.contactPerson ? (
               <div>
-                <span className="font-semibold text-slate-500">Contact: </span>
+                <span className="font-semibold text-[#6b7280]">Contact: </span>
                 {doc.contactPerson}
               </div>
             ) : null}
             {doc.delivery ? (
-              <div>
-                <span className="font-semibold text-slate-500">Delivery: </span>
+              <div className="text-center sm:text-center">
+                <span className="font-semibold text-[#6b7280]">Delivery: </span>
                 {doc.delivery}
               </div>
             ) : null}
             {doc.payment ? (
-              <div>
-                <span className="font-semibold text-slate-500">Payment: </span>
+              <div className="text-right sm:text-right">
+                <span className="font-semibold text-[#6b7280]">Payment: </span>
                 {doc.payment}
               </div>
             ) : null}
@@ -473,56 +490,51 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
         )}
 
         {doc.remarks ? (
-          <div className="mt-3 rounded-md border border-dashed border-slate-200 bg-white px-3 py-2 text-xs text-slate-700">
-            <span className="font-semibold text-slate-500">Header remarks: </span>
+          <div className="mt-3 rounded-md border border-dashed border-[#e5e7eb] bg-white px-3 py-2 text-xs text-[#374151]">
+            <span className="font-semibold text-[#6b7280]">Header remarks: </span>
             {doc.remarks}
           </div>
         ) : null}
 
-        <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200">
+        <div className="mt-4 overflow-x-auto rounded-lg border border-[#e5e7eb]">
           <table className="min-w-[900px] w-full border-collapse text-xs">
             <thead>
-              <tr className="bg-[#f5f5f5] text-left text-[11px] font-bold uppercase tracking-wide text-slate-700">
-                <th className="border border-slate-200 px-2 py-2">Pos</th>
-                <th className="border border-slate-200 px-2 py-2">Article Nr.</th>
-                <th className="border border-slate-200 px-2 py-2">Description</th>
-                <th className="border border-slate-200 px-2 py-2">Part Nr.</th>
-                <th className="border border-slate-200 px-2 py-2 text-right">Qty</th>
-                <th className="border border-slate-200 px-2 py-2">UOM</th>
-                <th className="border border-slate-200 px-2 py-2 text-right">Unit rate</th>
-                <th className="border border-slate-200 px-2 py-2 text-right">Total</th>
-                <th className="border border-slate-200 px-2 py-2">Lead time</th>
-                <th className="border border-slate-200 px-2 py-2">Remark</th>
+              <tr className="bg-[#1f3a5f]">
+                <th className={thCell}>Pos</th>
+                <th className={thCell}>Article Nr.</th>
+                <th className={thCell}>Description</th>
+                <th className={thCell}>Part Nr.</th>
+                <th className={`${thCell} text-right`}>Qty</th>
+                <th className={thCell}>UOM</th>
+                <th className={`${thCell} text-right`}>Unit rate</th>
+                <th className={`${thCell} text-right`}>Total</th>
+                <th className={thCell}>Lead time</th>
+                <th className={thCell}>Remark</th>
               </tr>
             </thead>
             <tbody>
               {lines.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="border border-slate-200 px-2 py-8 text-center text-slate-500">
+                  <td colSpan={10} className={`${tdCell} py-8 text-center text-[#6b7280]`}>
                     No line items.
                   </td>
                 </tr>
               ) : (
                 lines.map((l, i) => {
                   const tot = (Number(l.qty) || 0) * (Number(l.unitPrice) || 0);
+                  const stripe = i % 2 === 0 ? "bg-white" : "bg-[#f9fafb]";
                   return (
-                    <tr key={l._id || i} className="odd:bg-white even:bg-slate-50/60">
-                      <td className="border border-slate-200 px-2 py-2 text-slate-500">{i + 1}</td>
-                      <td className="border border-slate-200 px-2 py-2 font-mono text-[11px] text-slate-900">
-                        {l.articleNo || l.itemCode || "—"}
-                      </td>
-                      <td className="border border-slate-200 px-2 py-2 text-slate-800">{l.description || "—"}</td>
-                      <td className="border border-slate-200 px-2 py-2 font-mono text-[11px]">{l.partNo || "—"}</td>
-                      <td className="border border-slate-200 px-2 py-2 text-right tabular-nums">{l.qty}</td>
-                      <td className="border border-slate-200 px-2 py-2">{l.uom || "PCS"}</td>
-                      <td className="border border-slate-200 px-2 py-2 text-right tabular-nums">
-                        {Number(l.unitPrice || 0).toFixed(2)}
-                      </td>
-                      <td className="border border-slate-200 px-2 py-2 text-right tabular-nums font-semibold text-slate-900">
-                        {tot.toFixed(2)}
-                      </td>
-                      <td className="border border-slate-200 px-2 py-2 text-slate-700">{l.leadTime || "—"}</td>
-                      <td className="border border-slate-200 px-2 py-2 text-slate-600">{l.remarks || "—"}</td>
+                    <tr key={l._id || i} className={stripe}>
+                      <td className={`${tdCell} text-[#6b7280]`}>{i + 1}</td>
+                      <td className={`${tdCell} font-mono text-[11px]`}>{l.articleNo || l.itemCode || "—"}</td>
+                      <td className={tdCell}>{l.description || "—"}</td>
+                      <td className={`${tdCell} font-mono text-[11px]`}>{l.partNo || "—"}</td>
+                      <td className={`${tdCell} text-right tabular-nums`}>{l.qty}</td>
+                      <td className={tdCell}>{l.uom || "PCS"}</td>
+                      <td className={`${tdCell} text-right tabular-nums`}>{Number(l.unitPrice || 0).toFixed(2)}</td>
+                      <td className={`${tdCell} text-right tabular-nums font-semibold text-[#111827]`}>{tot.toFixed(2)}</td>
+                      <td className={tdCell}>{l.leadTime || "—"}</td>
+                      <td className={`${tdCell} text-[#4b5563]`}>{l.remarks || "—"}</td>
                     </tr>
                   );
                 })
@@ -531,21 +543,32 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
           </table>
         </div>
 
-        <div className="mt-4 flex justify-end border-t border-slate-200 pt-4">
+        <div className="mt-4 flex justify-end border-t border-[#e5e7eb] pt-4">
           <div className="w-full max-w-xs space-y-1.5 text-sm tabular-nums">
-            <div className="flex justify-between text-slate-600">
+            <div className="flex justify-between text-[#4b5563]">
               <span>Sub total</span>
-              <span className="font-semibold text-slate-900">
+              <span className="font-semibold text-[#111827]">
                 {cur} {subTotal.toFixed(2)}
               </span>
             </div>
-            <div className="flex justify-between border-t border-slate-200 pt-1 text-base font-bold text-slate-900">
+            <div className="flex justify-between border-t border-[#e5e7eb] pt-1 text-base font-bold text-[#1f3a5f]">
               <span>Grand total</span>
               <span>
                 {cur} {grand.toFixed(2)}
               </span>
             </div>
           </div>
+        </div>
+
+        <div className="mt-6 border-t border-dashed border-[#cfd8e3] pt-3 text-center text-[11px] text-[#4b5563]">
+          {b.useBrandedLayout ? (
+            <span>
+              {b.reportFooterName}
+              {b.reportWebsite ? ` · ${b.reportWebsite}` : ""}
+            </span>
+          ) : (
+            <span>Purchase order — {buyer.name}</span>
+          )}
         </div>
       </div>
     </div>
