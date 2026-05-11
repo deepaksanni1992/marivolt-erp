@@ -5,10 +5,10 @@ import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
 import { apiGet, apiGetWithQuery, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
+import PurchaseOrdersModule from "./Purchase.jsx";
 
 const TABS = [
   { id: "suppliers", label: "Supplier Master" },
-  { id: "requisitions", label: "Purchase Requisitions" },
   { id: "orders", label: "Purchase Orders" },
   { id: "grn", label: "GRN Receiving" },
   { id: "reports", label: "PO Reports" },
@@ -209,218 +209,6 @@ function SupplierForm({ initial, onSave, saving, error, onDismissError }) {
   );
 }
 
-function PurchaseRequisitionTab() {
-  const qc = useQueryClient();
-  const [status, setStatus] = useState("");
-  const [selected, setSelected] = useState(null);
-  const [editing, setEditing] = useState(null);
-  const { data, isLoading } = useQuery({
-    queryKey: ["procurement-pr", status],
-    queryFn: () => apiGetWithQuery("/purchase-orders/requisitions", { status: status || undefined, limit: 200 }),
-  });
-  const items = useMemo(() => data?.items || [], [data]);
-  const save = useMutation({
-    mutationFn: (payload) => (payload._id ? apiPut(`/purchase-orders/requisitions/${payload._id}`, payload) : apiPost("/purchase-orders/requisitions", payload)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["procurement-pr"] }),
-  });
-  const act = useMutation({
-    mutationFn: ({ id, action }) => apiPost(`/purchase-orders/requisitions/${id}/${action}`, {}),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["procurement-pr"] }),
-  });
-
-  const exportRows = useMemo(() => items.map((x) => ({
-    prNo: x.prNo,
-    status: x.status,
-    approvalStatus: x.approvalStatus,
-    requester: x.requester,
-    department: x.department,
-    requiredDate: x.requiredDate ? new Date(x.requiredDate).toISOString().slice(0, 10) : "",
-    lineCount: (x.lines || []).length,
-  })), [items]);
-
-  return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-end gap-2">
-        <FormField label="Status">
-          <SelectInput value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">All</option>
-            {["DRAFT", "SUBMITTED", "APPROVED", "REJECTED", "CLOSED", "CANCELLED"].map((s) => <option key={s} value={s}>{s}</option>)}
-          </SelectInput>
-        </FormField>
-        <button className="rounded-lg border px-3 py-2 text-sm font-semibold" onClick={() => downloadCsv(`pr-${Date.now()}.csv`, [{ key: "prNo", header: "PR No" }, { key: "status", header: "Status" }, { key: "approvalStatus", header: "Approval" }, { key: "requester", header: "Requester" }, { key: "department", header: "Dept" }, { key: "requiredDate", header: "Required Date" }, { key: "lineCount", header: "Lines" }], exportRows)} type="button">Export CSV</button>
-        <button className="rounded-lg border px-3 py-2 text-sm font-semibold" onClick={() => downloadPdfTable("Purchase Requisitions", "", [{ key: "prNo", header: "PR No" }, { key: "status", header: "Status" }, { key: "approvalStatus", header: "Approval" }, { key: "requester", header: "Requester" }, { key: "department", header: "Dept" }, { key: "requiredDate", header: "Required Date" }, { key: "lineCount", header: "Lines" }], exportRows, "purchase-requisitions")} type="button">Export PDF</button>
-        <button className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white" type="button" onClick={() => setEditing({ requester: "", department: "", remarks: "", lines: [{ article: "", description: "", qty: 1, uom: "PCS", remarks: "" }] })}>New PR</button>
-      </div>
-      <div className="grid gap-3 lg:grid-cols-[1.4fr_1fr]">
-        <div className="overflow-auto rounded-2xl border bg-white">
-          <table className="min-w-full text-sm">
-            <thead className="sticky top-0 bg-slate-50 text-xs uppercase text-slate-600">
-              <tr><th className="px-3 py-2 text-left">PR No</th><th className="px-3 py-2 text-left">Requester</th><th className="px-3 py-2 text-left">Dept</th><th className="px-3 py-2 text-left">Status</th><th className="px-3 py-2 text-left">Approval</th><th className="px-3 py-2 text-left">Action</th></tr>
-            </thead>
-            <tbody>
-              {isLoading ? <tr><td colSpan={6} className="px-3 py-6 text-center">Loading...</td></tr> : items.map((pr) => (
-                <tr key={pr._id} className={`border-t ${selected?._id === pr._id ? "bg-slate-50" : ""}`}>
-                  <td className="px-3 py-2 font-mono">{pr.prNo}</td>
-                  <td className="px-3 py-2">{pr.requester || "—"}</td>
-                  <td className="px-3 py-2">{pr.department || "—"}</td>
-                  <td className="px-3 py-2"><StatusBadge status={pr.status} /></td>
-                  <td className="px-3 py-2"><StatusBadge status={pr.approvalStatus} /></td>
-                  <td className="px-3 py-2 space-x-2"><button className="text-xs underline" onClick={() => setSelected(pr)} type="button">View</button><button className="text-xs underline" onClick={() => setEditing(pr)} type="button">Edit</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div className="rounded-2xl border bg-white p-3">
-          <h3 className="text-sm font-semibold">PR Detail</h3>
-          {selected ? (
-            <div className="mt-2 space-y-2 text-sm">
-              <div><b>{selected.prNo}</b></div>
-              <div>Status: <StatusBadge status={selected.status} /> </div>
-              <div>Approval: <StatusBadge status={selected.approvalStatus} /></div>
-              <div>Requester: {selected.requester || "—"}</div>
-              <div>Department: {selected.department || "—"}</div>
-              <div>Lines: {(selected.lines || []).length}</div>
-              <div className="flex flex-wrap gap-2 pt-2">
-                <button className="rounded border px-2 py-1 text-xs" onClick={() => act.mutate({ id: selected._id, action: "submit" })} type="button">Submit</button>
-                <button className="rounded border px-2 py-1 text-xs" onClick={() => act.mutate({ id: selected._id, action: "approve" })} type="button">Approve</button>
-                <button className="rounded border px-2 py-1 text-xs" onClick={() => act.mutate({ id: selected._id, action: "reject" })} type="button">Reject</button>
-                <button className="rounded border px-2 py-1 text-xs" onClick={() => act.mutate({ id: selected._id, action: "cancel" })} type="button">Cancel</button>
-              </div>
-            </div>
-          ) : <div className="mt-2 text-sm text-slate-500">Select a PR row.</div>}
-        </div>
-      </div>
-      <Modal open={!!editing} onClose={() => setEditing(null)} title={editing?._id ? "Edit PR" : "New PR"} wide>
-        {editing ? <PRForm initial={editing} onSave={(payload) => save.mutate(payload)} saving={save.isPending} /> : null}
-      </Modal>
-    </div>
-  );
-}
-
-function PRForm({ initial, onSave, saving }) {
-  const [form, setForm] = useState({
-    _id: initial._id,
-    requester: initial.requester || "",
-    department: initial.department || "",
-    requiredDate: initial.requiredDate ? new Date(initial.requiredDate).toISOString().slice(0, 10) : "",
-    remarks: initial.remarks || "",
-    lines: (initial.lines && initial.lines.length ? initial.lines : [{ article: "", description: "", qty: 1, uom: "PCS", remarks: "" }]).map((x) => ({ ...x, requiredDate: x.requiredDate ? new Date(x.requiredDate).toISOString().slice(0, 10) : "" })),
-  });
-  function updateLine(i, key, val) {
-    setForm((p) => ({ ...p, lines: p.lines.map((ln, idx) => (idx === i ? { ...ln, [key]: val } : ln)) }));
-  }
-  return (
-    <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-3">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <FormField label="Requester"><TextInput value={form.requester} onChange={(e) => setForm((p) => ({ ...p, requester: e.target.value }))} /></FormField>
-        <FormField label="Department"><TextInput value={form.department} onChange={(e) => setForm((p) => ({ ...p, department: e.target.value }))} /></FormField>
-        <FormField label="Required Date"><TextInput type="date" value={form.requiredDate} onChange={(e) => setForm((p) => ({ ...p, requiredDate: e.target.value }))} /></FormField>
-        <FormField label="Remarks"><TextInput value={form.remarks} onChange={(e) => setForm((p) => ({ ...p, remarks: e.target.value }))} /></FormField>
-      </div>
-      <div className="overflow-auto rounded-xl border">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 text-xs uppercase"><tr><th className="px-2 py-2 text-left">Article</th><th className="px-2 py-2 text-left">Description</th><th className="px-2 py-2 text-left">Qty</th><th className="px-2 py-2 text-left">UOM</th><th className="px-2 py-2 text-left">Required</th></tr></thead>
-          <tbody>
-            {form.lines.map((ln, i) => (
-              <tr key={i} className="border-t">
-                <td className="px-2 py-2"><TextInput value={ln.article || ""} onChange={(e) => updateLine(i, "article", e.target.value)} /></td>
-                <td className="px-2 py-2"><TextInput value={ln.description || ""} onChange={(e) => updateLine(i, "description", e.target.value)} /></td>
-                <td className="px-2 py-2"><TextInput type="number" value={ln.qty || 0} onChange={(e) => updateLine(i, "qty", Number(e.target.value))} /></td>
-                <td className="px-2 py-2"><TextInput value={ln.uom || "PCS"} onChange={(e) => updateLine(i, "uom", e.target.value)} /></td>
-                <td className="px-2 py-2"><TextInput type="date" value={ln.requiredDate || ""} onChange={(e) => updateLine(i, "requiredDate", e.target.value)} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="flex justify-between"><button type="button" className="rounded border px-3 py-2 text-sm" onClick={() => setForm((p) => ({ ...p, lines: [...p.lines, { article: "", description: "", qty: 1, uom: "PCS", remarks: "" }] }))}>Add Line</button><button disabled={saving} className="rounded bg-slate-900 px-3 py-2 text-sm font-semibold text-white">{saving ? "Saving..." : "Save PR"}</button></div>
-    </form>
-  );
-}
-
-function PurchaseOrderTab() {
-  const qc = useQueryClient();
-  const [status, setStatus] = useState("");
-  const [selected, setSelected] = useState(null);
-  const { data } = useQuery({
-    queryKey: ["procurement-po", status],
-    queryFn: () => apiGetWithQuery("/purchase-orders", { status: status || undefined, limit: 200 }),
-  });
-  const items = data?.items || [];
-  const { data: selectedPo } = useQuery({
-    queryKey: ["procurement-po-detail", selected?._id],
-    queryFn: () => apiGet(`/purchase-orders/${selected._id}`),
-    enabled: !!selected?._id,
-  });
-  const act = useMutation({
-    mutationFn: ({ id, action }) => apiPost(`/purchase-orders/${id}/${action}`, {}),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["procurement-po"] }),
-  });
-  const createGrnDraft = useMutation({
-    mutationFn: (payload) => apiPost(`/purchase-orders/${payload.id}/receive`, payload.body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["procurement-po"] });
-      qc.invalidateQueries({ queryKey: ["procurement-grn"] });
-    },
-  });
-  return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-end gap-2">
-        <FormField label="Status">
-          <SelectInput value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">All</option>
-            {["DRAFT", "SENT", "PARTIAL_RECEIVED", "RECEIVED", "CLOSED", "CANCELLED", "REJECTED"].map((s) => <option key={s} value={s}>{s}</option>)}
-          </SelectInput>
-        </FormField>
-        <button className="rounded-lg border px-3 py-2 text-sm font-semibold" type="button" onClick={() => downloadCsv(`po-${Date.now()}.csv`, [{ key: "poNo", header: "PO No" }, { key: "supplierName", header: "Supplier" }, { key: "status", header: "Status" }, { key: "approvalStatus", header: "Approval" }, { key: "grandTotal", header: "Amount" }], items)}>Export CSV</button>
-        <button className="rounded-lg border px-3 py-2 text-sm font-semibold" type="button" onClick={() => downloadPdfTable("Purchase Orders", "", [{ key: "poNo", header: "PO No" }, { key: "supplierName", header: "Supplier" }, { key: "status", header: "Status" }, { key: "approvalStatus", header: "Approval" }, { key: "grandTotal", header: "Amount" }], items, "purchase-orders")}>Export PDF</button>
-      </div>
-      <div className="grid gap-3 lg:grid-cols-[1.4fr_1fr]">
-        <div className="overflow-auto rounded-2xl border bg-white">
-          <table className="min-w-full text-sm">
-            <thead className="sticky top-0 bg-slate-50 text-xs uppercase text-slate-600"><tr><th className="px-3 py-2 text-left">PO No</th><th className="px-3 py-2 text-left">Supplier</th><th className="px-3 py-2 text-left">Status</th><th className="px-3 py-2 text-left">Approval</th><th className="px-3 py-2 text-left">Amount</th><th className="px-3 py-2 text-left">Action</th></tr></thead>
-            <tbody>{items.map((po) => <tr key={po._id} className={`border-t ${selected?._id === po._id ? "bg-slate-50" : ""}`}><td className="px-3 py-2 font-mono">{po.poNo || po.poNumber}</td><td className="px-3 py-2">{po.supplierName}</td><td className="px-3 py-2"><StatusBadge status={po.status} /></td><td className="px-3 py-2"><StatusBadge status={po.approvalStatus} /></td><td className="px-3 py-2">{Number(po.grandTotal || 0).toFixed(2)}</td><td className="px-3 py-2"><button className="text-xs underline" type="button" onClick={() => setSelected(po)}>View</button></td></tr>)}</tbody>
-          </table>
-        </div>
-        <div className="rounded-2xl border bg-white p-3">
-          <h3 className="text-sm font-semibold">PO Detail</h3>
-          {selected ? (
-            <div className="mt-2 space-y-2 text-sm">
-              <div><b>{selected.poNo || selected.poNumber}</b></div>
-              <div>Supplier: {selected.supplierName}</div>
-              <div>Status: <StatusBadge status={selected.status} /></div>
-              <div>Approval: <StatusBadge status={selected.approvalStatus} /></div>
-              <div className="overflow-auto rounded border">
-                <table className="min-w-full text-xs">
-                  <thead className="bg-slate-50"><tr><th className="px-2 py-1 text-left">Article</th><th className="px-2 py-1">Ordered</th><th className="px-2 py-1">Received</th><th className="px-2 py-1">Pending</th><th className="px-2 py-1">GRN History</th></tr></thead>
-                  <tbody>
-                    {(selectedPo?.lines || selected.lines || []).map((ln) => {
-                      const ordered = Number(ln.orderedQty ?? ln.qty) || 0;
-                      const received = Number(ln.receivedQty) || 0;
-                      const cancelled = Number(ln.cancelledQty) || 0;
-                      const pending = Math.max(0, ordered - received - cancelled);
-                      const history = selectedPo?._grnLineHistory?.[String(ln._id)] || [];
-                      return <tr key={ln._id} className="border-t"><td className="px-2 py-1">{ln.itemCode || ln.article}</td><td className="px-2 py-1 text-center">{ordered}</td><td className="px-2 py-1 text-center">{received}</td><td className="px-2 py-1 text-center font-semibold">{pending}</td><td className="px-2 py-1">{history.length ? history.map((h) => `${h.grnNo} (${h.receivedQty}/${h.rejectedQty}/${h.cancelledQty})`).join(", ") : "—"}</td></tr>;
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <div className="flex flex-wrap gap-2 pt-2">
-                <button className="rounded border px-2 py-1 text-xs" onClick={() => act.mutate({ id: selected._id, action: "submit" })} type="button">Submit</button>
-                <button className="rounded border px-2 py-1 text-xs" onClick={() => act.mutate({ id: selected._id, action: "approve" })} type="button">Approve</button>
-                <button className="rounded border px-2 py-1 text-xs" onClick={() => act.mutate({ id: selected._id, action: "reject" })} type="button">Reject</button>
-                <button className="rounded border px-2 py-1 text-xs" onClick={() => act.mutate({ id: selected._id, action: "cancel" })} type="button">Cancel</button>
-                <button className="rounded border px-2 py-1 text-xs" onClick={() => createGrnDraft.mutate({ id: selected._id, body: { warehouseId: selected.warehouseId || null, branchId: selected.branchId || null, lines: (selectedPo?.lines || selected.lines || []).map((ln) => ({ lineId: ln._id, qty: Math.max(0, Number(ln.orderedQty ?? ln.qty) - Number(ln.receivedQty || 0) - Number(ln.cancelledQty || 0)), remarks: "PO receive draft", batchNo: "", serialNo: "" })).filter((ln) => ln.qty > 0) } })} type="button">Create GRN Draft</button>
-              </div>
-            </div>
-          ) : <div className="mt-2 text-sm text-slate-500">Select a PO row.</div>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function GrnTab() {
   const qc = useQueryClient();
   const [status, setStatus] = useState("");
@@ -442,7 +230,7 @@ function GrnTab() {
     mutationFn: ({ grnNo, action }) => apiPost(`/grn/${grnNo}/${action}`, {}),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["procurement-grn"] });
-      qc.invalidateQueries({ queryKey: ["procurement-po"] });
+      qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
       refetchDetail();
     },
   });
@@ -638,7 +426,7 @@ export default function ProcurementFoundation() {
   const [tab, setTab] = useState("suppliers");
   return (
     <div className="space-y-4">
-      <PageHeader title="Procurement Foundation" subtitle="Phase-11.1 Supplier Master, PR and PO core architecture." />
+      <PageHeader title="Procurement Foundation" subtitle="Supplier Master, purchase orders, GRN, reports, and dashboard." />
       <div className="flex flex-wrap gap-2">
         {TABS.map((t) => (
           <button key={t.id} type="button" onClick={() => setTab(t.id)} className={tab === t.id ? "rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white" : "rounded-xl border px-3 py-2 text-sm font-semibold"}>
@@ -647,8 +435,7 @@ export default function ProcurementFoundation() {
         ))}
       </div>
       {tab === "suppliers" && <SupplierMasterTab />}
-      {tab === "requisitions" && <PurchaseRequisitionTab />}
-      {tab === "orders" && <PurchaseOrderTab />}
+      {tab === "orders" && <PurchaseOrdersModule procurementEmbed />}
       {tab === "grn" && <GrnTab />}
       {tab === "reports" && <ReportsTab />}
       {tab === "dashboard" && <DashboardTab />}

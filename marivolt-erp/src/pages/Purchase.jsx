@@ -591,7 +591,7 @@ function csvRowsToPurchaseOrders(rows) {
   return [...byKey.values()].filter((p) => p.lines.length > 0);
 }
 
-export default function Purchase() {
+export default function Purchase({ procurementEmbed = false } = {}) {
   const { auth } = useAuth();
   const qc = useQueryClient();
   const [tab, setTab] = useState("orders");
@@ -913,6 +913,7 @@ export default function Purchase() {
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
   const supplierCount = suppliersAll?.items?.length ?? "—";
+  const showOrdersSection = procurementEmbed || tab === "orders";
 
   function exportPoCsv() {
     const cols = [
@@ -1108,55 +1109,57 @@ export default function Purchase() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-2xl border border-gray-200 bg-gradient-to-br from-slate-50 to-white px-6 py-5 shadow-sm">
-        <div className="flex flex-col gap-2 border-b border-gray-200/80 pb-4 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">
-              Procurement
-            </p>
-            <h1 className="text-2xl font-bold tracking-tight text-gray-900">Purchase</h1>
-            <p className="mt-1 max-w-2xl text-sm text-gray-600">
-              Supplier master, purchase orders, goods receipt, returns, and operational reports.
-              Data below refreshes from your authorised API.
-            </p>
+    <div className={procurementEmbed ? "space-y-3" : "space-y-6"}>
+      {!procurementEmbed ? (
+        <div className="rounded-2xl border border-gray-200 bg-gradient-to-br from-slate-50 to-white px-6 py-5 shadow-sm">
+          <div className="flex flex-col gap-2 border-b border-gray-200/80 pb-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">
+                Procurement
+              </p>
+              <h1 className="text-2xl font-bold tracking-tight text-gray-900">Purchase</h1>
+              <p className="mt-1 max-w-2xl text-sm text-gray-600">
+                Supplier master, purchase orders, goods receipt, returns, and operational reports.
+                Data below refreshes from your authorised API.
+              </p>
+            </div>
+            <div className="text-right text-xs text-gray-500">
+              <div className="font-medium text-gray-700">Marivoltz ERP</div>
+              <div>Module version · live register</div>
+            </div>
           </div>
-          <div className="text-right text-xs text-gray-500">
-            <div className="font-medium text-gray-700">Marivoltz ERP</div>
-            <div>Module version · live register</div>
-          </div>
-        </div>
 
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <KpiCard
-            label="Total POs"
-            value={summary?.totalPurchaseOrders ?? "—"}
-            hint="All recorded orders"
-          />
-          <KpiCard
-            label="Pending orders"
-            value={summary?.pendingOrderCount ?? "—"}
-            hint="Not received / cancelled"
-          />
-          <KpiCard
-            label="Order value (sum)"
-            value={
-              summary?.totalOrderValue != null
-                ? `USD ${Number(summary.totalOrderValue).toLocaleString(undefined, {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}`
-                : "—"
-            }
-            hint="Grand total, all POs"
-          />
-          <KpiCard
-            label="Suppliers on file"
-            value={supplierCount}
-            hint="Master records"
-          />
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <KpiCard
+              label="Total POs"
+              value={summary?.totalPurchaseOrders ?? "—"}
+              hint="All recorded orders"
+            />
+            <KpiCard
+              label="Pending orders"
+              value={summary?.pendingOrderCount ?? "—"}
+              hint="Not received / cancelled"
+            />
+            <KpiCard
+              label="Order value (sum)"
+              value={
+                summary?.totalOrderValue != null
+                  ? `USD ${Number(summary.totalOrderValue).toLocaleString(undefined, {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}`
+                  : "—"
+              }
+              hint="Grand total, all POs"
+            />
+            <KpiCard
+              label="Suppliers on file"
+              value={supplierCount}
+              hint="Master records"
+            />
+          </div>
         </div>
-      </div>
+      ) : null}
 
       {(error || err) && (
         <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
@@ -1164,28 +1167,30 @@ export default function Purchase() {
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2 rounded-xl border border-gray-200 bg-white p-2 shadow-sm">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => {
-              setTab(t.id);
-              setErr("");
-            }}
-            className={[
-              "rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors",
-              tab === t.id
-                ? "bg-gray-900 text-white shadow"
-                : "text-gray-700 hover:bg-gray-100",
-            ].join(" ")}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {!procurementEmbed ? (
+        <div className="flex flex-wrap gap-2 rounded-xl border border-gray-200 bg-white p-2 shadow-sm">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => {
+                setTab(t.id);
+                setErr("");
+              }}
+              className={[
+                "rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors",
+                tab === t.id
+                  ? "bg-gray-900 text-white shadow"
+                  : "text-gray-700 hover:bg-gray-100",
+              ].join(" ")}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
-      {tab === "orders" && (
+      {showOrdersSection && (
         <section className="rounded-2xl border border-gray-200 bg-white shadow-sm">
           <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
