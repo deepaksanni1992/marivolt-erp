@@ -53,14 +53,6 @@ function isMongoIdString(s) {
   return /^[a-fA-F0-9]{24}$/.test(t);
 }
 
-/** GRN line: one display string (stock location code + putaway). */
-function formatGrnItemStorage(it) {
-  const w = String(it?.warehouse || "").trim();
-  const l = String(it?.location || "").trim();
-  if (w && l) return `${w} / ${l}`;
-  return w || l || "—";
-}
-
 /** Normalize GET /grn/from-po payload; map legacy PO line arrays if `lines` is empty. */
 function normalizeGrnFromPoResponse(data) {
   const d = data && typeof data === "object" ? data : {};
@@ -1145,6 +1137,7 @@ export default function StoreModule() {
                         <th className="px-2 py-2 text-right">Received</th>
                         <th className="px-2 py-2 text-right">Pending</th>
                         <th className="px-2 py-2 text-right">GRN qty</th>
+                        <th className="px-2 py-2">Warehouse</th>
                         <th className="px-2 py-2">Location</th>
                         <th className="px-2 py-2">Remarks</th>
                       </tr>
@@ -1203,10 +1196,29 @@ export default function StoreModule() {
                               />
                             </td>
                             <td className="px-2 py-1.5">
+                              <select
+                                className="max-w-[120px] rounded border px-1 py-0.5"
+                                disabled={pend <= 0 || !selectable}
+                                value={ed.warehouse}
+                                onChange={(e) =>
+                                  setGrnLineEdits((p) => ({
+                                    ...p,
+                                    [id]: { ...ed, warehouse: e.target.value },
+                                  }))
+                                }
+                              >
+                                {grnLocationSelectCodes.map((code) => (
+                                  <option key={`w-${id}-${code}`} value={code}>
+                                    {code}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="px-2 py-1.5">
                               <input
                                 type="text"
-                                className="w-full min-w-[160px] max-w-[280px] rounded border px-1 py-0.5"
-                                placeholder="e.g. A01 or shelf / bin"
+                                className="w-full min-w-[140px] max-w-[220px] rounded border px-1 py-0.5"
+                                placeholder="e.g. Shelf A1"
                                 disabled={pend <= 0 || !selectable}
                                 value={ed.location}
                                 onChange={(e) =>
@@ -1271,16 +1283,14 @@ export default function StoreModule() {
                           setGrnUiErr(`GRN qty cannot exceed pending (${pend}) for ${ln.article}.`);
                           return;
                         }
-                        const wh = String(defaultGrnWarehouse || "").trim();
+                        const wh = String(ed.warehouse || "").trim();
                         if (!wh) {
-                          setGrnUiErr(
-                            "Add at least one active store location (Store → Locations). The first code is used when posting GRN."
-                          );
+                          setGrnUiErr("Warehouse is required for each selected line.");
                           return;
                         }
                         const loc = String(ed.location || "").trim();
                         if (!loc) {
-                          setGrnUiErr("Location is required for each selected GRN line.");
+                          setGrnUiErr("Location is required for selected GRN line.");
                           return;
                         }
                         linesOut.push({
@@ -1309,17 +1319,6 @@ export default function StoreModule() {
                   >
                     Post GRN
                   </button>
-                  {defaultGrnWarehouse ? (
-                    <span className="text-[11px] text-slate-500">
-                      Uses stock location code{" "}
-                      <span className="font-mono font-semibold text-slate-700">{defaultGrnWarehouse}</span> (first
-                      active under Store → Locations). Enter putaway / bin in Location.
-                    </span>
-                  ) : (
-                    <span className="text-[11px] text-amber-700">
-                      Add an active store location before posting; the first code is used as the GRN warehouse.
-                    </span>
-                  )}
                   {grnTotalPending <= 0 ? (
                     <span className="text-xs text-amber-700">
                       This PO is fully received. No pending quantity available for GRN.
@@ -1403,12 +1402,14 @@ export default function StoreModule() {
                                     [
                                       { key: "article", header: "Article" },
                                       { key: "qty", header: "Qty" },
-                                      { key: "storage", header: "Location" },
+                                      { key: "warehouse", header: "Warehouse" },
+                                      { key: "location", header: "Location" },
                                     ],
                                     (g.items || []).map((it) => ({
                                       article: it.article,
                                       qty: Number(it.acceptedQty ?? it.receivedQty) || 0,
-                                      storage: formatGrnItemStorage(it),
+                                      warehouse: it.warehouse || "—",
+                                      location: it.location || "—",
                                     })),
                                     `grn-${g.grnNo}`
                                   )
@@ -1489,6 +1490,7 @@ export default function StoreModule() {
                     <tr>
                       <th className="px-2 py-1 text-left">Article</th>
                       <th className="px-2 py-1 text-right">Qty</th>
+                      <th className="px-2 py-1 text-left">Wh</th>
                       <th className="px-2 py-1 text-left">Location</th>
                     </tr>
                   </thead>
@@ -1499,7 +1501,8 @@ export default function StoreModule() {
                         <td className="px-2 py-1 text-right tabular-nums">
                           {Number(it.acceptedQty ?? it.receivedQty) || 0}
                         </td>
-                        <td className="px-2 py-1">{formatGrnItemStorage(it)}</td>
+                        <td className="px-2 py-1">{it.warehouse || "—"}</td>
+                        <td className="px-2 py-1">{it.location || "—"}</td>
                       </tr>
                     ))}
                   </tbody>

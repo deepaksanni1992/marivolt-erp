@@ -24,15 +24,6 @@ function withCompany(req, filter = {}) {
   }
   return { ...filter, companyId: cid };
 }
-
-/** First active `StockLocation.locationCode` for the company (sorted), for GRN default warehouse. */
-async function getDefaultGrnWarehouseCode(req, session = null) {
-  const q = StockLocation.findOne(withCompany(req, { status: "Active" })).select("locationCode").sort({ locationCode: 1 });
-  if (session) q.session(session);
-  const first = await q.lean();
-  return upper(first?.locationCode || "");
-}
-
 const PO_LINE_ARRAY_KEYS = ["lines", "orderLines", "poItems", "items", "products"];
 
 /** GRN documents that count toward PO received / pending (excludes DRAFT and CANCELLED). */
@@ -163,7 +154,6 @@ async function buildGrnItemsFromPoLineSelection(req, poId, selections = [], opti
   }
   const postedMap = postedOverride instanceof Map ? postedOverride : await getPostedAcceptedQtyByPoLineMap(req, poId, session);
   const rawRows = extractRawPoLinesFromPo(poLean);
-  const defaultWh = await getDefaultGrnWarehouseCode(req, session);
   const raw = [];
   for (const row of selections) {
     const poLineId = row.poLineId;
@@ -184,13 +174,8 @@ async function buildGrnItemsFromPoLineSelection(req, poId, selections = [], opti
       const label = String(src.itemCode || src.article || src.materialCode || poLineId).trim();
       throw new Error(`GRN qty (${grnQty}) exceeds pending (${pending}) for line ${label}`);
     }
-    let wh = upper(row.warehouse || "");
-    if (!wh) wh = defaultWh;
-    if (!wh) {
-      throw new Error(
-        "No active stock location is configured. Add at least one under Store → Locations before posting a GRN."
-      );
-    }
+    const wh = upper(row.warehouse || "");
+    if (!wh) throw new Error("Warehouse is required for each selected GRN line.");
     const loc = t(row.location);
     if (!loc) throw new Error("Location is required for selected GRN line.");
     raw.push({
@@ -306,7 +291,7 @@ export async function createGrn(req, res) {
   try {
     return res.status(400).json({
       message:
-        "Draft GRN creation is disabled. Select PO lines, enter location and quantities, then use POST /grn/post to post the GRN directly.",
+        "Draft GRN creation is disabled. Select PO lines, enter warehouse, location, and quantities, then use POST /grn/post to post the GRN directly.",
     });
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -516,7 +501,7 @@ function findPoLineMatchForCsv(rawRows, row) {
 /** GET /grn/csv-template — column header for GRN CSV import. */
 export async function getGrnCsvTemplate(req, res) {
   try {
-    const header = "poLineId,article,materialCode,spn,grnQty,location,remarks\n";
+    const header = "poLineId,article,materialCode,spn,grnQty,warehouse,location,remarks\n";
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", "attachment; filename=\"grn-import-template.csv\"");
     res.send(header);
@@ -542,7 +527,6 @@ export async function importGrnCsvPreview(req, res) {
     const postedMap = await getPostedAcceptedQtyByPoLineMap(req, poId);
     const rawRows = extractRawPoLinesFromPo(po);
     const { rows } = parseSimpleGrnCsv(csvText);
-    const defaultWh = await getDefaultGrnWarehouseCode(req);
     const errors = [];
     const updates = [];
     for (let i = 0; i < rows.length; i++) {
@@ -568,13 +552,9 @@ export async function importGrnCsvPreview(req, res) {
         errors.push({ line: lineNo, message: `grnQty (${grnQty}) exceeds pending (${pending}) for this line.` });
         continue;
       }
-      let warehouse = upper(row.warehouse || "");
-      if (!warehouse) warehouse = defaultWh;
+      const warehouse = upper(row.warehouse || "");
       if (!warehouse) {
-        errors.push({
-          line: lineNo,
-          message: "No default stock location: add an active location under Store, or include a warehouse column in the CSV.",
-        });
+        errors.push({ line: lineNo, message: "warehouse is required." });
         continue;
       }
       const location = t(row.location);
