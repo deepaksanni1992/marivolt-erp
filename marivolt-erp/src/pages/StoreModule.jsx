@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
@@ -18,6 +18,35 @@ const TABS = [
   "Store Reports",
   "Negative Allocation Report",
 ];
+
+const GRN_PO_PAY_LABEL = {
+  NOT_PAID: "Not paid",
+  NONE: "Not paid",
+  PAYMENT_PENDING: "Pending",
+  PARTIALLY_PAID: "Partially paid",
+  FULLY_PAID: "Fully paid",
+  PAID: "Fully paid",
+  ADVANCE_PAID: "Advance paid",
+};
+
+const GRN_PO_DOC_LABEL = {
+  NONE: "Not uploaded",
+  PI_RECEIVED: "PI uploaded",
+  INVOICE_RECEIVED: "Invoice uploaded",
+  INVOICE_BOOKED: "Booked",
+};
+
+const GRN_PO_RECEIPT_LABEL = {
+  NOT_RECEIVED: "Not received",
+  PARTIALLY_RECEIVED: "Partially received",
+  FULLY_RECEIVED: "Fully received",
+};
+
+function fmtPoDateShort(d) {
+  if (!d) return "—";
+  const x = new Date(d);
+  return Number.isNaN(x.getTime()) ? "—" : x.toLocaleDateString();
+}
 
 function NegativeBadge({ value }) {
   if (!Number.isFinite(value) || value >= 0) return null;
@@ -79,22 +108,17 @@ export default function StoreModule() {
   const [allocatedOnly, setAllocatedOnly] = useState(false);
   const [allocationDrillDown, setAllocationDrillDown] = useState({ open: false, article: "", warehouse: "" });
   const [grnPoId, setGrnPoId] = useState("");
+  const [grnPoSnapshot, setGrnPoSnapshot] = useState(null);
+  const [grnLineEdits, setGrnLineEdits] = useState({});
+  const [lastDraftGrnNo, setLastDraftGrnNo] = useState("");
+  const [grnUiErr, setGrnUiErr] = useState("");
+  const grnUrlPoLoadedRef = useRef("");
   const [packAllocInputId, setPackAllocInputId] = useState("");
   const [packAllocQueryId, setPackAllocQueryId] = useState("");
   const [packLineQty, setPackLineQty] = useState({});
   const [dispatchPackInputId, setDispatchPackInputId] = useState("");
   const [dispatchPackQueryId, setDispatchPackQueryId] = useState("");
   const [dispatchLineQty, setDispatchLineQty] = useState({});
-
-  useEffect(() => {
-    const tabq = searchParams.get("tab");
-    const po = searchParams.get("grnPoId");
-    if (tabq && TABS.includes(tabq)) setTab(tabq);
-    if (po) {
-      setGrnPoId(po);
-      if (!tabq || tabq === "GRN") setTab("GRN");
-    }
-  }, [searchParams]);
 
   // Unified-ledger filters (used only inside the Stock Ledger tab).
   const [ledgerMovementType, setLedgerMovementType] = useState("");
@@ -156,21 +180,47 @@ export default function StoreModule() {
     enabled: tab === "GRN",
   });
 
-  const { data: grnFromPoData } = useQuery({
-    queryKey: ["grn-from-po", grnPoId],
-    queryFn: () => apiGet(`/grn/from-po/${grnPoId}`),
-    enabled: tab === "GRN" && Boolean(grnPoId),
-  });
-
   const { data: poPickList } = useQuery({
     queryKey: ["store-purchase-orders"],
     queryFn: () => apiGetWithQuery("/purchase-orders", { limit: 150 }),
     enabled: tab === "GRN",
   });
 
+  const loadGrnPoMut = useMutation({
+    mutationFn: (poId) => apiGet(`/grn/from-po/${poId}`),
+    onSuccess: (data) => {
+      setGrnUiErr("");
+      setGrnPoSnapshot(data);
+      const init = {};
+      for (const ln of data.lines || []) {
+        init[String(ln.poLineId)] = {
+          selected: false,
+          grnQty: String(Math.max(0, Number(ln.pendingQty) || 0)),
+          warehouse: "MAIN",
+          location: "MAIN",
+          remarks: "",
+        };
+      }
+      setGrnLineEdits(init);
+    },
+    onError: (e) => {
+      setGrnPoSnapshot(null);
+      setGrnLineEdits({});
+      setGrnUiErr(e.message || String(e));
+    },
+  });
+
   const createGrnDraft = useMutation({
     mutationFn: (body) => apiPost("/grn/draft", body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["grn"] }),
+    onSuccess: (doc, vars) => {
+      qc.invalidateQueries({ queryKey: ["grn"] });
+      qc.invalidateQueries({ queryKey: ["store-purchase-orders"] });
+      if (doc?.grnNo) setLastDraftGrnNo(doc.grnNo);
+      const pid = vars?.poId ? String(vars.poId) : grnPoSnapshot?.header?._id ? String(grnPoSnapshot.header._id) : "";
+      if (pid) loadGrnPoMut.mutate(pid);
+      setGrnUiErr("");
+    },
+    onError: (e) => setGrnUiErr(e.message || String(e)),
   });
 
   const postGrnMut = useMutation({
@@ -179,8 +229,28 @@ export default function StoreModule() {
       qc.invalidateQueries({ queryKey: ["grn"] });
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
+      qc.invalidateQueries({ queryKey: ["store-purchase-orders"] });
+      const pid = grnPoSnapshot?.header?._id;
+      if (pid) loadGrnPoMut.mutate(String(pid));
+      setLastDraftGrnNo("");
+      setGrnUiErr("");
     },
+    onError: (e) => setGrnUiErr(e.message || String(e)),
   });
+
+  useEffect(() => {
+    const tabq = searchParams.get("tab");
+    const po = searchParams.get("grnPoId");
+    if (tabq && TABS.includes(tabq)) setTab(tabq);
+    if (po) {
+      setGrnPoId(po);
+      if (!tabq || tabq === "GRN") setTab("GRN");
+      if (grnUrlPoLoadedRef.current !== po) {
+        grnUrlPoLoadedRef.current = po;
+        loadGrnPoMut.mutate(po);
+      }
+    }
+  }, [searchParams]);
 
   const { data: packingFromAlloc } = useQuery({
     queryKey: ["packing-from-allocation", packAllocQueryId],
@@ -412,7 +482,7 @@ export default function StoreModule() {
   const { data: locations } = useQuery({
     queryKey: ["stock-locations"],
     queryFn: () => apiGet("/stock/locations"),
-    enabled: tab === "Locations",
+    enabled: tab === "GRN" || tab === "Locations",
   });
 
   const { data: negativeReport } = useQuery({
@@ -514,6 +584,15 @@ export default function StoreModule() {
   const stockRows = useMemo(() => balance?.items || [], [balance]);
   const ledgerRows = useMemo(() => ledger?.items || [], [ledger]);
   const locationRows = locations || [];
+  const grnLinesForUi = grnPoSnapshot?.lines || [];
+  const grnTotalPending = useMemo(
+    () => grnLinesForUi.reduce((s, ln) => s + Math.max(0, Number(ln.pendingQty) || 0), 0),
+    [grnLinesForUi]
+  );
+  const grnLocationSelectCodes = useMemo(() => {
+    const arr = locationRows.map((l) => l.locationCode).filter(Boolean);
+    return Array.from(new Set([...arr, "MAIN"])).sort();
+  }, [locationRows]);
   const negativeRows = useMemo(() => negativeReport?.items || [], [negativeReport]);
   const landedCostDetail = useMemo(
     () => (landedCostRows?.items || []).find((x) => String(x._id) === String(selectedLandedCostId)) || null,
@@ -680,12 +759,18 @@ export default function StoreModule() {
       {tab === "GRN" ? (
         <div className="space-y-4">
           <div className="rounded-2xl border bg-white p-4">
-            <h3 className="mb-2 text-sm font-semibold text-slate-800">Create GRN from purchase order</h3>
+            <h3 className="mb-2 text-sm font-semibold text-slate-800">GRN from purchase order</h3>
             <div className="flex flex-wrap items-end gap-2">
               <select
-                className="min-w-[240px] rounded border px-3 py-2 text-sm"
+                className="min-w-[260px] rounded border px-3 py-2 text-sm"
                 value={grnPoId}
-                onChange={(e) => setGrnPoId(e.target.value)}
+                onChange={(e) => {
+                  setGrnPoId(e.target.value);
+                  setGrnPoSnapshot(null);
+                  setGrnLineEdits({});
+                  setGrnUiErr("");
+                  setLastDraftGrnNo("");
+                }}
               >
                 <option value="">Select PO…</option>
                 {(poPickList?.items || []).map((p) => (
@@ -697,46 +782,337 @@ export default function StoreModule() {
               <button
                 type="button"
                 className="rounded bg-slate-900 px-3 py-2 text-sm text-white disabled:opacity-40"
-                disabled={!grnPoId || !grnFromPoData}
-                onClick={() => {
-                  const d = grnFromPoData;
-                  if (!d?.po?._id) return;
-                  createGrnDraft.mutate({
-                    poId: d.po._id,
-                    poNo: d.po.poNo || d.po.poNumber,
-                    supplierId: d.po.supplierId,
-                    supplierName: d.supplierName || d.po.supplierName,
-                    currency: d.currency || d.po.currency || "USD",
-                    grnDate: new Date().toISOString().slice(0, 10),
-                    items: (d.lines || []).map((ln) => ({
-                      article: ln.article,
-                      description: ln.description,
-                      spn: ln.spn,
-                      materialCode: ln.materialCode,
-                      orderedQty: ln.orderedQty,
-                      receivedQty: ln.pendingQty,
-                      pendingQty: ln.pendingQty,
-                      acceptedQty: ln.pendingQty,
-                      rejectedQty: 0,
-                      cancelledQty: 0,
-                      unitCost: ln.unitCost,
-                      poLineId: ln.poLineId,
-                      poId: ln.poId,
-                      poNo: ln.poNo,
-                      warehouse: "MAIN",
-                      location: "MAIN",
-                    })),
-                  });
-                }}
+                disabled={!grnPoId || loadGrnPoMut.isPending}
+                onClick={() => loadGrnPoMut.mutate(grnPoId)}
               >
-                Create draft GRN (full pending qty)
+                Load PO lines
               </button>
             </div>
-            {grnFromPoData?.lines?.length ? (
-              <p className="mt-2 text-xs text-slate-500">
-                {grnFromPoData.lines.length} line(s) loaded — adjust quantities in Purchase or edit draft GRN via API
-                before posting.
-              </p>
+            {grnUiErr ? <p className="mt-2 text-xs text-rose-600">{grnUiErr}</p> : null}
+            {loadGrnPoMut.isPending ? <p className="mt-2 text-xs text-slate-500">Loading PO…</p> : null}
+
+            {grnPoSnapshot?.header ? (
+              <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50/90 p-3 text-sm">
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <div>
+                    <span className="text-slate-500">PO No</span>{" "}
+                    <span className="font-mono font-semibold">{grnPoSnapshot.header.poNo || "—"}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Supplier</span>{" "}
+                    <span className="font-medium">{grnPoSnapshot.header.supplierName || "—"}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">PO date</span> {fmtPoDateShort(grnPoSnapshot.header.orderDate)}
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Currency</span>{" "}
+                    <span className="font-mono">{grnPoSnapshot.header.currency || "—"}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Payment status</span>{" "}
+                    <span className="font-medium">
+                      {GRN_PO_PAY_LABEL[grnPoSnapshot.header.paymentStatus] ||
+                        grnPoSnapshot.header.paymentStatus ||
+                        "—"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Supplier invoice</span>{" "}
+                    <span className="font-medium">
+                      {GRN_PO_DOC_LABEL[grnPoSnapshot.header.supplierInvoiceStatus] ||
+                        grnPoSnapshot.header.supplierInvoiceStatus ||
+                        "—"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">GRN status (PO)</span>{" "}
+                    <span className="font-medium">
+                      {GRN_PO_RECEIPT_LABEL[grnPoSnapshot.header.grnReceiptStatus] ||
+                        grnPoSnapshot.header.grnReceiptStatus ||
+                        "—"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">PO status</span>{" "}
+                    <span className="font-medium">{grnPoSnapshot.header.poStatus || "—"}</span>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {grnLinesForUi.length ? (
+              <>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                    onClick={() => {
+                      setGrnLineEdits((prev) => {
+                        const next = { ...prev };
+                        for (const ln of grnLinesForUi) {
+                          const id = String(ln.poLineId);
+                          if ((Number(ln.pendingQty) || 0) <= 0) continue;
+                          const pend = Math.max(0, Number(ln.pendingQty) || 0);
+                          const cur = next[id] || {
+                            selected: false,
+                            grnQty: String(pend),
+                            warehouse: "MAIN",
+                            location: "MAIN",
+                            remarks: "",
+                          };
+                          next[id] = { ...cur, selected: true };
+                        }
+                        return next;
+                      });
+                    }}
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                    onClick={() => {
+                      setGrnLineEdits((prev) => {
+                        const next = { ...prev };
+                        for (const id of Object.keys(next)) {
+                          next[id] = { ...next[id], selected: false };
+                        }
+                        return next;
+                      });
+                    }}
+                  >
+                    Clear selection
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                    onClick={() => {
+                      setGrnLineEdits((prev) => {
+                        const next = { ...prev };
+                        const anySel = Object.entries(next).some(([, v]) => v?.selected);
+                        for (const ln of grnLinesForUi) {
+                          const id = String(ln.poLineId);
+                          const pend = Math.max(0, Number(ln.pendingQty) || 0);
+                          if (pend <= 0) continue;
+                          const cur = next[id] || {
+                            selected: false,
+                            grnQty: "0",
+                            warehouse: "MAIN",
+                            location: "MAIN",
+                            remarks: "",
+                          };
+                          if (anySel && !cur.selected) continue;
+                          next[id] = { ...cur, grnQty: String(pend) };
+                        }
+                        return next;
+                      });
+                    }}
+                  >
+                    Fill full pending qty
+                  </button>
+                </div>
+                <div className="mt-3 overflow-auto rounded border border-slate-200">
+                  <table className="w-full min-w-[1000px] text-xs">
+                    <thead className="bg-slate-100 text-left text-[11px] uppercase tracking-wide text-slate-600">
+                      <tr>
+                        <th className="px-2 py-2">Sel</th>
+                        <th className="px-2 py-2">Article</th>
+                        <th className="px-2 py-2">Description</th>
+                        <th className="px-2 py-2">SPN</th>
+                        <th className="px-2 py-2">Material code</th>
+                        <th className="px-2 py-2">UOM</th>
+                        <th className="px-2 py-2 text-right">Ordered</th>
+                        <th className="px-2 py-2 text-right">Received</th>
+                        <th className="px-2 py-2 text-right">Pending</th>
+                        <th className="px-2 py-2 text-right">GRN qty</th>
+                        <th className="px-2 py-2">Warehouse</th>
+                        <th className="px-2 py-2">Location</th>
+                        <th className="px-2 py-2">Remarks</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {grnLinesForUi.map((ln) => {
+                        const id = String(ln.poLineId);
+                        const ed = grnLineEdits[id] || {
+                          selected: false,
+                          grnQty: String(Math.max(0, Number(ln.pendingQty) || 0)),
+                          warehouse: "MAIN",
+                          location: "MAIN",
+                          remarks: "",
+                        };
+                        const pend = Math.max(0, Number(ln.pendingQty) || 0);
+                        const qtyNum = Number(ed.grnQty);
+                        const qtyInvalid = Number.isFinite(qtyNum) && pend > 0 && qtyNum > pend + 1e-6;
+                        return (
+                          <tr key={id} className="border-t border-slate-100">
+                            <td className="px-2 py-1.5 align-middle">
+                              <input
+                                type="checkbox"
+                                checked={!!ed.selected}
+                                disabled={pend <= 0}
+                                onChange={(e) =>
+                                  setGrnLineEdits((p) => ({
+                                    ...p,
+                                    [id]: { ...ed, selected: e.target.checked },
+                                  }))
+                                }
+                              />
+                            </td>
+                            <td className="px-2 py-1.5 font-mono font-semibold">{ln.article}</td>
+                            <td className="max-w-[200px] truncate px-2 py-1.5" title={ln.description}>
+                              {ln.description || "—"}
+                            </td>
+                            <td className="px-2 py-1.5">{ln.spn || "—"}</td>
+                            <td className="px-2 py-1.5 font-mono text-[11px]">{ln.materialCode || "—"}</td>
+                            <td className="px-2 py-1.5">{ln.uom || "PCS"}</td>
+                            <td className="px-2 py-1.5 text-right tabular-nums">{ln.orderedQty}</td>
+                            <td className="px-2 py-1.5 text-right tabular-nums">{ln.receivedQty}</td>
+                            <td className="px-2 py-1.5 text-right tabular-nums">{pend}</td>
+                            <td className="px-2 py-1.5 text-right">
+                              <input
+                                className={`w-20 rounded border px-1 py-0.5 text-right tabular-nums ${qtyInvalid ? "border-rose-500" : ""}`}
+                                disabled={pend <= 0}
+                                value={ed.grnQty}
+                                onChange={(e) =>
+                                  setGrnLineEdits((p) => ({
+                                    ...p,
+                                    [id]: { ...ed, grnQty: e.target.value },
+                                  }))
+                                }
+                              />
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <select
+                                className="max-w-[120px] rounded border px-1 py-0.5"
+                                value={ed.warehouse}
+                                onChange={(e) =>
+                                  setGrnLineEdits((p) => ({
+                                    ...p,
+                                    [id]: { ...ed, warehouse: e.target.value, location: e.target.value },
+                                  }))
+                                }
+                              >
+                                {grnLocationSelectCodes.map((code) => (
+                                  <option key={`w-${id}-${code}`} value={code}>
+                                    {code}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <select
+                                className="max-w-[120px] rounded border px-1 py-0.5"
+                                value={ed.location}
+                                onChange={(e) =>
+                                  setGrnLineEdits((p) => ({
+                                    ...p,
+                                    [id]: { ...ed, location: e.target.value },
+                                  }))
+                                }
+                              >
+                                {grnLocationSelectCodes.map((code) => (
+                                  <option key={`l-${id}-${code}`} value={code}>
+                                    {code}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input
+                                className="w-full min-w-[100px] rounded border px-1 py-0.5"
+                                value={ed.remarks}
+                                onChange={(e) =>
+                                  setGrnLineEdits((p) => ({
+                                    ...p,
+                                    [id]: { ...ed, remarks: e.target.value },
+                                  }))
+                                }
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className="rounded bg-slate-900 px-3 py-2 text-sm text-white disabled:opacity-40"
+                    disabled={
+                      createGrnDraft.isPending ||
+                      grnTotalPending <= 0 ||
+                      !grnPoSnapshot?.header?._id
+                    }
+                    onClick={() => {
+                      setGrnUiErr("");
+                      const h = grnPoSnapshot?.header;
+                      if (!h?._id) {
+                        setGrnUiErr("Load PO lines first.");
+                        return;
+                      }
+                      const linesOut = [];
+                      for (const ln of grnLinesForUi) {
+                        const id = String(ln.poLineId);
+                        const ed = grnLineEdits[id];
+                        if (!ed?.selected) continue;
+                        const q = Number(ed.grnQty);
+                        const pend = Math.max(0, Number(ln.pendingQty) || 0);
+                        if (!(q > 0)) {
+                          setGrnUiErr("Each selected line needs GRN qty greater than zero.");
+                          return;
+                        }
+                        if (q > pend + 1e-6) {
+                          setGrnUiErr(`GRN qty cannot exceed pending (${pend}) for ${ln.article}.`);
+                          return;
+                        }
+                        linesOut.push({
+                          poLineId: ln.poLineId,
+                          grnQty: q,
+                          warehouse: (ed.warehouse || "MAIN").trim().toUpperCase(),
+                          location: (ed.location || ed.warehouse || "MAIN").trim().toUpperCase(),
+                          remarks: ed.remarks || "",
+                        });
+                      }
+                      if (!linesOut.length) {
+                        setGrnUiErr("Select at least one line with pending quantity and enter GRN qty.");
+                        return;
+                      }
+                      createGrnDraft.mutate({
+                        poId: h._id,
+                        poNo: h.poNo || h.poNumber,
+                        supplierId: h.supplierId,
+                        supplierName: h.supplierName,
+                        currency: h.currency || "USD",
+                        branchId: h.branchId || undefined,
+                        grnDate: new Date().toISOString().slice(0, 10),
+                        lines: linesOut,
+                      });
+                    }}
+                  >
+                    Create draft GRN
+                  </button>
+                  {lastDraftGrnNo ? (
+                    <button
+                      type="button"
+                      className="rounded border border-emerald-700 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-900 disabled:opacity-40"
+                      disabled={postGrnMut.isPending}
+                      onClick={() => {
+                        setGrnUiErr("");
+                        postGrnMut.mutate(lastDraftGrnNo);
+                      }}
+                    >
+                      Post GRN {lastDraftGrnNo}
+                    </button>
+                  ) : null}
+                  {grnTotalPending <= 0 ? (
+                    <span className="text-xs text-amber-700">No pending quantity on this PO — cannot create GRN.</span>
+                  ) : null}
+                </div>
+              </>
+            ) : grnPoSnapshot && !grnLinesForUi.length ? (
+              <p className="mt-3 text-xs text-amber-700">This PO has no lines.</p>
             ) : null}
           </div>
           <div className="rounded-2xl border bg-white p-4">
@@ -774,9 +1150,12 @@ export default function StoreModule() {
                               type="button"
                               className="rounded border px-2 py-1 text-xs font-semibold text-emerald-800"
                               disabled={postGrnMut.isPending}
-                              onClick={() => postGrnMut.mutate(g.grnNo)}
+                              onClick={() => {
+                                setGrnUiErr("");
+                                postGrnMut.mutate(g.grnNo);
+                              }}
                             >
-                              Post receive
+                              Post GRN
                             </button>
                           ) : (
                             <span className="text-xs text-slate-400">—</span>

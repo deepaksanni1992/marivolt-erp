@@ -19,6 +19,7 @@ router.get("/reports/supplier-receiving", storeView, c.getSupplierReceivingRepor
 router.get("/reports/pending-po", storeView, c.getPendingPoGrnReport);
 router.get("/from-po/:poId", storeView, c.getGrnFromPo);
 router.get("/id/:id", storeView, c.getGrnByMongoId);
+router.post("/id/:id/post", storeApprove, c.postGrnByMongoId);
 router.get("/:grnNo", storeView, c.getGrn);
 router.put("/:grnNo", storeEdit, c.updateGrn);
 router.post("/:grnNo/post", storeApprove, c.postGrn);
