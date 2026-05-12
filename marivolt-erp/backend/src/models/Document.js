@@ -2,6 +2,12 @@ import mongoose from "mongoose";
 
 /** Allowed business document categories (matches S3 folder mapping in controller). */
 export const DOCUMENT_TYPES = [
+  "Supplier Proforma Invoice",
+  "Supplier Tax Invoice",
+  "Commercial Invoice",
+  "Delivery Note",
+  "Supplier Bank Details",
+  "Payment Instruction",
   "Supplier Invoice",
   "Customer PO",
   "Purchase Order",

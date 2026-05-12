@@ -15,6 +15,12 @@ import {
 
 /** Must match backend `DOCUMENT_TYPES` / S3 folder mapping. */
 const DOCUMENT_TYPE_OPTIONS = [
+  "Supplier Proforma Invoice",
+  "Supplier Tax Invoice",
+  "Commercial Invoice",
+  "Delivery Note",
+  "Supplier Bank Details",
+  "Payment Instruction",
   "Supplier Invoice",
   "Customer PO",
   "Purchase Order",

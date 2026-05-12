@@ -3,6 +3,7 @@ import { requireErpAccess } from "../middleware/erpAccess.js";
 import { requirePermission } from "../middleware/permissions.js";
 import * as c from "../controllers/purchaseController.js";
 import * as pr from "../controllers/purchaseRequisitionController.js";
+import * as pod from "../controllers/purchasePoDocumentController.js";
 
 const router = express.Router();
 
@@ -34,6 +35,10 @@ router.post("/requisitions/:id/close", purchaseApprove, pr.closePurchaseRequisit
 
 router.post("/import", purchaseCreate, c.importPurchaseOrders);
 router.get("/", purchaseView, c.listPurchaseOrders);
+router.get("/:id/documents", purchaseView, pod.listPoDocuments);
+router.post("/:id/documents", purchaseCreate, pod.createPoDocument);
+router.delete("/:id/documents/:documentId", purchaseEdit, pod.deletePoDocument);
+router.get("/:id/ap-summary", purchaseView, pod.getPoApSummary);
 router.get("/:id", purchaseView, c.getPurchaseOrder);
 router.post("/", purchaseCreate, c.createPurchaseOrder);
 router.put("/:id", purchaseEdit, c.updatePurchaseOrder);

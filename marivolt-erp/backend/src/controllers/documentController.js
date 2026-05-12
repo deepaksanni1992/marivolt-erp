@@ -9,6 +9,12 @@ import { writeAudit } from "../services/auditService.js";
 
 /** Map UI document type → S3 prefix folder (no leading/trailing slashes). */
 const DOCUMENT_TYPE_TO_FOLDER = {
+  "Supplier Proforma Invoice": "supplier-proforma",
+  "Supplier Tax Invoice": "supplier-tax-invoices",
+  "Commercial Invoice": "commercial-invoices",
+  "Delivery Note": "delivery-notes",
+  "Supplier Bank Details": "supplier-bank-details",
+  "Payment Instruction": "payment-instructions",
   "Supplier Invoice": "supplier-invoices",
   "Customer PO": "customer-po",
   "Purchase Order": "purchase-orders",

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Papa from "papaparse";
 import Modal from "../components/erp/Modal.jsx";
+import PoAccountsPanel from "../components/purchase/PoAccountsPanel.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import {
@@ -2230,6 +2231,8 @@ export default function Purchase({ procurementEmbed = false } = {}) {
             <div className="rounded-lg border border-gray-200 bg-white p-3 text-xs italic text-gray-600">
               {detail.closingNote || DEFAULT_CLOSING_NOTE}
             </div>
+
+            <PoAccountsPanel detail={detail} detailId={detailId} qc={qc} setErr={setErr} />
 
             <div className="flex flex-wrap gap-2 border-t border-gray-100 pt-4">
               {detail && canModifyPoStatus(detail.status) ? (

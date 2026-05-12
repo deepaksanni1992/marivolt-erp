@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
@@ -65,6 +66,7 @@ function fmtMoney(n) {
 
 export default function StoreModule() {
   const qc = useQueryClient();
+  const [searchParams] = useSearchParams();
   const [tab, setTab] = useState("GRN");
   const [article, setArticle] = useState("");
   const [warehouse, setWarehouse] = useState("");
@@ -83,6 +85,16 @@ export default function StoreModule() {
   const [dispatchPackInputId, setDispatchPackInputId] = useState("");
   const [dispatchPackQueryId, setDispatchPackQueryId] = useState("");
   const [dispatchLineQty, setDispatchLineQty] = useState({});
+
+  useEffect(() => {
+    const tabq = searchParams.get("tab");
+    const po = searchParams.get("grnPoId");
+    if (tabq && TABS.includes(tabq)) setTab(tabq);
+    if (po) {
+      setGrnPoId(po);
+      if (!tabq || tabq === "GRN") setTab("GRN");
+    }
+  }, [searchParams]);
 
   // Unified-ledger filters (used only inside the Stock Ledger tab).
   const [ledgerMovementType, setLedgerMovementType] = useState("");

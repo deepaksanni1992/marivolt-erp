@@ -7,6 +7,7 @@ import StockLedger from "../models/StockLedger.js";
 import Setting from "../models/Setting.js";
 import * as stockService from "../services/stockService.js";
 import { writeAudit, writeStatusChange } from "../services/auditService.js";
+import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentController.js";
 import { nextNumber } from "../services/numberSeriesService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 
@@ -432,6 +433,12 @@ export async function postGrn(req, res) {
         },
       });
     });
+    const postedGrn = await GRN.findOne(withCompany(req, { grnNo: upper(req.params.grnNo) }))
+      .select("poId")
+      .lean();
+    if (postedGrn?.poId) {
+      await syncPurchaseOrderApExtensionFields(req.companyId, postedGrn.poId);
+    }
     res.json({ success: true });
   } catch (err) {
     if (err?._approval) return res.status(202).json(err._approval);

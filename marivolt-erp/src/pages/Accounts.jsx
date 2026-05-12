@@ -261,6 +261,11 @@ export default function Accounts() {
     queryFn: () => apiGet("/accounts/ap-aging"),
     enabled: tab === "ap",
   });
+  const apDashboardQ = useQuery({
+    queryKey: ["apDashboard"],
+    queryFn: () => apiGet("/accounts/ap-dashboard"),
+    enabled: tab === "ap",
+  });
   const supplierPaymentSummaryQ = useQuery({
     queryKey: ["supplierPaymentSummary"],
     queryFn: () => apiGet("/accounts/supplier-payment-summary"),
@@ -306,14 +311,18 @@ export default function Accounts() {
     mutationFn: ({ path, body }) => apiPost(path, body),
     onSuccess: (_, v) => {
       if (v.path.includes("sales-invoices")) qc.invalidateQueries({ queryKey: ["salesInvoices"] });
-      if (v.path.includes("purchase-invoices"))
+      if (v.path.includes("purchase-invoices")) {
         qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
+        qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      }
       if (v.path.includes("customer-ledger"))
         qc.invalidateQueries({ queryKey: ["customerLedger"] });
       if (v.path.includes("supplier-ledger"))
         qc.invalidateQueries({ queryKey: ["supplierLedger"] });
-      if (v.path.includes("supplier-payments"))
+      if (v.path.includes("supplier-payments")) {
         qc.invalidateQueries({ queryKey: ["supplierPayments"] });
+        qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      }
       if (v.path.includes("cash-bank")) qc.invalidateQueries({ queryKey: ["cashBank"] });
       if (v.path.includes("bank-details")) {
         qc.invalidateQueries({ queryKey: ["bankDetails"] });
@@ -358,8 +367,10 @@ export default function Accounts() {
     mutationFn: ({ path }) => apiDelete(path),
     onSuccess: (_, v) => {
       if (v.path.includes("sales-invoices")) qc.invalidateQueries({ queryKey: ["salesInvoices"] });
-      if (v.path.includes("purchase-invoices"))
+      if (v.path.includes("purchase-invoices")) {
         qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
+        qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      }
       if (v.path.includes("customer-ledger"))
         qc.invalidateQueries({ queryKey: ["customerLedger"] });
       if (v.path.includes("supplier-ledger"))
@@ -610,6 +621,8 @@ export default function Accounts() {
       qc.invalidateQueries({ queryKey: ["supplierLedgerSummary"] });
       qc.invalidateQueries({ queryKey: ["supplierOutstanding"] });
       qc.invalidateQueries({ queryKey: ["apAging"] });
+      qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
     },
     onError: (e) => setErr(e.message),
   });
@@ -1171,6 +1184,27 @@ export default function Accounts() {
           )}
           {tab === "ap" && (
             <div className="space-y-3 p-3">
+              {apDashboardQ.data ? (
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  {[
+                    ["Total PO value (excl. draft/cancel)", apDashboardQ.data.totalPurchaseValue],
+                    ["Total payables (posted PI)", apDashboardQ.data.totalPayables],
+                    ["Overdue payables", apDashboardQ.data.overduePayables],
+                    ["Supplier payments (this month)", apDashboardQ.data.paymentsDoneThisMonth],
+                    ["Unallocated on payments", apDashboardQ.data.advancePaid],
+                    ["Draft purchase invoices", apDashboardQ.data.draftPurchaseInvoices],
+                    ["Posted PI — unpaid count", apDashboardQ.data.pendingSupplierInvoices],
+                    ["Posted PI — partial / paid count", `${apDashboardQ.data.partiallyPaidInvoices} / ${apDashboardQ.data.fullyPaidInvoices}`],
+                  ].map(([k, v]) => (
+                    <div key={k} className="rounded border bg-slate-50 px-3 py-2 text-xs">
+                      <div className="text-gray-600">{k}</div>
+                      <div className="font-semibold tabular-nums text-gray-900">
+                        {typeof v === "number" ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : v}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="rounded-xl border p-3">
                   <div className="mb-2 text-sm font-semibold">Supplier Outstanding</div>

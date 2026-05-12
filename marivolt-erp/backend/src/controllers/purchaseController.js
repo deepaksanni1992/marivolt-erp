@@ -8,6 +8,7 @@ import { applyPurchaseOrderDefaults } from "../constants/purchaseOrderDefaults.j
 import { buyerSnapshotFromCompany } from "../utils/companyBuyer.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 import { writeAudit, writeStatusChange } from "../services/auditService.js";
+import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentController.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -451,6 +452,7 @@ export async function receivePurchaseOrder(req, res) {
       documentNo: grn.grnNo,
       description: `Draft GRN ${grn.grnNo} created from PO ${po.poNo || po.poNumber}`,
     });
+    await syncPurchaseOrderApExtensionFields(req.companyId, po._id);
     res.status(201).json(grn);
   } catch (err) {
     res.status(400).json({ message: err.message });

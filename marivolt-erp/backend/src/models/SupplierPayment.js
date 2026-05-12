@@ -12,6 +12,11 @@ const supplierPaymentAllocationSchema = new mongoose.Schema(
 const supplierPaymentSchema = new mongoose.Schema(
   {
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
+    branchId: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null, index: true },
+    linkedPoNo: { type: String, default: "", trim: true },
+    supplierPiNo: { type: String, default: "", trim: true },
+    supplierInvoiceNo: { type: String, default: "", trim: true },
+    exchangeRate: { type: Number, default: 1, min: 0 },
     paymentNo: { type: String, required: true, trim: true },
     paymentDate: { type: Date, required: true, default: () => new Date(), index: true },
     supplierName: { type: String, required: true, trim: true, index: true },

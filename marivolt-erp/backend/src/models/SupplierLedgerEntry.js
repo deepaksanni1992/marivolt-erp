@@ -3,10 +3,15 @@ import mongoose from "mongoose";
 const supplierLedgerEntrySchema = new mongoose.Schema(
   {
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
+    branchId: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null, index: true },
     entryDate: { type: Date, required: true, default: () => new Date() },
     supplierName: { type: String, required: true, trim: true },
     referenceType: { type: String, default: "", trim: true },
     referenceNumber: { type: String, default: "", trim: true },
+    poNo: { type: String, default: "", trim: true },
+    supplierInvoiceNo: { type: String, default: "", trim: true },
+    currency: { type: String, default: "", trim: true, uppercase: true },
+    paymentStatus: { type: String, default: "", trim: true },
     debit: { type: Number, default: 0, min: 0 },
     credit: { type: Number, default: 0, min: 0 },
     narrative: { type: String, default: "" },

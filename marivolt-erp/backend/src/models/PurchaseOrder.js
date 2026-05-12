@@ -87,6 +87,32 @@ const purchaseOrderSchema = new mongoose.Schema(
       enum: ["DRAFT", "SAVED", "SENT", "REJECTED", "PARTIAL_RECEIVED", "RECEIVED", "CLOSED", "CANCELLED"],
       default: "DRAFT",
     },
+    /** AP extension: supplier payment lifecycle (additive; does not replace `status`). */
+    apPaymentStatus: {
+      type: String,
+      default: "NONE",
+      trim: true,
+    },
+    /** AP extension: supplier PI / invoice document pipeline. */
+    supplierDocumentStatus: {
+      type: String,
+      default: "NONE",
+      trim: true,
+    },
+    /** AP extension: high-level GRN progress label (informational). */
+    grnProgressStatus: {
+      type: String,
+      default: "NONE",
+      trim: true,
+    },
+    /** GRN receipt progress vs PO lines (independent of supplier payment). */
+    grnReceiptStatus: {
+      type: String,
+      default: "NOT_RECEIVED",
+      trim: true,
+    },
+    /** AP extension: optional human-readable receipt summary. */
+    receivedQtySummary: { type: String, default: "", trim: true },
     remarks: { type: String, default: "" },
     createdBy: { type: String, default: "" },
   },
