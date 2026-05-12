@@ -25,6 +25,28 @@ function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
 }
 
+/**
+ * SupplierPayment.companyId is stored as ObjectId; req.companyId from JWT is often a string.
+ * Mongoose .find() casts; aggregation does not — use this for SupplierPayment.aggregate $match.
+ */
+function supplierPaymentAggregateMatch(req, extra = {}) {
+  const cid = req.companyId;
+  const clauses = [];
+  if (cid != null && String(cid).trim() !== "") {
+    const s = String(cid).trim();
+    if (mongoose.Types.ObjectId.isValid(s)) {
+      const oid = new mongoose.Types.ObjectId(s);
+      clauses.push({ $or: [{ companyId: oid }, { companyId: s }] });
+    } else {
+      clauses.push({ companyId: s });
+    }
+  }
+  if (extra && Object.keys(extra).length) clauses.push(extra);
+  if (!clauses.length) return {};
+  if (clauses.length === 1) return clauses[0];
+  return { $and: clauses };
+}
+
 function paginate(req) {
   const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
@@ -625,24 +647,39 @@ export async function deleteSupplierLedgerEntry(req, res) {
 async function recalcPurchaseInvoicePaymentState(req, purchaseInvoiceId) {
   const inv = await PurchaseInvoice.findOne(withCompany(req, { _id: purchaseInvoiceId }));
   if (!inv) return null;
+  const invIdStr = String(inv._id);
   const paidAgg = await SupplierPayment.aggregate([
-    {
-      $match: withCompany(req, {
-        status: { $nin: ["CANCELLED", "DRAFT"] },
-        "allocations.purchaseInvoiceId": inv._id,
-      }),
-    },
+    { $match: supplierPaymentAggregateMatch(req, { status: { $nin: ["CANCELLED", "DRAFT"] } }) },
     { $unwind: "$allocations" },
-    { $match: { "allocations.purchaseInvoiceId": inv._id } },
+    {
+      $match: {
+        $expr: { $eq: [{ $toString: "$allocations.purchaseInvoiceId" }, invIdStr] },
+      },
+    },
     { $group: { _id: null, paid: { $sum: "$allocations.allocatedAmount" } } },
   ]);
   const paid = Math.max(0, Number(paidAgg[0]?.paid || 0));
   const total = Math.max(0, Number(inv.totalAmount) || 0);
   inv.totalPaidAmount = paid;
   inv.balanceAmount = Math.max(0, total - paid);
-  inv.paymentStatus = paid <= 0 ? "UNPAID" : paid < total ? "PARTIAL" : "PAID";
+  inv.paymentStatus = paid <= 0 ? "UNPAID" : paid + 0.0001 < total ? "PARTIAL" : "PAID";
   await inv.save();
   return inv;
+}
+
+/** POST /accounts/ap/recalculate-pi-payments — re-sum allocations → PI paid/balance (repair after companyId aggregate fix). */
+export async function recalcAllPostedPurchaseInvoicePayments(req, res) {
+  try {
+    const list = await PurchaseInvoice.find(withCompany(req, { status: "POSTED" })).select("_id").lean();
+    let n = 0;
+    for (const row of list) {
+      await recalcPurchaseInvoicePaymentState(req, row._id);
+      n += 1;
+    }
+    res.json({ ok: true, recalculated: n });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 }
 
 export async function listSupplierPayments(req, res) {
@@ -1139,7 +1176,15 @@ export async function updateSupplierPayment(req, res) {
       if (b.remarks !== undefined) row.remarks = String(b.remarks || "");
       row.unallocatedAmount = Math.max(0, (Number(row.amountPaid) || 0) - (Number(row.allocatedAmount) || 0));
     } else {
-      if (Array.isArray(b.attachments)) row.attachments = b.attachments;
+      if (Array.isArray(b.attachments)) {
+        const oldIds = new Set((row.attachments || []).map((x) => String(x.documentId || "").trim()).filter(Boolean));
+        const newIds = new Set(b.attachments.map((x) => String(x.documentId || "").trim()).filter(Boolean));
+        const lost = [...oldIds].some((id) => !newIds.has(id));
+        if (lost) {
+          return res.status(409).json({ message: "Cannot remove attachments from a posted supplier payment" });
+        }
+        row.attachments = b.attachments;
+      }
       if (b.remarks !== undefined) row.remarks = String(b.remarks || "");
     }
     row.updatedBy = req.user?.email || "";
@@ -1777,13 +1822,18 @@ export async function getApDashboard(req, res) {
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
     const paymentsMonth = await SupplierPayment.aggregate([
-      { $match: { ...withCompany(req), status: { $nin: ["CANCELLED", "DRAFT"] }, paymentDate: { $gte: startOfMonth } } },
+      {
+        $match: supplierPaymentAggregateMatch(req, {
+          status: { $nin: ["CANCELLED", "DRAFT"] },
+          paymentDate: { $gte: startOfMonth },
+        }),
+      },
       { $group: { _id: null, total: { $sum: "$amountPaid" } } },
     ]);
     const paymentsDoneThisMonth = Number(paymentsMonth[0]?.total || 0);
 
     const unalloc = await SupplierPayment.aggregate([
-      { $match: { ...withCompany(req), status: { $nin: ["CANCELLED", "DRAFT"] } } },
+      { $match: supplierPaymentAggregateMatch(req, { status: { $nin: ["CANCELLED", "DRAFT"] } }) },
       { $group: { _id: null, u: { $sum: "$unallocatedAmount" } } },
     ]);
     const advancePaid = Number(unalloc[0]?.u || 0);

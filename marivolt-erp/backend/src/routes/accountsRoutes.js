@@ -66,6 +66,7 @@ router.get("/outstanding-suppliers", reportsView, c.supplierOutstandingReport);
 router.get("/ap-aging", reportsView, c.apAgeingReport);
 router.get("/aging-suppliers", reportsView, c.apAgeingReport);
 router.get("/ap-dashboard", reportsView, c.getApDashboard);
+router.post("/ap/recalculate-pi-payments", accountsEdit, c.recalcAllPostedPurchaseInvoicePayments);
 router.get("/reports/pending-supplier-documents", reportsView, c.reportPendingSupplierDocuments);
 router.get("/reports/po-grn-invoice", reportsView, c.reportPoGrnInvoice);
 router.get("/supplier-payment-summary", reportsView, c.supplierPaymentSummaryReport);

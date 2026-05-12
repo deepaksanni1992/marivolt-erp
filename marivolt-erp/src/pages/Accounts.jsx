@@ -362,7 +362,13 @@ export default function Accounts() {
         qc.invalidateQueries({ queryKey: ["supplierLedger"] });
       if (v.path.includes("supplier-payments")) {
         qc.invalidateQueries({ queryKey: ["supplierPayments"] });
+        qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
         qc.invalidateQueries({ queryKey: ["apDashboard"] });
+        qc.invalidateQueries({ queryKey: ["supplierOutstanding"] });
+        qc.invalidateQueries({ queryKey: ["apAging"] });
+        qc.invalidateQueries({ queryKey: ["supplierLedger"] });
+        qc.invalidateQueries({ queryKey: ["supplierLedgerSummary"] });
+        qc.invalidateQueries({ queryKey: ["supplierPaymentSummary"] });
       }
       if (v.path.includes("cash-bank")) qc.invalidateQueries({ queryKey: ["cashBank"] });
       if (v.path.includes("bank-details")) {
@@ -427,6 +433,10 @@ export default function Accounts() {
       qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
       qc.invalidateQueries({ queryKey: ["cashBank"] });
       qc.invalidateQueries({ queryKey: ["supplierLedger"] });
+      qc.invalidateQueries({ queryKey: ["supplierOutstanding"] });
+      qc.invalidateQueries({ queryKey: ["apAging"] });
+      qc.invalidateQueries({ queryKey: ["supplierLedgerSummary"] });
+      qc.invalidateQueries({ queryKey: ["supplierPaymentSummary"] });
       setModal(null);
       setSupplierPaymentFile(null);
       setSupPayAllocPiId("");
@@ -527,6 +537,10 @@ export default function Accounts() {
       qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
       qc.invalidateQueries({ queryKey: ["cashBank"] });
       qc.invalidateQueries({ queryKey: ["supplierLedger"] });
+      qc.invalidateQueries({ queryKey: ["supplierOutstanding"] });
+      qc.invalidateQueries({ queryKey: ["apAging"] });
+      qc.invalidateQueries({ queryKey: ["supplierLedgerSummary"] });
+      qc.invalidateQueries({ queryKey: ["supplierPaymentSummary"] });
       setModal(null);
       setSupplierPaymentFile(null);
       setSupPayAllocPiId("");
@@ -1682,7 +1696,7 @@ export default function Accounts() {
                       <td className="px-3 py-2 text-xs">
                         <div className="space-y-1">
                           {(r.attachments || []).slice(0, 4).map((a) => (
-                            <div key={String(a._id || a.documentId)} className="flex flex-wrap gap-2">
+                            <div key={String(a._id || a.documentId)} className="flex flex-wrap items-center gap-2">
                               <button
                                 type="button"
                                 className="text-blue-700 underline"
@@ -1690,7 +1704,34 @@ export default function Accounts() {
                               >
                                 View
                               </button>
-                              <span>{a.fileName || a.documentType || "—"}</span>
+                              <button
+                                type="button"
+                                className="text-blue-700 underline"
+                                onClick={() => a.documentId && openDocumentById(a.documentId, false)}
+                              >
+                                Download
+                              </button>
+                              {String(r.status || "").toUpperCase() === "DRAFT" && a.documentId ? (
+                                <button
+                                  type="button"
+                                  className="text-rose-700 underline"
+                                  onClick={async () => {
+                                    if (!window.confirm("Remove this attachment from the draft?")) return;
+                                    try {
+                                      const next = (r.attachments || []).filter(
+                                        (x) => String(x.documentId) !== String(a.documentId)
+                                      );
+                                      await apiPut(`/accounts/supplier-payments/${r._id}`, { attachments: next });
+                                      qc.invalidateQueries({ queryKey: ["supplierPayments"] });
+                                    } catch (e) {
+                                      setErr(e.message || "Could not remove attachment");
+                                    }
+                                  }}
+                                >
+                                  Remove
+                                </button>
+                              ) : null}
+                              <span className="text-gray-600">{a.fileName || a.documentType || "—"}</span>
                             </div>
                           ))}
                         </div>
