@@ -30,7 +30,7 @@ const grnItemSchema = new mongoose.Schema(
     freight: { type: Number, default: 0, min: 0 },
     customs: { type: Number, default: 0, min: 0 },
     landedAdjustment: { type: Number, default: 0, min: 0 },
-    location: { type: String, default: "", trim: true, uppercase: true },
+    location: { type: String, default: "", trim: true },
     warehouse: { type: String, default: "", trim: true, uppercase: true },
     warehouseId: { type: mongoose.Schema.Types.ObjectId, ref: "Warehouse", default: null },
     batchNo: { type: String, default: "", trim: true },
@@ -72,7 +72,7 @@ const grnSchema = new mongoose.Schema(
     remarks: { type: String, default: "", trim: true },
     status: {
       type: String,
-      enum: ["DRAFT", "RECEIVED", "PARTIAL_RECEIVED", "CANCELLED", "CLOSED"],
+      enum: ["DRAFT", "POSTED", "RECEIVED", "PARTIAL_RECEIVED", "CANCELLED", "CLOSED"],
       default: "DRAFT",
       index: true,
     },

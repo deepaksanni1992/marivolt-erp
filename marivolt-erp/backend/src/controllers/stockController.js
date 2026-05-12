@@ -1451,7 +1451,7 @@ export async function createLandedCostAllocation(req, res) {
     if (!grnNo) return res.status(400).json({ message: "grnNo is required" });
     const grn = await GRN.findOne(withCompany(req, { grnNo })).lean();
     if (!grn) return res.status(404).json({ message: "GRN not found" });
-    if (!["RECEIVED", "PARTIAL_RECEIVED", "CLOSED"].includes(String(grn.status || "").toUpperCase())) {
+    if (!["RECEIVED", "PARTIAL_RECEIVED", "CLOSED", "POSTED"].includes(String(grn.status || "").toUpperCase())) {
       return res.status(409).json({ message: "Landed cost can only be created for received GRN." });
     }
     const payload = normalizeLandedCostPayload(req.body);

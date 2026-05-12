@@ -26,6 +26,39 @@ function withCompany(req, filter = {}) {
 }
 const PO_LINE_ARRAY_KEYS = ["lines", "orderLines", "poItems", "items", "products"];
 
+/** GRN documents that count toward PO received / pending (excludes DRAFT and CANCELLED). */
+const GRN_POSTED_FOR_RECEIPT_QTY = ["POSTED", "RECEIVED", "PARTIAL_RECEIVED", "CLOSED"];
+
+async function getPostedAcceptedQtyByPoLineMap(req, poId, session = null) {
+  if (!mongoose.Types.ObjectId.isValid(String(poId))) return new Map();
+  const oid = new mongoose.Types.ObjectId(String(poId));
+  const pipeline = [
+    { $match: withCompany(req, { poId: oid, status: { $in: GRN_POSTED_FOR_RECEIPT_QTY } }) },
+    { $unwind: "$items" },
+    {
+      $match: {
+        "items.poLineId": { $exists: true, $ne: null },
+      },
+    },
+    {
+      $group: {
+        _id: "$items.poLineId",
+        qty: {
+          $sum: {
+            $toDouble: {
+              $ifNull: ["$items.acceptedQty", { $ifNull: ["$items.receivedQty", 0] }],
+            },
+          },
+        },
+      },
+    },
+  ];
+  const agg = GRN.aggregate(pipeline);
+  if (session) agg.session(session);
+  const rows = await agg;
+  return new Map(rows.map((r) => [String(r._id), Math.max(0, Number(r.qty) || 0)]));
+}
+
 /** Prefer canonical `lines`, then legacy/alternate array keys used by older imports. */
 function extractRawPoLinesFromPo(po) {
   if (!po || typeof po !== "object") return [];
@@ -107,13 +140,19 @@ async function nextGrnNo(companyId, companyCode = "") {
  * Build GRN line items from a PO line selection (Store UI / API).
  * `selections`: { poLineId, grnQty, warehouse?, location?, remarks?, currency? }[]
  * Only lines with grnQty > 0 are included.
+ * `pending` is ordered − posted(GRN) − cancelled; posted sums only non-draft, non-cancelled GRNs.
  */
-async function buildGrnItemsFromPoLineSelection(req, poId, selections = []) {
-  const poLean = await PurchaseOrder.findOne(withCompany(req, { _id: poId })).lean();
+async function buildGrnItemsFromPoLineSelection(req, poId, selections = [], options = {}) {
+  const session = options.session || null;
+  const postedOverride = options.postedMap;
+  const poQ = PurchaseOrder.findOne(withCompany(req, { _id: poId }));
+  if (session) poQ.session(session);
+  const poLean = await poQ.lean();
   if (!poLean) throw new Error("Purchase order not found");
   if (String(poLean.status || "").toUpperCase() === "CANCELLED") {
     throw new Error("Cannot create GRN against a cancelled PO");
   }
+  const postedMap = postedOverride instanceof Map ? postedOverride : await getPostedAcceptedQtyByPoLineMap(req, poId, session);
   const rawRows = extractRawPoLinesFromPo(poLean);
   const raw = [];
   for (const row of selections) {
@@ -123,13 +162,22 @@ async function buildGrnItemsFromPoLineSelection(req, poId, selections = []) {
     if (!Number.isFinite(grnQty) || grnQty <= 0) continue;
     const src = rawRows.find((x) => String(x._id ?? x.id ?? "") === String(poLineId ?? ""));
     if (!src) throw new Error(`Invalid PO line: ${poLineId}`);
-    const { ordered, pending } = poLineQtyFromRaw(src);
+    const ordered = Number(src?.orderedQty ?? src?.qty ?? src?.quantity ?? src?.orderedQuantity) || 0;
+    const cancelled = Number(src?.cancelledQty ?? src?.cancelled) || 0;
+    const posted = postedMap.get(String(poLineId)) || 0;
+    const pending = Math.max(0, ordered - posted - cancelled);
+    if (pending <= 0) {
+      const label = String(src.itemCode || src.article || src.materialCode || poLineId).trim();
+      throw new Error(`No pending quantity for PO line ${label}; this line is fully received.`);
+    }
     if (grnQty > pending + 1e-6) {
       const label = String(src.itemCode || src.article || src.materialCode || poLineId).trim();
       throw new Error(`GRN qty (${grnQty}) exceeds pending (${pending}) for line ${label}`);
     }
-    const wh = upper(row.warehouse || "MAIN");
-    const loc = upper(row.location || row.warehouse || "MAIN");
+    const wh = upper(row.warehouse || "");
+    if (!wh) throw new Error("Warehouse is required for each selected GRN line.");
+    const loc = t(row.location);
+    if (!loc) throw new Error("Location is required for selected GRN line.");
     raw.push({
       article: String(
         src.itemCode || src.materialCode || src.article || src.articleNo || src.sku || ""
@@ -170,6 +218,10 @@ function normalizeItems(items = []) {
       throw new Error("receivedQty + rejectedQty + cancelledQty cannot exceed pendingQty");
     }
     const accepted = Math.max(0, received - rejected);
+    if (accepted > 0) {
+      if (!upper(r.warehouse || "")) throw new Error("Warehouse is required for each GRN line with quantity.");
+      if (!t(r.location)) throw new Error("Location is required for selected GRN line.");
+    }
     const ordered = Number(r.orderedQty ?? pendingCap) || 0;
     const pending = Math.max(0, pendingCap - received - rejected - cancelled);
     return {
@@ -190,8 +242,8 @@ function normalizeItems(items = []) {
       freight: Number(r.freight) || 0,
       customs: Number(r.customs) || 0,
       landedAdjustment: Number(r.landedAdjustment) || 0,
-      location: upper(r.location || r.warehouse),
-      warehouse: upper(r.warehouse || r.location),
+      location: t(r.location),
+      warehouse: upper(r.warehouse || ""),
       warehouseId: mongoose.Types.ObjectId.isValid(String(r.warehouseId || "")) ? new mongoose.Types.ObjectId(String(r.warehouseId)) : null,
       batchNo: t(r.batchNo),
       serialNo: t(r.serialNo),
@@ -237,72 +289,10 @@ async function findRecoveryNotes({ session, companyId, article, warehouse, qty }
 
 export async function createGrn(req, res) {
   try {
-    if (!req.body.poId || !mongoose.Types.ObjectId.isValid(String(req.body.poId))) {
-      return res.status(400).json({ message: "Purchase Order (poId) is required to create a GRN" });
-    }
-    const po = await PurchaseOrder.findOne(withCompany(req, { _id: req.body.poId })).lean();
-    if (!po) return res.status(404).json({ message: "Purchase order not found" });
-    if (String(po.status || "").toUpperCase() === "CANCELLED") {
-      return res.status(400).json({ message: "Cannot create GRN against a cancelled PO" });
-    }
-    let items = [];
-    if (Array.isArray(req.body.lines) && req.body.lines.length > 0) {
-      try {
-        const { items: built } = await buildGrnItemsFromPoLineSelection(req, req.body.poId, req.body.lines);
-        items = built;
-      } catch (e) {
-        return res.status(400).json({ message: e.message });
-      }
-    } else {
-      items = normalizeItems(req.body.items || []);
-    }
-    if (!items.length) {
-      return res.status(400).json({
-        message:
-          "No GRN lines: send lines[] with { poLineId, grnQty } for each selected line, or a non-empty items[] payload",
-      });
-    }
-    const grnNo = t(req.body.grnNo) || (await nextGrnNo(req.companyId, req.companyCode));
-    const doc = await GRN.create({
-      companyId: req.companyId,
-      branchId: req.body.branchId || po.branchId || null,
-      warehouseId: req.body.warehouseId || po.warehouseId || null,
-      grnNo,
-      poId: req.body.poId || null,
-      grnDate: req.body.grnDate || new Date(),
-      supplierId: req.body.supplierId || po.supplierId || null,
-      supplierName: t(req.body.supplierName) || po.supplierName || "",
-      supplierInvoiceNo: t(req.body.supplierInvoiceNo),
-      supplierDeliveryNote: t(req.body.supplierDeliveryNote),
-      transporter: t(req.body.transporter),
-      vehicleDetails: t(req.body.vehicleDetails),
-      packingListNo: t(req.body.packingListNo),
-      blAwbNo: t(req.body.blAwbNo),
-      customsDocRef: t(req.body.customsDocRef),
-      poNo: t(req.body.poNo) || po.poNo || po.poNumber || "",
-      currency: upper(req.body.currency || po.currency || "USD"),
-      exchangeRate: Number(req.body.exchangeRate) || 1,
-      freight: Number(req.body.freight) || 0,
-      customs: Number(req.body.customs) || 0,
-      landedAdjustment: Number(req.body.landedAdjustment) || 0,
-      remarks: t(req.body.remarks),
-      status: "DRAFT",
-      approvalStatus: "NOT_REQUIRED",
-      items,
-      attachments: Array.isArray(req.body.attachments) ? req.body.attachments : [],
-      createdBy: req.user?.email || "",
-      updatedBy: req.user?.email || "",
+    return res.status(400).json({
+      message:
+        "Draft GRN creation is disabled. Select PO lines, enter warehouse, location, and quantities, then use POST /grn/post to post the GRN directly.",
     });
-    await writeAudit(req, {
-      action: "CREATE",
-      module: "STORE",
-      entityType: "GRN",
-      entityId: doc._id,
-      documentNo: doc.grnNo,
-      description: `GRN ${doc.grnNo} created`,
-      metadata: { poNo: doc.poNo || "", lineCount: doc.items.length },
-    });
-    res.status(201).json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -315,6 +305,9 @@ export async function listGrn(req, res) {
     const skip = (page - 1) * limit;
     const filter = withCompany(req);
     if (req.query.status) filter.status = upper(req.query.status);
+    else if (String(req.query.includeDrafts || "").trim() !== "1") {
+      filter.status = { $ne: "DRAFT" };
+    }
     if (req.query.search) {
       const re = new RegExp(t(req.query.search), "i");
       filter.$or = [{ grnNo: re }, { supplierName: re }, { supplierInvoiceNo: re }, { poNo: re }];
@@ -437,6 +430,338 @@ async function applyReceiveToPo({ session, req, grn }) {
   await po.save({ session });
 }
 
+function parseSimpleGrnCsv(text) {
+  const parseErrors = [];
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!lines.length) return { rows: [], parseErrors };
+  const splitLine = (line) => {
+    const out = [];
+    let cur = "";
+    let q = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') {
+        q = !q;
+        continue;
+      }
+      if (!q && c === ",") {
+        out.push(cur);
+        cur = "";
+        continue;
+      }
+      cur += c;
+    }
+    out.push(cur);
+    return out.map((x) => String(x).trim());
+  };
+  const headers = splitLine(lines[0]).map((h) => String(h).trim().toLowerCase());
+  const rows = [];
+  for (let li = 1; li < lines.length; li++) {
+    const parts = splitLine(lines[li]);
+    const o = {};
+    headers.forEach((h, idx) => {
+      o[h] = parts[idx] ?? "";
+    });
+    rows.push(o);
+  }
+  return { rows, parseErrors };
+}
+
+function normKey(s) {
+  return String(s ?? "").trim().toLowerCase();
+}
+
+function findPoLineMatchForCsv(rawRows, row) {
+  const pid = String(row.polineid || "").trim();
+  if (mongoose.Types.ObjectId.isValid(pid)) {
+    const hit = rawRows.find((x) => String(x._id ?? x.id ?? "") === pid);
+    if (hit) return { line: hit, by: "poLineId" };
+  }
+  const mc = normKey(row.materialcode);
+  if (mc) {
+    const hit = rawRows.find((x) => normKey(x.itemCode || x.materialCode) === mc);
+    if (hit) return { line: hit, by: "materialCode" };
+  }
+  const art = normKey(row.article);
+  if (art) {
+    const hit = rawRows.find((x) => normKey(x.itemCode || x.article || x.materialCode) === art);
+    if (hit) return { line: hit, by: "article" };
+  }
+  const spn = normKey(row.spn);
+  if (spn) {
+    const hit = rawRows.find((x) => normKey(x.partNo || x.spn || x.partNumber) === spn);
+    if (hit) return { line: hit, by: "spn" };
+  }
+  return null;
+}
+
+/** GET /grn/csv-template — column header for GRN CSV import. */
+export async function getGrnCsvTemplate(req, res) {
+  try {
+    const header = "poLineId,article,materialCode,spn,grnQty,warehouse,location,remarks\n";
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", "attachment; filename=\"grn-import-template.csv\"");
+    res.send(header);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+/** POST /grn/import-preview — validate CSV rows against a PO; does not create GRN. */
+export async function importGrnCsvPreview(req, res) {
+  try {
+    const poId = req.body?.poId;
+    const csvText = String(req.body?.csvText ?? "");
+    if (!mongoose.Types.ObjectId.isValid(String(poId))) {
+      return res.status(400).json({ message: "Valid poId is required" });
+    }
+    if (!csvText.trim()) return res.status(400).json({ message: "csvText is required" });
+    const po = await PurchaseOrder.findOne(withCompany(req, { _id: poId })).lean();
+    if (!po) return res.status(404).json({ message: "Purchase order not found" });
+    if (String(po.status || "").toUpperCase() === "CANCELLED") {
+      return res.status(400).json({ message: "PO is cancelled" });
+    }
+    const postedMap = await getPostedAcceptedQtyByPoLineMap(req, poId);
+    const rawRows = extractRawPoLinesFromPo(po);
+    const { rows } = parseSimpleGrnCsv(csvText);
+    const errors = [];
+    const updates = [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const lineNo = i + 2;
+      const match = findPoLineMatchForCsv(rawRows, row);
+      if (!match) {
+        errors.push({ line: lineNo, message: "No matching PO line (poLineId / materialCode / article / spn)." });
+        continue;
+      }
+      const src = match.line;
+      const lid = String(src._id ?? src.id ?? "");
+      const ordered = Number(src?.orderedQty ?? src?.qty ?? src?.quantity ?? src?.orderedQuantity) || 0;
+      const cancelled = Number(src?.cancelledQty ?? src?.cancelled) || 0;
+      const posted = postedMap.get(lid) || 0;
+      const pending = Math.max(0, ordered - posted - cancelled);
+      const grnQty = Number(row.grnqty ?? row.qty);
+      if (!Number.isFinite(grnQty) || grnQty <= 0) {
+        errors.push({ line: lineNo, message: "grnQty must be greater than zero." });
+        continue;
+      }
+      if (grnQty > pending + 1e-6) {
+        errors.push({ line: lineNo, message: `grnQty (${grnQty}) exceeds pending (${pending}) for this line.` });
+        continue;
+      }
+      const warehouse = upper(row.warehouse || "");
+      if (!warehouse) {
+        errors.push({ line: lineNo, message: "warehouse is required." });
+        continue;
+      }
+      const location = t(row.location);
+      if (!location) {
+        errors.push({ line: lineNo, message: "location is required." });
+        continue;
+      }
+      updates.push({
+        poLineId: lid,
+        grnQty,
+        warehouse,
+        location,
+        remarks: t(row.remarks),
+        matchedBy: match.by,
+      });
+    }
+    res.json({ updates, errors });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+/** DELETE /grn/id/:id/draft — remove a draft GRN (no stock impact). */
+export async function deleteGrnDraft(req, res) {
+  try {
+    const id = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const grn = await GRN.findOne(withCompany(req, { _id: id }));
+    if (!grn) return res.status(404).json({ message: "GRN not found" });
+    if (String(grn.status || "").toUpperCase() !== "DRAFT") {
+      return res.status(400).json({ message: "Only draft GRNs can be deleted" });
+    }
+    await GRN.deleteOne(withCompany(req, { _id: grn._id }));
+    await writeAudit(req, {
+      action: "DELETE",
+      module: "STORE",
+      entityType: "GRN",
+      entityId: grn._id,
+      documentNo: grn.grnNo,
+      description: `Draft GRN ${grn.grnNo} deleted`,
+    });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+/** POST /grn/post — create and post GRN in one step (status POSTED). */
+export async function postGrnFromPo(req, res) {
+  const session = await mongoose.startSession();
+  try {
+    const poId = req.body?.poId;
+    if (!mongoose.Types.ObjectId.isValid(String(poId))) {
+      return res.status(400).json({ message: "poId is required" });
+    }
+    const selections = Array.isArray(req.body?.lines) ? req.body.lines : [];
+    if (!selections.length) return res.status(400).json({ message: "lines[] is required" });
+
+    let savedGrnNo = "";
+    await session.withTransaction(async () => {
+      const postedMap = await getPostedAcceptedQtyByPoLineMap(req, poId, session);
+      const { items: builtItems, po: poLean } = await buildGrnItemsFromPoLineSelection(req, poId, selections, {
+        session,
+        postedMap,
+      });
+
+      const poDoc = await PurchaseOrder.findOne(withCompany(req, { _id: poId })).session(session);
+      if (poDoc && String(poDoc.status || "").toUpperCase() === "CANCELLED") {
+        throw new Error("Cannot post GRN for a cancelled PO");
+      }
+
+      const grnNo = await nextGrnNo(req.companyId, req.companyCode);
+      savedGrnNo = grnNo;
+      const created = await GRN.create(
+        [
+          {
+            companyId: req.companyId,
+            branchId: req.body.branchId || poLean.branchId || null,
+            warehouseId: req.body.warehouseId || poLean.warehouseId || null,
+            grnNo,
+            poId,
+            grnDate: req.body.grnDate ? new Date(req.body.grnDate) : new Date(),
+            supplierId: req.body.supplierId || poLean.supplierId || null,
+            supplierName: t(req.body.supplierName) || poLean.supplierName || "",
+            supplierInvoiceNo: t(req.body.supplierInvoiceNo),
+            supplierDeliveryNote: t(req.body.supplierDeliveryNote),
+            transporter: t(req.body.transporter),
+            vehicleDetails: t(req.body.vehicleDetails),
+            packingListNo: t(req.body.packingListNo),
+            blAwbNo: t(req.body.blAwbNo),
+            customsDocRef: t(req.body.customsDocRef),
+            poNo: t(req.body.poNo) || poLean.poNo || poLean.poNumber || "",
+            currency: upper(req.body.currency || poLean.currency || "USD"),
+            exchangeRate: Number(req.body.exchangeRate) || 1,
+            freight: Number(req.body.freight) || 0,
+            customs: Number(req.body.customs) || 0,
+            landedAdjustment: Number(req.body.landedAdjustment) || 0,
+            remarks: t(req.body.remarks),
+            status: "DRAFT",
+            approvalStatus: "NOT_REQUIRED",
+            items: builtItems,
+            attachments: Array.isArray(req.body.attachments) ? req.body.attachments : [],
+            createdBy: req.user?.email || "",
+            updatedBy: req.user?.email || "",
+          },
+        ],
+        { session },
+      );
+      const grn = Array.isArray(created) ? created[0] : created;
+
+      const gate = await ensureApproval(req, {
+        companyId: req.companyId,
+        module: "STORE",
+        actionKey: "grn_receive",
+        documentType: "GRN",
+        documentId: grn._id,
+        documentNo: grn.grnNo,
+        description: `Post GRN ${grn.grnNo}`,
+      });
+      if (!gate.approved) {
+        grn.approvalStatus = "PENDING_RECEIVE";
+        grn.updatedBy = req.user?.email || "";
+        await grn.save({ session });
+        throw Object.assign(new Error("APPROVAL_REQUIRED"), { _approval: approvalRequiredPayload(gate.request) });
+      }
+
+      for (const line of grn.items) {
+        const article = upper(line.article);
+        const item = await ItemMaster.findOne(withCompany(req, { article })).select("_id").session(session);
+        if (!item) throw new Error(`Article not found: ${article}`);
+        const wh = upper(line.warehouse || "");
+        if (!wh) throw new Error(`Warehouse is required for line ${article}`);
+        const putaway = t(line.location);
+        if (!putaway) throw new Error("Location is required for selected GRN line.");
+        const loc = await StockLocation.findOne(withCompany(req, { locationCode: wh, status: "Active" })).session(session);
+        if (!loc) throw new Error(`Invalid warehouse (stock location code): ${wh}`);
+        if (Number(line.acceptedQty) > 0) {
+          const recoveryInfo = await findRecoveryNotes({
+            session,
+            companyId: req.companyId,
+            article,
+            warehouse: wh,
+            qty: Number(line.acceptedQty),
+          });
+          await stockService.grnReceive({
+            session,
+            companyId: req.companyId,
+            article,
+            warehouse: wh,
+            qty: Number(line.acceptedQty),
+            referenceType: "GRN",
+            referenceNo: grn.grnNo,
+            supplierName: grn.supplierName || "",
+            unitCost: Number(line.unitCost) || 0,
+            currency: line.currency || "USD",
+            batchNo: line.batchNo || "",
+            serialNo: line.serialNo || "",
+            remarks: line.remarks || "",
+            putawayLocation: putaway,
+            createdBy: req.user?.email || "",
+            sourceModule: "STORE",
+            transactionDate: grn.grnDate,
+          });
+          line.recoveryInfo = recoveryInfo;
+        }
+      }
+
+      await applyReceiveToPo({ session, req, grn });
+      grn.status = "POSTED";
+      grn.approvalStatus = "APPROVED";
+      grn.postedAt = new Date();
+      grn.updatedBy = req.user?.email || "";
+      await grn.save({ session });
+      await writeStatusChange(req, {
+        module: "STORE",
+        entityType: "GRN",
+        entityId: grn._id,
+        documentNo: grn.grnNo,
+        fromStatus: "DRAFT",
+        toStatus: "POSTED",
+        description: `GRN ${grn.grnNo} posted`,
+      });
+      await writeAudit(req, {
+        action: "RECEIVE",
+        module: "STORE",
+        entityType: "GRN",
+        entityId: grn._id,
+        documentNo: grn.grnNo,
+        fromStatus: "DRAFT",
+        toStatus: "POSTED",
+        description: `GRN ${grn.grnNo} posted (${grn.items?.length || 0} lines)`,
+        metadata: { supplierName: grn.supplierName || "" },
+      });
+    });
+
+    if (mongoose.Types.ObjectId.isValid(String(poId))) {
+      await syncPurchaseOrderApExtensionFields(req.companyId, poId);
+    }
+    res.status(201).json({ success: true, grnNo: savedGrnNo });
+  } catch (err) {
+    if (err?._approval) return res.status(202).json(err._approval);
+    res.status(400).json({ message: err.message });
+  } finally {
+    await session.endSession();
+  }
+}
+
 export async function postGrn(req, res) {
   const session = await mongoose.startSession();
   try {
@@ -463,11 +788,17 @@ export async function postGrn(req, res) {
           .lean();
         allowOverPo = Boolean(s?.value);
         if (po && !allowOverPo) {
+          const postedMap = await getPostedAcceptedQtyByPoLineMap(req, grn.poId, session);
+          const rawRows = extractRawPoLinesFromPo(po);
           for (const line of grn.items || []) {
             if (!(Number(line.acceptedQty) > 0)) continue;
             const poLine = line.poLineId ? findPoLineSubdocument(po, line.poLineId) : null;
             if (!poLine) continue;
-            const pending = Math.max(0, Number(poLine.pendingQty ?? 0));
+            const src = rawRows.find((x) => String(x._id ?? x.id ?? "") === String(line.poLineId ?? "")) || poLine;
+            const ordered = Number(src?.orderedQty ?? src?.qty ?? poLine.orderedQty ?? poLine.qty) || 0;
+            const cancelled = Number(src?.cancelledQty ?? poLine.cancelledQty) || 0;
+            const posted = postedMap.get(String(line.poLineId)) || 0;
+            const pending = Math.max(0, ordered - posted - cancelled);
             const accepted = Number(line.acceptedQty) || 0;
             if (accepted > pending + 1e-6) {
               throw new Error(
@@ -498,9 +829,12 @@ export async function postGrn(req, res) {
         const article = upper(line.article);
         const item = await ItemMaster.findOne(withCompany(req, { article })).select("_id").session(session);
         if (!item) throw new Error(`Article not found: ${article}`);
-        const wh = upper(line.warehouse || line.location);
+        const wh = upper(line.warehouse || "");
+        if (!wh) throw new Error(`Warehouse is required for line ${article}`);
+        const putaway = t(line.location);
+        if (!putaway) throw new Error("Location is required for selected GRN line.");
         const loc = await StockLocation.findOne(withCompany(req, { locationCode: wh, status: "Active" })).session(session);
-        if (!loc) throw new Error(`Invalid location (code): ${wh}`);
+        if (!loc) throw new Error(`Invalid warehouse (stock location code): ${wh}`);
         if (Number(line.acceptedQty) > 0) {
           const recoveryInfo = await findRecoveryNotes({
             session,
@@ -523,6 +857,7 @@ export async function postGrn(req, res) {
             batchNo: line.batchNo || "",
             serialNo: line.serialNo || "",
             remarks: line.remarks || "",
+            putawayLocation: putaway,
             createdBy: req.user?.email || "",
             sourceModule: "STORE",
             transactionDate: grn.grnDate,
@@ -613,7 +948,9 @@ export async function cancelGrn(req, res) {
       const grnNo = upper(req.params.grnNo);
       const grn = await GRN.findOne(withCompany(req, { grnNo })).session(session);
       if (!grn) throw new Error("GRN not found");
-      if (!["RECEIVED", "PARTIAL_RECEIVED"].includes(grn.status)) throw new Error("Only received GRN can be cancelled");
+      if (!["RECEIVED", "PARTIAL_RECEIVED", "POSTED", "CLOSED"].includes(grn.status)) {
+        throw new Error("Only posted/received GRN can be cancelled");
+      }
 
       const gate = await ensureApproval(req, {
         companyId: req.companyId,
@@ -631,13 +968,14 @@ export async function cancelGrn(req, res) {
         throw Object.assign(new Error("APPROVAL_REQUIRED"), { _approval: approvalRequiredPayload(gate.request) });
       }
 
+      const prevGrnStatus = grn.status;
       for (const line of grn.items) {
         if (!(Number(line.acceptedQty) > 0)) continue;
         await stockService.cancelGrn({
           session,
           companyId: req.companyId,
           article: upper(line.article),
-          warehouse: upper(line.warehouse || line.location),
+          warehouse: upper(line.warehouse || "") || upper(line.location),
           qty: Number(line.acceptedQty),
           referenceNo: grn.grnNo,
           supplierName: grn.supplierName || "",
@@ -679,7 +1017,7 @@ export async function cancelGrn(req, res) {
         entityType: "GRN",
         entityId: grn._id,
         documentNo: grn.grnNo,
-        fromStatus: "RECEIVED",
+        fromStatus: prevGrnStatus,
         toStatus: "CANCELLED",
         description: `GRN ${grn.grnNo} cancelled`,
       });
@@ -689,7 +1027,7 @@ export async function cancelGrn(req, res) {
         entityType: "GRN",
         entityId: grn._id,
         documentNo: grn.grnNo,
-        fromStatus: "RECEIVED",
+        fromStatus: prevGrnStatus,
         toStatus: "CANCELLED",
         description: `GRN ${grn.grnNo} cancelled — stock reversed`,
         metadata: { supplierName: grn.supplierName || "" },
@@ -709,8 +1047,8 @@ export async function closeGrn(req, res) {
     const grnNo = upper(req.params.grnNo);
     const grn = await GRN.findOne(withCompany(req, { grnNo }));
     if (!grn) return res.status(404).json({ message: "GRN not found" });
-    if (!["RECEIVED", "PARTIAL_RECEIVED"].includes(grn.status)) {
-      return res.status(409).json({ message: "Only received/partial GRN can be closed" });
+    if (!["RECEIVED", "PARTIAL_RECEIVED", "POSTED"].includes(grn.status)) {
+      return res.status(409).json({ message: "Only posted/received GRN can be closed" });
     }
     const prev = grn.status;
     grn.status = "CLOSED";
@@ -735,6 +1073,9 @@ export async function getGrnSummaryReport(req, res) {
   try {
     const filter = withCompany(req);
     if (req.query.status) filter.status = upper(req.query.status);
+    else if (String(req.query.includeDrafts || "").trim() !== "1") {
+      filter.status = { $ne: "DRAFT" };
+    }
     if (req.query.supplierName) filter.supplierName = new RegExp(t(req.query.supplierName), "i");
     const items = await GRN.find(filter).sort({ createdAt: -1 }).lean();
     res.json({ items });
@@ -784,7 +1125,24 @@ export async function getGrnFromPo(req, res) {
       return res.status(400).json({ message: "PO is cancelled" });
     }
     const rawRows = extractRawPoLinesFromPo(po);
-    const lines = rawRows.map((l) => mapPoRowToGrnLine(l, po));
+    const postedMap = await getPostedAcceptedQtyByPoLineMap(req, poId);
+    const lines = rawRows.map((l) => {
+      const base = mapPoRowToGrnLine(l, po);
+      const lid = String(l._id ?? l.id ?? base.poLineId ?? "");
+      const ordered = Number(l?.orderedQty ?? l?.qty ?? l?.quantity ?? l?.orderedQuantity) || 0;
+      const cancelled = Number(l?.cancelledQty ?? l?.cancelled) || 0;
+      const postedReceivedQty = postedMap.get(lid) || 0;
+      const pendingQty = Math.max(0, ordered - postedReceivedQty - cancelled);
+      return {
+        ...base,
+        poLineId: base.poLineId || l._id || l.id,
+        orderedQty: ordered,
+        postedReceivedQty,
+        receivedQty: postedReceivedQty,
+        pendingQty,
+        lineDisabled: pendingQty <= 0,
+      };
+    });
     const header = {
       _id: po._id,
       poNo: po.poNo || po.poNumber,

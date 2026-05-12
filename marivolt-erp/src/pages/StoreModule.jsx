@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
+import { api, apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import Modal from "../components/erp/Modal.jsx";
 
@@ -183,9 +183,10 @@ export default function StoreModule() {
   const [grnPoId, setGrnPoId] = useState("");
   const [grnPoSnapshot, setGrnPoSnapshot] = useState(null);
   const [grnLineEdits, setGrnLineEdits] = useState({});
-  const [lastDraftGrnNo, setLastDraftGrnNo] = useState("");
   const [grnUiErr, setGrnUiErr] = useState("");
+  const [grnRegisterDetail, setGrnRegisterDetail] = useState(null);
   const grnUrlPoLoadedRef = useRef("");
+  const grnCsvInputRef = useRef(null);
   const [packAllocInputId, setPackAllocInputId] = useState("");
   const [packAllocQueryId, setPackAllocQueryId] = useState("");
   const [packLineQty, setPackLineQty] = useState({});
@@ -270,7 +271,14 @@ export default function StoreModule() {
       if (!lines.length) {
         setGrnUiErr("No pending PO lines found for GRN.");
       } else {
-        setGrnUiErr("");
+        const allReceived = lines.every(
+          (ln) => (Number(ln.pendingQty) || 0) <= 0 || ln.lineDisabled === true
+        );
+        if (allReceived) {
+          setGrnUiErr("This PO is fully received. No pending quantity available for GRN.");
+        } else {
+          setGrnUiErr("");
+        }
       }
       const init = {};
       for (const ln of lines) {
@@ -280,7 +288,7 @@ export default function StoreModule() {
           selected: false,
           grnQty: String(Math.max(0, Number(ln.pendingQty) || 0)),
           warehouse: "MAIN",
-          location: "MAIN",
+          location: "",
           remarks: "",
         };
       }
@@ -293,15 +301,16 @@ export default function StoreModule() {
     },
   });
 
-  const createGrnDraft = useMutation({
-    mutationFn: (body) => apiPost("/grn/draft", body),
-    onSuccess: (doc, vars) => {
+  const postGrnFromPoMut = useMutation({
+    mutationFn: (body) => apiPost("/grn/post", body),
+    onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["grn"] });
+      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+      qc.invalidateQueries({ queryKey: ["stock-summary"] });
       qc.invalidateQueries({ queryKey: ["store-purchase-orders"] });
-      if (doc?.grnNo) setLastDraftGrnNo(doc.grnNo);
-      const pid = vars?.poId ? String(vars.poId) : grnPoSnapshot?.header?._id ? String(grnPoSnapshot.header._id) : "";
-      if (pid) loadGrnPoMut.mutate(pid);
-      setGrnUiErr("");
+      const pid = grnPoSnapshot?.header?._id;
+      if (pid) loadGrnPoMut.mutate(String(pid));
+      setGrnUiErr(data?.grnNo ? `Posted ${data.grnNo}` : "GRN posted.");
     },
     onError: (e) => setGrnUiErr(e.message || String(e)),
   });
@@ -315,11 +324,88 @@ export default function StoreModule() {
       qc.invalidateQueries({ queryKey: ["store-purchase-orders"] });
       const pid = grnPoSnapshot?.header?._id;
       if (pid) loadGrnPoMut.mutate(String(pid));
-      setLastDraftGrnNo("");
       setGrnUiErr("");
     },
     onError: (e) => setGrnUiErr(e.message || String(e)),
   });
+
+  const cancelGrnMut = useMutation({
+    mutationFn: ({ grnNo, reason }) =>
+      apiPost(`/grn/${encodeURIComponent(grnNo)}/cancel`, { cancellationReason: reason, reason }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["grn"] });
+      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+      qc.invalidateQueries({ queryKey: ["stock-summary"] });
+      qc.invalidateQueries({ queryKey: ["store-purchase-orders"] });
+      const pid = grnPoSnapshot?.header?._id;
+      if (pid) loadGrnPoMut.mutate(String(pid));
+      setGrnRegisterDetail(null);
+      setGrnUiErr("");
+    },
+    onError: (e) => setGrnUiErr(e.message || String(e)),
+  });
+
+  const deleteGrnDraftMut = useMutation({
+    mutationFn: (id) => apiDelete(`/grn/id/${id}/draft`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["grn"] });
+      setGrnUiErr("");
+    },
+    onError: (e) => setGrnUiErr(e.message || String(e)),
+  });
+
+  const downloadGrnCsvTemplate = async () => {
+    try {
+      const res = await api.get("/grn/csv-template", { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "grn-import-template.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setGrnUiErr(e.message || String(e));
+    }
+  };
+
+  const onPickGrnCsvFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const poId = grnPoSnapshot?.header?._id;
+    if (!poId) {
+      setGrnUiErr("Select and load a PO before importing CSV.");
+      return;
+    }
+    try {
+      const csvText = await file.text();
+      const data = await apiPost("/grn/import-preview", { poId, csvText });
+      const errs = data.errors || [];
+      if (errs.length) {
+        setGrnUiErr(errs.map((x) => `Row ${x.line}: ${x.message}`).join(" · "));
+      } else {
+        setGrnUiErr("");
+      }
+      setGrnLineEdits((prev) => {
+        const next = { ...prev };
+        for (const u of data.updates || []) {
+          const id = String(u.poLineId);
+          const cur = next[id] || {};
+          next[id] = {
+            ...cur,
+            selected: true,
+            grnQty: String(u.grnQty),
+            warehouse: u.warehouse || cur.warehouse || "MAIN",
+            location: u.location || "",
+            remarks: u.remarks != null ? u.remarks : cur.remarks || "",
+          };
+        }
+        return next;
+      });
+    } catch (err) {
+      setGrnUiErr(err.message || String(err));
+    }
+  };
 
   useEffect(() => {
     const tabq = searchParams.get("tab");
@@ -670,6 +756,8 @@ export default function StoreModule() {
   const grnLinesForUi = grnPoSnapshot?.lines || [];
   const grnLineRowSelectable = (ln) => {
     const id = ln.poLineId != null ? String(ln.poLineId) : "";
+    const pend = Math.max(0, Number(ln.pendingQty) || 0);
+    if (ln.lineDisabled === true || pend <= 0) return false;
     return Boolean(id && isMongoIdString(id));
   };
   const grnTotalPending = useMemo(
@@ -856,7 +944,6 @@ export default function StoreModule() {
                   setGrnPoSnapshot(null);
                   setGrnLineEdits({});
                   setGrnUiErr("");
-                  setLastDraftGrnNo("");
                 }}
               >
                 <option value="">Select PO…</option>
@@ -875,7 +962,15 @@ export default function StoreModule() {
                 Load PO lines
               </button>
             </div>
-            {grnUiErr ? <p className="mt-2 text-xs text-rose-600">{grnUiErr}</p> : null}
+            {grnUiErr ? (
+              <p
+                className={`mt-2 text-xs ${
+                  String(grnUiErr).startsWith("Posted ") ? "text-emerald-700" : "text-rose-600"
+                }`}
+              >
+                {grnUiErr}
+              </p>
+            ) : null}
             {loadGrnPoMut.isPending ? <p className="mt-2 text-xs text-slate-500">Loading PO…</p> : null}
 
             {grnPoSnapshot?.header ? (
@@ -946,7 +1041,7 @@ export default function StoreModule() {
                             selected: false,
                             grnQty: String(pend),
                             warehouse: "MAIN",
-                            location: "MAIN",
+                            location: "",
                             remarks: "",
                           };
                           next[id] = { ...cur, selected: true };
@@ -988,7 +1083,7 @@ export default function StoreModule() {
                             selected: false,
                             grnQty: "0",
                             warehouse: "MAIN",
-                            location: "MAIN",
+                            location: "",
                             remarks: "",
                           };
                           if (anySel && !cur.selected) continue;
@@ -1000,6 +1095,27 @@ export default function StoreModule() {
                   >
                     Fill full pending qty
                   </button>
+                  <button
+                    type="button"
+                    className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                    onClick={() => downloadGrnCsvTemplate()}
+                  >
+                    Download GRN CSV template
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                    onClick={() => grnCsvInputRef.current?.click()}
+                  >
+                    Import GRN CSV
+                  </button>
+                  <input
+                    ref={grnCsvInputRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="hidden"
+                    onChange={onPickGrnCsvFile}
+                  />
                 </div>
                 <div className="mt-3 overflow-auto rounded border border-slate-200">
                   <table className="w-full min-w-[1000px] text-xs">
@@ -1029,7 +1145,7 @@ export default function StoreModule() {
                           selected: false,
                           grnQty: String(Math.max(0, Number(ln.pendingQty) || 0)),
                           warehouse: "MAIN",
-                          location: "MAIN",
+                          location: "",
                           remarks: "",
                         };
                         const pend = Math.max(0, Number(ln.pendingQty) || 0);
@@ -1081,7 +1197,7 @@ export default function StoreModule() {
                                 onChange={(e) =>
                                   setGrnLineEdits((p) => ({
                                     ...p,
-                                    [id]: { ...ed, warehouse: e.target.value, location: e.target.value },
+                                    [id]: { ...ed, warehouse: e.target.value },
                                   }))
                                 }
                               >
@@ -1093,8 +1209,10 @@ export default function StoreModule() {
                               </select>
                             </td>
                             <td className="px-2 py-1.5">
-                              <select
-                                className="max-w-[120px] rounded border px-1 py-0.5"
+                              <input
+                                type="text"
+                                className="w-full min-w-[140px] max-w-[220px] rounded border px-1 py-0.5"
+                                placeholder="e.g. Shelf A1"
                                 disabled={pend <= 0 || !selectable}
                                 value={ed.location}
                                 onChange={(e) =>
@@ -1103,13 +1221,7 @@ export default function StoreModule() {
                                     [id]: { ...ed, location: e.target.value },
                                   }))
                                 }
-                              >
-                                {grnLocationSelectCodes.map((code) => (
-                                  <option key={`l-${id}-${code}`} value={code}>
-                                    {code}
-                                  </option>
-                                ))}
-                              </select>
+                              />
                             </td>
                             <td className="px-2 py-1.5">
                               <input
@@ -1135,7 +1247,7 @@ export default function StoreModule() {
                     type="button"
                     className="rounded bg-slate-900 px-3 py-2 text-sm text-white disabled:opacity-40"
                     disabled={
-                      createGrnDraft.isPending ||
+                      postGrnFromPoMut.isPending ||
                       grnTotalPending <= 0 ||
                       !grnPoSnapshot?.header?._id
                     }
@@ -1152,7 +1264,7 @@ export default function StoreModule() {
                         const ed = grnLineEdits[id];
                         if (!ed?.selected) continue;
                         if (!grnLineRowSelectable(ln)) {
-                          setGrnUiErr("Selected line is missing a valid PO line id.");
+                          setGrnUiErr("Selected line is missing a valid PO line id or has no pending quantity.");
                           return;
                         }
                         const q = Number(ed.grnQty);
@@ -1165,11 +1277,21 @@ export default function StoreModule() {
                           setGrnUiErr(`GRN qty cannot exceed pending (${pend}) for ${ln.article}.`);
                           return;
                         }
+                        const wh = String(ed.warehouse || "").trim();
+                        if (!wh) {
+                          setGrnUiErr("Warehouse is required for each selected line.");
+                          return;
+                        }
+                        const loc = String(ed.location || "").trim();
+                        if (!loc) {
+                          setGrnUiErr("Location is required for selected GRN line.");
+                          return;
+                        }
                         linesOut.push({
                           poLineId: ln.poLineId,
                           grnQty: q,
-                          warehouse: (ed.warehouse || "MAIN").trim().toUpperCase(),
-                          location: (ed.location || ed.warehouse || "MAIN").trim().toUpperCase(),
+                          warehouse: wh.toUpperCase(),
+                          location: loc,
                           remarks: ed.remarks || "",
                         });
                       }
@@ -1177,7 +1299,7 @@ export default function StoreModule() {
                         setGrnUiErr("Select at least one line with pending quantity and enter GRN qty.");
                         return;
                       }
-                      createGrnDraft.mutate({
+                      postGrnFromPoMut.mutate({
                         poId: h._id,
                         poNo: h.poNo || h.poNumber,
                         supplierId: h.supplierId,
@@ -1189,23 +1311,12 @@ export default function StoreModule() {
                       });
                     }}
                   >
-                    Create draft GRN
+                    Post GRN
                   </button>
-                  {lastDraftGrnNo ? (
-                    <button
-                      type="button"
-                      className="rounded border border-emerald-700 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-900 disabled:opacity-40"
-                      disabled={postGrnMut.isPending}
-                      onClick={() => {
-                        setGrnUiErr("");
-                        postGrnMut.mutate(lastDraftGrnNo);
-                      }}
-                    >
-                      Post GRN {lastDraftGrnNo}
-                    </button>
-                  ) : null}
                   {grnTotalPending <= 0 ? (
-                    <span className="text-xs text-amber-700">No pending quantity on this PO — cannot create GRN.</span>
+                    <span className="text-xs text-amber-700">
+                      This PO is fully received. No pending quantity available for GRN.
+                    </span>
                   ) : null}
                 </div>
               </>
@@ -1218,8 +1329,10 @@ export default function StoreModule() {
                 <thead className="bg-slate-100 text-xs uppercase text-slate-600">
                   <tr>
                     <th className="px-2 py-2 text-left">GRN No</th>
-                    <th className="px-2 py-2 text-left">PO</th>
+                    <th className="px-2 py-2 text-left">Date</th>
+                    <th className="px-2 py-2 text-left">PO No</th>
                     <th className="px-2 py-2 text-left">Supplier</th>
+                    <th className="px-2 py-2 text-right">Total Qty</th>
                     <th className="px-2 py-2 text-left">Status</th>
                     <th className="px-2 py-2 text-left">Actions</th>
                   </tr>
@@ -1227,43 +1340,170 @@ export default function StoreModule() {
                 <tbody>
                   {(grns?.items || []).length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="px-2 py-4 text-center text-slate-500">
+                      <td colSpan={7} className="px-2 py-4 text-center text-slate-500">
                         No GRNs
                       </td>
                     </tr>
                   ) : (
-                    (grns?.items || []).map((g) => (
-                      <tr key={g._id} className="border-t">
-                        <td className="px-2 py-2 font-mono">{g.grnNo}</td>
-                        <td className="px-2 py-2">{g.poNo || "—"}</td>
-                        <td className="px-2 py-2">{g.supplierName || "—"}</td>
-                        <td className="px-2 py-2">
-                          <StatusPill status={g.status} tone={g.status === "DRAFT" ? "amber" : "emerald"} />
-                        </td>
-                        <td className="px-2 py-2">
-                          {g.status === "DRAFT" ? (
-                            <button
-                              type="button"
-                              className="rounded border px-2 py-1 text-xs font-semibold text-emerald-800"
-                              disabled={postGrnMut.isPending}
-                              onClick={() => {
-                                setGrnUiErr("");
-                                postGrnMut.mutate(g.grnNo);
-                              }}
-                            >
-                              Post GRN
-                            </button>
-                          ) : (
-                            <span className="text-xs text-slate-400">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))
+                    (grns?.items || []).map((g) => {
+                      const totalQty = (g.items || []).reduce(
+                        (s, x) => s + (Number(x.acceptedQty ?? x.receivedQty) || 0),
+                        0
+                      );
+                      const canCancel = ["POSTED", "RECEIVED", "PARTIAL_RECEIVED", "CLOSED"].includes(
+                        String(g.status || "")
+                      );
+                      const isDraft = String(g.status || "").toUpperCase() === "DRAFT";
+                      return (
+                        <tr key={g._id} className="border-t">
+                          <td className="px-2 py-2 font-mono">{g.grnNo}</td>
+                          <td className="px-2 py-2">{g.grnDate ? fmtDateOnly(g.grnDate) : "—"}</td>
+                          <td className="px-2 py-2">{g.poNo || "—"}</td>
+                          <td className="px-2 py-2">{g.supplierName || "—"}</td>
+                          <td className="px-2 py-2 text-right tabular-nums">{totalQty.toFixed(2)}</td>
+                          <td className="px-2 py-2">
+                            <StatusPill
+                              status={g.status}
+                              tone={g.status === "CANCELLED" ? "rose" : g.status === "DRAFT" ? "amber" : "emerald"}
+                            />
+                          </td>
+                          <td className="px-2 py-2">
+                            <div className="flex flex-wrap gap-1">
+                              <button
+                                type="button"
+                                className="rounded border px-2 py-0.5 text-[11px] font-semibold text-slate-800"
+                                onClick={() => setGrnRegisterDetail(g)}
+                              >
+                                View
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded border px-2 py-0.5 text-[11px] font-semibold text-slate-800"
+                                onClick={() => {
+                                  setGrnRegisterDetail(g);
+                                  setTimeout(() => window.print(), 200);
+                                }}
+                              >
+                                Print
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded border px-2 py-0.5 text-[11px] font-semibold text-slate-800"
+                                onClick={() =>
+                                  downloadPdfTable(
+                                    `GRN ${g.grnNo}`,
+                                    "",
+                                    [
+                                      { key: "article", header: "Article" },
+                                      { key: "qty", header: "Qty" },
+                                      { key: "warehouse", header: "Warehouse" },
+                                      { key: "location", header: "Location" },
+                                    ],
+                                    (g.items || []).map((it) => ({
+                                      article: it.article,
+                                      qty: Number(it.acceptedQty ?? it.receivedQty) || 0,
+                                      warehouse: it.warehouse || "—",
+                                      location: it.location || "—",
+                                    })),
+                                    `grn-${g.grnNo}`
+                                  )
+                                }
+                              >
+                                Export PDF
+                              </button>
+                              {canCancel ? (
+                                <button
+                                  type="button"
+                                  className="rounded border border-rose-200 px-2 py-0.5 text-[11px] font-semibold text-rose-800 disabled:opacity-40"
+                                  disabled={cancelGrnMut.isPending}
+                                  onClick={() => {
+                                    const reason = window.prompt("Cancellation reason (required):") || "";
+                                    if (!reason.trim()) {
+                                      setGrnUiErr("Cancellation reason is required.");
+                                      return;
+                                    }
+                                    setGrnUiErr("");
+                                    cancelGrnMut.mutate({ grnNo: g.grnNo, reason: reason.trim() });
+                                  }}
+                                >
+                                  Cancel GRN
+                                </button>
+                              ) : null}
+                              {isDraft ? (
+                                <button
+                                  type="button"
+                                  className="rounded border px-2 py-0.5 text-[11px] font-semibold text-slate-600 disabled:opacity-40"
+                                  disabled={deleteGrnDraftMut.isPending}
+                                  onClick={() => {
+                                    if (!window.confirm(`Delete draft ${g.grnNo}?`)) return;
+                                    deleteGrnDraftMut.mutate(String(g._id));
+                                  }}
+                                >
+                                  Delete draft
+                                </button>
+                              ) : null}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
             </div>
           </div>
+          <Modal
+            open={Boolean(grnRegisterDetail)}
+            onClose={() => setGrnRegisterDetail(null)}
+            title={grnRegisterDetail ? `GRN ${grnRegisterDetail.grnNo}` : "GRN"}
+          >
+            {grnRegisterDetail ? (
+              <div className="max-h-[70vh] space-y-2 overflow-auto text-sm">
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div>
+                    <span className="text-slate-500">PO</span>{" "}
+                    <span className="font-medium">{grnRegisterDetail.poNo || "—"}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Supplier</span>{" "}
+                    <span className="font-medium">{grnRegisterDetail.supplierName || "—"}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Date</span>{" "}
+                    <span className="font-medium">
+                      {grnRegisterDetail.grnDate ? fmtDateOnly(grnRegisterDetail.grnDate) : "—"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Status</span>{" "}
+                    <span className="font-medium">{grnRegisterDetail.status}</span>
+                  </div>
+                </div>
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="px-2 py-1 text-left">Article</th>
+                      <th className="px-2 py-1 text-right">Qty</th>
+                      <th className="px-2 py-1 text-left">Wh</th>
+                      <th className="px-2 py-1 text-left">Location</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(grnRegisterDetail.items || []).map((it, idx) => (
+                      <tr key={idx} className="border-t">
+                        <td className="px-2 py-1 font-mono">{it.article}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">
+                          {Number(it.acceptedQty ?? it.receivedQty) || 0}
+                        </td>
+                        <td className="px-2 py-1">{it.warehouse || "—"}</td>
+                        <td className="px-2 py-1">{it.location || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+          </Modal>
         </div>
       ) : null}
 
@@ -1278,7 +1518,7 @@ export default function StoreModule() {
               >
                 <option value="">Select GRN</option>
                 {(grns?.items || [])
-                  .filter((g) => ["RECEIVED", "PARTIAL_RECEIVED", "CLOSED"].includes(g.status))
+                  .filter((g) => ["RECEIVED", "PARTIAL_RECEIVED", "CLOSED", "POSTED"].includes(g.status))
                   .map((g) => (
                     <option key={g._id} value={g.grnNo}>
                       {g.grnNo} - {g.supplierName || "Supplier"}

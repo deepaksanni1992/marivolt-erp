@@ -420,10 +420,15 @@ export async function grnReceive({
   batchNo = "",
   serialNo = "",
   transactionDate = null,
+  /** Free-text putaway / bin (GRN line); appended to ledger remarks for traceability. */
+  putawayLocation = "",
 }) {
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
   if (!(q > 0)) throw new Error("grnReceive: qty must be > 0");
+  const put = s(putawayLocation || "");
+  const remarkParts = [s(remarks), put ? `Putaway: ${put}` : ""].filter(Boolean);
+  const remarksCombined = remarkParts.join(" | ");
   await bumpBuckets({
     session,
     companyId,
@@ -447,7 +452,7 @@ export async function grnReceive({
     referenceType,
     referenceNo,
     supplierName,
-    remarks,
+    remarks: remarksCombined,
     createdBy,
     sourceModule,
     unitCost,

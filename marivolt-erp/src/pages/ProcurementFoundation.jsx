@@ -29,6 +29,7 @@ function StatusBadge({ status }) {
     SENT: "bg-sky-100 text-sky-800",
     PARTIAL_RECEIVED: "bg-amber-100 text-amber-800",
     RECEIVED: "bg-emerald-100 text-emerald-800",
+    POSTED: "bg-emerald-100 text-emerald-800",
     PENDING_RECEIVE: "bg-amber-100 text-amber-800",
     PENDING_CANCEL: "bg-amber-100 text-amber-800",
     NOT_REQUIRED: "bg-slate-100 text-slate-800",
@@ -287,7 +288,11 @@ function GrnTab() {
         <FormField label="Status">
           <SelectInput value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">All</option>
-            {["DRAFT", "PARTIAL_RECEIVED", "RECEIVED", "CANCELLED", "CLOSED"].map((s) => <option key={s} value={s}>{s}</option>)}
+            {["DRAFT", "POSTED", "PARTIAL_RECEIVED", "RECEIVED", "CANCELLED", "CLOSED"].map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
           </SelectInput>
         </FormField>
         <button className="rounded-lg border px-3 py-2 text-sm font-semibold" type="button" onClick={() => downloadCsv(`grn-${Date.now()}.csv`, [{ key: "grnNo", header: "GRN No" }, { key: "grnDate", header: "Date" }, { key: "poNo", header: "PO No" }, { key: "supplierName", header: "Supplier" }, { key: "status", header: "Status" }, { key: "approvalStatus", header: "Approval" }, { key: "lines", header: "Lines" }], exportRows)}>Export CSV</button>
