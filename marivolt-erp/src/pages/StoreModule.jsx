@@ -42,6 +42,9 @@ const GRN_PO_RECEIPT_LABEL = {
   FULLY_RECEIVED: "Fully received",
 };
 
+/** Default GRN warehouse `locationCode` (hidden in UI; must match backend). */
+const GRN_DEFAULT_WAREHOUSE_CODE = "MAIN";
+
 function fmtPoDateShort(d) {
   if (!d) return "—";
   const x = new Date(d);
@@ -280,10 +283,6 @@ export default function StoreModule() {
           setGrnUiErr("");
         }
       }
-      const lr = qc.getQueryData(["stock-locations"]);
-      const locRows = Array.isArray(lr) ? lr : [];
-      const defaultWh = [...new Set(locRows.map((l) => String(l?.locationCode || "").trim()).filter(Boolean))]
-        .sort()[0] || "";
       const init = {};
       for (const ln of lines) {
         const id = ln.poLineId != null ? String(ln.poLineId) : "";
@@ -291,7 +290,7 @@ export default function StoreModule() {
         init[id] = {
           selected: false,
           grnQty: String(Math.max(0, Number(ln.pendingQty) || 0)),
-          warehouse: defaultWh,
+          warehouse: GRN_DEFAULT_WAREHOUSE_CODE,
           location: "",
           remarks: "",
         };
@@ -399,7 +398,7 @@ export default function StoreModule() {
             ...cur,
             selected: true,
             grnQty: String(u.grnQty),
-            warehouse: u.warehouse || cur.warehouse || defaultGrnWarehouse,
+            warehouse: u.warehouse || cur.warehouse || GRN_DEFAULT_WAREHOUSE_CODE,
             location: u.location || "",
             remarks: u.remarks != null ? u.remarks : cur.remarks || "",
           };
@@ -768,12 +767,6 @@ export default function StoreModule() {
     () => grnLinesForUi.reduce((s, ln) => s + Math.max(0, Number(ln.pendingQty) || 0), 0),
     [grnLinesForUi]
   );
-  /** Stock location master `locationCode` values only — must exist as Active in DB (GRN warehouse validates against this). */
-  const grnLocationSelectCodes = useMemo(() => {
-    const arr = locationRows.map((l) => l.locationCode).filter(Boolean);
-    return Array.from(new Set(arr)).sort();
-  }, [locationRows]);
-  const defaultGrnWarehouse = useMemo(() => grnLocationSelectCodes[0] || "", [grnLocationSelectCodes]);
   const negativeRows = useMemo(() => negativeReport?.items || [], [negativeReport]);
   const landedCostDetail = useMemo(
     () => (landedCostRows?.items || []).find((x) => String(x._id) === String(selectedLandedCostId)) || null,
@@ -1046,7 +1039,7 @@ export default function StoreModule() {
                           const cur = next[id] || {
                             selected: false,
                             grnQty: String(pend),
-                            warehouse: defaultGrnWarehouse,
+                            warehouse: GRN_DEFAULT_WAREHOUSE_CODE,
                             location: "",
                             remarks: "",
                           };
@@ -1088,7 +1081,7 @@ export default function StoreModule() {
                           const cur = next[id] || {
                             selected: false,
                             grnQty: "0",
-                            warehouse: defaultGrnWarehouse,
+                            warehouse: GRN_DEFAULT_WAREHOUSE_CODE,
                             location: "",
                             remarks: "",
                           };
@@ -1137,7 +1130,6 @@ export default function StoreModule() {
                         <th className="px-2 py-2 text-right">Received</th>
                         <th className="px-2 py-2 text-right">Pending</th>
                         <th className="px-2 py-2 text-right">GRN qty</th>
-                        <th className="px-2 py-2">Warehouse</th>
                         <th className="px-2 py-2">Location</th>
                         <th className="px-2 py-2">Remarks</th>
                       </tr>
@@ -1150,7 +1142,7 @@ export default function StoreModule() {
                         const ed = grnLineEdits[id] || {
                           selected: false,
                           grnQty: String(Math.max(0, Number(ln.pendingQty) || 0)),
-                          warehouse: defaultGrnWarehouse,
+                          warehouse: GRN_DEFAULT_WAREHOUSE_CODE,
                           location: "",
                           remarks: "",
                         };
@@ -1196,29 +1188,10 @@ export default function StoreModule() {
                               />
                             </td>
                             <td className="px-2 py-1.5">
-                              <select
-                                className="max-w-[120px] rounded border px-1 py-0.5"
-                                disabled={pend <= 0 || !selectable}
-                                value={ed.warehouse}
-                                onChange={(e) =>
-                                  setGrnLineEdits((p) => ({
-                                    ...p,
-                                    [id]: { ...ed, warehouse: e.target.value },
-                                  }))
-                                }
-                              >
-                                {grnLocationSelectCodes.map((code) => (
-                                  <option key={`w-${id}-${code}`} value={code}>
-                                    {code}
-                                  </option>
-                                ))}
-                              </select>
-                            </td>
-                            <td className="px-2 py-1.5">
                               <input
                                 type="text"
-                                className="w-full min-w-[140px] max-w-[220px] rounded border px-1 py-0.5"
-                                placeholder="e.g. Shelf A1"
+                                className="w-full min-w-[160px] max-w-[260px] rounded border px-1 py-0.5"
+                                placeholder="Type putaway location (required)"
                                 disabled={pend <= 0 || !selectable}
                                 value={ed.location}
                                 onChange={(e) =>
@@ -1283,20 +1256,15 @@ export default function StoreModule() {
                           setGrnUiErr(`GRN qty cannot exceed pending (${pend}) for ${ln.article}.`);
                           return;
                         }
-                        const wh = String(ed.warehouse || "").trim();
-                        if (!wh) {
-                          setGrnUiErr("Warehouse is required for each selected line.");
-                          return;
-                        }
                         const loc = String(ed.location || "").trim();
                         if (!loc) {
-                          setGrnUiErr("Location is required for selected GRN line.");
+                          setGrnUiErr("Location is required for each selected GRN line.");
                           return;
                         }
                         linesOut.push({
                           poLineId: ln.poLineId,
                           grnQty: q,
-                          warehouse: wh.toUpperCase(),
+                          warehouse: GRN_DEFAULT_WAREHOUSE_CODE,
                           location: loc,
                           remarks: ed.remarks || "",
                         });
@@ -1319,6 +1287,9 @@ export default function StoreModule() {
                   >
                     Post GRN
                   </button>
+                  <span className="text-[11px] text-slate-500">
+                    Default warehouse MAIN is applied automatically. Enter location manually for each line.
+                  </span>
                   {grnTotalPending <= 0 ? (
                     <span className="text-xs text-amber-700">
                       This PO is fully received. No pending quantity available for GRN.

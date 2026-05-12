@@ -125,6 +125,64 @@ function upper(v) {
   return t(v).toUpperCase();
 }
 
+/** Default GRN stock `locationCode` when warehouse is omitted (multi-warehouse expansion later). */
+const DEFAULT_GRN_WAREHOUSE_CODE = "MAIN";
+const DEFAULT_GRN_WAREHOUSE_NAME = "Main Warehouse";
+
+function resolveGrnWarehouseCode(warehouseRaw) {
+  const w = upper(warehouseRaw || "");
+  return w || DEFAULT_GRN_WAREHOUSE_CODE;
+}
+
+/**
+ * Ensure an Active `StockLocation` exists for {@link DEFAULT_GRN_WAREHOUSE_CODE} so GRN posting
+ * and ledger validation succeed without altering existing stock rows.
+ */
+async function ensureDefaultGrnStockLocation(req, session = null) {
+  const cid = req.companyId;
+  if (cid == null || cid === "") return null;
+  const code = DEFAULT_GRN_WAREHOUSE_CODE;
+  const baseFilter = withCompany(req, { locationCode: code });
+  const q1 = StockLocation.findOne(baseFilter);
+  if (session) q1.session(session);
+  let doc = await q1;
+  if (doc) {
+    let changed = false;
+    if (String(doc.status || "") !== "Active") {
+      doc.status = "Active";
+      changed = true;
+    }
+    if (!String(doc.locationName || "").trim()) {
+      doc.locationName = DEFAULT_GRN_WAREHOUSE_NAME;
+      changed = true;
+    }
+    if (changed) await doc.save({ session });
+    return doc;
+  }
+  try {
+    const arr = await StockLocation.create(
+      [
+        {
+          companyId: cid,
+          locationCode: code,
+          locationName: DEFAULT_GRN_WAREHOUSE_NAME,
+          status: "Active",
+        },
+      ],
+      session ? { session } : {}
+    );
+    return Array.isArray(arr) ? arr[0] : arr;
+  } catch (e) {
+    const msg = String(e?.message || "");
+    if (e?.code === 11000 || msg.includes("duplicate") || msg.includes("E11000")) {
+      const q2 = StockLocation.findOne(baseFilter);
+      if (session) q2.session(session);
+      return await q2;
+    }
+    throw e;
+  }
+}
+
 async function nextGrnNo(companyId, companyCode = "") {
   const { number } = await nextNumber({
     companyId,
@@ -139,6 +197,7 @@ async function nextGrnNo(companyId, companyCode = "") {
 /**
  * Build GRN line items from a PO line selection (Store UI / API).
  * `selections`: { poLineId, grnQty, warehouse?, location?, remarks?, currency? }[]
+ * `warehouse` defaults to MAIN when omitted or blank.
  * Only lines with grnQty > 0 are included.
  * `pending` is ordered − posted(GRN) − cancelled; posted sums only non-draft, non-cancelled GRNs.
  */
@@ -174,8 +233,7 @@ async function buildGrnItemsFromPoLineSelection(req, poId, selections = [], opti
       const label = String(src.itemCode || src.article || src.materialCode || poLineId).trim();
       throw new Error(`GRN qty (${grnQty}) exceeds pending (${pending}) for line ${label}`);
     }
-    const wh = upper(row.warehouse || "");
-    if (!wh) throw new Error("Warehouse is required for each selected GRN line.");
+    const wh = resolveGrnWarehouseCode(row.warehouse);
     const loc = t(row.location);
     if (!loc) throw new Error("Location is required for selected GRN line.");
     raw.push({
@@ -219,7 +277,6 @@ function normalizeItems(items = []) {
     }
     const accepted = Math.max(0, received - rejected);
     if (accepted > 0) {
-      if (!upper(r.warehouse || "")) throw new Error("Warehouse is required for each GRN line with quantity.");
       if (!t(r.location)) throw new Error("Location is required for selected GRN line.");
     }
     const ordered = Number(r.orderedQty ?? pendingCap) || 0;
@@ -243,7 +300,7 @@ function normalizeItems(items = []) {
       customs: Number(r.customs) || 0,
       landedAdjustment: Number(r.landedAdjustment) || 0,
       location: t(r.location),
-      warehouse: upper(r.warehouse || ""),
+      warehouse: resolveGrnWarehouseCode(r.warehouse),
       warehouseId: mongoose.Types.ObjectId.isValid(String(r.warehouseId || "")) ? new mongoose.Types.ObjectId(String(r.warehouseId)) : null,
       batchNo: t(r.batchNo),
       serialNo: t(r.serialNo),
@@ -291,7 +348,7 @@ export async function createGrn(req, res) {
   try {
     return res.status(400).json({
       message:
-        "Draft GRN creation is disabled. Select PO lines, enter warehouse, location, and quantities, then use POST /grn/post to post the GRN directly.",
+        "Draft GRN creation is disabled. Select PO lines, enter location and quantities, then use POST /grn/post to post the GRN directly.",
     });
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -501,7 +558,7 @@ function findPoLineMatchForCsv(rawRows, row) {
 /** GET /grn/csv-template — column header for GRN CSV import. */
 export async function getGrnCsvTemplate(req, res) {
   try {
-    const header = "poLineId,article,materialCode,spn,grnQty,warehouse,location,remarks\n";
+    const header = "poLineId,article,materialCode,spn,grnQty,location,remarks\n";
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", "attachment; filename=\"grn-import-template.csv\"");
     res.send(header);
@@ -552,11 +609,7 @@ export async function importGrnCsvPreview(req, res) {
         errors.push({ line: lineNo, message: `grnQty (${grnQty}) exceeds pending (${pending}) for this line.` });
         continue;
       }
-      const warehouse = upper(row.warehouse || "");
-      if (!warehouse) {
-        errors.push({ line: lineNo, message: "warehouse is required." });
-        continue;
-      }
+      const warehouse = resolveGrnWarehouseCode(row.warehouse || "");
       const location = t(row.location);
       if (!location) {
         errors.push({ line: lineNo, message: "location is required." });
@@ -681,12 +734,13 @@ export async function postGrnFromPo(req, res) {
         throw Object.assign(new Error("APPROVAL_REQUIRED"), { _approval: approvalRequiredPayload(gate.request) });
       }
 
+      await ensureDefaultGrnStockLocation(req, session);
+
       for (const line of grn.items) {
         const article = upper(line.article);
         const item = await ItemMaster.findOne(withCompany(req, { article })).select("_id").session(session);
         if (!item) throw new Error(`Article not found: ${article}`);
-        const wh = upper(line.warehouse || "");
-        if (!wh) throw new Error(`Warehouse is required for line ${article}`);
+        const wh = resolveGrnWarehouseCode(line.warehouse);
         const putaway = t(line.location);
         if (!putaway) throw new Error("Location is required for selected GRN line.");
         const loc = await StockLocation.findOne(withCompany(req, { locationCode: wh, status: "Active" })).session(session);
@@ -825,12 +879,13 @@ export async function postGrn(req, res) {
         throw Object.assign(new Error("APPROVAL_REQUIRED"), { _approval: approvalRequiredPayload(gate.request) });
       }
 
+      await ensureDefaultGrnStockLocation(req, session);
+
       for (const line of grn.items) {
         const article = upper(line.article);
         const item = await ItemMaster.findOne(withCompany(req, { article })).select("_id").session(session);
         if (!item) throw new Error(`Article not found: ${article}`);
-        const wh = upper(line.warehouse || "");
-        if (!wh) throw new Error(`Warehouse is required for line ${article}`);
+        const wh = resolveGrnWarehouseCode(line.warehouse);
         const putaway = t(line.location);
         if (!putaway) throw new Error("Location is required for selected GRN line.");
         const loc = await StockLocation.findOne(withCompany(req, { locationCode: wh, status: "Active" })).session(session);
