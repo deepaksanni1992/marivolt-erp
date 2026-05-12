@@ -231,6 +231,11 @@ export async function listPurchaseInvoices(req, res) {
     if (req.query.linkedPoId && mongoose.Types.ObjectId.isValid(String(req.query.linkedPoId))) {
       filter.linkedPoId = new mongoose.Types.ObjectId(String(req.query.linkedPoId));
     }
+    const linkedPoNumberQ = String(req.query.linkedPoNumber || "").trim();
+    if (linkedPoNumberQ) {
+      const esc = linkedPoNumberQ.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      filter.linkedPoNumber = new RegExp(esc, "i");
+    }
     if (req.query.status) filter.status = String(req.query.status).trim().toUpperCase();
     const [items, total] = await Promise.all([
       PurchaseInvoice.find(filter).sort({ invoiceDate: -1 }).skip(skip).limit(limit).lean(),
@@ -1619,7 +1624,7 @@ export async function createPurchaseInvoiceDraftFromPo(req, res) {
       supplierName: po.supplierName,
       supplierInvoiceNo: String(body.supplierInvoiceNo || "").trim(),
       supplierInvoiceDate: body.supplierInvoiceDate ? new Date(body.supplierInvoiceDate) : null,
-      linkedPoNumber: po.poNo,
+      linkedPoNumber: String(po.poNo || po.poNumber || "").trim(),
       currency: cur,
       paymentTerms: String(body.paymentTerms || po.paymentTerms || "").trim(),
       grnNo: String(body.grnNo || "").trim(),

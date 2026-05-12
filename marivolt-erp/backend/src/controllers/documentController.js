@@ -1,11 +1,13 @@
 import mongoose from "mongoose";
-import { randomUUID } from "crypto";
-import { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { DeleteObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import Document, { DOCUMENT_TYPES } from "../models/Document.js";
 import { getS3Client, getS3Bucket, buildS3ObjectPublicUrl } from "../config/s3.js";
 import { scopeToCompany } from "../middleware/auth.js";
 import { writeAudit } from "../services/auditService.js";
+import {
+  buildTenantDocumentObjectKey,
+  uploadFileToS3,
+} from "../services/s3UploadService.js";
 
 /** Map UI document type → S3 prefix folder (no leading/trailing slashes). */
 const DOCUMENT_TYPE_TO_FOLDER = {
@@ -73,9 +75,14 @@ function sanitizeStoredBaseName(originalName) {
   return base || "document";
 }
 
+function resolveDocumentBucket(doc) {
+  const b = String(doc?.s3Bucket || "").trim();
+  return b || getS3Bucket();
+}
+
 /**
  * POST /api/documents/upload
- * multipart: file + text fields
+ * multipart: file + text fields — always stored on AWS S3 under a tenant-isolated prefix.
  */
 export async function uploadDocument(req, res) {
   try {
@@ -97,25 +104,25 @@ export async function uploadDocument(req, res) {
 
     const folder = DOCUMENT_TYPE_TO_FOLDER[documentType] || "others";
     const companyId = req.companyId;
-    const uuid = randomUUID();
+    const companyCode = req.companyCode;
     const safeBase = sanitizeStoredBaseName(req.file.originalname);
-    const storedFileName = `${uuid}-${safeBase}`;
-    const s3Key = `${folder}/${companyId}/${storedFileName}`;
 
-    const client = getS3Client();
-    const bucket = getS3Bucket();
+    const s3Key = buildTenantDocumentObjectKey({
+      companyId,
+      companyCode,
+      documentFolder: folder,
+      originalFileName: req.file.originalname,
+    });
 
-    await client.send(
-      new PutObjectCommand({
-        Bucket: bucket,
-        Key: s3Key,
-        Body: req.file.buffer,
-        ContentType: req.file.mimetype,
-      }),
-    );
+    const uploaded = await uploadFileToS3(req.file, folder, {
+      key: s3Key,
+      contentType: req.file.mimetype,
+      companyCode,
+    });
 
-    const fileUrl = buildS3ObjectPublicUrl(s3Key);
+    const fileUrl = buildS3ObjectPublicUrl(uploaded.key, uploaded.bucket);
     const uploadedBy = String(req.user?.email || req.user?.id || "").trim();
+    const storedFileName = String(uploaded.key || "").split("/").pop() || safeBase;
 
     const doc = await Document.create({
       companyId,
@@ -128,7 +135,8 @@ export async function uploadDocument(req, res) {
       storedFileName,
       mimeType: req.file.mimetype,
       size: req.file.size,
-      s3Key,
+      s3Key: uploaded.key,
+      s3Bucket: uploaded.bucket,
       fileUrl,
       remarks,
       uploadedBy,
@@ -221,8 +229,8 @@ export async function deleteDocument(req, res) {
     const doc = await Document.findOne(scopeToCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Document not found" });
 
+    const bucket = resolveDocumentBucket(doc);
     const client = getS3Client();
-    const bucket = getS3Bucket();
     await client.send(
       new DeleteObjectCommand({
         Bucket: bucket,
@@ -267,7 +275,7 @@ export async function downloadDocument(req, res) {
     if (!doc) return res.status(404).json({ message: "Document not found" });
 
     const client = getS3Client();
-    const bucket = getS3Bucket();
+    const bucket = resolveDocumentBucket(doc);
     const asciiName = String(doc.originalFileName || "download")
       .replace(/[^\x20-\x7E]/g, "_")
       .replace(/["\\]/g, "_")

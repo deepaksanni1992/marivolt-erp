@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Papa from "papaparse";
 import Modal from "../components/erp/Modal.jsx";
 import PoAccountsPanel from "../components/purchase/PoAccountsPanel.jsx";
+import PoSupplierDocUploadModal from "../components/purchase/PoSupplierDocUploadModal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import {
@@ -729,6 +730,8 @@ export default function Purchase({ procurementEmbed = false } = {}) {
   const supImportRef = useRef(null);
   const [poPreview, setPoPreview] = useState(null);
   const [poCopyBusyId, setPoCopyBusyId] = useState(null);
+  /** { _id, poNumber, supplierName, currency } when register-row upload modal is open */
+  const [supplierDocUploadPo, setSupplierDocUploadPo] = useState(null);
 
   function loadPurchaseOrderCopy(poId, mode) {
     setErr("");
@@ -1520,6 +1523,22 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                             onClick={() => loadPurchaseOrderCopy(r._id, "print")}
                           >
                             Save PDF
+                          </button>
+                          <button
+                            type="button"
+                            title="Upload supplier proforma or tax invoice and link to this PO"
+                            className="rounded-md border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-900 hover:bg-indigo-100"
+                            onClick={() => {
+                              setErr("");
+                              setSupplierDocUploadPo({
+                                _id: r._id,
+                                poNumber: r.poNumber || r.poNo || "",
+                                supplierName: r.supplierName || "",
+                                currency: r.currency || "USD",
+                              });
+                            }}
+                          >
+                            Upload invoice / PI
                           </button>
                           {canModifyPoStatus(r.status) ? (
                             <button
@@ -3109,6 +3128,17 @@ export default function Purchase({ procurementEmbed = false } = {}) {
           </div>
         )}
       </Modal>
+
+      <PoSupplierDocUploadModal
+        open={Boolean(supplierDocUploadPo)}
+        onClose={() => setSupplierDocUploadPo(null)}
+        poId={supplierDocUploadPo?._id}
+        poNumber={supplierDocUploadPo?.poNumber}
+        supplierName={supplierDocUploadPo?.supplierName}
+        currency={supplierDocUploadPo?.currency}
+        qc={qc}
+        setErr={setErr}
+      />
     </div>
   );
 }

@@ -48,10 +48,30 @@ export function getS3Bucket() {
   return b;
 }
 
+/**
+ * Optional per-company bucket (hard isolation between tenants such as Marivolt vs Okeanos).
+ * Set `AWS_S3_BUCKET_BY_COMPANY` to JSON, e.g. `{"MAR":"marivolt-erp-docs","OKE":"okeanos-erp-docs"}`.
+ * Keys must match `Company.code` (uppercase). If missing, falls back to `AWS_S3_BUCKET`.
+ */
+export function getS3BucketForTenant(companyCode) {
+  const code = String(companyCode || "").trim().toUpperCase();
+  const raw = envVal(process.env.AWS_S3_BUCKET_BY_COMPANY || "");
+  if (raw && code) {
+    try {
+      const map = JSON.parse(raw);
+      const b = map[code];
+      if (typeof b === "string" && b.trim()) return b.trim();
+    } catch {
+      /* ignore invalid JSON */
+    }
+  }
+  return getS3Bucket();
+}
+
 /** Canonical object URL (bucket may still be private; use signed URLs for access). */
-export function buildS3ObjectPublicUrl(key) {
+export function buildS3ObjectPublicUrl(key, bucketOverride) {
   const region = envVal(process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "");
-  const bucket = getS3Bucket();
+  const bucket = bucketOverride && String(bucketOverride).trim() ? String(bucketOverride).trim() : getS3Bucket();
   const encodedKey = String(key || "")
     .split("/")
     .map(encodeURIComponent)

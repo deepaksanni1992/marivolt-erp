@@ -47,6 +47,8 @@ const documentSchema = new mongoose.Schema(
     mimeType: { type: String, required: true, trim: true },
     size: { type: Number, required: true, min: 0 },
     s3Key: { type: String, required: true, trim: true, index: true },
+    /** AWS bucket when using per-tenant buckets; empty uses default AWS_S3_BUCKET. */
+    s3Bucket: { type: String, default: "", trim: true },
     fileUrl: { type: String, required: true, trim: true },
     remarks: { type: String, default: "", trim: true },
     uploadedBy: { type: String, default: "", trim: true },

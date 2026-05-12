@@ -7,7 +7,7 @@ import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
 import CashBankEntry from "../models/CashBankEntry.js";
 import JournalEntry from "../models/JournalEntry.js";
 import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
-import { buildDatedS3Key, getSignedFileUrl, uploadFileToS3 } from "../services/s3UploadService.js";
+import { buildCompanyTenantPrefix, buildDatedS3Key, getSignedFileUrl, uploadFileToS3 } from "../services/s3UploadService.js";
 import { writeAudit } from "../services/auditService.js";
 import {
   postPaymentReceiptReceivable,
@@ -467,12 +467,14 @@ export async function createPaymentReceipt(req, res) {
 
     let attachment = null;
     if (req.file) {
+      const tenantPrefix = buildCompanyTenantPrefix({ companyId: req.companyId, companyCode: req.companyCode });
       const key = buildDatedS3Key({
         folderName: PAYMENT_SLIP_FOLDER,
         prefix: receiptNo.replace(/[^\w.\-]+/g, "-"),
         originalFileName: req.file.originalname,
+        tenantPrefix,
       });
-      attachment = await uploadFileToS3(req.file, PAYMENT_SLIP_FOLDER, { key });
+      attachment = await uploadFileToS3(req.file, PAYMENT_SLIP_FOLDER, { key, companyCode: req.companyCode });
     }
 
     const receipt = await PaymentReceipt.create({
@@ -876,7 +878,11 @@ export async function getPaymentReceiptAttachmentUrl(req, res) {
       .replace(/["\\]/g, "_")
       .slice(0, 200);
     const disposition = inline ? `inline; filename="${safeName}"` : `attachment; filename="${safeName}"`;
-    const signed = await getSignedFileUrl(receipt.attachmentKey, { expiresIn: 300, contentDisposition: disposition });
+    const signed = await getSignedFileUrl(receipt.attachmentKey, {
+      expiresIn: 300,
+      contentDisposition: disposition,
+      bucket: receipt.attachmentBucket || undefined,
+    });
     await writeAudit(req, {
       action: "ATTACHMENT",
       module: "ACCOUNTS",

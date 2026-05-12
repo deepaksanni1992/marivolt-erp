@@ -179,6 +179,9 @@ export default function Accounts() {
     bankCashAccountName: "",
     paymentReference: "",
     remarks: "",
+    linkedPoNo: "",
+    supplierInvoiceNo: "",
+    supplierPiNo: "",
     allocations: [],
   });
   const [supplierPaymentFilter, setSupplierPaymentFilter] = useState("");
@@ -197,9 +200,17 @@ export default function Accounts() {
     queryFn: () => apiGetWithQuery("/accounts/sales-dispatches", { page, limit }),
     enabled: tab === "sd",
   });
+  const [piPoFilterInput, setPiPoFilterInput] = useState("");
+  const [piPoFilter, setPiPoFilter] = useState("");
+
   const piQ = useQuery({
-    queryKey: ["purchaseInvoices", page],
-    queryFn: () => apiGetWithQuery("/accounts/purchase-invoices", { page, limit }),
+    queryKey: ["purchaseInvoices", page, piPoFilter],
+    queryFn: () =>
+      apiGetWithQuery("/accounts/purchase-invoices", {
+        page,
+        limit,
+        ...(piPoFilter ? { linkedPoNumber: piPoFilter } : {}),
+      }),
     enabled: tab === "pi",
   });
   const custQ = useQuery({
@@ -793,6 +804,28 @@ export default function Accounts() {
             {tab === "cash" && "New cash / bank entry"}
             {tab === "bank" && "New bank detail"}
             {tab === "payv" && "New supplier payment"}
+          </button>
+        </div>
+      )}
+
+      {tab === "pi" && (
+        <div className="mb-3 flex flex-wrap items-end gap-2 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2">
+          <FormField label="Filter by PO no." className="min-w-[220px] flex-1">
+            <TextInput
+              value={piPoFilterInput}
+              onChange={(e) => setPiPoFilterInput(e.target.value)}
+              placeholder="Contains… e.g. PO-2026"
+            />
+          </FormField>
+          <button
+            type="button"
+            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
+            onClick={() => {
+              setPage(1);
+              setPiPoFilter(piPoFilterInput.trim());
+            }}
+          >
+            Apply filter
           </button>
         </div>
       )}
