@@ -27,6 +27,8 @@ const supplierPaymentSchema = new mongoose.Schema(
     paymentMode: { type: String, default: "BANK_TRANSFER", trim: true, uppercase: true },
     bankCashAccountName: { type: String, default: "", trim: true },
     paymentReference: { type: String, default: "", trim: true },
+    /** ADVANCE | PARTIAL | FULL | BALANCE — informational for reporting */
+    paymentCategory: { type: String, default: "", trim: true },
     remarks: { type: String, default: "" },
     attachments: {
       type: [
@@ -42,7 +44,7 @@ const supplierPaymentSchema = new mongoose.Schema(
     allocations: { type: [supplierPaymentAllocationSchema], default: [] },
     status: {
       type: String,
-      enum: ["POSTED", "PARTIALLY_ALLOCATED", "FULLY_ALLOCATED", "CANCELLED"],
+      enum: ["DRAFT", "POSTED", "PARTIALLY_ALLOCATED", "FULLY_ALLOCATED", "CANCELLED"],
       default: "POSTED",
       index: true,
     },

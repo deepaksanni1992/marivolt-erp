@@ -19,6 +19,7 @@ import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentControll
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 import { writeAudit } from "../services/auditService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
+import { createDraftPurchaseInvoiceFromPurchaseDocument } from "../services/purchaseInvoiceDraftFromDocumentService.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -627,7 +628,7 @@ async function recalcPurchaseInvoicePaymentState(req, purchaseInvoiceId) {
   const paidAgg = await SupplierPayment.aggregate([
     {
       $match: withCompany(req, {
-        status: { $ne: "CANCELLED" },
+        status: { $nin: ["CANCELLED", "DRAFT"] },
         "allocations.purchaseInvoiceId": inv._id,
       }),
     },
@@ -689,6 +690,58 @@ export async function postSupplierPaymentAck(req, res) {
   }
 }
 
+async function buildSupplierPaymentAllocations(req, { supplierName, amountPaid, payCur, exchangeRate, allocationsInput }) {
+  const allocations = [];
+  const rows = Array.isArray(allocationsInput) ? allocationsInput : [];
+  for (const row of rows) {
+    if (!mongoose.Types.ObjectId.isValid(String(row?.purchaseInvoiceId || ""))) {
+      if (Number(row?.allocatedAmount) > 0) {
+        return { error: "Invalid purchaseInvoiceId in allocations", allocations: [], allocatedAmount: 0 };
+      }
+      continue;
+    }
+    const allocatedAmount = Number(row?.allocatedAmount) || 0;
+    if (!(allocatedAmount > 0)) continue;
+    const inv = await PurchaseInvoice.findOne(withCompany(req, { _id: row.purchaseInvoiceId }));
+    if (!inv) return { error: "Purchase invoice not found for allocation", allocations: [], allocatedAmount: 0 };
+    if (String(inv.status || "").toUpperCase() !== "POSTED") {
+      return {
+        error: `Invoice ${inv.invoiceNumber} is not booked (POSTED). Book the purchase invoice before allocating this payment.`,
+        allocations: [],
+        allocatedAmount: 0,
+      };
+    }
+    if (String(inv.supplierName || "").trim().toLowerCase() !== supplierName.toLowerCase()) {
+      return { error: `Supplier mismatch for invoice ${inv.invoiceNumber}`, allocations: [], allocatedAmount: 0 };
+    }
+    const invCur = String(inv.currency || "USD").trim().toUpperCase();
+    if (invCur !== payCur) {
+      const xr = Number(exchangeRate);
+      if (!Number.isFinite(xr) || xr <= 0) {
+        return { error: "Currency mismatch with invoice requires exchangeRate", allocations: [], allocatedAmount: 0 };
+      }
+    }
+    const remaining = Math.max(0, (Number(inv.totalAmount) || 0) - (Number(inv.totalPaidAmount) || 0));
+    if (allocatedAmount > remaining + 0.01) {
+      return {
+        error: `Allocation exceeds balance for ${inv.invoiceNumber} (balance ${remaining.toFixed(2)})`,
+        allocations: [],
+        allocatedAmount: 0,
+      };
+    }
+    allocations.push({
+      purchaseInvoiceId: inv._id,
+      purchaseInvoiceNo: inv.invoiceNumber || "",
+      allocatedAmount,
+    });
+  }
+  const allocatedAmount = allocations.reduce((n, x) => n + (Number(x.allocatedAmount) || 0), 0);
+  if (allocatedAmount - amountPaid > 0.0001) {
+    return { error: "Allocated amount cannot exceed amount paid", allocations: [], allocatedAmount: 0 };
+  }
+  return { error: null, allocations, allocatedAmount };
+}
+
 export async function createSupplierPayment(req, res) {
   try {
     const supplierName = String(req.body?.supplierName || "").trim();
@@ -697,49 +750,64 @@ export async function createSupplierPayment(req, res) {
     if (!Number.isFinite(amountPaid) || amountPaid <= 0) {
       return res.status(400).json({ message: "amountPaid must be greater than zero" });
     }
-    const allocationsInput = Array.isArray(req.body?.allocations) ? req.body.allocations : [];
-    const allocations = [];
     const payCur = String(req.body?.currency || "USD").trim().toUpperCase();
-    for (const row of allocationsInput) {
-      if (!mongoose.Types.ObjectId.isValid(String(row?.purchaseInvoiceId || ""))) {
-        if (Number(row?.allocatedAmount) > 0) {
-          return res.status(400).json({ message: "Invalid purchaseInvoiceId in allocations" });
-        }
-        continue;
-      }
-      const allocatedAmount = Number(row?.allocatedAmount) || 0;
-      if (!(allocatedAmount > 0)) continue;
-      const inv = await PurchaseInvoice.findOne(withCompany(req, { _id: row.purchaseInvoiceId }));
-      if (!inv) return res.status(400).json({ message: "Purchase invoice not found for allocation" });
-      if (String(inv.status || "").toUpperCase() !== "POSTED") {
-        return res.status(400).json({ message: `Invoice ${inv.invoiceNumber} is not booked (POSTED)` });
-      }
-      if (String(inv.supplierName || "").trim().toLowerCase() !== supplierName.toLowerCase()) {
-        return res.status(400).json({ message: `Supplier mismatch for invoice ${inv.invoiceNumber}` });
-      }
-      const invCur = String(inv.currency || "USD").trim().toUpperCase();
-      if (invCur !== payCur) {
-        const xr = Number(req.body?.exchangeRate);
-        if (!Number.isFinite(xr) || xr <= 0) {
-          return res.status(400).json({ message: "Currency mismatch with invoice requires exchangeRate" });
-        }
-      }
-      const remaining = Math.max(0, (Number(inv.totalAmount) || 0) - (Number(inv.totalPaidAmount) || 0));
-      if (allocatedAmount > remaining + 0.01) {
-        return res.status(400).json({
-          message: `Allocation exceeds balance for ${inv.invoiceNumber} (balance ${remaining.toFixed(2)})`,
-        });
-      }
-      allocations.push({
-        purchaseInvoiceId: inv._id,
-        purchaseInvoiceNo: inv.invoiceNumber || "",
-        allocatedAmount,
+
+    const saveAsDraft = Boolean(req.body?.saveAsDraft);
+    if (saveAsDraft) {
+      const paymentNo = await nextSequentialNumber(
+        SupplierPayment,
+        "paymentNo",
+        `${req.companyCode || "CMP"}-SP`,
+        { companyId: req.companyId }
+      );
+      const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+      const payment = await SupplierPayment.create({
+        companyId: req.companyId,
+        branchId: mongoose.Types.ObjectId.isValid(String(req.body?.branchId || ""))
+          ? new mongoose.Types.ObjectId(String(req.body.branchId))
+          : null,
+        linkedPoNo: String(req.body?.linkedPoNo || "").trim(),
+        supplierPiNo: String(req.body?.supplierPiNo || "").trim(),
+        supplierInvoiceNo: String(req.body?.supplierInvoiceNo || "").trim(),
+        exchangeRate: Number(req.body?.exchangeRate) > 0 ? Number(req.body.exchangeRate) : 1,
+        paymentNo,
+        paymentDate: req.body?.paymentDate ? new Date(req.body.paymentDate) : new Date(),
+        supplierName,
+        currency: payCur,
+        amountPaid,
+        allocatedAmount: 0,
+        unallocatedAmount: amountPaid,
+        paymentMode: String(req.body?.paymentMode || "BANK_TRANSFER").trim().toUpperCase(),
+        bankCashAccountName: String(req.body?.bankCashAccountName || req.body?.accountName || "").trim(),
+        paymentReference: String(req.body?.paymentReference || "").trim(),
+        remarks: String(req.body?.remarks || "").trim(),
+        attachments,
+        allocations: [],
+        status: "DRAFT",
+        paymentCategory: String(req.body?.paymentCategory || "").trim().toUpperCase(),
+        createdBy: req.user?.email || "",
+        updatedBy: req.user?.email || "",
       });
+      await writeAudit(req, {
+        action: "CREATE",
+        module: "ACCOUNTS",
+        entityType: "SUPPLIER_PAYMENT",
+        entityId: payment._id,
+        documentNo: payment.paymentNo,
+        description: `Supplier payment draft ${payment.paymentNo} for ${supplierName}`,
+      });
+      return res.status(201).json(payment);
     }
-    const allocatedAmount = allocations.reduce((n, x) => n + (Number(x.allocatedAmount) || 0), 0);
-    if (allocatedAmount - amountPaid > 0.0001) {
-      return res.status(400).json({ message: "Allocated amount cannot exceed amount paid" });
-    }
+
+    const allocBuild = await buildSupplierPaymentAllocations(req, {
+      supplierName,
+      amountPaid,
+      payCur,
+      exchangeRate: req.body?.exchangeRate,
+      allocationsInput: req.body?.allocations,
+    });
+    if (allocBuild.error) return res.status(400).json({ message: allocBuild.error });
+    const { allocations, allocatedAmount } = allocBuild;
     const paymentNo = await nextSequentialNumber(
       SupplierPayment,
       "paymentNo",
@@ -867,6 +935,183 @@ export async function createSupplierPayment(req, res) {
   }
 }
 
+/** POST /accounts/supplier-payments/:id/post — finalize a DRAFT supplier payment (ledger, cash bank, PI recalc). */
+export async function postDraftSupplierPayment(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const row = await SupplierPayment.findOne(withCompany(req, { _id: id }));
+    if (!row) return res.status(404).json({ message: "Not found" });
+    if (String(row.status || "").toUpperCase() !== "DRAFT") {
+      return res.status(400).json({ message: "Only draft supplier payments can be posted via this action" });
+    }
+
+    const body = req.body || {};
+    const supplierName = String(body.supplierName || row.supplierName || "").trim();
+    if (!supplierName) return res.status(400).json({ message: "supplierName is required" });
+    const amountPaid = Number(body.amountPaid ?? row.amountPaid);
+    if (!Number.isFinite(amountPaid) || amountPaid <= 0) {
+      return res.status(400).json({ message: "amountPaid must be greater than zero" });
+    }
+    const payCur = String(body.currency || row.currency || "USD").trim().toUpperCase();
+
+    row.supplierName = supplierName;
+    row.amountPaid = amountPaid;
+    row.currency = payCur;
+    if (body.paymentDate) row.paymentDate = new Date(body.paymentDate);
+    row.linkedPoNo = String(body.linkedPoNo ?? row.linkedPoNo ?? "").trim();
+    row.supplierPiNo = String(body.supplierPiNo ?? row.supplierPiNo ?? "").trim();
+    row.supplierInvoiceNo = String(body.supplierInvoiceNo ?? row.supplierInvoiceNo ?? "").trim();
+    row.paymentMode = String(body.paymentMode || row.paymentMode || "BANK_TRANSFER").trim().toUpperCase();
+    row.bankCashAccountName = String(body.bankCashAccountName || row.bankCashAccountName || "").trim();
+    row.paymentReference = String(body.paymentReference ?? row.paymentReference ?? "").trim();
+    row.remarks = String(body.remarks ?? row.remarks ?? "").trim();
+    row.paymentCategory = String(body.paymentCategory ?? row.paymentCategory ?? "").trim().toUpperCase();
+    if (Array.isArray(body.attachments) && body.attachments.length) {
+      row.attachments = [...(row.attachments || []), ...body.attachments];
+    }
+    row.exchangeRate = Number(body.exchangeRate) > 0 ? Number(body.exchangeRate) : Number(row.exchangeRate) || 1;
+
+    const allocBuild = await buildSupplierPaymentAllocations(req, {
+      supplierName,
+      amountPaid,
+      payCur,
+      exchangeRate: body.exchangeRate,
+      allocationsInput: body.allocations,
+    });
+    if (allocBuild.error) return res.status(400).json({ message: allocBuild.error });
+    const { allocations, allocatedAmount } = allocBuild;
+
+    const status =
+      allocatedAmount <= 0 ? "POSTED" : allocatedAmount < amountPaid ? "PARTIALLY_ALLOCATED" : "FULLY_ALLOCATED";
+
+    const gate = await ensureApproval(req, {
+      companyId: req.companyId,
+      module: "ACCOUNTS",
+      actionKey: "supplier_payment_post",
+      documentType: "SUPPLIER_PAYMENT",
+      documentNo: row.paymentNo,
+      customerName: supplierName,
+      amount: amountPaid,
+      currency: payCur,
+      description: `Post supplier payment for ${supplierName}`,
+    });
+    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
+
+    row.allocations = allocations;
+    row.allocatedAmount = allocatedAmount;
+    row.unallocatedAmount = Math.max(0, amountPaid - allocatedAmount);
+    row.status = status;
+    row.updatedBy = req.user?.email || "";
+
+    const cashBank = await CashBankEntry.create({
+      companyId: req.companyId,
+      entryDate: row.paymentDate,
+      accountName: row.bankCashAccountName || "Bank/Cash",
+      transactionType: "PAYMENT",
+      referenceNumber: row.paymentReference || row.paymentNo,
+      sourceModule: "Accounts",
+      sourceType: "Supplier Payment",
+      sourceId: row._id,
+      currency: row.currency,
+      partyName: row.supplierName,
+      amount: row.amountPaid,
+      mode: row.paymentMode,
+      paymentReference: row.paymentReference || "",
+      remarks: row.remarks || "",
+      createdBy: req.user?.email || "",
+    });
+    let firstPoNo = "";
+    let firstBranchId = null;
+    if (allocations.length) {
+      const inv0 = await PurchaseInvoice.findOne(withCompany(req, { _id: allocations[0].purchaseInvoiceId }))
+        .select("linkedPoNumber branchId")
+        .lean();
+      firstPoNo = String(inv0?.linkedPoNumber || "").trim();
+      firstBranchId = inv0?.branchId || null;
+    }
+    const supplierLedger = await SupplierLedgerEntry.create({
+      companyId: req.companyId,
+      branchId: firstBranchId || row.branchId || null,
+      entryDate: row.paymentDate,
+      supplierName: row.supplierName,
+      referenceType: "SUPPLIER_PAYMENT",
+      referenceNumber: row.paymentNo,
+      poNo: firstPoNo,
+      supplierInvoiceNo: String(body.supplierInvoiceNo || row.supplierInvoiceNo || "").trim(),
+      currency: String(row.currency || "USD").trim().toUpperCase(),
+      paymentStatus: "PAID",
+      debit: 0,
+      credit: row.amountPaid,
+      narrative: `Supplier payment ${row.paymentNo}`,
+      createdBy: req.user?.email || "",
+    });
+    row.linkedCashBankEntryId = cashBank._id;
+    row.linkedSupplierLedgerEntryId = supplierLedger._id;
+    await row.save();
+
+    for (const alloc of allocations) {
+      await recalcPurchaseInvoicePaymentState(req, alloc.purchaseInvoiceId);
+    }
+    const linkedPoIds = new Set();
+    for (const alloc of allocations) {
+      const inv = await PurchaseInvoice.findOne(withCompany(req, { _id: alloc.purchaseInvoiceId }))
+        .select("linkedPoId")
+        .lean();
+      if (inv?.linkedPoId) linkedPoIds.add(String(inv.linkedPoId));
+    }
+    const linkedPoRaw = String(body.linkedPoNo || row.linkedPoNo || "").trim();
+    if (linkedPoRaw) {
+      const poRow = await PurchaseOrder.findOne(
+        withCompany(req, { $or: [{ poNo: linkedPoRaw }, { poNumber: linkedPoRaw }] })
+      )
+        .select("_id")
+        .lean();
+      if (poRow?._id) linkedPoIds.add(String(poRow._id));
+    }
+    for (const pid of linkedPoIds) {
+      await syncPurchaseOrderApExtensionFields(req.companyId, pid);
+    }
+    await writeAudit(req, {
+      action: "PAYMENT",
+      module: "ACCOUNTS",
+      entityType: "SUPPLIER_PAYMENT",
+      entityId: row._id,
+      documentNo: row.paymentNo,
+      description: `Supplier payment ${row.paymentNo} posted for ${row.supplierName}`,
+      metadata: { amountPaid: row.amountPaid, allocationCount: allocations.length },
+    });
+    res.json(row);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
+/** DELETE /accounts/supplier-payments/:id/draft — remove a DRAFT payment only (no ledger impact). */
+export async function deleteSupplierPaymentDraft(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const row = await SupplierPayment.findOne(withCompany(req, { _id: id }));
+    if (!row) return res.status(404).json({ message: "Not found" });
+    if (String(row.status || "").toUpperCase() !== "DRAFT") {
+      return res.status(400).json({ message: "Only draft supplier payments can be deleted here" });
+    }
+    await row.deleteOne();
+    await writeAudit(req, {
+      action: "DELETE",
+      module: "ACCOUNTS",
+      entityType: "SUPPLIER_PAYMENT",
+      entityId: row._id,
+      documentNo: row.paymentNo,
+      description: `Draft supplier payment ${row.paymentNo} deleted`,
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
 export async function updateSupplierPayment(req, res) {
   try {
     const { id } = req.params;
@@ -876,8 +1121,27 @@ export async function updateSupplierPayment(req, res) {
     if (String(row.status || "").toUpperCase() === "CANCELLED") {
       return res.status(409).json({ message: "Cancelled payment cannot be edited" });
     }
-    if (Array.isArray(req.body?.attachments)) row.attachments = req.body.attachments;
-    if (req.body?.remarks !== undefined) row.remarks = String(req.body.remarks || "");
+    const b = req.body || {};
+    if (String(row.status || "").toUpperCase() === "DRAFT") {
+      if (b.supplierName !== undefined) row.supplierName = String(b.supplierName || "").trim();
+      if (b.amountPaid !== undefined) row.amountPaid = Number(b.amountPaid) || 0;
+      if (b.currency !== undefined) row.currency = String(b.currency || "USD").trim().toUpperCase();
+      if (b.paymentDate !== undefined) row.paymentDate = b.paymentDate ? new Date(b.paymentDate) : row.paymentDate;
+      if (b.linkedPoNo !== undefined) row.linkedPoNo = String(b.linkedPoNo || "").trim();
+      if (b.supplierInvoiceNo !== undefined) row.supplierInvoiceNo = String(b.supplierInvoiceNo || "").trim();
+      if (b.supplierPiNo !== undefined) row.supplierPiNo = String(b.supplierPiNo || "").trim();
+      if (b.paymentMode !== undefined) row.paymentMode = String(b.paymentMode || "").trim().toUpperCase();
+      if (b.bankCashAccountName !== undefined) row.bankCashAccountName = String(b.bankCashAccountName || "").trim();
+      if (b.paymentReference !== undefined) row.paymentReference = String(b.paymentReference || "").trim();
+      if (b.paymentCategory !== undefined) row.paymentCategory = String(b.paymentCategory || "").trim().toUpperCase();
+      if (b.exchangeRate !== undefined) row.exchangeRate = Number(b.exchangeRate) > 0 ? Number(b.exchangeRate) : 1;
+      if (Array.isArray(b.attachments)) row.attachments = b.attachments;
+      if (b.remarks !== undefined) row.remarks = String(b.remarks || "");
+      row.unallocatedAmount = Math.max(0, (Number(row.amountPaid) || 0) - (Number(row.allocatedAmount) || 0));
+    } else {
+      if (Array.isArray(b.attachments)) row.attachments = b.attachments;
+      if (b.remarks !== undefined) row.remarks = String(b.remarks || "");
+    }
     row.updatedBy = req.user?.email || "";
     await row.save();
     await writeAudit(req, {
@@ -905,6 +1169,21 @@ export async function cancelSupplierPayment(req, res) {
     if (!row) return res.status(404).json({ message: "Not found" });
     if (String(row.status || "").toUpperCase() === "CANCELLED") {
       return res.status(400).json({ message: "Payment already cancelled" });
+    }
+    if (String(row.status || "").toUpperCase() === "DRAFT") {
+      row.status = "CANCELLED";
+      row.updatedBy = req.user?.email || "";
+      row.remarks = `${row.remarks || ""}${row.remarks ? " " : ""}[CANCELLED (draft): ${reason}]`;
+      await row.save();
+      await writeAudit(req, {
+        action: "CANCEL",
+        module: "ACCOUNTS",
+        entityType: "SUPPLIER_PAYMENT",
+        entityId: row._id,
+        documentNo: row.paymentNo,
+        description: `Draft supplier payment ${row.paymentNo} cancelled`,
+      });
+      return res.json(row);
     }
     const gate = await ensureApproval(req, {
       companyId: req.companyId,
@@ -1498,13 +1777,13 @@ export async function getApDashboard(req, res) {
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
     const paymentsMonth = await SupplierPayment.aggregate([
-      { $match: { ...withCompany(req), status: { $ne: "CANCELLED" }, paymentDate: { $gte: startOfMonth } } },
+      { $match: { ...withCompany(req), status: { $nin: ["CANCELLED", "DRAFT"] }, paymentDate: { $gte: startOfMonth } } },
       { $group: { _id: null, total: { $sum: "$amountPaid" } } },
     ]);
     const paymentsDoneThisMonth = Number(paymentsMonth[0]?.total || 0);
 
     const unalloc = await SupplierPayment.aggregate([
-      { $match: { ...withCompany(req), status: { $ne: "CANCELLED" } } },
+      { $match: { ...withCompany(req), status: { $nin: ["CANCELLED", "DRAFT"] } } },
       { $group: { _id: null, u: { $sum: "$unallocatedAmount" } } },
     ]);
     const advancePaid = Number(unalloc[0]?.u || 0);
@@ -1721,6 +2000,81 @@ export async function bookPurchaseInvoice(req, res) {
   }
 }
 
+/** GET /accounts/supplier-payments/from-po/:poId — PO, invoices, payments for supplier payment form */
+export async function getSupplierPaymentContextFromPo(req, res) {
+  try {
+    const poId = req.params.poId;
+    if (!mongoose.Types.ObjectId.isValid(poId)) return res.status(400).json({ message: "Invalid PO id" });
+    const po = await PurchaseOrder.findOne(withCompany(req, { _id: poId }))
+      .select("_id poNo poNumber supplierName supplierId currency grandTotal status paymentTerms orderDate")
+      .lean();
+    if (!po) return res.status(404).json({ message: "Purchase order not found" });
+    const purchaseInvoices = await PurchaseInvoice.find(withCompany(req, { linkedPoId: poId }))
+      .sort({ invoiceDate: -1 })
+      .lean();
+    const poNos = [...new Set([po.poNo, po.poNumber].map((s) => String(s || "").trim()).filter(Boolean))];
+    const supplierPayments =
+      poNos.length > 0
+        ? await SupplierPayment.find(
+            withCompany(req, { linkedPoNo: { $in: poNos }, status: { $ne: "CANCELLED" } })
+          )
+            .sort({ paymentDate: -1 })
+            .limit(80)
+            .lean()
+        : [];
+    const warnings = [];
+    if (purchaseInvoices.some((i) => String(i.status || "").toUpperCase() === "DRAFT")) {
+      warnings.push(
+        "Supplier invoice is not booked. Payment can be saved as draft or advance without allocation to a PI."
+      );
+    }
+    res.json({ po, purchaseInvoices, supplierPayments, warnings });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+/** POST /purchase-invoices/from-document/:documentId — draft PI from linked PO + purchase document */
+export async function createPurchaseInvoiceFromPurchaseDocument(req, res) {
+  try {
+    const documentId = req.params.documentId;
+    if (!mongoose.Types.ObjectId.isValid(documentId)) {
+      return res.status(400).json({ message: "Invalid document id" });
+    }
+    const pd = await PurchaseDocument.findOne(withCompany(req, { _id: documentId, status: "ACTIVE" })).lean();
+    if (!pd) return res.status(404).json({ message: "Purchase document not found" });
+    const r = await createDraftPurchaseInvoiceFromPurchaseDocument({
+      companyId: req.companyId,
+      companyCode: req.companyCode || "CMP",
+      userEmail: req.user?.email || "",
+      purchaseDocument: pd,
+      skipIfDraftExists: true,
+      restrictAutoTypes: false,
+    });
+    if (r.skippedReason === "DRAFT_EXISTS" && r.invoice) {
+      const full = await PurchaseInvoice.findOne(withCompany(req, { _id: r.invoice._id })).lean();
+      return res.status(200).json({ ok: true, draftExists: true, invoice: full });
+    }
+    if (!r.created) {
+      return res.status(400).json({ message: r.message || "Could not create purchase invoice draft" });
+    }
+    const inv = await PurchaseInvoice.findOne(withCompany(req, { _id: r.invoice._id }));
+    if (!inv) return res.status(500).json({ message: "Invoice not found after create" });
+    await syncPurchaseOrderApExtensionFields(req.companyId, inv.linkedPoId);
+    await writeAudit(req, {
+      action: "CREATE",
+      module: "ACCOUNTS",
+      entityType: "PURCHASE_INVOICE",
+      entityId: inv._id,
+      documentNo: inv.invoiceNumber,
+      description: `Purchase invoice draft ${inv.invoiceNumber} from PO supplier document`,
+    });
+    res.status(201).json(inv);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
 /** Recent supplier files attached to POs (for Accounts: create PI, trace payments). */
 export async function listApPoSupplierDocuments(req, res) {
   try {
@@ -1744,7 +2098,7 @@ export async function listApPoSupplierDocuments(req, res) {
         : await PurchaseInvoice.find(
             withCompany(req, { linkedPoId: { $in: poIds }, status: { $in: ["DRAFT", "POSTED"] } })
           )
-            .select("linkedPoId invoiceNumber status supplierInvoiceNo balanceAmount totalAmount")
+            .select("linkedPoId invoiceNumber status supplierInvoiceNo balanceAmount totalAmount totalPaidAmount _id")
             .lean();
     const invGroups = new Map();
     for (const i of invByPo) {
@@ -1752,19 +2106,38 @@ export async function listApPoSupplierDocuments(req, res) {
       if (!invGroups.has(k)) invGroups.set(k, []);
       invGroups.get(k).push(i);
     }
-    const items = docs.map((d) => ({
-      purchaseDocumentId: d._id,
-      linkedPoId: d.linkedPoId,
-      documentType: d.documentType,
-      documentNo: d.documentNo,
-      fileUrl: d.fileUrl,
-      documentId: d.documentId,
-      amount: d.amount,
-      currency: d.currency,
-      uploadedAt: d.uploadedAt,
-      po: poMap.get(String(d.linkedPoId)) || null,
-      purchaseInvoicesOnPo: invGroups.get(String(d.linkedPoId)) || [],
-    }));
+    const draftInvs =
+      poIds.length === 0
+        ? []
+        : await PurchaseInvoice.find(withCompany(req, { linkedPoId: { $in: poIds }, status: "DRAFT" }))
+            .select("linkedPoId invoiceNumber status supplierInvoiceNo _id")
+            .lean();
+    const draftByKey = new Map();
+    for (const inv of draftInvs) {
+      const kn = String(inv.supplierInvoiceNo || "").trim().toLowerCase();
+      if (!kn) continue;
+      const k = `${String(inv.linkedPoId)}:::${kn}`;
+      if (!draftByKey.has(k)) draftByKey.set(k, inv);
+    }
+    const items = docs.map((d) => {
+      const kn = String(d.documentNo || "").trim().toLowerCase();
+      const draftKey = kn ? `${String(d.linkedPoId)}:::${kn}` : "";
+      return {
+        purchaseDocumentId: d._id,
+        linkedPoId: d.linkedPoId,
+        documentType: d.documentType,
+        documentNo: d.documentNo,
+        documentDate: d.documentDate,
+        fileUrl: d.fileUrl,
+        documentId: d.documentId,
+        amount: d.amount,
+        currency: d.currency,
+        uploadedAt: d.uploadedAt,
+        po: poMap.get(String(d.linkedPoId)) || null,
+        purchaseInvoicesOnPo: invGroups.get(String(d.linkedPoId)) || [],
+        draftPiForDoc: draftKey ? draftByKey.get(draftKey) || null : null,
+      };
+    });
     res.json({ items });
   } catch (err) {
     res.status(500).json({ message: err.message });

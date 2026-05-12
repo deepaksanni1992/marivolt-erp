@@ -5,6 +5,10 @@ import PurchaseInvoice from "../models/PurchaseInvoice.js";
 import SupplierPayment from "../models/SupplierPayment.js";
 import GRN from "../models/GRN.js";
 import { writeAudit } from "../services/auditService.js";
+import {
+  AUTO_DRAFT_PI_PURCHASE_DOC_TYPES,
+  createDraftPurchaseInvoiceFromPurchaseDocument,
+} from "../services/purchaseInvoiceDraftFromDocumentService.js";
 
 const PO_LINE_ARRAY_KEYS = ["lines", "orderLines", "poItems", "items", "products"];
 
@@ -196,6 +200,24 @@ export async function createPoDocument(req, res) {
       documentNo: po.poNo,
       description: `PO document ${documentType} for ${po.poNo}`,
     });
+
+    try {
+      const dno = String(doc.documentNo || "").trim();
+      if (dno && AUTO_DRAFT_PI_PURCHASE_DOC_TYPES.has(documentType)) {
+        const r = await createDraftPurchaseInvoiceFromPurchaseDocument({
+          companyId: req.companyId,
+          companyCode: req.companyCode || "CMP",
+          userEmail: req.user?.email || "",
+          purchaseDocument: doc.toObject(),
+          skipIfDraftExists: true,
+          restrictAutoTypes: true,
+        });
+        if (r.created) await syncPurchaseOrderApExtensionFields(req.companyId, po._id);
+      }
+    } catch (autoErr) {
+      console.error("[PO document] auto draft purchase invoice:", autoErr?.message || autoErr);
+    }
+
     res.status(201).json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });

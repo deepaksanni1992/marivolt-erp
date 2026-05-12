@@ -182,6 +182,7 @@ export default function Accounts() {
     linkedPoNo: "",
     supplierInvoiceNo: "",
     supplierPiNo: "",
+    paymentCategory: "ADVANCE",
     allocations: [],
   });
   const [supplierPaymentFilter, setSupplierPaymentFilter] = useState("");
@@ -192,6 +193,8 @@ export default function Accounts() {
   const [poPaySearchInput, setPoPaySearchInput] = useState("");
   const [poPaySearchResults, setPoPaySearchResults] = useState([]);
   const [poPaySearchBusy, setPoPaySearchBusy] = useState(false);
+  const [supPayDraftId, setSupPayDraftId] = useState("");
+  const [supPayPoContext, setSupPayPoContext] = useState(null);
   const [bankForm, setBankForm] = useState(() => emptyBankForm());
   const [bankEditId, setBankEditId] = useState(null);
 
@@ -349,6 +352,9 @@ export default function Accounts() {
         qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
         qc.invalidateQueries({ queryKey: ["apDashboard"] });
         qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
+        qc.invalidateQueries({ queryKey: ["supplierLedger"] });
+        qc.invalidateQueries({ queryKey: ["supplierOutstanding"] });
+        qc.invalidateQueries({ queryKey: ["apAging"] });
       }
       if (v.path.includes("customer-ledger"))
         qc.invalidateQueries({ queryKey: ["customerLedger"] });
@@ -420,11 +426,123 @@ export default function Accounts() {
       qc.invalidateQueries({ queryKey: ["apDashboard"] });
       qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
       qc.invalidateQueries({ queryKey: ["cashBank"] });
+      qc.invalidateQueries({ queryKey: ["supplierLedger"] });
       setModal(null);
       setSupplierPaymentFile(null);
       setSupPayAllocPiId("");
       setSupPayAllocAmt("");
+      setSupPayDraftId("");
+      setSupPayPoContext(null);
       setErr("");
+    },
+    onError: (e) => setErr(e.message || String(e)),
+  });
+
+  const createPiFromDocumentMut = useMutation({
+    mutationFn: ({ purchaseDocumentId }) => apiPost(`/purchase-invoices/from-document/${purchaseDocumentId}`, {}),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
+      qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
+      qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      if (data?.draftExists) setErr("Draft purchase invoice already exists for this supplier document number.");
+      else setErr("");
+    },
+    onError: (e) => setErr(e.message || String(e)),
+  });
+
+  const supplierPaySaveDraftMut = useMutation({
+    mutationFn: async () => {
+      let attachments = [];
+      if (supplierPaymentFile) {
+        const fd = new FormData();
+        fd.append("file", supplierPaymentFile);
+        fd.append("documentType", supplierPaymentDocType);
+        fd.append("moduleName", "ACCOUNTS");
+        fd.append("relatedId", "");
+        fd.append("refNo", (supplierPaymentForm.linkedPoNo || supplierPaymentForm.paymentReference || "").trim());
+        fd.append("partyName", (supplierPaymentForm.supplierName || "").trim());
+        const up = await apiPostFormData("/documents/upload", fd);
+        attachments = [
+          {
+            documentId: up._id,
+            documentType: supplierPaymentDocType,
+            fileName: up.originalFileName || supplierPaymentFile.name,
+            uploadedAt: new Date().toISOString(),
+          },
+        ];
+      }
+      return apiPost("/accounts/supplier-payments", {
+        ...supplierPaymentForm,
+        attachments,
+        allocations: [],
+        saveAsDraft: true,
+      });
+    },
+    onSuccess: (data) => {
+      if (data?._id) setSupPayDraftId(String(data._id));
+      qc.invalidateQueries({ queryKey: ["supplierPayments"] });
+      qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      setSupplierPaymentFile(null);
+      setErr("");
+    },
+    onError: (e) => setErr(e.message || String(e)),
+  });
+
+  const supplierPayFinalizeMut = useMutation({
+    mutationFn: async () => {
+      if (!supPayDraftId) throw new Error("Save as draft first, or use Post payment without a draft.");
+      let attachments = [];
+      if (supplierPaymentFile) {
+        const fd = new FormData();
+        fd.append("file", supplierPaymentFile);
+        fd.append("documentType", supplierPaymentDocType);
+        fd.append("moduleName", "ACCOUNTS");
+        fd.append("relatedId", supPayDraftId);
+        fd.append("refNo", (supplierPaymentForm.linkedPoNo || supplierPaymentForm.paymentReference || "").trim());
+        fd.append("partyName", (supplierPaymentForm.supplierName || "").trim());
+        const up = await apiPostFormData("/documents/upload", fd);
+        attachments = [
+          {
+            documentId: up._id,
+            documentType: supplierPaymentDocType,
+            fileName: up.originalFileName || supplierPaymentFile.name,
+            uploadedAt: new Date().toISOString(),
+          },
+        ];
+      }
+      const allocations = [];
+      if (supPayAllocPiId && Number(supPayAllocAmt) > 0) {
+        allocations.push({ purchaseInvoiceId: supPayAllocPiId, allocatedAmount: Number(supPayAllocAmt) });
+      }
+      return apiPost(`/accounts/supplier-payments/${supPayDraftId}/post`, {
+        ...supplierPaymentForm,
+        attachments,
+        allocations,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["supplierPayments"] });
+      qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
+      qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
+      qc.invalidateQueries({ queryKey: ["cashBank"] });
+      qc.invalidateQueries({ queryKey: ["supplierLedger"] });
+      setModal(null);
+      setSupplierPaymentFile(null);
+      setSupPayAllocPiId("");
+      setSupPayAllocAmt("");
+      setSupPayDraftId("");
+      setSupPayPoContext(null);
+      setErr("");
+    },
+    onError: (e) => setErr(e.message || String(e)),
+  });
+
+  const deleteSupplierPaymentDraftMut = useMutation({
+    mutationFn: (id) => apiDelete(`/accounts/supplier-payments/${id}/draft`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["supplierPayments"] });
+      qc.invalidateQueries({ queryKey: ["apDashboard"] });
     },
     onError: (e) => setErr(e.message || String(e)),
   });
@@ -465,6 +583,9 @@ export default function Accounts() {
         qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
         qc.invalidateQueries({ queryKey: ["apDashboard"] });
         qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
+        qc.invalidateQueries({ queryKey: ["supplierLedger"] });
+        qc.invalidateQueries({ queryKey: ["supplierOutstanding"] });
+        qc.invalidateQueries({ queryKey: ["apAging"] });
       }
       if (v.path.includes("customer-ledger"))
         qc.invalidateQueries({ queryKey: ["customerLedger"] });
@@ -472,16 +593,58 @@ export default function Accounts() {
         qc.invalidateQueries({ queryKey: ["supplierLedger"] });
       if (v.path.includes("cash-bank")) qc.invalidateQueries({ queryKey: ["cashBank"] });
       if (v.path.includes("bank-details")) qc.invalidateQueries({ queryKey: ["bankDetails"] });
+      if (v.path.includes("purchase-orders") && v.path.includes("/documents/")) {
+        qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
+      }
     },
   });
+
+  async function resolveDocumentOpenUrl(documentId, inline = true) {
+    if (!documentId) return null;
+    try {
+      const data = await apiGet(`/documents/${documentId}/download${inline ? "?inline=1" : ""}`);
+      if (data?.url) return data.url;
+    } catch {
+      /* fall through */
+    }
+    try {
+      const meta = await apiGet(`/documents/${documentId}`);
+      if (meta?.fileUrl) return String(meta.fileUrl).trim();
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
 
   async function viewApPoDoc(row) {
     setErr("");
     try {
       if (row.documentId) {
-        const { url } = await apiGet(`/documents/${row.documentId}/download`);
-        if (url) window.open(url, "_blank", "noopener,noreferrer");
+        const url = await resolveDocumentOpenUrl(row.documentId, true);
+        if (url) {
+          window.open(url, "_blank", "noopener,noreferrer");
+          return;
+        }
+      }
+      if (row.fileUrl) {
+        window.open(row.fileUrl, "_blank", "noopener,noreferrer");
         return;
+      }
+      setErr("No file link available for this document.");
+    } catch (e) {
+      setErr(e.message || String(e));
+    }
+  }
+
+  async function downloadApPoDoc(row) {
+    setErr("");
+    try {
+      if (row.documentId) {
+        const url = await resolveDocumentOpenUrl(row.documentId, false);
+        if (url) {
+          window.open(url, "_blank", "noopener,noreferrer");
+          return;
+        }
       }
       if (row.fileUrl) {
         window.open(row.fileUrl, "_blank", "noopener,noreferrer");
@@ -506,6 +669,7 @@ export default function Accounts() {
       linkedPoNo: "",
       supplierInvoiceNo: "",
       supplierPiNo: "",
+      paymentCategory: "ADVANCE",
       allocations: [],
     });
     setSupplierPaymentFile(null);
@@ -514,6 +678,8 @@ export default function Accounts() {
     setSupPayAllocAmt("");
     setPoPaySearchInput("");
     setPoPaySearchResults([]);
+    setSupPayDraftId("");
+    setSupPayPoContext(null);
     setErr("");
   }
 
@@ -546,9 +712,23 @@ export default function Accounts() {
         .toUpperCase(),
     }));
     setPoPaySearchResults([]);
+    setErr("");
+    apiGet(`/accounts/supplier-payments/from-po/${po._id}`)
+      .then((data) => {
+        setSupPayPoContext(data);
+        if ((data.warnings || []).length) setErr(String(data.warnings[0]));
+      })
+      .catch((e) => {
+        setSupPayPoContext(null);
+        setErr(e.message || String(e));
+      });
   }
 
   function createDraftPiFromApRow(row) {
+    if (row.purchaseDocumentId) {
+      createPiFromDocumentMut.mutate({ purchaseDocumentId: row.purchaseDocumentId });
+      return;
+    }
     const poId = row.linkedPoId;
     if (!poId) {
       setErr("This row has no linked PO id.");
@@ -839,9 +1019,12 @@ export default function Accounts() {
 
   async function openDocumentById(id, inline = true) {
     try {
-      const data = await apiGet(`/documents/${id}/download${inline ? "?inline=1" : ""}`);
-      if (!data?.url) throw new Error("No signed URL");
-      window.open(data.url, "_blank", "noopener,noreferrer");
+      const url = await resolveDocumentOpenUrl(id, inline);
+      if (url) {
+        window.open(url, "_blank", "noopener,noreferrer");
+        return;
+      }
+      throw new Error("No download URL or file URL");
     } catch (e) {
       setErr(e.message || "Could not open attachment");
     }
@@ -1032,7 +1215,10 @@ export default function Accounts() {
                       <th className="px-2 py-2">Supplier</th>
                       <th className="px-2 py-2">Type</th>
                       <th className="px-2 py-2">Doc no.</th>
+                      <th className="px-2 py-2">Doc date</th>
+                      <th className="px-2 py-2">Amount</th>
                       <th className="px-2 py-2">Uploaded</th>
+                      <th className="px-2 py-2">Draft PI</th>
                       <th className="px-2 py-2">PI on PO</th>
                       <th className="px-2 py-2">Actions</th>
                     </tr>
@@ -1041,6 +1227,8 @@ export default function Accounts() {
                     {(apPoDocsQ.data?.items || []).map((row) => {
                       const poLabel = row.po?.poNo || row.po?.poNumber || "—";
                       const pis = row.purchaseInvoicesOnPo || [];
+                      const draft = row.draftPiForDoc;
+                      const poId = row.linkedPoId;
                       return (
                         <tr key={String(row.purchaseDocumentId)} className="border-b border-gray-50">
                           <td className="px-2 py-1.5 font-mono">{poLabel}</td>
@@ -1048,11 +1236,24 @@ export default function Accounts() {
                           <td className="px-2 py-1.5">{row.documentType || "—"}</td>
                           <td className="px-2 py-1.5 font-mono">{row.documentNo || "—"}</td>
                           <td className="px-2 py-1.5 text-gray-600">
+                            {row.documentDate ? new Date(row.documentDate).toLocaleDateString() : "—"}
+                          </td>
+                          <td className="px-2 py-1.5 tabular-nums">
+                            {row.currency || ""} {Number(row.amount || 0).toFixed(2)}
+                          </td>
+                          <td className="px-2 py-1.5 text-gray-600">
                             {row.uploadedAt ? new Date(row.uploadedAt).toLocaleString() : "—"}
+                          </td>
+                          <td className="px-2 py-1.5 text-[11px]">
+                            {draft ? (
+                              <span className="font-mono text-emerald-800">{draft.invoiceNumber}</span>
+                            ) : (
+                              <span className="text-amber-700">None</span>
+                            )}
                           </td>
                           <td className="px-2 py-1.5 text-[11px] text-gray-700">
                             {!pis.length ? (
-                              <span className="text-amber-700">No draft/posted PI</span>
+                              <span className="text-amber-700">No PI</span>
                             ) : (
                               <ul className="list-inside list-disc space-y-0.5">
                                 {pis.map((inv) => (
@@ -1068,7 +1269,7 @@ export default function Accounts() {
                             )}
                           </td>
                           <td className="px-2 py-1.5">
-                            <div className="flex flex-wrap gap-1">
+                            <div className="flex max-w-[280px] flex-wrap gap-1">
                               <button
                                 type="button"
                                 className="rounded border border-blue-200 bg-blue-50 px-2 py-0.5 font-semibold text-blue-900 hover:bg-blue-100"
@@ -1078,12 +1279,44 @@ export default function Accounts() {
                               </button>
                               <button
                                 type="button"
+                                className="rounded border border-gray-300 bg-white px-2 py-0.5 font-semibold text-gray-800 hover:bg-gray-50"
+                                onClick={() => downloadApPoDoc(row)}
+                              >
+                                Download
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded border border-rose-200 bg-rose-50 px-2 py-0.5 font-semibold text-rose-900 hover:bg-rose-100 disabled:opacity-40"
+                                disabled={delMut.isPending}
+                                onClick={() => {
+                                  if (!poId) return;
+                                  if (!window.confirm("Remove this supplier file from the PO only? (Purchase invoices are not deleted.)")) return;
+                                  delMut.mutate({ path: `/purchase-orders/${poId}/documents/${row.purchaseDocumentId}` });
+                                }}
+                              >
+                                Delete
+                              </button>
+                              <button
+                                type="button"
                                 className="rounded border border-gray-300 bg-white px-2 py-0.5 font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-40"
-                                disabled={createPiFromPoMut.isPending}
+                                disabled={createPiFromDocumentMut.isPending || createPiFromPoMut.isPending}
                                 onClick={() => createDraftPiFromApRow(row)}
                               >
                                 Create draft PI
                               </button>
+                              {draft ? (
+                                <button
+                                  type="button"
+                                  className="rounded border border-gray-900 bg-gray-900 px-2 py-0.5 font-semibold text-white hover:bg-gray-800 disabled:opacity-40"
+                                  disabled={postMut.isPending}
+                                  onClick={() => {
+                                    if (!window.confirm(`Book draft ${draft.invoiceNumber} to the supplier ledger?`)) return;
+                                    postMut.mutate({ path: `/purchase-invoices/${draft._id}/book`, body: {} });
+                                  }}
+                                >
+                                  Book PI
+                                </button>
+                              ) : null}
                             </div>
                           </td>
                         </tr>
@@ -1410,53 +1643,132 @@ export default function Accounts() {
                 <tr>
                   <th className="px-3 py-2">Payment No</th>
                   <th className="px-3 py-2">Supplier</th>
+                  <th className="px-3 py-2">PO #</th>
+                  <th className="px-3 py-2">Sup. inv #</th>
                   <th className="px-3 py-2">Date</th>
                   <th className="px-3 py-2 text-right">Paid</th>
                   <th className="px-3 py-2 text-right">Allocated</th>
+                  <th className="px-3 py-2 text-right">Unallocated</th>
                   <th className="px-3 py-2">Status</th>
                   <th className="px-3 py-2">Attachments</th>
+                  <th className="px-3 py-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {loading() ? (
-                  <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-500">Loading…</td></tr>
+                  <tr>
+                    <td colSpan={11} className="px-3 py-8 text-center text-gray-500">
+                      Loading…
+                    </td>
+                  </tr>
                 ) : activeRows().length === 0 ? (
-                  <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-500">No supplier payments.</td></tr>
+                  <tr>
+                    <td colSpan={11} className="px-3 py-8 text-center text-gray-500">
+                      No supplier payments.
+                    </td>
+                  </tr>
                 ) : (
                   activeRows().map((r) => (
                     <tr key={r._id} className="border-b border-gray-100 align-top">
                       <td className="px-3 py-2 font-mono text-xs">{r.paymentNo}</td>
                       <td className="px-3 py-2">{r.supplierName}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{r.linkedPoNo || "—"}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{r.supplierInvoiceNo || "—"}</td>
                       <td className="px-3 py-2 text-xs">{r.paymentDate ? new Date(r.paymentDate).toLocaleDateString() : "—"}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{Number(r.amountPaid || 0).toFixed(2)}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{Number(r.allocatedAmount || 0).toFixed(2)}</td>
-                      <td className="px-3 py-2">{r.status}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{Number(r.unallocatedAmount || 0).toFixed(2)}</td>
+                      <td className="px-3 py-2 text-xs">{r.status}</td>
                       <td className="px-3 py-2 text-xs">
                         <div className="space-y-1">
-                          {(r.attachments || []).slice(0, 3).map((a) => (
-                            <div key={String(a._id || a.documentId)} className="flex gap-2">
-                              <button type="button" className="underline" onClick={() => openDocumentById(a.documentId, true)}>Preview</button>
-                              <span>{a.fileName || a.documentType || "Attachment"}</span>
+                          {(r.attachments || []).slice(0, 4).map((a) => (
+                            <div key={String(a._id || a.documentId)} className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                className="text-blue-700 underline"
+                                onClick={() => a.documentId && openDocumentById(a.documentId, true)}
+                              >
+                                View
+                              </button>
+                              <span>{a.fileName || a.documentType || "—"}</span>
                             </div>
                           ))}
-                          <div className="mt-1 flex flex-wrap items-center gap-1">
-                            <SelectInput value={supplierPaymentDocType} onChange={(e) => setSupplierPaymentDocType(e.target.value)}>
-                              <option>Supplier Invoice</option>
-                              <option>Packing List</option>
-                              <option>BL/AWB</option>
-                              <option>Customs Docs</option>
-                              <option>Inspection Report</option>
-                              <option>Bank Transfer Proof</option>
-                              <option>Supplier Receipt</option>
-                              <option>SWIFT Copy</option>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-xs">
+                        <div className="flex flex-col gap-1">
+                          {String(r.status || "").toUpperCase() === "DRAFT" ? (
+                            <>
+                              <button
+                                type="button"
+                                className="rounded border border-gray-900 bg-gray-900 px-2 py-0.5 text-[11px] font-semibold text-white"
+                                onClick={() => {
+                                  setSupPayDraftId(String(r._id));
+                                  setSupplierPaymentForm({
+                                    supplierName: r.supplierName || "",
+                                    paymentDate: r.paymentDate ? new Date(r.paymentDate).toISOString().slice(0, 10) : "",
+                                    currency: r.currency || "USD",
+                                    amountPaid: Number(r.amountPaid) || 0,
+                                    paymentMode: r.paymentMode || "BANK_TRANSFER",
+                                    bankCashAccountName: r.bankCashAccountName || "",
+                                    paymentReference: r.paymentReference || "",
+                                    remarks: r.remarks || "",
+                                    linkedPoNo: r.linkedPoNo || "",
+                                    supplierInvoiceNo: r.supplierInvoiceNo || "",
+                                    supplierPiNo: r.supplierPiNo || "",
+                                    paymentCategory: r.paymentCategory || "ADVANCE",
+                                    allocations: [],
+                                  });
+                                  setModal("payv");
+                                }}
+                              >
+                                Edit / Post
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded border border-rose-200 px-2 py-0.5 text-[11px] text-rose-800"
+                                disabled={deleteSupplierPaymentDraftMut.isPending}
+                                onClick={() => {
+                                  if (!window.confirm("Delete this draft payment?")) return;
+                                  deleteSupplierPaymentDraftMut.mutate(r._id);
+                                }}
+                              >
+                                Delete draft
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              className="rounded border px-2 py-0.5 text-[11px]"
+                              onClick={() => {
+                                const reason = window.prompt("Cancel reason");
+                                if (!reason) return;
+                                cancelSupplierPaymentMut.mutate({ id: r._id, reason });
+                              }}
+                            >
+                              Cancel
+                            </button>
+                          )}
+                          <div className="mt-1 flex flex-wrap items-center gap-1 border-t border-gray-100 pt-1">
+                            <SelectInput
+                              value={supplierPaymentDocType}
+                              onChange={(e) => setSupplierPaymentDocType(e.target.value)}
+                            >
+                              <option value="SWIFT Copy">SWIFT Copy</option>
+                              <option value="Bank Transfer Proof">Bank Transfer Proof</option>
                             </SelectInput>
-                            <input type="file" className="max-w-[170px] text-[10px]" onChange={(e) => setSupplierPaymentFile(e.target.files?.[0] || null)} />
-                            <button type="button" className="rounded border px-2 py-0.5 text-[10px]" onClick={() => uploadSupplierPaymentDocMut.mutate({ payment: r })}>Upload</button>
-                            <button type="button" className="rounded border px-2 py-0.5 text-[10px]" onClick={() => {
-                              const reason = window.prompt("Cancel reason");
-                              if (!reason) return;
-                              cancelSupplierPaymentMut.mutate({ id: r._id, reason });
-                            }}>Cancel</button>
+                            <input
+                              type="file"
+                              className="max-w-[140px] text-[10px]"
+                              onChange={(e) => setSupplierPaymentFile(e.target.files?.[0] || null)}
+                            />
+                            <button
+                              type="button"
+                              className="rounded border px-2 py-0.5 text-[10px]"
+                              onClick={() => uploadSupplierPaymentDocMut.mutate({ payment: r })}
+                            >
+                              Upload
+                            </button>
                           </div>
                         </div>
                       </td>
@@ -2161,7 +2473,36 @@ export default function Accounts() {
               ))}
             </ul>
           ) : null}
+          {supPayPoContext?.purchaseInvoices?.length ? (
+            <div className="mt-2 rounded border border-white bg-white p-2">
+              <div className="text-[11px] font-semibold text-gray-800">Purchase invoices on this PO</div>
+              <ul className="mt-1 max-h-28 space-y-0.5 overflow-y-auto text-[11px]">
+                {(supPayPoContext.purchaseInvoices || []).map((inv) => {
+                  const bal = Math.max(0, (Number(inv.totalAmount) || 0) - (Number(inv.totalPaidAmount) || 0));
+                  return (
+                    <li key={String(inv._id)} className="flex justify-between gap-2 border-b border-gray-50 py-0.5">
+                      <span className="font-mono">{inv.invoiceNumber}</span>
+                      <span className="text-gray-600">
+                        {inv.status} · bal {bal.toFixed(2)} {inv.currency || ""}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+              {(supPayPoContext.warnings || []).map((w, i) => (
+                <p key={i} className="mt-1 text-[11px] text-amber-800">
+                  {w}
+                </p>
+              ))}
+            </div>
+          ) : null}
         </div>
+        {supPayDraftId ? (
+          <p className="mb-2 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-gray-800">
+            Draft payment open — adjust fields, attach bank proof if needed, then <b>Post payment</b> to post to ledger
+            and update invoices.
+          </p>
+        ) : null}
         <div className="grid gap-3 sm:grid-cols-2">
           <FormField label="Supplier *">
             <TextInput
@@ -2189,6 +2530,17 @@ export default function Accounts() {
               value={supplierPaymentForm.amountPaid}
               onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, amountPaid: Number(e.target.value) }))}
             />
+          </FormField>
+          <FormField label="Payment type">
+            <SelectInput
+              value={supplierPaymentForm.paymentCategory || "ADVANCE"}
+              onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, paymentCategory: e.target.value }))}
+            >
+              <option value="ADVANCE">Advance payment</option>
+              <option value="PARTIAL">Partial payment</option>
+              <option value="FULL">Full payment</option>
+              <option value="BALANCE">Balance payment</option>
+            </SelectInput>
           </FormField>
           <FormField label="Mode">
             <SelectInput
@@ -2309,17 +2661,34 @@ export default function Accounts() {
             />
           </FormField>
         </div>
-        <div className="mt-4 flex justify-end gap-2">
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
           <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={() => setModal(null)}>
             Cancel
           </button>
+          {!supPayDraftId ? (
+            <button
+              type="button"
+              className="rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-900 disabled:opacity-40"
+              disabled={supplierPaySaveDraftMut.isPending}
+              onClick={() => supplierPaySaveDraftMut.mutate()}
+            >
+              {supplierPaySaveDraftMut.isPending ? "Saving…" : "Save draft"}
+            </button>
+          ) : null}
           <button
             type="button"
             className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
-            disabled={supplierPaySubmitMut.isPending}
-            onClick={() => supplierPaySubmitMut.mutate()}
+            disabled={supplierPaySubmitMut.isPending || supplierPayFinalizeMut.isPending}
+            onClick={() => {
+              if (supPayDraftId) supplierPayFinalizeMut.mutate();
+              else supplierPaySubmitMut.mutate();
+            }}
           >
-            {supplierPaySubmitMut.isPending ? "Saving…" : "Save payment"}
+            {supplierPaySubmitMut.isPending || supplierPayFinalizeMut.isPending
+              ? "Working…"
+              : supPayDraftId
+                ? "Post payment"
+                : "Post payment (direct)"}
           </button>
         </div>
       </Modal>

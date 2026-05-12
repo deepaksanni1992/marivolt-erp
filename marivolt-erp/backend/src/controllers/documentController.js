@@ -1,7 +1,8 @@
 import mongoose from "mongoose";
 import { DeleteObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import Document, { DOCUMENT_TYPES } from "../models/Document.js";
-import { getS3Client, getS3Bucket, buildS3ObjectPublicUrl } from "../config/s3.js";
+import { getS3Client, getS3Bucket, buildS3ObjectPublicUrl, isS3Configured } from "../config/s3.js";
 import { scopeToCompany } from "../middleware/auth.js";
 import { writeAudit } from "../services/auditService.js";
 import {
@@ -274,27 +275,54 @@ export async function downloadDocument(req, res) {
     const doc = await Document.findOne(scopeToCompany(req, { _id: id })).lean();
     if (!doc) return res.status(404).json({ message: "Document not found" });
 
-    const client = getS3Client();
-    const bucket = resolveDocumentBucket(doc);
-    const asciiName = String(doc.originalFileName || "download")
-      .replace(/[^\x20-\x7E]/g, "_")
-      .replace(/["\\]/g, "_")
-      .slice(0, 200);
-    const inline = String(req.query.inline || "").trim() === "1";
-    const disposition = inline
-      ? `inline; filename="${asciiName}"`
-      : `attachment; filename="${asciiName}"`;
-    const command = new GetObjectCommand({
-      Bucket: bucket,
-      Key: doc.s3Key,
-      ResponseContentDisposition: disposition,
-    });
-    const url = await getSignedUrl(client, command, { expiresIn: SIGNED_URL_EXPIRES });
-    res.json({
-      url,
-      expiresIn: SIGNED_URL_EXPIRES,
-      fileName: doc.originalFileName,
-      mimeType: doc.mimeType,
+    const fallbackUrl = String(doc.fileUrl || "").trim();
+    let signedFailed = null;
+
+    if (isS3Configured() && doc.s3Key) {
+      try {
+        const client = getS3Client();
+        const bucket = resolveDocumentBucket(doc);
+        const asciiName = String(doc.originalFileName || "download")
+          .replace(/[^\x20-\x7E]/g, "_")
+          .replace(/["\\]/g, "_")
+          .slice(0, 200);
+        const inline = String(req.query.inline || "").trim() === "1";
+        const disposition = inline
+          ? `inline; filename="${asciiName}"`
+          : `attachment; filename="${asciiName}"`;
+        const command = new GetObjectCommand({
+          Bucket: bucket,
+          Key: doc.s3Key,
+          ResponseContentDisposition: disposition,
+        });
+        const url = await getSignedUrl(client, command, { expiresIn: SIGNED_URL_EXPIRES });
+        return res.json({
+          url,
+          expiresIn: SIGNED_URL_EXPIRES,
+          fileName: doc.originalFileName,
+          mimeType: doc.mimeType,
+        });
+      } catch (e) {
+        signedFailed = e?.message || String(e);
+        console.warn("[documents] signed URL failed, trying fileUrl fallback:", signedFailed);
+      }
+    }
+
+    if (fallbackUrl) {
+      return res.json({
+        url: fallbackUrl,
+        expiresIn: 0,
+        fileName: doc.originalFileName,
+        mimeType: doc.mimeType,
+        fallback: true,
+        warning: signedFailed || undefined,
+      });
+    }
+
+    return res.status(503).json({
+      message:
+        signedFailed ||
+        "Could not generate download link (S3 not configured or no public file URL). Configure AWS or re-upload the file.",
     });
   } catch (err) {
     console.error("[documents] download error:", err);

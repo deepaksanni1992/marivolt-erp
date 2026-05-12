@@ -11,6 +11,7 @@ const accountsEdit = requirePermission("ACCOUNTS", "edit");
 
 router.get("/", accountsView, c.listPurchaseInvoices);
 router.post("/from-po/:poId", accountsCreate, c.createPurchaseInvoiceDraftFromPo);
+router.post("/from-document/:documentId", accountsCreate, c.createPurchaseInvoiceFromPurchaseDocument);
 router.get("/:id", accountsView, c.getPurchaseInvoice);
 router.post("/:id/book", accountsEdit, c.bookPurchaseInvoice);
 router.post("/:id/cancel", accountsEdit, c.cancelPurchaseInvoice);

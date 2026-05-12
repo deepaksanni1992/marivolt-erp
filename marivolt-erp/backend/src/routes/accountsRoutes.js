@@ -35,9 +35,12 @@ router.get("/ap/po-supplier-documents", accountsView, c.listApPoSupplierDocument
 router.get("/ap/po-search", accountsView, c.searchApPurchaseOrders);
 
 router.get("/supplier-payments", accountsView, c.listSupplierPayments);
+router.get("/supplier-payments/from-po/:poId", accountsView, c.getSupplierPaymentContextFromPo);
 router.get("/supplier-payments/:id", accountsView, c.getSupplierPayment);
 router.post("/supplier-payments", accountsCreate, c.createSupplierPayment);
+router.post("/supplier-payments/:id/post", accountsCreate, c.postDraftSupplierPayment);
 router.put("/supplier-payments/:id", accountsEdit, c.updateSupplierPayment);
+router.delete("/supplier-payments/:id/draft", accountsDelete, c.deleteSupplierPaymentDraft);
 router.patch("/supplier-payments/:id/cancel", accountsEdit, c.cancelSupplierPayment);
 
 router.get("/customer-ledger", accountsView, c.listCustomerLedger);

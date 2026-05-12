@@ -12,7 +12,7 @@ const accountsEdit = requirePermission("ACCOUNTS", "edit");
 router.get("/", accountsView, c.listSupplierPayments);
 router.post("/", accountsCreate, c.createSupplierPayment);
 router.get("/:id", accountsView, c.getSupplierPayment);
-router.post("/:id/post", accountsEdit, c.postSupplierPaymentAck);
+router.post("/:id/post", accountsEdit, c.postDraftSupplierPayment);
 router.post("/:id/cancel", accountsEdit, c.cancelSupplierPayment);
 
 export default router;
