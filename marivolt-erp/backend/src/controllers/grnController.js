@@ -12,8 +12,78 @@ import { nextNumber } from "../services/numberSeriesService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 
 function withCompany(req, filter = {}) {
-  return { companyId: req.companyId, ...filter };
+  const cid = req.companyId;
+  if (cid == null || cid === "") return { ...filter };
+  const s = String(cid).trim();
+  if (mongoose.Types.ObjectId.isValid(s)) {
+    const oid = new mongoose.Types.ObjectId(s);
+    if (!Object.keys(filter).length) {
+      return { $or: [{ companyId: oid }, { companyId: s }] };
+    }
+    return { $and: [{ ...filter }, { $or: [{ companyId: oid }, { companyId: s }] }] };
+  }
+  return { ...filter, companyId: cid };
 }
+const PO_LINE_ARRAY_KEYS = ["lines", "orderLines", "poItems", "items", "products"];
+
+/** Prefer canonical `lines`, then legacy/alternate array keys used by older imports. */
+function extractRawPoLinesFromPo(po) {
+  if (!po || typeof po !== "object") return [];
+  for (const k of PO_LINE_ARRAY_KEYS) {
+    const arr = po[k];
+    if (Array.isArray(arr) && arr.length) return arr;
+  }
+  return [];
+}
+
+/** Resolve a PO line subdocument on the hydrated doc (canonical `lines` only for writes). */
+function findPoLineSubdocument(po, poLineId) {
+  if (!po || poLineId == null || poLineId === "") return null;
+  try {
+    const via = po.lines?.id?.(poLineId);
+    if (via) return via;
+  } catch {
+    /* ignore */
+  }
+  const sid = String(poLineId);
+  return (po.lines || []).find((l) => String(l._id) === sid) || null;
+}
+
+function poLineQtyFromRaw(l) {
+  const ordered = Number(l?.orderedQty ?? l?.qty ?? l?.quantity ?? l?.orderedQuantity) || 0;
+  const received = Number(l?.receivedQty ?? l?.received ?? l?.receivedQuantity) || 0;
+  const cancelled = Number(l?.cancelledQty ?? l?.cancelled) || 0;
+  const pending = Math.max(
+    0,
+    Number(l?.pendingQty ?? l?.openQty ?? Math.max(0, ordered - received - cancelled)) || 0
+  );
+  return { ordered, received, cancelled, pending };
+}
+
+function mapPoRowToGrnLine(l, po) {
+  const { ordered, received, cancelled, pending } = poLineQtyFromRaw(l);
+  const itemCode = String(
+    l?.itemCode || l?.materialCode || l?.article || l?.articleNo || l?.sku || l?.productCode || ""
+  ).trim();
+  const article = (itemCode || String(l?.article || "").trim()).toUpperCase();
+  const lineId = l?._id ?? l?.id ?? null;
+  return {
+    poLineId: lineId,
+    itemId: l?.itemId || l?.itemMasterId || l?.productId || null,
+    poId: po._id,
+    poNo: po.poNo || po.poNumber,
+    article: article || "—",
+    description: l?.description || l?.desc || l?.productName || "",
+    spn: l?.partNo || l?.spn || l?.partNumber || "",
+    materialCode: itemCode || String(l?.materialCode || "").trim(),
+    orderedQty: ordered,
+    receivedQty: received,
+    pendingQty: pending,
+    unitCost: Number(l?.unitPrice ?? l?.price ?? l?.rate) || 0,
+    uom: l?.uom || l?.unit || l?.uOM || "PCS",
+  };
+}
+
 function t(v) {
   return String(v ?? "").trim();
 }
@@ -39,53 +109,52 @@ async function nextGrnNo(companyId, companyCode = "") {
  * Only lines with grnQty > 0 are included.
  */
 async function buildGrnItemsFromPoLineSelection(req, poId, selections = []) {
-  const po = await PurchaseOrder.findOne(withCompany(req, { _id: poId }));
-  if (!po) throw new Error("Purchase order not found");
-  if (String(po.status || "").toUpperCase() === "CANCELLED") {
+  const poLean = await PurchaseOrder.findOne(withCompany(req, { _id: poId })).lean();
+  if (!poLean) throw new Error("Purchase order not found");
+  if (String(poLean.status || "").toUpperCase() === "CANCELLED") {
     throw new Error("Cannot create GRN against a cancelled PO");
   }
+  const rawRows = extractRawPoLinesFromPo(poLean);
   const raw = [];
   for (const row of selections) {
     const poLineId = row.poLineId;
     const grnQty = Number(row.grnQty ?? row.receivedQty);
     if (!mongoose.Types.ObjectId.isValid(String(poLineId))) continue;
     if (!Number.isFinite(grnQty) || grnQty <= 0) continue;
-    const poLine = po.lines.id(poLineId);
-    if (!poLine) throw new Error(`Invalid PO line: ${poLineId}`);
-    const ordered = Number(poLine.orderedQty ?? poLine.qty) || 0;
-    const receivedSoFar = Number(poLine.receivedQty) || 0;
-    const cancelled = Number(poLine.cancelledQty) || 0;
-    const pending = Math.max(0, Number(poLine.pendingQty ?? Math.max(0, ordered - receivedSoFar - cancelled)) || 0);
+    const src = rawRows.find((x) => String(x._id ?? x.id ?? "") === String(poLineId ?? ""));
+    if (!src) throw new Error(`Invalid PO line: ${poLineId}`);
+    const { ordered, pending } = poLineQtyFromRaw(src);
     if (grnQty > pending + 1e-6) {
-      throw new Error(
-        `GRN qty (${grnQty}) exceeds pending (${pending}) for line ${poLine.itemCode || poLine.article || poLineId}`
-      );
+      const label = String(src.itemCode || src.article || src.materialCode || poLineId).trim();
+      throw new Error(`GRN qty (${grnQty}) exceeds pending (${pending}) for line ${label}`);
     }
     const wh = upper(row.warehouse || "MAIN");
     const loc = upper(row.location || row.warehouse || "MAIN");
     raw.push({
-      article: String(poLine.itemCode || poLine.article || "").toUpperCase(),
-      description: poLine.description || "",
-      spn: poLine.partNo || "",
-      materialCode: poLine.itemCode || "",
+      article: String(
+        src.itemCode || src.materialCode || src.article || src.articleNo || src.sku || ""
+      ).toUpperCase() || "—",
+      description: src.description || src.desc || src.productName || "",
+      spn: src.partNo || src.spn || "",
+      materialCode: String(src.itemCode || src.materialCode || "").trim(),
       orderedQty: ordered,
       receivedQty: grnQty,
       pendingQty: pending,
       acceptedQty: grnQty,
       rejectedQty: 0,
       cancelledQty: 0,
-      unitCost: Number(poLine.unitPrice) || 0,
-      currency: upper(row.currency || po.currency || "USD"),
+      unitCost: Number(src.unitPrice ?? src.price ?? src.rate) || 0,
+      currency: upper(row.currency || poLean.currency || "USD"),
       warehouse: wh,
       location: loc,
       poLineId,
-      poId: po._id,
-      poNo: po.poNo || po.poNumber || "",
+      poId: poLean._id,
+      poNo: poLean.poNo || poLean.poNumber || "",
       remarks: t(row.remarks),
     });
   }
   if (!raw.length) throw new Error("Select at least one PO line with GRN qty greater than zero");
-  return { po, items: normalizeItems(raw) };
+  return { po: poLean, items: normalizeItems(raw) };
 }
 
 function normalizeItems(items = []) {
@@ -347,9 +416,9 @@ async function applyReceiveToPo({ session, req, grn }) {
     current.rejected += Number(line.rejectedQty) || 0;
     receiveByLineId.set(String(line.poLineId), current);
   }
-  for (const poLine of po.lines || []) {
-    const rec = receiveByLineId.get(String(poLine._id));
-    if (!rec) continue;
+  for (const [lineIdStr, rec] of receiveByLineId) {
+    const poLine = findPoLineSubdocument(po, lineIdStr);
+    if (!poLine) continue;
     const ordered = Number(poLine.orderedQty ?? poLine.qty) || 0;
     const nextReceived = Math.min(ordered, (Number(poLine.receivedQty) || 0) + rec.accepted);
     poLine.receivedQty = nextReceived;
@@ -360,8 +429,9 @@ async function applyReceiveToPo({ session, req, grn }) {
     poLine.lineAmount = ordered * (Number(poLine.unitPrice) || 0);
     poLine.lineTotal = poLine.lineAmount;
   }
-  const allReceived = po.lines.length > 0 && po.lines.every((l) => (Number(l.pendingQty) || 0) <= 0);
-  const anyReceived = po.lines.some((l) => (Number(l.receivedQty) || 0) > 0);
+  const lineSnapshot = extractRawPoLinesFromPo(po);
+  const allReceived = lineSnapshot.length > 0 && lineSnapshot.every((l) => poLineQtyFromRaw(l).pending <= 0);
+  const anyReceived = lineSnapshot.some((l) => (Number(l.receivedQty ?? l.received) || 0) > 0);
   if (allReceived) po.status = "RECEIVED";
   else if (anyReceived) po.status = "PARTIAL_RECEIVED";
   await po.save({ session });
@@ -395,7 +465,7 @@ export async function postGrn(req, res) {
         if (po && !allowOverPo) {
           for (const line of grn.items || []) {
             if (!(Number(line.acceptedQty) > 0)) continue;
-            const poLine = line.poLineId ? po.lines.id(line.poLineId) : null;
+            const poLine = line.poLineId ? findPoLineSubdocument(po, line.poLineId) : null;
             if (!poLine) continue;
             const pending = Math.max(0, Number(poLine.pendingQty ?? 0));
             const accepted = Number(line.acceptedQty) || 0;
@@ -585,14 +655,15 @@ export async function cancelGrn(req, res) {
         if (po) {
           for (const line of grn.items || []) {
             if (!line.poLineId) continue;
-            const poLine = po.lines.id(line.poLineId);
+            const poLine = findPoLineSubdocument(po, line.poLineId);
             if (!poLine) continue;
             const ordered = Number(poLine.orderedQty ?? poLine.qty) || 0;
             poLine.receivedQty = Math.max(0, (Number(poLine.receivedQty) || 0) - (Number(line.acceptedQty) || 0));
             poLine.pendingQty = Math.max(0, ordered - poLine.receivedQty - (Number(poLine.cancelledQty) || 0));
           }
-          const allReceived = po.lines.length > 0 && po.lines.every((l) => (Number(l.pendingQty) || 0) <= 0);
-          const anyReceived = po.lines.some((l) => (Number(l.receivedQty) || 0) > 0);
+          const snap = extractRawPoLinesFromPo(po);
+          const allReceived = snap.length > 0 && snap.every((l) => poLineQtyFromRaw(l).pending <= 0);
+          const anyReceived = snap.some((l) => (Number(l.receivedQty ?? l.received) || 0) > 0);
           po.status = allReceived ? "RECEIVED" : anyReceived ? "PARTIAL_RECEIVED" : "SENT";
           await po.save({ session });
         }
@@ -702,36 +773,18 @@ export async function getGrnFromPo(req, res) {
   try {
     const poId = req.params.poId;
     if (!mongoose.Types.ObjectId.isValid(poId)) return res.status(400).json({ message: "Invalid PO id" });
-    await syncPurchaseOrderApExtensionFields(req.companyId, poId);
-    const po = await PurchaseOrder.findOne(withCompany(req, { _id: poId }))
-      .select(
-        "poNo poNumber orderDate currency supplierName supplierId status lines companyId branchId warehouseId apPaymentStatus supplierDocumentStatus grnReceiptStatus grnProgressStatus"
-      )
-      .lean();
+    try {
+      await syncPurchaseOrderApExtensionFields(req.companyId, poId);
+    } catch (e) {
+      console.error("[grn/from-po] syncPurchaseOrderApExtensionFields:", e?.message || e);
+    }
+    const po = await PurchaseOrder.findOne(withCompany(req, { _id: poId })).lean();
     if (!po) return res.status(404).json({ message: "Purchase order not found" });
     if (String(po.status || "").toUpperCase() === "CANCELLED") {
       return res.status(400).json({ message: "PO is cancelled" });
     }
-    const lines = (po.lines || []).map((l) => {
-      const ordered = Number(l.orderedQty ?? l.qty) || 0;
-      const received = Number(l.receivedQty) || 0;
-      const cancelled = Number(l.cancelledQty) || 0;
-      const pending = Math.max(0, Number(l.pendingQty ?? Math.max(0, ordered - received - cancelled)) || 0);
-      return {
-        poLineId: l._id,
-        poId: po._id,
-        poNo: po.poNo || po.poNumber,
-        article: String(l.itemCode || l.article || "").toUpperCase(),
-        description: l.description || "",
-        spn: l.partNo || "",
-        materialCode: l.itemCode || "",
-        orderedQty: ordered,
-        receivedQty: received,
-        pendingQty: pending,
-        unitCost: Number(l.unitPrice) || 0,
-        uom: l.uom || "PCS",
-      };
-    });
+    const rawRows = extractRawPoLinesFromPo(po);
+    const lines = rawRows.map((l) => mapPoRowToGrnLine(l, po));
     const header = {
       _id: po._id,
       poNo: po.poNo || po.poNumber,

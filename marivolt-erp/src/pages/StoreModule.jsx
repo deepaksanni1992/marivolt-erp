@@ -48,6 +48,79 @@ function fmtPoDateShort(d) {
   return Number.isNaN(x.getTime()) ? "—" : x.toLocaleDateString();
 }
 
+function isMongoIdString(s) {
+  const t = String(s ?? "").trim();
+  return /^[a-fA-F0-9]{24}$/.test(t);
+}
+
+/** Normalize GET /grn/from-po payload; map legacy PO line arrays if `lines` is empty. */
+function normalizeGrnFromPoResponse(data) {
+  const d = data && typeof data === "object" ? data : {};
+  const po = d.po && typeof d.po === "object" ? d.po : null;
+  let lines = Array.isArray(d.lines) ? d.lines.map((x) => ({ ...x })) : [];
+  const PO_KEYS = ["lines", "orderLines", "poItems", "items", "products"];
+
+  const mapRawToLine = (raw) => {
+    const ordered = Number(raw?.orderedQty ?? raw?.qty ?? raw?.quantity ?? raw?.orderedQuantity) || 0;
+    const received = Number(raw?.receivedQty ?? raw?.received ?? raw?.receivedQuantity) || 0;
+    const cancelled = Number(raw?.cancelledQty ?? raw?.cancelled) || 0;
+    const pending = Math.max(
+      0,
+      Number(raw?.pendingQty ?? raw?.openQty ?? Math.max(0, ordered - received - cancelled)) || 0
+    );
+    const itemCode = String(
+      raw?.itemCode || raw?.materialCode || raw?.article || raw?.articleNo || raw?.sku || raw?.productCode || ""
+    ).trim();
+    const pid = raw?._id ?? raw?.poLineId ?? raw?.id ?? null;
+    return {
+      ...raw,
+      poLineId: pid,
+      itemId: raw?.itemId ?? raw?.itemMasterId ?? raw?.productId ?? null,
+      article: (itemCode || String(raw?.article || "").trim()).toUpperCase() || "—",
+      description: raw?.description || raw?.desc || raw?.productName || "",
+      spn: raw?.partNo || raw?.spn || raw?.partNumber || "",
+      materialCode: itemCode || String(raw?.materialCode || "").trim(),
+      uom: raw?.uom || raw?.unit || raw?.uOM || "PCS",
+      orderedQty: ordered,
+      receivedQty: received,
+      pendingQty: pending,
+      unitCost: Number(raw?.unitCost ?? raw?.unitPrice ?? raw?.price ?? raw?.rate) || 0,
+    };
+  };
+
+  if (!lines.length && po) {
+    for (const k of PO_KEYS) {
+      const arr = po[k];
+      if (Array.isArray(arr) && arr.length) {
+        lines = arr.map(mapRawToLine);
+        break;
+      }
+    }
+  }
+
+  let header = d.header;
+  if (!header && po) {
+    header = {
+      _id: po._id,
+      poNo: po.poNo || po.poNumber,
+      poNumber: po.poNumber,
+      orderDate: po.orderDate,
+      currency: po.currency || "USD",
+      supplierName: po.supplierName,
+      supplierId: po.supplierId,
+      branchId: po.branchId || null,
+      warehouseId: po.warehouseId || null,
+      paymentStatus: po.apPaymentStatus || "NOT_PAID",
+      supplierInvoiceStatus: po.supplierDocumentStatus || "NONE",
+      grnReceiptStatus: po.grnReceiptStatus || "NOT_RECEIVED",
+      grnProgressStatus: po.grnProgressStatus || "NONE",
+      poStatus: po.status,
+    };
+  }
+
+  return { ...d, po, lines, header };
+}
+
 function NegativeBadge({ value }) {
   if (!Number.isFinite(value) || value >= 0) return null;
   return (
@@ -189,11 +262,21 @@ export default function StoreModule() {
   const loadGrnPoMut = useMutation({
     mutationFn: (poId) => apiGet(`/grn/from-po/${poId}`),
     onSuccess: (data) => {
-      setGrnUiErr("");
-      setGrnPoSnapshot(data);
+      if (import.meta.env.DEV) console.log("[GRN from-po] API response", data);
+      const normalized = normalizeGrnFromPoResponse(data);
+      if (import.meta.env.DEV) console.log("[GRN from-po] normalized", normalized);
+      setGrnPoSnapshot(normalized);
+      const lines = normalized.lines || [];
+      if (!lines.length) {
+        setGrnUiErr("No pending PO lines found for GRN.");
+      } else {
+        setGrnUiErr("");
+      }
       const init = {};
-      for (const ln of data.lines || []) {
-        init[String(ln.poLineId)] = {
+      for (const ln of lines) {
+        const id = ln.poLineId != null ? String(ln.poLineId) : "";
+        if (!id || !isMongoIdString(id)) continue;
+        init[id] = {
           selected: false,
           grnQty: String(Math.max(0, Number(ln.pendingQty) || 0)),
           warehouse: "MAIN",
@@ -585,6 +668,10 @@ export default function StoreModule() {
   const ledgerRows = useMemo(() => ledger?.items || [], [ledger]);
   const locationRows = locations || [];
   const grnLinesForUi = grnPoSnapshot?.lines || [];
+  const grnLineRowSelectable = (ln) => {
+    const id = ln.poLineId != null ? String(ln.poLineId) : "";
+    return Boolean(id && isMongoIdString(id));
+  };
   const grnTotalPending = useMemo(
     () => grnLinesForUi.reduce((s, ln) => s + Math.max(0, Number(ln.pendingQty) || 0), 0),
     [grnLinesForUi]
@@ -851,6 +938,7 @@ export default function StoreModule() {
                       setGrnLineEdits((prev) => {
                         const next = { ...prev };
                         for (const ln of grnLinesForUi) {
+                          if (!grnLineRowSelectable(ln)) continue;
                           const id = String(ln.poLineId);
                           if ((Number(ln.pendingQty) || 0) <= 0) continue;
                           const pend = Math.max(0, Number(ln.pendingQty) || 0);
@@ -892,6 +980,7 @@ export default function StoreModule() {
                         const next = { ...prev };
                         const anySel = Object.entries(next).some(([, v]) => v?.selected);
                         for (const ln of grnLinesForUi) {
+                          if (!grnLineRowSelectable(ln)) continue;
                           const id = String(ln.poLineId);
                           const pend = Math.max(0, Number(ln.pendingQty) || 0);
                           if (pend <= 0) continue;
@@ -932,8 +1021,10 @@ export default function StoreModule() {
                       </tr>
                     </thead>
                     <tbody>
-                      {grnLinesForUi.map((ln) => {
-                        const id = String(ln.poLineId);
+                      {grnLinesForUi.map((ln, rowIdx) => {
+                        const id = ln.poLineId != null ? String(ln.poLineId) : "";
+                        const selectable = grnLineRowSelectable(ln);
+                        const rowKey = selectable ? id : `row-${rowIdx}`;
                         const ed = grnLineEdits[id] || {
                           selected: false,
                           grnQty: String(Math.max(0, Number(ln.pendingQty) || 0)),
@@ -945,12 +1036,12 @@ export default function StoreModule() {
                         const qtyNum = Number(ed.grnQty);
                         const qtyInvalid = Number.isFinite(qtyNum) && pend > 0 && qtyNum > pend + 1e-6;
                         return (
-                          <tr key={id} className="border-t border-slate-100">
+                          <tr key={rowKey} className="border-t border-slate-100">
                             <td className="px-2 py-1.5 align-middle">
                               <input
                                 type="checkbox"
                                 checked={!!ed.selected}
-                                disabled={pend <= 0}
+                                disabled={pend <= 0 || !selectable}
                                 onChange={(e) =>
                                   setGrnLineEdits((p) => ({
                                     ...p,
@@ -972,7 +1063,7 @@ export default function StoreModule() {
                             <td className="px-2 py-1.5 text-right">
                               <input
                                 className={`w-20 rounded border px-1 py-0.5 text-right tabular-nums ${qtyInvalid ? "border-rose-500" : ""}`}
-                                disabled={pend <= 0}
+                                disabled={pend <= 0 || !selectable}
                                 value={ed.grnQty}
                                 onChange={(e) =>
                                   setGrnLineEdits((p) => ({
@@ -985,6 +1076,7 @@ export default function StoreModule() {
                             <td className="px-2 py-1.5">
                               <select
                                 className="max-w-[120px] rounded border px-1 py-0.5"
+                                disabled={pend <= 0 || !selectable}
                                 value={ed.warehouse}
                                 onChange={(e) =>
                                   setGrnLineEdits((p) => ({
@@ -1003,6 +1095,7 @@ export default function StoreModule() {
                             <td className="px-2 py-1.5">
                               <select
                                 className="max-w-[120px] rounded border px-1 py-0.5"
+                                disabled={pend <= 0 || !selectable}
                                 value={ed.location}
                                 onChange={(e) =>
                                   setGrnLineEdits((p) => ({
@@ -1021,6 +1114,7 @@ export default function StoreModule() {
                             <td className="px-2 py-1.5">
                               <input
                                 className="w-full min-w-[100px] rounded border px-1 py-0.5"
+                                disabled={pend <= 0 || !selectable}
                                 value={ed.remarks}
                                 onChange={(e) =>
                                   setGrnLineEdits((p) => ({
@@ -1054,9 +1148,13 @@ export default function StoreModule() {
                       }
                       const linesOut = [];
                       for (const ln of grnLinesForUi) {
-                        const id = String(ln.poLineId);
+                        const id = ln.poLineId != null ? String(ln.poLineId) : "";
                         const ed = grnLineEdits[id];
                         if (!ed?.selected) continue;
+                        if (!grnLineRowSelectable(ln)) {
+                          setGrnUiErr("Selected line is missing a valid PO line id.");
+                          return;
+                        }
                         const q = Number(ed.grnQty);
                         const pend = Math.max(0, Number(ln.pendingQty) || 0);
                         if (!(q > 0)) {
@@ -1111,8 +1209,6 @@ export default function StoreModule() {
                   ) : null}
                 </div>
               </>
-            ) : grnPoSnapshot && !grnLinesForUi.length ? (
-              <p className="mt-3 text-xs text-amber-700">This PO has no lines.</p>
             ) : null}
           </div>
           <div className="rounded-2xl border bg-white p-4">

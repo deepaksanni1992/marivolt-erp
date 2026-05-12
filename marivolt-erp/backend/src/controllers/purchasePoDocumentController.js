@@ -6,16 +6,47 @@ import SupplierPayment from "../models/SupplierPayment.js";
 import GRN from "../models/GRN.js";
 import { writeAudit } from "../services/auditService.js";
 
+const PO_LINE_ARRAY_KEYS = ["lines", "orderLines", "poItems", "items", "products"];
+
 function withCompany(req, filter = {}) {
-  return { companyId: req.companyId, ...filter };
+  const cid = req.companyId;
+  if (cid == null || cid === "") return { ...filter };
+  const s = String(cid).trim();
+  if (mongoose.Types.ObjectId.isValid(s)) {
+    const oid = new mongoose.Types.ObjectId(s);
+    if (!Object.keys(filter).length) {
+      return { $or: [{ companyId: oid }, { companyId: s }] };
+    }
+    return { $and: [{ ...filter }, { $or: [{ companyId: oid }, { companyId: s }] }] };
+  }
+  return { ...filter, companyId: cid };
+}
+
+function companyScope(companyId) {
+  const s = String(companyId ?? "").trim();
+  if (mongoose.Types.ObjectId.isValid(s)) {
+    const oid = new mongoose.Types.ObjectId(s);
+    return { $or: [{ companyId: oid }, { companyId: s }] };
+  }
+  return { companyId: s };
+}
+
+function extractRawPoLinesFromPo(po) {
+  if (!po || typeof po !== "object") return [];
+  for (const k of PO_LINE_ARRAY_KEYS) {
+    const arr = po[k];
+    if (Array.isArray(arr) && arr.length) return arr;
+  }
+  return [];
 }
 
 export async function syncPurchaseOrderApExtensionFields(companyId, poId) {
   if (!mongoose.Types.ObjectId.isValid(String(poId))) return;
-  const po = await PurchaseOrder.findOne({ companyId, _id: poId });
+  const po = await PurchaseOrder.findOne({ _id: poId, ...companyScope(companyId) });
   if (!po) return;
 
-  const docs = await PurchaseDocument.find({ companyId, linkedPoId: poId, status: "ACTIVE" }).lean();
+  const scope = companyScope(companyId);
+  const docs = await PurchaseDocument.find({ ...scope, linkedPoId: poId, status: "ACTIVE" }).lean();
   let supplierDocumentStatus = "NONE";
   const hasPi = docs.some((d) => d.documentType === "SUPPLIER_PROFORMA");
   const hasInvDoc = docs.some((d) =>
@@ -25,7 +56,7 @@ export async function syncPurchaseOrderApExtensionFields(companyId, poId) {
   else if (hasPi) supplierDocumentStatus = "PI_RECEIVED";
 
   const postedInvoices = await PurchaseInvoice.find({
-    companyId,
+    ...scope,
     linkedPoId: poId,
     status: "POSTED",
   }).lean();
@@ -46,7 +77,7 @@ export async function syncPurchaseOrderApExtensionFields(companyId, poId) {
       const payAgg = await SupplierPayment.aggregate([
         {
           $match: {
-            companyId,
+            ...scope,
             status: { $ne: "CANCELLED" },
             linkedPoNo: { $in: poNoSet },
           },
@@ -58,35 +89,39 @@ export async function syncPurchaseOrderApExtensionFields(companyId, poId) {
     }
   }
 
-  const grnCount = await GRN.countDocuments({ companyId, poId });
+  const grnCount = await GRN.countDocuments({ ...scope, poId });
   let grnProgressStatus = "NONE";
   if (String(po.status) === "PARTIAL_RECEIVED") grnProgressStatus = "PARTIAL";
   else if (String(po.status) === "RECEIVED" || String(po.status) === "CLOSED") grnProgressStatus = "COMPLETE";
   else if (grnCount > 0) grnProgressStatus = "IN_PROGRESS";
 
   let grnReceiptStatus = "NOT_RECEIVED";
-  const lines = po.lines || [];
+  const linesForSync = extractRawPoLinesFromPo(po);
   let anyReceived = false;
   let anyPending = false;
-  for (const l of lines) {
-    const ordered = Number(l.orderedQty ?? l.qty) || 0;
-    const received = Number(l.receivedQty) || 0;
-    const pending = Number(l.pendingQty ?? Math.max(0, ordered - received)) || 0;
+  for (const l of linesForSync) {
+    const ordered = Number(l.orderedQty ?? l.qty ?? l.quantity ?? l.orderedQuantity) || 0;
+    const received = Number(l.receivedQty ?? l.received ?? l.receivedQuantity) || 0;
+    const cancelled = Number(l.cancelledQty ?? l.cancelled) || 0;
+    const pending = Math.max(
+      0,
+      Number(l.pendingQty ?? l.openQty ?? Math.max(0, ordered - received - cancelled)) || 0
+    );
     if (received > 0.001) anyReceived = true;
     if (pending > 0.001) anyPending = true;
   }
-  if (lines.length) {
+  if (linesForSync.length) {
     if (anyReceived && !anyPending) grnReceiptStatus = "FULLY_RECEIVED";
     else if (anyReceived) grnReceiptStatus = "PARTIALLY_RECEIVED";
     else grnReceiptStatus = "NOT_RECEIVED";
   }
 
   let receivedQtySummary = po.receivedQtySummary || "";
-  if (Array.isArray(po.lines) && po.lines.length) {
-    const parts = po.lines.map((l) => {
-      const o = Number(l.orderedQty ?? l.qty) || 0;
-      const r = Number(l.receivedQty) || 0;
-      return `${l.itemCode || ""}:${r}/${o}`;
+  if (linesForSync.length) {
+    const parts = linesForSync.map((l) => {
+      const o = Number(l.orderedQty ?? l.qty ?? l.quantity ?? l.orderedQuantity) || 0;
+      const r = Number(l.receivedQty ?? l.received ?? l.receivedQuantity) || 0;
+      return `${l.itemCode || l.article || ""}:${r}/${o}`;
     });
     receivedQtySummary = parts.join("; ").slice(0, 500);
   }
