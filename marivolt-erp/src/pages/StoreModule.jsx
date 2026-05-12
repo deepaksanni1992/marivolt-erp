@@ -280,6 +280,10 @@ export default function StoreModule() {
           setGrnUiErr("");
         }
       }
+      const lr = qc.getQueryData(["stock-locations"]);
+      const locRows = Array.isArray(lr) ? lr : [];
+      const defaultWh = [...new Set(locRows.map((l) => String(l?.locationCode || "").trim()).filter(Boolean))]
+        .sort()[0] || "";
       const init = {};
       for (const ln of lines) {
         const id = ln.poLineId != null ? String(ln.poLineId) : "";
@@ -287,7 +291,7 @@ export default function StoreModule() {
         init[id] = {
           selected: false,
           grnQty: String(Math.max(0, Number(ln.pendingQty) || 0)),
-          warehouse: "MAIN",
+          warehouse: defaultWh,
           location: "",
           remarks: "",
         };
@@ -395,7 +399,7 @@ export default function StoreModule() {
             ...cur,
             selected: true,
             grnQty: String(u.grnQty),
-            warehouse: u.warehouse || cur.warehouse || "MAIN",
+            warehouse: u.warehouse || cur.warehouse || defaultGrnWarehouse,
             location: u.location || "",
             remarks: u.remarks != null ? u.remarks : cur.remarks || "",
           };
@@ -764,10 +768,12 @@ export default function StoreModule() {
     () => grnLinesForUi.reduce((s, ln) => s + Math.max(0, Number(ln.pendingQty) || 0), 0),
     [grnLinesForUi]
   );
+  /** Stock location master `locationCode` values only — must exist as Active in DB (GRN warehouse validates against this). */
   const grnLocationSelectCodes = useMemo(() => {
     const arr = locationRows.map((l) => l.locationCode).filter(Boolean);
-    return Array.from(new Set([...arr, "MAIN"])).sort();
+    return Array.from(new Set(arr)).sort();
   }, [locationRows]);
+  const defaultGrnWarehouse = useMemo(() => grnLocationSelectCodes[0] || "", [grnLocationSelectCodes]);
   const negativeRows = useMemo(() => negativeReport?.items || [], [negativeReport]);
   const landedCostDetail = useMemo(
     () => (landedCostRows?.items || []).find((x) => String(x._id) === String(selectedLandedCostId)) || null,
@@ -1040,7 +1046,7 @@ export default function StoreModule() {
                           const cur = next[id] || {
                             selected: false,
                             grnQty: String(pend),
-                            warehouse: "MAIN",
+                            warehouse: defaultGrnWarehouse,
                             location: "",
                             remarks: "",
                           };
@@ -1082,7 +1088,7 @@ export default function StoreModule() {
                           const cur = next[id] || {
                             selected: false,
                             grnQty: "0",
-                            warehouse: "MAIN",
+                            warehouse: defaultGrnWarehouse,
                             location: "",
                             remarks: "",
                           };
@@ -1144,7 +1150,7 @@ export default function StoreModule() {
                         const ed = grnLineEdits[id] || {
                           selected: false,
                           grnQty: String(Math.max(0, Number(ln.pendingQty) || 0)),
-                          warehouse: "MAIN",
+                          warehouse: defaultGrnWarehouse,
                           location: "",
                           remarks: "",
                         };
