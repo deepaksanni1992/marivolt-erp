@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Modal from "../erp/Modal.jsx";
-import { apiPost, apiPostFormData } from "../../lib/api.js";
+import { apiDelete, apiGet, apiPost, apiPostFormData } from "../../lib/api.js";
 
 /** Matches Document model upload labels and PurchaseDocument internal types. */
 const INVOICE_DOC_TYPES = [
@@ -11,10 +11,11 @@ const INVOICE_DOC_TYPES = [
 ];
 
 /**
- * Upload supplier PI / invoice file and attach to a PO (PurchaseDocument).
- * Optional: create Accounts purchase invoice draft linked to the same PO.
+ * Upload supplier PI / invoice, list attached files (view / delete), optional draft purchase invoice.
  */
 export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber, supplierName, currency, qc, setErr }) {
+  const innerQc = useQueryClient();
+  const queryClient = qc || innerQc;
   const [docPick, setDocPick] = useState(INVOICE_DOC_TYPES[0]);
   const [meta, setMeta] = useState({
     documentNo: "",
@@ -29,14 +30,34 @@ export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber
     otherCharges: "0",
     remarks: "",
   });
+  const [autoCreateDraftPi, setAutoCreateDraftPi] = useState(true);
+
+  const docsQ = useQuery({
+    queryKey: ["po-documents", poId],
+    queryFn: () => apiGet(`/purchase-orders/${poId}/documents`),
+    enabled: Boolean(open && poId),
+  });
 
   useEffect(() => {
     if (!open) return;
     setDocPick(INVOICE_DOC_TYPES[0]);
     setMeta({ documentNo: "", amount: "", currency: "", remarks: "", file: null });
     setInvDraft({ supplierInvoiceNo: "", taxAmount: "0", otherCharges: "0", remarks: "" });
+    setAutoCreateDraftPi(true);
     setErr("");
-  }, [open]);
+  }, [open, setErr]);
+
+  const deleteDocMut = useMutation({
+    mutationFn: (purchaseDocumentId) => apiDelete(`/purchase-orders/${poId}/documents/${purchaseDocumentId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["po-documents", poId] });
+      queryClient.invalidateQueries({ queryKey: ["po-ap-summary", poId] });
+      queryClient.invalidateQueries({ queryKey: ["purchaseOrder", poId] });
+      queryClient.invalidateQueries({ queryKey: ["purchaseOrders"] });
+      queryClient.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
+    },
+    onError: (e) => setErr(e.message || String(e)),
+  });
 
   const uploadMut = useMutation({
     mutationFn: async () => {
@@ -59,14 +80,32 @@ export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber
         fileUrl: uploaded.fileUrl,
       });
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["po-documents", poId] });
-      qc.invalidateQueries({ queryKey: ["po-ap-summary", poId] });
-      qc.invalidateQueries({ queryKey: ["purchaseOrder", poId] });
-      qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
-      qc.invalidateQueries({ queryKey: ["purchaseSummary"] });
-      qc.invalidateQueries({ queryKey: ["apDashboard"] });
+    onSuccess: async () => {
+      queryClient.invalidateQueries({ queryKey: ["po-documents", poId] });
+      queryClient.invalidateQueries({ queryKey: ["po-ap-summary", poId] });
+      queryClient.invalidateQueries({ queryKey: ["purchaseOrder", poId] });
+      queryClient.invalidateQueries({ queryKey: ["purchaseOrders"] });
+      queryClient.invalidateQueries({ queryKey: ["purchaseSummary"] });
+      queryClient.invalidateQueries({ queryKey: ["apDashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
       setErr("");
+      const sinv = (meta.documentNo || "").trim() || (invDraft.supplierInvoiceNo || "").trim();
+      if (autoCreateDraftPi && sinv) {
+        try {
+          await apiPost(`/purchase-invoices/from-po/${poId}`, {
+            supplierInvoiceNo: sinv,
+            taxAmount: Number(invDraft.taxAmount) || 0,
+            otherCharges: Number(invDraft.otherCharges) || 0,
+            remarks: invDraft.remarks || `PO ${poNumber || ""} supplier document`,
+          });
+          queryClient.invalidateQueries({ queryKey: ["purchaseInvoices"] });
+        } catch (e) {
+          setErr(
+            (e.message || String(e)) +
+              " — File was saved on the PO. Open Accounts → Purchase Invoices and use Create draft, or fix the error above."
+          );
+        }
+      }
     },
     onError: (e) => setErr(e.message || String(e)),
   });
@@ -80,25 +119,96 @@ export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber
         remarks: invDraft.remarks,
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["po-ap-summary", poId] });
-      qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
-      qc.invalidateQueries({ queryKey: ["apDashboard"] });
-      qc.invalidateQueries({ queryKey: ["purchaseOrder", poId] });
+      queryClient.invalidateQueries({ queryKey: ["po-ap-summary", poId] });
+      queryClient.invalidateQueries({ queryKey: ["purchaseInvoices"] });
+      queryClient.invalidateQueries({ queryKey: ["apDashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["purchaseOrder", poId] });
+      queryClient.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
       setErr("");
     },
     onError: (e) => setErr(e.message || String(e)),
   });
 
+  async function viewFile(row) {
+    setErr("");
+    try {
+      if (row.documentId) {
+        const { url } = await apiGet(`/documents/${row.documentId}/download`);
+        if (url) window.open(url, "_blank", "noopener,noreferrer");
+        return;
+      }
+      if (row.fileUrl) {
+        window.open(row.fileUrl, "_blank", "noopener,noreferrer");
+        return;
+      }
+      setErr("No file link available for this row.");
+    } catch (e) {
+      setErr(e.message || String(e));
+    }
+  }
+
   if (!poId) return null;
 
+  const items = docsQ.data?.items || [];
+
   return (
-    <Modal open={open} onClose={onClose} title="Upload supplier PI / invoice" wide>
+    <Modal open={open} onClose={onClose} title="PO supplier documents (PI / invoice)" wide>
       <p className="mb-3 text-xs text-gray-600">
-        File is stored securely and linked to PO <span className="font-mono font-semibold">{poNumber || "—"}</span> (
-        {supplierName || "—"}). After upload you can create a purchase invoice draft for Accounts; book it there, then
-        record supplier payments against that invoice or with PO reference.
+        Files are stored on <b>AWS S3</b> and linked to PO{" "}
+        <span className="font-mono font-semibold">{poNumber || "—"}</span> ({supplierName || "—"}). Use{" "}
+        <b>View</b> for a secure download link. <b>Delete</b> voids the link on this PO (does not delete the S3 object
+        automatically). When <b>Create purchase invoice draft after upload</b> is on and you enter a supplier document
+        number, a draft is created in Accounts so it appears under Purchase Invoices.
       </p>
-      <div className="space-y-3 text-sm">
+
+      <div className="mb-4 rounded border border-slate-200 bg-slate-50/80 p-3">
+        <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-700">Attached on this PO</div>
+        {docsQ.isLoading ? (
+          <p className="text-xs text-gray-500">Loading…</p>
+        ) : !items.length ? (
+          <p className="text-xs text-gray-500">No supplier documents yet.</p>
+        ) : (
+          <ul className="max-h-40 space-y-2 overflow-y-auto text-xs">
+            {items.map((d) => (
+              <li
+                key={d._id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded border border-white bg-white px-2 py-1.5"
+              >
+                <div>
+                  <span className="font-semibold text-gray-900">{d.documentType}</span>
+                  {d.documentNo ? <span className="ml-2 font-mono text-gray-700">{d.documentNo}</span> : null}
+                  <div className="text-[10px] text-gray-500">
+                    {d.uploadedAt ? new Date(d.uploadedAt).toLocaleString() : ""}
+                  </div>
+                </div>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    className="rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-900 hover:bg-blue-100"
+                    onClick={() => viewFile(d)}
+                  >
+                    View
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-900 hover:bg-rose-100 disabled:opacity-40"
+                    disabled={deleteDocMut.isPending}
+                    onClick={() => {
+                      if (!window.confirm("Remove this document from the PO?")) return;
+                      deleteDocMut.mutate(d._id);
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="space-y-3 border-t pt-3 text-sm">
+        <div className="text-xs font-bold uppercase tracking-wide text-slate-700">Upload new file</div>
         <label className="block">
           <span className="text-xs font-semibold text-gray-600">Document type</span>
           <select
@@ -122,7 +232,7 @@ export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber
         />
         <input
           className="w-full rounded border px-2 py-1 text-sm"
-          placeholder="Supplier document / invoice no."
+          placeholder="Supplier document / invoice no. (used for Accounts draft if enabled below)"
           value={meta.documentNo}
           onChange={(e) => setMeta((m) => ({ ...m, documentNo: e.target.value }))}
         />
@@ -147,6 +257,14 @@ export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber
           value={meta.remarks}
           onChange={(e) => setMeta((m) => ({ ...m, remarks: e.target.value }))}
         />
+        <label className="flex cursor-pointer items-center gap-2 text-xs text-gray-800">
+          <input
+            type="checkbox"
+            checked={autoCreateDraftPi}
+            onChange={(e) => setAutoCreateDraftPi(e.target.checked)}
+          />
+          After upload, create purchase invoice draft in Accounts (needs supplier document / invoice no. above)
+        </label>
         <button
           type="button"
           className="rounded bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
@@ -157,7 +275,7 @@ export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber
         </button>
 
         <div className="border-t pt-3">
-          <p className="mb-2 text-xs font-semibold text-gray-700">Optional: create purchase invoice draft (Accounts)</p>
+          <p className="mb-2 text-xs font-semibold text-gray-700">Create / refresh purchase invoice draft (Accounts)</p>
           <input
             className="mb-2 w-full rounded border px-2 py-1 text-sm"
             placeholder="Supplier invoice no. *"

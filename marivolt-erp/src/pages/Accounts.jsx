@@ -185,8 +185,13 @@ export default function Accounts() {
     allocations: [],
   });
   const [supplierPaymentFilter, setSupplierPaymentFilter] = useState("");
-  const [supplierPaymentDocType, setSupplierPaymentDocType] = useState("Supplier Invoice");
+  const [supplierPaymentDocType, setSupplierPaymentDocType] = useState("SWIFT Copy");
   const [supplierPaymentFile, setSupplierPaymentFile] = useState(null);
+  const [supPayAllocPiId, setSupPayAllocPiId] = useState("");
+  const [supPayAllocAmt, setSupPayAllocAmt] = useState("");
+  const [poPaySearchInput, setPoPaySearchInput] = useState("");
+  const [poPaySearchResults, setPoPaySearchResults] = useState([]);
+  const [poPaySearchBusy, setPoPaySearchBusy] = useState(false);
   const [bankForm, setBankForm] = useState(() => emptyBankForm());
   const [bankEditId, setBankEditId] = useState(null);
 
@@ -212,6 +217,24 @@ export default function Accounts() {
         ...(piPoFilter ? { linkedPoNumber: piPoFilter } : {}),
       }),
     enabled: tab === "pi",
+  });
+
+  const apPoDocsQ = useQuery({
+    queryKey: ["ap-po-supplier-documents"],
+    queryFn: () => apiGet("/accounts/ap/po-supplier-documents"),
+    enabled: tab === "pi",
+  });
+
+  const supplierPayPiQ = useQuery({
+    queryKey: ["purchaseInvoices", "posted-pay", supplierPaymentForm.supplierName],
+    queryFn: () =>
+      apiGetWithQuery("/accounts/purchase-invoices", {
+        page: 1,
+        limit: 80,
+        status: "POSTED",
+        supplierName: supplierPaymentForm.supplierName.trim(),
+      }),
+    enabled: modal === "payv" && supplierPaymentForm.supplierName.trim().length >= 2,
   });
   const custQ = useQuery({
     queryKey: ["customerLedger", filterCustomer, page],
@@ -325,6 +348,7 @@ export default function Accounts() {
       if (v.path.includes("purchase-invoices")) {
         qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
         qc.invalidateQueries({ queryKey: ["apDashboard"] });
+        qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
       }
       if (v.path.includes("customer-ledger"))
         qc.invalidateQueries({ queryKey: ["customerLedger"] });
@@ -344,6 +368,65 @@ export default function Accounts() {
       setErr("");
     },
     onError: (e) => setErr(e.message),
+  });
+
+  const createPiFromPoMut = useMutation({
+    mutationFn: ({ poId, supplierInvoiceNo }) =>
+      apiPost(`/purchase-invoices/from-po/${poId}`, {
+        supplierInvoiceNo: String(supplierInvoiceNo || "").trim(),
+        taxAmount: 0,
+        otherCharges: 0,
+        remarks: "Created from Accounts PO supplier document list",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
+      qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
+      qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      setErr("");
+    },
+    onError: (e) => setErr(e.message || String(e)),
+  });
+
+  const supplierPaySubmitMut = useMutation({
+    mutationFn: async () => {
+      let attachments = [];
+      if (supplierPaymentFile) {
+        const fd = new FormData();
+        fd.append("file", supplierPaymentFile);
+        fd.append("documentType", supplierPaymentDocType);
+        fd.append("moduleName", "ACCOUNTS");
+        fd.append("relatedId", "");
+        fd.append("refNo", (supplierPaymentForm.linkedPoNo || supplierPaymentForm.paymentReference || "").trim());
+        fd.append("partyName", (supplierPaymentForm.supplierName || "").trim());
+        const up = await apiPostFormData("/documents/upload", fd);
+        attachments = [
+          {
+            documentId: up._id,
+            documentType: supplierPaymentDocType,
+            fileName: up.originalFileName || supplierPaymentFile.name,
+            uploadedAt: new Date().toISOString(),
+          },
+        ];
+      }
+      const allocations = [];
+      if (supPayAllocPiId && Number(supPayAllocAmt) > 0) {
+        allocations.push({ purchaseInvoiceId: supPayAllocPiId, allocatedAmount: Number(supPayAllocAmt) });
+      }
+      return apiPost("/accounts/supplier-payments", { ...supplierPaymentForm, attachments, allocations });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["supplierPayments"] });
+      qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
+      qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
+      qc.invalidateQueries({ queryKey: ["cashBank"] });
+      setModal(null);
+      setSupplierPaymentFile(null);
+      setSupPayAllocPiId("");
+      setSupPayAllocAmt("");
+      setErr("");
+    },
+    onError: (e) => setErr(e.message || String(e)),
   });
 
   const patchMut = useMutation({
@@ -381,6 +464,7 @@ export default function Accounts() {
       if (v.path.includes("purchase-invoices")) {
         qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
         qc.invalidateQueries({ queryKey: ["apDashboard"] });
+        qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
       }
       if (v.path.includes("customer-ledger"))
         qc.invalidateQueries({ queryKey: ["customerLedger"] });
@@ -390,6 +474,94 @@ export default function Accounts() {
       if (v.path.includes("bank-details")) qc.invalidateQueries({ queryKey: ["bankDetails"] });
     },
   });
+
+  async function viewApPoDoc(row) {
+    setErr("");
+    try {
+      if (row.documentId) {
+        const { url } = await apiGet(`/documents/${row.documentId}/download`);
+        if (url) window.open(url, "_blank", "noopener,noreferrer");
+        return;
+      }
+      if (row.fileUrl) {
+        window.open(row.fileUrl, "_blank", "noopener,noreferrer");
+        return;
+      }
+      setErr("No file link available for this document.");
+    } catch (e) {
+      setErr(e.message || String(e));
+    }
+  }
+
+  function resetSupplierPaymentForm() {
+    setSupplierPaymentForm({
+      supplierName: "",
+      paymentDate: "",
+      currency: "USD",
+      amountPaid: 0,
+      paymentMode: "BANK_TRANSFER",
+      bankCashAccountName: "",
+      paymentReference: "",
+      remarks: "",
+      linkedPoNo: "",
+      supplierInvoiceNo: "",
+      supplierPiNo: "",
+      allocations: [],
+    });
+    setSupplierPaymentFile(null);
+    setSupplierPaymentDocType("SWIFT Copy");
+    setSupPayAllocPiId("");
+    setSupPayAllocAmt("");
+    setPoPaySearchInput("");
+    setPoPaySearchResults([]);
+    setErr("");
+  }
+
+  async function runPoPaySearch() {
+    const q = poPaySearchInput.trim();
+    if (q.length < 2) {
+      setErr("Enter at least 2 characters to search for a PO.");
+      return;
+    }
+    setPoPaySearchBusy(true);
+    setErr("");
+    try {
+      const data = await apiGetWithQuery("/accounts/ap/po-search", { q });
+      setPoPaySearchResults(data.items || []);
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setPoPaySearchBusy(false);
+    }
+  }
+
+  function applyPoToSupplierPayment(po) {
+    if (!po) return;
+    setSupplierPaymentForm((f) => ({
+      ...f,
+      linkedPoNo: String(po.poNo || po.poNumber || "").trim(),
+      supplierName: String(po.supplierName || f.supplierName || "").trim(),
+      currency: String(po.currency || f.currency || "USD")
+        .trim()
+        .toUpperCase(),
+    }));
+    setPoPaySearchResults([]);
+  }
+
+  function createDraftPiFromApRow(row) {
+    const poId = row.linkedPoId;
+    if (!poId) {
+      setErr("This row has no linked PO id.");
+      return;
+    }
+    let sinv = String(row.documentNo || "").trim();
+    if (!sinv) {
+      sinv = window.prompt("Supplier invoice / document number for the draft purchase invoice:") || "";
+    }
+    sinv = sinv.trim();
+    if (!sinv) return;
+    createPiFromPoMut.mutate({ poId, supplierInvoiceNo: sinv });
+  }
 
   function activeRows() {
     if (tab === "si") return siQ.data?.items ?? [];
@@ -794,6 +966,7 @@ export default function Accounts() {
                 setBankEditId(null);
                 setBankForm(emptyBankForm());
               }
+              if (tab === "payv") resetSupplierPaymentForm();
               setModal(tab);
             }}
           >
@@ -809,25 +982,119 @@ export default function Accounts() {
       )}
 
       {tab === "pi" && (
-        <div className="mb-3 flex flex-wrap items-end gap-2 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2">
-          <FormField label="Filter by PO no." className="min-w-[220px] flex-1">
-            <TextInput
-              value={piPoFilterInput}
-              onChange={(e) => setPiPoFilterInput(e.target.value)}
-              placeholder="Contains… e.g. PO-2026"
-            />
-          </FormField>
-          <button
-            type="button"
-            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
-            onClick={() => {
-              setPage(1);
-              setPiPoFilter(piPoFilterInput.trim());
-            }}
-          >
-            Apply filter
-          </button>
-        </div>
+        <>
+          <div className="mb-3 flex flex-wrap items-end gap-2 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2">
+            <FormField label="Filter by PO no." className="min-w-[220px] flex-1">
+              <TextInput
+                value={piPoFilterInput}
+                onChange={(e) => setPiPoFilterInput(e.target.value)}
+                placeholder="Contains… e.g. PO-2026"
+              />
+            </FormField>
+            <button
+              type="button"
+              className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
+              onClick={() => {
+                setPage(1);
+                setPiPoFilter(piPoFilterInput.trim());
+              }}
+            >
+              Apply filter
+            </button>
+          </div>
+          <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900">Supplier files from purchase orders</h3>
+                <p className="text-xs text-gray-600">
+                  Uploaded PO invoices appear here. Use <b>Create draft PI</b> if they are missing from the table
+                  below, then <b>Book</b> the draft so you can allocate supplier payments.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+                onClick={() => qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] })}
+              >
+                Refresh list
+              </button>
+            </div>
+            {apPoDocsQ.isLoading ? (
+              <p className="text-sm text-gray-500">Loading supplier documents…</p>
+            ) : !(apPoDocsQ.data?.items || []).length ? (
+              <p className="text-sm text-gray-500">No supplier documents on POs yet.</p>
+            ) : (
+              <div className="overflow-x-auto rounded-lg border border-gray-100">
+                <table className="min-w-full text-left text-xs">
+                  <thead className="border-b bg-slate-50 font-semibold text-gray-600">
+                    <tr>
+                      <th className="px-2 py-2">PO</th>
+                      <th className="px-2 py-2">Supplier</th>
+                      <th className="px-2 py-2">Type</th>
+                      <th className="px-2 py-2">Doc no.</th>
+                      <th className="px-2 py-2">Uploaded</th>
+                      <th className="px-2 py-2">PI on PO</th>
+                      <th className="px-2 py-2">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(apPoDocsQ.data?.items || []).map((row) => {
+                      const poLabel = row.po?.poNo || row.po?.poNumber || "—";
+                      const pis = row.purchaseInvoicesOnPo || [];
+                      return (
+                        <tr key={String(row.purchaseDocumentId)} className="border-b border-gray-50">
+                          <td className="px-2 py-1.5 font-mono">{poLabel}</td>
+                          <td className="px-2 py-1.5">{row.po?.supplierName || "—"}</td>
+                          <td className="px-2 py-1.5">{row.documentType || "—"}</td>
+                          <td className="px-2 py-1.5 font-mono">{row.documentNo || "—"}</td>
+                          <td className="px-2 py-1.5 text-gray-600">
+                            {row.uploadedAt ? new Date(row.uploadedAt).toLocaleString() : "—"}
+                          </td>
+                          <td className="px-2 py-1.5 text-[11px] text-gray-700">
+                            {!pis.length ? (
+                              <span className="text-amber-700">No draft/posted PI</span>
+                            ) : (
+                              <ul className="list-inside list-disc space-y-0.5">
+                                {pis.map((inv) => (
+                                  <li key={String(inv._id)}>
+                                    {inv.invoiceNumber}{" "}
+                                    <span className="text-gray-500">
+                                      ({inv.status}
+                                      {inv.supplierInvoiceNo ? ` · ${inv.supplierInvoiceNo}` : ""})
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <div className="flex flex-wrap gap-1">
+                              <button
+                                type="button"
+                                className="rounded border border-blue-200 bg-blue-50 px-2 py-0.5 font-semibold text-blue-900 hover:bg-blue-100"
+                                onClick={() => viewApPoDoc(row)}
+                              >
+                                View
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded border border-gray-300 bg-white px-2 py-0.5 font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-40"
+                                disabled={createPiFromPoMut.isPending}
+                                onClick={() => createDraftPiFromApRow(row)}
+                              >
+                                Create draft PI
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
       )}
 
       <div className="overflow-hidden rounded-2xl border bg-white">
@@ -981,23 +1248,26 @@ export default function Accounts() {
               <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
                 <tr>
                   <th className="px-3 py-2">Invoice</th>
+                  <th className="px-3 py-2">PO #</th>
                   <th className="px-3 py-2">Supplier</th>
+                  <th className="px-3 py-2">Sup. inv #</th>
                   <th className="px-3 py-2">Date</th>
-                  <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Book status</th>
+                  <th className="px-3 py-2">Payment</th>
                   <th className="px-3 py-2 text-right">Total</th>
-                  <th className="px-3 py-2 w-16" />
+                  <th className="px-3 py-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {loading() ? (
                   <tr>
-                    <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                    <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
                       Loading…
                     </td>
                   </tr>
                 ) : activeRows().length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                    <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
                       No rows.
                     </td>
                   </tr>
@@ -1005,25 +1275,44 @@ export default function Accounts() {
                   activeRows().map((r) => (
                     <tr key={r._id} className="border-b border-gray-100">
                       <td className="px-3 py-2 font-mono text-xs">{r.invoiceNumber}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{r.linkedPoNumber || "—"}</td>
                       <td className="px-3 py-2">{r.supplierName}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{r.supplierInvoiceNo || "—"}</td>
                       <td className="px-3 py-2 text-xs text-gray-600">
                         {r.invoiceDate ? new Date(r.invoiceDate).toLocaleDateString() : "—"}
                       </td>
-                      <td className="px-3 py-2">{r.paymentStatus}</td>
+                      <td className="px-3 py-2 text-xs">{r.status || "—"}</td>
+                      <td className="px-3 py-2 text-xs">{r.paymentStatus || "—"}</td>
                       <td className="px-3 py-2 text-right tabular-nums">
                         {r.currency} {Number(r.totalAmount || 0).toFixed(2)}
                       </td>
                       <td className="px-3 py-2">
-                        <button
-                          type="button"
-                          className="text-xs text-red-600"
-                          onClick={() => {
-                            if (confirm("Delete invoice?"))
-                              delMut.mutate({ path: `/accounts/purchase-invoices/${r._id}` });
-                          }}
-                        >
-                          Del
-                        </button>
+                        <div className="flex flex-wrap gap-1">
+                          {String(r.status || "").toUpperCase() === "DRAFT" ? (
+                            <button
+                              type="button"
+                              className="rounded border border-gray-300 bg-white px-2 py-0.5 text-xs font-semibold text-gray-900 hover:bg-gray-50 disabled:opacity-40"
+                              disabled={postMut.isPending}
+                              onClick={() => {
+                                if (!window.confirm("Book this purchase invoice? It will post to the supplier ledger."))
+                                  return;
+                                postMut.mutate({ path: `/purchase-invoices/${r._id}/book`, body: {} });
+                              }}
+                            >
+                              Book
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="text-xs text-red-600"
+                            onClick={() => {
+                              if (confirm("Delete invoice?"))
+                                delMut.mutate({ path: `/accounts/purchase-invoices/${r._id}` });
+                            }}
+                          >
+                            Del
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -1830,21 +2119,82 @@ export default function Accounts() {
         </div>
       </Modal>
       <Modal open={modal === "payv"} onClose={() => setModal(null)} title="Supplier payment" wide>
+        <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50/80 p-3 text-xs text-gray-700">
+          <div className="font-semibold text-gray-900">Find purchase order</div>
+          <p className="mt-1 text-gray-600">
+            Search by PO number or supplier name, then apply to fill supplier, PO reference, and currency.
+          </p>
+          <div className="mt-2 flex flex-wrap items-end gap-2">
+            <FormField label="PO / supplier contains" className="min-w-[200px] flex-1">
+              <TextInput
+                value={poPaySearchInput}
+                onChange={(e) => setPoPaySearchInput(e.target.value)}
+                placeholder="e.g. PO-2026 or Alliance"
+              />
+            </FormField>
+            <button
+              type="button"
+              className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-40"
+              disabled={poPaySearchBusy}
+              onClick={() => runPoPaySearch()}
+            >
+              {poPaySearchBusy ? "Searching…" : "Search PO"}
+            </button>
+          </div>
+          {poPaySearchResults.length ? (
+            <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto rounded border border-white bg-white p-2">
+              {poPaySearchResults.map((po) => (
+                <li key={String(po._id)} className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 py-1 last:border-0">
+                  <span className="font-mono text-[11px]">{po.poNo || po.poNumber}</span>
+                  <span className="text-[11px] text-gray-700">{po.supplierName}</span>
+                  <span className="text-[11px] text-gray-500">
+                    {po.currency} {Number(po.grandTotal || 0).toFixed(2)} · {po.status}
+                  </span>
+                  <button
+                    type="button"
+                    className="rounded border border-gray-900 bg-gray-900 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-gray-800"
+                    onClick={() => applyPoToSupplierPayment(po)}
+                  >
+                    Use PO
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <FormField label="Supplier *">
-            <TextInput value={supplierPaymentForm.supplierName} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, supplierName: e.target.value }))} />
+            <TextInput
+              value={supplierPaymentForm.supplierName}
+              onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, supplierName: e.target.value }))}
+            />
           </FormField>
           <FormField label="Payment Date">
-            <TextInput type="date" value={supplierPaymentForm.paymentDate} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, paymentDate: e.target.value }))} />
+            <TextInput
+              type="date"
+              value={supplierPaymentForm.paymentDate}
+              onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, paymentDate: e.target.value }))}
+            />
           </FormField>
           <FormField label="Currency">
-            <TextInput value={supplierPaymentForm.currency} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))} />
+            <TextInput
+              value={supplierPaymentForm.currency}
+              onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
+            />
           </FormField>
           <FormField label="Amount Paid *">
-            <TextInput type="number" step="0.01" value={supplierPaymentForm.amountPaid} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, amountPaid: Number(e.target.value) }))} />
+            <TextInput
+              type="number"
+              step="0.01"
+              value={supplierPaymentForm.amountPaid}
+              onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, amountPaid: Number(e.target.value) }))}
+            />
           </FormField>
           <FormField label="Mode">
-            <SelectInput value={supplierPaymentForm.paymentMode} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, paymentMode: e.target.value }))}>
+            <SelectInput
+              value={supplierPaymentForm.paymentMode}
+              onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, paymentMode: e.target.value }))}
+            >
               <option value="BANK_TRANSFER">BANK_TRANSFER</option>
               <option value="CASH">CASH</option>
               <option value="CHEQUE">CHEQUE</option>
@@ -1853,24 +2203,123 @@ export default function Accounts() {
             </SelectInput>
           </FormField>
           <FormField label="Bank/Cash Account">
-            <TextInput value={supplierPaymentForm.bankCashAccountName} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, bankCashAccountName: e.target.value }))} />
+            <TextInput
+              value={supplierPaymentForm.bankCashAccountName}
+              onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, bankCashAccountName: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Linked PO #">
+            <TextInput
+              value={supplierPaymentForm.linkedPoNo}
+              onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, linkedPoNo: e.target.value }))}
+              placeholder="Filled from PO search or type manually"
+            />
+          </FormField>
+          <FormField label="Supplier invoice # (reference)">
+            <TextInput
+              value={supplierPaymentForm.supplierInvoiceNo}
+              onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, supplierInvoiceNo: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Our PI # (optional)">
+            <TextInput
+              value={supplierPaymentForm.supplierPiNo}
+              onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, supplierPiNo: e.target.value }))}
+              placeholder="e.g. CMP-PI-0001"
+            />
           </FormField>
           <FormField label="Payment Reference">
-            <TextInput value={supplierPaymentForm.paymentReference} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, paymentReference: e.target.value }))} />
+            <TextInput
+              value={supplierPaymentForm.paymentReference}
+              onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, paymentReference: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Allocate to booked PI (optional)" className="sm:col-span-2">
+            <div className="flex flex-wrap gap-2">
+              <select
+                className="min-w-[200px] flex-1 rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+                value={supPayAllocPiId}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setSupPayAllocPiId(id);
+                  const row = (supplierPayPiQ.data?.items || []).find((x) => String(x._id) === id);
+                  if (row) {
+                    const bal = Math.max(
+                      0,
+                      (Number(row.totalAmount) || 0) - (Number(row.totalPaidAmount) || 0)
+                    );
+                    setSupPayAllocAmt(String(bal > 0 ? bal.toFixed(2) : ""));
+                  }
+                }}
+              >
+                <option value="">— Select posted purchase invoice —</option>
+                {(supplierPayPiQ.data?.items || []).map((inv) => {
+                  const bal = Math.max(
+                    0,
+                    (Number(inv.totalAmount) || 0) - (Number(inv.totalPaidAmount) || 0)
+                  );
+                  return (
+                    <option key={String(inv._id)} value={String(inv._id)}>
+                      {inv.invoiceNumber} · bal {bal.toFixed(2)} {inv.currency}
+                    </option>
+                  );
+                })}
+              </select>
+              <div className="w-36 shrink-0">
+                <TextInput
+                  type="number"
+                  step="0.01"
+                  placeholder="Amount"
+                  value={supPayAllocAmt}
+                  onChange={(e) => setSupPayAllocAmt(e.target.value)}
+                />
+              </div>
+            </div>
+            <p className="mt-1 text-[11px] text-gray-500">
+              Loads posted PIs for the supplier name above (type at least 2 characters). Booking a draft PI is
+              required before allocation.
+            </p>
+          </FormField>
+          <FormField label="Bank proof / SWIFT upload" className="sm:col-span-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <SelectInput
+                value={supplierPaymentDocType}
+                onChange={(e) => setSupplierPaymentDocType(e.target.value)}
+              >
+                <option value="SWIFT Copy">SWIFT Copy</option>
+                <option value="Bank Transfer Proof">Bank Transfer Proof</option>
+              </SelectInput>
+              <input
+                type="file"
+                accept=".pdf,.png,.jpg,.jpeg"
+                className="text-xs"
+                onChange={(e) => setSupplierPaymentFile(e.target.files?.[0] || null)}
+              />
+            </div>
+            {supplierPaymentFile ? (
+              <p className="mt-1 text-[11px] text-gray-600">Selected: {supplierPaymentFile.name}</p>
+            ) : (
+              <p className="mt-1 text-[11px] text-gray-500">Optional — attach before Save to link proof to this payment.</p>
+            )}
           </FormField>
           <FormField label="Remarks" className="sm:col-span-2">
-            <TextInput value={supplierPaymentForm.remarks} onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, remarks: e.target.value }))} />
+            <TextInput
+              value={supplierPaymentForm.remarks}
+              onChange={(e) => setSupplierPaymentForm((f) => ({ ...f, remarks: e.target.value }))}
+            />
           </FormField>
         </div>
         <div className="mt-4 flex justify-end gap-2">
-          <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={() => setModal(null)}>Cancel</button>
+          <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={() => setModal(null)}>
+            Cancel
+          </button>
           <button
             type="button"
-            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
-            disabled={postMut.isPending}
-            onClick={() => postMut.mutate({ path: "/accounts/supplier-payments", body: supplierPaymentForm })}
+            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
+            disabled={supplierPaySubmitMut.isPending}
+            onClick={() => supplierPaySubmitMut.mutate()}
           >
-            Save
+            {supplierPaySubmitMut.isPending ? "Saving…" : "Save payment"}
           </button>
         </div>
       </Modal>

@@ -1721,6 +1721,79 @@ export async function bookPurchaseInvoice(req, res) {
   }
 }
 
+/** Recent supplier files attached to POs (for Accounts: create PI, trace payments). */
+export async function listApPoSupplierDocuments(req, res) {
+  try {
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "40"), 10) || 40));
+    const docs = await PurchaseDocument.find(withCompany(req, { status: "ACTIVE" }))
+      .sort({ uploadedAt: -1 })
+      .limit(limit)
+      .lean();
+    const rawIds = [...new Set(docs.map((d) => String(d.linkedPoId)).filter(Boolean))];
+    const poIds = rawIds.filter((id) => mongoose.Types.ObjectId.isValid(id)).map((id) => new mongoose.Types.ObjectId(id));
+    const pos =
+      poIds.length === 0
+        ? []
+        : await PurchaseOrder.find(withCompany(req, { _id: { $in: poIds } }))
+            .select("_id poNo poNumber supplierName currency status")
+            .lean();
+    const poMap = new Map(pos.map((p) => [String(p._id), p]));
+    const invByPo =
+      poIds.length === 0
+        ? []
+        : await PurchaseInvoice.find(
+            withCompany(req, { linkedPoId: { $in: poIds }, status: { $in: ["DRAFT", "POSTED"] } })
+          )
+            .select("linkedPoId invoiceNumber status supplierInvoiceNo balanceAmount totalAmount")
+            .lean();
+    const invGroups = new Map();
+    for (const i of invByPo) {
+      const k = String(i.linkedPoId);
+      if (!invGroups.has(k)) invGroups.set(k, []);
+      invGroups.get(k).push(i);
+    }
+    const items = docs.map((d) => ({
+      purchaseDocumentId: d._id,
+      linkedPoId: d.linkedPoId,
+      documentType: d.documentType,
+      documentNo: d.documentNo,
+      fileUrl: d.fileUrl,
+      documentId: d.documentId,
+      amount: d.amount,
+      currency: d.currency,
+      uploadedAt: d.uploadedAt,
+      po: poMap.get(String(d.linkedPoId)) || null,
+      purchaseInvoicesOnPo: invGroups.get(String(d.linkedPoId)) || [],
+    }));
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+/** Quick PO lookup for supplier payment / AP (by PO # or supplier name fragment). */
+export async function searchApPurchaseOrders(req, res) {
+  try {
+    const q = String(req.query.q || "").trim();
+    if (q.length < 2) return res.json({ items: [] });
+    const esc = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const rx = new RegExp(esc, "i");
+    const items = await PurchaseOrder.find(
+      withCompany(req, {
+        status: { $nin: ["CANCELLED"] },
+        $or: [{ poNo: rx }, { poNumber: rx }, { supplierName: rx }],
+      })
+    )
+      .sort({ orderDate: -1 })
+      .limit(30)
+      .select("_id poNo poNumber supplierName currency grandTotal status")
+      .lean();
+    res.json({ items });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
 /** Pending supplier PI / invoice documents (PurchaseDocument collection). */
 export async function reportPendingSupplierDocuments(req, res) {
   try {

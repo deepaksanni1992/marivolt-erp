@@ -31,6 +31,9 @@ router.put("/purchase-invoices/:id", accountsEdit, c.updatePurchaseInvoice);
 router.patch("/purchase-invoices/:id/cancel", accountsEdit, c.cancelPurchaseInvoice);
 router.delete("/purchase-invoices/:id", accountsDelete, c.deletePurchaseInvoice);
 
+router.get("/ap/po-supplier-documents", accountsView, c.listApPoSupplierDocuments);
+router.get("/ap/po-search", accountsView, c.searchApPurchaseOrders);
+
 router.get("/supplier-payments", accountsView, c.listSupplierPayments);
 router.get("/supplier-payments/:id", accountsView, c.getSupplierPayment);
 router.post("/supplier-payments", accountsCreate, c.createSupplierPayment);
