@@ -47,6 +47,175 @@ function supplierPaymentAggregateMatch(req, extra = {}) {
   return { $and: clauses };
 }
 
+function normApKey(s) {
+  return String(s ?? "").trim().toLowerCase();
+}
+
+function escapeRegex(s) {
+  return String(s ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * For (supplier, PO) pairs seen on invoices, return which composite key maps to exactly one POSTED PI (company-scoped).
+ * Used to attribute supplier payment lines where purchaseInvoiceNo holds a PO number instead of a PI number.
+ * @returns {Map<string, string|null>} key `supplierNorm::poNorm` -> invoice ObjectId string, or null if ambiguous/absent.
+ */
+async function buildPoUniqueOwnerMap(req, invoicesLean) {
+  const out = new Map();
+  const pairs = [];
+  const seen = new Set();
+  for (const inv of invoicesLean) {
+    const sn = String(inv.supplierName || "").trim();
+    const pn = String(inv.linkedPoNumber || "").trim();
+    if (!sn || !pn) continue;
+    const k = `${normApKey(sn)}::${normApKey(pn)}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    pairs.push({ k, sn, pn });
+  }
+  if (!pairs.length) return out;
+  const orClauses = pairs.map(({ sn, pn }) => ({
+    supplierName: new RegExp(`^${escapeRegex(sn)}$`, "i"),
+    linkedPoNumber: new RegExp(`^${escapeRegex(pn)}$`, "i"),
+  }));
+  const rows = await PurchaseInvoice.find(withCompany(req, { status: "POSTED", $or: orClauses }))
+    .select("_id supplierName linkedPoNumber")
+    .lean();
+  const grouping = new Map();
+  for (const r of rows) {
+    const gk = `${normApKey(r.supplierName)}::${normApKey(r.linkedPoNumber)}`;
+    if (!grouping.has(gk)) grouping.set(gk, []);
+    grouping.get(gk).push(String(r._id));
+  }
+  for (const { k } of pairs) {
+    const ids = grouping.get(k) || [];
+    out.set(k, ids.length === 1 ? ids[0] : null);
+  }
+  return out;
+}
+
+/**
+ * Resolve purchase invoice _id from a supplier payment allocation line (id, or purchaseInvoiceNo).
+ */
+async function resolvePurchaseInvoiceIdFromAllocation(req, alloc) {
+  const rawId = alloc?.purchaseInvoiceId;
+  if (rawId != null && mongoose.Types.ObjectId.isValid(String(rawId))) {
+    return new mongoose.Types.ObjectId(String(rawId));
+  }
+  const no = String(alloc?.purchaseInvoiceNo || "").trim();
+  if (!no) return null;
+  const esc = escapeRegex(no);
+  const inv = await PurchaseInvoice.findOne(
+    withCompany(req, {
+      $or: [{ invoiceNumber: new RegExp(`^${esc}$`, "i") }, { supplierInvoiceNo: new RegExp(`^${esc}$`, "i") }],
+    }),
+  )
+    .select("_id")
+    .lean();
+  return inv?._id || null;
+}
+
+/**
+ * Sum allocated amounts from posted supplier payments for one purchase invoice.
+ * Uses purchaseInvoiceId (string-safe), purchaseInvoiceNo vs internal invoice number,
+ * and purchaseInvoiceNo vs supplier invoice number so paid totals stay correct when links are partial.
+ */
+async function computePurchaseInvoicePaidFromSupplierPayments(req, inv) {
+  const lean = inv && typeof inv.toObject === "function" ? inv.toObject() : { ...inv };
+  const m = await computePurchaseInvoicePaidTotalsForMany(req, [lean]);
+  return Math.max(0, Number(m.get(String(lean._id)) || 0));
+}
+
+/**
+ * Bulk: for each purchase invoice in the list, total paid from supplier payment allocation lines.
+ * Returns Map keyed by invoice ObjectId string.
+ */
+async function computePurchaseInvoicePaidTotalsForMany(req, invoicesLean) {
+  const out = new Map();
+  if (!invoicesLean?.length) return out;
+
+  const idStrings = [...new Set(invoicesLean.map((i) => String(i._id)).filter(Boolean))];
+  const noKeySet = new Set();
+  for (const inv of invoicesLean) {
+    const n1 = normApKey(inv.invoiceNumber);
+    const n2 = normApKey(inv.supplierInvoiceNo);
+    if (n1) noKeySet.add(n1);
+    if (n2) noKeySet.add(n2);
+  }
+  const poOwnerMap = await buildPoUniqueOwnerMap(req, invoicesLean);
+  const extraPoNorms = new Set();
+  for (const inv of invoicesLean) {
+    const pok = `${normApKey(inv.supplierName)}::${normApKey(inv.linkedPoNumber)}`;
+    const poNorm = normApKey(inv.linkedPoNumber);
+    if (!poNorm) continue;
+    if (poOwnerMap.get(pok) === String(inv._id)) extraPoNorms.add(poNorm);
+  }
+  const noArr = [...new Set([...noKeySet, ...extraPoNorms])];
+  const supplierNorms = [...new Set(invoicesLean.map((i) => normApKey(i.supplierName)).filter(Boolean))];
+
+  const aggMatch = supplierPaymentAggregateMatch(req, { status: { $nin: ["CANCELLED", "DRAFT"] } });
+  const supplierClause =
+    supplierNorms.length > 0
+      ? {
+          $expr: {
+            $in: [{ $toLower: { $trim: { input: { $ifNull: ["$supplierName", ""] } } } }, supplierNorms],
+          },
+        }
+      : null;
+  const baseMatch = supplierClause ? { $and: [aggMatch, supplierClause] } : aggMatch;
+
+  const grouped = await SupplierPayment.aggregate([
+    { $match: baseMatch },
+    { $unwind: "$allocations" },
+    {
+      $addFields: {
+        idStr: {
+          $convert: { input: "$allocations.purchaseInvoiceId", to: "string", onError: "", onNull: "" },
+        },
+        noNorm: { $toLower: { $trim: { input: { $ifNull: ["$allocations.purchaseInvoiceNo", ""] } } } },
+        amt: { $toDouble: { $ifNull: ["$allocations.allocatedAmount", 0] } },
+      },
+    },
+    {
+      $addFields: {
+        groupKey: {
+          $cond: [
+            { $and: [{ $ne: ["$idStr", ""] }, { $in: ["$idStr", idStrings] }] },
+            "$idStr",
+            {
+              $cond: [
+                { $and: [{ $ne: ["$noNorm", ""] }, { $in: ["$noNorm", noArr] }] },
+                { $concat: ["no:", "$noNorm"] },
+                null,
+              ],
+            },
+          ],
+        },
+      },
+    },
+    { $match: { groupKey: { $ne: null } } },
+    { $group: { _id: "$groupKey", paid: { $sum: "$amt" } } },
+  ]);
+
+  const bucket = new Map(grouped.map((r) => [String(r._id), Math.max(0, Number(r.paid || 0))]));
+
+  for (const inv of invoicesLean) {
+    const idStr = String(inv._id);
+    const n1 = normApKey(inv.invoiceNumber);
+    const n2 = normApKey(inv.supplierInvoiceNo);
+    const poNorm = normApKey(inv.linkedPoNumber);
+    const pok = `${normApKey(inv.supplierName)}::${poNorm}`;
+    let paid = bucket.get(idStr) || 0;
+    if (n1) paid += bucket.get(`no:${n1}`) || 0;
+    if (n2 && n2 !== n1) paid += bucket.get(`no:${n2}`) || 0;
+    if (poNorm && poOwnerMap.get(pok) === idStr && poNorm !== n1 && poNorm !== n2) {
+      paid += bucket.get(`no:${poNorm}`) || 0;
+    }
+    out.set(idStr, Math.max(0, paid));
+  }
+  return out;
+}
+
 function paginate(req) {
   const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
@@ -264,7 +433,15 @@ export async function listPurchaseInvoices(req, res) {
       PurchaseInvoice.find(filter).sort({ invoiceDate: -1 }).skip(skip).limit(limit).lean(),
       PurchaseInvoice.countDocuments(filter),
     ]);
-    res.json({ items, total, page, limit });
+    const paidMap = await computePurchaseInvoicePaidTotalsForMany(req, items);
+    const enriched = items.map((inv) => {
+      const invoiceAmount = Math.max(0, Number(inv.totalAmount) || 0);
+      const paid = Math.max(0, Number(paidMap.get(String(inv._id)) || 0));
+      const balanceAmount = Math.max(0, invoiceAmount - paid);
+      const paymentStatus = paid <= 0 ? "UNPAID" : paid + 0.0001 < invoiceAmount ? "PARTIAL" : "PAID";
+      return { ...inv, totalPaidAmount: paid, balanceAmount, paymentStatus };
+    });
+    res.json({ items: enriched, total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -278,7 +455,11 @@ export async function getPurchaseInvoice(req, res) {
     }
     const row = await PurchaseInvoice.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
-    res.json(row);
+    const paid = await computePurchaseInvoicePaidFromSupplierPayments(req, row);
+    const invoiceAmount = Math.max(0, Number(row.totalAmount) || 0);
+    const balanceAmount = Math.max(0, invoiceAmount - paid);
+    const paymentStatus = paid <= 0 ? "UNPAID" : paid + 0.0001 < invoiceAmount ? "PARTIAL" : "PAID";
+    res.json({ ...row, totalPaidAmount: paid, balanceAmount, paymentStatus });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -644,21 +825,11 @@ export async function deleteSupplierLedgerEntry(req, res) {
   }
 }
 
-async function recalcPurchaseInvoicePaymentState(req, purchaseInvoiceId) {
+/** Persist PI paid/balance/status from posted supplier payment allocations (company-scoped). */
+export async function recalculatePurchaseInvoicePaymentStatus(req, purchaseInvoiceId) {
   const inv = await PurchaseInvoice.findOne(withCompany(req, { _id: purchaseInvoiceId }));
   if (!inv) return null;
-  const invIdStr = String(inv._id);
-  const paidAgg = await SupplierPayment.aggregate([
-    { $match: supplierPaymentAggregateMatch(req, { status: { $nin: ["CANCELLED", "DRAFT"] } }) },
-    { $unwind: "$allocations" },
-    {
-      $match: {
-        $expr: { $eq: [{ $toString: "$allocations.purchaseInvoiceId" }, invIdStr] },
-      },
-    },
-    { $group: { _id: null, paid: { $sum: "$allocations.allocatedAmount" } } },
-  ]);
-  const paid = Math.max(0, Number(paidAgg[0]?.paid || 0));
+  const paid = await computePurchaseInvoicePaidFromSupplierPayments(req, inv);
   const total = Math.max(0, Number(inv.totalAmount) || 0);
   inv.totalPaidAmount = paid;
   inv.balanceAmount = Math.max(0, total - paid);
@@ -673,7 +844,7 @@ export async function recalcAllPostedPurchaseInvoicePayments(req, res) {
     const list = await PurchaseInvoice.find(withCompany(req, { status: "POSTED" })).select("_id").lean();
     let n = 0;
     for (const row of list) {
-      await recalcPurchaseInvoicePaymentState(req, row._id);
+      await recalculatePurchaseInvoicePaymentStatus(req, row._id);
       n += 1;
     }
     res.json({ ok: true, recalculated: n });
@@ -936,7 +1107,7 @@ export async function createSupplierPayment(req, res) {
     payment.linkedSupplierLedgerEntryId = supplierLedger._id;
     await payment.save();
     for (const row of allocations) {
-      await recalcPurchaseInvoicePaymentState(req, row.purchaseInvoiceId);
+      await recalculatePurchaseInvoicePaymentStatus(req, row.purchaseInvoiceId);
     }
     const linkedPoIds = new Set();
     for (const row of allocations) {
@@ -1088,7 +1259,7 @@ export async function postDraftSupplierPayment(req, res) {
     await row.save();
 
     for (const alloc of allocations) {
-      await recalcPurchaseInvoicePaymentState(req, alloc.purchaseInvoiceId);
+      await recalculatePurchaseInvoicePaymentStatus(req, alloc.purchaseInvoiceId);
     }
     const linkedPoIds = new Set();
     for (const alloc of allocations) {
@@ -1276,14 +1447,15 @@ export async function cancelSupplierPayment(req, res) {
     row.updatedBy = req.user?.email || "";
     row.remarks = `${row.remarks || ""}${row.remarks ? " " : ""}[CANCELLED: ${reason}]`;
     await row.save();
+    const touchedIds = new Set();
     for (const a of row.allocations || []) {
-      await recalcPurchaseInvoicePaymentState(req, a.purchaseInvoiceId);
+      const pid = await resolvePurchaseInvoiceIdFromAllocation(req, a);
+      if (pid) touchedIds.add(String(pid));
     }
     const linkedPoIds = new Set();
-    for (const a of row.allocations || []) {
-      const inv = await PurchaseInvoice.findOne(withCompany(req, { _id: a.purchaseInvoiceId }))
-        .select("linkedPoId")
-        .lean();
+    for (const idStr of touchedIds) {
+      await recalculatePurchaseInvoicePaymentStatus(req, new mongoose.Types.ObjectId(idStr));
+      const inv = await PurchaseInvoice.findOne(withCompany(req, { _id: idStr })).select("linkedPoId").lean();
       if (inv?.linkedPoId) linkedPoIds.add(String(inv.linkedPoId));
     }
     const linkedPoRaw = String(row.linkedPoNo || "").trim();
@@ -1329,10 +1501,11 @@ export async function supplierOutstandingReport(req, res) {
     const filter = withCompany(req, { status: "POSTED" });
     if (req.query.supplierName) filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
     const invoices = await PurchaseInvoice.find(filter).sort({ invoiceDate: -1 }).lean();
+    const paidMap = await computePurchaseInvoicePaidTotalsForMany(req, invoices);
     const rows = invoices
       .map((inv) => {
         const invoiceAmount = Math.max(0, Number(inv.totalAmount) || 0);
-        const paidAmount = Math.max(0, Number(inv.totalPaidAmount) || 0);
+        const paidAmount = Math.max(0, Number(paidMap.get(String(inv._id)) || 0));
         const balance = Math.max(0, invoiceAmount - paidAmount);
         const dueDate = inv.dueDate ? new Date(inv.dueDate) : dueDateForPurchaseInvoice(inv);
         const ageing = ageingBucketFromDueDate(dueDate);
@@ -1359,10 +1532,11 @@ export async function apAgeingReport(req, res) {
     const filter = withCompany(req, { status: "POSTED" });
     if (req.query.supplierName) filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
     const invs = await PurchaseInvoice.find(filter).lean();
+    const paidMap = await computePurchaseInvoicePaidTotalsForMany(req, invs);
     const bucketBySupplier = new Map();
     for (const inv of invs) {
       const total = Math.max(0, Number(inv.totalAmount) || 0);
-      const paid = Math.max(0, Number(inv.totalPaidAmount) || 0);
+      const paid = Math.max(0, Number(paidMap.get(String(inv._id)) || 0));
       const bal = Math.max(0, total - paid);
       if (bal <= 0) continue;
       const dueDate = inv.dueDate ? new Date(inv.dueDate) : dueDateForPurchaseInvoice(inv);
@@ -1801,6 +1975,7 @@ export async function getApDashboard(req, res) {
     const totalPurchaseValue = pos.reduce((n, p) => n + (Number(p.grandTotal) || 0), 0);
 
     const pis = await PurchaseInvoice.find(withCompany(req, { status: "POSTED" })).lean();
+    const paidMap = await computePurchaseInvoicePaidTotalsForMany(req, pis);
     let totalPayables = 0;
     let overduePayables = 0;
     let pendingInvoices = 0;
@@ -1808,14 +1983,15 @@ export async function getApDashboard(req, res) {
     let paidInvoices = 0;
     const now = Date.now();
     for (const inv of pis) {
-      const bal = Math.max(0, (Number(inv.totalAmount) || 0) - (Number(inv.totalPaidAmount) || 0));
+      const total = Math.max(0, Number(inv.totalAmount) || 0);
+      const paid = Math.max(0, Number(paidMap.get(String(inv._id)) || 0));
+      const bal = Math.max(0, total - paid);
       totalPayables += bal;
       const due = inv.dueDate ? new Date(inv.dueDate) : dueDateForPurchaseInvoice(inv);
       if (bal > 0.001 && due.getTime() < now) overduePayables += bal;
-      const ps = String(inv.paymentStatus || "").toUpperCase();
-      if (ps === "UNPAID" && bal > 0.001) pendingInvoices += 1;
-      else if (ps === "PARTIAL") partialInvoices += 1;
-      else if (ps === "PAID" || bal <= 0.001) paidInvoices += 1;
+      if (bal <= 0.001) paidInvoices += 1;
+      else if (paid > 0.001) partialInvoices += 1;
+      else pendingInvoices += 1;
     }
 
     const startOfMonth = new Date();
@@ -1840,7 +2016,9 @@ export async function getApDashboard(req, res) {
 
     const supplierWise = new Map();
     for (const inv of pis) {
-      const bal = Math.max(0, (Number(inv.totalAmount) || 0) - (Number(inv.totalPaidAmount) || 0));
+      const total = Math.max(0, Number(inv.totalAmount) || 0);
+      const paid = Math.max(0, Number(paidMap.get(String(inv._id)) || 0));
+      const bal = Math.max(0, total - paid);
       if (bal <= 0.001) continue;
       const k = `${inv.supplierName || "—"}::${inv.currency || "USD"}`;
       supplierWise.set(k, (supplierWise.get(k) || 0) + bal);
@@ -1932,9 +2110,10 @@ export async function getFinanceDashboard(req, res) {
 
     const pis = await PurchaseInvoice.find(withCompany(req, { status: "POSTED" }))
       .select(
-        "totalAmount totalPaidAmount dueDate invoiceDate paymentTerms supplierName currency paymentStatus",
+        "totalAmount totalPaidAmount dueDate invoiceDate paymentTerms supplierName currency paymentStatus linkedPoNumber supplierInvoiceNo invoiceNumber",
       )
       .lean();
+    const piPaidMap = await computePurchaseInvoicePaidTotalsForMany(req, pis);
 
     let totalPayables = 0;
     let overduePayables = 0;
@@ -1943,7 +2122,7 @@ export async function getFinanceDashboard(req, res) {
 
     for (const inv of pis) {
       const t = Math.max(0, Number(inv.totalAmount) || 0);
-      const paid = Math.max(0, Number(inv.totalPaidAmount) || 0);
+      const paid = Math.max(0, Number(piPaidMap.get(String(inv._id)) || 0));
       const bal = Math.max(0, t - paid);
       totalPayables += bal;
       const due = inv.dueDate ? new Date(inv.dueDate) : dueDateForPurchaseInvoice(inv);

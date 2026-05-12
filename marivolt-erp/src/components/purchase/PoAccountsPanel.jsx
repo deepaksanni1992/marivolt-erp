@@ -203,6 +203,7 @@ export default function PoAccountsPanel({ detail, detailId, qc, setErr }) {
       qc.invalidateQueries({ queryKey: ["apAging"] });
       qc.invalidateQueries({ queryKey: ["cashBank"] });
       qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      qc.invalidateQueries({ queryKey: ["financeDashboard"] });
       qc.invalidateQueries({ queryKey: ["purchaseOrder", detailId] });
       setSubModal(null);
     },
