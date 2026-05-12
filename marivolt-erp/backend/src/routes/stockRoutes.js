@@ -12,6 +12,7 @@ const storeApprove = requirePermission("STORE", "approve");
 const storeDelete = requirePermission("STORE", "delete");
 
 router.get("/meta", storeView, c.stockMeta);
+router.get("/view", storeView, c.listStockSummary);
 router.get("/summary", storeView, c.listStockSummary);
 router.get("/balance", storeView, c.listStockBalance);
 router.get("/customer-allocations", storeView, c.listCustomerAllocationsForArticle);

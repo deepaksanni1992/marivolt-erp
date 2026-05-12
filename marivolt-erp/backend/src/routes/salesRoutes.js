@@ -4,6 +4,7 @@ import { requireErpAccess } from "../middleware/erpAccess.js";
 import { requirePermission } from "../middleware/permissions.js";
 import * as c from "../controllers/salesController.js";
 import * as flow from "../controllers/salesFlowController.js";
+import * as storeOutbound from "../controllers/storeOutboundController.js";
 import * as salesReturn from "../controllers/salesReturnController.js";
 
 /** Customer master edits (PUT/DELETE) — super_admin, company_admin, or admin only. */
@@ -68,6 +69,7 @@ router.post("/sales-invoices", salesCreate, flow.createSalesInvoice);
 router.get("/sales-invoices/:id", salesView, flow.getSalesInvoice);
 router.put("/sales-invoices/:id", salesEdit, flow.updateSalesInvoice);
 router.patch("/sales-invoices/:id/cancel", salesCancel, flow.cancelSalesInvoice);
+router.get("/dispatch-status", salesView, storeOutbound.listDispatchStatus);
 router.get("/sales-dispatches", salesView, flow.listSalesDispatches);
 router.get("/sales-dispatches/:id", salesView, flow.getSalesDispatch);
 router.patch("/sales-dispatches/:id", salesEdit, flow.patchSalesDispatch);

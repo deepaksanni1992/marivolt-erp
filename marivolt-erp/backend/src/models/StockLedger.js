@@ -17,6 +17,10 @@ const TX_TYPES = [
   "STOCK_ADJUSTMENT",
   "TRANSFER_IN",
   "TRANSFER_OUT",
+  "PACKED",
+  "UNPACKED",
+  "DISPATCH_OUT",
+  "DISPATCH_CANCEL",
 ];
 
 /**
@@ -40,6 +44,10 @@ const UNIFIED_MOVEMENT_TYPES = [
   "STOCK_TRANSFER_IN",
   "STOCK_ADJUSTMENT",
   "OPENING_BALANCE",
+  "PACKED",
+  "UNPACKED",
+  "DISPATCH_OUT",
+  "DISPATCH_CANCEL",
 ];
 
 const stockLedgerSchema = new mongoose.Schema(
@@ -83,6 +91,8 @@ const stockLedgerSchema = new mongoose.Schema(
     onHandAfter: { type: Number, default: null },
     allocatedAfter: { type: Number, default: null },
     rtsAfter: { type: Number, default: null },
+    /** Qty in posted Store Packing (not yet dispatched). */
+    packedAfter: { type: Number, default: null },
     availableAfter: { type: Number, default: null },
     isNegativeAllocation: { type: Boolean, default: false },
   },

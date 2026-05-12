@@ -2,6 +2,7 @@ import express from "express";
 import { requireErpAccess } from "../middleware/erpAccess.js";
 import { requirePermission } from "../middleware/permissions.js";
 import * as stock from "../controllers/stockController.js";
+import * as outbound from "../controllers/storeOutboundController.js";
 
 /**
  * Aggregates Store-module endpoints under the `/api/store` namespace.
@@ -36,5 +37,7 @@ router.post("/landed-cost/:id/cancel", requirePermission("STORE", "approve"), st
 router.get("/reports/landed-cost-summary", storeView, stock.landedCostSummaryReport);
 router.get("/reports/stock-valuation-adjustments", storeView, stock.stockValuationAdjustmentReport);
 router.get("/reports/grn-cost-analysis", storeView, stock.grnCostAnalysisReport);
+router.get("/reports/packing-pending-dispatch", storeView, outbound.reportPackingPendingDispatch);
+router.get("/reports/dispatch-summary", storeView, outbound.reportDispatchSummary);
 
 export default router;

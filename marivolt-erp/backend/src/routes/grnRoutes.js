@@ -12,9 +12,13 @@ const storeApprove = requirePermission("STORE", "approve");
 const storeCancel = requirePermission("STORE", "cancel");
 
 router.post("/", storeCreate, c.createGrn);
+router.post("/draft", storeCreate, c.createGrn);
 router.get("/", storeView, c.listGrn);
 router.get("/reports/summary", storeView, c.getGrnSummaryReport);
 router.get("/reports/supplier-receiving", storeView, c.getSupplierReceivingReport);
+router.get("/reports/pending-po", storeView, c.getPendingPoGrnReport);
+router.get("/from-po/:poId", storeView, c.getGrnFromPo);
+router.get("/id/:id", storeView, c.getGrnByMongoId);
 router.get("/:grnNo", storeView, c.getGrn);
 router.put("/:grnNo", storeEdit, c.updateGrn);
 router.post("/:grnNo/post", storeApprove, c.postGrn);

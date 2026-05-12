@@ -77,7 +77,7 @@ function defaultFormatFor(docKey) {
     case "PAYMENT_RECEIPT":
       return "{COMPANY}/{YYMMDD}.{SEQ}";
     case "GRN":
-      return "GRN-{YYYYMMDD}-{SEQ}";
+      return "{COMPANY}-GRN-{SEQ}";
     case "STOCK_ADJUSTMENT":
       return "ADJ-{YYYYMMDD}-{SEQ}";
     case "STOCK_TRANSFER":
@@ -94,6 +94,12 @@ function defaultFormatFor(docKey) {
       return "KIT-{YYYYMMDD}-{SEQ}";
     case "DEKITTING":
       return "DK-{YYYYMMDD}-{SEQ}";
+    case "STORE_PACKING":
+    case "PACKING":
+      return "{COMPANY}-PACK-{SEQ}";
+    case "STORE_DISPATCH":
+    case "DISPATCH":
+      return "{COMPANY}-DISP-{SEQ}";
     default:
       return `${upper}-{YYYYMMDD}-{SEQ}`;
   }

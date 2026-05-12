@@ -15,6 +15,8 @@ const grnItemSchema = new mongoose.Schema(
   {
     article: { type: String, required: true, ref: "ItemMaster", trim: true, uppercase: true },
     description: { type: String, default: "", trim: true },
+    spn: { type: String, default: "", trim: true },
+    materialCode: { type: String, default: "", trim: true },
     orderedQty: { type: Number, default: 0, min: 0 },
     receivedQty: { type: Number, required: true, min: 0 },
     pendingQty: { type: Number, default: 0, min: 0 },
@@ -55,6 +57,9 @@ const grnSchema = new mongoose.Schema(
     supplierId: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", default: null, index: true },
     supplierName: { type: String, default: "", trim: true },
     supplierInvoiceNo: { type: String, default: "", trim: true },
+    supplierDeliveryNote: { type: String, default: "", trim: true },
+    transporter: { type: String, default: "", trim: true },
+    vehicleDetails: { type: String, default: "", trim: true },
     packingListNo: { type: String, default: "", trim: true },
     blAwbNo: { type: String, default: "", trim: true },
     customsDocRef: { type: String, default: "", trim: true },
@@ -83,6 +88,7 @@ const grnSchema = new mongoose.Schema(
     updatedBy: { type: String, default: "" },
     postedAt: Date,
     cancelledAt: Date,
+    cancellationReason: { type: String, default: "", trim: true },
   },
   { timestamps: true }
 );

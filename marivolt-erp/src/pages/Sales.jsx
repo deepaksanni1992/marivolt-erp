@@ -30,7 +30,7 @@ const salesTabs = [
   "Proforma Invoice",
   "Order Allocation",
   "Sales Invoice",
-  "Sales Dispatch",
+  "Dispatch Status",
   "Sales Return",
   "Reports",
 ];
@@ -1742,7 +1742,7 @@ export default function Sales() {
     enabled: activeTab === "Sales Invoice",
   });
 
-  const { data: salesDispatchData, isLoading: salesDispatchLoading } = useQuery({
+  const { data: salesDispatchData, isLoading: legacySalesDispatchLoading } = useQuery({
     queryKey: ["sales-sales-dispatch", page, search],
     queryFn: () =>
       apiGetWithQuery("/sales/sales-dispatches", {
@@ -1750,7 +1750,16 @@ export default function Sales() {
         limit,
         search: search || undefined,
       }),
-    enabled: activeTab === "Sales Dispatch" || activeTab === "Sales Return" || srCreateOpen,
+    enabled: activeTab === "Sales Return" || srCreateOpen,
+  });
+
+  const { data: dispatchStatusData, isLoading: dispatchStatusLoading } = useQuery({
+    queryKey: ["sales-dispatch-status", search],
+    queryFn: () =>
+      apiGetWithQuery("/sales/dispatch-status", {
+        customer: search || undefined,
+      }),
+    enabled: activeTab === "Dispatch Status",
   });
 
   const { data: salesReturnData, isLoading: salesReturnLoading } = useQuery({
@@ -2074,7 +2083,7 @@ export default function Sales() {
   const { data: salesDispatchDetail } = useQuery({
     queryKey: ["sales-dispatch-detail", detailId],
     queryFn: () => apiGet(`/sales/sales-dispatches/${detailId}`),
-    enabled: !!detailId && activeTab === "Sales Dispatch",
+    enabled: false,
   });
 
   const createMutation = useMutation({
@@ -2678,6 +2687,7 @@ export default function Sales() {
       qc.invalidateQueries({ queryKey: ["sales-sales-dispatch"] });
       qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
       qc.invalidateQueries({ queryKey: ["accountsSalesDispatches"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
       if (detailId) qc.invalidateQueries({ queryKey: ["sales-invoice-detail", detailId] });
       setErr("");
       setShippingDocForm({ documentType: "Shipping Document", remarks: "" });
@@ -2698,6 +2708,7 @@ export default function Sales() {
       qc.invalidateQueries({ queryKey: ["sales-sales-dispatch"] });
       qc.invalidateQueries({ queryKey: ["sales-dispatch-detail"] });
       qc.invalidateQueries({ queryKey: ["accountsSalesDispatches"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
     },
     onError: (e) => setErr(e.message),
   });
@@ -2935,7 +2946,10 @@ export default function Sales() {
   const proformaRows = proformaData?.items ?? [];
   const allocationRows = allocationData?.items ?? [];
   const salesInvoiceRows = salesInvoiceData?.items ?? [];
-  const salesDispatchRows = salesDispatchData?.items ?? [];
+  const salesDispatchRows =
+    activeTab === "Dispatch Status" ? dispatchStatusData?.items ?? [] : salesDispatchData?.items ?? [];
+  const salesDispatchLoading =
+    activeTab === "Dispatch Status" ? dispatchStatusLoading : legacySalesDispatchLoading;
   const customerRows = customerData?.items ?? [];
   const customerOptions = customerLookupData?.items ?? customerRows;
   const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -2943,7 +2957,10 @@ export default function Sales() {
   const proformaTotalPages = Math.max(1, Math.ceil((proformaData?.total ?? 0) / limit));
   const allocationTotalPages = Math.max(1, Math.ceil((allocationData?.total ?? 0) / limit));
   const salesInvoiceTotalPages = Math.max(1, Math.ceil((salesInvoiceData?.total ?? 0) / limit));
-  const salesDispatchTotalPages = Math.max(1, Math.ceil((salesDispatchData?.total ?? 0) / limit));
+  const salesDispatchTotalPages =
+    activeTab === "Dispatch Status"
+      ? 1
+      : Math.max(1, Math.ceil((salesDispatchData?.total ?? 0) / limit));
   const salesReturnRows = salesReturnData?.items ?? [];
   const salesReturnTotalPages = Math.max(1, Math.ceil((salesReturnData?.total ?? 0) / limit));
   const customerTotalPages = Math.max(1, Math.ceil((customerData?.total ?? 0) / limit));
@@ -2956,7 +2973,7 @@ export default function Sales() {
     if (activeTab === "Proforma Invoice") return "proforma";
     if (activeTab === "Order Allocation") return "allocation";
     if (activeTab === "Sales Invoice") return "sales-invoice";
-    if (activeTab === "Sales Dispatch") return "sales-dispatch";
+    if (activeTab === "Dispatch Status") return "dispatch-status";
     if (activeTab === "Sales Return") return "sales-return";
     if (activeTab === "Reports") return "reports";
     return "coming";
@@ -2974,7 +2991,7 @@ export default function Sales() {
             disabled={
               activeTab === "Order Allocation" ||
               activeTab === "Reports" ||
-              activeTab === "Sales Dispatch"
+              activeTab === "Dispatch Status"
             }
             onClick={() => {
               setErr("");
@@ -3000,7 +3017,7 @@ export default function Sales() {
               ? "New proforma"
               : activeTab === "Sales Invoice"
               ? "New sales invoice"
-              : activeTab === "Sales Dispatch"
+              : activeTab === "Dispatch Status"
               ? "Create from dispatched invoice"
               : activeTab === "Sales Return"
               ? "New sales return"
@@ -4932,11 +4949,15 @@ export default function Sales() {
             </div>
           </div>
         </>
-      ) : tabContent === "sales-dispatch" ? (
+      ) : tabContent === "dispatch-status" ? (
         <>
+          <p className="mb-3 text-sm text-gray-600">
+            Read-only fulfilment pipeline (Store handles packing and physical dispatch). Use Store module to pack and dispatch
+            stock.
+          </p>
           <div className="mb-3 flex flex-wrap items-end gap-2 rounded-2xl border bg-white p-3 shadow-sm">
             <TextInput
-              placeholder="Search dispatch/customer"
+              placeholder="Filter by customer"
               value={search}
               onChange={(e) => {
                 setSearch(e.target.value);
@@ -4948,14 +4969,18 @@ export default function Sales() {
               type="button"
               className="rounded-xl border px-3 py-2 text-sm"
               onClick={() =>
-                exportListCsv("sales-dispatch-list", salesDispatchRows, [
-                  { label: "Dispatch No", value: (r) => r.dispatchNo },
-                  { label: "Date", value: (r) => (r.dispatchDate ? new Date(r.dispatchDate).toLocaleDateString() : "") },
-                  { label: "Linked Invoice", value: (r) => r.linkedSalesInvoiceNo || "" },
+                exportListCsv("dispatch-status", salesDispatchRows, [
                   { label: "Customer", value: (r) => r.customerName },
-                  { label: "Status", value: (r) => r.status },
-                  { label: "Currency", value: (r) => r.currency || "USD" },
-                  { label: "Total", value: (r) => money(r.grandTotal) },
+                  { label: "OA No", value: (r) => r.oaNo || "" },
+                  { label: "PI No", value: (r) => r.piNo || "" },
+                  { label: "Allocation No", value: (r) => r.allocationNo || "" },
+                  { label: "Packing No", value: (r) => r.packingNo || "" },
+                  { label: "Dispatch No", value: (r) => r.dispatchNo || "" },
+                  { label: "Invoice No", value: (r) => r.invoiceNo || "" },
+                  { label: "Packed Qty", value: (r) => r.packedQty },
+                  { label: "Dispatched Qty", value: (r) => r.dispatchedQty },
+                  { label: "Balance Qty", value: (r) => r.balanceQty },
+                  { label: "Dispatch status", value: (r) => r.dispatchStatus },
                 ])
               }
             >
@@ -4967,140 +4992,61 @@ export default function Sales() {
               <table className="min-w-full text-left text-sm">
                 <thead className="sticky top-0 z-10 border-b bg-gray-100 text-xs font-semibold uppercase tracking-wide text-gray-700">
                   <tr>
-                    <th className="px-3 py-2">Dispatch No</th>
-                    <th className="px-3 py-2">Invoice</th>
-                    <th className="px-3 py-2">Inv. status</th>
                     <th className="px-3 py-2">Customer</th>
-                    <th className="px-3 py-2">Date</th>
+                    <th className="px-3 py-2">OA</th>
+                    <th className="px-3 py-2">PI</th>
+                    <th className="px-3 py-2">Allocation</th>
+                    <th className="px-3 py-2">Packing</th>
+                    <th className="px-3 py-2">Dispatch</th>
+                    <th className="px-3 py-2">Invoice</th>
+                    <th className="px-3 py-2 text-right">Packed</th>
+                    <th className="px-3 py-2 text-right">Dispatched</th>
+                    <th className="px-3 py-2 text-right">Balance</th>
                     <th className="px-3 py-2">Status</th>
-                    <th className="px-3 py-2 text-right">Grand Total</th>
-                    <th className="px-3 py-2">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {salesDispatchLoading ? (
                     <tr>
-                      <td colSpan={8} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={11} className="px-3 py-8 text-center text-gray-500">
                         Loading...
                       </td>
                     </tr>
                   ) : salesDispatchRows.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="px-3 py-8 text-center text-gray-500">
-                        No Sales Dispatch found.
+                      <td colSpan={11} className="px-3 py-8 text-center text-gray-500">
+                        No fulfilment rows for this company.
                       </td>
                     </tr>
                   ) : (
-                    salesDispatchRows.map((r) => {
-                      const invSt = String(r.linkedInvoiceStatus || "—");
-                      const canClose =
-                        String(r.status || "").toUpperCase() === "DISPATCHED" &&
-                        String(invSt || "").toUpperCase() === "PAID";
-                      return (
-                      <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
-                        <td className="px-3 py-2 font-mono text-xs">{r.dispatchNo}</td>
-                        <td className="px-3 py-2">{r.linkedSalesInvoiceNo || "-"}</td>
-                        <td className="px-3 py-2 text-xs">{invSt}</td>
+                    salesDispatchRows.map((r, idx) => (
+                      <tr key={`${r.allocationNo}-${idx}`} className="border-b border-gray-100 hover:bg-gray-50/80">
                         <td className="px-3 py-2">{r.customerName}</td>
-                        <td className="px-3 py-2">{r.dispatchDate ? new Date(r.dispatchDate).toLocaleDateString() : "—"}</td>
+                        <td className="px-3 py-2 font-mono text-xs">{r.oaNo || "—"}</td>
+                        <td className="px-3 py-2 font-mono text-xs">{r.piNo || "—"}</td>
+                        <td className="px-3 py-2 font-mono text-xs">{r.allocationNo}</td>
+                        <td className="px-3 py-2 text-xs">{r.packingNo || "—"}</td>
+                        <td className="px-3 py-2 text-xs">{r.dispatchNo || "—"}</td>
+                        <td className="px-3 py-2 text-xs">{r.invoiceNo || "—"}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{r.packedQty}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{r.dispatchedQty}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{r.balanceQty}</td>
                         <td className="px-3 py-2">
-                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
-                            {r.status}
+                          <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-800 ring-1 ring-slate-200">
+                            {r.dispatchStatus}
                           </span>
                         </td>
-                        <td className="px-3 py-2 text-right">
-                          {r.currency} {money(r.grandTotal)}
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="flex flex-wrap gap-1">
-                            <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => setDetailId(r._id)}>
-                              Open
-                            </button>
-                            <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", r._id)}>
-                              Print
-                            </button>
-                            <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-dispatch", r._id, true)}>
-                              Export PDF
-                            </button>
-                            {String(r.status || "").toUpperCase() === "DRAFT" ? (
-                              <button
-                                type="button"
-                                className="rounded-lg border px-2 py-1 text-xs"
-                                disabled={patchSalesDispatchMutation.isPending}
-                                onClick={() =>
-                                  patchSalesDispatchMutation.mutate({ id: r._id, body: { status: "DISPATCHED" } })
-                                }
-                              >
-                                Mark shipped
-                              </button>
-                            ) : null}
-                            {canClose ? (
-                              <button
-                                type="button"
-                                className="rounded-lg border px-2 py-1 text-xs"
-                                disabled={patchSalesDispatchMutation.isPending}
-                                onClick={() => {
-                                  if (!window.confirm("Close dispatch? Invoice is PAID.")) return;
-                                  const postCredit = window.confirm(
-                                    "Post customer ledger CREDIT for dispatch total? OK = yes, Cancel = no"
-                                  );
-                                  patchSalesDispatchMutation.mutate({
-                                    id: r._id,
-                                    body: { status: "CLOSED", postCustomerLedgerCredit: postCredit },
-                                  });
-                                }}
-                              >
-                                Close
-                              </button>
-                            ) : null}
-                            <button
-                              type="button"
-                              className="rounded-lg border px-2 py-1 text-xs"
-                              onClick={() => {
-                                setErr("");
-                                setShippingDocForm({ documentType: "Shipping Document", remarks: "" });
-                                if (shippingFileRef.current) shippingFileRef.current.value = "";
-                                setShippingDocsAfterDispatch({
-                                  dispatchId: r._id,
-                                  dispatchNo: r.dispatchNo || "",
-                                  customerName: r.customerName || "",
-                                  linkedInvoiceNo: r.linkedSalesInvoiceNo || "",
-                                });
-                              }}
-                            >
-                              Shipping docs
-                            </button>
-                          </div>
-                        </td>
                       </tr>
-                    );
-                    })
+                    ))
                   )}
                 </tbody>
               </table>
             </div>
             <div className="flex items-center justify-between border-t px-3 py-2 text-sm text-gray-600">
               <span>
-                Page {page}/{salesDispatchTotalPages} · {salesDispatchData?.total ?? 0} Sales Dispatch
+                {dispatchStatusData?.total ?? salesDispatchRows.length} allocation(s) · fulfilment from Store (Packing /
+                Dispatch)
               </span>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  className="rounded-lg border px-2 py-1 disabled:opacity-40"
-                  disabled={page <= 1}
-                  onClick={() => setPage((p) => p - 1)}
-                >
-                  Prev
-                </button>
-                <button
-                  type="button"
-                  className="rounded-lg border px-2 py-1 disabled:opacity-40"
-                  disabled={page >= salesDispatchTotalPages}
-                  onClick={() => setPage((p) => p + 1)}
-                >
-                  Next
-                </button>
-              </div>
             </div>
           </div>
         </>
@@ -5222,7 +5168,7 @@ export default function Sales() {
                 ? "Proforma View"
                 : tabContent === "sales-invoice"
                   ? "Sales Invoice View"
-                  : "Sales Dispatch View"
+                  : "Document view"
         }
         subtitle={
           tabContent === "proforma"

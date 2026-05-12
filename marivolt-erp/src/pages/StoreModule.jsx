@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
@@ -12,6 +12,9 @@ const TABS = [
   "Stock Adjustment",
   "Stock Transfer",
   "Locations",
+  "Packing",
+  "Dispatch",
+  "Store Reports",
   "Negative Allocation Report",
 ];
 
@@ -73,6 +76,13 @@ export default function StoreModule() {
   const [negativeOnly, setNegativeOnly] = useState(false);
   const [allocatedOnly, setAllocatedOnly] = useState(false);
   const [allocationDrillDown, setAllocationDrillDown] = useState({ open: false, article: "", warehouse: "" });
+  const [grnPoId, setGrnPoId] = useState("");
+  const [packAllocInputId, setPackAllocInputId] = useState("");
+  const [packAllocQueryId, setPackAllocQueryId] = useState("");
+  const [packLineQty, setPackLineQty] = useState({});
+  const [dispatchPackInputId, setDispatchPackInputId] = useState("");
+  const [dispatchPackQueryId, setDispatchPackQueryId] = useState("");
+  const [dispatchLineQty, setDispatchLineQty] = useState({});
 
   // Unified-ledger filters (used only inside the Stock Ledger tab).
   const [ledgerMovementType, setLedgerMovementType] = useState("");
@@ -132,6 +142,166 @@ export default function StoreModule() {
     queryKey: ["grn"],
     queryFn: () => apiGetWithQuery("/grn", { limit: 200 }),
     enabled: tab === "GRN",
+  });
+
+  const { data: grnFromPoData } = useQuery({
+    queryKey: ["grn-from-po", grnPoId],
+    queryFn: () => apiGet(`/grn/from-po/${grnPoId}`),
+    enabled: tab === "GRN" && Boolean(grnPoId),
+  });
+
+  const { data: poPickList } = useQuery({
+    queryKey: ["store-purchase-orders"],
+    queryFn: () => apiGetWithQuery("/purchase-orders", { limit: 150 }),
+    enabled: tab === "GRN",
+  });
+
+  const createGrnDraft = useMutation({
+    mutationFn: (body) => apiPost("/grn/draft", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["grn"] }),
+  });
+
+  const postGrnMut = useMutation({
+    mutationFn: (grnNo) => apiPost(`/grn/${encodeURIComponent(grnNo)}/post`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["grn"] });
+      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+      qc.invalidateQueries({ queryKey: ["stock-summary"] });
+    },
+  });
+
+  const { data: packingFromAlloc } = useQuery({
+    queryKey: ["packing-from-allocation", packAllocQueryId],
+    queryFn: () => apiGet(`/packing/from-allocation/${packAllocQueryId}`),
+    enabled: tab === "Packing" && Boolean(packAllocQueryId),
+  });
+
+  useEffect(() => {
+    const lines = packingFromAlloc?.lines;
+    if (!lines?.length) {
+      if (!packAllocQueryId) setPackLineQty({});
+      return;
+    }
+    const next = {};
+    for (const ln of lines) {
+      next[String(ln.allocationLineId)] = Math.max(0, Number(ln.pendingPack) || 0);
+    }
+    setPackLineQty(next);
+  }, [packAllocQueryId, packingFromAlloc]);
+
+  const createPackingDraft = useMutation({
+    mutationFn: (body) => apiPost("/packing/draft", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["store-packing"] });
+      qc.invalidateQueries({ queryKey: ["packing-from-allocation", packAllocQueryId] });
+      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+      qc.invalidateQueries({ queryKey: ["stock-summary"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
+    },
+  });
+
+  const postPackingMut = useMutation({
+    mutationFn: (id) => apiPost(`/packing/${id}/post`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["store-packing"] });
+      qc.invalidateQueries({ queryKey: ["packing-from-allocation", packAllocQueryId] });
+      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+      qc.invalidateQueries({ queryKey: ["stock-summary"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
+    },
+  });
+
+  const cancelPackingMut = useMutation({
+    mutationFn: ({ id, reason }) => apiPost(`/packing/${id}/cancel`, { reason: reason || "" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["store-packing"] });
+      qc.invalidateQueries({ queryKey: ["packing-from-allocation", packAllocQueryId] });
+      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+      qc.invalidateQueries({ queryKey: ["stock-summary"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
+    },
+  });
+
+  const { data: dispatchFromPack } = useQuery({
+    queryKey: ["dispatch-from-packing", dispatchPackQueryId],
+    queryFn: () => apiGet(`/dispatch/from-packing/${dispatchPackQueryId}`),
+    enabled: tab === "Dispatch" && Boolean(dispatchPackQueryId),
+  });
+
+  useEffect(() => {
+    const lines = dispatchFromPack?.lines;
+    if (!lines?.length) {
+      if (!dispatchPackQueryId) setDispatchLineQty({});
+      return;
+    }
+    const next = {};
+    for (const ln of lines) {
+      next[String(ln.packingLineId)] = Math.max(0, Number(ln.pendingDispatch) || 0);
+    }
+    setDispatchLineQty(next);
+  }, [dispatchPackQueryId, dispatchFromPack]);
+
+  const createDispatchDraft = useMutation({
+    mutationFn: (body) => apiPost("/dispatch/draft", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["store-dispatch"] });
+      qc.invalidateQueries({ queryKey: ["dispatch-from-packing", dispatchPackQueryId] });
+      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+      qc.invalidateQueries({ queryKey: ["stock-summary"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
+    },
+  });
+
+  const postDispatchMut = useMutation({
+    mutationFn: (id) => apiPost(`/dispatch/${id}/post`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["store-dispatch"] });
+      qc.invalidateQueries({ queryKey: ["dispatch-from-packing", dispatchPackQueryId] });
+      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+      qc.invalidateQueries({ queryKey: ["stock-summary"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
+    },
+  });
+
+  const cancelDispatchMut = useMutation({
+    mutationFn: ({ id, reason }) => apiPost(`/dispatch/${id}/cancel`, { reason: reason || "" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["store-dispatch"] });
+      qc.invalidateQueries({ queryKey: ["dispatch-from-packing", dispatchPackQueryId] });
+      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+      qc.invalidateQueries({ queryKey: ["stock-summary"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
+    },
+  });
+
+  const { data: packingList } = useQuery({
+    queryKey: ["store-packing"],
+    queryFn: () => apiGetWithQuery("/packing", { limit: 200 }),
+    enabled: tab === "Packing",
+  });
+
+  const { data: dispatchList } = useQuery({
+    queryKey: ["store-dispatch"],
+    queryFn: () => apiGetWithQuery("/dispatch", { limit: 200 }),
+    enabled: tab === "Dispatch",
+  });
+
+  const { data: reportPackingPending } = useQuery({
+    queryKey: ["store-report-packing-pending"],
+    queryFn: () => apiGet("/store/reports/packing-pending-dispatch"),
+    enabled: tab === "Store Reports",
+  });
+
+  const { data: reportDispatchSummary } = useQuery({
+    queryKey: ["store-report-dispatch-summary"],
+    queryFn: () => apiGet("/store/reports/dispatch-summary"),
+    enabled: tab === "Store Reports",
+  });
+
+  const { data: reportPendingPo } = useQuery({
+    queryKey: ["store-report-pending-po"],
+    queryFn: () => apiGet("/grn/reports/pending-po"),
+    enabled: tab === "Store Reports",
   });
 
   const { data: landedCostRows } = useQuery({
@@ -346,6 +516,7 @@ export default function StoreModule() {
       { key: "location", header: "Location" },
       { key: "onHandQty", header: "On Hand" },
       { key: "allocatedQty", header: "Allocated" },
+      { key: "packedQty", header: "Packed" },
       { key: "rtsQty", header: "RTS" },
       { key: "availableQty", header: "Available" },
       { key: "uom", header: "UOM" },
@@ -495,16 +666,116 @@ export default function StoreModule() {
       </div>
 
       {tab === "GRN" ? (
-        <div className="rounded-2xl border bg-white p-4">
-          <p className="mb-2 text-sm text-slate-600">
-            Use API endpoints: create draft (<code>POST /api/grn</code>), post (<code>POST /api/grn/:grnNo/post</code>), cancel (<code>POST /api/grn/:grnNo/cancel</code>).
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {(grns?.items || []).map((g) => (
-              <span key={g._id} className="rounded border px-2 py-1 text-xs">
-                {g.grnNo} ({g.status})
-              </span>
-            ))}
+        <div className="space-y-4">
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold text-slate-800">Create GRN from purchase order</h3>
+            <div className="flex flex-wrap items-end gap-2">
+              <select
+                className="min-w-[240px] rounded border px-3 py-2 text-sm"
+                value={grnPoId}
+                onChange={(e) => setGrnPoId(e.target.value)}
+              >
+                <option value="">Select PO…</option>
+                {(poPickList?.items || []).map((p) => (
+                  <option key={p._id} value={p._id}>
+                    {(p.poNo || p.poNumber || "").trim()} — {p.supplierName || ""}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="rounded bg-slate-900 px-3 py-2 text-sm text-white disabled:opacity-40"
+                disabled={!grnPoId || !grnFromPoData}
+                onClick={() => {
+                  const d = grnFromPoData;
+                  if (!d?.po?._id) return;
+                  createGrnDraft.mutate({
+                    poId: d.po._id,
+                    poNo: d.po.poNo || d.po.poNumber,
+                    supplierId: d.po.supplierId,
+                    supplierName: d.supplierName || d.po.supplierName,
+                    currency: d.currency || d.po.currency || "USD",
+                    grnDate: new Date().toISOString().slice(0, 10),
+                    items: (d.lines || []).map((ln) => ({
+                      article: ln.article,
+                      description: ln.description,
+                      spn: ln.spn,
+                      materialCode: ln.materialCode,
+                      orderedQty: ln.orderedQty,
+                      receivedQty: ln.pendingQty,
+                      pendingQty: ln.pendingQty,
+                      acceptedQty: ln.pendingQty,
+                      rejectedQty: 0,
+                      cancelledQty: 0,
+                      unitCost: ln.unitCost,
+                      poLineId: ln.poLineId,
+                      poId: ln.poId,
+                      poNo: ln.poNo,
+                      warehouse: "MAIN",
+                      location: "MAIN",
+                    })),
+                  });
+                }}
+              >
+                Create draft GRN (full pending qty)
+              </button>
+            </div>
+            {grnFromPoData?.lines?.length ? (
+              <p className="mt-2 text-xs text-slate-500">
+                {grnFromPoData.lines.length} line(s) loaded — adjust quantities in Purchase or edit draft GRN via API
+                before posting.
+              </p>
+            ) : null}
+          </div>
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold text-slate-800">GRN register</h3>
+            <div className="overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-100 text-xs uppercase text-slate-600">
+                  <tr>
+                    <th className="px-2 py-2 text-left">GRN No</th>
+                    <th className="px-2 py-2 text-left">PO</th>
+                    <th className="px-2 py-2 text-left">Supplier</th>
+                    <th className="px-2 py-2 text-left">Status</th>
+                    <th className="px-2 py-2 text-left">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(grns?.items || []).length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-2 py-4 text-center text-slate-500">
+                        No GRNs
+                      </td>
+                    </tr>
+                  ) : (
+                    (grns?.items || []).map((g) => (
+                      <tr key={g._id} className="border-t">
+                        <td className="px-2 py-2 font-mono">{g.grnNo}</td>
+                        <td className="px-2 py-2">{g.poNo || "—"}</td>
+                        <td className="px-2 py-2">{g.supplierName || "—"}</td>
+                        <td className="px-2 py-2">
+                          <StatusPill status={g.status} tone={g.status === "DRAFT" ? "amber" : "emerald"} />
+                        </td>
+                        <td className="px-2 py-2">
+                          {g.status === "DRAFT" ? (
+                            <button
+                              type="button"
+                              className="rounded border px-2 py-1 text-xs font-semibold text-emerald-800"
+                              disabled={postGrnMut.isPending}
+                              onClick={() => postGrnMut.mutate(g.grnNo)}
+                            >
+                              Post receive
+                            </button>
+                          ) : (
+                            <span className="text-xs text-slate-400">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       ) : null}
@@ -938,6 +1209,7 @@ export default function StoreModule() {
                     "Location",
                     "On Hand",
                     "Allocated",
+                    "Packed",
                     "RTS",
                     "Available",
                     "UOM",
@@ -954,7 +1226,7 @@ export default function StoreModule() {
               <tbody>
                 {stockRows.length === 0 ? (
                   <tr>
-                    <td colSpan={12} className="px-2 py-6 text-center text-sm text-slate-500">
+                    <td colSpan={13} className="px-2 py-6 text-center text-sm text-slate-500">
                       No stock balance rows match the current filters.
                     </td>
                   </tr>
@@ -971,6 +1243,7 @@ export default function StoreModule() {
                         <td className="px-2 py-1">{r.location}</td>
                         <td className="px-2 py-1">{r.onHandQty}</td>
                         <td className="px-2 py-1">{r.allocatedQty}</td>
+                        <td className="px-2 py-1">{r.packedQty ?? 0}</td>
                         <td className="px-2 py-1">{r.rtsQty}</td>
                         <td className={`px-2 py-1 font-semibold ${negative ? "text-rose-700" : zero ? "text-amber-700" : ""}`}>
                           {r.availableQty}
@@ -1499,6 +1772,408 @@ export default function StoreModule() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      ) : null}
+
+      {tab === "Packing" ? (
+        <div className="space-y-4">
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold">New packing from order allocation</h3>
+            <p className="mb-3 text-xs text-slate-600">
+              Paste the Order Allocation document id (from Sales). Load lines, set pack quantities (partial allowed), then create draft and post.
+            </p>
+            <div className="mb-3 flex flex-wrap items-end gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-slate-600">Allocation id</label>
+                <input
+                  className="w-72 rounded border px-2 py-1.5 font-mono text-xs"
+                  value={packAllocInputId}
+                  onChange={(e) => setPackAllocInputId(e.target.value.trim())}
+                  placeholder="MongoDB ObjectId"
+                />
+              </div>
+              <button
+                type="button"
+                className="rounded border bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+                onClick={() => setPackAllocQueryId(packAllocInputId)}
+              >
+                Load allocation
+              </button>
+            </div>
+            {packingFromAlloc?.allocation ? (
+              <div className="mb-3 rounded border border-slate-200 bg-slate-50 p-3 text-xs">
+                <div>
+                  <span className="font-semibold">{packingFromAlloc.allocation.allocationNo}</span> ·{" "}
+                  {packingFromAlloc.allocation.customerName}
+                </div>
+                <div className="mt-1 text-slate-600">
+                  OA {packingFromAlloc.allocation.linkedOANo || "—"} · PI {packingFromAlloc.allocation.linkedProformaNo || "—"} · WH{" "}
+                  {packingFromAlloc.allocation.warehouse || "MAIN"}
+                </div>
+              </div>
+            ) : null}
+            {packingFromAlloc?.lines?.length ? (
+              <div className="overflow-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-100 text-xs uppercase text-slate-600">
+                    <tr>
+                      <th className="px-2 py-2 text-left">Article</th>
+                      <th className="px-2 py-2 text-left">Pending pack</th>
+                      <th className="px-2 py-2 text-left">Pack qty</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {packingFromAlloc.lines.map((ln) => (
+                      <tr key={String(ln.allocationLineId)} className="border-t">
+                        <td className="px-2 py-2 font-mono">{ln.article}</td>
+                        <td className="px-2 py-2">{ln.pendingPack}</td>
+                        <td className="px-2 py-2">
+                          <input
+                            type="number"
+                            min={0}
+                            max={ln.pendingPack}
+                            className="w-24 rounded border px-2 py-1 text-xs"
+                            value={packLineQty[String(ln.allocationLineId)] ?? 0}
+                            onChange={(e) =>
+                              setPackLineQty((prev) => ({
+                                ...prev,
+                                [String(ln.allocationLineId)]: Math.max(
+                                  0,
+                                  Math.min(Number(e.target.value) || 0, ln.pendingPack)
+                                ),
+                              }))
+                            }
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <button
+                  type="button"
+                  className="mt-3 rounded border border-emerald-700 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-900 hover:bg-emerald-100 disabled:opacity-50"
+                  disabled={createPackingDraft.isPending || !packingFromAlloc?.allocation}
+                  onClick={() => {
+                    const lines = (packingFromAlloc.lines || [])
+                      .map((ln) => ({
+                        allocationLineId: ln.allocationLineId,
+                        article: ln.article,
+                        description: ln.description || "",
+                        spn: ln.partNumber || "",
+                        materialCode: ln.materialCode || "",
+                        packQty: Math.min(
+                          Number(packLineQty[String(ln.allocationLineId)]) || 0,
+                          Number(ln.pendingPack) || 0
+                        ),
+                        uom: ln.uom || "PCS",
+                      }))
+                      .filter((x) => x.packQty > 0);
+                    createPackingDraft.mutate({
+                      allocationId: packingFromAlloc.allocation._id,
+                      lines,
+                    });
+                  }}
+                >
+                  Create draft packing
+                </button>
+              </div>
+            ) : packAllocQueryId ? (
+              <p className="text-xs text-slate-500">No lines to pack (or allocation not found).</p>
+            ) : null}
+          </div>
+
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold">Packing documents</h3>
+            <div className="overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-100 text-xs uppercase text-slate-600">
+                  <tr>
+                    <th className="px-2 py-2 text-left">Packing No</th>
+                    <th className="px-2 py-2 text-left">Customer</th>
+                    <th className="px-2 py-2 text-left">Allocation</th>
+                    <th className="px-2 py-2 text-left">Status</th>
+                    <th className="px-2 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(packingList?.items || []).length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-2 py-4 text-center text-xs text-slate-500">
+                        No packing records.
+                      </td>
+                    </tr>
+                  ) : (
+                    (packingList?.items || []).map((p) => (
+                      <tr key={p._id} className="border-t">
+                        <td className="px-2 py-2 font-mono">{p.packingNo}</td>
+                        <td className="px-2 py-2">{p.customerName}</td>
+                        <td className="px-2 py-2 font-mono text-xs">{p.allocationNo}</td>
+                        <td className="px-2 py-2">
+                          <StatusPill status={p.status} tone={p.status === "POSTED" ? "emerald" : "amber"} />
+                        </td>
+                        <td className="px-2 py-2 text-right">
+                          {p.status === "DRAFT" ? (
+                            <span className="flex flex-wrap justify-end gap-1">
+                              <button
+                                type="button"
+                                className="rounded border px-2 py-0.5 text-xs text-emerald-800 hover:bg-emerald-50"
+                                disabled={postPackingMut.isPending}
+                                onClick={() => postPackingMut.mutate(p._id)}
+                              >
+                                Post
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded border px-2 py-0.5 text-xs text-rose-700 hover:bg-rose-50"
+                                disabled={cancelPackingMut.isPending}
+                                onClick={() => {
+                                  const reason = window.prompt("Cancel reason?", "") ?? "";
+                                  cancelPackingMut.mutate({ id: p._id, reason });
+                                }}
+                              >
+                                Cancel
+                              </button>
+                            </span>
+                          ) : (
+                            <span className="text-xs text-slate-400">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {tab === "Dispatch" ? (
+        <div className="space-y-4">
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold">New dispatch from posted packing</h3>
+            <p className="mb-3 text-xs text-slate-600">
+              Enter a posted Store Packing id. Load pending quantities, then create draft dispatch and post (reduces on-hand stock).
+            </p>
+            <div className="mb-3 flex flex-wrap items-end gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-slate-600">Packing id</label>
+                <input
+                  className="w-72 rounded border px-2 py-1.5 font-mono text-xs"
+                  value={dispatchPackInputId}
+                  onChange={(e) => setDispatchPackInputId(e.target.value.trim())}
+                  placeholder="StorePacking MongoDB id"
+                />
+              </div>
+              <button
+                type="button"
+                className="rounded border bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+                onClick={() => setDispatchPackQueryId(dispatchPackInputId)}
+              >
+                Load packing
+              </button>
+            </div>
+            {dispatchFromPack?.packing ? (
+              <div className="mb-3 rounded border border-slate-200 bg-slate-50 p-3 text-xs">
+                <div>
+                  <span className="font-semibold">{dispatchFromPack.packing.packingNo}</span> ·{" "}
+                  {dispatchFromPack.packing.customerName}
+                </div>
+                <div className="mt-1 text-slate-600">Allocation {dispatchFromPack.packing.allocationNo || "—"}</div>
+              </div>
+            ) : null}
+            {dispatchFromPack?.lines?.length ? (
+              <div className="overflow-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-100 text-xs uppercase text-slate-600">
+                    <tr>
+                      <th className="px-2 py-2 text-left">Article</th>
+                      <th className="px-2 py-2 text-left">Packed</th>
+                      <th className="px-2 py-2 text-left">Pending dispatch</th>
+                      <th className="px-2 py-2 text-left">Dispatch qty</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dispatchFromPack.lines.map((ln) => (
+                      <tr key={String(ln.packingLineId)} className="border-t">
+                        <td className="px-2 py-2 font-mono">{ln.article}</td>
+                        <td className="px-2 py-2">{ln.packedQty}</td>
+                        <td className="px-2 py-2">{ln.pendingDispatch}</td>
+                        <td className="px-2 py-2">
+                          <input
+                            type="number"
+                            min={0}
+                            max={ln.pendingDispatch}
+                            className="w-24 rounded border px-2 py-1 text-xs"
+                            value={dispatchLineQty[String(ln.packingLineId)] ?? 0}
+                            onChange={(e) =>
+                              setDispatchLineQty((prev) => ({
+                                ...prev,
+                                [String(ln.packingLineId)]: Math.max(
+                                  0,
+                                  Math.min(Number(e.target.value) || 0, ln.pendingDispatch)
+                                ),
+                              }))
+                            }
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <button
+                  type="button"
+                  className="mt-3 rounded border border-emerald-700 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-900 hover:bg-emerald-100 disabled:opacity-50"
+                  disabled={createDispatchDraft.isPending || !dispatchFromPack?.packing}
+                  onClick={() => {
+                    const lines = (dispatchFromPack.lines || [])
+                      .map((ln) => ({
+                        packingLineId: ln.packingLineId,
+                        article: ln.article,
+                        description: ln.description || "",
+                        spn: ln.spn || "",
+                        materialCode: ln.materialCode || "",
+                        dispatchQty: Math.min(
+                          Number(dispatchLineQty[String(ln.packingLineId)]) || 0,
+                          Number(ln.pendingDispatch) || 0
+                        ),
+                        uom: ln.uom || "PCS",
+                      }))
+                      .filter((x) => x.dispatchQty > 0);
+                    createDispatchDraft.mutate({
+                      packingId: dispatchFromPack.packing._id,
+                      courier: "",
+                      awbNo: "",
+                      lines,
+                    });
+                  }}
+                >
+                  Create draft dispatch
+                </button>
+              </div>
+            ) : dispatchPackQueryId ? (
+              <p className="text-xs text-slate-500">Nothing pending or packing not posted.</p>
+            ) : null}
+          </div>
+
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold">Dispatch documents</h3>
+            <div className="overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-100 text-xs uppercase text-slate-600">
+                  <tr>
+                    <th className="px-2 py-2 text-left">Dispatch No</th>
+                    <th className="px-2 py-2 text-left">Customer</th>
+                    <th className="px-2 py-2 text-left">Packing</th>
+                    <th className="px-2 py-2 text-left">AWB</th>
+                    <th className="px-2 py-2 text-left">Status</th>
+                    <th className="px-2 py-2 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(dispatchList?.items || []).length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-2 py-4 text-center text-xs text-slate-500">
+                        No dispatch records.
+                      </td>
+                    </tr>
+                  ) : (
+                    (dispatchList?.items || []).map((d) => (
+                      <tr key={d._id} className="border-t">
+                        <td className="px-2 py-2 font-mono">{d.dispatchNo}</td>
+                        <td className="px-2 py-2">{d.customerName}</td>
+                        <td className="px-2 py-2 font-mono text-xs">{d.packingNo}</td>
+                        <td className="px-2 py-2 text-xs">{d.awbNo || "—"}</td>
+                        <td className="px-2 py-2">
+                          <StatusPill status={d.status} tone={d.status === "POSTED" ? "emerald" : "amber"} />
+                        </td>
+                        <td className="px-2 py-2 text-right">
+                          {d.status === "DRAFT" ? (
+                            <span className="flex flex-wrap justify-end gap-1">
+                              <button
+                                type="button"
+                                className="rounded border px-2 py-0.5 text-xs text-emerald-800 hover:bg-emerald-50"
+                                disabled={postDispatchMut.isPending}
+                                onClick={() => postDispatchMut.mutate(d._id)}
+                              >
+                                Post
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded border px-2 py-0.5 text-xs text-rose-700 hover:bg-rose-50"
+                                disabled={cancelDispatchMut.isPending}
+                                onClick={() => {
+                                  const reason = window.prompt("Cancel reason?", "") ?? "";
+                                  cancelDispatchMut.mutate({ id: d._id, reason });
+                                }}
+                              >
+                                Cancel
+                              </button>
+                            </span>
+                          ) : (
+                            <span className="text-xs text-slate-400">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {tab === "Store Reports" ? (
+        <div className="grid gap-4 lg:grid-cols-3">
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold">Pending PO (GRN)</h3>
+            <div className="max-h-64 overflow-auto text-xs">
+              {(reportPendingPo?.items || []).map((r) => (
+                <div key={r.poNo} className="border-b py-1">
+                  {r.poNo} · {r.supplierName} · lines {r.pendingLines}
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="mt-2 rounded border px-2 py-1 text-xs"
+              onClick={() =>
+                downloadCsv(
+                  "pending-po-grn.csv",
+                  [
+                    { key: "poNo", header: "PO No" },
+                    { key: "supplierName", header: "Supplier" },
+                    { key: "status", header: "Status" },
+                    { key: "pendingLines", header: "Pending lines" },
+                  ],
+                  reportPendingPo?.items || []
+                )
+              }
+            >
+              Export CSV
+            </button>
+          </div>
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold">Packing pending dispatch</h3>
+            <div className="max-h-64 overflow-auto text-xs">
+              {(reportPackingPending?.items || []).map((r) => (
+                <div key={r.packingNo} className="border-b py-1">
+                  {r.packingNo} · {r.customerName} · pending {r.pendingQty}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold">Dispatch summary</h3>
+            <div className="max-h-64 overflow-auto text-xs">
+              {(reportDispatchSummary?.items || []).map((r) => (
+                <div key={r.dispatchNo} className="border-b py-1">
+                  {r.dispatchNo} · {r.customerName} · {r.courier || "—"}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       ) : null}

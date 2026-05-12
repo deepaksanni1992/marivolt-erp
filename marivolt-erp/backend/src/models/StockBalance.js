@@ -15,6 +15,8 @@ const stockBalanceSchema = new mongoose.Schema(
     allocatedQty: { type: Number, default: 0 },
     reservedQty: { type: Number, default: 0 },
     rtsQty: { type: Number, default: 0 },
+    /** Qty physically staged in packages (Store Packing posted), not yet dispatched. */
+    packedQty: { type: Number, default: 0, min: 0 },
     availableQty: { type: Number, default: 0 },
     avgCost: { type: Number, default: 0 },
     unitCost: { type: Number, default: 0 },

@@ -31,13 +31,15 @@ function deriveStockRow(row) {
   // so a stale 0 in one of them does not under-report.
   const allocated = Math.max(Number(row.allocatedQty || 0), Number(row.reservedQty || 0));
   const rts = Number(row.rtsQty || 0);
-  const available = onHand - allocated - rts;
+  const packed = Number(row.packedQty || 0) || 0;
+  const available = onHand - allocated - rts - packed;
   return {
     ...row,
     onHandQty: onHand,
     allocatedQty: allocated,
     reservedQty: allocated,
     rtsQty: rts,
+    packedQty: packed,
     availableQty: available,
     isNegativeAvailable: available < 0,
   };
@@ -283,6 +285,7 @@ export async function listStockSummary(req, res) {
           quantity: { $sum: { $ifNull: ["$quantity", 0] } },
           allocatedQty: { $sum: { $max: ["$allocatedQty", "$reservedQty"] } },
           rtsQty: { $sum: { $ifNull: ["$rtsQty", 0] } },
+          packedQty: { $sum: { $ifNull: ["$packedQty", 0] } },
           lastTransactionDate: { $max: "$lastTransactionDate" },
           rowIds: { $addToSet: "$_id" },
         },
@@ -304,7 +307,13 @@ export async function listStockSummary(req, res) {
           onHandQty: "$onHandQty",
           allocatedQty: "$allocatedQty",
           rtsQty: "$rtsQty",
-          availableQty: { $subtract: ["$onHandQty", { $add: ["$allocatedQty", "$rtsQty"] }] },
+          packedQty: "$packedQty",
+          availableQty: {
+            $subtract: [
+              "$onHandQty",
+              { $add: ["$allocatedQty", "$rtsQty", "$packedQty"] },
+            ],
+          },
           pairKey: {
             $concat: [
               "$_id.article",
@@ -630,6 +639,10 @@ const STOCK_LEDGER_TYPE_TO_UNIFIED = {
   TRANSFER_IN: "STOCK_TRANSFER_IN",
   TRANSFER_OUT: "STOCK_TRANSFER_OUT",
   OPENING: "OPENING",
+  PACKED: "PACKED",
+  UNPACKED: "UNPACKED",
+  DISPATCH_OUT: "DISPATCH_OUT",
+  DISPATCH_CANCEL: "DISPATCH_CANCEL",
 };
 
 const INVENTORY_LEDGER_TYPE_TO_UNIFIED = {
@@ -960,6 +973,7 @@ export async function listUnifiedStockLedger(req, res) {
         onHandAfter: r.onHandAfter != null ? Number(r.onHandAfter) : r.balanceQty != null ? Number(r.balanceQty) : null,
         allocatedAfter: r.allocatedAfter != null ? Number(r.allocatedAfter) : null,
         rtsAfter: r.rtsAfter != null ? Number(r.rtsAfter) : null,
+        packedAfter: r.packedAfter != null ? Number(r.packedAfter) : null,
         availableAfter: r.availableAfter != null ? Number(r.availableAfter) : null,
         sourceModule: r.sourceModule || "",
         sourceModel: "StockLedger",
@@ -1031,6 +1045,7 @@ export async function listUnifiedStockLedger(req, res) {
         onHandAfter: r.onHandAfter != null ? Number(r.onHandAfter) : null,
         allocatedAfter: r.allocatedAfter != null ? Number(r.allocatedAfter) : null,
         rtsAfter: r.rtsAfter != null ? Number(r.rtsAfter) : null,
+        packedAfter: r.packedAfter != null ? Number(r.packedAfter) : null,
         availableAfter: r.availableAfter != null ? Number(r.availableAfter) : null,
         sourceModule: r.sourceModule || "",
         sourceModel: "InventoryLedger",

@@ -50,6 +50,10 @@ export const MOVEMENT_TYPES = Object.freeze({
   STOCK_TRANSFER_IN: "STOCK_TRANSFER_IN",
   STOCK_ADJUSTMENT: "STOCK_ADJUSTMENT",
   OPENING_BALANCE: "OPENING_BALANCE",
+  PACKED: "PACKED",
+  UNPACKED: "UNPACKED",
+  DISPATCH_OUT: "DISPATCH_OUT",
+  DISPATCH_CANCEL: "DISPATCH_CANCEL",
 });
 
 /**
@@ -75,6 +79,10 @@ const UNIFIED_TO_LEGACY_TX = Object.freeze({
   STOCK_TRANSFER_IN: "TRANSFER_IN",
   STOCK_ADJUSTMENT: "STOCK_ADJUSTMENT",
   OPENING_BALANCE: "OPENING",
+  PACKED: "PACKED",
+  UNPACKED: "UNPACKED",
+  DISPATCH_OUT: "DISPATCH_OUT",
+  DISPATCH_CANCEL: "DISPATCH_CANCEL",
 });
 
 /* --------------------------------------------------------------- */
@@ -131,7 +139,8 @@ function deriveBalanceShape(row, fallback = {}) {
     Number(row?.reservedQty || 0)
   );
   const rts = Number(row?.rtsQty || 0);
-  const available = onHand - allocated - rts;
+  const packed = Number(row?.packedQty || 0) || 0;
+  const available = onHand - allocated - rts - packed;
   return {
     _id: row?._id || null,
     companyId: row?.companyId || fallback.companyId || null,
@@ -141,6 +150,7 @@ function deriveBalanceShape(row, fallback = {}) {
     allocatedQty: allocated,
     reservedQty: allocated,
     rtsQty: rts,
+    packedQty: packed,
     availableQty: available,
     isNegativeAvailable: available < 0,
     raw: row || null,
@@ -172,16 +182,19 @@ async function snapshotAfter({ companyId, article, warehouse, session }) {
   let onHand = 0;
   let allocated = 0;
   let rts = 0;
+  let packed = 0;
   for (const r of rows) {
     onHand += Number(r?.onHandQty ?? r?.quantity ?? 0) || 0;
     allocated += Math.max(Number(r?.allocatedQty || 0), Number(r?.reservedQty || 0));
     rts += Number(r?.rtsQty || 0);
+    packed += Number(r?.packedQty || 0) || 0;
   }
-  const available = onHand - allocated - rts;
+  const available = onHand - allocated - rts - packed;
   return {
     onHandAfter: onHand,
     allocatedAfter: allocated,
     rtsAfter: rts,
+    packedAfter: packed,
     availableAfter: available,
     isNegativeAvailable: available < 0,
   };
@@ -208,12 +221,14 @@ export async function recalculateStockBalance({ companyId, article, warehouse, s
   const onHand = Number(row.onHandQty ?? row.quantity ?? 0) || 0;
   const allocated = Math.max(Number(row.allocatedQty || 0), Number(row.reservedQty || 0));
   const rts = Number(row.rtsQty || 0);
+  const packed = Number(row.packedQty || 0) || 0;
   row.onHandQty = onHand;
   row.quantity = onHand;
   row.allocatedQty = allocated;
   row.reservedQty = allocated;
   row.rtsQty = rts;
-  row.availableQty = onHand - allocated - rts;
+  row.packedQty = packed;
+  row.availableQty = onHand - allocated - rts - packed;
   row.itemCode = code;
   row.article = code;
   row.warehouse = wh;
@@ -254,6 +269,7 @@ function buildLedgerRow({
   onHandAfter = null,
   allocatedAfter = null,
   rtsAfter = null,
+  packedAfter = null,
   availableAfter = null,
   batchNo = "",
   serialNo = "",
@@ -285,6 +301,7 @@ function buildLedgerRow({
     onHandAfter,
     allocatedAfter,
     rtsAfter,
+    packedAfter,
     availableAfter,
     isNegativeAllocation: Boolean(isNegativeAllocation),
     unitCost: Number(unitCost) || 0,
@@ -365,6 +382,7 @@ async function bumpBuckets({
       onHandQty: 0,
       allocatedQty: 0,
       rtsQty: 0,
+      packedQty: 0,
     };
   }
   const updated = await StockBalance.findOneAndUpdate(filter, update, {
@@ -488,7 +506,13 @@ export async function cancelGrn({
               {
                 $subtract: [
                   { $ifNull: ["$onHandQty", 0] },
-                  { $add: [{ $ifNull: ["$reservedQty", 0] }, { $ifNull: ["$rtsQty", 0] }] },
+                  {
+                    $add: [
+                      { $ifNull: ["$reservedQty", 0] },
+                      { $ifNull: ["$rtsQty", 0] },
+                      { $ifNull: ["$packedQty", 0] },
+                    ],
+                  },
                 ],
               },
               q,
@@ -638,6 +662,7 @@ export async function allocateStock({
                   $add: [
                     { $ifNull: ["$reservedQty", 0] },
                     { $ifNull: ["$rtsQty", 0] },
+                    { $ifNull: ["$packedQty", 0] },
                   ],
                 },
               ],
@@ -1002,7 +1027,7 @@ export async function stockTransfer({
             {
               $subtract: [
                 { $ifNull: ["$quantity", 0] },
-                { $add: [{ $ifNull: ["$reservedQty", 0] }, { $ifNull: ["$rtsQty", 0] }] },
+                { $add: [{ $ifNull: ["$reservedQty", 0] }, { $ifNull: ["$rtsQty", 0] }, { $ifNull: ["$packedQty", 0] }] },
               ],
             },
             q,
@@ -1103,7 +1128,7 @@ export async function stockAdjustment({
               {
                 $subtract: [
                   { $ifNull: ["$quantity", 0] },
-                  { $add: [{ $ifNull: ["$reservedQty", 0] }, { $ifNull: ["$rtsQty", 0] }] },
+                  { $add: [{ $ifNull: ["$reservedQty", 0] }, { $ifNull: ["$rtsQty", 0] }, { $ifNull: ["$packedQty", 0] }] },
                 ],
               },
               q,
@@ -1137,6 +1162,220 @@ export async function stockAdjustment({
     referenceType,
     referenceNo,
     remarks,
+    createdBy,
+    sourceModule,
+    ...after,
+  });
+}
+
+/**
+ * PACKED — moves qty from reserved (allocation) into packed staging.
+ * Physical on-hand unchanged; available unchanged.
+ */
+export async function packFromAllocation({
+  session,
+  companyId,
+  article,
+  warehouse,
+  qty,
+  customerName = "",
+  referenceType = "STORE_PACKING",
+  referenceNo,
+  remarks = "",
+  createdBy = "",
+  sourceModule = "STORE",
+  allocationId = null,
+  transactionDate = null,
+}) {
+  requireCompanyId(companyId);
+  const q = Number(qty) || 0;
+  if (!(q > 0)) throw new Error("packFromAllocation: qty must be > 0");
+  const updated = await bumpBuckets({
+    session,
+    companyId,
+    article,
+    warehouse,
+    inc: { reservedQty: -q, packedQty: q },
+    guard: { $expr: { $gte: [{ $ifNull: ["$reservedQty", 0] }, q] } },
+  });
+  if (!updated) {
+    throw new Error(
+      `packFromAllocation: reserved bucket lower than ${q} for ${normArticle(article)} in ${normWarehouse(warehouse)}.`
+    );
+  }
+  const after = await snapshotAfter({ companyId, article, warehouse, session });
+  return createStockLedgerEntry({
+    session,
+    companyId,
+    transactionDate,
+    movementType: MOVEMENT_TYPES.PACKED,
+    article,
+    warehouse,
+    qtyOut: q,
+    referenceType,
+    referenceNo,
+    customerName,
+    remarks: `${remarks || ""}${remarks ? " " : ""}[reserved→packed]`.trim(),
+    createdBy,
+    sourceModule,
+    allocationId,
+    ...after,
+  });
+}
+
+/**
+ * UNPACKED — reverses posted packing: packed → reserved.
+ */
+export async function unpackFromPacked({
+  session,
+  companyId,
+  article,
+  warehouse,
+  qty,
+  customerName = "",
+  referenceType = "STORE_PACKING",
+  referenceNo,
+  remarks = "",
+  createdBy = "",
+  sourceModule = "STORE",
+  allocationId = null,
+  transactionDate = null,
+}) {
+  requireCompanyId(companyId);
+  const q = Number(qty) || 0;
+  if (!(q > 0)) throw new Error("unpackFromPacked: qty must be > 0");
+  const updated = await bumpBuckets({
+    session,
+    companyId,
+    article,
+    warehouse,
+    inc: { packedQty: -q, reservedQty: q },
+    guard: { $expr: { $gte: [{ $ifNull: ["$packedQty", 0] }, q] } },
+  });
+  if (!updated) {
+    throw new Error(
+      `unpackFromPacked: packed bucket lower than ${q} for ${normArticle(article)} in ${normWarehouse(warehouse)}.`
+    );
+  }
+  const after = await snapshotAfter({ companyId, article, warehouse, session });
+  return createStockLedgerEntry({
+    session,
+    companyId,
+    transactionDate,
+    movementType: MOVEMENT_TYPES.UNPACKED,
+    article,
+    warehouse,
+    qtyIn: q,
+    referenceType,
+    referenceNo,
+    customerName,
+    remarks: `${remarks || ""}${remarks ? " " : ""}[packed→reserved]`.trim(),
+    createdBy,
+    sourceModule,
+    allocationId,
+    ...after,
+  });
+}
+
+/**
+ * DISPATCH_OUT — removes physical stock that was in packed staging.
+ */
+export async function dispatchFromPacked({
+  session,
+  companyId,
+  article,
+  warehouse,
+  qty,
+  customerName = "",
+  referenceType = "STORE_DISPATCH",
+  referenceNo,
+  remarks = "",
+  createdBy = "",
+  sourceModule = "STORE",
+  transactionDate = null,
+}) {
+  requireCompanyId(companyId);
+  const q = Number(qty) || 0;
+  if (!(q > 0)) throw new Error("dispatchFromPacked: qty must be > 0");
+  const updated = await bumpBuckets({
+    session,
+    companyId,
+    article,
+    warehouse,
+    inc: { packedQty: -q, quantity: -q, onHandQty: -q },
+    guard: {
+      $expr: {
+        $and: [{ $gte: [{ $ifNull: ["$packedQty", 0] }, q] }, { $gte: [{ $ifNull: ["$onHandQty", 0] }, q] }],
+      },
+    },
+  });
+  if (!updated) {
+    throw new Error(
+      `dispatchFromPacked: insufficient packed/on-hand for ${normArticle(article)} in ${normWarehouse(warehouse)}.`
+    );
+  }
+  const after = await snapshotAfter({ companyId, article, warehouse, session });
+  return createStockLedgerEntry({
+    session,
+    companyId,
+    transactionDate,
+    movementType: MOVEMENT_TYPES.DISPATCH_OUT,
+    article,
+    warehouse,
+    locationFrom: warehouse,
+    qtyOut: q,
+    referenceType,
+    referenceNo,
+    customerName,
+    remarks,
+    createdBy,
+    sourceModule,
+    ...after,
+  });
+}
+
+/**
+ * DISPATCH_CANCEL — restores physical stock and packed staging after dispatch cancel.
+ */
+export async function cancelDispatchFromPacked({
+  session,
+  companyId,
+  article,
+  warehouse,
+  qty,
+  customerName = "",
+  referenceType = "STORE_DISPATCH",
+  referenceNo,
+  remarks = "",
+  createdBy = "",
+  sourceModule = "STORE",
+  transactionDate = null,
+}) {
+  requireCompanyId(companyId);
+  const q = Number(qty) || 0;
+  if (!(q > 0)) throw new Error("cancelDispatchFromPacked: qty must be > 0");
+  await bumpBuckets({
+    session,
+    companyId,
+    article,
+    warehouse,
+    inc: { packedQty: q, quantity: q, onHandQty: q },
+    upsert: true,
+  });
+  const after = await snapshotAfter({ companyId, article, warehouse, session });
+  return createStockLedgerEntry({
+    session,
+    companyId,
+    transactionDate,
+    movementType: MOVEMENT_TYPES.DISPATCH_CANCEL,
+    article,
+    warehouse,
+    locationTo: warehouse,
+    qtyIn: q,
+    referenceType,
+    referenceNo,
+    customerName,
+    remarks: `${remarks || ""}${remarks ? " " : ""}[dispatch cancel → restore packed+onHand]`.trim(),
     createdBy,
     sourceModule,
     ...after,
@@ -1212,6 +1451,10 @@ export default {
   cancelInvoice,
   stockTransfer,
   stockAdjustment,
+  packFromAllocation,
+  unpackFromPacked,
+  dispatchFromPacked,
+  cancelDispatchFromPacked,
   getRecentLedgerEntries,
   withTransaction,
 };
