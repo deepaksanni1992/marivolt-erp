@@ -69,24 +69,48 @@ function truncateBankAddressCell(s, max = 56) {
   return t.length > max ? `${t.slice(0, max)}…` : t;
 }
 
-const tabs = [
-  { id: "ar", label: "AR Dashboard" },
-  { id: "ap", label: "AP Dashboard" },
-  { id: "cust", label: "Customer Ledger" },
-  { id: "statement", label: "Customer Statement" },
-  { id: "supp", label: "Supplier Ledger" },
-  { id: "payrcpt", label: "Payment Receipts" },
-  { id: "payv", label: "Supplier Payments" },
-  { id: "si", label: "Sales Invoices" },
-  { id: "pi", label: "Purchase Invoices" },
-  { id: "cash", label: "Cash / Bank Ledger" },
-  { id: "journal", label: "Journal Entries" },
-  { id: "outstanding", label: "Outstanding Report" },
-  { id: "aging", label: "Aging Report" },
-  { id: "alloc", label: "Allocation / Reconciliation" },
-  { id: "reports", label: "Reports" },
-  { id: "sd", label: "Sales Dispatches" },
-  { id: "bank", label: "Bank Details" },
+/** Standard ERP-style navigation (flat `id` values preserved for existing tab logic). */
+const ACCOUNT_NAV = [
+  { id: "dash", label: "Dashboard", items: [{ id: "fin", label: "Finance Dashboard" }] },
+  {
+    id: "ar",
+    label: "Receivables (AR)",
+    items: [
+      { id: "si", label: "Sales Invoices" },
+      { id: "payrcpt", label: "Customer Payments" },
+      { id: "cust", label: "Customer Ledger" },
+      { id: "outstanding", label: "Outstanding Report" },
+      { id: "aging", label: "Aging Report" },
+    ],
+  },
+  {
+    id: "ap",
+    label: "Payables (AP)",
+    items: [
+      { id: "pi", label: "Purchase Invoices" },
+      { id: "payv", label: "Supplier Payments" },
+      { id: "supp", label: "Supplier Ledger" },
+      { id: "ap-out", label: "AP Outstanding" },
+      { id: "ap-aging", label: "AP Aging" },
+    ],
+  },
+  {
+    id: "banking",
+    label: "Banking",
+    items: [
+      { id: "cash", label: "Cash / Bank Ledger" },
+      { id: "bank", label: "Bank Accounts" },
+    ],
+  },
+  {
+    id: "acct",
+    label: "Accounting",
+    items: [
+      { id: "journal", label: "Journal Entries" },
+      { id: "reports", label: "Reports" },
+      { id: "statement", label: "Customer Statement" },
+    ],
+  },
 ];
 
 const invLine = () => ({
@@ -100,7 +124,7 @@ export default function Accounts() {
   const { auth } = useAuth();
   const bankDetailsAdmin = canManageBankDetails(auth?.user?.role);
   const qc = useQueryClient();
-  const [tab, setTab] = useState("si");
+  const [tab, setTab] = useState("fin");
   const [page, setPage] = useState(1);
   const limit = 25;
   const [err, setErr] = useState("");
@@ -203,11 +227,6 @@ export default function Accounts() {
     queryFn: () => apiGetWithQuery("/accounts/sales-invoices", { page, limit }),
     enabled: tab === "si",
   });
-  const sdQ = useQuery({
-    queryKey: ["accountsSalesDispatches", page],
-    queryFn: () => apiGetWithQuery("/accounts/sales-dispatches", { page, limit }),
-    enabled: tab === "sd",
-  });
   const [piPoFilterInput, setPiPoFilterInput] = useState("");
   const [piPoFilter, setPiPoFilter] = useState("");
 
@@ -291,17 +310,17 @@ export default function Accounts() {
   const supplierOutstandingQ = useQuery({
     queryKey: ["supplierOutstanding"],
     queryFn: () => apiGet("/accounts/supplier-outstanding"),
-    enabled: tab === "ap",
+    enabled: tab === "ap-out",
   });
   const apAgingQ = useQuery({
     queryKey: ["apAging"],
     queryFn: () => apiGet("/accounts/ap-aging"),
-    enabled: tab === "ap",
+    enabled: tab === "ap-aging",
   });
-  const apDashboardQ = useQuery({
-    queryKey: ["apDashboard"],
-    queryFn: () => apiGet("/accounts/ap-dashboard"),
-    enabled: tab === "ap",
+  const financeDashboardQ = useQuery({
+    queryKey: ["financeDashboard"],
+    queryFn: () => apiGet("/accounts/finance-dashboard"),
+    enabled: tab === "fin",
   });
   const supplierPaymentSummaryQ = useQuery({
     queryKey: ["supplierPaymentSummary"],
@@ -347,30 +366,40 @@ export default function Accounts() {
   const postMut = useMutation({
     mutationFn: ({ path, body }) => apiPost(path, body),
     onSuccess: (_, v) => {
-      if (v.path.includes("sales-invoices")) qc.invalidateQueries({ queryKey: ["salesInvoices"] });
+      if (v.path.includes("sales-invoices")) {
+        qc.invalidateQueries({ queryKey: ["salesInvoices"] });
+        qc.invalidateQueries({ queryKey: ["financeDashboard"] });
+      }
       if (v.path.includes("purchase-invoices")) {
         qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
         qc.invalidateQueries({ queryKey: ["apDashboard"] });
+        qc.invalidateQueries({ queryKey: ["financeDashboard"] });
         qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
         qc.invalidateQueries({ queryKey: ["supplierLedger"] });
         qc.invalidateQueries({ queryKey: ["supplierOutstanding"] });
         qc.invalidateQueries({ queryKey: ["apAging"] });
       }
-      if (v.path.includes("customer-ledger"))
+      if (v.path.includes("customer-ledger")) {
         qc.invalidateQueries({ queryKey: ["customerLedger"] });
+        qc.invalidateQueries({ queryKey: ["financeDashboard"] });
+      }
       if (v.path.includes("supplier-ledger"))
         qc.invalidateQueries({ queryKey: ["supplierLedger"] });
       if (v.path.includes("supplier-payments")) {
         qc.invalidateQueries({ queryKey: ["supplierPayments"] });
         qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
         qc.invalidateQueries({ queryKey: ["apDashboard"] });
+        qc.invalidateQueries({ queryKey: ["financeDashboard"] });
         qc.invalidateQueries({ queryKey: ["supplierOutstanding"] });
         qc.invalidateQueries({ queryKey: ["apAging"] });
         qc.invalidateQueries({ queryKey: ["supplierLedger"] });
         qc.invalidateQueries({ queryKey: ["supplierLedgerSummary"] });
         qc.invalidateQueries({ queryKey: ["supplierPaymentSummary"] });
       }
-      if (v.path.includes("cash-bank")) qc.invalidateQueries({ queryKey: ["cashBank"] });
+      if (v.path.includes("cash-bank")) {
+        qc.invalidateQueries({ queryKey: ["cashBank"] });
+        qc.invalidateQueries({ queryKey: ["financeDashboard"] });
+      }
       if (v.path.includes("bank-details")) {
         qc.invalidateQueries({ queryKey: ["bankDetails"] });
         setBankEditId(null);
@@ -394,6 +423,7 @@ export default function Accounts() {
       qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
       qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
       qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      qc.invalidateQueries({ queryKey: ["financeDashboard"] });
       setErr("");
     },
     onError: (e) => setErr(e.message || String(e)),
@@ -430,6 +460,7 @@ export default function Accounts() {
       qc.invalidateQueries({ queryKey: ["supplierPayments"] });
       qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
       qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      qc.invalidateQueries({ queryKey: ["financeDashboard"] });
       qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
       qc.invalidateQueries({ queryKey: ["cashBank"] });
       qc.invalidateQueries({ queryKey: ["supplierLedger"] });
@@ -454,6 +485,7 @@ export default function Accounts() {
       qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
       qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
       qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      qc.invalidateQueries({ queryKey: ["financeDashboard"] });
       if (data?.draftExists) setErr("Draft purchase invoice already exists for this supplier document number.");
       else setErr("");
     },
@@ -492,6 +524,7 @@ export default function Accounts() {
       if (data?._id) setSupPayDraftId(String(data._id));
       qc.invalidateQueries({ queryKey: ["supplierPayments"] });
       qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      qc.invalidateQueries({ queryKey: ["financeDashboard"] });
       setSupplierPaymentFile(null);
       setErr("");
     },
@@ -534,6 +567,7 @@ export default function Accounts() {
       qc.invalidateQueries({ queryKey: ["supplierPayments"] });
       qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
       qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      qc.invalidateQueries({ queryKey: ["financeDashboard"] });
       qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
       qc.invalidateQueries({ queryKey: ["cashBank"] });
       qc.invalidateQueries({ queryKey: ["supplierLedger"] });
@@ -557,22 +591,9 @@ export default function Accounts() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["supplierPayments"] });
       qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      qc.invalidateQueries({ queryKey: ["financeDashboard"] });
     },
     onError: (e) => setErr(e.message || String(e)),
-  });
-
-  const patchMut = useMutation({
-    mutationFn: ({ path, body }) => apiPatch(path, body),
-    onSuccess: (_, v) => {
-      if (String(v.path || "").includes("sales-dispatches")) {
-        qc.invalidateQueries({ queryKey: ["accountsSalesDispatches"] });
-        qc.invalidateQueries({ queryKey: ["sales-sales-dispatch"] });
-        qc.invalidateQueries({ queryKey: ["sales-dispatch-detail"] });
-        qc.invalidateQueries({ queryKey: ["customerLedger"] });
-      }
-      setErr("");
-    },
-    onError: (e) => setErr(e.message),
   });
 
   const putMut = useMutation({
@@ -592,20 +613,29 @@ export default function Accounts() {
   const delMut = useMutation({
     mutationFn: ({ path }) => apiDelete(path),
     onSuccess: (_, v) => {
-      if (v.path.includes("sales-invoices")) qc.invalidateQueries({ queryKey: ["salesInvoices"] });
+      if (v.path.includes("sales-invoices")) {
+        qc.invalidateQueries({ queryKey: ["salesInvoices"] });
+        qc.invalidateQueries({ queryKey: ["financeDashboard"] });
+      }
       if (v.path.includes("purchase-invoices")) {
         qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
         qc.invalidateQueries({ queryKey: ["apDashboard"] });
+        qc.invalidateQueries({ queryKey: ["financeDashboard"] });
         qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
         qc.invalidateQueries({ queryKey: ["supplierLedger"] });
         qc.invalidateQueries({ queryKey: ["supplierOutstanding"] });
         qc.invalidateQueries({ queryKey: ["apAging"] });
       }
-      if (v.path.includes("customer-ledger"))
+      if (v.path.includes("customer-ledger")) {
         qc.invalidateQueries({ queryKey: ["customerLedger"] });
+        qc.invalidateQueries({ queryKey: ["financeDashboard"] });
+      }
       if (v.path.includes("supplier-ledger"))
         qc.invalidateQueries({ queryKey: ["supplierLedger"] });
-      if (v.path.includes("cash-bank")) qc.invalidateQueries({ queryKey: ["cashBank"] });
+      if (v.path.includes("cash-bank")) {
+        qc.invalidateQueries({ queryKey: ["cashBank"] });
+        qc.invalidateQueries({ queryKey: ["financeDashboard"] });
+      }
       if (v.path.includes("bank-details")) qc.invalidateQueries({ queryKey: ["bankDetails"] });
       if (v.path.includes("purchase-orders") && v.path.includes("/documents/")) {
         qc.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
@@ -759,7 +789,6 @@ export default function Accounts() {
 
   function activeRows() {
     if (tab === "si") return siQ.data?.items ?? [];
-    if (tab === "sd") return sdQ.data?.items ?? [];
     if (tab === "pi") return piQ.data?.items ?? [];
     if (tab === "cust") return custQ.data?.items ?? [];
     if (tab === "statement") return statementQ.data?.items ?? [];
@@ -776,7 +805,6 @@ export default function Accounts() {
 
   function activeTotal() {
     if (tab === "si") return siQ.data?.total ?? 0;
-    if (tab === "sd") return sdQ.data?.total ?? 0;
     if (tab === "pi") return piQ.data?.total ?? 0;
     if (tab === "cust") return custQ.data?.total ?? 0;
     if (tab === "statement") return statementQ.data?.items?.length ?? 0;
@@ -793,7 +821,9 @@ export default function Accounts() {
 
   function loading() {
     if (tab === "si") return siQ.isLoading;
-    if (tab === "sd") return sdQ.isLoading;
+    if (tab === "fin") return financeDashboardQ.isLoading;
+    if (tab === "ap-out") return supplierOutstandingQ.isLoading;
+    if (tab === "ap-aging") return apAgingQ.isLoading;
     if (tab === "pi") return piQ.isLoading;
     if (tab === "cust") return custQ.isLoading;
     if (tab === "statement") return statementQ.isLoading;
@@ -987,6 +1017,10 @@ export default function Accounts() {
       qc.invalidateQueries({ queryKey: ["accountsJournals"] });
       qc.invalidateQueries({ queryKey: ["cashBank"] });
       qc.invalidateQueries({ queryKey: ["customerLedger"] });
+      qc.invalidateQueries({ queryKey: ["financeDashboard"] });
+      qc.invalidateQueries({ queryKey: ["accountsOutstanding"] });
+      qc.invalidateQueries({ queryKey: ["accountsAging"] });
+      qc.invalidateQueries({ queryKey: ["salesInvoices"] });
     },
     onError: (e) => setErr(e.message),
   });
@@ -999,6 +1033,7 @@ export default function Accounts() {
       qc.invalidateQueries({ queryKey: ["supplierOutstanding"] });
       qc.invalidateQueries({ queryKey: ["apAging"] });
       qc.invalidateQueries({ queryKey: ["apDashboard"] });
+      qc.invalidateQueries({ queryKey: ["financeDashboard"] });
       qc.invalidateQueries({ queryKey: ["purchaseInvoices"] });
     },
     onError: (e) => setErr(e.message),
@@ -1076,7 +1111,7 @@ export default function Accounts() {
     <div>
       <PageHeader
         title="Accounts"
-        subtitle="Invoices, sales dispatches (ship / close vs payment), AR/AP ledgers, and cash or bank movements."
+        subtitle="Standard ERP layout: AR, AP, banking, and journals. Data is scoped by company. Files upload to AWS S3 through the server (signed URLs for view/download)."
       />
 
       {err ? (
@@ -1085,24 +1120,36 @@ export default function Accounts() {
         </div>
       ) : null}
 
-      <div className="mb-4 flex flex-wrap gap-2 rounded-2xl border bg-white p-2">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => {
-              setTab(t.id);
-              setPage(1);
-            }}
-            className={[
-              "rounded-xl px-3 py-2 text-sm font-medium",
-              tab === t.id ? "bg-gray-900 text-white" : "text-gray-700 hover:bg-gray-100",
-            ].join(" ")}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+        <aside className="shrink-0 rounded-2xl border bg-white p-3 lg:sticky lg:top-4 lg:w-56">
+          {ACCOUNT_NAV.map((section) => (
+            <div key={section.id} className="mb-4 last:mb-0">
+              <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-gray-400">
+                {section.label}
+              </div>
+              <nav className="mt-1 flex flex-col gap-0.5">
+                {section.items.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setTab(item.id);
+                      setPage(1);
+                    }}
+                    className={[
+                      "rounded-lg px-2 py-1.5 text-left text-sm font-medium",
+                      tab === item.id ? "bg-gray-900 text-white" : "text-gray-700 hover:bg-gray-100",
+                    ].join(" ")}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </nav>
+            </div>
+          ))}
+        </aside>
+
+        <div className="min-w-0 flex-1 space-y-4">
 
       {tab === "bank" && !bankDetailsAdmin ? (
         <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
@@ -1152,7 +1199,9 @@ export default function Accounts() {
         </div>
       )}
 
-      {(tab !== "bank" || bankDetailsAdmin) && tab !== "sd" && tab !== "payrcpt" && (
+      {(tab !== "bank" || bankDetailsAdmin) &&
+        tab !== "payrcpt" &&
+        !["fin", "ap-out", "ap-aging", "outstanding", "aging", "statement", "reports"].includes(tab) && (
         <div className="mb-3 flex justify-end">
           <button
             type="button"
@@ -1398,94 +1447,6 @@ export default function Accounts() {
                       </td>
                     </tr>
                   ))
-                )}
-              </tbody>
-            </table>
-          )}
-          {tab === "sd" && (
-            <table className="min-w-full text-left text-sm">
-              <thead className="border-b bg-gray-50 text-xs font-semibold text-gray-600">
-                <tr>
-                  <th className="px-3 py-2">Dispatch</th>
-                  <th className="px-3 py-2">Customer</th>
-                  <th className="px-3 py-2">Invoice</th>
-                  <th className="px-3 py-2">Inv. status</th>
-                  <th className="px-3 py-2">Disp. status</th>
-                  <th className="px-3 py-2 text-right">Total</th>
-                  <th className="px-3 py-2">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading() ? (
-                  <tr>
-                    <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
-                      Loading…
-                    </td>
-                  </tr>
-                ) : activeRows().length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
-                      No rows.
-                    </td>
-                  </tr>
-                ) : (
-                  activeRows().map((r) => {
-                    const invSt = r.linkedInvoice?.status || "—";
-                    const canShip = String(r.status || "").toUpperCase() === "DRAFT";
-                    const canClose =
-                      String(r.status || "").toUpperCase() === "DISPATCHED" &&
-                      String(invSt || "").toUpperCase() === "PAID";
-                    return (
-                      <tr key={r._id} className="border-b border-gray-100">
-                        <td className="px-3 py-2 font-mono text-xs">{r.dispatchNo}</td>
-                        <td className="px-3 py-2">{r.customerName}</td>
-                        <td className="px-3 py-2 font-mono text-xs">{r.linkedSalesInvoiceNo || "—"}</td>
-                        <td className="px-3 py-2 text-xs">{invSt}</td>
-                        <td className="px-3 py-2 text-xs">{r.status}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">
-                          {r.currency || "USD"} {Number(r.grandTotal || 0).toFixed(2)}
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="flex flex-wrap gap-1">
-                            {canShip ? (
-                              <button
-                                type="button"
-                                className="rounded-lg border px-2 py-1 text-xs"
-                                disabled={patchMut.isPending}
-                                onClick={() =>
-                                  patchMut.mutate({
-                                    path: `/sales/sales-dispatches/${r._id}`,
-                                    body: { status: "DISPATCHED" },
-                                  })
-                                }
-                              >
-                                Mark shipped
-                              </button>
-                            ) : null}
-                            {canClose ? (
-                              <button
-                                type="button"
-                                className="rounded-lg border px-2 py-1 text-xs"
-                                disabled={patchMut.isPending}
-                                onClick={() => {
-                                  if (!window.confirm("Close this dispatch? The linked invoice must already be PAID.")) return;
-                                  const postCredit = window.confirm(
-                                    "Also post a customer ledger CREDIT for this dispatch total? (OK = yes, Cancel = no)"
-                                  );
-                                  patchMut.mutate({
-                                    path: `/sales/sales-dispatches/${r._id}`,
-                                    body: { status: "CLOSED", postCustomerLedgerCredit: postCredit },
-                                  });
-                                }}
-                              >
-                                Close (paid)
-                              </button>
-                            ) : null}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })
                 )}
               </tbody>
             </table>
@@ -1852,53 +1813,235 @@ export default function Accounts() {
           {tab === "journal" && <JournalEntriesTab rows={activeRows() || []} />}
           {tab === "outstanding" && <OutstandingReportTab rows={activeRows() || []} />}
           {tab === "aging" && <AgingReportTab rows={activeRows() || []} />}
-          {["ar", "alloc"].includes(tab) && (
-            <div className="px-4 py-10 text-center text-sm text-gray-500">
-              This tab structure is now ready. Detailed ERP widgets will be added in the next phase.
-            </div>
-          )}
-          {tab === "ap" && (
-            <div className="space-y-3 p-3">
-              {apDashboardQ.data ? (
-                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                  {[
-                    ["Total PO value (excl. draft/cancel)", apDashboardQ.data.totalPurchaseValue],
-                    ["Total payables (posted PI)", apDashboardQ.data.totalPayables],
-                    ["Overdue payables", apDashboardQ.data.overduePayables],
-                    ["Supplier payments (this month)", apDashboardQ.data.paymentsDoneThisMonth],
-                    ["Unallocated on payments", apDashboardQ.data.advancePaid],
-                    ["Draft purchase invoices", apDashboardQ.data.draftPurchaseInvoices],
-                    ["Posted PI — unpaid count", apDashboardQ.data.pendingSupplierInvoices],
-                    ["Posted PI — partial / paid count", `${apDashboardQ.data.partiallyPaidInvoices} / ${apDashboardQ.data.fullyPaidInvoices}`],
-                  ].map(([k, v]) => (
-                    <div key={k} className="rounded border bg-slate-50 px-3 py-2 text-xs">
-                      <div className="text-gray-600">{k}</div>
-                      <div className="font-semibold tabular-nums text-gray-900">
-                        {typeof v === "number" ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : v}
+          {tab === "fin" && (
+            <div className="space-y-4 p-4">
+              {financeDashboardQ.isLoading ? (
+                <p className="text-sm text-gray-500">Loading finance summary…</p>
+              ) : financeDashboardQ.isError ? (
+                <p className="text-sm text-red-600">
+                  {financeDashboardQ.error?.message || "Could not load finance dashboard."}
+                </p>
+              ) : (
+                <>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    {[
+                      ["Total receivable (AR)", financeDashboardQ.data?.totalReceivable],
+                      ["Overdue AR", financeDashboardQ.data?.overdueReceivable],
+                      ["This month — sales (invoiced)", financeDashboardQ.data?.salesThisMonth],
+                      ["Total payable (AP)", financeDashboardQ.data?.totalPayables],
+                      ["Overdue AP", financeDashboardQ.data?.overduePayables],
+                      ["This month — PO value", financeDashboardQ.data?.purchaseThisMonth],
+                      ["Cash / bank net", financeDashboardQ.data?.cashBankBalance],
+                    ].map(([label, v]) => (
+                      <div key={label} className="rounded-xl border border-slate-200 bg-slate-50/90 px-3 py-2">
+                        <div className="text-[11px] font-medium text-gray-600">{label}</div>
+                        <div className="mt-1 text-lg font-semibold tabular-nums text-gray-900">
+                          {typeof v === "number"
+                            ? v.toLocaleString(undefined, { maximumFractionDigits: 2 })
+                            : "—"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    <div className="rounded-xl border p-3">
+                      <div className="mb-2 text-sm font-semibold text-gray-900">Customer outstanding (top)</div>
+                      <div className="overflow-auto">
+                        <table className="min-w-full text-xs">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-2 py-1 text-left">Customer</th>
+                              <th className="px-2 py-1 text-left">Currency</th>
+                              <th className="px-2 py-1 text-right">Balance</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(financeDashboardQ.data?.customerOutstandingTop || []).length ? (
+                              (financeDashboardQ.data.customerOutstandingTop || []).map((r) => (
+                                <tr key={`${r.name}-${r.currency}`} className="border-t">
+                                  <td className="px-2 py-1">{r.name}</td>
+                                  <td className="px-2 py-1">{r.currency}</td>
+                                  <td className="px-2 py-1 text-right font-semibold tabular-nums">
+                                    {Number(r.balance || 0).toFixed(2)}
+                                  </td>
+                                </tr>
+                              ))
+                            ) : (
+                              <tr>
+                                <td colSpan={3} className="px-2 py-3 text-gray-500">
+                                  No open AR balances.
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
                       </div>
                     </div>
-                  ))}
-                </div>
-              ) : null}
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="rounded-xl border p-3">
-                  <div className="mb-2 text-sm font-semibold">Supplier Outstanding</div>
-                  <div className="overflow-auto">
-                    <table className="min-w-full text-xs">
-                      <thead className="bg-gray-50"><tr><th className="px-2 py-1 text-left">Supplier</th><th className="px-2 py-1 text-left">Invoice No</th><th className="px-2 py-1 text-left">Invoice Amount</th><th className="px-2 py-1 text-left">Paid Amount</th><th className="px-2 py-1 text-left">Balance</th><th className="px-2 py-1 text-left">Due Date</th><th className="px-2 py-1 text-left">Ageing Bucket</th><th className="px-2 py-1 text-left">Currency</th></tr></thead>
-                      <tbody>{(supplierOutstandingQ.data?.items || []).map((r, idx) => <tr key={`${r.invoiceNo}-${idx}`} className="border-t"><td className="px-2 py-1">{r.supplier}</td><td className="px-2 py-1">{r.invoiceNo}</td><td className="px-2 py-1">{Number(r.invoiceAmount || 0).toFixed(2)}</td><td className="px-2 py-1">{Number(r.paidAmount || 0).toFixed(2)}</td><td className="px-2 py-1 font-semibold">{Number(r.balance || 0).toFixed(2)}</td><td className="px-2 py-1">{r.dueDate ? new Date(r.dueDate).toLocaleDateString() : "—"}</td><td className="px-2 py-1">{r.ageingBucket}</td><td className="px-2 py-1">{r.currency}</td></tr>)}</tbody>
-                    </table>
+                    <div className="rounded-xl border p-3">
+                      <div className="mb-2 text-sm font-semibold text-gray-900">Supplier outstanding (top)</div>
+                      <div className="overflow-auto">
+                        <table className="min-w-full text-xs">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-2 py-1 text-left">Supplier</th>
+                              <th className="px-2 py-1 text-left">Currency</th>
+                              <th className="px-2 py-1 text-right">Balance</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(financeDashboardQ.data?.supplierOutstandingTop || []).length ? (
+                              (financeDashboardQ.data.supplierOutstandingTop || []).map((r) => (
+                                <tr key={`${r.name}-${r.currency}`} className="border-t">
+                                  <td className="px-2 py-1">{r.name}</td>
+                                  <td className="px-2 py-1">{r.currency}</td>
+                                  <td className="px-2 py-1 text-right font-semibold tabular-nums">
+                                    {Number(r.balance || 0).toFixed(2)}
+                                  </td>
+                                </tr>
+                              ))
+                            ) : (
+                              <tr>
+                                <td colSpan={3} className="px-2 py-3 text-gray-500">
+                                  No open AP balances.
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <div className="rounded-xl border p-3">
-                  <div className="mb-2 text-sm font-semibold">AP Ageing</div>
-                  <div className="overflow-auto">
-                    <table className="min-w-full text-xs">
-                      <thead className="bg-gray-50"><tr><th className="px-2 py-1 text-left">Supplier</th><th className="px-2 py-1 text-left">Current</th><th className="px-2 py-1 text-left">0-30</th><th className="px-2 py-1 text-left">31-60</th><th className="px-2 py-1 text-left">61-90</th><th className="px-2 py-1 text-left">90+</th><th className="px-2 py-1 text-left">Total</th><th className="px-2 py-1 text-left">Currency</th></tr></thead>
-                      <tbody>{(apAgingQ.data?.items || []).map((r) => <tr key={`${r.supplier}-${r.currency}`} className="border-t"><td className="px-2 py-1">{r.supplier}</td><td className="px-2 py-1">{Number(r.current || 0).toFixed(2)}</td><td className="px-2 py-1">{Number(r.d0_30 || 0).toFixed(2)}</td><td className="px-2 py-1">{Number(r.d31_60 || 0).toFixed(2)}</td><td className="px-2 py-1">{Number(r.d61_90 || 0).toFixed(2)}</td><td className="px-2 py-1">{Number(r.d90Plus || 0).toFixed(2)}</td><td className="px-2 py-1 font-semibold">{Number(r.totalOutstanding || 0).toFixed(2)}</td><td className="px-2 py-1">{r.currency}</td></tr>)}</tbody>
-                    </table>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="rounded-xl border p-3">
+                      <div className="mb-2 text-sm font-semibold">AR aging (open balances)</div>
+                      {financeDashboardQ.data?.arAgingSummary ? (
+                        <table className="min-w-full text-xs">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-1 py-1">Current</th>
+                              <th className="px-1 py-1">0–30</th>
+                              <th className="px-1 py-1">31–60</th>
+                              <th className="px-1 py-1">61–90</th>
+                              <th className="px-1 py-1">90+</th>
+                              <th className="px-1 py-1">Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr className="border-t">
+                              {["current", "d0_30", "d31_60", "d61_90", "d90Plus", "total"].map((k) => (
+                                <td key={k} className="px-1 py-1 text-right tabular-nums font-medium">
+                                  {Number(financeDashboardQ.data.arAgingSummary[k] || 0).toFixed(2)}
+                                </td>
+                              ))}
+                            </tr>
+                          </tbody>
+                        </table>
+                      ) : (
+                        <p className="text-xs text-gray-500">—</p>
+                      )}
+                    </div>
+                    <div className="rounded-xl border p-3">
+                      <div className="mb-2 text-sm font-semibold">AP aging (open balances)</div>
+                      {financeDashboardQ.data?.apAgingSummary ? (
+                        <table className="min-w-full text-xs">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-1 py-1">Current</th>
+                              <th className="px-1 py-1">0–30</th>
+                              <th className="px-1 py-1">31–60</th>
+                              <th className="px-1 py-1">61–90</th>
+                              <th className="px-1 py-1">90+</th>
+                              <th className="px-1 py-1">Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr className="border-t">
+                              {["current", "d0_30", "d31_60", "d61_90", "d90Plus", "total"].map((k) => (
+                                <td key={k} className="px-1 py-1 text-right tabular-nums font-medium">
+                                  {Number(financeDashboardQ.data.apAgingSummary[k] || 0).toFixed(2)}
+                                </td>
+                              ))}
+                            </tr>
+                          </tbody>
+                        </table>
+                      ) : (
+                        <p className="text-xs text-gray-500">—</p>
+                      )}
+                    </div>
                   </div>
-                </div>
+                </>
+              )}
+            </div>
+          )}
+          {tab === "ap-out" && (
+            <div className="p-3">
+              <div className="mb-2 text-sm font-semibold text-gray-900">AP outstanding (all lines)</div>
+              <div className="overflow-auto">
+                <table className="min-w-full text-xs">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-2 py-1 text-left">Supplier</th>
+                      <th className="px-2 py-1 text-left">Invoice No</th>
+                      <th className="px-2 py-1 text-left">Invoice Amount</th>
+                      <th className="px-2 py-1 text-left">Paid Amount</th>
+                      <th className="px-2 py-1 text-left">Balance</th>
+                      <th className="px-2 py-1 text-left">Due Date</th>
+                      <th className="px-2 py-1 text-left">Ageing</th>
+                      <th className="px-2 py-1 text-left">Currency</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(supplierOutstandingQ.data?.items || []).map((r, idx) => (
+                      <tr key={`${r.invoiceNo}-${idx}`} className="border-t">
+                        <td className="px-2 py-1">{r.supplier}</td>
+                        <td className="px-2 py-1">{r.invoiceNo}</td>
+                        <td className="px-2 py-1">{Number(r.invoiceAmount || 0).toFixed(2)}</td>
+                        <td className="px-2 py-1">{Number(r.paidAmount || 0).toFixed(2)}</td>
+                        <td className="px-2 py-1 font-semibold">{Number(r.balance || 0).toFixed(2)}</td>
+                        <td className="px-2 py-1">
+                          {r.dueDate ? new Date(r.dueDate).toLocaleDateString() : "—"}
+                        </td>
+                        <td className="px-2 py-1">{r.ageingBucket}</td>
+                        <td className="px-2 py-1">{r.currency}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          {tab === "ap-aging" && (
+            <div className="p-3">
+              <div className="mb-2 text-sm font-semibold text-gray-900">AP ageing by supplier</div>
+              <div className="overflow-auto">
+                <table className="min-w-full text-xs">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-2 py-1 text-left">Supplier</th>
+                      <th className="px-2 py-1 text-left">Current</th>
+                      <th className="px-2 py-1 text-left">0-30</th>
+                      <th className="px-2 py-1 text-left">31-60</th>
+                      <th className="px-2 py-1 text-left">61-90</th>
+                      <th className="px-2 py-1 text-left">90+</th>
+                      <th className="px-2 py-1 text-left">Total</th>
+                      <th className="px-2 py-1 text-left">Currency</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(apAgingQ.data?.items || []).map((r) => (
+                      <tr key={`${r.supplier}-${r.currency}`} className="border-t">
+                        <td className="px-2 py-1">{r.supplier}</td>
+                        <td className="px-2 py-1">{Number(r.current || 0).toFixed(2)}</td>
+                        <td className="px-2 py-1">{Number(r.d0_30 || 0).toFixed(2)}</td>
+                        <td className="px-2 py-1">{Number(r.d31_60 || 0).toFixed(2)}</td>
+                        <td className="px-2 py-1">{Number(r.d61_90 || 0).toFixed(2)}</td>
+                        <td className="px-2 py-1">{Number(r.d90Plus || 0).toFixed(2)}</td>
+                        <td className="px-2 py-1 font-semibold">{Number(r.totalOutstanding || 0).toFixed(2)}</td>
+                        <td className="px-2 py-1">{r.currency}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
@@ -1990,7 +2133,7 @@ export default function Accounts() {
             </table>
           )}
         </div>
-        {tab !== "cust" && tab !== "supp" && tab !== "outstanding" && tab !== "aging" && !["ar", "ap", "payv", "alloc", "reports"].includes(tab) ? (
+        {tab !== "cust" && tab !== "supp" && tab !== "outstanding" && tab !== "aging" && !["fin", "ap-out", "ap-aging", "payv", "reports", "statement"].includes(tab) ? (
           <div className="flex items-center justify-between border-t px-3 py-2 text-sm text-gray-600">
             <span>
               Page {page}/{totalPages} · {total} rows
@@ -2039,6 +2182,8 @@ export default function Accounts() {
             </div>
           </div>
         ) : null}
+      </div>
+        </div>
       </div>
 
       {/* Modals */}

@@ -1870,6 +1870,132 @@ export async function getApDashboard(req, res) {
   }
 }
 
+function topBalancesFromMap(balanceMap, limit = 10) {
+  return Array.from(balanceMap.entries())
+    .map(([key, balance]) => {
+      const sep = key.lastIndexOf("::");
+      const name = sep >= 0 ? key.slice(0, sep) : key;
+      const currency = sep >= 0 ? key.slice(sep + 2) : "USD";
+      return { name, currency, balance };
+    })
+    .sort((a, b) => b.balance - a.balance)
+    .slice(0, limit);
+}
+
+/** GET /accounts/finance-dashboard — single AR/AP/cash snapshot (company-scoped). */
+export async function getFinanceDashboard(req, res) {
+  try {
+    const now = Date.now();
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+
+    const salesInv = await SalesInvoice.find(
+      withCompany(req, { status: { $nin: ["CANCELLED", "DRAFT"] } }),
+    )
+      .select(
+        "grandTotal totalReceivedAmount invoiceDate paymentTerms customerName currency status",
+      )
+      .lean();
+
+    let totalReceivable = 0;
+    let overdueReceivable = 0;
+    let salesThisMonth = 0;
+    const customerBal = new Map();
+    const arAge = { current: 0, d0_30: 0, d31_60: 0, d61_90: 0, d90Plus: 0, total: 0 };
+
+    for (const inv of salesInv) {
+      const total = Math.max(0, Number(inv.grandTotal) || 0);
+      const received = Math.max(0, Number(inv.totalReceivedAmount) || 0);
+      const bal = Math.max(0, total - received);
+      totalReceivable += bal;
+      const due = dueDateForInvoice(inv);
+      if (bal > 0.001 && due.getTime() < now) overdueReceivable += bal;
+
+      const invDate = inv.invoiceDate ? new Date(inv.invoiceDate) : null;
+      if (invDate && invDate >= startOfMonth) {
+        salesThisMonth += total;
+      }
+
+      if (bal > 0.001) {
+        const key = `${inv.customerName || "—"}::${inv.currency || "USD"}`;
+        customerBal.set(key, (customerBal.get(key) || 0) + bal);
+        const { bucket, days } = ageingBucketFromDueDate(due);
+        arAge.total += bal;
+        if (bucket === "Current") arAge.current += bal;
+        else if (days <= 30) arAge.d0_30 += bal;
+        else if (days <= 60) arAge.d31_60 += bal;
+        else if (days <= 90) arAge.d61_90 += bal;
+        else arAge.d90Plus += bal;
+      }
+    }
+
+    const pis = await PurchaseInvoice.find(withCompany(req, { status: "POSTED" }))
+      .select(
+        "totalAmount totalPaidAmount dueDate invoiceDate paymentTerms supplierName currency paymentStatus",
+      )
+      .lean();
+
+    let totalPayables = 0;
+    let overduePayables = 0;
+    const supplierBal = new Map();
+    const apAge = { current: 0, d0_30: 0, d31_60: 0, d61_90: 0, d90Plus: 0, total: 0 };
+
+    for (const inv of pis) {
+      const t = Math.max(0, Number(inv.totalAmount) || 0);
+      const paid = Math.max(0, Number(inv.totalPaidAmount) || 0);
+      const bal = Math.max(0, t - paid);
+      totalPayables += bal;
+      const due = inv.dueDate ? new Date(inv.dueDate) : dueDateForPurchaseInvoice(inv);
+      if (bal > 0.001 && due.getTime() < now) overduePayables += bal;
+      if (bal > 0.001) {
+        const key = `${inv.supplierName || "—"}::${inv.currency || "USD"}`;
+        supplierBal.set(key, (supplierBal.get(key) || 0) + bal);
+        const { bucket, days } = ageingBucketFromDueDate(due);
+        apAge.total += bal;
+        if (bucket === "Current") apAge.current += bal;
+        else if (days <= 30) apAge.d0_30 += bal;
+        else if (days <= 60) apAge.d31_60 += bal;
+        else if (days <= 90) apAge.d61_90 += bal;
+        else apAge.d90Plus += bal;
+      }
+    }
+
+    const posList = await PurchaseOrder.find(withCompany(req, { status: { $nin: ["CANCELLED", "DRAFT"] } }))
+      .select("grandTotal orderDate")
+      .lean();
+    let purchaseThisMonth = 0;
+    for (const p of posList) {
+      const od = p.orderDate ? new Date(p.orderDate) : null;
+      if (od && od >= startOfMonth) purchaseThisMonth += Math.max(0, Number(p.grandTotal) || 0);
+    }
+
+    const cashRows = await CashBankEntry.find(withCompany(req)).select("transactionType amount").lean();
+    let cashBankBalance = 0;
+    for (const r of cashRows) {
+      const a = Math.max(0, Number(r.amount) || 0);
+      if (String(r.transactionType || "").toUpperCase() === "RECEIPT") cashBankBalance += a;
+      else cashBankBalance -= a;
+    }
+
+    res.json({
+      totalReceivable,
+      overdueReceivable,
+      salesThisMonth,
+      totalPayables,
+      overduePayables,
+      purchaseThisMonth,
+      cashBankBalance,
+      customerOutstandingTop: topBalancesFromMap(customerBal, 12),
+      supplierOutstandingTop: topBalancesFromMap(supplierBal, 12),
+      arAgingSummary: arAge,
+      apAgingSummary: apAge,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
 export async function listSupplierLedgerBySupplierId(req, res) {
   try {
     const { supplierId } = req.params;

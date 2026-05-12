@@ -31,6 +31,7 @@ const DOCUMENT_TYPE_TO_FOLDER = {
   "SWIFT Copy": "swift-copies",
   "Shipping Document": "shipping-documents",
   "GRN Document": "grn-documents",
+  "Remittance Advice": "customer-payments",
   Other: "others",
 };
 
@@ -101,7 +102,14 @@ export async function uploadDocument(req, res) {
     const partyName = String(req.body?.partyName || "").trim();
     const moduleName = String(req.body?.moduleName || "").trim();
     const relatedId = String(req.body?.relatedId || "").trim();
+    const referenceType = String(req.body?.referenceType || "").trim();
+    const referenceId = String(req.body?.referenceId || "").trim();
     const remarks = String(req.body?.remarks || "").trim();
+    let branchId = null;
+    const br = String(req.body?.branchId || "").trim();
+    if (mongoose.Types.ObjectId.isValid(br)) {
+      branchId = new mongoose.Types.ObjectId(br);
+    }
 
     const folder = DOCUMENT_TYPE_TO_FOLDER[documentType] || "others";
     const companyId = req.companyId;
@@ -127,6 +135,9 @@ export async function uploadDocument(req, res) {
 
     const doc = await Document.create({
       companyId,
+      branchId,
+      referenceType,
+      referenceId,
       documentType,
       refNo,
       partyName,

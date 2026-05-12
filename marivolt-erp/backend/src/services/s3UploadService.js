@@ -32,7 +32,10 @@ function slugTenantSegment(companyCode) {
  * Isolates tenants (e.g. Marivolt MAR vs Okeanos OKE) under distinct S3 prefixes.
  */
 export function buildCompanyTenantPrefix({ companyId, companyCode }) {
-  const globalPrefix = safeEnv(process.env.AWS_S3_KEY_PREFIX, "").replace(/^\/+|\/+$/g, "");
+  const globalPrefix = safeEnv(
+    process.env.AWS_S3_KEY_PREFIX || process.env.AWS_S3_BASE_PREFIX,
+    "",
+  ).replace(/^\/+|\/+$/g, "");
   const tenant = slugTenantSegment(companyCode);
   const cid = String(companyId || "").replace(/[^a-f0-9]/gi, "");
   const parts = [];

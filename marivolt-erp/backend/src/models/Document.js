@@ -21,6 +21,7 @@ export const DOCUMENT_TYPES = [
   "SWIFT Copy",
   "Shipping Document",
   "GRN Document",
+  "Remittance Advice",
   "Other",
 ];
 
@@ -32,6 +33,11 @@ const documentSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    branchId: { type: mongoose.Schema.Types.ObjectId, ref: "Branch", default: null, index: true },
+    /** e.g. PURCHASE_ORDER, SUPPLIER_PAYMENT, SALES_INVOICE */
+    referenceType: { type: String, default: "", trim: true, index: true },
+    /** String id of linked business document (ObjectId hex or legacy ref) */
+    referenceId: { type: String, default: "", trim: true, index: true },
     documentType: {
       type: String,
       required: true,
