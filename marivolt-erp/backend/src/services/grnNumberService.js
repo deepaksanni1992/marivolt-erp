@@ -3,7 +3,6 @@ import Company from "../models/Company.js";
 import Counter from "../models/Counter.js";
 import GRN from "../models/GRN.js";
 
-const GRN_COUNTER_KEY = "grn";
 const GRN_NUMBER_WIDTH = 4;
 
 function escapeRegex(value = "") {
@@ -38,9 +37,9 @@ async function resolveCompanyPrefix(companyId, companyCode = "") {
   return normalizeCompanyCode(company?.code) || "CMP";
 }
 
-async function maxExistingGrnSequence({ prefix }) {
+async function maxExistingGrnSequence({ companyId, prefix }) {
   const regex = new RegExp(`^${escapeRegex(prefix)}-GRN-(\\d+)$`, "i");
-  const rows = await GRN.find({ grnNo: regex }).select("grnNo").lean();
+  const rows = await GRN.find({ companyId: normalizeCompanyId(companyId), grnNo: regex }).select("grnNo").lean();
   let max = 0;
   for (const row of rows) {
     const match = String(row.grnNo || "").match(regex);
@@ -50,11 +49,15 @@ async function maxExistingGrnSequence({ prefix }) {
   return max;
 }
 
-async function ensureCounterAtLeast({ companyId, floorSeq }) {
+function grnCounterKey(prefix) {
+  return `grn:${normalizeCompanyCode(prefix) || "CMP"}`;
+}
+
+async function ensureCounterAtLeast({ companyId, key, floorSeq }) {
   const normalizedCompanyId = normalizeCompanyId(companyId);
-  const filter = { companyId: normalizedCompanyId, key: GRN_COUNTER_KEY };
+  const filter = { companyId: normalizedCompanyId, key };
   const update = {
-    $setOnInsert: { companyId: normalizedCompanyId, key: GRN_COUNTER_KEY },
+    $setOnInsert: { companyId: normalizedCompanyId, key },
     $max: { seq: Math.max(0, Number(floorSeq) || 0) },
   };
 
@@ -75,17 +78,18 @@ async function ensureCounterAtLeast({ companyId, floorSeq }) {
  */
 export async function nextGrnNo({ companyId, companyCode = "" } = {}) {
   const prefix = await resolveCompanyPrefix(companyId, companyCode);
-  const existingMax = await maxExistingGrnSequence({ prefix });
-  await ensureCounterAtLeast({ companyId, floorSeq: existingMax });
+  const key = grnCounterKey(prefix);
+  const existingMax = await maxExistingGrnSequence({ companyId, prefix });
+  await ensureCounterAtLeast({ companyId, key, floorSeq: existingMax });
 
   const normalizedCompanyId = normalizeCompanyId(companyId);
   const row = await Counter.findOneAndUpdate(
-    { companyId: normalizedCompanyId, key: GRN_COUNTER_KEY },
+    { companyId: normalizedCompanyId, key },
     {
-      $setOnInsert: { companyId: normalizedCompanyId, key: GRN_COUNTER_KEY },
+      $setOnInsert: { companyId: normalizedCompanyId, key },
       $inc: { seq: 1 },
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
+    { upsert: true, new: true, setDefaultsOnInsert: false }
   ).lean();
 
   return `${prefix}-GRN-${padSeq(row.seq)}`;

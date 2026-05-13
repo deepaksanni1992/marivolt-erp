@@ -18,6 +18,7 @@ import StoreDispatch from "./models/StoreDispatch.js";
 import StockLocation from "./models/StockLocation.js";
 import ItemMaster from "./models/itemMasterModel.js";
 import * as stockService from "./services/stockService.js";
+import { nextGrnNo } from "./services/grnNumberService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, "../.env") });
@@ -126,7 +127,7 @@ async function seedOneCompany(company) {
         { session }
       );
 
-      const grnNo = `${code}-ERP-DEMO-GRN`;
+      const grnNo = await nextGrnNo({ companyId, companyCode: code });
       const grnItems = [
         {
           article: ARTICLE,

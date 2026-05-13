@@ -10,6 +10,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "seed:companies": "node src/seedCompanies.js",
     "seed:store-sales-demo": "node src/seedStoreSalesDemo.js",
+    "repair:grn": "node scripts/repair-grn-system.js",
     "seed:clone-item-master-okeanos": "node scripts/clone-item-master-mar-to-oke.mjs",
     "sync:masters-mar-oke": "node scripts/sync-suppliers-customers-mar-oke.mjs",
     "migrate:isolate-masters": "node scripts/migrate-supplier-customer-isolation.mjs",

@@ -15,7 +15,7 @@ function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
 }
 
-const MAX_GRN_NUMBER_RETRIES = 10;
+const MAX_GRN_NUMBER_RETRIES = 2;
 
 function isDuplicateGrnNoError(err) {
   const msg = String(err?.message || "");

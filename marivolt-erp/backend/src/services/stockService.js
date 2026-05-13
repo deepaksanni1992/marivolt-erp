@@ -370,7 +370,7 @@ async function bumpBuckets({
   if (guard) Object.assign(filter, guard);
   const update = { $inc: inc };
   if (upsert) {
-    update.$setOnInsert = {
+    const insertDefaults = {
       companyId,
       article: code,
       location: wh,
@@ -384,12 +384,16 @@ async function bumpBuckets({
       rtsQty: 0,
       packedQty: 0,
     };
+    for (const field of Object.keys(inc || {})) {
+      delete insertDefaults[field];
+    }
+    update.$setOnInsert = insertDefaults;
   }
   const updated = await StockBalance.findOneAndUpdate(filter, update, {
     session,
     new: true,
     upsert,
-    setDefaultsOnInsert: upsert,
+    setDefaultsOnInsert: false,
   });
   return updated;
 }

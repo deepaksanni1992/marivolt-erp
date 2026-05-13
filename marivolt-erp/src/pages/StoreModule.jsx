@@ -312,6 +312,7 @@ export default function StoreModule() {
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
       qc.invalidateQueries({ queryKey: ["store-purchase-orders"] });
       const pid = grnPoSnapshot?.header?._id;
+      setGrnLineEdits({});
       if (pid) loadGrnPoMut.mutate(String(pid));
       setGrnUiErr(data?.grnNo ? `Posted ${data.grnNo}` : "GRN posted.");
     },
@@ -1285,7 +1286,7 @@ export default function StoreModule() {
                       });
                     }}
                   >
-                    Post GRN
+                    {postGrnFromPoMut.isPending ? "Posting GRN..." : "Post GRN"}
                   </button>
                   <span className="text-[11px] text-slate-500">
                     Default warehouse MAIN is applied automatically. Enter location manually for each line.

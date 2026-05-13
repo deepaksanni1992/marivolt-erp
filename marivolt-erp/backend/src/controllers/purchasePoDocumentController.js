@@ -93,7 +93,11 @@ export async function syncPurchaseOrderApExtensionFields(companyId, poId) {
     }
   }
 
-  const grnCount = await GRN.countDocuments({ ...scope, poId });
+  const grnCount = await GRN.countDocuments({
+    ...scope,
+    poId,
+    status: { $in: ["POSTED", "RECEIVED", "PARTIAL_RECEIVED", "CLOSED"] },
+  });
   let grnProgressStatus = "NONE";
   if (String(po.status) === "PARTIAL_RECEIVED") grnProgressStatus = "PARTIAL";
   else if (String(po.status) === "RECEIVED" || String(po.status) === "CLOSED") grnProgressStatus = "COMPLETE";
@@ -107,10 +111,7 @@ export async function syncPurchaseOrderApExtensionFields(companyId, poId) {
     const ordered = Number(l.orderedQty ?? l.qty ?? l.quantity ?? l.orderedQuantity) || 0;
     const received = Number(l.receivedQty ?? l.received ?? l.receivedQuantity) || 0;
     const cancelled = Number(l.cancelledQty ?? l.cancelled) || 0;
-    const pending = Math.max(
-      0,
-      Number(l.pendingQty ?? l.openQty ?? Math.max(0, ordered - received - cancelled)) || 0
-    );
+    const pending = Math.max(0, ordered - received - cancelled);
     if (received > 0.001) anyReceived = true;
     if (pending > 0.001) anyPending = true;
   }

@@ -128,7 +128,7 @@ function upper(v) {
 /** Default GRN stock `locationCode` when warehouse is omitted (multi-warehouse expansion later). */
 const DEFAULT_GRN_WAREHOUSE_CODE = "MAIN";
 const DEFAULT_GRN_WAREHOUSE_NAME = "Main Warehouse";
-const MAX_GRN_NUMBER_RETRIES = 10;
+const MAX_GRN_NUMBER_RETRIES = 2;
 
 function resolveGrnWarehouseCode(warehouseRaw) {
   const w = upper(warehouseRaw || "");
@@ -204,16 +204,22 @@ async function buildGrnItemsFromPoLineSelection(req, poId, selections = [], opti
   const postedMap = postedOverride instanceof Map ? postedOverride : await getPostedAcceptedQtyByPoLineMap(req, poId, session);
   const rawRows = extractRawPoLinesFromPo(poLean);
   const raw = [];
+  const selectedLineIds = new Set();
   for (const row of selections) {
     const poLineId = row.poLineId;
     const grnQty = Number(row.grnQty ?? row.receivedQty);
     if (!mongoose.Types.ObjectId.isValid(String(poLineId))) continue;
+    const lineKey = String(poLineId);
+    if (selectedLineIds.has(lineKey)) {
+      throw new Error("Duplicate GRN line selected for the same PO line. Combine the quantity into one line.");
+    }
+    selectedLineIds.add(lineKey);
     if (!Number.isFinite(grnQty) || grnQty <= 0) continue;
     const src = rawRows.find((x) => String(x._id ?? x.id ?? "") === String(poLineId ?? ""));
     if (!src) throw new Error(`Invalid PO line: ${poLineId}`);
     const ordered = Number(src?.orderedQty ?? src?.qty ?? src?.quantity ?? src?.orderedQuantity) || 0;
     const cancelled = Number(src?.cancelledQty ?? src?.cancelled) || 0;
-    const posted = postedMap.get(String(poLineId)) || 0;
+    const posted = postedMap.get(lineKey) || 0;
     const pending = Math.max(0, ordered - posted - cancelled);
     if (pending <= 0) {
       const label = String(src.itemCode || src.article || src.materialCode || poLineId).trim();
@@ -584,6 +590,7 @@ export async function importGrnCsvPreview(req, res) {
     const { rows } = parseSimpleGrnCsv(csvText);
     const errors = [];
     const updates = [];
+    const seenPoLineIds = new Set();
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const lineNo = i + 2;
@@ -594,6 +601,11 @@ export async function importGrnCsvPreview(req, res) {
       }
       const src = match.line;
       const lid = String(src._id ?? src.id ?? "");
+      if (seenPoLineIds.has(lid)) {
+        errors.push({ line: lineNo, message: "Duplicate CSV row for the same PO line." });
+        continue;
+      }
+      seenPoLineIds.add(lid);
       const ordered = Number(src?.orderedQty ?? src?.qty ?? src?.quantity ?? src?.orderedQuantity) || 0;
       const cancelled = Number(src?.cancelledQty ?? src?.cancelled) || 0;
       const posted = postedMap.get(lid) || 0;
@@ -778,7 +790,9 @@ export async function postGrnFromPo(req, res) {
           }
 
           await applyReceiveToPo({ session, req, grn });
-          grn.status = "POSTED";
+          const hasPending = (grn.items || []).some((x) => Number(x.pendingQty || 0) > 0);
+          const postedStatus = hasPending ? "PARTIAL_RECEIVED" : "RECEIVED";
+          grn.status = postedStatus;
           grn.approvalStatus = "APPROVED";
           grn.postedAt = new Date();
           grn.updatedBy = req.user?.email || "";
@@ -789,8 +803,8 @@ export async function postGrnFromPo(req, res) {
             entityId: grn._id,
             documentNo: grn.grnNo,
             fromStatus: "DRAFT",
-            toStatus: "POSTED",
-            description: `GRN ${grn.grnNo} posted`,
+            toStatus: postedStatus,
+            description: `GRN ${grn.grnNo} ${postedStatus === "RECEIVED" ? "fully received" : "partially received"}`,
           });
           await writeAudit(req, {
             action: "RECEIVE",
@@ -799,8 +813,8 @@ export async function postGrnFromPo(req, res) {
             entityId: grn._id,
             documentNo: grn.grnNo,
             fromStatus: "DRAFT",
-            toStatus: "POSTED",
-            description: `GRN ${grn.grnNo} posted (${grn.items?.length || 0} lines)`,
+            toStatus: postedStatus,
+            description: `GRN ${grn.grnNo} ${postedStatus === "RECEIVED" ? "fully received" : "partially received"} (${grn.items?.length || 0} lines)`,
             metadata: { supplierName: grn.supplierName || "" },
           });
         });
