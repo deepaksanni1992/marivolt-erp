@@ -3,6 +3,7 @@ import Shipment from "../models/Shipment.js";
 import ShipmentContainer from "../models/ShipmentContainer.js";
 import SalesDispatch from "../models/SalesDispatch.js";
 import SalesInvoice from "../models/SalesInvoice.js";
+import StoreDispatch from "../models/StoreDispatch.js";
 import Rts from "../models/Rts.js";
 import OrderAllocation from "../models/OrderAllocation.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
@@ -627,6 +628,62 @@ export async function getPendingDispatchReport(req, res) {
       .sort({ dispatchDate: -1, createdAt: -1 })
       .lean();
     res.json({ items });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getPhysicalDispatchStatusReport(req, res) {
+  try {
+    const status = String(req.query.status || "").trim().toUpperCase();
+    const filter = withCompany(req, {});
+    if (status === "PARTIALLY_DISPATCHED" || status === "FULLY_DISPATCHED") filter.status = status;
+    else if (status === "PENDING") filter.status = "DRAFT";
+    else filter.status = { $in: ["DRAFT", "PARTIALLY_DISPATCHED", "FULLY_DISPATCHED", "POSTED"] };
+    if (req.query.customer) filter.customerName = new RegExp(String(req.query.customer).trim(), "i");
+    const rows = await StoreDispatch.find(filter).sort({ dispatchDate: -1, createdAt: -1 }).limit(500).lean();
+    const items = rows.map((d) => ({
+      dispatchNo: d.dispatchNo,
+      invoiceNo: d.salesInvoiceNo || "",
+      customerName: d.customerName || "",
+      packingNo: d.packingNo || "",
+      allocationNo: d.allocationNo || "",
+      dispatchDate: d.dispatchDate,
+      transporter: d.transporter || d.courier || "",
+      awbNo: d.awbNo || "",
+      trackingNo: d.trackingNo || d.awbNo || "",
+      blNo: d.blNo || "",
+      status: d.status,
+      dispatchQty: (d.lines || []).reduce((sum, line) => sum + (Number(line.dispatchQty) || 0), 0),
+    }));
+    res.json({ items, total: items.length });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getAwbTrackingReport(req, res) {
+  try {
+    const rows = await StoreDispatch.find(
+      withCompany(req, {
+        status: { $in: ["PARTIALLY_DISPATCHED", "FULLY_DISPATCHED", "POSTED"] },
+        $or: [{ awbNo: { $ne: "" } }, { trackingNo: { $ne: "" } }],
+      })
+    )
+      .sort({ dispatchDate: -1, createdAt: -1 })
+      .limit(500)
+      .lean();
+    const items = rows.map((d) => ({
+      dispatchNo: d.dispatchNo,
+      invoiceNo: d.salesInvoiceNo || "",
+      customerName: d.customerName || "",
+      awbNo: d.awbNo || "",
+      trackingNo: d.trackingNo || d.awbNo || "",
+      transporter: d.transporter || d.courier || "",
+      dispatchDate: d.dispatchDate,
+      documentLink: d.attachments?.find?.((attachment) => attachment?.documentId)?.documentId || "",
+    }));
+    res.json({ items, total: items.length });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

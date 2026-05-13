@@ -23,6 +23,7 @@ const salesInvoiceSchema = new mongoose.Schema(
   {
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
     invoiceNo: { type: String, required: true, trim: true },
+    invoiceNumber: { type: String, required: true, trim: true },
     invoiceDate: { type: Date, default: () => new Date(), index: true },
     linkedQuotationId: { type: mongoose.Schema.Types.ObjectId, ref: "Quotation", index: true, default: null },
     linkedQuotationNo: { type: String, default: "", trim: true },
@@ -91,7 +92,15 @@ const salesInvoiceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+salesInvoiceSchema.pre("validate", function syncInvoiceNumber(next) {
+  const invoiceNo = String(this.invoiceNo || this.invoiceNumber || "").trim();
+  this.invoiceNo = invoiceNo;
+  this.invoiceNumber = invoiceNo;
+  next();
+});
+
 salesInvoiceSchema.index({ companyId: 1, invoiceNo: 1 }, { unique: true });
+salesInvoiceSchema.index({ companyId: 1, invoiceNumber: 1 }, { unique: true });
 salesInvoiceSchema.index({ companyId: 1, invoiceDate: -1 });
 salesInvoiceSchema.index({ companyId: 1, paymentStatus: 1, invoiceDate: -1 });
 

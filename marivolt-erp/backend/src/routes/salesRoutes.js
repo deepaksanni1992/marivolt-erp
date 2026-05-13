@@ -31,6 +31,11 @@ router.get("/reports/pending-quotation", reportsView, flow.reportPendingQuotatio
 router.get("/reports/order-acknowledgement", reportsView, flow.reportOrderAcknowledgement);
 router.get("/reports/pending-order-acknowledgement", reportsView, flow.reportPendingOrderAcknowledgement);
 router.get("/reports/proforma", reportsView, flow.reportProforma);
+router.get("/reports/pending-proforma-payment", reportsView, flow.reportPendingProformaPayment);
+router.get("/reports/pending-allocation", reportsView, flow.reportPendingAllocation);
+router.get("/reports/packing-done-not-invoiced", reportsView, storeOutbound.reportPackedNotInvoiced);
+router.get("/reports/invoiced-not-dispatched", reportsView, storeOutbound.reportInvoicedNotDispatched);
+router.get("/reports/dispatch-status", reportsView, storeOutbound.listDispatchStatus);
 router.get("/reports/sales-invoice-summary", reportsView, flow.reportSalesInvoiceSummary);
 router.get("/reports/sales-invoice-article-wise", reportsView, flow.reportSalesInvoiceArticleWise);
 router.get("/reports/sales-branch-wise", reportsView, flow.reportSalesBranchWise);

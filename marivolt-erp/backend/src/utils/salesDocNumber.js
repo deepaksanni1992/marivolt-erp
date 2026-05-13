@@ -1,62 +1,68 @@
-import DocCounter from "../models/DocCounter.js";
-import NumberSeriesConfig from "../models/NumberSeriesConfig.js";
-import { nextNumber } from "../services/numberSeriesService.js";
+import Counter from "../models/Counter.js";
 
-function formatDatePrefix(value) {
-  const date = value ? new Date(value) : new Date();
-  const year = String(date.getFullYear()).slice(-2);
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}${month}${day}`;
+const DOC_NUMBER_CONFIG = {
+  QUOTATION: { key: "quotation", prefix: "QTN" },
+  ORDER_ACK: { key: "oa", prefix: "OA" },
+  PROFORMA: { key: "pi", prefix: "PI" },
+  ORDER_ALLOCATION: { key: "allocation", prefix: "ALLOC" },
+  PACKING: { key: "packing", prefix: "PK" },
+  SALES_INVOICE: { key: "salesInvoice", prefix: "SI" },
+  SALES_DISPATCH: { key: "dispatch", prefix: "DSP" },
+  DISPATCH: { key: "dispatch", prefix: "DSP" },
+  RTS: { key: "rts", prefix: "RTS" },
+  SALES_RETURN: { key: "salesReturn", prefix: "SR" },
+  CIPL: { key: "cipl", prefix: "CIPL" },
+  PAYMENT_RECEIPT: { key: "paymentReceipt", prefix: "RCPT" },
+};
+
+export function normalizeCompanyCode(companyCode) {
+  const raw = String(companyCode || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (raw === "OKE" || raw === "OKEANOS") return "OKE";
+  if (raw === "MAR" || raw === "MARIVOLT") return "MAR";
+  return raw.slice(0, 3) || "CMP";
 }
 
-function companyInitial(companyCode) {
-  const code = String(companyCode || "").trim().toUpperCase();
-  if (code === "MAR") return "MV";
-  if (code === "OKE") return "OK";
-  if (!code) return "CP";
-  if (code.length === 1) return code;
-  return code.slice(0, 2);
+export function salesDocCounterKey(docKey, companyCode) {
+  const safeKey = String(docKey || "").trim().toUpperCase();
+  const config = DOC_NUMBER_CONFIG[safeKey];
+  if (!config) throw new Error(`Unsupported sales docKey: ${safeKey}`);
+  return `${config.key}:${normalizeCompanyCode(companyCode)}`;
 }
 
 export async function nextSalesDocNumber({ companyId, companyCode, docKey, referenceDate }) {
+  void referenceDate;
   const safeKey = String(docKey || "").trim().toUpperCase();
-  const allowed = new Set([
-    "QUOTATION",
-    "ORDER_ACK",
-    "PROFORMA",
-    "ORDER_ALLOCATION",
-    "RTS",
-    "SALES_INVOICE",
-    "SALES_DISPATCH",
-    "SALES_RETURN",
-    "CIPL",
-    "PAYMENT_RECEIPT",
-  ]);
-  if (!allowed.has(safeKey)) {
-    throw new Error(`Unsupported sales docKey: ${safeKey}`);
+  const config = DOC_NUMBER_CONFIG[safeKey];
+  if (!config) throw new Error(`Unsupported sales docKey: ${safeKey}`);
+  const code = normalizeCompanyCode(companyCode);
+  const key = `${config.key}:${code}`;
+  const row = await Counter.findOneAndUpdate(
+    { companyId, key },
+    {
+      $setOnInsert: { companyId, key },
+      $inc: { seq: 1 },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: false }
+  ).lean();
+  const seq = Number(row?.seq) || 0;
+  if (!(seq > 0)) throw new Error(`Failed to generate ${safeKey} number`);
+  return `${code}-${config.prefix}-${String(seq).padStart(4, "0")}`;
+}
+
+export async function nextUniqueSalesDocNumber({
+  companyId,
+  companyCode,
+  docKey,
+  model,
+  field,
+  referenceDate,
+  maxAttempts = 25,
+}) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const number = await nextSalesDocNumber({ companyId, companyCode, docKey, referenceDate });
+    if (!model || !field) return number;
+    const exists = await model.exists({ companyId, [field]: number });
+    if (!exists) return number;
   }
-  const configured = await NumberSeriesConfig.exists({
-    companyId,
-    branchId: null,
-    docKey: safeKey,
-    isActive: true,
-  });
-  if (configured) {
-    const generated = await nextNumber({
-      companyId,
-      companyCode: companyInitial(companyCode),
-      docKey: safeKey,
-      referenceDate,
-    });
-    return generated.number;
-  }
-  const datePrefix = formatDatePrefix(referenceDate);
-  const scopedDocKey = `${safeKey}:${datePrefix}`;
-  const row = await DocCounter.findOneAndUpdate(
-    { companyId, docKey: scopedDocKey },
-    { $inc: { seq: 1 } },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
-  );
-  return `${companyInitial(companyCode)}/${datePrefix}.${row.seq}`;
+  throw new Error(`Unable to allocate a unique ${docKey} number after ${maxAttempts} attempts`);
 }

@@ -23,6 +23,10 @@ router.get("/reports/shipment-summary", reportsView, c.getShipmentSummaryReport)
 router.get("/reports/delivery-delay", reportsView, c.getDeliveryDelayReport);
 router.get("/reports/container-utilization", reportsView, c.getContainerUtilizationReport);
 router.get("/reports/pending-dispatch", reportsView, c.getPendingDispatchReport);
+router.get("/reports/physical-dispatch-status", reportsView, c.getPhysicalDispatchStatusReport);
+router.get("/reports/partially-dispatched", reportsView, (req, res) => c.getPhysicalDispatchStatusReport({ ...req, query: { ...(req.query || {}), status: "PARTIALLY_DISPATCHED" } }, res));
+router.get("/reports/fully-dispatched", reportsView, (req, res) => c.getPhysicalDispatchStatusReport({ ...req, query: { ...(req.query || {}), status: "FULLY_DISPATCHED" } }, res));
+router.get("/reports/awb-tracking", reportsView, c.getAwbTrackingReport);
 router.get("/", logisticsView, c.listShipments);
 router.get("/:id", logisticsView, c.getShipment);
 router.post("/", logisticsCreate, c.createShipment);

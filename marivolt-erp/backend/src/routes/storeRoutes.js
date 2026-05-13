@@ -39,6 +39,8 @@ router.get("/reports/stock-valuation-adjustments", storeView, stock.stockValuati
 router.get("/reports/grn-cost-analysis", storeView, stock.grnCostAnalysisReport);
 router.get("/reports/packing-pending-dispatch", storeView, outbound.reportPackingPendingDispatch);
 router.get("/reports/pending-packing", storeView, outbound.reportPendingPacking);
+router.get("/reports/partially-packed", storeView, outbound.reportPackingByStatus);
+router.get("/reports/fully-packed", storeView, outbound.reportPackingByStatus);
 router.get("/reports/packed-not-invoiced", storeView, outbound.reportPackedNotInvoiced);
 router.get("/reports/invoiced-not-dispatched", storeView, outbound.reportInvoicedNotDispatched);
 router.get("/reports/pending-dispatch", storeView, outbound.reportInvoicedNotDispatched);

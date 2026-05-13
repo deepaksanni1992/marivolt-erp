@@ -16,7 +16,7 @@ import Customer from "../models/Customer.js";
 import Company from "../models/Company.js";
 import Item from "../models/Item.js";
 import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
-import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
+import { nextSalesDocNumber, nextUniqueSalesDocNumber } from "../utils/salesDocNumber.js";
 import { formatDuplicateKeyError } from "../utils/mongoErrors.js";
 import * as stockService from "../services/stockService.js";
 import {
@@ -214,6 +214,87 @@ async function recalcPackingInvoiceStatus({ companyId, packingId, session = null
   packing.lastInvoicedAt = invoices.length ? invoices[invoices.length - 1].invoiceDate || new Date() : null;
   await packing.save({ session });
   return packing;
+}
+
+async function allocationFulfilmentSnapshot(companyId, allocation, session = null) {
+  if (!allocation?._id) {
+    return {
+      allocatedQty: 0,
+      packedQty: 0,
+      pendingPackingQty: 0,
+      invoicedQty: 0,
+      pendingInvoiceQty: 0,
+      dispatchedQty: 0,
+      pendingDispatchQty: 0,
+      packingStatus: "NOT_PACKED",
+      invoiceStatus: "NOT_INVOICED",
+      dispatchStatus: "NOT_DISPATCHED",
+    };
+  }
+  const allocationId = allocation._id;
+  const qPacking = StorePacking.find({
+    companyId,
+    allocationId,
+    status: { $in: POSTED_STORE_PACKING_STATUSES },
+  }).select("packingNo lines");
+  const qInvoice = SalesInvoice.find({
+    companyId,
+    linkedOrderAllocationId: allocationId,
+    status: { $ne: "CANCELLED" },
+  }).select("invoiceNo lines");
+  const qDispatch = StoreDispatch.find({
+    companyId,
+    allocationId,
+    status: { $in: POSTED_STORE_DISPATCH_STATUSES },
+  }).select("dispatchNo lines");
+  if (session) {
+    qPacking.session(session);
+    qInvoice.session(session);
+    qDispatch.session(session);
+  }
+  const [packings, invoices, dispatches] = await Promise.all([qPacking.lean(), qInvoice.lean(), qDispatch.lean()]);
+  const allocatedQty = (allocation.lines || []).reduce((sum, line) => sum + (Number(line.qty) || 0), 0);
+  const packedQty = packings.reduce(
+    (sum, packing) => sum + (packing.lines || []).reduce((lineSum, line) => lineSum + (Number(line.packQty) || 0), 0),
+    0
+  );
+  const invoicedQty = invoices.reduce(
+    (sum, invoice) => sum + (invoice.lines || []).reduce((lineSum, line) => lineSum + (Number(line.qty) || 0), 0),
+    0
+  );
+  const dispatchedQty = dispatches.reduce(
+    (sum, dispatch) => sum + (dispatch.lines || []).reduce((lineSum, line) => lineSum + (Number(line.dispatchQty) || 0), 0),
+    0
+  );
+  const packingStatus =
+    packedQty <= 0 ? "NOT_PACKED" : packedQty >= allocatedQty - 1e-6 ? "FULLY_PACKED" : "PARTIALLY_PACKED";
+  const invoiceStatus =
+    invoicedQty <= 0 ? "NOT_INVOICED" : invoicedQty >= packedQty - 1e-6 ? "FULLY_INVOICED" : "PARTIALLY_INVOICED";
+  const dispatchStatus =
+    dispatchedQty <= 0 ? "NOT_DISPATCHED" : dispatchedQty >= invoicedQty - 1e-6 ? "DISPATCHED" : "PARTIALLY_DISPATCHED";
+  return {
+    allocatedQty,
+    packedQty,
+    pendingPackingQty: Math.max(0, allocatedQty - packedQty),
+    invoicedQty,
+    pendingInvoiceQty: Math.max(0, packedQty - invoicedQty),
+    dispatchedQty,
+    pendingDispatchQty: Math.max(0, invoicedQty - dispatchedQty),
+    packingStatus,
+    invoiceStatus,
+    dispatchStatus,
+    packingNos: [...new Set(packings.map((p) => p.packingNo).filter(Boolean))],
+    invoiceNos: [...new Set(invoices.map((i) => i.invoiceNo).filter(Boolean))],
+    dispatchNos: [...new Set(dispatches.map((d) => d.dispatchNo).filter(Boolean))],
+  };
+}
+
+async function persistAllocationFulfilment(companyId, allocation, session = null) {
+  const snapshot = await allocationFulfilmentSnapshot(companyId, allocation, session);
+  allocation.packingStatus = snapshot.packingStatus;
+  allocation.invoiceStatus = snapshot.invoiceStatus;
+  allocation.dispatchStatus = snapshot.dispatchStatus;
+  return snapshot;
 }
 
 function packedInvoiceLineFromPackingLine(packingLine, allocationLine, pendingQty) {
@@ -1035,6 +1116,83 @@ export async function reportProforma(req, res) {
   }
 }
 
+export async function reportPendingProformaPayment(req, res) {
+  try {
+    const filter = withCompany(req, {
+      status: { $nin: ["CANCELLED", "CONVERTED"] },
+      paymentStatus: { $ne: "PAID" },
+    });
+    if (req.query.customer) filter.customerName = new RegExp(String(req.query.customer).trim(), "i");
+    if (req.query.search) {
+      const q = String(req.query.search).trim();
+      filter.$or = [{ proformaNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }, { linkedOANo: new RegExp(q, "i") }];
+    }
+    const rows = await ProformaInvoice.find(filter).sort({ proformaDate: -1, createdAt: -1 }).limit(500).lean();
+    const items = rows.map((doc) => ({
+      _id: doc._id,
+      proformaNo: doc.proformaNo,
+      proformaDate: doc.proformaDate,
+      linkedOANo: doc.linkedOANo || "",
+      customerName: doc.customerName,
+      currency: doc.currency || "USD",
+      amount: toNumber(doc.grandTotal),
+      paidAmount: toNumber(doc.totalReceivedAmount),
+      balanceAmount: toNumber(doc.balanceAmount || Math.max(0, (Number(doc.grandTotal) || 0) - (Number(doc.totalReceivedAmount) || 0))),
+      paymentStatus: doc.paymentStatus || "UNPAID",
+      status: doc.status || "DRAFT",
+    }));
+    res.json({ items, total: items.length });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportPendingAllocation(req, res) {
+  try {
+    const q = String(req.query.search || "").trim();
+    const [oas, proformas, allocations] = await Promise.all([
+      OrderAcknowledgement.find(withCompany(req, { status: { $nin: ["CANCELLED", "CONVERTED", "CLOSED"] } })).lean(),
+      ProformaInvoice.find(withCompany(req, { status: { $in: ["APPROVED", "PAID_PENDING_SHIPMENT"] } })).lean(),
+      OrderAllocation.find(withCompany(req, { status: { $ne: "CANCELLED" } }))
+        .select("linkedOAId linkedProformaId")
+        .lean(),
+    ]);
+    const allocatedOaIds = new Set(allocations.map((a) => String(a.linkedOAId || "")).filter(Boolean));
+    const allocatedPiIds = new Set(allocations.map((a) => String(a.linkedProformaId || "")).filter(Boolean));
+    const items = [];
+    for (const oa of oas) {
+      if (allocatedOaIds.has(String(oa._id))) continue;
+      if (q && !new RegExp(q, "i").test(`${oa.oaNo} ${oa.customerName}`)) continue;
+      items.push({
+        sourceType: "OA",
+        sourceNo: oa.oaNo,
+        sourceDate: oa.oaDate,
+        customerName: oa.customerName,
+        paymentTerms: oa.paymentTerms || "",
+        amount: toNumber(oa.grandTotal),
+        status: oa.status || "ACTIVE",
+      });
+    }
+    for (const pi of proformas) {
+      if (allocatedPiIds.has(String(pi._id))) continue;
+      if (q && !new RegExp(q, "i").test(`${pi.proformaNo} ${pi.customerName} ${pi.linkedOANo}`)) continue;
+      items.push({
+        sourceType: "PI",
+        sourceNo: pi.proformaNo,
+        sourceDate: pi.proformaDate,
+        linkedOANo: pi.linkedOANo || "",
+        customerName: pi.customerName,
+        paymentTerms: pi.paymentTerms || "",
+        amount: toNumber(pi.grandTotal),
+        status: pi.status || "APPROVED",
+      });
+    }
+    res.json({ items, total: items.length });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
 export async function reportSalesInvoiceSummary(req, res) {
   try {
     const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
@@ -1474,10 +1632,12 @@ export async function createOA(req, res) {
     if (!lines.length) return res.status(400).json({ message: "OA requires at least one line" });
     const oaNo =
       body.oaNo ||
-      (await nextSalesDocNumber({
+      (await nextUniqueSalesDocNumber({
         companyId: req.companyId,
         companyCode: req.companyCode,
         docKey: "ORDER_ACK",
+        model: OrderAcknowledgement,
+        field: "oaNo",
       }));
     const totals = computeTotals(lines, body);
     const doc = await OrderAcknowledgement.create({
@@ -1653,10 +1813,12 @@ export async function createProforma(req, res) {
     if (!lines.length) return res.status(400).json({ message: "Proforma requires at least one line" });
     const proformaNo =
       body.proformaNo ||
-      (await nextSalesDocNumber({
+      (await nextUniqueSalesDocNumber({
         companyId: req.companyId,
         companyCode: req.companyCode,
         docKey: "PROFORMA",
+        model: ProformaInvoice,
+        field: "proformaNo",
       }));
     const totals = computeTotals(lines, body);
     const doc = await ProformaInvoice.create({
@@ -1781,10 +1943,12 @@ export async function convertQuotationToOA(req, res) {
     );
     if (already) return res.status(409).json({ message: `OA already exists (${already.oaNo})` });
 
-    const oaNo = await nextSalesDocNumber({
+    const oaNo = await nextUniqueSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
       docKey: "ORDER_ACK",
+      model: OrderAcknowledgement,
+      field: "oaNo",
     });
     const lines = normalizeLines(quotation.lines.map((line) => line.toObject?.() || line));
     const totals = computeTotals(lines, quotation);
@@ -1835,10 +1999,12 @@ export async function convertQuotationToProforma(req, res) {
     );
     if (already) return res.status(409).json({ message: `Proforma already exists (${already.proformaNo})` });
 
-    const proformaNo = await nextSalesDocNumber({
+    const proformaNo = await nextUniqueSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
       docKey: "PROFORMA",
+      model: ProformaInvoice,
+      field: "proformaNo",
     });
     const lines = normalizeLines(quotation.lines.map((line) => line.toObject?.() || line));
     const totals = computeTotals(lines, quotation);
@@ -1885,10 +2051,12 @@ export async function convertOAToProforma(req, res) {
     );
     if (already) return res.status(409).json({ message: `Proforma already exists (${already.proformaNo})` });
 
-    const proformaNo = await nextSalesDocNumber({
+    const proformaNo = await nextUniqueSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
       docKey: "PROFORMA",
+      model: ProformaInvoice,
+      field: "proformaNo",
     });
     const lines = normalizeLines(oa.lines.map((line) => line.toObject?.() || line));
     const totals = computeTotals(lines, oa);
@@ -1938,7 +2106,7 @@ export async function convertOAToSalesInvoice(req, res) {
       .lean();
     if (!allocation) {
       return res.status(400).json({
-        message: "At least one posted Packing document is required before creating Sales Invoice",
+        message: "Packing must be completed before creating Sales Invoice",
       });
     }
     req.params.id = String(allocation._id);
@@ -2038,40 +2206,11 @@ export async function getSalesInvoice(req, res) {
 export async function createSalesInvoice(req, res) {
   try {
     const body = { ...req.body };
-    const lines = normalizeLines(body.lines || []);
-    if (!lines.length) return res.status(400).json({ message: "Sales invoice requires at least one line" });
-    const totals = computeTotals(lines, body);
-    const gate = await ensureApproval(req, {
-      companyId: req.companyId,
-      module: "SALES",
-      actionKey: "invoice_post",
-      documentType: "SALES_INVOICE",
-      documentNo: body.invoiceNo || "",
-      customerName: body.customerName || "",
-      amount: totals.grandTotal || 0,
-      currency: body.currency || "USD",
-      description: `Post sales invoice for ${body.customerName || "customer"}`,
-    });
-    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
-    const invoiceNo =
-      body.invoiceNo ||
-      (await nextSalesDocNumber({
-        companyId: req.companyId,
-        companyCode: req.companyCode,
-        docKey: "SALES_INVOICE",
-      }));
-    const doc = await SalesInvoice.create({
-      ...body,
-      lines,
-      ...totals,
-      invoiceNo,
-      companyId: req.companyId,
-      createdBy: req.user?.email || "",
-    });
-    if (canonicalStatus(DOC_TYPES.SALES_INVOICE, doc.status) !== "DRAFT") {
-      await postSalesInvoiceReceivable({ req, invoice: doc });
+    if (body.linkedStorePackingId) {
+      req.params.id = String(body.linkedStorePackingId);
+      return convertPackingToSalesInvoice(req, res);
     }
-    res.status(201).json(doc);
+    return res.status(400).json({ message: "Packing must be completed before creating Sales Invoice" });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -2129,7 +2268,7 @@ export async function getPackingInvoicePreview(req, res) {
     const packing = await StorePacking.findOne(withCompany(req, { _id: id })).lean();
     if (!packing) return res.status(404).json({ message: "Packing not found" });
     if (!POSTED_STORE_PACKING_STATUSES.includes(String(packing.status || "").toUpperCase())) {
-      return res.status(400).json({ message: "Cannot invoice without posted packing" });
+      return res.status(400).json({ message: "Packing must be completed before creating Sales Invoice" });
     }
     const allocation = await OrderAllocation.findOne(withCompany(req, { _id: packing.allocationId })).lean();
     const invoicedByLine = await invoicedQtyByPackingLine(req.companyId, packing._id);
@@ -2161,7 +2300,7 @@ export async function convertPackingToSalesInvoice(req, res) {
       return res.status(400).json({ message: "Cannot invoice cancelled packing" });
     }
     if (!POSTED_STORE_PACKING_STATUSES.includes(String(packingPre.status || "").toUpperCase())) {
-      return res.status(400).json({ message: "Cannot invoice without posted packing" });
+      return res.status(400).json({ message: "Packing must be completed before creating Sales Invoice" });
     }
     const allocationPre = await OrderAllocation.findOne(withCompany(req, { _id: packingPre.allocationId })).lean();
     if (!allocationPre) return res.status(404).json({ message: "Linked allocation not found" });
@@ -2195,10 +2334,12 @@ export async function convertPackingToSalesInvoice(req, res) {
       description: `Post sales invoice from packing ${packingPre.packingNo}`,
     });
     if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
-    const invoiceNo = await nextSalesDocNumber({
+    const invoiceNo = await nextUniqueSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
       docKey: "SALES_INVOICE",
+      model: SalesInvoice,
+      field: "invoiceNo",
     });
 
     let createdId = null;
@@ -2207,7 +2348,7 @@ export async function convertPackingToSalesInvoice(req, res) {
       if (!packing) throw new Error("Packing not found");
       if (String(packing.status || "").toUpperCase() === "CANCELLED") throw new Error("Cannot invoice cancelled packing");
       if (!POSTED_STORE_PACKING_STATUSES.includes(String(packing.status || "").toUpperCase())) {
-        throw new Error("Cannot invoice without posted packing");
+        throw new Error("Packing must be completed before creating Sales Invoice");
       }
       const allocation = await OrderAllocation.findOne(withCompany(req, { _id: packing.allocationId })).session(session);
       if (!allocation) throw new Error("Linked allocation not found");
@@ -2225,6 +2366,7 @@ export async function convertPackingToSalesInvoice(req, res) {
           {
             companyId: req.companyId,
             invoiceNo,
+            invoiceNumber: invoiceNo,
             invoiceDate: req.body?.invoiceDate || new Date(),
             linkedQuotationId: allocation.linkedQuotationId || null,
             linkedQuotationNo: allocation.linkedQuotationNo || "",
@@ -2262,6 +2404,7 @@ export async function convertPackingToSalesInvoice(req, res) {
       const refreshedPacking = await recalcPackingInvoiceStatus({ companyId: req.companyId, packingId: packing._id, session });
       allocation.linkedSalesInvoiceId = doc._id;
       allocation.linkedSalesInvoiceNo = doc.invoiceNo;
+      await persistAllocationFulfilment(req.companyId, allocation, session);
       if (refreshedPacking?.invoiceStatus === "FULLY_INVOICED") allocation.status = "CLOSED";
       allocation.updatedBy = req.user?.email || "";
       await allocation.save({ session });
@@ -2872,7 +3015,7 @@ export async function convertProformaToSalesInvoice(req, res) {
       .lean();
     if (!allocation) {
       return res.status(400).json({
-        message: "At least one posted Packing document is required before creating Sales Invoice",
+        message: "Packing must be completed before creating Sales Invoice",
       });
     }
     req.params.id = String(allocation._id);
@@ -2950,10 +3093,15 @@ export async function listOrderAllocations(req, res) {
       filter.$or = [{ allocationNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }];
     }
     if (req.query.status) filter.status = String(req.query.status).toUpperCase();
-    const [items, total] = await Promise.all([
+    const [itemsRaw, total] = await Promise.all([
       OrderAllocation.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       OrderAllocation.countDocuments(filter),
     ]);
+    const items = [];
+    for (const allocation of itemsRaw) {
+      const snapshot = await allocationFulfilmentSnapshot(req.companyId, allocation);
+      items.push({ ...allocation, ...snapshot });
+    }
     res.json({ items, total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -2986,7 +3134,8 @@ export async function getOrderAllocation(req, res) {
       const pendingPackQty = Math.max(0, (Number(l.qty) || 0) - packedQty);
       return { ...l, packedQty, pendingPackQty, pendingQty: pendingPackQty };
     });
-    res.json({ ...doc, lines });
+    const snapshot = await allocationFulfilmentSnapshot(req.companyId, doc);
+    res.json({ ...doc, ...snapshot, lines });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -3007,21 +3156,35 @@ export async function reportOrderAllocation(req, res) {
       OrderAllocation.find(filter).sort({ allocationDate: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
       OrderAllocation.countDocuments(filter),
     ]);
-    const rowsOut = rows.map((r) => ({
-      _id: r._id,
-      allocationNo: r.allocationNo,
-      allocationDate: r.allocationDate,
-      linkedOANo: r.linkedOANo || "",
-      linkedProformaNo: r.linkedProformaNo || "",
-      customerName: r.customerName || "",
-      vertical: r.vertical || "",
-      engine: r.engine || "",
-      model: r.model || "",
-      config: r.config || "",
-      esn: r.esn || "",
-      status: r.status || "OPEN",
-      lineCount: Array.isArray(r.lines) ? r.lines.length : 0,
-    }));
+    const rowsOut = [];
+    for (const r of rows) {
+      const snapshot = await allocationFulfilmentSnapshot(req.companyId, r);
+      rowsOut.push({
+        _id: r._id,
+        allocationNo: r.allocationNo,
+        allocationDate: r.allocationDate,
+        linkedOANo: r.linkedOANo || "",
+        linkedProformaNo: r.linkedProformaNo || "",
+        customerName: r.customerName || "",
+        vertical: r.vertical || "",
+        engine: r.engine || "",
+        model: r.model || "",
+        config: r.config || "",
+        esn: r.esn || "",
+        status: r.status || "OPEN",
+        packingStatus: snapshot.packingStatus,
+        invoiceStatus: snapshot.invoiceStatus,
+        dispatchStatus: snapshot.dispatchStatus,
+        allocatedQty: snapshot.allocatedQty,
+        packedQty: snapshot.packedQty,
+        pendingPackingQty: snapshot.pendingPackingQty,
+        invoicedQty: snapshot.invoicedQty,
+        pendingInvoiceQty: snapshot.pendingInvoiceQty,
+        dispatchedQty: snapshot.dispatchedQty,
+        pendingDispatchQty: snapshot.pendingDispatchQty,
+        lineCount: Array.isArray(r.lines) ? r.lines.length : 0,
+      });
+    }
     res.json({ rows: rowsOut, total, page, limit, totals: { totalOrderAllocations: total } });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -3429,10 +3592,12 @@ export async function convertOAToOrderAllocation(req, res) {
     if (!oa.lines?.length) return res.status(400).json({ message: "OA requires at least one line to convert" });
     const already = await OrderAllocation.findOne(withCompany(req, { linkedOAId: oa._id, status: { $ne: "CANCELLED" } }));
     if (already) return res.status(409).json({ message: `Order allocation already exists (${already.allocationNo})` });
-    const allocationNo = await nextSalesDocNumber({
+    const allocationNo = await nextUniqueSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
       docKey: "ORDER_ALLOCATION",
+      model: OrderAllocation,
+      field: "allocationNo",
     });
     let lines = normalizeLines(oa.lines.map((line) => line.toObject?.() || line));
     lines = await attachUnitWeightFromItems(req, lines);
@@ -3466,6 +3631,9 @@ export async function convertOAToOrderAllocation(req, res) {
             lines,
             ...totals,
             status: "OPEN",
+            packingStatus: "NOT_PACKED",
+            invoiceStatus: "NOT_INVOICED",
+            dispatchStatus: "NOT_DISPATCHED",
             createdBy: req.user?.email || "",
           },
         ],
@@ -3658,10 +3826,12 @@ export async function convertProformaToOrderAllocation(req, res) {
       withCompany(req, { linkedProformaId: proforma._id, status: { $ne: "CANCELLED" } })
     );
     if (already) return res.status(409).json({ message: `Order allocation already exists (${already.allocationNo})` });
-    const allocationNo = await nextSalesDocNumber({
+    const allocationNo = await nextUniqueSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
       docKey: "ORDER_ALLOCATION",
+      model: OrderAllocation,
+      field: "allocationNo",
     });
     let lines = normalizeLines(proforma.lines.map((line) => line.toObject?.() || line));
     lines = await attachUnitWeightFromItems(req, lines);
@@ -3696,6 +3866,9 @@ export async function convertProformaToOrderAllocation(req, res) {
             lines,
             ...totals,
             status: "OPEN",
+            packingStatus: "NOT_PACKED",
+            invoiceStatus: "NOT_INVOICED",
+            dispatchStatus: "NOT_DISPATCHED",
             createdBy: req.user?.email || "",
           },
         ],
@@ -3832,7 +4005,7 @@ export async function convertOrderAllocationToSalesInvoice(req, res) {
     const ready = await firstReadyPackingForAllocation(req, allocation._id);
     if (!ready) {
       return res.status(400).json({
-        message: "At least one posted Packing document is required before creating Sales Invoice",
+        message: "Packing must be completed before creating Sales Invoice",
       });
     }
     req.params.id = String(ready.packing._id);
@@ -3848,17 +4021,11 @@ export async function convertOrderAllocationToSalesInvoice(req, res) {
   }
 }
 
-/** POST /sales/rts/:id/convert-to-invoice — delegates to allocation→SI with rtsId preset. */
+/** Legacy RTS no longer gates Sales Invoice. Invoices must be created from posted Store Packing. */
 export async function convertRtsToSalesInvoice(req, res) {
-  const { id } = req.params;
-  if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid RTS id" });
-  const rts = await Rts.findOne(withCompany(req, { _id: id })).lean();
-  if (!rts) return res.status(404).json({ message: "RTS not found" });
-  const allocId = String(rts.linkedOrderAllocationId || "");
-  if (!mongoose.Types.ObjectId.isValid(allocId)) return res.status(400).json({ message: "RTS has no allocation link" });
-  req.params.id = allocId;
-  req.body = { ...(req.body || {}), legacyRtsId: id };
-  return convertOrderAllocationToSalesInvoice(req, res);
+  return res.status(410).json({
+    message: "RTS conversion is disabled. Complete Store Packing, then create Sales Invoice from the Order Allocation or Packing document.",
+  });
 }
 
 export async function cancelOrderAllocation(req, res) {

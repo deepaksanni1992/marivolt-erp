@@ -6,7 +6,7 @@ import Item from "../models/itemModel.js";
 import ItemTechnical from "../models/itemTechnicalModel.js";
 import OrderAcknowledgement from "../models/OrderAcknowledgement.js";
 import * as stockService from "../services/stockService.js";
-import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
+import { nextSalesDocNumber, nextUniqueSalesDocNumber } from "../utils/salesDocNumber.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -253,11 +253,13 @@ export async function createQuotation(req, res) {
       return res.status(403).json({ message: "Active company context required" });
     }
     if (!body.quotationNo) {
-      body.quotationNo = await nextSalesDocNumber({
+      body.quotationNo = await nextUniqueSalesDocNumber({
         companyId: req.companyId,
         companyCode: req.companyCode,
         docKey: "QUOTATION",
         referenceDate: body.quotationDate || new Date(),
+        model: Quotation,
+        field: "quotationNo",
       });
     }
     body.quotationNumber = body.quotationNo;
@@ -505,10 +507,12 @@ export async function duplicateQuotation(req, res) {
     if (src.status === "CANCELLED") {
       return res.status(400).json({ message: "Cannot duplicate cancelled quotation" });
     }
-    const nextNo = await nextSalesDocNumber({
+    const nextNo = await nextUniqueSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
       docKey: "QUOTATION",
+      model: Quotation,
+      field: "quotationNo",
     });
     const doc = await Quotation.create({
       ...src,

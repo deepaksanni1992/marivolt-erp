@@ -4,8 +4,8 @@ import StorePacking from "../models/StorePacking.js";
 import StoreDispatch from "../models/StoreDispatch.js";
 import SalesInvoice from "../models/SalesInvoice.js";
 import * as stockService from "../services/stockService.js";
-import Counter from "../models/Counter.js";
 import { writeAudit } from "../services/auditService.js";
+import { nextUniqueSalesDocNumber } from "../utils/salesDocNumber.js";
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -19,36 +19,17 @@ const POSTED_DISPATCH_STATUSES = ["POSTED", "PARTIALLY_DISPATCHED", "FULLY_DISPA
 const DISPATCH_READY_INVOICE_STATUSES = ["ISSUED", "PARTIALLY_PAID", "PAID"];
 const PACKAGE_TYPES = new Set(["CARTON", "PALLET", "WOODEN_BOX", "CRATE", "BUNDLE"]);
 
-function companyCode(v) {
-  return String(v || "CMP").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3) || "CMP";
-}
-
 function normalizePackageType(v) {
   const raw = t(v || "CARTON").toUpperCase().replace(/[\s-]+/g, "_");
   return PACKAGE_TYPES.has(raw) ? raw : "CARTON";
 }
 
-async function nextStoreDocNo(companyId, companyCodeRaw, kind) {
-  const code = companyCode(companyCodeRaw);
-  const prefix = kind === "PACKING" ? "PK" : "DSP";
-  const key = kind === "PACKING" ? `packing:${code}` : `dispatch:${code}`;
-  const row = await Counter.findOneAndUpdate(
-    { companyId, key },
-    {
-      $setOnInsert: { companyId, key },
-      $inc: { seq: 1 },
-    },
-    { upsert: true, new: true, setDefaultsOnInsert: false }
-  ).lean();
-  return `${prefix}-${code}-${String(Number(row.seq) || 0).padStart(4, "0")}`;
-}
-
 async function nextPackingNo(companyId, companyCode) {
-  return nextStoreDocNo(companyId, companyCode, "PACKING");
+  return nextUniqueSalesDocNumber({ companyId, companyCode, docKey: "PACKING", model: StorePacking, field: "packingNo" });
 }
 
 async function nextDispatchNo(companyId, companyCode) {
-  return nextStoreDocNo(companyId, companyCode, "DISPATCH");
+  return nextUniqueSalesDocNumber({ companyId, companyCode, docKey: "DISPATCH", model: StoreDispatch, field: "dispatchNo" });
 }
 
 async function sumPostedPackQtyByLine(companyId, allocationId) {
@@ -460,6 +441,7 @@ export async function postStorePacking(req, res) {
       const totalPackedNow = (doc.lines || []).reduce((sum, ln) => sum + (Number(ln.packQty) || 0), 0);
       doc.status = totalPackedBefore + totalPackedNow >= totalAlloc - 1e-6 ? "FULLY_PACKED" : "PARTIALLY_PACKED";
       allocation.status = doc.status;
+      allocation.packingStatus = doc.status === "FULLY_PACKED" ? "FULLY_PACKED" : "PARTIALLY_PACKED";
       allocation.updatedBy = req.user?.email || "";
       doc.postedAt = new Date();
       doc.updatedBy = req.user?.email || "";
@@ -886,6 +868,14 @@ export async function postStoreDispatch(req, res) {
       invoice.linkedSalesDispatchNo = doc.dispatchNo;
       invoice.updatedBy = req.user?.email || "";
       await invoice.save({ session });
+      if (doc.allocationId) {
+        const allocation = await OrderAllocation.findOne(withCompany(req, { _id: doc.allocationId })).session(session);
+        if (allocation) {
+          allocation.dispatchStatus = doc.status === "FULLY_DISPATCHED" ? "DISPATCHED" : "PARTIALLY_DISPATCHED";
+          allocation.updatedBy = req.user?.email || "";
+          await allocation.save({ session });
+        }
+      }
       doc.postedAt = new Date();
       doc.updatedBy = req.user?.email || "";
       await doc.save({ session });
@@ -987,7 +977,7 @@ export async function listDispatchStatus(req, res) {
         .select("packingNo allocationId lines")
         .lean(),
       StoreDispatch.find(withCompany(req, { allocationId: { $in: allocIds }, status: { $in: POSTED_DISPATCH_STATUSES } }))
-        .select("dispatchNo allocationId packingNo lines")
+        .select("dispatchNo dispatchDate allocationId packingNo lines status transporter courier awbNo trackingNo attachments")
         .lean(),
       SalesInvoice.find(withCompany(req, { linkedOrderAllocationId: { $in: allocIds }, status: { $ne: "CANCELLED" } }))
         .select("invoiceNo linkedOrderAllocationId lines")
@@ -1029,7 +1019,11 @@ export async function listDispatchStatus(req, res) {
       const inv = invByAlloc.get(id);
       const invoiceNo = inv?.invoiceNo || "";
       const packingNos = [...new Set((packByAlloc.get(id) || []).map((p) => p.packingNo).filter(Boolean))].join(", ");
-      const dispatchNos = [...new Set((dispByAlloc.get(id) || []).map((d) => d.dispatchNo).filter(Boolean))].join(", ");
+      const dispatchRows = dispByAlloc.get(id) || [];
+      const dispatchNos = [...new Set(dispatchRows.map((d) => d.dispatchNo).filter(Boolean))].join(", ");
+      const latestDispatch = dispatchRows
+        .slice()
+        .sort((a, b) => new Date(b.dispatchDate || b.createdAt || 0) - new Date(a.dispatchDate || a.createdAt || 0))[0];
       let dispatchStatus = "Pending Packing";
       if (packed <= 0) dispatchStatus = "Pending Packing";
       else if (dispatched >= packed) dispatchStatus = "Fully Dispatched";
@@ -1048,6 +1042,12 @@ export async function listDispatchStatus(req, res) {
         balanceQty: Math.max(0, packed - dispatched),
         allocationQty: totalAlloc,
         dispatchStatus,
+        awbNo: latestDispatch?.awbNo || "",
+        trackingNo: latestDispatch?.trackingNo || latestDispatch?.awbNo || "",
+        transporter: latestDispatch?.transporter || latestDispatch?.courier || "",
+        dispatchDate: latestDispatch?.dispatchDate || null,
+        uploadedDocumentLink:
+          latestDispatch?.attachments?.find?.((attachment) => attachment?.documentId)?.documentId || "",
         companyId: a.companyId,
       });
     }
@@ -1205,6 +1205,33 @@ export async function reportPendingPacking(req, res) {
   try {
     req.query = { ...(req.query || {}) };
     return listPendingPackingAllocations(req, res);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportPackingByStatus(req, res) {
+  try {
+    const routeHint = String(req.originalUrl || "").toUpperCase();
+    const status = String(req.params.status || req.query.status || (routeHint.includes("FULLY-PACKED") ? "FULLY_PACKED" : routeHint.includes("PARTIALLY-PACKED") ? "PARTIALLY_PACKED" : "")).trim().toUpperCase();
+    const allowed = status === "FULLY_PACKED" ? ["FULLY_PACKED"] : status === "PARTIALLY_PACKED" ? ["PARTIALLY_PACKED"] : POSTED_PACKING_STATUSES;
+    const rows = await StorePacking.find(withCompany(req, { status: { $in: allowed } }))
+      .sort({ packingDate: -1, createdAt: -1 })
+      .limit(500)
+      .lean();
+    const items = rows.map((p) => ({
+      packingNo: p.packingNo,
+      packingDate: p.packingDate,
+      customerName: p.customerName,
+      allocationNo: p.allocationNo,
+      linkedOANo: p.linkedOANo || "",
+      linkedProformaNo: p.linkedProformaNo || "",
+      packedQty: (p.lines || []).reduce((sum, line) => sum + (Number(line.packQty) || 0), 0),
+      totalPackages: p.totalPackages || (p.packages || []).length,
+      invoiceStatus: p.invoiceStatus || "NOT_INVOICED",
+      status: p.status,
+    }));
+    res.json({ items, total: items.length });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

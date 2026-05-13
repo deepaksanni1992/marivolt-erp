@@ -64,6 +64,24 @@ const orderAllocationSchema = new mongoose.Schema(
       ],
       default: "OPEN",
     },
+    packingStatus: {
+      type: String,
+      enum: ["NOT_PACKED", "PARTIALLY_PACKED", "FULLY_PACKED"],
+      default: "NOT_PACKED",
+      index: true,
+    },
+    invoiceStatus: {
+      type: String,
+      enum: ["NOT_INVOICED", "PARTIALLY_INVOICED", "FULLY_INVOICED"],
+      default: "NOT_INVOICED",
+      index: true,
+    },
+    dispatchStatus: {
+      type: String,
+      enum: ["NOT_DISPATCHED", "PARTIALLY_DISPATCHED", "DISPATCHED"],
+      default: "NOT_DISPATCHED",
+      index: true,
+    },
     /** Set when SALES_RESERVE was applied for this allocation (legacy rows may be null). */
     stockReservedAt: { type: Date, default: null },
     /** True when at least one line was reserved while available stock was below 0. */
