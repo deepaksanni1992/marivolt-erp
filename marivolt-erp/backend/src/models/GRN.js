@@ -93,6 +93,7 @@ const grnSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+grnSchema.index({ grnNo: 1 }, { unique: true });
 grnSchema.index({ companyId: 1, grnNo: 1 }, { unique: true });
 
 export default mongoose.model("GRN", grnSchema);

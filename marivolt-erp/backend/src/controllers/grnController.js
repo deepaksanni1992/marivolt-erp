@@ -8,7 +8,7 @@ import Setting from "../models/Setting.js";
 import * as stockService from "../services/stockService.js";
 import { writeAudit, writeStatusChange } from "../services/auditService.js";
 import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentController.js";
-import { nextNumber } from "../services/numberSeriesService.js";
+import { nextGrnNo } from "../services/grnNumberService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 
 function withCompany(req, filter = {}) {
@@ -128,6 +128,7 @@ function upper(v) {
 /** Default GRN stock `locationCode` when warehouse is omitted (multi-warehouse expansion later). */
 const DEFAULT_GRN_WAREHOUSE_CODE = "MAIN";
 const DEFAULT_GRN_WAREHOUSE_NAME = "Main Warehouse";
+const MAX_GRN_NUMBER_RETRIES = 10;
 
 function resolveGrnWarehouseCode(warehouseRaw) {
   const w = upper(warehouseRaw || "");
@@ -181,17 +182,6 @@ async function ensureDefaultGrnStockLocation(req, session = null) {
     }
     throw e;
   }
-}
-
-async function nextGrnNo(companyId, companyCode = "") {
-  const { number } = await nextNumber({
-    companyId,
-    companyCode,
-    docKey: "GRN",
-    referenceDate: new Date(),
-    branchId: null,
-  });
-  return number;
 }
 
 /**
@@ -342,6 +332,14 @@ async function findRecoveryNotes({ session, companyId, article, warehouse, qty }
     );
   }
   return notes;
+}
+
+function isDuplicateGrnNoError(err) {
+  const msg = String(err?.message || "");
+  return (
+    err?.code === 11000 &&
+    (err?.keyPattern?.grnNo || err?.keyValue?.grnNo || msg.includes("grnNo_1") || msg.includes("grnNo"))
+  );
 }
 
 export async function createGrn(req, res) {
@@ -667,142 +665,156 @@ export async function postGrnFromPo(req, res) {
     if (!selections.length) return res.status(400).json({ message: "lines[] is required" });
 
     let savedGrnNo = "";
-    await session.withTransaction(async () => {
-      const postedMap = await getPostedAcceptedQtyByPoLineMap(req, poId, session);
-      const { items: builtItems, po: poLean } = await buildGrnItemsFromPoLineSelection(req, poId, selections, {
-        session,
-        postedMap,
-      });
-
-      const poDoc = await PurchaseOrder.findOne(withCompany(req, { _id: poId })).session(session);
-      if (poDoc && String(poDoc.status || "").toUpperCase() === "CANCELLED") {
-        throw new Error("Cannot post GRN for a cancelled PO");
-      }
-
-      const grnNo = await nextGrnNo(req.companyId, req.companyCode);
-      savedGrnNo = grnNo;
-      const created = await GRN.create(
-        [
-          {
-            companyId: req.companyId,
-            branchId: req.body.branchId || poLean.branchId || null,
-            warehouseId: req.body.warehouseId || poLean.warehouseId || null,
-            grnNo,
-            poId,
-            grnDate: req.body.grnDate ? new Date(req.body.grnDate) : new Date(),
-            supplierId: req.body.supplierId || poLean.supplierId || null,
-            supplierName: t(req.body.supplierName) || poLean.supplierName || "",
-            supplierInvoiceNo: t(req.body.supplierInvoiceNo),
-            supplierDeliveryNote: t(req.body.supplierDeliveryNote),
-            transporter: t(req.body.transporter),
-            vehicleDetails: t(req.body.vehicleDetails),
-            packingListNo: t(req.body.packingListNo),
-            blAwbNo: t(req.body.blAwbNo),
-            customsDocRef: t(req.body.customsDocRef),
-            poNo: t(req.body.poNo) || poLean.poNo || poLean.poNumber || "",
-            currency: upper(req.body.currency || poLean.currency || "USD"),
-            exchangeRate: Number(req.body.exchangeRate) || 1,
-            freight: Number(req.body.freight) || 0,
-            customs: Number(req.body.customs) || 0,
-            landedAdjustment: Number(req.body.landedAdjustment) || 0,
-            remarks: t(req.body.remarks),
-            status: "DRAFT",
-            approvalStatus: "NOT_REQUIRED",
-            items: builtItems,
-            attachments: Array.isArray(req.body.attachments) ? req.body.attachments : [],
-            createdBy: req.user?.email || "",
-            updatedBy: req.user?.email || "",
-          },
-        ],
-        { session },
-      );
-      const grn = Array.isArray(created) ? created[0] : created;
-
-      const gate = await ensureApproval(req, {
-        companyId: req.companyId,
-        module: "STORE",
-        actionKey: "grn_receive",
-        documentType: "GRN",
-        documentId: grn._id,
-        documentNo: grn.grnNo,
-        description: `Post GRN ${grn.grnNo}`,
-      });
-      if (!gate.approved) {
-        grn.approvalStatus = "PENDING_RECEIVE";
-        grn.updatedBy = req.user?.email || "";
-        await grn.save({ session });
-        throw Object.assign(new Error("APPROVAL_REQUIRED"), { _approval: approvalRequiredPayload(gate.request) });
-      }
-
-      await ensureDefaultGrnStockLocation(req, session);
-
-      for (const line of grn.items) {
-        const article = upper(line.article);
-        const item = await ItemMaster.findOne(withCompany(req, { article })).select("_id").session(session);
-        if (!item) throw new Error(`Article not found: ${article}`);
-        const wh = resolveGrnWarehouseCode(line.warehouse);
-        const putaway = t(line.location);
-        if (!putaway) throw new Error("Location is required for selected GRN line.");
-        const loc = await StockLocation.findOne(withCompany(req, { locationCode: wh, status: "Active" })).session(session);
-        if (!loc) throw new Error(`Invalid warehouse (stock location code): ${wh}`);
-        if (Number(line.acceptedQty) > 0) {
-          const recoveryInfo = await findRecoveryNotes({
+    let completed = false;
+    for (let attempt = 1; attempt <= MAX_GRN_NUMBER_RETRIES; attempt++) {
+      try {
+        await session.withTransaction(async () => {
+          const postedMap = await getPostedAcceptedQtyByPoLineMap(req, poId, session);
+          const { items: builtItems, po: poLean } = await buildGrnItemsFromPoLineSelection(req, poId, selections, {
             session,
-            companyId: req.companyId,
-            article,
-            warehouse: wh,
-            qty: Number(line.acceptedQty),
+            postedMap,
           });
-          await stockService.grnReceive({
-            session,
+
+          const poDoc = await PurchaseOrder.findOne(withCompany(req, { _id: poId })).session(session);
+          if (poDoc && String(poDoc.status || "").toUpperCase() === "CANCELLED") {
+            throw new Error("Cannot post GRN for a cancelled PO");
+          }
+
+          const grnNo = await nextGrnNo({ companyId: req.companyId, companyCode: req.companyCode });
+          savedGrnNo = grnNo;
+          const created = await GRN.create(
+            [
+              {
+                companyId: req.companyId,
+                branchId: req.body.branchId || poLean.branchId || null,
+                warehouseId: req.body.warehouseId || poLean.warehouseId || null,
+                grnNo,
+                poId,
+                grnDate: req.body.grnDate ? new Date(req.body.grnDate) : new Date(),
+                supplierId: req.body.supplierId || poLean.supplierId || null,
+                supplierName: t(req.body.supplierName) || poLean.supplierName || "",
+                supplierInvoiceNo: t(req.body.supplierInvoiceNo),
+                supplierDeliveryNote: t(req.body.supplierDeliveryNote),
+                transporter: t(req.body.transporter),
+                vehicleDetails: t(req.body.vehicleDetails),
+                packingListNo: t(req.body.packingListNo),
+                blAwbNo: t(req.body.blAwbNo),
+                customsDocRef: t(req.body.customsDocRef),
+                poNo: t(req.body.poNo) || poLean.poNo || poLean.poNumber || "",
+                currency: upper(req.body.currency || poLean.currency || "USD"),
+                exchangeRate: Number(req.body.exchangeRate) || 1,
+                freight: Number(req.body.freight) || 0,
+                customs: Number(req.body.customs) || 0,
+                landedAdjustment: Number(req.body.landedAdjustment) || 0,
+                remarks: t(req.body.remarks),
+                status: "DRAFT",
+                approvalStatus: "NOT_REQUIRED",
+                items: builtItems,
+                attachments: Array.isArray(req.body.attachments) ? req.body.attachments : [],
+                createdBy: req.user?.email || "",
+                updatedBy: req.user?.email || "",
+              },
+            ],
+            { session }
+          );
+          const grn = Array.isArray(created) ? created[0] : created;
+
+          const gate = await ensureApproval(req, {
             companyId: req.companyId,
-            article,
-            warehouse: wh,
-            qty: Number(line.acceptedQty),
-            referenceType: "GRN",
-            referenceNo: grn.grnNo,
-            supplierName: grn.supplierName || "",
-            unitCost: Number(line.unitCost) || 0,
-            currency: line.currency || "USD",
-            batchNo: line.batchNo || "",
-            serialNo: line.serialNo || "",
-            remarks: line.remarks || "",
-            putawayLocation: putaway,
-            createdBy: req.user?.email || "",
-            sourceModule: "STORE",
-            transactionDate: grn.grnDate,
+            module: "STORE",
+            actionKey: "grn_receive",
+            documentType: "GRN",
+            documentId: grn._id,
+            documentNo: grn.grnNo,
+            description: `Post GRN ${grn.grnNo}`,
           });
-          line.recoveryInfo = recoveryInfo;
+          if (!gate.approved) {
+            grn.approvalStatus = "PENDING_RECEIVE";
+            grn.updatedBy = req.user?.email || "";
+            await grn.save({ session });
+            throw Object.assign(new Error("APPROVAL_REQUIRED"), { _approval: approvalRequiredPayload(gate.request) });
+          }
+
+          await ensureDefaultGrnStockLocation(req, session);
+
+          for (const line of grn.items) {
+            const article = upper(line.article);
+            const item = await ItemMaster.findOne(withCompany(req, { article })).select("_id").session(session);
+            if (!item) throw new Error(`Article not found: ${article}`);
+            const wh = resolveGrnWarehouseCode(line.warehouse);
+            const putaway = t(line.location);
+            if (!putaway) throw new Error("Location is required for selected GRN line.");
+            const loc = await StockLocation.findOne(withCompany(req, { locationCode: wh, status: "Active" })).session(session);
+            if (!loc) throw new Error(`Invalid warehouse (stock location code): ${wh}`);
+            if (Number(line.acceptedQty) > 0) {
+              const recoveryInfo = await findRecoveryNotes({
+                session,
+                companyId: req.companyId,
+                article,
+                warehouse: wh,
+                qty: Number(line.acceptedQty),
+              });
+              await stockService.grnReceive({
+                session,
+                companyId: req.companyId,
+                article,
+                warehouse: wh,
+                qty: Number(line.acceptedQty),
+                referenceType: "GRN",
+                referenceNo: grn.grnNo,
+                supplierName: grn.supplierName || "",
+                unitCost: Number(line.unitCost) || 0,
+                currency: line.currency || "USD",
+                batchNo: line.batchNo || "",
+                serialNo: line.serialNo || "",
+                remarks: line.remarks || "",
+                putawayLocation: putaway,
+                createdBy: req.user?.email || "",
+                sourceModule: "STORE",
+                transactionDate: grn.grnDate,
+              });
+              line.recoveryInfo = recoveryInfo;
+            }
+          }
+
+          await applyReceiveToPo({ session, req, grn });
+          grn.status = "POSTED";
+          grn.approvalStatus = "APPROVED";
+          grn.postedAt = new Date();
+          grn.updatedBy = req.user?.email || "";
+          await grn.save({ session });
+          await writeStatusChange(req, {
+            module: "STORE",
+            entityType: "GRN",
+            entityId: grn._id,
+            documentNo: grn.grnNo,
+            fromStatus: "DRAFT",
+            toStatus: "POSTED",
+            description: `GRN ${grn.grnNo} posted`,
+          });
+          await writeAudit(req, {
+            action: "RECEIVE",
+            module: "STORE",
+            entityType: "GRN",
+            entityId: grn._id,
+            documentNo: grn.grnNo,
+            fromStatus: "DRAFT",
+            toStatus: "POSTED",
+            description: `GRN ${grn.grnNo} posted (${grn.items?.length || 0} lines)`,
+            metadata: { supplierName: grn.supplierName || "" },
+          });
+        });
+        completed = true;
+        break;
+      } catch (err) {
+        if (isDuplicateGrnNoError(err) && attempt < MAX_GRN_NUMBER_RETRIES) {
+          savedGrnNo = "";
+          continue;
         }
+        throw err;
       }
-
-      await applyReceiveToPo({ session, req, grn });
-      grn.status = "POSTED";
-      grn.approvalStatus = "APPROVED";
-      grn.postedAt = new Date();
-      grn.updatedBy = req.user?.email || "";
-      await grn.save({ session });
-      await writeStatusChange(req, {
-        module: "STORE",
-        entityType: "GRN",
-        entityId: grn._id,
-        documentNo: grn.grnNo,
-        fromStatus: "DRAFT",
-        toStatus: "POSTED",
-        description: `GRN ${grn.grnNo} posted`,
-      });
-      await writeAudit(req, {
-        action: "RECEIVE",
-        module: "STORE",
-        entityType: "GRN",
-        entityId: grn._id,
-        documentNo: grn.grnNo,
-        fromStatus: "DRAFT",
-        toStatus: "POSTED",
-        description: `GRN ${grn.grnNo} posted (${grn.items?.length || 0} lines)`,
-        metadata: { supplierName: grn.supplierName || "" },
-      });
-    });
+    }
+    if (!completed) throw new Error("Unable to allocate a unique GRN number. Please retry.");
 
     if (mongoose.Types.ObjectId.isValid(String(poId))) {
       await syncPurchaseOrderApExtensionFields(req.companyId, poId);

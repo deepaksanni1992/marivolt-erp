@@ -9,9 +9,20 @@ import { buyerSnapshotFromCompany } from "../utils/companyBuyer.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 import { writeAudit, writeStatusChange } from "../services/auditService.js";
 import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentController.js";
+import { nextGrnNo } from "../services/grnNumberService.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
+}
+
+const MAX_GRN_NUMBER_RETRIES = 10;
+
+function isDuplicateGrnNoError(err) {
+  const msg = String(err?.message || "");
+  return (
+    err?.code === 11000 &&
+    (err?.keyPattern?.grnNo || err?.keyValue?.grnNo || msg.includes("grnNo_1") || msg.includes("grnNo"))
+  );
 }
 
 function normalizePoLines(lines = []) {
@@ -411,39 +422,44 @@ export async function receivePurchaseOrder(req, res) {
       });
     }
 
-    const grnNo = await nextSequentialNumber(req, "GRN", {
-      fallbackPrefix: "GRN",
-      width: 4,
-      referenceDate: new Date(),
-      branchId: branchId || po.branchId || null,
-    });
-    const grn = await GRN.create({
-      companyId: req.companyId,
-      branchId: branchId || po.branchId || null,
-      warehouseId: warehouseId || po.warehouseId || null,
-      grnNo,
-      grnDate: req.body.grnDate || new Date(),
-      poId: po._id,
-      poNo: po.poNo || po.poNumber,
-      supplierId: po.supplierId || null,
-      supplierName: po.supplierName || "",
-      supplierInvoiceNo: String(req.body.supplierInvoiceNo || "").trim(),
-      packingListNo: String(req.body.packingListNo || "").trim(),
-      blAwbNo: String(req.body.blAwbNo || "").trim(),
-      customsDocRef: String(req.body.customsDocRef || "").trim(),
-      currency: po.currency || "USD",
-      exchangeRate: Number(po.exchangeRate) || 1,
-      freight: Number(req.body.freight) || 0,
-      customs: Number(req.body.customs) || 0,
-      landedAdjustment: Number(req.body.landedAdjustment) || 0,
-      remarks: String(req.body.remarks || "").trim(),
-      status: "DRAFT",
-      approvalStatus: "NOT_REQUIRED",
-      items: receiveLines,
-      attachments: Array.isArray(req.body.attachments) ? req.body.attachments : [],
-      createdBy: req.user?.email || "",
-      updatedBy: req.user?.email || "",
-    });
+    let grn = null;
+    for (let attempt = 1; attempt <= MAX_GRN_NUMBER_RETRIES; attempt++) {
+      const grnNo = await nextGrnNo({ companyId: req.companyId, companyCode: req.companyCode });
+      try {
+        grn = await GRN.create({
+          companyId: req.companyId,
+          branchId: branchId || po.branchId || null,
+          warehouseId: warehouseId || po.warehouseId || null,
+          grnNo,
+          grnDate: req.body.grnDate || new Date(),
+          poId: po._id,
+          poNo: po.poNo || po.poNumber,
+          supplierId: po.supplierId || null,
+          supplierName: po.supplierName || "",
+          supplierInvoiceNo: String(req.body.supplierInvoiceNo || "").trim(),
+          packingListNo: String(req.body.packingListNo || "").trim(),
+          blAwbNo: String(req.body.blAwbNo || "").trim(),
+          customsDocRef: String(req.body.customsDocRef || "").trim(),
+          currency: po.currency || "USD",
+          exchangeRate: Number(po.exchangeRate) || 1,
+          freight: Number(req.body.freight) || 0,
+          customs: Number(req.body.customs) || 0,
+          landedAdjustment: Number(req.body.landedAdjustment) || 0,
+          remarks: String(req.body.remarks || "").trim(),
+          status: "DRAFT",
+          approvalStatus: "NOT_REQUIRED",
+          items: receiveLines,
+          attachments: Array.isArray(req.body.attachments) ? req.body.attachments : [],
+          createdBy: req.user?.email || "",
+          updatedBy: req.user?.email || "",
+        });
+        break;
+      } catch (err) {
+        if (isDuplicateGrnNoError(err) && attempt < MAX_GRN_NUMBER_RETRIES) continue;
+        throw err;
+      }
+    }
+    if (!grn) throw new Error("Unable to allocate a unique GRN number. Please retry.");
     await writeAudit(req, {
       action: "CREATE",
       module: "PURCHASE",
