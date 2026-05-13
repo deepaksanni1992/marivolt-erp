@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import GRN from "../models/GRN.js";
-import ItemMaster from "../models/itemMasterModel.js";
+import ItemMaster, { UOM_VALUES } from "../models/itemMasterModel.js";
 import StockLocation from "../models/StockLocation.js";
 import PurchaseOrder from "../models/PurchaseOrder.js";
 import StockLedger from "../models/StockLedger.js";
@@ -129,10 +129,61 @@ function upper(v) {
 const DEFAULT_GRN_WAREHOUSE_CODE = "MAIN";
 const DEFAULT_GRN_WAREHOUSE_NAME = "Main Warehouse";
 const MAX_GRN_NUMBER_RETRIES = 2;
+const VALID_ITEM_UOMS = new Set(UOM_VALUES);
 
 function resolveGrnWarehouseCode(warehouseRaw) {
   const w = upper(warehouseRaw || "");
   return w || DEFAULT_GRN_WAREHOUSE_CODE;
+}
+
+function normalizeItemUom(value) {
+  const uom = upper(value || "PCS");
+  return VALID_ITEM_UOMS.has(uom) ? uom : "PCS";
+}
+
+async function ensureGrnItemMaster({ session, companyId, companyCode = "", line }) {
+  const article = upper(line?.article);
+  if (!article) throw new Error("GRN line article is required.");
+  console.info(`[GRN item lookup] companyId=${companyId} article=${article}`);
+  const existing = await ItemMaster.findOne({ companyId, article }).select("_id companyId article").session(session);
+  if (existing) {
+    if (String(existing.companyId) !== String(companyId)) {
+      throw new Error(`Item ${article} belongs to another company and cannot be used for this GRN.`);
+    }
+    console.info(`[GRN item lookup] companyId=${companyId} article=${article} status=found`);
+    return existing;
+  }
+
+  try {
+    const created = await ItemMaster.create(
+      [
+        {
+          companyId,
+          companyCode: upper(companyCode),
+          article,
+          itemName: t(line?.description) || article,
+          description: t(line?.description),
+          materialCode: t(line?.materialCode),
+          spn: t(line?.spn),
+          uom: normalizeItemUom(line?.uom),
+          status: "Active",
+          source: "PO_AUTO_CREATE",
+        },
+      ],
+      { session }
+    );
+    const item = Array.isArray(created) ? created[0] : created;
+    console.info(`[GRN item lookup] companyId=${companyId} article=${article} status=auto-created`);
+    return item;
+  } catch (err) {
+    if (err?.code !== 11000) throw err;
+    const raced = await ItemMaster.findOne({ companyId, article }).select("_id companyId article").session(session);
+    if (!raced || String(raced.companyId) !== String(companyId)) {
+      throw new Error(`Item ${article} could not be auto-created for this company.`);
+    }
+    console.info(`[GRN item lookup] companyId=${companyId} article=${article} status=found-after-race`);
+    return raced;
+  }
 }
 
 /**
@@ -751,8 +802,12 @@ export async function postGrnFromPo(req, res) {
 
           for (const line of grn.items) {
             const article = upper(line.article);
-            const item = await ItemMaster.findOne(withCompany(req, { article })).select("_id").session(session);
-            if (!item) throw new Error(`Article not found: ${article}`);
+            await ensureGrnItemMaster({
+              session,
+              companyId: poLean.companyId || req.companyId,
+              companyCode: req.companyCode,
+              line,
+            });
             const wh = resolveGrnWarehouseCode(line.warehouse);
             const putaway = t(line.location);
             if (!putaway) throw new Error("Location is required for selected GRN line.");
@@ -909,8 +964,12 @@ export async function postGrn(req, res) {
 
       for (const line of grn.items) {
         const article = upper(line.article);
-        const item = await ItemMaster.findOne(withCompany(req, { article })).select("_id").session(session);
-        if (!item) throw new Error(`Article not found: ${article}`);
+        await ensureGrnItemMaster({
+          session,
+          companyId: grn.companyId || req.companyId,
+          companyCode: req.companyCode,
+          line,
+        });
         const wh = resolveGrnWarehouseCode(line.warehouse);
         const putaway = t(line.location);
         if (!putaway) throw new Error("Location is required for selected GRN line.");

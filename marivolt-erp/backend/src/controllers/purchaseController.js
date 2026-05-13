@@ -3,6 +3,7 @@ import PurchaseOrder from "../models/PurchaseOrder.js";
 import GRN from "../models/GRN.js";
 import Supplier from "../models/Supplier.js";
 import Company from "../models/Company.js";
+import ItemMaster, { UOM_VALUES } from "../models/itemMasterModel.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 import { applyPurchaseOrderDefaults } from "../constants/purchaseOrderDefaults.js";
 import { buyerSnapshotFromCompany } from "../utils/companyBuyer.js";
@@ -16,6 +17,7 @@ function withCompany(req, filter = {}) {
 }
 
 const MAX_GRN_NUMBER_RETRIES = 2;
+const VALID_ITEM_UOMS = new Set(UOM_VALUES);
 
 function isDuplicateGrnNoError(err) {
   const msg = String(err?.message || "");
@@ -51,6 +53,56 @@ function normalizePoLines(lines = []) {
       };
     })
     .filter((l) => l.itemCode && l.qty > 0);
+}
+
+function normalizeArticle(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function normalizeItemUom(value) {
+  const uom = String(value || "PCS").trim().toUpperCase();
+  return VALID_ITEM_UOMS.has(uom) ? uom : "PCS";
+}
+
+async function ensurePoLineItemsForCompany({ companyId, companyCode = "", lines = [] }) {
+  if (!companyId) throw new Error("companyId is required for PO item auto-create");
+  for (const line of lines || []) {
+    const article = normalizeArticle(line.article || line.itemCode || line.articleNo || line.partNo);
+    if (!article) continue;
+    if (line.itemId && mongoose.Types.ObjectId.isValid(String(line.itemId))) {
+      const linkedItem = await ItemMaster.findOne({ _id: line.itemId, companyId }).select("_id companyId article").lean();
+      if (!linkedItem) {
+        throw new Error(`Item ${article} is not available in this PO company and cannot be linked.`);
+      }
+    }
+    const existing = await ItemMaster.findOne({ companyId, article }).select("_id companyId article").lean();
+    if (existing) {
+      if (String(existing.companyId) !== String(companyId)) {
+        throw new Error(`Item ${article} belongs to another company and cannot be linked to this PO.`);
+      }
+      continue;
+    }
+    try {
+      await ItemMaster.create({
+        companyId,
+        companyCode: normalizeArticle(companyCode),
+        article,
+        itemName: String(line.description || line.itemName || article).trim() || article,
+        description: String(line.description || "").trim(),
+        materialCode: String(line.materialCode || line.itemCode || "").trim(),
+        spn: String(line.spn || line.partNo || "").trim(),
+        uom: normalizeItemUom(line.uom),
+        status: "Active",
+        source: "PO_AUTO_CREATE",
+      });
+    } catch (err) {
+      if (err?.code !== 11000) throw err;
+      const raced = await ItemMaster.findOne({ companyId, article }).select("_id companyId article").lean();
+      if (!raced || String(raced.companyId) !== String(companyId)) {
+        throw new Error(`Item ${article} could not be auto-created for this company.`);
+      }
+    }
+  }
 }
 
 function recalcPoTotals(doc) {
@@ -170,6 +222,11 @@ export async function createPurchaseOrder(req, res) {
     }
     const company = await Company.findById(req.companyId).lean();
     Object.assign(body, buyerSnapshotFromCompany(company));
+    await ensurePoLineItemsForCompany({
+      companyId: req.companyId,
+      companyCode: req.companyCode || company?.code || "",
+      lines: body.lines,
+    });
     body = applyPurchaseOrderDefaults(body);
     if (!body.poNo && !body.poNumber) {
       body.poNo = await nextSequentialNumber(PurchaseOrder, "poNo", "PO", {
@@ -271,6 +328,11 @@ export async function updatePurchaseOrder(req, res) {
       if (!doc.lines.length) {
         return res.status(400).json({ message: "At least one valid line is required" });
       }
+      await ensurePoLineItemsForCompany({
+        companyId: req.companyId,
+        companyCode: req.companyCode || "",
+        lines: doc.lines,
+      });
     }
     if (req.body.supplierId !== undefined || req.body.supplierName !== undefined) {
       const supplierSnapshot = await resolveSupplierSnapshot(req, doc);
