@@ -32,6 +32,7 @@ function deriveStockRow(row) {
   const allocated = Math.max(Number(row.allocatedQty || 0), Number(row.reservedQty || 0));
   const rts = Number(row.rtsQty || 0);
   const packed = Number(row.packedQty || 0) || 0;
+  const dispatched = Number(row.dispatchedQty || 0) || 0;
   const available = onHand - allocated - rts - packed;
   return {
     ...row,
@@ -40,6 +41,7 @@ function deriveStockRow(row) {
     reservedQty: allocated,
     rtsQty: rts,
     packedQty: packed,
+    dispatchedQty: dispatched,
     availableQty: available,
     isNegativeAvailable: available < 0,
   };
@@ -286,6 +288,7 @@ export async function listStockSummary(req, res) {
           allocatedQty: { $sum: { $max: ["$allocatedQty", "$reservedQty"] } },
           rtsQty: { $sum: { $ifNull: ["$rtsQty", 0] } },
           packedQty: { $sum: { $ifNull: ["$packedQty", 0] } },
+          dispatchedQty: { $sum: { $ifNull: ["$dispatchedQty", 0] } },
           lastTransactionDate: { $max: "$lastTransactionDate" },
           rowIds: { $addToSet: "$_id" },
         },
@@ -308,6 +311,7 @@ export async function listStockSummary(req, res) {
           allocatedQty: "$allocatedQty",
           rtsQty: "$rtsQty",
           packedQty: "$packedQty",
+          dispatchedQty: "$dispatchedQty",
           availableQty: {
             $subtract: [
               "$onHandQty",

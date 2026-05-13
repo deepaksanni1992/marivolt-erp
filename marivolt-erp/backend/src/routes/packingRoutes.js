@@ -11,6 +11,7 @@ const storeApprove = requirePermission("STORE", "approve");
 const storeCancel = requirePermission("STORE", "cancel");
 
 router.get("/", storeView, c.listStorePacking);
+router.get("/allocations/pending", storeView, c.listPendingPackingAllocations);
 router.get("/from-allocation/:allocationId", storeView, c.getPackingFromAllocation);
 router.get("/:id", storeView, c.getStorePacking);
 router.post("/draft", storeCreate, c.createStorePackingDraft);

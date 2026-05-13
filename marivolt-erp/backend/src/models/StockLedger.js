@@ -93,6 +93,8 @@ const stockLedgerSchema = new mongoose.Schema(
     rtsAfter: { type: Number, default: null },
     /** Qty in posted Store Packing (not yet dispatched). */
     packedAfter: { type: Number, default: null },
+    /** Cumulative qty dispatched through Store Dispatch. */
+    dispatchedAfter: { type: Number, default: null },
     availableAfter: { type: Number, default: null },
     isNegativeAllocation: { type: Boolean, default: false },
   },

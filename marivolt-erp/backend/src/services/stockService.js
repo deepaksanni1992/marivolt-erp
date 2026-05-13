@@ -140,6 +140,7 @@ function deriveBalanceShape(row, fallback = {}) {
   );
   const rts = Number(row?.rtsQty || 0);
   const packed = Number(row?.packedQty || 0) || 0;
+  const dispatched = Number(row?.dispatchedQty || 0) || 0;
   const available = onHand - allocated - rts - packed;
   return {
     _id: row?._id || null,
@@ -151,6 +152,7 @@ function deriveBalanceShape(row, fallback = {}) {
     reservedQty: allocated,
     rtsQty: rts,
     packedQty: packed,
+    dispatchedQty: dispatched,
     availableQty: available,
     isNegativeAvailable: available < 0,
     raw: row || null,
@@ -183,11 +185,13 @@ async function snapshotAfter({ companyId, article, warehouse, session }) {
   let allocated = 0;
   let rts = 0;
   let packed = 0;
+  let dispatched = 0;
   for (const r of rows) {
     onHand += Number(r?.onHandQty ?? r?.quantity ?? 0) || 0;
     allocated += Math.max(Number(r?.allocatedQty || 0), Number(r?.reservedQty || 0));
     rts += Number(r?.rtsQty || 0);
     packed += Number(r?.packedQty || 0) || 0;
+    dispatched += Number(r?.dispatchedQty || 0) || 0;
   }
   const available = onHand - allocated - rts - packed;
   return {
@@ -195,6 +199,7 @@ async function snapshotAfter({ companyId, article, warehouse, session }) {
     allocatedAfter: allocated,
     rtsAfter: rts,
     packedAfter: packed,
+    dispatchedAfter: dispatched,
     availableAfter: available,
     isNegativeAvailable: available < 0,
   };
@@ -222,12 +227,14 @@ export async function recalculateStockBalance({ companyId, article, warehouse, s
   const allocated = Math.max(Number(row.allocatedQty || 0), Number(row.reservedQty || 0));
   const rts = Number(row.rtsQty || 0);
   const packed = Number(row.packedQty || 0) || 0;
+  const dispatched = Math.max(0, Number(row.dispatchedQty || 0));
   row.onHandQty = onHand;
   row.quantity = onHand;
   row.allocatedQty = allocated;
   row.reservedQty = allocated;
   row.rtsQty = rts;
   row.packedQty = packed;
+  row.dispatchedQty = dispatched;
   row.availableQty = onHand - allocated - rts - packed;
   row.itemCode = code;
   row.article = code;
@@ -383,6 +390,7 @@ async function bumpBuckets({
       allocatedQty: 0,
       rtsQty: 0,
       packedQty: 0,
+      dispatchedQty: 0,
     };
     for (const field of Object.keys(inc || {})) {
       delete insertDefaults[field];
@@ -1311,7 +1319,7 @@ export async function dispatchFromPacked({
     companyId,
     article,
     warehouse,
-    inc: { packedQty: -q, quantity: -q, onHandQty: -q },
+    inc: { packedQty: -q, dispatchedQty: q, quantity: -q, onHandQty: -q },
     guard: {
       $expr: {
         $and: [{ $gte: [{ $ifNull: ["$packedQty", 0] }, q] }, { $gte: [{ $ifNull: ["$onHandQty", 0] }, q] }],
@@ -1363,12 +1371,19 @@ export async function cancelDispatchFromPacked({
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
   if (!(q > 0)) throw new Error("cancelDispatchFromPacked: qty must be > 0");
+  const before = await getStockBalance({ companyId, article, warehouse, session });
+  const reverseDispatchedQty = Math.min(q, Math.max(0, Number(before?.dispatchedQty || 0)));
   await bumpBuckets({
     session,
     companyId,
     article,
     warehouse,
-    inc: { packedQty: q, quantity: q, onHandQty: q },
+    inc: {
+      packedQty: q,
+      ...(reverseDispatchedQty > 0 ? { dispatchedQty: -reverseDispatchedQty } : {}),
+      quantity: q,
+      onHandQty: q,
+    },
     upsert: true,
   });
   const after = await snapshotAfter({ companyId, article, warehouse, session });

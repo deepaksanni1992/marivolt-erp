@@ -38,6 +38,11 @@ router.get("/reports/landed-cost-summary", storeView, stock.landedCostSummaryRep
 router.get("/reports/stock-valuation-adjustments", storeView, stock.stockValuationAdjustmentReport);
 router.get("/reports/grn-cost-analysis", storeView, stock.grnCostAnalysisReport);
 router.get("/reports/packing-pending-dispatch", storeView, outbound.reportPackingPendingDispatch);
+router.get("/reports/pending-packing", storeView, outbound.reportPendingPacking);
 router.get("/reports/dispatch-summary", storeView, outbound.reportDispatchSummary);
+router.get("/reports/dispatch-by-customer", storeView, outbound.reportDispatchByCustomer);
+router.get("/reports/dispatch-by-article", storeView, outbound.reportDispatchByArticle);
+router.get("/reports/packing-efficiency", storeView, outbound.reportPackingEfficiency);
+router.get("/reports/daily-dispatch", storeView, outbound.reportDailyDispatch);
 
 export default router;

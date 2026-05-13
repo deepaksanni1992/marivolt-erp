@@ -4,7 +4,7 @@ import StorePacking from "../models/StorePacking.js";
 import StoreDispatch from "../models/StoreDispatch.js";
 import SalesInvoice from "../models/SalesInvoice.js";
 import * as stockService from "../services/stockService.js";
-import { nextNumber } from "../services/numberSeriesService.js";
+import Counter from "../models/Counter.js";
 import { writeAudit } from "../services/auditService.js";
 
 function withCompany(req, filter = {}) {
@@ -14,33 +14,41 @@ function t(v) {
   return String(v ?? "").trim();
 }
 
+const POSTED_PACKING_STATUSES = ["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED"];
+const POSTED_DISPATCH_STATUSES = ["POSTED", "PARTIALLY_DISPATCHED", "FULLY_DISPATCHED"];
+
+function companyCode(v) {
+  return String(v || "CMP").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3) || "CMP";
+}
+
+async function nextStoreDocNo(companyId, companyCodeRaw, kind) {
+  const code = companyCode(companyCodeRaw);
+  const prefix = kind === "PACKING" ? "PK" : "DSP";
+  const key = kind === "PACKING" ? `packing:${code}` : `dispatch:${code}`;
+  const row = await Counter.findOneAndUpdate(
+    { companyId, key },
+    {
+      $setOnInsert: { companyId, key },
+      $inc: { seq: 1 },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: false }
+  ).lean();
+  return `${prefix}-${code}-${String(Number(row.seq) || 0).padStart(4, "0")}`;
+}
+
 async function nextPackingNo(companyId, companyCode) {
-  const { number } = await nextNumber({
-    companyId,
-    companyCode,
-    docKey: "STORE_PACKING",
-    referenceDate: new Date(),
-    branchId: null,
-  });
-  return number;
+  return nextStoreDocNo(companyId, companyCode, "PACKING");
 }
 
 async function nextDispatchNo(companyId, companyCode) {
-  const { number } = await nextNumber({
-    companyId,
-    companyCode,
-    docKey: "STORE_DISPATCH",
-    referenceDate: new Date(),
-    branchId: null,
-  });
-  return number;
+  return nextStoreDocNo(companyId, companyCode, "DISPATCH");
 }
 
 async function sumPostedPackQtyByLine(companyId, allocationId) {
   const packs = await StorePacking.find({
     companyId,
     allocationId,
-    status: "POSTED",
+    status: { $in: POSTED_PACKING_STATUSES },
   })
     .select("lines")
     .lean();
@@ -59,7 +67,7 @@ async function sumPostedDispatchQtyByPackingLine(companyId, packingId) {
   const rows = await StoreDispatch.find({
     companyId,
     packingId,
-    status: "POSTED",
+    status: { $in: POSTED_DISPATCH_STATUSES },
   })
     .select("lines")
     .lean();
@@ -92,8 +100,11 @@ function normalizePackingLines(bodyLines = [], allocation) {
         allocatedQty: Number(match?.qty) || 0,
         packQty: Math.max(0, Number(ln.packQty) || 0),
         uom: t(ln.uom || match?.uom || "PCS") || "PCS",
+        cartonNo: t(ln.cartonNo),
+        palletNo: t(ln.palletNo),
         packageNo: t(ln.packageNo),
         boxNo: t(ln.boxNo),
+        boxRemarks: t(ln.boxRemarks),
         dimensions: t(ln.dimensions),
         grossWeightKg: Number(ln.grossWeightKg) || 0,
         netWeightKg: Number(ln.netWeightKg) || 0,
@@ -137,6 +148,45 @@ export async function getStorePacking(req, res) {
   }
 }
 
+export async function listPendingPackingAllocations(req, res) {
+  try {
+    const q = t(req.query.search);
+    const filter = withCompany(req, { status: { $nin: ["CANCELLED", "CLOSED"] } });
+    if (q) {
+      const re = new RegExp(q, "i");
+      filter.$or = [{ allocationNo: re }, { customerName: re }, { linkedOANo: re }, { linkedProformaNo: re }];
+    }
+    const allocations = await OrderAllocation.find(filter).sort({ allocationDate: -1 }).limit(200).lean();
+    const items = [];
+    for (const allocation of allocations) {
+      const packedByLine = await sumPostedPackQtyByLine(req.companyId, allocation._id);
+      let allocatedQty = 0;
+      let packedQty = 0;
+      for (const ln of allocation.lines || []) {
+        allocatedQty += Number(ln.qty) || 0;
+        packedQty += packedByLine.get(String(ln._id)) || 0;
+      }
+      const pendingPackQty = Math.max(0, allocatedQty - packedQty);
+      if (pendingPackQty <= 0) continue;
+      items.push({
+        _id: allocation._id,
+        allocationNo: allocation.allocationNo,
+        linkedOANo: allocation.linkedOANo || "",
+        linkedProformaNo: allocation.linkedProformaNo || "",
+        customerName: allocation.customerName,
+        status: allocation.status,
+        warehouse: allocation.warehouse || "MAIN",
+        allocatedQty,
+        alreadyPackedQty: packedQty,
+        pendingPackQty,
+      });
+    }
+    res.json({ items, total: items.length });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
 export async function getPackingFromAllocation(req, res) {
   try {
     const allocationId = req.params.allocationId;
@@ -146,17 +196,31 @@ export async function getPackingFromAllocation(req, res) {
     const allocation = await OrderAllocation.findOne(withCompany(req, { _id: allocationId })).lean();
     if (!allocation) return res.status(404).json({ message: "Allocation not found" });
     const packedByLine = await sumPostedPackQtyByLine(req.companyId, allocation._id);
-    const lines = (allocation.lines || []).map((ln) => ({
-      allocationLineId: ln._id,
-      article: ln.article,
-      description: ln.description || "",
-      partNumber: ln.partNumber || "",
-      materialCode: ln.materialCode || "",
-      qty: Number(ln.qty) || 0,
-      alreadyPacked: packedByLine.get(String(ln._id)) || 0,
-      pendingPack: Math.max(0, (Number(ln.qty) || 0) - (packedByLine.get(String(ln._id)) || 0)),
-      uom: ln.uom || "PCS",
-    }));
+    const wh = String(allocation.warehouse || "MAIN").toUpperCase();
+    const lines = [];
+    for (const ln of allocation.lines || []) {
+      const stock = await stockService.getStockBalance({
+        companyId: req.companyId,
+        article: ln.article,
+        warehouse: wh,
+      });
+      const allocatedQty = Number(ln.qty) || 0;
+      const alreadyPacked = packedByLine.get(String(ln._id)) || 0;
+      lines.push({
+        allocationLineId: ln._id,
+        article: ln.article,
+        description: ln.description || "",
+        partNumber: ln.partNumber || "",
+        materialCode: ln.materialCode || "",
+        location: wh,
+        qty: allocatedQty,
+        allocatedQty,
+        alreadyPacked,
+        pendingPack: Math.max(0, allocatedQty - alreadyPacked),
+        availableStock: stock.availableQty,
+        uom: ln.uom || "PCS",
+      });
+    }
     res.json({
       allocation,
       lines,
@@ -186,6 +250,8 @@ export async function createStorePackingDraft(req, res) {
       packingNo,
       packingDate: req.body.packingDate || new Date(),
       warehouse: String(allocation.warehouse || "MAIN").toUpperCase(),
+      sourceDocumentType: "ORDER_ALLOCATION",
+      sourceDocumentId: allocation._id,
       allocationId: allocation._id,
       allocationNo: allocation.allocationNo,
       linkedOANo: allocation.linkedOANo || "",
@@ -259,7 +325,10 @@ export async function postStorePacking(req, res) {
         });
       }
 
-      doc.status = "POSTED";
+      const totalAlloc = (allocation.lines || []).reduce((sum, ln) => sum + (Number(ln.qty) || 0), 0);
+      const totalPackedBefore = Array.from(packedByLine.values()).reduce((sum, qty) => sum + (Number(qty) || 0), 0);
+      const totalPackedNow = (doc.lines || []).reduce((sum, ln) => sum + (Number(ln.packQty) || 0), 0);
+      doc.status = totalPackedBefore + totalPackedNow >= totalAlloc - 1e-6 ? "FULLY_PACKED" : "PARTIALLY_PACKED";
       doc.postedAt = new Date();
       doc.updatedBy = req.user?.email || "";
       await doc.save({ session });
@@ -296,12 +365,12 @@ export async function cancelStorePacking(req, res) {
         await doc.save({ session });
         return;
       }
-      if (doc.status !== "POSTED") throw new Error("Cannot cancel this packing");
+      if (!POSTED_PACKING_STATUSES.includes(doc.status)) throw new Error("Cannot cancel this packing");
 
       const dispatched = await StoreDispatch.findOne({
         companyId: req.companyId,
         packingId: doc._id,
-        status: "POSTED",
+        status: { $in: POSTED_DISPATCH_STATUSES },
       })
         .session(session)
         .select("_id")
@@ -384,13 +453,52 @@ export async function getStoreDispatch(req, res) {
   }
 }
 
+export async function listPendingDispatchPackings(req, res) {
+  try {
+    const q = t(req.query.search);
+    const filter = withCompany(req, { status: { $in: POSTED_PACKING_STATUSES } });
+    if (q) {
+      const re = new RegExp(q, "i");
+      filter.$or = [{ packingNo: re }, { customerName: re }, { allocationNo: re }];
+    }
+    const packings = await StorePacking.find(filter).sort({ packingDate: -1 }).limit(200).lean();
+    const items = [];
+    for (const packing of packings) {
+      const dispatchedByLine = await sumPostedDispatchQtyByPackingLine(req.companyId, packing._id);
+      let packedQty = 0;
+      let dispatchedQty = 0;
+      for (const ln of packing.lines || []) {
+        packedQty += Number(ln.packQty) || 0;
+        dispatchedQty += dispatchedByLine.get(String(ln._id)) || 0;
+      }
+      const pendingDispatchQty = Math.max(0, packedQty - dispatchedQty);
+      if (pendingDispatchQty <= 0) continue;
+      items.push({
+        _id: packing._id,
+        packingNo: packing.packingNo,
+        allocationNo: packing.allocationNo,
+        linkedOANo: packing.linkedOANo || "",
+        customerName: packing.customerName,
+        status: packing.status,
+        warehouse: packing.warehouse || "MAIN",
+        packedQty,
+        alreadyDispatchedQty: dispatchedQty,
+        pendingDispatchQty,
+      });
+    }
+    res.json({ items, total: items.length });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
 export async function getDispatchFromPacking(req, res) {
   try {
     const packingId = req.params.packingId;
     if (!mongoose.Types.ObjectId.isValid(packingId)) return res.status(400).json({ message: "Invalid packing id" });
     const packing = await StorePacking.findOne(withCompany(req, { _id: packingId })).lean();
     if (!packing) return res.status(404).json({ message: "Packing not found" });
-    if (packing.status !== "POSTED") return res.status(400).json({ message: "Packing must be posted" });
+    if (!POSTED_PACKING_STATUSES.includes(packing.status)) return res.status(400).json({ message: "Packing must be posted" });
     const dispatchedByLine = await sumPostedDispatchQtyByPackingLine(req.companyId, packing._id);
     const lines = (packing.lines || []).map((ln) => {
       const packed = Number(ln.packQty) || 0;
@@ -444,7 +552,7 @@ export async function createStoreDispatchDraft(req, res) {
     }
     const packing = await StorePacking.findOne(withCompany(req, { _id: packingId }));
     if (!packing) return res.status(404).json({ message: "Packing not found" });
-    if (packing.status !== "POSTED") return res.status(400).json({ message: "Packing must be posted" });
+    if (!POSTED_PACKING_STATUSES.includes(packing.status)) return res.status(400).json({ message: "Packing must be posted" });
 
     const dispatchedByLine = await sumPostedDispatchQtyByPackingLine(req.companyId, packing._id);
     const linesIn = Array.isArray(req.body.lines) && req.body.lines.length
@@ -474,6 +582,8 @@ export async function createStoreDispatchDraft(req, res) {
       dispatchNo,
       dispatchDate: req.body.dispatchDate || new Date(),
       warehouse: String(packing.warehouse || "MAIN").toUpperCase(),
+      sourceDocumentType: "STORE_PACKING",
+      sourceDocumentId: packing._id,
       packingId: packing._id,
       packingNo: packing.packingNo,
       allocationId: packing.allocationId,
@@ -484,9 +594,12 @@ export async function createStoreDispatchDraft(req, res) {
       engine: packing.engine || "",
       model: packing.model || "",
       esn: packing.esn || "",
-      courier: t(req.body.courier),
+      transporter: t(req.body.transporter || req.body.courier),
+      courier: t(req.body.courier || req.body.transporter),
       awbNo: t(req.body.awbNo || req.body.awbBlLrNo),
       blNo: t(req.body.blNo),
+      trackingNo: t(req.body.trackingNo || req.body.awbNo || req.body.awbBlLrNo),
+      containerNo: t(req.body.containerNo),
       lrNo: t(req.body.lrNo),
       vehicleNo: t(req.body.vehicleNo),
       driverName: t(req.body.driverName),
@@ -524,7 +637,7 @@ export async function postStoreDispatch(req, res) {
       if (!doc) throw new Error("Dispatch not found");
       if (doc.status !== "DRAFT") throw new Error("Only DRAFT dispatch can be posted");
       const packing = await StorePacking.findOne(withCompany(req, { _id: doc.packingId })).session(session);
-      if (!packing || packing.status !== "POSTED") throw new Error("Packing invalid");
+      if (!packing || !POSTED_PACKING_STATUSES.includes(packing.status)) throw new Error("Packing invalid");
 
       const dispatchedByLine = await sumPostedDispatchQtyByPackingLine(req.companyId, packing._id);
       const wh = String(doc.warehouse || packing.warehouse || "MAIN").toUpperCase();
@@ -552,7 +665,13 @@ export async function postStoreDispatch(req, res) {
         });
       }
 
-      doc.status = "POSTED";
+      const totalPacked = (packing.lines || []).reduce((sum, ln) => sum + (Number(ln.packQty) || 0), 0);
+      const totalDispatchedBefore = Array.from(dispatchedByLine.values()).reduce((sum, qty) => sum + (Number(qty) || 0), 0);
+      const totalDispatchedNow = (doc.lines || []).reduce((sum, ln) => sum + (Number(ln.dispatchQty) || 0), 0);
+      doc.status =
+        totalDispatchedBefore + totalDispatchedNow >= totalPacked - 1e-6
+          ? "FULLY_DISPATCHED"
+          : "PARTIALLY_DISPATCHED";
       doc.postedAt = new Date();
       doc.updatedBy = req.user?.email || "";
       await doc.save({ session });
@@ -589,7 +708,7 @@ export async function cancelStoreDispatch(req, res) {
         await doc.save({ session });
         return;
       }
-      if (doc.status !== "POSTED") throw new Error("Cannot cancel");
+      if (!POSTED_DISPATCH_STATUSES.includes(doc.status)) throw new Error("Cannot cancel");
 
       const packing = await StorePacking.findOne(withCompany(req, { _id: doc.packingId })).session(session);
       const wh = String(doc.warehouse || packing?.warehouse || "MAIN").toUpperCase();
@@ -650,10 +769,10 @@ export async function listDispatchStatus(req, res) {
 
     const allocIds = allocations.map((a) => a._id);
     const [packings, dispatches, invoices] = await Promise.all([
-      StorePacking.find(withCompany(req, { allocationId: { $in: allocIds }, status: "POSTED" }))
+      StorePacking.find(withCompany(req, { allocationId: { $in: allocIds }, status: { $in: POSTED_PACKING_STATUSES } }))
         .select("packingNo allocationId lines")
         .lean(),
-      StoreDispatch.find(withCompany(req, { allocationId: { $in: allocIds }, status: "POSTED" }))
+      StoreDispatch.find(withCompany(req, { allocationId: { $in: allocIds }, status: { $in: POSTED_DISPATCH_STATUSES } }))
         .select("dispatchNo allocationId packingNo lines")
         .lean(),
       SalesInvoice.find(withCompany(req, { linkedOrderAllocationId: { $in: allocIds }, status: { $ne: "CANCELLED" } }))
@@ -726,7 +845,7 @@ export async function listDispatchStatus(req, res) {
 
 export async function reportPackingPendingDispatch(req, res) {
   try {
-    const posted = await StorePacking.find(withCompany(req, { status: "POSTED" })).lean();
+    const posted = await StorePacking.find(withCompany(req, { status: { $in: POSTED_PACKING_STATUSES } })).lean();
     const items = [];
     for (const p of posted) {
       const dispatchedByLine = await sumPostedDispatchQtyByPackingLine(req.companyId, p._id);
@@ -753,7 +872,7 @@ export async function reportPackingPendingDispatch(req, res) {
 
 export async function reportDispatchSummary(req, res) {
   try {
-    const rows = await StoreDispatch.find(withCompany(req, { status: "POSTED" }))
+    const rows = await StoreDispatch.find(withCompany(req, { status: { $in: POSTED_DISPATCH_STATUSES } }))
       .sort({ dispatchDate: -1 })
       .limit(500)
       .lean();
@@ -767,6 +886,87 @@ export async function reportDispatchSummary(req, res) {
       lineCount: (d.lines || []).length,
     }));
     res.json({ items });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportPendingPacking(req, res) {
+  try {
+    req.query = { ...(req.query || {}) };
+    return listPendingPackingAllocations(req, res);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportDispatchByCustomer(req, res) {
+  try {
+    const rows = await StoreDispatch.find(withCompany(req, { status: { $in: POSTED_DISPATCH_STATUSES } })).lean();
+    const byCustomer = new Map();
+    for (const d of rows) {
+      const key = d.customerName || "Unknown";
+      const row = byCustomer.get(key) || { customerName: key, dispatchCount: 0, dispatchQty: 0 };
+      row.dispatchCount += 1;
+      for (const ln of d.lines || []) row.dispatchQty += Number(ln.dispatchQty) || 0;
+      byCustomer.set(key, row);
+    }
+    res.json({ items: Array.from(byCustomer.values()).sort((a, b) => b.dispatchQty - a.dispatchQty) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportDispatchByArticle(req, res) {
+  try {
+    const rows = await StoreDispatch.find(withCompany(req, { status: { $in: POSTED_DISPATCH_STATUSES } })).lean();
+    const byArticle = new Map();
+    for (const d of rows) {
+      for (const ln of d.lines || []) {
+        const key = ln.article || "UNKNOWN";
+        const row = byArticle.get(key) || { article: key, description: ln.description || "", dispatchQty: 0, dispatchCount: 0 };
+        row.dispatchQty += Number(ln.dispatchQty) || 0;
+        row.dispatchCount += 1;
+        byArticle.set(key, row);
+      }
+    }
+    res.json({ items: Array.from(byArticle.values()).sort((a, b) => b.dispatchQty - a.dispatchQty) });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportPackingEfficiency(req, res) {
+  try {
+    const allocations = await OrderAllocation.find(withCompany(req, { status: { $nin: ["CANCELLED"] } })).lean();
+    let allocatedQty = 0;
+    let packedQty = 0;
+    for (const a of allocations) {
+      for (const ln of a.lines || []) allocatedQty += Number(ln.qty) || 0;
+    }
+    const packings = await StorePacking.find(withCompany(req, { status: { $in: POSTED_PACKING_STATUSES } })).lean();
+    for (const p of packings) {
+      for (const ln of p.lines || []) packedQty += Number(ln.packQty) || 0;
+    }
+    const efficiencyPct = allocatedQty > 0 ? (packedQty / allocatedQty) * 100 : 0;
+    res.json({ allocatedQty, packedQty, pendingQty: Math.max(0, allocatedQty - packedQty), efficiencyPct });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportDailyDispatch(req, res) {
+  try {
+    const rows = await StoreDispatch.find(withCompany(req, { status: { $in: POSTED_DISPATCH_STATUSES } })).lean();
+    const byDate = new Map();
+    for (const d of rows) {
+      const key = new Date(d.dispatchDate || d.createdAt || Date.now()).toISOString().slice(0, 10);
+      const row = byDate.get(key) || { dispatchDate: key, dispatchCount: 0, dispatchQty: 0 };
+      row.dispatchCount += 1;
+      for (const ln of d.lines || []) row.dispatchQty += Number(ln.dispatchQty) || 0;
+      byDate.set(key, row);
+    }
+    res.json({ items: Array.from(byDate.values()).sort((a, b) => String(b.dispatchDate).localeCompare(String(a.dispatchDate))) });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

@@ -193,9 +193,21 @@ export default function StoreModule() {
   const [packAllocInputId, setPackAllocInputId] = useState("");
   const [packAllocQueryId, setPackAllocQueryId] = useState("");
   const [packLineQty, setPackLineQty] = useState({});
+  const [packLineMeta, setPackLineMeta] = useState({});
+  const [packingStatusFilter, setPackingStatusFilter] = useState("");
   const [dispatchPackInputId, setDispatchPackInputId] = useState("");
   const [dispatchPackQueryId, setDispatchPackQueryId] = useState("");
   const [dispatchLineQty, setDispatchLineQty] = useState({});
+  const [dispatchStatusFilter, setDispatchStatusFilter] = useState("");
+  const [dispatchHeader, setDispatchHeader] = useState({
+    transporter: "",
+    trackingNo: "",
+    containerNo: "",
+    vehicleNo: "",
+    driverName: "",
+    driverPhone: "",
+    remarks: "",
+  });
 
   // Unified-ledger filters (used only inside the Stock Ledger tab).
   const [ledgerMovementType, setLedgerMovementType] = useState("");
@@ -431,6 +443,12 @@ export default function StoreModule() {
     enabled: tab === "Packing" && Boolean(packAllocQueryId),
   });
 
+  const { data: pendingPackingAllocations } = useQuery({
+    queryKey: ["packing-allocations-pending"],
+    queryFn: () => apiGetWithQuery("/packing/allocations/pending", { limit: 200 }),
+    enabled: tab === "Packing",
+  });
+
   useEffect(() => {
     const lines = packingFromAlloc?.lines;
     if (!lines?.length) {
@@ -438,16 +456,28 @@ export default function StoreModule() {
       return;
     }
     const next = {};
+    const meta = {};
     for (const ln of lines) {
-      next[String(ln.allocationLineId)] = Math.max(0, Number(ln.pendingPack) || 0);
+      const id = String(ln.allocationLineId);
+      next[id] = Math.max(0, Number(ln.pendingPack) || 0);
+      meta[id] = {
+        cartonNo: "",
+        palletNo: "",
+        boxRemarks: "",
+        dimensions: "",
+        grossWeightKg: "",
+        netWeightKg: "",
+      };
     }
     setPackLineQty(next);
+    setPackLineMeta(meta);
   }, [packAllocQueryId, packingFromAlloc]);
 
   const createPackingDraft = useMutation({
     mutationFn: (body) => apiPost("/packing/draft", body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["store-packing"] });
+      qc.invalidateQueries({ queryKey: ["packing-allocations-pending"] });
       qc.invalidateQueries({ queryKey: ["packing-from-allocation", packAllocQueryId] });
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
@@ -459,6 +489,7 @@ export default function StoreModule() {
     mutationFn: (id) => apiPost(`/packing/${id}/post`, {}),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["store-packing"] });
+      qc.invalidateQueries({ queryKey: ["packing-allocations-pending"] });
       qc.invalidateQueries({ queryKey: ["packing-from-allocation", packAllocQueryId] });
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
@@ -470,6 +501,7 @@ export default function StoreModule() {
     mutationFn: ({ id, reason }) => apiPost(`/packing/${id}/cancel`, { reason: reason || "" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["store-packing"] });
+      qc.invalidateQueries({ queryKey: ["packing-allocations-pending"] });
       qc.invalidateQueries({ queryKey: ["packing-from-allocation", packAllocQueryId] });
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
@@ -481,6 +513,12 @@ export default function StoreModule() {
     queryKey: ["dispatch-from-packing", dispatchPackQueryId],
     queryFn: () => apiGet(`/dispatch/from-packing/${dispatchPackQueryId}`),
     enabled: tab === "Dispatch" && Boolean(dispatchPackQueryId),
+  });
+
+  const { data: pendingDispatchPackings } = useQuery({
+    queryKey: ["dispatch-packings-pending"],
+    queryFn: () => apiGetWithQuery("/dispatch/packings/pending", { limit: 200 }),
+    enabled: tab === "Dispatch",
   });
 
   useEffect(() => {
@@ -500,6 +538,7 @@ export default function StoreModule() {
     mutationFn: (body) => apiPost("/dispatch/draft", body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["store-dispatch"] });
+      qc.invalidateQueries({ queryKey: ["dispatch-packings-pending"] });
       qc.invalidateQueries({ queryKey: ["dispatch-from-packing", dispatchPackQueryId] });
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
@@ -511,6 +550,7 @@ export default function StoreModule() {
     mutationFn: (id) => apiPost(`/dispatch/${id}/post`, {}),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["store-dispatch"] });
+      qc.invalidateQueries({ queryKey: ["dispatch-packings-pending"] });
       qc.invalidateQueries({ queryKey: ["dispatch-from-packing", dispatchPackQueryId] });
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
@@ -522,6 +562,7 @@ export default function StoreModule() {
     mutationFn: ({ id, reason }) => apiPost(`/dispatch/${id}/cancel`, { reason: reason || "" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["store-dispatch"] });
+      qc.invalidateQueries({ queryKey: ["dispatch-packings-pending"] });
       qc.invalidateQueries({ queryKey: ["dispatch-from-packing", dispatchPackQueryId] });
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
@@ -530,14 +571,14 @@ export default function StoreModule() {
   });
 
   const { data: packingList } = useQuery({
-    queryKey: ["store-packing"],
-    queryFn: () => apiGetWithQuery("/packing", { limit: 200 }),
+    queryKey: ["store-packing", packingStatusFilter],
+    queryFn: () => apiGetWithQuery("/packing", { limit: 200, status: packingStatusFilter || undefined }),
     enabled: tab === "Packing",
   });
 
   const { data: dispatchList } = useQuery({
-    queryKey: ["store-dispatch"],
-    queryFn: () => apiGetWithQuery("/dispatch", { limit: 200 }),
+    queryKey: ["store-dispatch", dispatchStatusFilter],
+    queryFn: () => apiGetWithQuery("/dispatch", { limit: 200, status: dispatchStatusFilter || undefined }),
     enabled: tab === "Dispatch",
   });
 
@@ -550,6 +591,36 @@ export default function StoreModule() {
   const { data: reportDispatchSummary } = useQuery({
     queryKey: ["store-report-dispatch-summary"],
     queryFn: () => apiGet("/store/reports/dispatch-summary"),
+    enabled: tab === "Store Reports",
+  });
+
+  const { data: reportPendingPacking } = useQuery({
+    queryKey: ["store-report-pending-packing"],
+    queryFn: () => apiGet("/store/reports/pending-packing"),
+    enabled: tab === "Store Reports",
+  });
+
+  const { data: reportDispatchByCustomer } = useQuery({
+    queryKey: ["store-report-dispatch-by-customer"],
+    queryFn: () => apiGet("/store/reports/dispatch-by-customer"),
+    enabled: tab === "Store Reports",
+  });
+
+  const { data: reportDispatchByArticle } = useQuery({
+    queryKey: ["store-report-dispatch-by-article"],
+    queryFn: () => apiGet("/store/reports/dispatch-by-article"),
+    enabled: tab === "Store Reports",
+  });
+
+  const { data: reportPackingEfficiency } = useQuery({
+    queryKey: ["store-report-packing-efficiency"],
+    queryFn: () => apiGet("/store/reports/packing-efficiency"),
+    enabled: tab === "Store Reports",
+  });
+
+  const { data: reportDailyDispatch } = useQuery({
+    queryKey: ["store-report-daily-dispatch"],
+    queryFn: () => apiGet("/store/reports/daily-dispatch"),
     enabled: tab === "Store Reports",
   });
 
@@ -784,6 +855,7 @@ export default function StoreModule() {
       { key: "allocatedQty", header: "Allocated" },
       { key: "packedQty", header: "Packed" },
       { key: "rtsQty", header: "RTS" },
+      { key: "dispatchedQty", header: "Dispatched" },
       { key: "availableQty", header: "Available" },
       { key: "uom", header: "UOM" },
       { key: "negativeStatus", header: "Negative Status" },
@@ -1916,6 +1988,7 @@ export default function StoreModule() {
                     "Allocated",
                     "Packed",
                     "RTS",
+                    "Dispatched",
                     "Available",
                     "UOM",
                     "Negative Status",
@@ -1931,7 +2004,7 @@ export default function StoreModule() {
               <tbody>
                 {stockRows.length === 0 ? (
                   <tr>
-                    <td colSpan={13} className="px-2 py-6 text-center text-sm text-slate-500">
+                    <td colSpan={14} className="px-2 py-6 text-center text-sm text-slate-500">
                       No stock balance rows match the current filters.
                     </td>
                   </tr>
@@ -1950,6 +2023,7 @@ export default function StoreModule() {
                         <td className="px-2 py-1">{r.allocatedQty}</td>
                         <td className="px-2 py-1">{r.packedQty ?? 0}</td>
                         <td className="px-2 py-1">{r.rtsQty}</td>
+                        <td className="px-2 py-1">{r.dispatchedQty ?? 0}</td>
                         <td className={`px-2 py-1 font-semibold ${negative ? "text-rose-700" : zero ? "text-amber-700" : ""}`}>
                           {r.availableQty}
                         </td>
@@ -2486,21 +2560,28 @@ export default function StoreModule() {
           <div className="rounded-2xl border bg-white p-4">
             <h3 className="mb-2 text-sm font-semibold">New packing from order allocation</h3>
             <p className="mb-3 text-xs text-slate-600">
-              Paste the Order Allocation document id (from Sales). Load lines, set pack quantities (partial allowed), then create draft and post.
+              Select an allocation with pending quantity, load warehouse lines, enter packing details, then create a draft and post it.
             </p>
             <div className="mb-3 flex flex-wrap items-end gap-2">
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-medium text-slate-600">Allocation id</label>
-                <input
-                  className="w-72 rounded border px-2 py-1.5 font-mono text-xs"
+                <label className="text-xs font-medium text-slate-600">Allocation</label>
+                <select
+                  className="w-96 rounded border px-2 py-1.5 text-xs"
                   value={packAllocInputId}
-                  onChange={(e) => setPackAllocInputId(e.target.value.trim())}
-                  placeholder="MongoDB ObjectId"
-                />
+                  onChange={(e) => setPackAllocInputId(e.target.value)}
+                >
+                  <option value="">Select allocation pending packing...</option>
+                  {(pendingPackingAllocations?.items || []).map((a) => (
+                    <option key={a._id} value={a._id}>
+                      {a.allocationNo} | {a.customerName} | OA {a.linkedOANo || "-"} | pending {a.pendingPackQty}
+                    </option>
+                  ))}
+                </select>
               </div>
               <button
                 type="button"
                 className="rounded border bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+                disabled={!packAllocInputId}
                 onClick={() => setPackAllocQueryId(packAllocInputId)}
               >
                 Load allocation
@@ -2524,26 +2605,43 @@ export default function StoreModule() {
                   <thead className="bg-slate-100 text-xs uppercase text-slate-600">
                     <tr>
                       <th className="px-2 py-2 text-left">Article</th>
+                      <th className="px-2 py-2 text-left">Description</th>
+                      <th className="px-2 py-2 text-left">Allocated</th>
+                      <th className="px-2 py-2 text-left">Packed</th>
                       <th className="px-2 py-2 text-left">Pending pack</th>
+                      <th className="px-2 py-2 text-left">Location</th>
+                      <th className="px-2 py-2 text-left">Available</th>
                       <th className="px-2 py-2 text-left">Pack qty</th>
+                      <th className="px-2 py-2 text-left">Carton/Pallet</th>
+                      <th className="px-2 py-2 text-left">Dims/Wt</th>
+                      <th className="px-2 py-2 text-left">Remarks</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {packingFromAlloc.lines.map((ln) => (
-                      <tr key={String(ln.allocationLineId)} className="border-t">
+                    {packingFromAlloc.lines.map((ln) => {
+                      const id = String(ln.allocationLineId);
+                      const meta = packLineMeta[id] || {};
+                      const partial = Number(packLineQty[id] || 0) > 0 && Number(packLineQty[id] || 0) < Number(ln.pendingPack || 0);
+                      return (
+                      <tr key={id} className={`border-t ${partial ? "bg-amber-50" : Number(ln.pendingPack) <= 0 ? "bg-slate-50 text-slate-400" : ""}`}>
                         <td className="px-2 py-2 font-mono">{ln.article}</td>
-                        <td className="px-2 py-2">{ln.pendingPack}</td>
+                        <td className="max-w-[220px] truncate px-2 py-2" title={ln.description}>{ln.description || "—"}</td>
+                        <td className="px-2 py-2">{ln.allocatedQty ?? ln.qty}</td>
+                        <td className="px-2 py-2">{ln.alreadyPacked}</td>
+                        <td className="px-2 py-2 font-semibold">{ln.pendingPack}</td>
+                        <td className="px-2 py-2">{ln.location || "MAIN"}</td>
+                        <td className="px-2 py-2">{ln.availableStock ?? "—"}</td>
                         <td className="px-2 py-2">
                           <input
                             type="number"
                             min={0}
                             max={ln.pendingPack}
                             className="w-24 rounded border px-2 py-1 text-xs"
-                            value={packLineQty[String(ln.allocationLineId)] ?? 0}
+                            value={packLineQty[id] ?? 0}
                             onChange={(e) =>
                               setPackLineQty((prev) => ({
                                 ...prev,
-                                [String(ln.allocationLineId)]: Math.max(
+                                [id]: Math.max(
                                   0,
                                   Math.min(Number(e.target.value) || 0, ln.pendingPack)
                                 ),
@@ -2551,8 +2649,22 @@ export default function StoreModule() {
                             }
                           />
                         </td>
+                        <td className="px-2 py-2">
+                          <input className="mb-1 w-28 rounded border px-1 py-0.5 text-xs" placeholder="Carton" value={meta.cartonNo || ""} onChange={(e) => setPackLineMeta((p) => ({ ...p, [id]: { ...meta, cartonNo: e.target.value } }))} />
+                          <input className="w-28 rounded border px-1 py-0.5 text-xs" placeholder="Pallet" value={meta.palletNo || ""} onChange={(e) => setPackLineMeta((p) => ({ ...p, [id]: { ...meta, palletNo: e.target.value } }))} />
+                        </td>
+                        <td className="px-2 py-2">
+                          <input className="mb-1 w-32 rounded border px-1 py-0.5 text-xs" placeholder="LxWxH" value={meta.dimensions || ""} onChange={(e) => setPackLineMeta((p) => ({ ...p, [id]: { ...meta, dimensions: e.target.value } }))} />
+                          <div className="flex gap-1">
+                            <input className="w-16 rounded border px-1 py-0.5 text-xs" placeholder="Gross" value={meta.grossWeightKg || ""} onChange={(e) => setPackLineMeta((p) => ({ ...p, [id]: { ...meta, grossWeightKg: e.target.value } }))} />
+                            <input className="w-16 rounded border px-1 py-0.5 text-xs" placeholder="Net" value={meta.netWeightKg || ""} onChange={(e) => setPackLineMeta((p) => ({ ...p, [id]: { ...meta, netWeightKg: e.target.value } }))} />
+                          </div>
+                        </td>
+                        <td className="px-2 py-2">
+                          <input className="w-36 rounded border px-1 py-0.5 text-xs" placeholder="Box remarks" value={meta.boxRemarks || ""} onChange={(e) => setPackLineMeta((p) => ({ ...p, [id]: { ...meta, boxRemarks: e.target.value } }))} />
+                        </td>
                       </tr>
-                    ))}
+                    );})}
                   </tbody>
                 </table>
                 <button
@@ -2561,18 +2673,25 @@ export default function StoreModule() {
                   disabled={createPackingDraft.isPending || !packingFromAlloc?.allocation}
                   onClick={() => {
                     const lines = (packingFromAlloc.lines || [])
-                      .map((ln) => ({
-                        allocationLineId: ln.allocationLineId,
-                        article: ln.article,
-                        description: ln.description || "",
-                        spn: ln.partNumber || "",
-                        materialCode: ln.materialCode || "",
-                        packQty: Math.min(
-                          Number(packLineQty[String(ln.allocationLineId)]) || 0,
-                          Number(ln.pendingPack) || 0
-                        ),
-                        uom: ln.uom || "PCS",
-                      }))
+                      .map((ln) => {
+                        const id = String(ln.allocationLineId);
+                        const meta = packLineMeta[id] || {};
+                        return {
+                          allocationLineId: ln.allocationLineId,
+                          article: ln.article,
+                          description: ln.description || "",
+                          spn: ln.partNumber || "",
+                          materialCode: ln.materialCode || "",
+                          packQty: Math.min(Number(packLineQty[id]) || 0, Number(ln.pendingPack) || 0),
+                          cartonNo: meta.cartonNo || "",
+                          palletNo: meta.palletNo || "",
+                          boxRemarks: meta.boxRemarks || "",
+                          dimensions: meta.dimensions || "",
+                          grossWeightKg: Number(meta.grossWeightKg) || 0,
+                          netWeightKg: Number(meta.netWeightKg) || 0,
+                          uom: ln.uom || "PCS",
+                        };
+                      })
                       .filter((x) => x.packQty > 0);
                     createPackingDraft.mutate({
                       allocationId: packingFromAlloc.allocation._id,
@@ -2589,7 +2708,21 @@ export default function StoreModule() {
           </div>
 
           <div className="rounded-2xl border bg-white p-4">
-            <h3 className="mb-2 text-sm font-semibold">Packing documents</h3>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">Packing documents</h3>
+              <div className="flex flex-wrap gap-1">
+                {["", "DRAFT", "PARTIALLY_PACKED", "FULLY_PACKED", "CANCELLED"].map((st) => (
+                  <button
+                    key={st || "ALL"}
+                    type="button"
+                    className={`rounded border px-2 py-1 text-xs ${packingStatusFilter === st ? "bg-slate-900 text-white" : "hover:bg-slate-50"}`}
+                    onClick={() => setPackingStatusFilter(st)}
+                  >
+                    {st || "All"}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="overflow-auto">
               <table className="w-full text-sm">
                 <thead className="bg-slate-100 text-xs uppercase text-slate-600">
@@ -2615,11 +2748,36 @@ export default function StoreModule() {
                         <td className="px-2 py-2">{p.customerName}</td>
                         <td className="px-2 py-2 font-mono text-xs">{p.allocationNo}</td>
                         <td className="px-2 py-2">
-                          <StatusPill status={p.status} tone={p.status === "POSTED" ? "emerald" : "amber"} />
+                          <StatusPill status={p.status} tone={String(p.status).includes("FULLY") ? "emerald" : String(p.status).includes("PARTIALLY") ? "amber" : "slate"} />
                         </td>
                         <td className="px-2 py-2 text-right">
+                          <span className="flex flex-wrap justify-end gap-1">
+                            <button
+                              type="button"
+                              className="rounded border px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
+                              onClick={() =>
+                                downloadPdfTable(
+                                  `Packing List ${p.packingNo}`,
+                                  `${p.customerName || ""} | Allocation ${p.allocationNo || ""}`,
+                                  [
+                                    { key: "article", header: "Article" },
+                                    { key: "description", header: "Description" },
+                                    { key: "packQty", header: "Pack Qty" },
+                                    { key: "cartonNo", header: "Carton" },
+                                    { key: "palletNo", header: "Pallet" },
+                                    { key: "dimensions", header: "Dimensions" },
+                                    { key: "grossWeightKg", header: "Gross Kg" },
+                                    { key: "netWeightKg", header: "Net Kg" },
+                                  ],
+                                  p.lines || [],
+                                  p.packingNo || "packing-list"
+                                )
+                              }
+                            >
+                              PDF
+                            </button>
                           {p.status === "DRAFT" ? (
-                            <span className="flex flex-wrap justify-end gap-1">
+                            <>
                               <button
                                 type="button"
                                 className="rounded border px-2 py-0.5 text-xs text-emerald-800 hover:bg-emerald-50"
@@ -2639,10 +2797,11 @@ export default function StoreModule() {
                               >
                                 Cancel
                               </button>
-                            </span>
+                            </>
                           ) : (
                             <span className="text-xs text-slate-400">—</span>
                           )}
+                          </span>
                         </td>
                       </tr>
                     ))
@@ -2659,25 +2818,52 @@ export default function StoreModule() {
           <div className="rounded-2xl border bg-white p-4">
             <h3 className="mb-2 text-sm font-semibold">New dispatch from posted packing</h3>
             <p className="mb-3 text-xs text-slate-600">
-              Enter a posted Store Packing id. Load pending quantities, then create draft dispatch and post (reduces on-hand stock).
+              Select a packing document with pending dispatch quantity, enter transporter details, then create draft dispatch and post.
             </p>
             <div className="mb-3 flex flex-wrap items-end gap-2">
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-medium text-slate-600">Packing id</label>
-                <input
-                  className="w-72 rounded border px-2 py-1.5 font-mono text-xs"
+                <label className="text-xs font-medium text-slate-600">Packing document</label>
+                <select
+                  className="w-96 rounded border px-2 py-1.5 text-xs"
                   value={dispatchPackInputId}
-                  onChange={(e) => setDispatchPackInputId(e.target.value.trim())}
-                  placeholder="StorePacking MongoDB id"
-                />
+                  onChange={(e) => setDispatchPackInputId(e.target.value)}
+                >
+                  <option value="">Select packing pending dispatch...</option>
+                  {(pendingDispatchPackings?.items || []).map((p) => (
+                    <option key={p._id} value={p._id}>
+                      {p.packingNo} | {p.customerName} | allocation {p.allocationNo || "-"} | pending {p.pendingDispatchQty}
+                    </option>
+                  ))}
+                </select>
               </div>
               <button
                 type="button"
                 className="rounded border bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+                disabled={!dispatchPackInputId}
                 onClick={() => setDispatchPackQueryId(dispatchPackInputId)}
               >
                 Load packing
               </button>
+            </div>
+            <div className="mb-3 grid gap-2 rounded border bg-slate-50 p-3 md:grid-cols-4">
+              {[
+                ["transporter", "Transporter"],
+                ["trackingNo", "AWB/BL/Tracking"],
+                ["containerNo", "Container no"],
+                ["vehicleNo", "Vehicle no"],
+                ["driverName", "Driver"],
+                ["driverPhone", "Driver phone"],
+                ["remarks", "Dispatch remarks"],
+              ].map(([key, label]) => (
+                <label key={key} className="flex flex-col gap-1 text-xs text-slate-600">
+                  {label}
+                  <input
+                    className="rounded border bg-white px-2 py-1.5 text-xs"
+                    value={dispatchHeader[key] || ""}
+                    onChange={(e) => setDispatchHeader((prev) => ({ ...prev, [key]: e.target.value }))}
+                  />
+                </label>
+              ))}
             </div>
             {dispatchFromPack?.packing ? (
               <div className="mb-3 rounded border border-slate-200 bg-slate-50 p-3 text-xs">
@@ -2695,6 +2881,7 @@ export default function StoreModule() {
                     <tr>
                       <th className="px-2 py-2 text-left">Article</th>
                       <th className="px-2 py-2 text-left">Packed</th>
+                      <th className="px-2 py-2 text-left">Dispatched</th>
                       <th className="px-2 py-2 text-left">Pending dispatch</th>
                       <th className="px-2 py-2 text-left">Dispatch qty</th>
                     </tr>
@@ -2704,6 +2891,7 @@ export default function StoreModule() {
                       <tr key={String(ln.packingLineId)} className="border-t">
                         <td className="px-2 py-2 font-mono">{ln.article}</td>
                         <td className="px-2 py-2">{ln.packedQty}</td>
+                        <td className="px-2 py-2">{ln.dispatchedQty}</td>
                         <td className="px-2 py-2">{ln.pendingDispatch}</td>
                         <td className="px-2 py-2">
                           <input
@@ -2748,8 +2936,16 @@ export default function StoreModule() {
                       .filter((x) => x.dispatchQty > 0);
                     createDispatchDraft.mutate({
                       packingId: dispatchFromPack.packing._id,
-                      courier: "",
-                      awbNo: "",
+                      transporter: dispatchHeader.transporter,
+                      courier: dispatchHeader.transporter,
+                      awbNo: dispatchHeader.trackingNo,
+                      trackingNo: dispatchHeader.trackingNo,
+                      blNo: dispatchHeader.trackingNo,
+                      containerNo: dispatchHeader.containerNo,
+                      vehicleNo: dispatchHeader.vehicleNo,
+                      driverName: dispatchHeader.driverName,
+                      driverPhone: dispatchHeader.driverPhone,
+                      remarks: dispatchHeader.remarks,
                       lines,
                     });
                   }}
@@ -2763,7 +2959,21 @@ export default function StoreModule() {
           </div>
 
           <div className="rounded-2xl border bg-white p-4">
-            <h3 className="mb-2 text-sm font-semibold">Dispatch documents</h3>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">Dispatch documents</h3>
+              <div className="flex flex-wrap gap-1">
+                {["", "DRAFT", "PARTIALLY_DISPATCHED", "FULLY_DISPATCHED", "CANCELLED"].map((st) => (
+                  <button
+                    key={st || "ALL"}
+                    type="button"
+                    className={`rounded border px-2 py-1 text-xs ${dispatchStatusFilter === st ? "bg-slate-900 text-white" : "hover:bg-slate-50"}`}
+                    onClick={() => setDispatchStatusFilter(st)}
+                  >
+                    {st || "All"}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="overflow-auto">
               <table className="w-full text-sm">
                 <thead className="bg-slate-100 text-xs uppercase text-slate-600">
@@ -2771,7 +2981,8 @@ export default function StoreModule() {
                     <th className="px-2 py-2 text-left">Dispatch No</th>
                     <th className="px-2 py-2 text-left">Customer</th>
                     <th className="px-2 py-2 text-left">Packing</th>
-                    <th className="px-2 py-2 text-left">AWB</th>
+                    <th className="px-2 py-2 text-left">Transporter</th>
+                    <th className="px-2 py-2 text-left">Tracking</th>
                     <th className="px-2 py-2 text-left">Status</th>
                     <th className="px-2 py-2 text-right">Actions</th>
                   </tr>
@@ -2779,7 +2990,7 @@ export default function StoreModule() {
                 <tbody>
                   {(dispatchList?.items || []).length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-2 py-4 text-center text-xs text-slate-500">
+                      <td colSpan={7} className="px-2 py-4 text-center text-xs text-slate-500">
                         No dispatch records.
                       </td>
                     </tr>
@@ -2789,9 +3000,10 @@ export default function StoreModule() {
                         <td className="px-2 py-2 font-mono">{d.dispatchNo}</td>
                         <td className="px-2 py-2">{d.customerName}</td>
                         <td className="px-2 py-2 font-mono text-xs">{d.packingNo}</td>
-                        <td className="px-2 py-2 text-xs">{d.awbNo || "—"}</td>
+                        <td className="px-2 py-2 text-xs">{d.transporter || d.courier || "—"}</td>
+                        <td className="px-2 py-2 text-xs">{d.trackingNo || d.awbNo || d.blNo || "—"}</td>
                         <td className="px-2 py-2">
-                          <StatusPill status={d.status} tone={d.status === "POSTED" ? "emerald" : "amber"} />
+                          <StatusPill status={d.status} tone={String(d.status).includes("FULLY") ? "emerald" : String(d.status).includes("PARTIALLY") ? "amber" : "slate"} />
                         </td>
                         <td className="px-2 py-2 text-right">
                           {d.status === "DRAFT" ? (
@@ -2861,6 +3073,36 @@ export default function StoreModule() {
             </button>
           </div>
           <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold">Pending Packing</h3>
+            <div className="max-h-64 overflow-auto text-xs">
+              {(reportPendingPacking?.items || []).map((r) => (
+                <div key={r._id} className="border-b py-1">
+                  {r.allocationNo} · {r.customerName} · pending {r.pendingPackQty}
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="mt-2 rounded border px-2 py-1 text-xs"
+              onClick={() =>
+                downloadCsv(
+                  "pending-packing.csv",
+                  [
+                    { key: "allocationNo", header: "Allocation" },
+                    { key: "linkedOANo", header: "OA" },
+                    { key: "customerName", header: "Customer" },
+                    { key: "allocatedQty", header: "Allocated" },
+                    { key: "alreadyPackedQty", header: "Packed" },
+                    { key: "pendingPackQty", header: "Pending Pack" },
+                  ],
+                  reportPendingPacking?.items || []
+                )
+              }
+            >
+              Export CSV
+            </button>
+          </div>
+          <div className="rounded-2xl border bg-white p-4">
             <h3 className="mb-2 text-sm font-semibold">Packing pending dispatch</h3>
             <div className="max-h-64 overflow-auto text-xs">
               {(reportPackingPending?.items || []).map((r) => (
@@ -2876,6 +3118,46 @@ export default function StoreModule() {
               {(reportDispatchSummary?.items || []).map((r) => (
                 <div key={r.dispatchNo} className="border-b py-1">
                   {r.dispatchNo} · {r.customerName} · {r.courier || "—"}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold">Dispatch by Customer</h3>
+            <div className="max-h-64 overflow-auto text-xs">
+              {(reportDispatchByCustomer?.items || []).map((r) => (
+                <div key={r.customerName} className="border-b py-1">
+                  {r.customerName} · qty {r.dispatchQty} · docs {r.dispatchCount}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold">Dispatch by Article</h3>
+            <div className="max-h-64 overflow-auto text-xs">
+              {(reportDispatchByArticle?.items || []).map((r) => (
+                <div key={r.article} className="border-b py-1">
+                  <span className="font-mono">{r.article}</span> · qty {r.dispatchQty} · lines {r.dispatchCount}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold">Packing Efficiency</h3>
+            <div className="text-3xl font-semibold text-slate-900">
+              {Number(reportPackingEfficiency?.efficiencyPct || 0).toFixed(1)}%
+            </div>
+            <div className="mt-2 text-xs text-slate-600">
+              Allocated {reportPackingEfficiency?.allocatedQty || 0} · Packed {reportPackingEfficiency?.packedQty || 0} · Pending{" "}
+              {reportPackingEfficiency?.pendingQty || 0}
+            </div>
+          </div>
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold">Daily Dispatch Report</h3>
+            <div className="max-h-64 overflow-auto text-xs">
+              {(reportDailyDispatch?.items || []).map((r) => (
+                <div key={r.dispatchDate} className="border-b py-1">
+                  {r.dispatchDate} · qty {r.dispatchQty} · docs {r.dispatchCount}
                 </div>
               ))}
             </div>

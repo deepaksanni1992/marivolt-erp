@@ -17,6 +17,8 @@ const stockBalanceSchema = new mongoose.Schema(
     rtsQty: { type: Number, default: 0 },
     /** Qty physically staged in packages (Store Packing posted), not yet dispatched. */
     packedQty: { type: Number, default: 0, min: 0 },
+    /** Cumulative qty dispatched from packed stock. Physical on-hand is already reduced. */
+    dispatchedQty: { type: Number, default: 0, min: 0 },
     availableQty: { type: Number, default: 0 },
     avgCost: { type: Number, default: 0 },
     unitCost: { type: Number, default: 0 },
