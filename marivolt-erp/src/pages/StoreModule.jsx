@@ -169,6 +169,26 @@ function fmtMoney(n) {
   return x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+const PACKING_PACKAGE_TYPES = ["Carton", "Pallet", "Wooden Box", "Crate", "Bundle"];
+
+function newPackingPackage(index = 1) {
+  return {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    packageNo: `Carton-${index}`,
+    packageType: "Carton",
+    dimensions: "",
+    grossWeightKg: "",
+    netWeightKg: "",
+    packageRemarks: "",
+    marksAndNumbers: "",
+    items: [],
+  };
+}
+
+function packageTypeLabel(v) {
+  return String(v || "").replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
 export default function StoreModule() {
   const qc = useQueryClient();
   const [searchParams] = useSearchParams();
@@ -192,8 +212,7 @@ export default function StoreModule() {
   const grnCsvInputRef = useRef(null);
   const [packAllocInputId, setPackAllocInputId] = useState("");
   const [packAllocQueryId, setPackAllocQueryId] = useState("");
-  const [packLineQty, setPackLineQty] = useState({});
-  const [packLineMeta, setPackLineMeta] = useState({});
+  const [packPackages, setPackPackages] = useState([]);
   const [packingStatusFilter, setPackingStatusFilter] = useState("");
   const [dispatchPackInputId, setDispatchPackInputId] = useState("");
   const [dispatchPackQueryId, setDispatchPackQueryId] = useState("");
@@ -452,26 +471,40 @@ export default function StoreModule() {
   useEffect(() => {
     const lines = packingFromAlloc?.lines;
     if (!lines?.length) {
-      if (!packAllocQueryId) setPackLineQty({});
+      if (!packAllocQueryId) setPackPackages([]);
       return;
     }
-    const next = {};
-    const meta = {};
-    for (const ln of lines) {
-      const id = String(ln.allocationLineId);
-      next[id] = Math.max(0, Number(ln.pendingPack) || 0);
-      meta[id] = {
-        cartonNo: "",
-        palletNo: "",
-        boxRemarks: "",
-        dimensions: "",
-        grossWeightKg: "",
-        netWeightKg: "",
-      };
-    }
-    setPackLineQty(next);
-    setPackLineMeta(meta);
+    setPackPackages([newPackingPackage(1)]);
   }, [packAllocQueryId, packingFromAlloc]);
+
+  const packingPackageStats = useMemo(() => {
+    const byLine = new Map();
+    for (const pkg of packPackages || []) {
+      for (const item of pkg.items || []) {
+        const lineId = String(item.allocationLineId || "");
+        byLine.set(lineId, (byLine.get(lineId) || 0) + (Number(item.qty) || 0));
+      }
+    }
+    const lines = (packingFromAlloc?.lines || []).map((ln) => {
+      const lineId = String(ln.allocationLineId);
+      const inPackages = byLine.get(lineId) || 0;
+      const pending = Number(ln.pendingPack) || 0;
+      return {
+        ...ln,
+        inPackages,
+        balancePack: Math.max(0, pending - inPackages),
+        overPacked: Math.max(0, inPackages - pending),
+      };
+    });
+    return {
+      lines,
+      hasOverPacked: lines.some((ln) => ln.overPacked > 0),
+      totalPackageQty: lines.reduce((sum, ln) => sum + (Number(ln.inPackages) || 0), 0),
+      totalPackages: packPackages.length,
+      totalGrossWeightKg: packPackages.reduce((sum, pkg) => sum + (Number(pkg.grossWeightKg) || 0), 0),
+      totalNetWeightKg: packPackages.reduce((sum, pkg) => sum + (Number(pkg.netWeightKg) || 0), 0),
+    };
+  }, [packPackages, packingFromAlloc]);
 
   const createPackingDraft = useMutation({
     mutationFn: (body) => apiPost("/packing/draft", body),
@@ -2600,102 +2633,216 @@ export default function StoreModule() {
               </div>
             ) : null}
             {packingFromAlloc?.lines?.length ? (
-              <div className="overflow-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-100 text-xs uppercase text-slate-600">
-                    <tr>
-                      <th className="px-2 py-2 text-left">Article</th>
-                      <th className="px-2 py-2 text-left">Description</th>
-                      <th className="px-2 py-2 text-left">Allocated</th>
-                      <th className="px-2 py-2 text-left">Packed</th>
-                      <th className="px-2 py-2 text-left">Pending pack</th>
-                      <th className="px-2 py-2 text-left">Location</th>
-                      <th className="px-2 py-2 text-left">Available</th>
-                      <th className="px-2 py-2 text-left">Pack qty</th>
-                      <th className="px-2 py-2 text-left">Carton/Pallet</th>
-                      <th className="px-2 py-2 text-left">Dims/Wt</th>
-                      <th className="px-2 py-2 text-left">Remarks</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {packingFromAlloc.lines.map((ln) => {
-                      const id = String(ln.allocationLineId);
-                      const meta = packLineMeta[id] || {};
-                      const partial = Number(packLineQty[id] || 0) > 0 && Number(packLineQty[id] || 0) < Number(ln.pendingPack || 0);
-                      return (
-                      <tr key={id} className={`border-t ${partial ? "bg-amber-50" : Number(ln.pendingPack) <= 0 ? "bg-slate-50 text-slate-400" : ""}`}>
-                        <td className="px-2 py-2 font-mono">{ln.article}</td>
-                        <td className="max-w-[220px] truncate px-2 py-2" title={ln.description}>{ln.description || "—"}</td>
-                        <td className="px-2 py-2">{ln.allocatedQty ?? ln.qty}</td>
-                        <td className="px-2 py-2">{ln.alreadyPacked}</td>
-                        <td className="px-2 py-2 font-semibold">{ln.pendingPack}</td>
-                        <td className="px-2 py-2">{ln.location || "MAIN"}</td>
-                        <td className="px-2 py-2">{ln.availableStock ?? "—"}</td>
-                        <td className="px-2 py-2">
+              <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+                <div className="rounded-xl border bg-slate-50 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Pending allocation lines</h4>
+                    <span className="text-xs text-slate-500">Packed in packages: {packingPackageStats.totalPackageQty}</span>
+                  </div>
+                  <div className="overflow-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-white uppercase text-slate-600">
+                        <tr>
+                          <th className="px-2 py-2 text-left">Article</th>
+                          <th className="px-2 py-2 text-left">Description</th>
+                          <th className="px-2 py-2 text-right">Allocated</th>
+                          <th className="px-2 py-2 text-right">Prev Packed</th>
+                          <th className="px-2 py-2 text-right">In Packages</th>
+                          <th className="px-2 py-2 text-right">Balance</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {packingPackageStats.lines.map((ln) => (
+                          <tr
+                            key={String(ln.allocationLineId)}
+                            className={`border-t ${ln.overPacked > 0 ? "bg-rose-50" : ln.balancePack === 0 ? "bg-emerald-50" : ""}`}
+                          >
+                            <td className="px-2 py-2 font-mono">{ln.article}</td>
+                            <td className="max-w-[220px] truncate px-2 py-2" title={ln.description}>{ln.description || "—"}</td>
+                            <td className="px-2 py-2 text-right">{ln.allocatedQty ?? ln.qty}</td>
+                            <td className="px-2 py-2 text-right">{ln.alreadyPacked}</td>
+                            <td className="px-2 py-2 text-right font-semibold">{ln.inPackages}</td>
+                            <td className={`px-2 py-2 text-right font-semibold ${ln.overPacked > 0 ? "text-rose-700" : ""}`}>
+                              {ln.overPacked > 0 ? `Over ${ln.overPacked}` : ln.balancePack}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border bg-white p-3">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Package builder</h4>
+                      <p className="text-xs text-slate-500">
+                        Dimensions and weights are package-level only. Assign articles inside each carton/pallet.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded border bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+                      onClick={() => setPackPackages((prev) => [...prev, newPackingPackage(prev.length + 1)])}
+                    >
+                      Add package
+                    </button>
+                  </div>
+                  <div className="space-y-3">
+                    {packPackages.map((pkg) => (
+                      <div key={pkg.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <div className="grid gap-2 md:grid-cols-5">
                           <input
-                            type="number"
-                            min={0}
-                            max={ln.pendingPack}
-                            className="w-24 rounded border px-2 py-1 text-xs"
-                            value={packLineQty[id] ?? 0}
+                            className="rounded border bg-white px-2 py-1.5 text-xs"
+                            placeholder="Package no"
+                            value={pkg.packageNo}
                             onChange={(e) =>
-                              setPackLineQty((prev) => ({
-                                ...prev,
-                                [id]: Math.max(
-                                  0,
-                                  Math.min(Number(e.target.value) || 0, ln.pendingPack)
-                                ),
-                              }))
+                              setPackPackages((prev) => prev.map((p) => (p.id === pkg.id ? { ...p, packageNo: e.target.value } : p)))
                             }
                           />
-                        </td>
-                        <td className="px-2 py-2">
-                          <input className="mb-1 w-28 rounded border px-1 py-0.5 text-xs" placeholder="Carton" value={meta.cartonNo || ""} onChange={(e) => setPackLineMeta((p) => ({ ...p, [id]: { ...meta, cartonNo: e.target.value } }))} />
-                          <input className="w-28 rounded border px-1 py-0.5 text-xs" placeholder="Pallet" value={meta.palletNo || ""} onChange={(e) => setPackLineMeta((p) => ({ ...p, [id]: { ...meta, palletNo: e.target.value } }))} />
-                        </td>
-                        <td className="px-2 py-2">
-                          <input className="mb-1 w-32 rounded border px-1 py-0.5 text-xs" placeholder="LxWxH" value={meta.dimensions || ""} onChange={(e) => setPackLineMeta((p) => ({ ...p, [id]: { ...meta, dimensions: e.target.value } }))} />
-                          <div className="flex gap-1">
-                            <input className="w-16 rounded border px-1 py-0.5 text-xs" placeholder="Gross" value={meta.grossWeightKg || ""} onChange={(e) => setPackLineMeta((p) => ({ ...p, [id]: { ...meta, grossWeightKg: e.target.value } }))} />
-                            <input className="w-16 rounded border px-1 py-0.5 text-xs" placeholder="Net" value={meta.netWeightKg || ""} onChange={(e) => setPackLineMeta((p) => ({ ...p, [id]: { ...meta, netWeightKg: e.target.value } }))} />
-                          </div>
-                        </td>
-                        <td className="px-2 py-2">
-                          <input className="w-36 rounded border px-1 py-0.5 text-xs" placeholder="Box remarks" value={meta.boxRemarks || ""} onChange={(e) => setPackLineMeta((p) => ({ ...p, [id]: { ...meta, boxRemarks: e.target.value } }))} />
-                        </td>
-                      </tr>
-                    );})}
-                  </tbody>
-                </table>
+                          <select
+                            className="rounded border bg-white px-2 py-1.5 text-xs"
+                            value={pkg.packageType}
+                            onChange={(e) =>
+                              setPackPackages((prev) => prev.map((p) => (p.id === pkg.id ? { ...p, packageType: e.target.value } : p)))
+                            }
+                          >
+                            {PACKING_PACKAGE_TYPES.map((type) => (
+                              <option key={type} value={type}>{type}</option>
+                            ))}
+                          </select>
+                          <input
+                            className="rounded border bg-white px-2 py-1.5 text-xs"
+                            placeholder="Dimensions LxWxH"
+                            value={pkg.dimensions}
+                            onChange={(e) =>
+                              setPackPackages((prev) => prev.map((p) => (p.id === pkg.id ? { ...p, dimensions: e.target.value } : p)))
+                            }
+                          />
+                          <input
+                            className="rounded border bg-white px-2 py-1.5 text-xs"
+                            placeholder="Gross wt"
+                            value={pkg.grossWeightKg}
+                            onChange={(e) =>
+                              setPackPackages((prev) => prev.map((p) => (p.id === pkg.id ? { ...p, grossWeightKg: e.target.value } : p)))
+                            }
+                          />
+                          <input
+                            className="rounded border bg-white px-2 py-1.5 text-xs"
+                            placeholder="Net wt"
+                            value={pkg.netWeightKg}
+                            onChange={(e) =>
+                              setPackPackages((prev) => prev.map((p) => (p.id === pkg.id ? { ...p, netWeightKg: e.target.value } : p)))
+                            }
+                          />
+                        </div>
+                        <div className="mt-2 grid gap-2 md:grid-cols-[1fr_auto]">
+                          <input
+                            className="rounded border bg-white px-2 py-1.5 text-xs"
+                            placeholder="Package remarks / marks & numbers"
+                            value={pkg.packageRemarks}
+                            onChange={(e) =>
+                              setPackPackages((prev) => prev.map((p) => (p.id === pkg.id ? { ...p, packageRemarks: e.target.value, marksAndNumbers: e.target.value } : p)))
+                            }
+                          />
+                          <button
+                            type="button"
+                            className="rounded border px-2 py-1.5 text-xs text-rose-700 hover:bg-rose-50"
+                            onClick={() => setPackPackages((prev) => prev.filter((p) => p.id !== pkg.id))}
+                            disabled={packPackages.length <= 1}
+                          >
+                            Remove package
+                          </button>
+                        </div>
+                        <div className="mt-3 overflow-auto">
+                          <table className="w-full text-xs">
+                            <thead className="bg-white text-slate-600">
+                              <tr>
+                                <th className="px-2 py-1 text-left">Article</th>
+                                <th className="px-2 py-1 text-left">Qty in package</th>
+                                <th className="px-2 py-1 text-left">Balance</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {packingPackageStats.lines.map((ln) => {
+                                const lineId = String(ln.allocationLineId);
+                                const item = (pkg.items || []).find((it) => String(it.allocationLineId) === lineId);
+                                return (
+                                  <tr key={`${pkg.id}-${lineId}`} className="border-t">
+                                    <td className="px-2 py-1 font-mono">{ln.article}</td>
+                                    <td className="px-2 py-1">
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        className="w-24 rounded border bg-white px-2 py-1 text-xs"
+                                        value={item?.qty ?? ""}
+                                        onChange={(e) => {
+                                          const qty = Math.max(0, Number(e.target.value) || 0);
+                                          setPackPackages((prev) =>
+                                            prev.map((p) => {
+                                              if (p.id !== pkg.id) return p;
+                                              const without = (p.items || []).filter((it) => String(it.allocationLineId) !== lineId);
+                                              const nextItem = qty > 0
+                                                ? [{
+                                                    allocationLineId: ln.allocationLineId,
+                                                    article: ln.article,
+                                                    description: ln.description || "",
+                                                    spn: ln.partNumber || "",
+                                                    materialCode: ln.materialCode || "",
+                                                    qty,
+                                                    uom: ln.uom || "PCS",
+                                                  }]
+                                                : [];
+                                              return { ...p, items: [...without, ...nextItem] };
+                                            })
+                                          );
+                                        }}
+                                      />
+                                    </td>
+                                    <td className={`px-2 py-1 ${ln.overPacked > 0 ? "font-semibold text-rose-700" : ""}`}>
+                                      {ln.overPacked > 0 ? `Over ${ln.overPacked}` : ln.balancePack}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3 rounded border bg-slate-50 p-2 text-xs text-slate-700">
+                    Total packages {packingPackageStats.totalPackages} · Gross {packingPackageStats.totalGrossWeightKg} · Net{" "}
+                    {packingPackageStats.totalNetWeightKg}
+                    {packingPackageStats.hasOverPacked ? <span className="ml-2 font-semibold text-rose-700">Over-packed lines must be corrected.</span> : null}
+                  </div>
+                </div>
                 <button
                   type="button"
-                  className="mt-3 rounded border border-emerald-700 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-900 hover:bg-emerald-100 disabled:opacity-50"
-                  disabled={createPackingDraft.isPending || !packingFromAlloc?.allocation}
+                  className="xl:col-span-2 rounded border border-emerald-700 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-900 hover:bg-emerald-100 disabled:opacity-50"
+                  disabled={
+                    createPackingDraft.isPending ||
+                    !packingFromAlloc?.allocation ||
+                    packingPackageStats.hasOverPacked ||
+                    packingPackageStats.totalPackageQty <= 0
+                  }
                   onClick={() => {
-                    const lines = (packingFromAlloc.lines || [])
-                      .map((ln) => {
-                        const id = String(ln.allocationLineId);
-                        const meta = packLineMeta[id] || {};
-                        return {
-                          allocationLineId: ln.allocationLineId,
-                          article: ln.article,
-                          description: ln.description || "",
-                          spn: ln.partNumber || "",
-                          materialCode: ln.materialCode || "",
-                          packQty: Math.min(Number(packLineQty[id]) || 0, Number(ln.pendingPack) || 0),
-                          cartonNo: meta.cartonNo || "",
-                          palletNo: meta.palletNo || "",
-                          boxRemarks: meta.boxRemarks || "",
-                          dimensions: meta.dimensions || "",
-                          grossWeightKg: Number(meta.grossWeightKg) || 0,
-                          netWeightKg: Number(meta.netWeightKg) || 0,
-                          uom: ln.uom || "PCS",
-                        };
-                      })
-                      .filter((x) => x.packQty > 0);
+                    const packages = packPackages
+                      .map((pkg) => ({
+                        packageNo: pkg.packageNo,
+                        packageType: pkg.packageType,
+                        dimensions: pkg.dimensions,
+                        grossWeightKg: Number(pkg.grossWeightKg) || 0,
+                        netWeightKg: Number(pkg.netWeightKg) || 0,
+                        packageRemarks: pkg.packageRemarks,
+                        marksAndNumbers: pkg.marksAndNumbers || pkg.packageRemarks,
+                        items: (pkg.items || []).filter((item) => Number(item.qty) > 0),
+                      }))
+                      .filter((pkg) => pkg.packageNo && pkg.items.length);
                     createPackingDraft.mutate({
                       allocationId: packingFromAlloc.allocation._id,
-                      lines,
+                      packages,
+                      marksAndNumbers: packages.map((pkg) => pkg.marksAndNumbers).filter(Boolean).join(", "),
                     });
                   }}
                 >
@@ -2730,6 +2877,9 @@ export default function StoreModule() {
                     <th className="px-2 py-2 text-left">Packing No</th>
                     <th className="px-2 py-2 text-left">Customer</th>
                     <th className="px-2 py-2 text-left">Allocation</th>
+                    <th className="px-2 py-2 text-right">Packages</th>
+                    <th className="px-2 py-2 text-right">Gross Wt</th>
+                    <th className="px-2 py-2 text-right">Net Wt</th>
                     <th className="px-2 py-2 text-left">Status</th>
                     <th className="px-2 py-2 text-right">Actions</th>
                   </tr>
@@ -2737,7 +2887,7 @@ export default function StoreModule() {
                 <tbody>
                   {(packingList?.items || []).length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="px-2 py-4 text-center text-xs text-slate-500">
+                      <td colSpan={8} className="px-2 py-4 text-center text-xs text-slate-500">
                         No packing records.
                       </td>
                     </tr>
@@ -2747,6 +2897,9 @@ export default function StoreModule() {
                         <td className="px-2 py-2 font-mono">{p.packingNo}</td>
                         <td className="px-2 py-2">{p.customerName}</td>
                         <td className="px-2 py-2 font-mono text-xs">{p.allocationNo}</td>
+                        <td className="px-2 py-2 text-right">{p.totalPackages || (p.packages || []).length || "—"}</td>
+                        <td className="px-2 py-2 text-right">{p.totalGrossWeightKg || "—"}</td>
+                        <td className="px-2 py-2 text-right">{p.totalNetWeightKg || "—"}</td>
                         <td className="px-2 py-2">
                           <StatusPill status={p.status} tone={String(p.status).includes("FULLY") ? "emerald" : String(p.status).includes("PARTIALLY") ? "amber" : "slate"} />
                         </td>
@@ -2756,22 +2909,49 @@ export default function StoreModule() {
                               type="button"
                               className="rounded border px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
                               onClick={() =>
-                                downloadPdfTable(
-                                  `Packing List ${p.packingNo}`,
-                                  `${p.customerName || ""} | Allocation ${p.allocationNo || ""}`,
-                                  [
-                                    { key: "article", header: "Article" },
-                                    { key: "description", header: "Description" },
-                                    { key: "packQty", header: "Pack Qty" },
-                                    { key: "cartonNo", header: "Carton" },
-                                    { key: "palletNo", header: "Pallet" },
-                                    { key: "dimensions", header: "Dimensions" },
-                                    { key: "grossWeightKg", header: "Gross Kg" },
-                                    { key: "netWeightKg", header: "Net Kg" },
-                                  ],
-                                  p.lines || [],
-                                  p.packingNo || "packing-list"
-                                )
+                                {
+                                  const packages = (p.packages || []).length
+                                    ? p.packages
+                                    : [{ packageNo: "Legacy package", packageType: "Carton", dimensions: "", grossWeightKg: "", netWeightKg: "", items: p.lines || [] }];
+                                  const rows = packages.flatMap((pkg) => [
+                                    {
+                                      packageNo: pkg.packageNo,
+                                      packageType: packageTypeLabel(pkg.packageType),
+                                      dimensions: pkg.dimensions || "",
+                                      grossWeightKg: pkg.grossWeightKg || "",
+                                      netWeightKg: pkg.netWeightKg || "",
+                                      article: "Package",
+                                      description: pkg.packageRemarks || pkg.marksAndNumbers || "",
+                                      qty: "",
+                                    },
+                                    ...(pkg.items || []).map((item) => ({
+                                      packageNo: pkg.packageNo,
+                                      packageType: "",
+                                      dimensions: "",
+                                      grossWeightKg: "",
+                                      netWeightKg: "",
+                                      article: item.article,
+                                      description: item.description || "",
+                                      qty: item.qty ?? item.packQty ?? 0,
+                                    })),
+                                  ]);
+                                  downloadPdfTable(
+                                    `Packing List ${p.packingNo}`,
+                                    `${p.customerName || ""} | Allocation ${p.allocationNo || ""} | Packages ${p.totalPackages || packages.length} | Gross ${p.totalGrossWeightKg || 0} | Net ${p.totalNetWeightKg || 0}`,
+                                    [
+                                      { key: "packageNo", header: "Package" },
+                                      { key: "packageType", header: "Type" },
+                                      { key: "dimensions", header: "Dimensions" },
+                                      { key: "grossWeightKg", header: "Gross Kg" },
+                                      { key: "netWeightKg", header: "Net Kg" },
+                                      { key: "article", header: "Article" },
+                                      { key: "description", header: "Description / Marks" },
+                                      { key: "qty", header: "Qty" },
+                                    ],
+                                    rows,
+                                    p.packingNo || "packing-list"
+                                  );
+                                }
                               }
                             >
                               PDF

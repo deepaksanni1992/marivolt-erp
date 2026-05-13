@@ -16,9 +16,15 @@ function t(v) {
 
 const POSTED_PACKING_STATUSES = ["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED"];
 const POSTED_DISPATCH_STATUSES = ["POSTED", "PARTIALLY_DISPATCHED", "FULLY_DISPATCHED"];
+const PACKAGE_TYPES = new Set(["CARTON", "PALLET", "WOODEN_BOX", "CRATE", "BUNDLE"]);
 
 function companyCode(v) {
   return String(v || "CMP").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3) || "CMP";
+}
+
+function normalizePackageType(v) {
+  const raw = t(v || "CARTON").toUpperCase().replace(/[\s-]+/g, "_");
+  return PACKAGE_TYPES.has(raw) ? raw : "CARTON";
 }
 
 async function nextStoreDocNo(companyId, companyCodeRaw, kind) {
@@ -82,9 +88,9 @@ async function sumPostedDispatchQtyByPackingLine(companyId, packingId) {
   return map;
 }
 
-function normalizePackingLines(bodyLines = [], allocation) {
+function normalizePackageItems(bodyItems = [], allocation) {
   const allocLines = allocation.lines || [];
-  return (bodyLines || [])
+  return (bodyItems || [])
     .map((ln) => {
       const allocationLineId = mongoose.Types.ObjectId.isValid(String(ln.allocationLineId || ""))
         ? new mongoose.Types.ObjectId(String(ln.allocationLineId))
@@ -98,21 +104,85 @@ function normalizePackingLines(bodyLines = [], allocation) {
         spn: t(ln.spn || ln.partNumber || match?.partNumber || ""),
         materialCode: t(ln.materialCode || match?.materialCode || ""),
         allocatedQty: Number(match?.qty) || 0,
-        packQty: Math.max(0, Number(ln.packQty) || 0),
+        qty: Math.max(0, Number(ln.qty ?? ln.packQty) || 0),
         uom: t(ln.uom || match?.uom || "PCS") || "PCS",
-        cartonNo: t(ln.cartonNo),
-        palletNo: t(ln.palletNo),
-        packageNo: t(ln.packageNo),
-        boxNo: t(ln.boxNo),
-        boxRemarks: t(ln.boxRemarks),
-        dimensions: t(ln.dimensions),
-        grossWeightKg: Number(ln.grossWeightKg) || 0,
-        netWeightKg: Number(ln.netWeightKg) || 0,
-        volumeM3: Number(ln.volumeM3) || 0,
         remarks: t(ln.remarks),
       };
     })
-    .filter((ln) => ln.article && ln.packQty > 0 && ln.allocationLineId);
+    .filter((ln) => ln.article && ln.qty > 0 && ln.allocationLineId);
+}
+
+function normalizePackingPackages(bodyPackages = [], allocation) {
+  return (bodyPackages || [])
+    .map((pkg, idx) => {
+      const items = normalizePackageItems(pkg.items || [], allocation);
+      return {
+        packageNo: t(pkg.packageNo) || `Carton-${idx + 1}`,
+        packageType: normalizePackageType(pkg.packageType),
+        dimensions: t(pkg.dimensions),
+        grossWeightKg: Math.max(0, Number(pkg.grossWeightKg) || 0),
+        netWeightKg: Math.max(0, Number(pkg.netWeightKg) || 0),
+        packageRemarks: t(pkg.packageRemarks || pkg.remarks),
+        marksAndNumbers: t(pkg.marksAndNumbers),
+        barcode: t(pkg.barcode),
+        qrCode: t(pkg.qrCode),
+        items,
+      };
+    })
+    .filter((pkg) => pkg.packageNo && pkg.items.length);
+}
+
+function legacyLinesToPackages(bodyLines = [], allocation) {
+  const items = normalizePackageItems(bodyLines, allocation);
+  if (!items.length) return [];
+  return [
+    {
+      packageNo: "Carton-1",
+      packageType: "CARTON",
+      dimensions: "",
+      grossWeightKg: 0,
+      netWeightKg: 0,
+      packageRemarks: "",
+      marksAndNumbers: "",
+      barcode: "",
+      qrCode: "",
+      items,
+    },
+  ];
+}
+
+function aggregatePackingLines(packages = [], allocation) {
+  const allocLines = allocation.lines || [];
+  const map = new Map();
+  for (const pkg of packages || []) {
+    for (const item of pkg.items || []) {
+      const lineId = String(item.allocationLineId || "");
+      const match = allocLines.find((x) => String(x._id) === lineId);
+      if (!match) continue;
+      const prev = map.get(lineId) || {
+        allocationLineId: item.allocationLineId,
+        article: String(item.article || match.article || "").trim().toUpperCase(),
+        description: t(item.description || match.description || ""),
+        spn: t(item.spn || match.partNumber || ""),
+        materialCode: t(item.materialCode || match.materialCode || ""),
+        allocatedQty: Number(match.qty) || 0,
+        packQty: 0,
+        uom: t(item.uom || match.uom || "PCS") || "PCS",
+        remarks: "",
+      };
+      prev.packQty += Number(item.qty) || 0;
+      map.set(lineId, prev);
+    }
+  }
+  return Array.from(map.values()).filter((ln) => ln.article && ln.packQty > 0 && ln.allocationLineId);
+}
+
+function packageTotals(packages = []) {
+  return {
+    totalPackages: packages.length,
+    totalGrossWeightKg: packages.reduce((sum, pkg) => sum + (Number(pkg.grossWeightKg) || 0), 0),
+    totalNetWeightKg: packages.reduce((sum, pkg) => sum + (Number(pkg.netWeightKg) || 0), 0),
+  };
 }
 
 export async function listStorePacking(req, res) {
@@ -242,8 +312,20 @@ export async function createStorePackingDraft(req, res) {
       return res.status(400).json({ message: "Cannot pack a cancelled allocation" });
     }
     const packingNo = t(req.body.packingNo) || (await nextPackingNo(req.companyId, req.companyCode));
-    const lines = normalizePackingLines(req.body.lines || [], allocation);
+    const packages = normalizePackingPackages(req.body.packages || [], allocation);
+    const normalizedPackages = packages.length ? packages : legacyLinesToPackages(req.body.lines || [], allocation);
+    const lines = aggregatePackingLines(normalizedPackages, allocation);
     if (!lines.length) return res.status(400).json({ message: "At least one packing line required" });
+    const packedByLine = await sumPostedPackQtyByLine(req.companyId, allocation._id);
+    for (const ln of lines) {
+      const allocLine = (allocation.lines || []).find((x) => String(x._id) === String(ln.allocationLineId));
+      const maxQty = Number(allocLine?.qty) || 0;
+      const already = packedByLine.get(String(ln.allocationLineId)) || 0;
+      if (already + (Number(ln.packQty) || 0) > maxQty) {
+        return res.status(400).json({ message: `Pack qty exceeds pending for ${ln.article} (max ${Math.max(0, maxQty - already)})` });
+      }
+    }
+    const totals = packageTotals(normalizedPackages);
     const doc = await StorePacking.create({
       companyId: req.companyId,
       branchId: req.body.branchId || null,
@@ -261,6 +343,9 @@ export async function createStorePackingDraft(req, res) {
       model: allocation.model || "",
       esn: allocation.esn || "",
       currency: String(allocation.currency || "USD").toUpperCase(),
+      ...totals,
+      marksAndNumbers: t(req.body.marksAndNumbers),
+      packages: normalizedPackages,
       lines,
       attachments: Array.isArray(req.body.attachments) ? req.body.attachments : [],
       remarks: t(req.body.remarks),
@@ -296,6 +381,12 @@ export async function postStorePacking(req, res) {
 
       const packedByLine = await sumPostedPackQtyByLine(req.companyId, allocation._id);
       const wh = String(doc.warehouse || allocation.warehouse || "MAIN").toUpperCase();
+      if (doc.packages?.length) {
+        const totals = packageTotals(doc.packages);
+        doc.totalPackages = totals.totalPackages;
+        doc.totalGrossWeightKg = totals.totalGrossWeightKg;
+        doc.totalNetWeightKg = totals.totalNetWeightKg;
+      }
 
       for (const ln of doc.lines || []) {
         const lineId = String(ln.allocationLineId || "");

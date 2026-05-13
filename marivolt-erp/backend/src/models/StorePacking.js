@@ -20,16 +20,42 @@ const storePackingLineSchema = new mongoose.Schema(
     allocatedQty: { type: Number, default: 0, min: 0 },
     packQty: { type: Number, required: true, min: 0 },
     uom: { type: String, default: "PCS", trim: true },
-    cartonNo: { type: String, default: "", trim: true },
-    palletNo: { type: String, default: "", trim: true },
-    packageNo: { type: String, default: "", trim: true },
-    boxNo: { type: String, default: "", trim: true },
-    boxRemarks: { type: String, default: "", trim: true },
+    remarks: { type: String, default: "", trim: true },
+  },
+  { _id: true }
+);
+
+const packageItemSchema = new mongoose.Schema(
+  {
+    allocationLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    article: { type: String, required: true, trim: true, uppercase: true },
+    description: { type: String, default: "" },
+    spn: { type: String, default: "", trim: true },
+    materialCode: { type: String, default: "", trim: true },
+    qty: { type: Number, required: true, min: 0 },
+    uom: { type: String, default: "PCS", trim: true },
+    remarks: { type: String, default: "", trim: true },
+  },
+  { _id: true }
+);
+
+const packingPackageSchema = new mongoose.Schema(
+  {
+    packageNo: { type: String, required: true, trim: true },
+    packageType: {
+      type: String,
+      enum: ["CARTON", "PALLET", "WOODEN_BOX", "CRATE", "BUNDLE"],
+      default: "CARTON",
+      trim: true,
+    },
     dimensions: { type: String, default: "", trim: true },
     grossWeightKg: { type: Number, default: 0, min: 0 },
     netWeightKg: { type: Number, default: 0, min: 0 },
-    volumeM3: { type: Number, default: 0, min: 0 },
-    remarks: { type: String, default: "", trim: true },
+    packageRemarks: { type: String, default: "", trim: true },
+    marksAndNumbers: { type: String, default: "", trim: true },
+    barcode: { type: String, default: "", trim: true },
+    qrCode: { type: String, default: "", trim: true },
+    items: { type: [packageItemSchema], default: [] },
   },
   { _id: true }
 );
@@ -52,6 +78,11 @@ const storePackingSchema = new mongoose.Schema(
     model: { type: String, default: "", trim: true },
     esn: { type: String, default: "", trim: true },
     currency: { type: String, default: "USD", trim: true, uppercase: true },
+    totalPackages: { type: Number, default: 0, min: 0 },
+    totalGrossWeightKg: { type: Number, default: 0, min: 0 },
+    totalNetWeightKg: { type: Number, default: 0, min: 0 },
+    marksAndNumbers: { type: String, default: "", trim: true },
+    packages: { type: [packingPackageSchema], default: [] },
     lines: { type: [storePackingLineSchema], default: [] },
     attachments: { type: [packingAttachmentSchema], default: [] },
     remarks: { type: String, default: "", trim: true },
