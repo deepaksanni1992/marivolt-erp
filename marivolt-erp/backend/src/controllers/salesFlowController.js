@@ -4,6 +4,8 @@ import OrderAcknowledgement from "../models/OrderAcknowledgement.js";
 import ProformaInvoice from "../models/ProformaInvoice.js";
 import SalesInvoice from "../models/SalesInvoice.js";
 import SalesDispatch from "../models/SalesDispatch.js";
+import StorePacking from "../models/StorePacking.js";
+import StoreDispatch from "../models/StoreDispatch.js";
 import Cipl from "../models/Cipl.js";
 import OrderAllocation from "../models/OrderAllocation.js";
 import Rts from "../models/Rts.js";
@@ -31,6 +33,10 @@ import {
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 
 const { withTransaction } = stockService;
+
+function t(v) {
+  return String(v ?? "").trim();
+}
 
 /**
  * Phase-4 helpers — wrap the per-line stockService calls used by the
@@ -122,6 +128,12 @@ function normalizeLines(lines = []) {
     const totalPrice = qty * price;
     return {
       serialNo,
+      packingLineId: mongoose.Types.ObjectId.isValid(String(line.packingLineId || ""))
+        ? new mongoose.Types.ObjectId(String(line.packingLineId))
+        : null,
+      allocationLineId: mongoose.Types.ObjectId.isValid(String(line.allocationLineId || ""))
+        ? new mongoose.Types.ObjectId(String(line.allocationLineId))
+        : null,
       article: String(line.article || line.itemCode || "").trim().toUpperCase(),
       partNumber: String(line.partNumber || line.partNo || "").trim(),
       description: String(line.description || ""),
@@ -155,6 +167,71 @@ function computeTotals(lines = [], source = {}) {
     packingCost,
     clearanceCost,
     grandTotal: subTotal - effectiveDiscount + taxTotal + packingCost + clearanceCost,
+  };
+}
+
+const POSTED_STORE_PACKING_STATUSES = ["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED"];
+const POSTED_STORE_DISPATCH_STATUSES = ["POSTED", "PARTIALLY_DISPATCHED", "FULLY_DISPATCHED"];
+
+async function invoicedQtyByPackingLine(companyId, packingId, session = null) {
+  const q = SalesInvoice.find({
+    companyId,
+    linkedStorePackingId: packingId,
+    status: { $ne: "CANCELLED" },
+  }).select("lines");
+  if (session) q.session(session);
+  const invoices = await q.lean();
+  const map = new Map();
+  for (const inv of invoices) {
+    for (const line of inv.lines || []) {
+      if (!line.packingLineId) continue;
+      const key = String(line.packingLineId);
+      map.set(key, (map.get(key) || 0) + (Number(line.qty) || 0));
+    }
+  }
+  return map;
+}
+
+async function recalcPackingInvoiceStatus({ companyId, packingId, session = null }) {
+  const q = StorePacking.findOne({ companyId, _id: packingId });
+  if (session) q.session(session);
+  const packing = await q;
+  if (!packing) return null;
+  const invoicedByLine = await invoicedQtyByPackingLine(companyId, packing._id, session);
+  const packedQty = (packing.lines || []).reduce((sum, line) => sum + (Number(line.packQty) || 0), 0);
+  const invoicedQty = (packing.lines || []).reduce((sum, line) => sum + (invoicedByLine.get(String(line._id)) || 0), 0);
+  const invoiceQuery = SalesInvoice.find({
+    companyId,
+    linkedStorePackingId: packing._id,
+    status: { $ne: "CANCELLED" },
+  }).select("_id invoiceNo invoiceDate");
+  if (session) invoiceQuery.session(session);
+  const invoices = await invoiceQuery.sort({ invoiceDate: 1 }).lean();
+  packing.invoiceStatus =
+    invoicedQty <= 0 ? "NOT_INVOICED" : invoicedQty >= packedQty - 1e-6 ? "FULLY_INVOICED" : "PARTIALLY_INVOICED";
+  packing.linkedSalesInvoiceIds = invoices.map((inv) => inv._id);
+  packing.linkedSalesInvoiceNos = invoices.map((inv) => inv.invoiceNo).filter(Boolean);
+  packing.lastInvoicedAt = invoices.length ? invoices[invoices.length - 1].invoiceDate || new Date() : null;
+  await packing.save({ session });
+  return packing;
+}
+
+function packedInvoiceLineFromPackingLine(packingLine, allocationLine, pendingQty) {
+  const qty = Math.max(0, Number(pendingQty) || 0);
+  const price = Number(allocationLine?.price ?? allocationLine?.salePrice ?? 0) || 0;
+  return {
+    packingLineId: packingLine._id,
+    allocationLineId: packingLine.allocationLineId || allocationLine?._id || null,
+    article: packingLine.article,
+    partNumber: packingLine.spn || allocationLine?.partNumber || "",
+    description: packingLine.description || allocationLine?.description || packingLine.article || "",
+    uom: packingLine.uom || allocationLine?.uom || "PCS",
+    qty,
+    price,
+    totalPrice: qty * price,
+    remarks: packingLine.remarks || "",
+    materialCode: packingLine.materialCode || allocationLine?.materialCode || "",
+    availability: allocationLine?.availability || "",
   };
 }
 
@@ -2026,6 +2103,206 @@ export async function createSalesInvoice(req, res) {
   }
 }
 
+export async function listPackingsReadyForInvoice(req, res) {
+  try {
+    const q = String(req.query.search || "").trim();
+    const filter = withCompany(req, {
+      status: { $in: POSTED_STORE_PACKING_STATUSES },
+      invoiceStatus: { $ne: "FULLY_INVOICED" },
+    });
+    if (q) {
+      const re = new RegExp(q, "i");
+      filter.$or = [{ packingNo: re }, { customerName: re }, { allocationNo: re }, { linkedOANo: re }, { linkedProformaNo: re }];
+    }
+    const rows = await StorePacking.find(filter).sort({ packingDate: -1 }).limit(200).lean();
+    const items = [];
+    for (const packing of rows) {
+      const invoicedByLine = await invoicedQtyByPackingLine(req.companyId, packing._id);
+      let packedQty = 0;
+      let invoicedQty = 0;
+      for (const line of packing.lines || []) {
+        packedQty += Number(line.packQty) || 0;
+        invoicedQty += invoicedByLine.get(String(line._id)) || 0;
+      }
+      const pendingInvoiceQty = Math.max(0, packedQty - invoicedQty);
+      if (pendingInvoiceQty <= 0) continue;
+      items.push({
+        _id: packing._id,
+        packingNo: packing.packingNo,
+        customerName: packing.customerName,
+        allocationNo: packing.allocationNo,
+        linkedOANo: packing.linkedOANo || "",
+        linkedProformaNo: packing.linkedProformaNo || "",
+        warehouse: packing.warehouse || "MAIN",
+        status: packing.status,
+        invoiceStatus: packing.invoiceStatus || "NOT_INVOICED",
+        packedQty,
+        invoicedQty,
+        pendingInvoiceQty,
+        totalPackages: packing.totalPackages || (packing.packages || []).length,
+      });
+    }
+    res.json({ items, total: items.length });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getPackingInvoicePreview(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid packing id" });
+    const packing = await StorePacking.findOne(withCompany(req, { _id: id })).lean();
+    if (!packing) return res.status(404).json({ message: "Packing not found" });
+    if (!POSTED_STORE_PACKING_STATUSES.includes(String(packing.status || "").toUpperCase())) {
+      return res.status(400).json({ message: "Cannot invoice without posted packing" });
+    }
+    const allocation = await OrderAllocation.findOne(withCompany(req, { _id: packing.allocationId })).lean();
+    const invoicedByLine = await invoicedQtyByPackingLine(req.companyId, packing._id);
+    const lines = (packing.lines || []).map((line) => {
+      const allocationLine = (allocation?.lines || []).find((x) => String(x._id) === String(line.allocationLineId));
+      const packedQty = Number(line.packQty) || 0;
+      const invoicedQty = invoicedByLine.get(String(line._id)) || 0;
+      const pendingInvoiceQty = Math.max(0, packedQty - invoicedQty);
+      return {
+        ...packedInvoiceLineFromPackingLine(line, allocationLine, pendingInvoiceQty),
+        packedQty,
+        invoicedQty,
+        pendingInvoiceQty,
+      };
+    });
+    res.json({ packing, allocation, lines, packages: packing.packages || [] });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function convertPackingToSalesInvoice(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid packing id" });
+    const packingPre = await StorePacking.findOne(withCompany(req, { _id: id })).lean();
+    if (!packingPre) return res.status(404).json({ message: "Packing not found" });
+    if (String(packingPre.status || "").toUpperCase() === "CANCELLED") {
+      return res.status(400).json({ message: "Cannot invoice cancelled packing" });
+    }
+    if (!POSTED_STORE_PACKING_STATUSES.includes(String(packingPre.status || "").toUpperCase())) {
+      return res.status(400).json({ message: "Cannot invoice without posted packing" });
+    }
+    const allocationPre = await OrderAllocation.findOne(withCompany(req, { _id: packingPre.allocationId })).lean();
+    if (!allocationPre) return res.status(404).json({ message: "Linked allocation not found" });
+    const invoicedByLinePre = await invoicedQtyByPackingLine(req.companyId, packingPre._id);
+    const requestedQtyByLine = new Map(
+      (req.body?.lines || [])
+        .map((line) => [String(line.packingLineId || ""), Number(line.qty) || 0])
+        .filter(([lineId, qty]) => lineId && qty > 0)
+    );
+    const rawLines = [];
+    for (const packingLine of packingPre.lines || []) {
+      const allocationLine = (allocationPre.lines || []).find((x) => String(x._id) === String(packingLine.allocationLineId));
+      const packedQty = Number(packingLine.packQty) || 0;
+      const invoicedQty = invoicedByLinePre.get(String(packingLine._id)) || 0;
+      const pendingQty = Math.max(0, packedQty - invoicedQty);
+      const requestedQty = requestedQtyByLine.size ? Math.min(requestedQtyByLine.get(String(packingLine._id)) || 0, pendingQty) : pendingQty;
+      if (requestedQty > 0) rawLines.push(packedInvoiceLineFromPackingLine(packingLine, allocationLine, requestedQty));
+    }
+    const lines = normalizeLines(rawLines);
+    if (!lines.length) return res.status(400).json({ message: "Nothing pending to invoice for this packing" });
+    const totals = computeTotals(lines, allocationPre);
+    const gate = await ensureApproval(req, {
+      companyId: req.companyId,
+      module: "SALES",
+      actionKey: "invoice_post",
+      documentType: "SALES_INVOICE",
+      documentNo: "",
+      customerName: packingPre.customerName || "",
+      amount: totals.grandTotal || 0,
+      currency: packingPre.currency || "USD",
+      description: `Post sales invoice from packing ${packingPre.packingNo}`,
+    });
+    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
+    const invoiceNo = await nextSalesDocNumber({
+      companyId: req.companyId,
+      companyCode: req.companyCode,
+      docKey: "SALES_INVOICE",
+    });
+
+    let createdId = null;
+    await withTransaction(async (session) => {
+      const packing = await StorePacking.findOne(withCompany(req, { _id: id })).session(session);
+      if (!packing) throw new Error("Packing not found");
+      if (String(packing.status || "").toUpperCase() === "CANCELLED") throw new Error("Cannot invoice cancelled packing");
+      if (!POSTED_STORE_PACKING_STATUSES.includes(String(packing.status || "").toUpperCase())) {
+        throw new Error("Cannot invoice without posted packing");
+      }
+      const allocation = await OrderAllocation.findOne(withCompany(req, { _id: packing.allocationId })).session(session);
+      if (!allocation) throw new Error("Linked allocation not found");
+      const invoicedByLine = await invoicedQtyByPackingLine(req.companyId, packing._id, session);
+      for (const line of lines) {
+        const packingLine = (packing.lines || []).find((x) => String(x._id) === String(line.packingLineId));
+        const packedQty = Number(packingLine?.packQty) || 0;
+        const invoicedQty = invoicedByLine.get(String(line.packingLineId)) || 0;
+        if (invoicedQty + (Number(line.qty) || 0) > packedQty + 1e-6) {
+          throw new Error(`Invoice qty exceeds packed pending invoice qty for ${line.article}`);
+        }
+      }
+      const [doc] = await SalesInvoice.create(
+        [
+          {
+            companyId: req.companyId,
+            invoiceNo,
+            invoiceDate: req.body?.invoiceDate || new Date(),
+            linkedQuotationId: allocation.linkedQuotationId || null,
+            linkedQuotationNo: allocation.linkedQuotationNo || "",
+            linkedOAId: allocation.linkedOAId || null,
+            linkedOANo: allocation.linkedOANo || "",
+            linkedProformaId: allocation.linkedProformaId || null,
+            linkedProformaNo: allocation.linkedProformaNo || "",
+            linkedOrderAllocationId: allocation._id,
+            linkedOrderAllocationNo: allocation.allocationNo,
+            linkedStorePackingId: packing._id,
+            linkedStorePackingNo: packing.packingNo,
+            customerName: packing.customerName,
+            paymentTerms: req.body?.paymentTerms || "",
+            dispatchDetails: "",
+            shippingAddress: req.body?.shippingAddress || "",
+            billingAddress: req.body?.billingAddress || "",
+            currency: packing.currency || allocation.currency || "USD",
+            vertical: allocation.vertical || "",
+            engine: packing.engine || allocation.engine || "",
+            model: packing.model || allocation.model || "",
+            config: allocation.config || "",
+            esn: packing.esn || allocation.esn || "",
+            remarks: t(req.body?.remarks),
+            lines,
+            ...totals,
+            status: "ISSUED",
+            stockPostedAt: null,
+            createdBy: req.user?.email || "",
+          },
+        ],
+        { session }
+      );
+      createdId = doc._id;
+      await postSalesInvoiceReceivable({ req, invoice: doc, session });
+      await recalcPackingInvoiceStatus({ companyId: req.companyId, packingId: packing._id, session });
+    });
+    const doc = await SalesInvoice.findOne(withCompany(req, { _id: createdId })).lean();
+    await writeAudit(req, {
+      action: "CREATE",
+      module: "SALES",
+      entityType: "SALES_INVOICE",
+      entityId: doc._id,
+      documentNo: doc.invoiceNo,
+      toStatus: "ISSUED",
+      description: `Sales Invoice ${doc.invoiceNo} created from packing ${doc.linkedStorePackingNo}`,
+    });
+    res.status(201).json(doc);
+  } catch (err) {
+    res.status(400).json({ message: err.message || String(err) });
+  }
+}
+
 export async function updateSalesInvoice(req, res) {
   try {
     const { id } = req.params;
@@ -2151,6 +2428,14 @@ export async function cancelSalesInvoice(req, res) {
         { receivedAmount, invoiceNo: inv.invoiceNo }
       );
     }
+    if (inv.linkedStorePackingId) {
+      const postedDispatch = await StoreDispatch.findOne(
+        withCompany(req, { salesInvoiceId: inv._id, status: { $in: POSTED_STORE_DISPATCH_STATUSES } })
+      ).lean();
+      if (postedDispatch) {
+        return res.status(400).json({ message: "Cannot cancel invoice after dispatch. Cancel dispatch first." });
+      }
+    }
     assertTransition(DOC_TYPES.SALES_INVOICE, prevInvStatus, "CANCELLED", { documentNo: inv.invoiceNo });
     let warehouse = "MAIN";
     let allocation = null;
@@ -2220,7 +2505,10 @@ export async function cancelSalesInvoice(req, res) {
           { session }
         );
       }
-      if (allocation) {
+      if (inv.linkedStorePackingId) {
+        await recalcPackingInvoiceStatus({ companyId: req.companyId, packingId: inv.linkedStorePackingId, session });
+      }
+      if (allocation && (inv.linkedRtsId || inv.stockPostedAt)) {
         allocation.linkedSalesInvoiceId = null;
         allocation.linkedSalesInvoiceNo = "";
         const postedDocs = await postedRtsByAllocation(req, allocation._id, session);

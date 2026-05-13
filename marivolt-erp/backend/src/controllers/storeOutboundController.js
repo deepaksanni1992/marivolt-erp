@@ -88,6 +88,44 @@ async function sumPostedDispatchQtyByPackingLine(companyId, packingId) {
   return map;
 }
 
+async function sumPostedDispatchQtyByInvoiceLine(companyId, salesInvoiceId) {
+  const rows = await StoreDispatch.find({
+    companyId,
+    salesInvoiceId,
+    status: { $in: POSTED_DISPATCH_STATUSES },
+  })
+    .select("lines")
+    .lean();
+  const map = new Map();
+  for (const d of rows) {
+    for (const ln of d.lines || []) {
+      if (!ln.invoiceLineId) continue;
+      const k = String(ln.invoiceLineId);
+      map.set(k, (map.get(k) || 0) + (Number(ln.dispatchQty) || 0));
+    }
+  }
+  return map;
+}
+
+async function sumInvoicedQtyByPackingLine(companyId, packingId) {
+  const invoices = await SalesInvoice.find({
+    companyId,
+    linkedStorePackingId: packingId,
+    status: { $ne: "CANCELLED" },
+  })
+    .select("lines")
+    .lean();
+  const map = new Map();
+  for (const inv of invoices) {
+    for (const ln of inv.lines || []) {
+      if (!ln.packingLineId) continue;
+      const k = String(ln.packingLineId);
+      map.set(k, (map.get(k) || 0) + (Number(ln.qty) || 0));
+    }
+  }
+  return map;
+}
+
 function normalizePackageItems(bodyItems = [], allocation) {
   const allocLines = allocation.lines || [];
   return (bodyItems || [])
@@ -457,6 +495,15 @@ export async function cancelStorePacking(req, res) {
         return;
       }
       if (!POSTED_PACKING_STATUSES.includes(doc.status)) throw new Error("Cannot cancel this packing");
+      const invoiced = await SalesInvoice.findOne({
+        companyId: req.companyId,
+        linkedStorePackingId: doc._id,
+        status: { $ne: "CANCELLED" },
+      })
+        .session(session)
+        .select("_id invoiceNo")
+        .lean();
+      if (invoiced) throw new Error(`Cannot cancel packing: sales invoice ${invoiced.invoiceNo} exists`);
 
       const dispatched = await StoreDispatch.findOne({
         companyId: req.companyId,
@@ -494,6 +541,24 @@ export async function cancelStorePacking(req, res) {
       doc.cancellationReason = t(req.body?.reason);
       doc.updatedBy = req.user?.email || "";
       await doc.save({ session });
+      if (doc.salesInvoiceId) {
+        const remainingDispatch = await StoreDispatch.findOne({
+          companyId: req.companyId,
+          salesInvoiceId: doc.salesInvoiceId,
+          _id: { $ne: doc._id },
+          status: { $in: POSTED_DISPATCH_STATUSES },
+        }).session(session);
+        await SalesInvoice.findOneAndUpdate(
+          withCompany(req, { _id: doc.salesInvoiceId }),
+          {
+            status: "ISSUED",
+            linkedSalesDispatchId: remainingDispatch?._id || null,
+            linkedSalesDispatchNo: remainingDispatch?.dispatchNo || "",
+            updatedBy: req.user?.email || "",
+          },
+          { session }
+        );
+      }
       await writeAudit(req, {
         action: "CANCEL",
         module: "STORE",
@@ -546,33 +611,53 @@ export async function getStoreDispatch(req, res) {
 
 export async function listPendingDispatchPackings(req, res) {
   try {
+    return listPendingDispatchInvoices(req, res);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function listPendingDispatchInvoices(req, res) {
+  try {
     const q = t(req.query.search);
-    const filter = withCompany(req, { status: { $in: POSTED_PACKING_STATUSES } });
+    const filter = withCompany(req, {
+      status: { $nin: ["DRAFT", "CANCELLED"] },
+      linkedStorePackingId: { $ne: null },
+    });
     if (q) {
       const re = new RegExp(q, "i");
-      filter.$or = [{ packingNo: re }, { customerName: re }, { allocationNo: re }];
+      filter.$or = [
+        { invoiceNo: re },
+        { customerName: re },
+        { linkedStorePackingNo: re },
+        { linkedOrderAllocationNo: re },
+        { linkedOANo: re },
+        { linkedProformaNo: re },
+      ];
     }
-    const packings = await StorePacking.find(filter).sort({ packingDate: -1 }).limit(200).lean();
+    const invoices = await SalesInvoice.find(filter).sort({ invoiceDate: -1 }).limit(200).lean();
     const items = [];
-    for (const packing of packings) {
-      const dispatchedByLine = await sumPostedDispatchQtyByPackingLine(req.companyId, packing._id);
-      let packedQty = 0;
+    for (const invoice of invoices) {
+      const dispatchedByLine = await sumPostedDispatchQtyByInvoiceLine(req.companyId, invoice._id);
+      let invoiceQty = 0;
       let dispatchedQty = 0;
-      for (const ln of packing.lines || []) {
-        packedQty += Number(ln.packQty) || 0;
+      for (const ln of invoice.lines || []) {
+        invoiceQty += Number(ln.qty) || 0;
         dispatchedQty += dispatchedByLine.get(String(ln._id)) || 0;
       }
-      const pendingDispatchQty = Math.max(0, packedQty - dispatchedQty);
+      const pendingDispatchQty = Math.max(0, invoiceQty - dispatchedQty);
       if (pendingDispatchQty <= 0) continue;
       items.push({
-        _id: packing._id,
-        packingNo: packing.packingNo,
-        allocationNo: packing.allocationNo,
-        linkedOANo: packing.linkedOANo || "",
-        customerName: packing.customerName,
-        status: packing.status,
-        warehouse: packing.warehouse || "MAIN",
-        packedQty,
+        _id: invoice._id,
+        invoiceNo: invoice.invoiceNo,
+        packingNo: invoice.linkedStorePackingNo || "",
+        allocationNo: invoice.linkedOrderAllocationNo || "",
+        linkedQuotationNo: invoice.linkedQuotationNo || "",
+        linkedOANo: invoice.linkedOANo || "",
+        linkedProformaNo: invoice.linkedProformaNo || "",
+        customerName: invoice.customerName,
+        status: invoice.status,
+        invoiceQty,
         alreadyDispatchedQty: dispatchedQty,
         pendingDispatchQty,
       });
@@ -584,86 +669,100 @@ export async function listPendingDispatchPackings(req, res) {
 }
 
 export async function getDispatchFromPacking(req, res) {
+  return res.status(400).json({ message: "Dispatch must be created from a posted Sales Invoice, not directly from packing" });
+}
+
+export async function getDispatchFromInvoice(req, res) {
   try {
-    const packingId = req.params.packingId;
-    if (!mongoose.Types.ObjectId.isValid(packingId)) return res.status(400).json({ message: "Invalid packing id" });
-    const packing = await StorePacking.findOne(withCompany(req, { _id: packingId })).lean();
-    if (!packing) return res.status(404).json({ message: "Packing not found" });
-    if (!POSTED_PACKING_STATUSES.includes(packing.status)) return res.status(400).json({ message: "Packing must be posted" });
-    const dispatchedByLine = await sumPostedDispatchQtyByPackingLine(req.companyId, packing._id);
-    const lines = (packing.lines || []).map((ln) => {
-      const packed = Number(ln.packQty) || 0;
+    const invoiceId = req.params.invoiceId;
+    if (!mongoose.Types.ObjectId.isValid(invoiceId)) return res.status(400).json({ message: "Invalid invoice id" });
+    const invoice = await SalesInvoice.findOne(withCompany(req, { _id: invoiceId })).lean();
+    if (!invoice) return res.status(404).json({ message: "Sales Invoice not found" });
+    if (String(invoice.status || "").toUpperCase() === "CANCELLED") return res.status(400).json({ message: "Cannot dispatch cancelled invoice" });
+    if (!invoice.linkedStorePackingId) return res.status(400).json({ message: "Cannot dispatch without invoice linked to packing" });
+    const packing = await StorePacking.findOne(withCompany(req, { _id: invoice.linkedStorePackingId })).lean();
+    if (!packing) return res.status(404).json({ message: "Linked packing not found" });
+    const dispatchedByLine = await sumPostedDispatchQtyByInvoiceLine(req.companyId, invoice._id);
+    const lines = (invoice.lines || []).map((ln) => {
+      const invoiceQty = Number(ln.qty) || 0;
       const out = dispatchedByLine.get(String(ln._id)) || 0;
       return {
-        packingLineId: ln._id,
+        invoiceLineId: ln._id,
+        packingLineId: ln.packingLineId || null,
         article: ln.article,
         description: ln.description || "",
-        spn: ln.spn || "",
+        spn: ln.partNumber || "",
         materialCode: ln.materialCode || "",
-        packedQty: packed,
+        invoiceQty,
         dispatchedQty: out,
-        pendingDispatch: Math.max(0, packed - out),
+        pendingDispatch: Math.max(0, invoiceQty - out),
         uom: ln.uom || "PCS",
       };
     });
-    res.json({ packing, lines });
+    res.json({ invoice, packing, lines });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 }
 
-function normalizeDispatchLines(bodyLines = [], packing) {
-  const packingLines = packing.lines || [];
+function normalizeDispatchLines(bodyLines = [], invoice) {
+  const invoiceLines = invoice.lines || [];
   return (bodyLines || [])
     .map((ln) => {
-      const packingLineId = mongoose.Types.ObjectId.isValid(String(ln.packingLineId || ""))
-        ? new mongoose.Types.ObjectId(String(ln.packingLineId))
+      const invoiceLineId = mongoose.Types.ObjectId.isValid(String(ln.invoiceLineId || ""))
+        ? new mongoose.Types.ObjectId(String(ln.invoiceLineId))
         : null;
-      const match = packingLineId ? packingLines.find((x) => String(x._id) === String(packingLineId)) : null;
+      const match = invoiceLineId ? invoiceLines.find((x) => String(x._id) === String(invoiceLineId)) : null;
       return {
-        packingLineId,
+        invoiceLineId,
+        packingLineId: match?.packingLineId || null,
         article: String(ln.article || match?.article || "").trim().toUpperCase(),
         description: t(ln.description || match?.description || ""),
-        spn: t(ln.spn || match?.spn || ""),
+        spn: t(ln.spn || match?.partNumber || ""),
         materialCode: t(ln.materialCode || match?.materialCode || ""),
-        packedQty: Number(match?.packQty) || 0,
+        invoiceQty: Number(match?.qty) || 0,
+        packedQty: Number(match?.qty) || 0,
         dispatchQty: Math.max(0, Number(ln.dispatchQty) || 0),
         uom: t(ln.uom || match?.uom || "PCS") || "PCS",
         remarks: t(ln.remarks),
       };
     })
-    .filter((ln) => ln.article && ln.dispatchQty > 0 && ln.packingLineId);
+    .filter((ln) => ln.article && ln.dispatchQty > 0 && ln.invoiceLineId);
 }
 
 export async function createStoreDispatchDraft(req, res) {
   try {
-    const packingId = req.body.packingId;
-    if (!mongoose.Types.ObjectId.isValid(String(packingId || ""))) {
-      return res.status(400).json({ message: "packingId required" });
+    const invoiceId = req.body.salesInvoiceId || req.body.invoiceId;
+    if (!mongoose.Types.ObjectId.isValid(String(invoiceId || ""))) {
+      return res.status(400).json({ message: "salesInvoiceId required. Dispatch must be created from posted Sales Invoice." });
     }
-    const packing = await StorePacking.findOne(withCompany(req, { _id: packingId }));
-    if (!packing) return res.status(404).json({ message: "Packing not found" });
-    if (!POSTED_PACKING_STATUSES.includes(packing.status)) return res.status(400).json({ message: "Packing must be posted" });
+    const invoice = await SalesInvoice.findOne(withCompany(req, { _id: invoiceId }));
+    if (!invoice) return res.status(404).json({ message: "Sales Invoice not found" });
+    if (String(invoice.status || "").toUpperCase() === "CANCELLED") return res.status(400).json({ message: "Cannot dispatch cancelled invoice" });
+    if (!invoice.linkedStorePackingId) return res.status(400).json({ message: "Cannot dispatch without invoice linked to packing" });
+    const packing = await StorePacking.findOne(withCompany(req, { _id: invoice.linkedStorePackingId }));
+    if (!packing) return res.status(404).json({ message: "Linked packing not found" });
+    if (!POSTED_PACKING_STATUSES.includes(packing.status)) return res.status(400).json({ message: "Linked packing must be posted" });
 
-    const dispatchedByLine = await sumPostedDispatchQtyByPackingLine(req.companyId, packing._id);
+    const dispatchedByLine = await sumPostedDispatchQtyByInvoiceLine(req.companyId, invoice._id);
     const linesIn = Array.isArray(req.body.lines) && req.body.lines.length
       ? req.body.lines
-      : (packing.lines || []).map((ln) => {
-          const packed = Number(ln.packQty) || 0;
+      : (invoice.lines || []).map((ln) => {
+          const invoiceQty = Number(ln.qty) || 0;
           const out = dispatchedByLine.get(String(ln._id)) || 0;
-          return { packingLineId: ln._id, article: ln.article, dispatchQty: Math.max(0, packed - out) };
+          return { invoiceLineId: ln._id, article: ln.article, dispatchQty: Math.max(0, invoiceQty - out) };
         });
 
     const dispatchNo = t(req.body.dispatchNo) || (await nextDispatchNo(req.companyId, req.companyCode));
-    const lines = normalizeDispatchLines(linesIn, packing);
+    const lines = normalizeDispatchLines(linesIn, invoice);
     if (!lines.length) return res.status(400).json({ message: "Nothing to dispatch (all lines complete or empty)" });
 
     for (const ln of lines) {
-      const match = (packing.lines || []).find((x) => String(x._id) === String(ln.packingLineId));
-      const packed = Number(match?.packQty) || 0;
-      const out = dispatchedByLine.get(String(ln.packingLineId)) || 0;
-      if (out + ln.dispatchQty > packed) {
-        return res.status(400).json({ message: `Dispatch qty exceeds packed for ${ln.article}` });
+      const match = (invoice.lines || []).find((x) => String(x._id) === String(ln.invoiceLineId));
+      const invoiceQty = Number(match?.qty) || 0;
+      const out = dispatchedByLine.get(String(ln.invoiceLineId)) || 0;
+      if (out + ln.dispatchQty > invoiceQty) {
+        return res.status(400).json({ message: `Dispatch qty exceeds invoice pending dispatch qty for ${ln.article}` });
       }
     }
 
@@ -673,15 +772,18 @@ export async function createStoreDispatchDraft(req, res) {
       dispatchNo,
       dispatchDate: req.body.dispatchDate || new Date(),
       warehouse: String(packing.warehouse || "MAIN").toUpperCase(),
-      sourceDocumentType: "STORE_PACKING",
-      sourceDocumentId: packing._id,
+      sourceDocumentType: "SALES_INVOICE",
+      sourceDocumentId: invoice._id,
       packingId: packing._id,
       packingNo: packing.packingNo,
+      salesInvoiceId: invoice._id,
+      salesInvoiceNo: invoice.invoiceNo,
       allocationId: packing.allocationId,
       allocationNo: packing.allocationNo,
-      linkedOANo: packing.linkedOANo || "",
-      linkedProformaNo: packing.linkedProformaNo || "",
-      customerName: packing.customerName,
+      linkedQuotationNo: invoice.linkedQuotationNo || "",
+      linkedOANo: invoice.linkedOANo || packing.linkedOANo || "",
+      linkedProformaNo: invoice.linkedProformaNo || packing.linkedProformaNo || "",
+      customerName: invoice.customerName || packing.customerName,
       engine: packing.engine || "",
       model: packing.model || "",
       esn: packing.esn || "",
@@ -729,16 +831,19 @@ export async function postStoreDispatch(req, res) {
       if (doc.status !== "DRAFT") throw new Error("Only DRAFT dispatch can be posted");
       const packing = await StorePacking.findOne(withCompany(req, { _id: doc.packingId })).session(session);
       if (!packing || !POSTED_PACKING_STATUSES.includes(packing.status)) throw new Error("Packing invalid");
+      const invoice = await SalesInvoice.findOne(withCompany(req, { _id: doc.salesInvoiceId })).session(session);
+      if (!invoice) throw new Error("Sales Invoice required before dispatch");
+      if (String(invoice.status || "").toUpperCase() === "CANCELLED") throw new Error("Cannot dispatch cancelled invoice");
 
-      const dispatchedByLine = await sumPostedDispatchQtyByPackingLine(req.companyId, packing._id);
+      const dispatchedByLine = await sumPostedDispatchQtyByInvoiceLine(req.companyId, invoice._id);
       const wh = String(doc.warehouse || packing.warehouse || "MAIN").toUpperCase();
 
       for (const ln of doc.lines || []) {
-        const match = (packing.lines || []).find((x) => String(x._id) === String(ln.packingLineId));
-        const packed = Number(match?.packQty) || 0;
-        const out = dispatchedByLine.get(String(ln.packingLineId)) || 0;
+        const match = (invoice.lines || []).find((x) => String(x._id) === String(ln.invoiceLineId));
+        const invoiceQty = Number(match?.qty) || 0;
+        const out = dispatchedByLine.get(String(ln.invoiceLineId)) || 0;
         const dq = Number(ln.dispatchQty) || 0;
-        if (out + dq > packed) throw new Error(`Dispatch qty exceeds packed for ${ln.article}`);
+        if (out + dq > invoiceQty) throw new Error(`Dispatch qty exceeds invoice pending dispatch qty for ${ln.article}`);
         if (!(dq > 0)) continue;
         await stockService.dispatchFromPacked({
           session,
@@ -756,13 +861,18 @@ export async function postStoreDispatch(req, res) {
         });
       }
 
-      const totalPacked = (packing.lines || []).reduce((sum, ln) => sum + (Number(ln.packQty) || 0), 0);
+      const totalInvoiceQty = (invoice.lines || []).reduce((sum, ln) => sum + (Number(ln.qty) || 0), 0);
       const totalDispatchedBefore = Array.from(dispatchedByLine.values()).reduce((sum, qty) => sum + (Number(qty) || 0), 0);
       const totalDispatchedNow = (doc.lines || []).reduce((sum, ln) => sum + (Number(ln.dispatchQty) || 0), 0);
       doc.status =
-        totalDispatchedBefore + totalDispatchedNow >= totalPacked - 1e-6
+        totalDispatchedBefore + totalDispatchedNow >= totalInvoiceQty - 1e-6
           ? "FULLY_DISPATCHED"
           : "PARTIALLY_DISPATCHED";
+      invoice.status = doc.status === "FULLY_DISPATCHED" ? "DISPATCHED" : invoice.status;
+      invoice.linkedSalesDispatchId = doc._id;
+      invoice.linkedSalesDispatchNo = doc.dispatchNo;
+      invoice.updatedBy = req.user?.email || "";
+      await invoice.save({ session });
       doc.postedAt = new Date();
       doc.updatedBy = req.user?.email || "";
       await doc.save({ session });
@@ -977,6 +1087,102 @@ export async function reportDispatchSummary(req, res) {
       lineCount: (d.lines || []).length,
     }));
     res.json({ items });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportPackedNotInvoiced(req, res) {
+  try {
+    const packings = await StorePacking.find(withCompany(req, { status: { $in: POSTED_PACKING_STATUSES } })).lean();
+    const items = [];
+    for (const p of packings) {
+      const invoicedByLine = await sumInvoicedQtyByPackingLine(req.companyId, p._id);
+      let packedQty = 0;
+      let invoicedQty = 0;
+      for (const ln of p.lines || []) {
+        packedQty += Number(ln.packQty) || 0;
+        invoicedQty += invoicedByLine.get(String(ln._id)) || 0;
+      }
+      const pendingInvoiceQty = Math.max(0, packedQty - invoicedQty);
+      if (pendingInvoiceQty <= 0) continue;
+      items.push({
+        packingNo: p.packingNo,
+        customerName: p.customerName,
+        allocationNo: p.allocationNo,
+        oaNo: p.linkedOANo || "",
+        piNo: p.linkedProformaNo || "",
+        packedQty,
+        invoicedQty,
+        pendingInvoiceQty,
+        invoiceStatus: p.invoiceStatus || "NOT_INVOICED",
+      });
+    }
+    res.json({ items, total: items.length });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportInvoicedNotDispatched(req, res) {
+  try {
+    const invoices = await SalesInvoice.find(
+      withCompany(req, { linkedStorePackingId: { $ne: null }, status: { $nin: ["DRAFT", "CANCELLED"] } })
+    )
+      .sort({ invoiceDate: -1 })
+      .lean();
+    const items = [];
+    for (const inv of invoices) {
+      const dispatchedByLine = await sumPostedDispatchQtyByInvoiceLine(req.companyId, inv._id);
+      let invoiceQty = 0;
+      let dispatchedQty = 0;
+      for (const ln of inv.lines || []) {
+        invoiceQty += Number(ln.qty) || 0;
+        dispatchedQty += dispatchedByLine.get(String(ln._id)) || 0;
+      }
+      const pendingDispatchQty = Math.max(0, invoiceQty - dispatchedQty);
+      if (pendingDispatchQty <= 0) continue;
+      items.push({
+        invoiceNo: inv.invoiceNo,
+        packingNo: inv.linkedStorePackingNo || "",
+        customerName: inv.customerName,
+        allocationNo: inv.linkedOrderAllocationNo || "",
+        oaNo: inv.linkedOANo || "",
+        piNo: inv.linkedProformaNo || "",
+        invoiceQty,
+        dispatchedQty,
+        pendingDispatchQty,
+      });
+    }
+    res.json({ items, total: items.length });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function reportCustomerInvoicePendingDispatch(req, res) {
+  try {
+    const byCustomer = new Map();
+    const invoices = await SalesInvoice.find(
+      withCompany(req, { linkedStorePackingId: { $ne: null }, status: { $nin: ["DRAFT", "CANCELLED"] } })
+    ).lean();
+    for (const inv of invoices) {
+      const dispatchedByLine = await sumPostedDispatchQtyByInvoiceLine(req.companyId, inv._id);
+      let invoiceQty = 0;
+      let dispatchedQty = 0;
+      for (const ln of inv.lines || []) {
+        invoiceQty += Number(ln.qty) || 0;
+        dispatchedQty += dispatchedByLine.get(String(ln._id)) || 0;
+      }
+      const pendingDispatchQty = Math.max(0, invoiceQty - dispatchedQty);
+      if (pendingDispatchQty <= 0) continue;
+      const key = inv.customerName || "Unknown";
+      const item = byCustomer.get(key) || { customerName: key, invoiceCount: 0, pendingDispatchQty: 0 };
+      item.invoiceCount += 1;
+      item.pendingDispatchQty += pendingDispatchQty;
+      byCustomer.set(key, item);
+    }
+    res.json({ items: Array.from(byCustomer.values()).sort((a, b) => b.pendingDispatchQty - a.pendingDispatchQty) });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

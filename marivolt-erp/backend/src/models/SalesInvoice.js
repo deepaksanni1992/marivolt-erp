@@ -3,6 +3,8 @@ import mongoose from "mongoose";
 const salesInvoiceLineSchema = new mongoose.Schema(
   {
     serialNo: { type: Number, default: 0, min: 0 },
+    packingLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    allocationLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
     article: { type: String, required: true, trim: true, uppercase: true },
     partNumber: { type: String, default: "", trim: true },
     description: { type: String, default: "" },
@@ -32,6 +34,8 @@ const salesInvoiceSchema = new mongoose.Schema(
     linkedOrderAllocationNo: { type: String, default: "", trim: true },
     linkedRtsId: { type: mongoose.Schema.Types.ObjectId, ref: "Rts", index: true, default: null },
     linkedRtsNo: { type: String, default: "", trim: true },
+    linkedStorePackingId: { type: mongoose.Schema.Types.ObjectId, ref: "StorePacking", index: true, default: null },
+    linkedStorePackingNo: { type: String, default: "", trim: true },
     linkedSalesDispatchId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesDispatch", index: true, default: null },
     linkedSalesDispatchNo: { type: String, default: "", trim: true },
     customerName: { type: String, required: true, trim: true },

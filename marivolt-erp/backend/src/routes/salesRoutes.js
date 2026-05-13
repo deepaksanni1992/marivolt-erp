@@ -66,6 +66,9 @@ router.patch("/proforma-invoices/:id/cancel", salesCancel, flow.cancelProforma);
 
 router.get("/sales-invoices", salesView, flow.listSalesInvoices);
 router.post("/sales-invoices", salesCreate, flow.createSalesInvoice);
+router.get("/sales-invoices/packings/ready", salesView, flow.listPackingsReadyForInvoice);
+router.get("/sales-invoices/from-packing/:id", salesView, flow.getPackingInvoicePreview);
+router.post("/sales-invoices/from-packing/:id", salesCreate, flow.convertPackingToSalesInvoice);
 router.get("/sales-invoices/:id", salesView, flow.getSalesInvoice);
 router.put("/sales-invoices/:id", salesEdit, flow.updateSalesInvoice);
 router.patch("/sales-invoices/:id/cancel", salesCancel, flow.cancelSalesInvoice);

@@ -1742,6 +1742,15 @@ export default function Sales() {
     enabled: activeTab === "Sales Invoice",
   });
 
+  const { data: readyPackingInvoiceData } = useQuery({
+    queryKey: ["sales-packings-ready-invoice", search],
+    queryFn: () =>
+      apiGetWithQuery("/sales/sales-invoices/packings/ready", {
+        search: search || undefined,
+      }),
+    enabled: activeTab === "Sales Invoice",
+  });
+
   const { data: salesDispatchData, isLoading: legacySalesDispatchLoading } = useQuery({
     queryKey: ["sales-sales-dispatch", page, search],
     queryFn: () =>
@@ -2918,6 +2927,16 @@ export default function Sales() {
         esn: "",
         lines: [emptyLine()],
       });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const createSalesInvoiceFromPackingMutation = useMutation({
+    mutationFn: (packingId) => apiPost(`/sales/sales-invoices/from-packing/${packingId}`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
+      qc.invalidateQueries({ queryKey: ["sales-packings-ready-invoice"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
     },
     onError: (e) => setErr(e.message),
   });
@@ -4161,6 +4180,70 @@ export default function Sales() {
               Export CSV
             </button>
           </div>
+          <div className="mb-3 rounded-2xl border bg-white p-3 shadow-sm">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-semibold">Ready for Invoice</h3>
+                <p className="text-xs text-gray-500">Posted packing documents with pending invoice quantity.</p>
+              </div>
+              <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200">
+                Packing → Sales Invoice
+              </span>
+            </div>
+            <div className="max-h-56 overflow-auto">
+              <table className="min-w-full text-left text-xs">
+                <thead className="bg-gray-100 uppercase text-gray-600">
+                  <tr>
+                    <th className="px-2 py-2">Packing No</th>
+                    <th className="px-2 py-2">Customer</th>
+                    <th className="px-2 py-2">Allocation</th>
+                    <th className="px-2 py-2">OA</th>
+                    <th className="px-2 py-2">PI</th>
+                    <th className="px-2 py-2 text-right">Packed</th>
+                    <th className="px-2 py-2 text-right">Pending Invoice</th>
+                    <th className="px-2 py-2">Status</th>
+                    <th className="px-2 py-2 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(readyPackingInvoiceData?.items || []).length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="px-2 py-4 text-center text-gray-500">
+                        No packing documents ready for invoice.
+                      </td>
+                    </tr>
+                  ) : (
+                    (readyPackingInvoiceData?.items || []).map((p) => (
+                      <tr key={p._id} className="border-t">
+                        <td className="px-2 py-2 font-mono">{p.packingNo}</td>
+                        <td className="px-2 py-2">{p.customerName}</td>
+                        <td className="px-2 py-2 font-mono">{p.allocationNo}</td>
+                        <td className="px-2 py-2">{p.linkedOANo || "—"}</td>
+                        <td className="px-2 py-2">{p.linkedProformaNo || "—"}</td>
+                        <td className="px-2 py-2 text-right">{p.packedQty}</td>
+                        <td className="px-2 py-2 text-right font-semibold">{p.pendingInvoiceQty}</td>
+                        <td className="px-2 py-2">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(p.invoiceStatus || "NOT_INVOICED")}`}>
+                            {p.invoiceStatus || "NOT_INVOICED"}
+                          </span>
+                        </td>
+                        <td className="px-2 py-2 text-right">
+                          <button
+                            type="button"
+                            className="rounded-lg border px-2 py-1 text-xs"
+                            disabled={createSalesInvoiceFromPackingMutation.isPending}
+                            onClick={() => createSalesInvoiceFromPackingMutation.mutate(p._id)}
+                          >
+                            Create invoice
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
               <table className="min-w-full text-left text-sm">
@@ -4168,6 +4251,7 @@ export default function Sales() {
                   <tr>
                     <th className="px-3 py-2">OA No</th>
                     <th className="px-3 py-2">Customer</th>
+                    <th className="px-3 py-2">Packing</th>
                     <th className="px-3 py-2">Date</th>
                     <th className="px-3 py-2">Status</th>
                     <th className="px-3 py-2 text-right">Grand Total</th>
@@ -4341,13 +4425,13 @@ export default function Sales() {
                 <tbody>
                   {proformaLoading ? (
                     <tr>
-                      <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={10} className="px-3 py-8 text-center text-gray-500">
                         Loading...
                       </td>
                     </tr>
                   ) : proformaRows.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={10} className="px-3 py-8 text-center text-gray-500">
                         No Proforma found.
                       </td>
                     </tr>
@@ -4821,6 +4905,7 @@ export default function Sales() {
                       <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
                         <td className="px-3 py-2 font-mono text-xs">{r.invoiceNo}</td>
                         <td className="px-3 py-2">{r.customerName}</td>
+                        <td className="px-3 py-2 font-mono text-xs">{r.linkedStorePackingNo || "—"}</td>
                         <td className="px-3 py-2">{r.invoiceDate ? new Date(r.invoiceDate).toLocaleDateString() : "—"}</td>
                         <td className="px-3 py-2">
                           <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>

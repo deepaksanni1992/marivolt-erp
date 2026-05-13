@@ -543,14 +543,14 @@ export default function StoreModule() {
   });
 
   const { data: dispatchFromPack } = useQuery({
-    queryKey: ["dispatch-from-packing", dispatchPackQueryId],
-    queryFn: () => apiGet(`/dispatch/from-packing/${dispatchPackQueryId}`),
+    queryKey: ["dispatch-from-invoice", dispatchPackQueryId],
+    queryFn: () => apiGet(`/dispatch/from-invoice/${dispatchPackQueryId}`),
     enabled: tab === "Dispatch" && Boolean(dispatchPackQueryId),
   });
 
   const { data: pendingDispatchPackings } = useQuery({
-    queryKey: ["dispatch-packings-pending"],
-    queryFn: () => apiGetWithQuery("/dispatch/packings/pending", { limit: 200 }),
+    queryKey: ["dispatch-invoices-pending"],
+    queryFn: () => apiGetWithQuery("/dispatch/invoices/pending", { limit: 200 }),
     enabled: tab === "Dispatch",
   });
 
@@ -571,8 +571,8 @@ export default function StoreModule() {
     mutationFn: (body) => apiPost("/dispatch/draft", body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["store-dispatch"] });
-      qc.invalidateQueries({ queryKey: ["dispatch-packings-pending"] });
-      qc.invalidateQueries({ queryKey: ["dispatch-from-packing", dispatchPackQueryId] });
+      qc.invalidateQueries({ queryKey: ["dispatch-invoices-pending"] });
+      qc.invalidateQueries({ queryKey: ["dispatch-from-invoice", dispatchPackQueryId] });
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
       qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
@@ -583,8 +583,8 @@ export default function StoreModule() {
     mutationFn: (id) => apiPost(`/dispatch/${id}/post`, {}),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["store-dispatch"] });
-      qc.invalidateQueries({ queryKey: ["dispatch-packings-pending"] });
-      qc.invalidateQueries({ queryKey: ["dispatch-from-packing", dispatchPackQueryId] });
+      qc.invalidateQueries({ queryKey: ["dispatch-invoices-pending"] });
+      qc.invalidateQueries({ queryKey: ["dispatch-from-invoice", dispatchPackQueryId] });
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
       qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
@@ -595,8 +595,8 @@ export default function StoreModule() {
     mutationFn: ({ id, reason }) => apiPost(`/dispatch/${id}/cancel`, { reason: reason || "" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["store-dispatch"] });
-      qc.invalidateQueries({ queryKey: ["dispatch-packings-pending"] });
-      qc.invalidateQueries({ queryKey: ["dispatch-from-packing", dispatchPackQueryId] });
+      qc.invalidateQueries({ queryKey: ["dispatch-invoices-pending"] });
+      qc.invalidateQueries({ queryKey: ["dispatch-from-invoice", dispatchPackQueryId] });
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
       qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
@@ -630,6 +630,24 @@ export default function StoreModule() {
   const { data: reportPendingPacking } = useQuery({
     queryKey: ["store-report-pending-packing"],
     queryFn: () => apiGet("/store/reports/pending-packing"),
+    enabled: tab === "Store Reports",
+  });
+
+  const { data: reportPackedNotInvoiced } = useQuery({
+    queryKey: ["store-report-packed-not-invoiced"],
+    queryFn: () => apiGet("/store/reports/packed-not-invoiced"),
+    enabled: tab === "Store Reports",
+  });
+
+  const { data: reportInvoicedNotDispatched } = useQuery({
+    queryKey: ["store-report-invoiced-not-dispatched"],
+    queryFn: () => apiGet("/store/reports/invoiced-not-dispatched"),
+    enabled: tab === "Store Reports",
+  });
+
+  const { data: reportCustomerInvoicePendingDispatch } = useQuery({
+    queryKey: ["store-report-customer-invoice-pending-dispatch"],
+    queryFn: () => apiGet("/store/reports/customer-invoice-pending-dispatch"),
     enabled: tab === "Store Reports",
   });
 
@@ -2996,22 +3014,22 @@ export default function StoreModule() {
       {tab === "Dispatch" ? (
         <div className="space-y-4">
           <div className="rounded-2xl border bg-white p-4">
-            <h3 className="mb-2 text-sm font-semibold">New dispatch from posted packing</h3>
+            <h3 className="mb-2 text-sm font-semibold">New dispatch from posted Sales Invoice</h3>
             <p className="mb-3 text-xs text-slate-600">
-              Select a packing document with pending dispatch quantity, enter transporter details, then create draft dispatch and post.
+              Select a posted Sales Invoice with pending dispatch quantity, enter transporter details, then create draft dispatch and post.
             </p>
             <div className="mb-3 flex flex-wrap items-end gap-2">
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-medium text-slate-600">Packing document</label>
+                <label className="text-xs font-medium text-slate-600">Sales Invoice</label>
                 <select
                   className="w-96 rounded border px-2 py-1.5 text-xs"
                   value={dispatchPackInputId}
                   onChange={(e) => setDispatchPackInputId(e.target.value)}
                 >
-                  <option value="">Select packing pending dispatch...</option>
+                  <option value="">Select invoice pending dispatch...</option>
                   {(pendingDispatchPackings?.items || []).map((p) => (
                     <option key={p._id} value={p._id}>
-                      {p.packingNo} | {p.customerName} | allocation {p.allocationNo || "-"} | pending {p.pendingDispatchQty}
+                      {p.invoiceNo} | {p.customerName} | packing {p.packingNo || "-"} | pending {p.pendingDispatchQty}
                     </option>
                   ))}
                 </select>
@@ -3022,7 +3040,7 @@ export default function StoreModule() {
                 disabled={!dispatchPackInputId}
                 onClick={() => setDispatchPackQueryId(dispatchPackInputId)}
               >
-                Load packing
+                Load invoice
               </button>
             </div>
             <div className="mb-3 grid gap-2 rounded border bg-slate-50 p-3 md:grid-cols-4">
@@ -3045,13 +3063,16 @@ export default function StoreModule() {
                 </label>
               ))}
             </div>
-            {dispatchFromPack?.packing ? (
+            {dispatchFromPack?.invoice ? (
               <div className="mb-3 rounded border border-slate-200 bg-slate-50 p-3 text-xs">
                 <div>
-                  <span className="font-semibold">{dispatchFromPack.packing.packingNo}</span> ·{" "}
-                  {dispatchFromPack.packing.customerName}
+                  <span className="font-semibold">{dispatchFromPack.invoice.invoiceNo}</span> ·{" "}
+                  {dispatchFromPack.invoice.customerName}
                 </div>
-                <div className="mt-1 text-slate-600">Allocation {dispatchFromPack.packing.allocationNo || "—"}</div>
+                <div className="mt-1 text-slate-600">
+                  Packing {dispatchFromPack.invoice.linkedStorePackingNo || "—"} · Allocation{" "}
+                  {dispatchFromPack.invoice.linkedOrderAllocationNo || "—"}
+                </div>
               </div>
             ) : null}
             {dispatchFromPack?.lines?.length ? (
@@ -3098,10 +3119,11 @@ export default function StoreModule() {
                 <button
                   type="button"
                   className="mt-3 rounded border border-emerald-700 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-900 hover:bg-emerald-100 disabled:opacity-50"
-                  disabled={createDispatchDraft.isPending || !dispatchFromPack?.packing}
+                  disabled={createDispatchDraft.isPending || !dispatchFromPack?.invoice}
                   onClick={() => {
                     const lines = (dispatchFromPack.lines || [])
                       .map((ln) => ({
+                        invoiceLineId: ln.invoiceLineId,
                         packingLineId: ln.packingLineId,
                         article: ln.article,
                         description: ln.description || "",
@@ -3115,7 +3137,7 @@ export default function StoreModule() {
                       }))
                       .filter((x) => x.dispatchQty > 0);
                     createDispatchDraft.mutate({
-                      packingId: dispatchFromPack.packing._id,
+                      salesInvoiceId: dispatchFromPack.invoice._id,
                       transporter: dispatchHeader.transporter,
                       courier: dispatchHeader.transporter,
                       awbNo: dispatchHeader.trackingNo,
@@ -3134,7 +3156,7 @@ export default function StoreModule() {
                 </button>
               </div>
             ) : dispatchPackQueryId ? (
-              <p className="text-xs text-slate-500">Nothing pending or packing not posted.</p>
+              <p className="text-xs text-slate-500">Nothing pending or invoice not posted.</p>
             ) : null}
           </div>
 
@@ -3160,6 +3182,7 @@ export default function StoreModule() {
                   <tr>
                     <th className="px-2 py-2 text-left">Dispatch No</th>
                     <th className="px-2 py-2 text-left">Customer</th>
+                    <th className="px-2 py-2 text-left">Invoice</th>
                     <th className="px-2 py-2 text-left">Packing</th>
                     <th className="px-2 py-2 text-left">Transporter</th>
                     <th className="px-2 py-2 text-left">Tracking</th>
@@ -3170,7 +3193,7 @@ export default function StoreModule() {
                 <tbody>
                   {(dispatchList?.items || []).length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-2 py-4 text-center text-xs text-slate-500">
+                      <td colSpan={8} className="px-2 py-4 text-center text-xs text-slate-500">
                         No dispatch records.
                       </td>
                     </tr>
@@ -3179,6 +3202,7 @@ export default function StoreModule() {
                       <tr key={d._id} className="border-t">
                         <td className="px-2 py-2 font-mono">{d.dispatchNo}</td>
                         <td className="px-2 py-2">{d.customerName}</td>
+                        <td className="px-2 py-2 font-mono text-xs">{d.salesInvoiceNo || "—"}</td>
                         <td className="px-2 py-2 font-mono text-xs">{d.packingNo}</td>
                         <td className="px-2 py-2 text-xs">{d.transporter || d.courier || "—"}</td>
                         <td className="px-2 py-2 text-xs">{d.trackingNo || d.awbNo || d.blNo || "—"}</td>
@@ -3283,11 +3307,31 @@ export default function StoreModule() {
             </button>
           </div>
           <div className="rounded-2xl border bg-white p-4">
-            <h3 className="mb-2 text-sm font-semibold">Packing pending dispatch</h3>
+            <h3 className="mb-2 text-sm font-semibold">Packed Not Invoiced</h3>
             <div className="max-h-64 overflow-auto text-xs">
-              {(reportPackingPending?.items || []).map((r) => (
+              {(reportPackedNotInvoiced?.items || []).map((r) => (
                 <div key={r.packingNo} className="border-b py-1">
-                  {r.packingNo} · {r.customerName} · pending {r.pendingQty}
+                  {r.packingNo} · {r.customerName} · pending invoice {r.pendingInvoiceQty}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold">Invoiced Not Dispatched</h3>
+            <div className="max-h-64 overflow-auto text-xs">
+              {(reportInvoicedNotDispatched?.items || []).map((r) => (
+                <div key={r.invoiceNo} className="border-b py-1">
+                  {r.invoiceNo} · {r.customerName} · pending dispatch {r.pendingDispatchQty}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-2xl border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold">Customer Invoice Pending Dispatch</h3>
+            <div className="max-h-64 overflow-auto text-xs">
+              {(reportCustomerInvoicePendingDispatch?.items || []).map((r) => (
+                <div key={r.customerName} className="border-b py-1">
+                  {r.customerName} · invoices {r.invoiceCount} · pending {r.pendingDispatchQty}
                 </div>
               ))}
             </div>

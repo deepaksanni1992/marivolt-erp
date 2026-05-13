@@ -12,6 +12,8 @@ const storeCancel = requirePermission("STORE", "cancel");
 
 router.get("/", storeView, c.listStoreDispatch);
 router.get("/packings/pending", storeView, c.listPendingDispatchPackings);
+router.get("/invoices/pending", storeView, c.listPendingDispatchInvoices);
+router.get("/from-invoice/:invoiceId", storeView, c.getDispatchFromInvoice);
 router.get("/from-packing/:packingId", storeView, c.getDispatchFromPacking);
 router.get("/:id", storeView, c.getStoreDispatch);
 router.post("/draft", storeCreate, c.createStoreDispatchDraft);
