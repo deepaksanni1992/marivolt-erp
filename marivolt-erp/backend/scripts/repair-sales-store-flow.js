@@ -6,6 +6,7 @@ import Company from "../src/models/Company.js";
 import StorePacking from "../src/models/StorePacking.js";
 import StoreDispatch from "../src/models/StoreDispatch.js";
 import SalesInvoice from "../src/models/SalesInvoice.js";
+import OrderAllocation from "../src/models/OrderAllocation.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, "../.env") });
@@ -35,6 +36,8 @@ async function repairCompany(company) {
     company: company.code || company.name || String(companyId),
     packingsChecked: 0,
     packingsUpdated: 0,
+    allocationsUpdated: 0,
+    legacyAllocationsSkippedNoPacking: 0,
     dispatchesLinkedToInvoice: 0,
   };
 
@@ -62,6 +65,53 @@ async function repairCompany(company) {
       packing.lastInvoicedAt = invoices.length ? invoices[invoices.length - 1].invoiceDate || new Date() : null;
       await packing.save();
       summary.packingsUpdated += 1;
+    }
+  }
+
+  const allocations = await OrderAllocation.find({ companyId });
+  for (const allocation of allocations) {
+    const allocationPackings = await StorePacking.find({
+      companyId,
+      allocationId: allocation._id,
+      status: { $in: POSTED_PACKING_STATUSES },
+    })
+      .select("_id lines")
+      .lean();
+    const allocationInvoices = await SalesInvoice.find({
+      companyId,
+      linkedOrderAllocationId: allocation._id,
+      status: { $ne: "CANCELLED" },
+    })
+      .select("_id invoiceNo invoiceDate")
+      .sort({ invoiceDate: -1 })
+      .lean();
+    const legacyStatus = ["PARTIALLY_RTS", "RTS_COMPLETE"].includes(String(allocation.status || "").toUpperCase());
+    if (!allocationPackings.length) {
+      if (legacyStatus) summary.legacyAllocationsSkippedNoPacking += 1;
+      continue;
+    }
+
+    const allocatedQty = (allocation.lines || []).reduce((sum, line) => sum + (Number(line.qty) || 0), 0);
+    const packedQty = allocationPackings.reduce(
+      (sum, packing) => sum + (packing.lines || []).reduce((lineSum, line) => lineSum + (Number(line.packQty) || 0), 0),
+      0
+    );
+    const nextStatus = allocationInvoices.length
+      ? "CLOSED"
+      : packedQty >= allocatedQty - 1e-6
+        ? "FULLY_PACKED"
+        : "PARTIALLY_PACKED";
+    const latestInvoice = allocationInvoices[0] || null;
+    if (
+      allocation.status !== nextStatus ||
+      String(allocation.linkedSalesInvoiceId || "") !== String(latestInvoice?._id || "") ||
+      String(allocation.linkedSalesInvoiceNo || "") !== String(latestInvoice?.invoiceNo || "")
+    ) {
+      allocation.status = nextStatus;
+      allocation.linkedSalesInvoiceId = latestInvoice?._id || null;
+      allocation.linkedSalesInvoiceNo = latestInvoice?.invoiceNo || "";
+      await allocation.save();
+      summary.allocationsUpdated += 1;
     }
   }
 

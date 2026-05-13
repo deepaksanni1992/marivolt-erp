@@ -16,6 +16,7 @@ function t(v) {
 
 const POSTED_PACKING_STATUSES = ["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED"];
 const POSTED_DISPATCH_STATUSES = ["POSTED", "PARTIALLY_DISPATCHED", "FULLY_DISPATCHED"];
+const DISPATCH_READY_INVOICE_STATUSES = ["ISSUED", "PARTIALLY_PAID", "PAID"];
 const PACKAGE_TYPES = new Set(["CARTON", "PALLET", "WOODEN_BOX", "CRATE", "BUNDLE"]);
 
 function companyCode(v) {
@@ -458,8 +459,11 @@ export async function postStorePacking(req, res) {
       const totalPackedBefore = Array.from(packedByLine.values()).reduce((sum, qty) => sum + (Number(qty) || 0), 0);
       const totalPackedNow = (doc.lines || []).reduce((sum, ln) => sum + (Number(ln.packQty) || 0), 0);
       doc.status = totalPackedBefore + totalPackedNow >= totalAlloc - 1e-6 ? "FULLY_PACKED" : "PARTIALLY_PACKED";
+      allocation.status = doc.status;
+      allocation.updatedBy = req.user?.email || "";
       doc.postedAt = new Date();
       doc.updatedBy = req.user?.email || "";
+      await allocation.save({ session });
       await doc.save({ session });
       await writeAudit(req, {
         action: "POST",
@@ -621,7 +625,7 @@ export async function listPendingDispatchInvoices(req, res) {
   try {
     const q = t(req.query.search);
     const filter = withCompany(req, {
-      status: { $nin: ["DRAFT", "CANCELLED"] },
+      status: { $in: DISPATCH_READY_INVOICE_STATUSES },
       linkedStorePackingId: { $ne: null },
     });
     if (q) {
@@ -679,6 +683,9 @@ export async function getDispatchFromInvoice(req, res) {
     const invoice = await SalesInvoice.findOne(withCompany(req, { _id: invoiceId })).lean();
     if (!invoice) return res.status(404).json({ message: "Sales Invoice not found" });
     if (String(invoice.status || "").toUpperCase() === "CANCELLED") return res.status(400).json({ message: "Cannot dispatch cancelled invoice" });
+    if (!DISPATCH_READY_INVOICE_STATUSES.includes(String(invoice.status || "").toUpperCase())) {
+      return res.status(400).json({ message: "Dispatch requires a posted Sales Invoice" });
+    }
     if (!invoice.linkedStorePackingId) return res.status(400).json({ message: "Cannot dispatch without invoice linked to packing" });
     const packing = await StorePacking.findOne(withCompany(req, { _id: invoice.linkedStorePackingId })).lean();
     if (!packing) return res.status(404).json({ message: "Linked packing not found" });
@@ -739,6 +746,9 @@ export async function createStoreDispatchDraft(req, res) {
     const invoice = await SalesInvoice.findOne(withCompany(req, { _id: invoiceId }));
     if (!invoice) return res.status(404).json({ message: "Sales Invoice not found" });
     if (String(invoice.status || "").toUpperCase() === "CANCELLED") return res.status(400).json({ message: "Cannot dispatch cancelled invoice" });
+    if (!DISPATCH_READY_INVOICE_STATUSES.includes(String(invoice.status || "").toUpperCase())) {
+      return res.status(400).json({ message: "Dispatch requires a posted Sales Invoice" });
+    }
     if (!invoice.linkedStorePackingId) return res.status(400).json({ message: "Cannot dispatch without invoice linked to packing" });
     const packing = await StorePacking.findOne(withCompany(req, { _id: invoice.linkedStorePackingId }));
     if (!packing) return res.status(404).json({ message: "Linked packing not found" });
@@ -834,6 +844,9 @@ export async function postStoreDispatch(req, res) {
       const invoice = await SalesInvoice.findOne(withCompany(req, { _id: doc.salesInvoiceId })).session(session);
       if (!invoice) throw new Error("Sales Invoice required before dispatch");
       if (String(invoice.status || "").toUpperCase() === "CANCELLED") throw new Error("Cannot dispatch cancelled invoice");
+      if (!DISPATCH_READY_INVOICE_STATUSES.includes(String(invoice.status || "").toUpperCase())) {
+        throw new Error("Dispatch requires a posted Sales Invoice");
+      }
 
       const dispatchedByLine = await sumPostedDispatchQtyByInvoiceLine(req.companyId, invoice._id);
       const wh = String(doc.warehouse || packing.warehouse || "MAIN").toUpperCase();

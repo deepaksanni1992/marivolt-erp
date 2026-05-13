@@ -51,7 +51,17 @@ const orderAllocationSchema = new mongoose.Schema(
     grandTotal: { type: Number, default: 0 },
     status: {
       type: String,
-      enum: ["OPEN", "PARTIALLY_RTS", "RTS_COMPLETE", "APPROVED", "CLOSED", "CANCELLED"],
+      enum: [
+        "OPEN",
+        "PARTIALLY_PACKED",
+        "FULLY_PACKED",
+        "APPROVED",
+        "CLOSED",
+        "CANCELLED",
+        // Legacy values are accepted so old data can still be read and repaired safely.
+        "PARTIALLY_RTS",
+        "RTS_COMPLETE",
+      ],
       default: "OPEN",
     },
     /** Set when SALES_RESERVE was applied for this allocation (legacy rows may be null). */

@@ -51,7 +51,6 @@ const reportsCatalog = [
       { id: "order-acknowledgement", title: "Order Acknowledgement Report", desc: "Track OA issuance, linked quotation references, and confirmation state." },
       { id: "pending-order-acknowledgement", title: "Pending Order Acknowledgement Report", desc: "OA records pending closure or downstream conversion." },
       { id: "order-allocation", title: "Order Allocation Report", desc: "Allocation register for Store processing (without pricing)." },
-      { id: "rts", title: "RTS Report", desc: "Ready-to-Ship register with packing information (without pricing)." },
       { id: "backorder", title: "Backorder Report", desc: "Customer-level shortage report for allocated lines still waiting for stock." },
     ],
   },
@@ -76,7 +75,7 @@ const statusOptions = ["DRAFT", "SENT", "APPROVED", "REJECTED", "EXPIRED", "CONV
 const oaStatusOptions = ["DRAFT", "ACTIVE", "CONFIRMED", "CLOSED", "CANCELLED"];
 const proformaStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "APPROVED", "CONVERTED", "CANCELLED"];
 const salesInvoiceStatusOptions = ["DRAFT", "ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID", "CANCELLED"];
-const orderAllocationStatusOptions = ["OPEN", "PARTIALLY_RTS", "RTS_COMPLETE", "APPROVED", "CLOSED", "CANCELLED"];
+const orderAllocationStatusOptions = ["OPEN", "APPROVED", "CLOSED", "CANCELLED"];
 const rtsStatusOptions = ["DRAFT", "APPROVED", "CONVERTED_TO_INVOICE", "CANCELLED"];
 
 const reportStatusOptionsById = {
@@ -2408,28 +2407,6 @@ export default function Sales() {
     onError: (e) => setErr(e.message),
   });
 
-  const convertToSalesInvoiceFromOAMutation = useMutation({
-    mutationFn: (id) => apiPost(`/sales/convert/oa/${id}/to-sales-invoice`, {}),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
-      qc.invalidateQueries({ queryKey: ["sales-oa"] });
-      invalidateStockViews();
-      if (detailId) qc.invalidateQueries({ queryKey: ["oa-detail", detailId] });
-    },
-    onError: (e) => setErr(e.message),
-  });
-
-  const convertProformaToSalesInvoiceMutation = useMutation({
-    mutationFn: (id) => apiPost(`/sales/convert/proforma/${id}/to-sales-invoice`, {}),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
-      qc.invalidateQueries({ queryKey: ["sales-proforma"] });
-      invalidateStockViews();
-      if (detailId) qc.invalidateQueries({ queryKey: ["proforma-detail", detailId] });
-    },
-    onError: (e) => setErr(e.message),
-  });
-
   const convertProformaToCiplMutation = useMutation({
     mutationFn: (id) => apiPost(`/sales/convert/proforma/${id}/to-cipl`, {}),
     onSuccess: () => {
@@ -3010,7 +2987,8 @@ export default function Sales() {
             disabled={
               activeTab === "Order Allocation" ||
               activeTab === "Reports" ||
-              activeTab === "Dispatch Status"
+              activeTab === "Dispatch Status" ||
+              activeTab === "Sales Invoice"
             }
             onClick={() => {
               setErr("");
@@ -3035,7 +3013,7 @@ export default function Sales() {
               : activeTab === "Proforma Invoice"
               ? "New proforma"
               : activeTab === "Sales Invoice"
-              ? "New sales invoice"
+              ? "Create from Packing"
               : activeTab === "Dispatch Status"
               ? "Create from dispatched invoice"
               : activeTab === "Sales Return"
@@ -4234,7 +4212,7 @@ export default function Sales() {
                             disabled={createSalesInvoiceFromPackingMutation.isPending}
                             onClick={() => createSalesInvoiceFromPackingMutation.mutate(p._id)}
                           >
-                            Create invoice
+                            Create Invoice
                           </button>
                         </td>
                       </tr>
@@ -4275,7 +4253,6 @@ export default function Sales() {
                     oaRows.map((r) => {
                       const converted = Array.isArray(r.convertedTo) ? r.convertedTo.map(String) : [];
                       const hasPIFromOA = converted.includes("PROFORMA");
-                      const hasSIFromOA = converted.includes("SALES_INVOICE");
                       const isCancelled = String(r.status || "").toUpperCase() === "CANCELLED";
                       return (
                       <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
@@ -4311,15 +4288,6 @@ export default function Sales() {
                               onClick={() => convertToProformaFromOAMutation.mutate(r._id)}
                             >
                               Convert to PI
-                            </button>
-                            <button
-                              type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${hasSIFromOA || isCancelled ? "opacity-40" : ""}`}
-                              disabled={hasSIFromOA || isCancelled}
-                              title={isCancelled ? "Cancelled OA cannot be converted" : hasSIFromOA ? "Sales invoice already created from this OA" : ""}
-                              onClick={() => convertToSalesInvoiceFromOAMutation.mutate(r._id)}
-                            >
-                              Convert to SI
                             </button>
                             <button
                               type="button"
@@ -4534,15 +4502,6 @@ export default function Sales() {
                               className={`rounded-lg border px-2 py-1 text-xs ${piApproved || isCancelled ? "opacity-40" : ""}`}
                               disabled={piApproved || isCancelled}
                               title={isCancelled ? "Cancelled proforma cannot be converted" : piApproved ? "Already converted from this PI" : ""}
-                              onClick={() => convertProformaToSalesInvoiceMutation.mutate(r._id)}
-                            >
-                              Convert to SI
-                            </button>
-                            <button
-                              type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${piApproved || isCancelled ? "opacity-40" : ""}`}
-                              disabled={piApproved || isCancelled}
-                              title={isCancelled ? "Cancelled proforma cannot be converted" : piApproved ? "Already converted from this PI" : ""}
                               onClick={() => convertProformaToCiplMutation.mutate(r._id)}
                             >
                               Convert to CIPL
@@ -4657,26 +4616,6 @@ export default function Sales() {
                           <div className="flex flex-wrap gap-1">
                             <button
                               type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${String(r.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
-                              disabled={String(r.status || "").toUpperCase() === "CANCELLED"}
-                              title={String(r.status || "").toUpperCase() === "CANCELLED" ? "Cancelled allocation cannot be converted" : ""}
-                              onClick={() =>
-                                apiPost(`/sales/order-allocations/${r._id}/to-sales-invoice`, {
-                                  rtsId: r.latestApprovedRtsId || undefined,
-                                })
-                                  .then(() => {
-                                    qc.invalidateQueries({ queryKey: ["sales-order-allocation"] });
-                                    qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
-                                    qc.invalidateQueries({ queryKey: ["store-rts"] });
-                                    invalidateStockViews();
-                                  })
-                                  .catch((e) => setErr(e.message))
-                              }
-                            >
-                              Convert to SI
-                            </button>
-                            <button
-                              type="button"
                               className={`rounded-lg border px-2 py-1 text-xs ${
                                 r.linkedSalesInvoiceId || String(r.status || "").toUpperCase() === "CANCELLED"
                                   ? "opacity-40"
@@ -4760,60 +4699,6 @@ export default function Sales() {
                             >
                               Export CSV
                             </button>
-                            {r.latestApprovedRtsId ? (
-                              <>
-                                <button
-                                  type="button"
-                                  className="rounded-lg border px-2 py-1 text-xs"
-                                  title="Approved RTS packing list"
-                                  onClick={() => openFlowDocumentPrint("rts", r.latestApprovedRtsId)}
-                                >
-                                  RTS print
-                                </button>
-                                <button
-                                  type="button"
-                                  className="rounded-lg border px-2 py-1 text-xs"
-                                  title="RTS packing PDF"
-                                  onClick={() => openFlowDocumentPrint("rts", r.latestApprovedRtsId, true)}
-                                >
-                                  RTS PDF
-                                </button>
-                                <button
-                                  type="button"
-                                  className="rounded-lg border px-2 py-1 text-xs"
-                                  title="RTS packing CSV"
-                                  onClick={() =>
-                                    apiGet(`/sales/rts/${r.latestApprovedRtsId}`)
-                                      .then((doc) =>
-                                        exportListCsv(`packing-list-${doc.rtsNo || "rts"}`, rtsCsvRowsForSales(doc), [
-                                          { label: "Record Type", value: (x) => x.recordType || "" },
-                                          { label: "RTS No", value: (x) => x.rtsNo || "" },
-                                          { label: "RTS Date", value: (x) => x.rtsDate || "" },
-                                          { label: "Allocation No", value: (x) => x.allocationNo || "" },
-                                          { label: "Customer", value: (x) => x.customer || "" },
-                                          { label: "Total Weight Kg", value: (x) => x.totalWeightKg ?? "" },
-                                          { label: "Box Material", value: (x) => x.boxMaterial || "" },
-                                          { label: "Box Count", value: (x) => x.boxCount ?? "" },
-                                          { label: "Box Dimensions mm", value: (x) => x.boxDimensionsMm || "" },
-                                          { label: "Box Remarks", value: (x) => x.boxRemarks || "" },
-                                          { label: "S/N", value: (x) => x.serialNo || "" },
-                                          { label: "Article", value: (x) => x.article || "" },
-                                          { label: "Part no", value: (x) => x.partNo || "" },
-                                          { label: "Description", value: (x) => x.description || "" },
-                                          { label: "UOM", value: (x) => x.uom || "" },
-                                          { label: "Qty", value: (x) => x.qty ?? "" },
-                                          { label: "COO", value: (x) => x.coo || "Germany" },
-                                          { label: "Unit weight kg", value: (x) => x.unitWeightKg ?? "" },
-                                          { label: "Total line weight kg", value: (x) => x.totalLineWeightKg ?? "" },
-                                        ])
-                                      )
-                                      .catch((e) => setErr(e.message))
-                                  }
-                                >
-                                  RTS CSV
-                                </button>
-                              </>
-                            ) : null}
                           </div>
                         </td>
                       </tr>
@@ -4977,7 +4862,7 @@ export default function Sales() {
                                 String(r.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""
                               }`}
                               disabled={String(r.status || "").toUpperCase() === "CANCELLED"}
-                              title="Invoice → RTS (one step back)"
+                              title="Cancel invoice before dispatch"
                               onClick={async () => {
                                 setErr("");
                                 try {
@@ -6084,7 +5969,6 @@ export default function Sales() {
                 {(() => {
                   const conv = Array.isArray(oaDetail.convertedTo) ? oaDetail.convertedTo.map(String) : [];
                   const hasPI = conv.includes("PROFORMA");
-                  const hasSI = conv.includes("SALES_INVOICE");
                   const isCancelled = String(oaDetail.status || "").toUpperCase() === "CANCELLED";
                   return (
                     <>
@@ -6096,15 +5980,6 @@ export default function Sales() {
                         onClick={() => convertToProformaFromOAMutation.mutate(oaDetail._id)}
                       >
                         Convert to PI
-                      </button>
-                      <button
-                        type="button"
-                        className={`rounded-xl border px-2 py-1 text-xs ${hasSI || isCancelled ? "opacity-40" : ""}`}
-                        disabled={hasSI || isCancelled || convertToSalesInvoiceFromOAMutation.isPending}
-                        title={isCancelled ? "Cancelled OA cannot be converted" : hasSI ? "Sales invoice already linked (from OA)" : ""}
-                        onClick={() => convertToSalesInvoiceFromOAMutation.mutate(oaDetail._id)}
-                      >
-                        Convert to SI
                       </button>
                     </>
                   );
@@ -6256,14 +6131,6 @@ export default function Sales() {
                   onClick={() => convertToProformaFromOAMutation.mutate(oaDetail._id)}
                 >
                   Convert to PI
-                </button>
-                <button
-                  type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${dupSIOpen || String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
-                  disabled={dupSIOpen || String(oaDetail.status || "").toUpperCase() === "CANCELLED"}
-                  onClick={() => convertToSalesInvoiceFromOAMutation.mutate(oaDetail._id)}
-                >
-                  Convert to SI
                 </button>
                 <button
                   type="button"
@@ -6555,15 +6422,6 @@ export default function Sales() {
                   className={`rounded-xl border px-2 py-1 text-xs ${String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
                   disabled={String(proformaDetail.status || "").toUpperCase() === "CANCELLED"}
                   title={String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "Cancelled proforma cannot be converted" : ""}
-                  onClick={() => convertProformaToSalesInvoiceMutation.mutate(proformaDetail._id)}
-                >
-                  Convert to SI
-                </button>
-                <button
-                  type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
-                  disabled={String(proformaDetail.status || "").toUpperCase() === "CANCELLED"}
-                  title={String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "Cancelled proforma cannot be converted" : ""}
                   onClick={() => convertProformaToCiplMutation.mutate(proformaDetail._id)}
                 >
                   Convert to CIPL
@@ -6694,14 +6552,6 @@ export default function Sales() {
                 </button>
               </div>
               <div className="flex flex-wrap gap-2 opacity-80">
-                <button
-                  type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${["APPROVED", "CONVERTED", "CANCELLED"].includes(String(proformaDetail.status || "").toUpperCase()) ? "opacity-40" : ""}`}
-                  disabled={["APPROVED", "CONVERTED", "CANCELLED"].includes(String(proformaDetail.status || "").toUpperCase())}
-                  onClick={() => convertProformaToSalesInvoiceMutation.mutate(proformaDetail._id)}
-                >
-                  Convert to SI
-                </button>
                 <button
                   type="button"
                   className={`rounded-xl border px-2 py-1 text-xs ${["APPROVED", "CONVERTED", "CANCELLED"].includes(String(proformaDetail.status || "").toUpperCase()) ? "opacity-40" : ""}`}

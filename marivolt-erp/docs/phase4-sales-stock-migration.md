@@ -111,14 +111,11 @@ bucket movement: `rtsAfter` decreases, `allocatedAfter` increases.
 
 ### 6. Sales Invoice creation
 
-1. Convert an Order Allocation (with at least one APPROVED RTS) to a
-   Sales Invoice. Approve the invoice (post stock).
+1. Create a Sales Invoice from a posted Packing document (`PARTIALLY_PACKED`
+   or `FULLY_PACKED`) with pending invoice quantity.
 
-**Expected:** Stock Ledger shows one `SALES_INVOICE_OUT` row per article
-with `referenceType = SALES_INVOICE`, `referenceNo = <invoice no>`,
-`qtyOut = invoice qty`, `onHandAfter` decreased, `rtsAfter` decreased
-(by min(invoice qty, RTS bucket)), and any remainder taken from
-`allocatedAfter`.
+**Expected:** No stock movement is posted by Sales Invoice. Physical stock
+moves later during Store Dispatch.
 
 ### 7. Sales Invoice cancellation
 

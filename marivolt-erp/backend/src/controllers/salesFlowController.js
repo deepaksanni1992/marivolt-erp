@@ -235,6 +235,27 @@ function packedInvoiceLineFromPackingLine(packingLine, allocationLine, pendingQt
   };
 }
 
+async function firstReadyPackingForAllocation(req, allocationId) {
+  const packings = await StorePacking.find(
+    withCompany(req, {
+      allocationId,
+      status: { $in: POSTED_STORE_PACKING_STATUSES },
+      invoiceStatus: { $ne: "FULLY_INVOICED" },
+    })
+  )
+    .sort({ packingDate: 1 })
+    .lean();
+  for (const packing of packings) {
+    const invoicedByLine = await invoicedQtyByPackingLine(req.companyId, packing._id);
+    let pendingInvoiceQty = 0;
+    for (const line of packing.lines || []) {
+      pendingInvoiceQty += Math.max(0, (Number(line.packQty) || 0) - (invoicedByLine.get(String(line._id)) || 0));
+    }
+    if (pendingInvoiceQty > 0) return { packing, pendingInvoiceQty };
+  }
+  return null;
+}
+
 async function applyLinkedQuotationDiscountFallback(req, docs = [], { persistModel = null } = {}) {
   const rows = Array.isArray(docs) ? docs : [];
   if (!rows.length) return rows;
@@ -1910,66 +1931,19 @@ export async function convertOAToSalesInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid OA id" });
     const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: id }));
     validateConversionSource(oa, "order acknowledgement");
-    if (!oa.lines?.length) return res.status(400).json({ message: "OA requires at least one line to convert" });
-    const already = await SalesInvoice.findOne(
-      withCompany(req, { linkedOAId: oa._id, linkedProformaId: null, status: { $ne: "CANCELLED" } })
-    );
-    if (already) return res.status(409).json({ message: `Sales invoice already exists (${already.invoiceNo})` });
-
-    const lines = normalizeLines(oa.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines, oa);
-    const gate = await ensureApproval(req, {
-      companyId: req.companyId,
-      module: "SALES",
-      actionKey: "invoice_post",
-      documentType: "SALES_INVOICE",
-      documentNo: "",
-      customerName: oa.customerName || "",
-      amount: totals.grandTotal || 0,
-      currency: oa.currency || "USD",
-      description: `Post sales invoice from OA ${oa.oaNo}`,
-    });
-    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
-    const invoiceNo = await nextSalesDocNumber({
-      companyId: req.companyId,
-      companyCode: req.companyCode,
-      docKey: "SALES_INVOICE",
-    });
-    const doc = await SalesInvoice.create({
-      companyId: req.companyId,
-      invoiceNo,
-      invoiceDate: new Date(),
-      linkedQuotationId: oa.linkedQuotationId || null,
-      linkedQuotationNo: oa.linkedQuotationNo || "",
-      linkedOAId: oa._id,
-      linkedOANo: oa.oaNo,
-      linkedProformaId: null,
-      linkedProformaNo: "",
-      customerName: oa.customerName,
-      paymentTerms: oa.paymentTerms || "",
-      shippingAddress: "",
-      billingAddress: "",
-      dispatchDetails: oa.dispatchTerms || oa.deliverySchedule || "",
-      currency: oa.currency || "USD",
-      remarks: oa.acknowledgementNotes || "",
-      vertical: oa.vertical || "",
-      engine: oa.engine || "",
-      model: oa.model || "",
-      config: oa.config || "",
-      esn: oa.esn || "",
-      lines,
-      ...totals,
-      status: "DRAFT",
-      createdBy: req.user?.email || "",
-    });
-    if (canonicalStatus(DOC_TYPES.SALES_INVOICE, doc.status) !== "DRAFT") {
-      await postSalesInvoiceReceivable({ req, invoice: doc });
+    const allocation = await OrderAllocation.findOne(
+      withCompany(req, { linkedOAId: oa._id, status: { $ne: "CANCELLED" } })
+    )
+      .sort({ allocationDate: -1 })
+      .lean();
+    if (!allocation) {
+      return res.status(400).json({
+        message: "At least one posted Packing document is required before creating Sales Invoice",
+      });
     }
-    if (!oa.convertedTo?.includes("SALES_INVOICE")) oa.convertedTo = [...(oa.convertedTo || []), "SALES_INVOICE"];
-    oa.status = "APPROVED";
-    oa.updatedBy = req.user?.email || "";
-    await oa.save();
-    res.status(201).json(doc);
+    req.params.id = String(allocation._id);
+    req.body = { ...(req.body || {}), sourceOAId: id };
+    return convertOrderAllocationToSalesInvoice(req, res);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -2207,7 +2181,7 @@ export async function convertPackingToSalesInvoice(req, res) {
       if (requestedQty > 0) rawLines.push(packedInvoiceLineFromPackingLine(packingLine, allocationLine, requestedQty));
     }
     const lines = normalizeLines(rawLines);
-    if (!lines.length) return res.status(400).json({ message: "Nothing pending to invoice for this packing" });
+    if (!lines.length) return res.status(400).json({ message: "Packing has no pending invoice quantity" });
     const totals = computeTotals(lines, allocationPre);
     const gate = await ensureApproval(req, {
       companyId: req.companyId,
@@ -2285,7 +2259,12 @@ export async function convertPackingToSalesInvoice(req, res) {
       );
       createdId = doc._id;
       await postSalesInvoiceReceivable({ req, invoice: doc, session });
-      await recalcPackingInvoiceStatus({ companyId: req.companyId, packingId: packing._id, session });
+      const refreshedPacking = await recalcPackingInvoiceStatus({ companyId: req.companyId, packingId: packing._id, session });
+      allocation.linkedSalesInvoiceId = doc._id;
+      allocation.linkedSalesInvoiceNo = doc.invoiceNo;
+      if (refreshedPacking?.invoiceStatus === "FULLY_INVOICED") allocation.status = "CLOSED";
+      allocation.updatedBy = req.user?.email || "";
+      await allocation.save({ session });
     });
     const doc = await SalesInvoice.findOne(withCompany(req, { _id: createdId })).lean();
     await writeAudit(req, {
@@ -2446,12 +2425,14 @@ export async function cancelSalesInvoice(req, res) {
     const lines = (inv.lines || [])
       .map((l) => ({ article: l.article, qty: Number(l.qty) || 0 }))
       .filter((x) => x.article && x.qty > 0);
-    const stockImpact = lines.map((l) => ({
-      article: l.article,
-      qty: l.qty,
-      from: "INVOICED",
-      to: "RTS",
-    }));
+    const stockImpact = inv.linkedStorePackingId
+      ? []
+      : lines.map((l) => ({
+          article: l.article,
+          qty: l.qty,
+          from: "INVOICED",
+          to: "RTS",
+        }));
     if (dryRun) {
       return res.json({ dryRun: true, stockImpact });
     }
@@ -2506,7 +2487,28 @@ export async function cancelSalesInvoice(req, res) {
         );
       }
       if (inv.linkedStorePackingId) {
-        await recalcPackingInvoiceStatus({ companyId: req.companyId, packingId: inv.linkedStorePackingId, session });
+        const refreshedPacking = await recalcPackingInvoiceStatus({
+          companyId: req.companyId,
+          packingId: inv.linkedStorePackingId,
+          session,
+        });
+        if (allocation) {
+          const remainingInvoice = await SalesInvoice.findOne(
+            withCompany(req, {
+              linkedOrderAllocationId: allocation._id,
+              _id: { $ne: inv._id },
+              status: { $ne: "CANCELLED" },
+            })
+          )
+            .sort({ invoiceDate: -1 })
+            .session(session)
+            .lean();
+          allocation.linkedSalesInvoiceId = remainingInvoice?._id || null;
+          allocation.linkedSalesInvoiceNo = remainingInvoice?.invoiceNo || "";
+          allocation.status = refreshedPacking?.invoiceStatus === "FULLY_INVOICED" ? "CLOSED" : refreshedPacking?.status || allocation.status;
+          allocation.updatedBy = req.user?.email || "";
+          await allocation.save({ session });
+        }
       }
       if (allocation && (inv.linkedRtsId || inv.stockPostedAt)) {
         allocation.linkedSalesInvoiceId = null;
@@ -2863,66 +2865,19 @@ export async function convertProformaToSalesInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid proforma id" });
     const proforma = await ProformaInvoice.findOne(withCompany(req, { _id: id }));
     validateConversionSource(proforma, "proforma");
-    if (!proforma.lines?.length) return res.status(400).json({ message: "Proforma requires at least one line to convert" });
-    const already = await SalesInvoice.findOne(
+    const allocation = await OrderAllocation.findOne(
       withCompany(req, { linkedProformaId: proforma._id, status: { $ne: "CANCELLED" } })
-    );
-    if (already) return res.status(409).json({ message: `Sales invoice already exists (${already.invoiceNo})` });
-    const ciplFromPi = await Cipl.findOne(
-      withCompany(req, { linkedProformaId: proforma._id, status: { $ne: "CANCELLED" } })
-    );
-    if (ciplFromPi) return res.status(409).json({ message: `CIPL already exists from this proforma (${ciplFromPi.ciplNo})` });
-
-    const lines = normalizeLines(proforma.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines, proforma);
-    const gate = await ensureApproval(req, {
-      companyId: req.companyId,
-      module: "SALES",
-      actionKey: "invoice_post",
-      documentType: "SALES_INVOICE",
-      documentNo: "",
-      customerName: proforma.customerName || "",
-      amount: totals.grandTotal || 0,
-      currency: proforma.currency || "USD",
-      description: `Post sales invoice from proforma ${proforma.proformaNo}`,
-    });
-    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
-    const invoiceNo = await nextSalesDocNumber({
-      companyId: req.companyId,
-      companyCode: req.companyCode,
-      docKey: "SALES_INVOICE",
-    });
-    const doc = await SalesInvoice.create({
-      companyId: req.companyId,
-      invoiceNo,
-      invoiceDate: new Date(),
-      linkedQuotationId: proforma.linkedQuotationId || null,
-      linkedQuotationNo: proforma.linkedQuotationNo || "",
-      linkedOAId: proforma.linkedOAId || null,
-      linkedOANo: proforma.linkedOANo || "",
-      linkedProformaId: proforma._id,
-      linkedProformaNo: proforma.proformaNo,
-      customerName: proforma.customerName,
-      paymentTerms: proforma.paymentTerms || "",
-      shippingAddress: "",
-      billingAddress: "",
-      dispatchDetails: proforma.shipmentTerms || "",
-      currency: proforma.currency || "USD",
-      remarks: proforma.remarks || "",
-      vertical: proforma.vertical || "",
-      engine: proforma.engine || "",
-      model: proforma.model || "",
-      config: proforma.config || "",
-      esn: proforma.esn || "",
-      lines,
-      ...totals,
-      status: "DRAFT",
-      createdBy: req.user?.email || "",
-    });
-    proforma.status = "APPROVED";
-    proforma.updatedBy = req.user?.email || "";
-    await proforma.save();
-    res.status(201).json(doc);
+    )
+      .sort({ allocationDate: -1 })
+      .lean();
+    if (!allocation) {
+      return res.status(400).json({
+        message: "At least one posted Packing document is required before creating Sales Invoice",
+      });
+    }
+    req.params.id = String(allocation._id);
+    req.body = { ...(req.body || {}), sourceProformaId: id };
+    return convertOrderAllocationToSalesInvoice(req, res);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -2999,31 +2954,7 @@ export async function listOrderAllocations(req, res) {
       OrderAllocation.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       OrderAllocation.countDocuments(filter),
     ]);
-    const allocationIds = items.map((x) => x._id);
-    const rtsDocs = allocationIds.length
-      ? await Rts.find(
-          withCompany(req, {
-            linkedOrderAllocationId: { $in: allocationIds },
-            status: "APPROVED",
-          })
-        )
-          .sort({ rtsDate: -1, createdAt: -1 })
-          .lean()
-      : [];
-    const latestByAllocation = new Map();
-    for (const rts of rtsDocs) {
-      const key = String(rts.linkedOrderAllocationId || "");
-      if (!latestByAllocation.has(key)) latestByAllocation.set(key, rts);
-    }
-    const rows = items.map((x) => {
-      const latest = latestByAllocation.get(String(x._id || ""));
-      return {
-        ...x,
-        latestApprovedRtsId: latest?._id || null,
-        latestApprovedRtsNo: latest?.rtsNo || "",
-      };
-    });
-    res.json({ items: rows, total, page, limit });
+    res.json({ items, total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -3035,13 +2966,25 @@ export async function getOrderAllocation(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const doc = await OrderAllocation.findOne(withCompany(req, { _id: id })).lean();
     if (!doc) return res.status(404).json({ message: "Not found" });
-    const postedRtsDocs = await postedRtsByAllocation(req, doc._id);
-    const shipped = shippedQtyMapForAllocation(postedRtsDocs);
+    const packings = await StorePacking.find(
+      withCompany(req, {
+        allocationId: doc._id,
+        status: { $in: POSTED_STORE_PACKING_STATUSES },
+      })
+    ).lean();
+    const packed = new Map();
+    for (const packing of packings) {
+      for (const line of packing.lines || []) {
+        const key = String(line.allocationLineId || "");
+        if (!key) continue;
+        packed.set(key, (packed.get(key) || 0) + (Number(line.packQty) || 0));
+      }
+    }
     const lines = (doc.lines || []).map((l) => {
       const lineId = String(l._id || "");
-      const shippedQty = shipped.get(lineId) || 0;
-      const pendingQty = Math.max(0, (Number(l.qty) || 0) - shippedQty);
-      return { ...l, shippedQty, pendingQty };
+      const packedQty = packed.get(lineId) || 0;
+      const pendingPackQty = Math.max(0, (Number(l.qty) || 0) - packedQty);
+      return { ...l, packedQty, pendingPackQty, pendingQty: pendingPackQty };
     });
     res.json({ ...doc, lines });
   } catch (err) {
@@ -3884,156 +3827,17 @@ export async function convertOrderAllocationToSalesInvoice(req, res) {
   try {
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid order allocation id" });
-    const allocationPre = await OrderAllocation.findOne(withCompany(req, { _id: id }));
-    validateConversionSource(allocationPre, "order allocation");
-    const approvedPre = await approvedRtsByAllocation(req, allocationPre?._id);
-    if (!approvedPre.length) {
-      return res.status(400).json({ message: "At least one APPROVED RTS is required before converting to Sales Invoice" });
+    const allocation = await OrderAllocation.findOne(withCompany(req, { _id: id })).lean();
+    validateConversionSource(allocation, "order allocation");
+    const ready = await firstReadyPackingForAllocation(req, allocation._id);
+    if (!ready) {
+      return res.status(400).json({
+        message: "At least one posted Packing document is required before creating Sales Invoice",
+      });
     }
-    const requestedRtsId = req.body?.rtsId;
-    let refRtsPre = null;
-    if (requestedRtsId && mongoose.Types.ObjectId.isValid(String(requestedRtsId))) {
-      refRtsPre = approvedPre.find((x) => String(x._id) === String(requestedRtsId)) || null;
-      if (!refRtsPre) return res.status(400).json({ message: "Selected RTS is not approved or not linked to this allocation" });
-    } else {
-      refRtsPre = approvedPre[0];
-    }
-    const lines = normalizeLines((allocationPre.lines || []).map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines, allocationPre);
-    const gate = await ensureApproval(req, {
-      companyId: req.companyId,
-      module: "SALES",
-      actionKey: "invoice_post",
-      documentType: "SALES_INVOICE",
-      documentNo: "",
-      customerName: allocationPre.customerName || "",
-      amount: totals.grandTotal || 0,
-      currency: allocationPre.currency || "USD",
-      description: `Post sales invoice from allocation ${allocationPre.allocationNo}`,
-    });
-    if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
-    const invoiceNo = await nextSalesDocNumber({
-      companyId: req.companyId,
-      companyCode: req.companyCode,
-      docKey: "SALES_INVOICE",
-    });
-    const stockLines = lines.map((l) => ({ article: l.article, qty: Number(l.qty) || 0 })).filter((x) => x.article && x.qty > 0);
-    const warehouse = String(allocationPre.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
-
-    let createdId = null;
-    await withTransaction(async (session) => {
-      const allocation = await OrderAllocation.findOne(withCompany(req, { _id: id })).session(session);
-      if (!allocation) throw new Error("Order allocation not found");
-      const existing = await SalesInvoice.findOne(
-        withCompany(req, { linkedOrderAllocationId: allocation._id, status: { $ne: "CANCELLED" } })
-      ).session(session);
-      if (existing) {
-        throw new Error(`Sales invoice already exists (${existing.invoiceNo})`);
-      }
-      const approvedDocs = await approvedRtsByAllocation(req, allocation._id, session);
-      if (!approvedDocs.length) throw new Error("At least one APPROVED RTS is required before converting to Sales Invoice");
-      let refRts = null;
-      if (requestedRtsId && mongoose.Types.ObjectId.isValid(String(requestedRtsId))) {
-        refRts = approvedDocs.find((x) => String(x._id) === String(requestedRtsId)) || null;
-        if (!refRts) throw new Error("Selected RTS is not approved or not linked to this allocation");
-      } else {
-        refRts = approvedDocs[0];
-      }
-      for (const [article, qty] of dedupeLines(stockLines)) {
-        await stockService.invoiceFromRTS({
-          session,
-          companyId: req.companyId,
-          article,
-          warehouse,
-          qty,
-          customerName: allocation.customerName || "",
-          referenceType: "SALES_INVOICE",
-          referenceNo: invoiceNo,
-          remarks: "Allocation→sales invoice",
-          createdBy: req.user?.email || "",
-          sourceModule: "SALES",
-        });
-      }
-      const [doc] = await SalesInvoice.create(
-        [
-          {
-            companyId: req.companyId,
-            invoiceNo,
-            invoiceDate: new Date(),
-            linkedQuotationId: allocation.linkedQuotationId || null,
-            linkedQuotationNo: allocation.linkedQuotationNo || "",
-            linkedOAId: allocation.linkedOAId || null,
-            linkedOANo: allocation.linkedOANo || "",
-            linkedProformaId: allocation.linkedProformaId || null,
-            linkedProformaNo: allocation.linkedProformaNo || "",
-            linkedOrderAllocationId: allocation._id,
-            linkedOrderAllocationNo: allocation.allocationNo,
-            linkedRtsId: refRts?._id || null,
-            linkedRtsNo: refRts?.rtsNo || "",
-            customerName: allocation.customerName,
-            paymentTerms: "",
-            dispatchDetails: "",
-            shippingAddress: "",
-            billingAddress: "",
-            currency: allocation.currency || "USD",
-            vertical: allocation.vertical || "",
-            engine: allocation.engine || "",
-            model: allocation.model || "",
-            config: allocation.config || "",
-            esn: allocation.esn || "",
-            remarks: "",
-            lines,
-            ...totals,
-            status: "ISSUED",
-            stockPostedAt: new Date(),
-            convertedFromRtsAt: new Date(),
-            convertedFromRtsBy: req.user?.email || "",
-            createdBy: req.user?.email || "",
-          },
-        ],
-        { session }
-      );
-      createdId = doc._id;
-      await postSalesInvoiceReceivable({ req, invoice: doc, session });
-      allocation.status = "CLOSED";
-      allocation.linkedSalesInvoiceId = doc._id;
-      allocation.linkedSalesInvoiceNo = doc.invoiceNo;
-      allocation.updatedBy = req.user?.email || "";
-      await allocation.save({ session });
-      if (refRts?._id) {
-        await Rts.findOneAndUpdate(
-          withCompany(req, { _id: refRts._id }),
-          {
-            status: "CONVERTED_TO_INVOICE",
-            linkedSalesInvoiceId: doc._id,
-            linkedSalesInvoiceNo: doc.invoiceNo,
-            convertedToInvoiceAt: new Date(),
-            convertedToInvoiceBy: req.user?.email || "",
-            updatedBy: req.user?.email || "",
-          },
-          { session }
-        );
-      }
-    });
-    const doc = await SalesInvoice.findOne(withCompany(req, { _id: createdId })).lean();
-    await writeAudit(req, {
-      action: "CREATE",
-      module: "SALES",
-      entityType: "SALES_INVOICE",
-      entityId: doc._id,
-      documentNo: doc.invoiceNo,
-      toStatus: "POSTED",
-      description: `Sales Invoice ${doc.invoiceNo} created from allocation ${doc.linkedOrderAllocationNo}`,
-      metadata: {
-        sourceDoc: {
-          type: "ORDER_ALLOCATION",
-          id: String(doc.linkedOrderAllocationId),
-          no: doc.linkedOrderAllocationNo,
-        },
-        rtsNo: doc.linkedRtsNo || "",
-      },
-    });
-    res.status(201).json(doc);
+    req.params.id = String(ready.packing._id);
+    req.body = { ...(req.body || {}), sourceAllocationId: id };
+    return convertPackingToSalesInvoice(req, res);
   } catch (err) {
     const msg = err.message || String(err);
     if (err?.code === "INVALID_TRANSITION" || err?.code === "STOCK_INSUFFICIENT") {
@@ -4050,13 +3854,10 @@ export async function convertRtsToSalesInvoice(req, res) {
   if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid RTS id" });
   const rts = await Rts.findOne(withCompany(req, { _id: id })).lean();
   if (!rts) return res.status(404).json({ message: "RTS not found" });
-  if (String(rts.status || "").toUpperCase() !== "APPROVED") {
-    return res.status(400).json({ message: "Only APPROVED RTS can convert to sales invoice" });
-  }
   const allocId = String(rts.linkedOrderAllocationId || "");
   if (!mongoose.Types.ObjectId.isValid(allocId)) return res.status(400).json({ message: "RTS has no allocation link" });
   req.params.id = allocId;
-  req.body = { ...(req.body || {}), rtsId: id };
+  req.body = { ...(req.body || {}), legacyRtsId: id };
   return convertOrderAllocationToSalesInvoice(req, res);
 }
 
