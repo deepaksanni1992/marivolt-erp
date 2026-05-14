@@ -67,6 +67,12 @@ function initialPoForm(company) {
     contactPerson: "",
     supplierReference: "",
     offerDate: "",
+    vertical: "",
+    brand: "",
+    engine: "",
+    model: "",
+    config: "",
+    esn: "",
     currency: cur,
     orderDate: todayDateInput(),
     remarks: "",
@@ -88,6 +94,8 @@ function buildPoPayload(form) {
         articleNo: articleNo || itemCode,
         itemCode,
         partNo,
+        partNumber: partNo.toUpperCase(),
+        materialCode: itemCode,
         description: String(l.description || "").trim(),
         qty: Number(l.qty) || 0,
         uom: String(l.uom || "PCS").trim(),
@@ -120,6 +128,12 @@ function buildPoPayload(form) {
     contactPerson: form.contactPerson ?? "",
     supplierReference: form.supplierReference ?? "",
     offerDate: form.offerDate ?? "",
+    vertical: form.vertical ?? "",
+    brand: form.brand ?? "",
+    engine: form.engine || form.brand || "",
+    model: form.model ?? "",
+    config: form.config ?? "",
+    esn: form.esn ?? "",
     currency: cur,
     orderDate,
     remarks: form.remarks ?? "",
@@ -180,6 +194,12 @@ function purchaseOrderApiToForm(po) {
     contactPerson: po.contactPerson || "",
     supplierReference: po.supplierReference || "",
     offerDate: po.offerDate || "",
+    vertical: po.vertical || "",
+    brand: po.brand || po.engine || "",
+    engine: po.engine || po.brand || "",
+    model: po.model || "",
+    config: po.config || "",
+    esn: po.esn || "",
     currency: po.currency || "USD",
     orderDate,
     remarks: po.remarks || "",
@@ -376,6 +396,14 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
     web: doc.buyerWeb || "",
     trn: doc.buyerTrnNo || "",
   };
+  const machine = {
+    vertical: doc.vertical || "—",
+    brand: doc.brand || doc.engine || "—",
+    model: doc.model || "—",
+    config: doc.config || "—",
+    esn: doc.esn || "—",
+    currency: cur,
+  };
   const poNo = unsaved ? "Draft (not saved)" : doc.poNumber || "—";
 
   const brandingName = String(doc.buyerLegalName || auth?.company?.name || "").trim();
@@ -521,7 +549,7 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
           </header>
         )}
 
-        <div className="mt-5 grid gap-3 md:grid-cols-2">
+        <div className="mt-5 grid gap-3 lg:grid-cols-3">
           <div className="min-h-[140px] rounded-[10px] border border-[#e5e7eb] bg-[#fafafa] p-3">
             <p className="text-[11px] font-bold uppercase tracking-[0.3px] text-[#6b7280]">Buyer</p>
             <p className="mt-1 text-sm font-semibold text-[#111827]">{buyer.name}</p>
@@ -540,6 +568,15 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
               {doc.supplierPhone ? <p>Tel: {doc.supplierPhone}</p> : null}
               {doc.supplierEmail ? <p>{doc.supplierEmail}</p> : null}
             </div>
+          </div>
+          <div className="min-h-[140px] rounded-[10px] border border-[#e5e7eb] bg-[#fafafa] p-3 text-xs leading-relaxed text-[#555]">
+            <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.3px] text-[#6b7280]">Machine Details</p>
+            <p><b>Vertical:</b> {machine.vertical}</p>
+            <p><b>Brand:</b> {machine.brand}</p>
+            <p><b>Model:</b> {machine.model}</p>
+            <p><b>Config:</b> {machine.config}</p>
+            <p><b>ESN:</b> {machine.esn}</p>
+            <p><b>Currency:</b> {machine.currency}</p>
           </div>
         </div>
 
@@ -577,16 +614,16 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
           <table className="min-w-[900px] w-full border-collapse text-xs">
             <thead>
               <tr className="bg-[#1f3a5f]">
-                <th className={thCell}>Pos</th>
-                <th className={thCell}>Article Nr.</th>
+                <th className={thCell}>S/N</th>
+                <th className={thCell}>Article</th>
+                <th className={thCell}>Part Number</th>
                 <th className={thCell}>Description</th>
-                <th className={thCell}>Part Nr.</th>
-                <th className={`${thCell} text-right`}>Qty</th>
                 <th className={thCell}>UOM</th>
+                <th className={`${thCell} text-right`}>QTY</th>
                 <th className={`${thCell} text-right`}>Unit rate</th>
                 <th className={`${thCell} text-right`}>Total</th>
                 <th className={thCell}>Lead time</th>
-                <th className={thCell}>Remark</th>
+                <th className={thCell}>Remarks</th>
               </tr>
             </thead>
             <tbody>
@@ -603,11 +640,11 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
                   return (
                     <tr key={l._id || i} className={stripe}>
                       <td className={`${tdCell} text-[#6b7280]`}>{i + 1}</td>
-                      <td className={`${tdCell} font-mono text-[11px]`}>{l.articleNo || l.itemCode || "—"}</td>
+                      <td className={`${tdCell} font-mono text-[11px]`}>{l.article || l.articleNo || l.itemCode || "—"}</td>
+                      <td className={`${tdCell} font-mono text-[11px]`}>{l.partNumber || l.partNo || "—"}</td>
                       <td className={tdCell}>{l.description || "—"}</td>
-                      <td className={`${tdCell} font-mono text-[11px]`}>{l.partNo || "—"}</td>
-                      <td className={`${tdCell} text-right tabular-nums`}>{l.qty}</td>
                       <td className={tdCell}>{l.uom || "PCS"}</td>
+                      <td className={`${tdCell} text-right tabular-nums`}>{l.qty}</td>
                       <td className={`${tdCell} text-right tabular-nums`}>{Number(l.unitPrice || 0).toFixed(2)}</td>
                       <td className={`${tdCell} text-right tabular-nums font-semibold text-[#111827]`}>{tot.toFixed(2)}</td>
                       <td className={tdCell}>{l.leadTime || "—"}</td>
@@ -2570,6 +2607,33 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                 placeholder="Optional notes on the PO"
               />
             </FormField>
+          </div>
+
+          <div className="mt-4 rounded-lg border border-gray-100 bg-gray-50/90 p-3">
+            <div className="mb-2 text-[10px] font-bold uppercase text-gray-500">Machine Details</div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+              <FormField label="Vertical">
+                <TextInput value={form.vertical} onChange={(e) => setForm((f) => ({ ...f, vertical: e.target.value }))} />
+              </FormField>
+              <FormField label="Brand">
+                <TextInput
+                  value={form.brand}
+                  onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value, engine: e.target.value }))}
+                />
+              </FormField>
+              <FormField label="Model">
+                <TextInput value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))} />
+              </FormField>
+              <FormField label="Config">
+                <TextInput value={form.config} onChange={(e) => setForm((f) => ({ ...f, config: e.target.value }))} />
+              </FormField>
+              <FormField label="ESN">
+                <TextInput value={form.esn} onChange={(e) => setForm((f) => ({ ...f, esn: e.target.value }))} />
+              </FormField>
+              <FormField label="Currency">
+                <TextInput value={form.currency} onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value }))} />
+              </FormField>
+            </div>
           </div>
 
           <div className="mt-5">

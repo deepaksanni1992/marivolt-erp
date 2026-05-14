@@ -9,6 +9,7 @@
     "build": "vite build",
     "verify": "npm --prefix backend run verify && npm run build",
     "repair:sales-flow": "npm --prefix backend run repair:sales-flow",
+    "repair:po-items": "npm --prefix backend run repair:po-items",
     "lint": "eslint .",
     "preview": "vite preview",
     "generate:import-templates": "node scripts/generate-import-templates.mjs",

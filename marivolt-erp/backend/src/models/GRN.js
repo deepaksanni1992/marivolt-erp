@@ -15,8 +15,11 @@ const grnItemSchema = new mongoose.Schema(
   {
     article: { type: String, required: true, ref: "ItemMaster", trim: true, uppercase: true },
     description: { type: String, default: "", trim: true },
+    partNumber: { type: String, default: "", trim: true, uppercase: true },
     spn: { type: String, default: "", trim: true },
     materialCode: { type: String, default: "", trim: true },
+    drawingNo: { type: String, default: "", trim: true },
+    uom: { type: String, default: "PCS", trim: true, uppercase: true },
     orderedQty: { type: Number, default: 0, min: 0 },
     receivedQty: { type: Number, required: true, min: 0 },
     pendingQty: { type: Number, default: 0, min: 0 },

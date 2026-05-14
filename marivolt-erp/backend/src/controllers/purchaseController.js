@@ -3,7 +3,6 @@ import PurchaseOrder from "../models/PurchaseOrder.js";
 import GRN from "../models/GRN.js";
 import Supplier from "../models/Supplier.js";
 import Company from "../models/Company.js";
-import ItemMaster, { UOM_VALUES } from "../models/itemMasterModel.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 import { applyPurchaseOrderDefaults } from "../constants/purchaseOrderDefaults.js";
 import { buyerSnapshotFromCompany } from "../utils/companyBuyer.js";
@@ -11,13 +10,13 @@ import { approvalRequiredPayload, ensureApproval } from "../services/approvalSer
 import { writeAudit, writeStatusChange } from "../services/auditService.js";
 import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentController.js";
 import { nextGrnNo } from "../services/grnNumberService.js";
+import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
 }
 
 const MAX_GRN_NUMBER_RETRIES = 2;
-const VALID_ITEM_UOMS = new Set(UOM_VALUES);
 
 function isDuplicateGrnNoError(err) {
   const msg = String(err?.message || "");
@@ -41,6 +40,16 @@ function normalizePoLines(lines = []) {
         article: String(l.article || itemCode).trim().toUpperCase(),
         articleNo,
         partNo: l.partNo != null ? String(l.partNo).trim() : "",
+        partNumber: String(l.partNumber || l.partNo || "").trim().toUpperCase(),
+        materialCode: String(l.materialCode || l.itemCode || "").trim().toUpperCase(),
+        spn: String(l.spn || l.SPN || l.partNo || "").trim().toUpperCase(),
+        drawingNo: l.drawingNo != null ? String(l.drawingNo).trim() : String(l.drawingNumber || "").trim(),
+        vertical: l.vertical != null ? String(l.vertical).trim() : "",
+        brand: l.brand != null ? String(l.brand).trim() : String(l.engine || "").trim(),
+        engine: l.engine != null ? String(l.engine).trim() : String(l.brand || "").trim(),
+        model: l.model != null ? String(l.model).trim() : "",
+        config: l.config != null ? String(l.config).trim() : "",
+        esn: l.esn != null ? String(l.esn).trim() : "",
         uom: l.uom || "PCS",
         qty: Number(l.orderedQty ?? l.qty) || 0,
         orderedQty: Number(l.orderedQty ?? l.qty) || 0,
@@ -53,56 +62,6 @@ function normalizePoLines(lines = []) {
       };
     })
     .filter((l) => l.itemCode && l.qty > 0);
-}
-
-function normalizeArticle(value) {
-  return String(value || "").trim().toUpperCase();
-}
-
-function normalizeItemUom(value) {
-  const uom = String(value || "PCS").trim().toUpperCase();
-  return VALID_ITEM_UOMS.has(uom) ? uom : "PCS";
-}
-
-async function ensurePoLineItemsForCompany({ companyId, companyCode = "", lines = [] }) {
-  if (!companyId) throw new Error("companyId is required for PO item auto-create");
-  for (const line of lines || []) {
-    const article = normalizeArticle(line.article || line.itemCode || line.articleNo || line.partNo);
-    if (!article) continue;
-    if (line.itemId && mongoose.Types.ObjectId.isValid(String(line.itemId))) {
-      const linkedItem = await ItemMaster.findOne({ _id: line.itemId, companyId }).select("_id companyId article").lean();
-      if (!linkedItem) {
-        throw new Error(`Item ${article} is not available in this PO company and cannot be linked.`);
-      }
-    }
-    const existing = await ItemMaster.findOne({ companyId, article }).select("_id companyId article").lean();
-    if (existing) {
-      if (String(existing.companyId) !== String(companyId)) {
-        throw new Error(`Item ${article} belongs to another company and cannot be linked to this PO.`);
-      }
-      continue;
-    }
-    try {
-      await ItemMaster.create({
-        companyId,
-        companyCode: normalizeArticle(companyCode),
-        article,
-        itemName: String(line.description || line.itemName || article).trim() || article,
-        description: String(line.description || "").trim(),
-        materialCode: String(line.materialCode || line.itemCode || "").trim(),
-        spn: String(line.spn || line.partNo || "").trim(),
-        uom: normalizeItemUom(line.uom),
-        status: "Active",
-        source: "PO_AUTO_CREATE",
-      });
-    } catch (err) {
-      if (err?.code !== 11000) throw err;
-      const raced = await ItemMaster.findOne({ companyId, article }).select("_id companyId article").lean();
-      if (!raced || String(raced.companyId) !== String(companyId)) {
-        throw new Error(`Item ${article} could not be auto-created for this company.`);
-      }
-    }
-  }
 }
 
 function recalcPoTotals(doc) {
@@ -222,11 +181,6 @@ export async function createPurchaseOrder(req, res) {
     }
     const company = await Company.findById(req.companyId).lean();
     Object.assign(body, buyerSnapshotFromCompany(company));
-    await ensurePoLineItemsForCompany({
-      companyId: req.companyId,
-      companyCode: req.companyCode || company?.code || "",
-      lines: body.lines,
-    });
     body = applyPurchaseOrderDefaults(body);
     if (!body.poNo && !body.poNumber) {
       body.poNo = await nextSequentialNumber(PurchaseOrder, "poNo", "PO", {
@@ -252,6 +206,14 @@ export async function createPurchaseOrder(req, res) {
     body.linkedPRs = Array.isArray(body.linkedPRs) ? body.linkedPRs.filter((x) => mongoose.Types.ObjectId.isValid(String(x))) : [];
     body.createdBy = req.user?.email || "";
     body.companyId = req.companyId;
+    await syncPoLinesToItemMaster({
+      companyId: req.companyId,
+      companyCode: req.companyCode || company?.code || "",
+      poNo: body.poNo,
+      supplierName: body.supplierName,
+      header: body,
+      lines: body.lines,
+    });
     const doc = new PurchaseOrder(body);
     recalcPoTotals(doc);
     await doc.save();
@@ -281,6 +243,7 @@ export async function updatePurchaseOrder(req, res) {
     if (!["DRAFT", "SAVED", "REJECTED"].includes(doc.status)) {
       return res.status(400).json({ message: "Only draft or saved purchase orders can be modified." });
     }
+    const company = await Company.findById(req.companyId).lean();
 
     const allowed = [
       "buyerLegalName",
@@ -297,6 +260,12 @@ export async function updatePurchaseOrder(req, res) {
       "ref",
       "intRef",
       "contactPerson",
+      "vertical",
+      "brand",
+      "engine",
+      "model",
+      "config",
+      "esn",
       "supplierId",
       "branchId",
       "warehouseId",
@@ -328,11 +297,6 @@ export async function updatePurchaseOrder(req, res) {
       if (!doc.lines.length) {
         return res.status(400).json({ message: "At least one valid line is required" });
       }
-      await ensurePoLineItemsForCompany({
-        companyId: req.companyId,
-        companyCode: req.companyCode || "",
-        lines: doc.lines,
-      });
     }
     if (req.body.supplierId !== undefined || req.body.supplierName !== undefined) {
       const supplierSnapshot = await resolveSupplierSnapshot(req, doc);
@@ -344,8 +308,17 @@ export async function updatePurchaseOrder(req, res) {
       doc.paymentTerms = supplierSnapshot.paymentTerms || doc.paymentTerms;
       doc.currency = supplierSnapshot.currency || doc.currency;
     }
+    Object.assign(doc, buyerSnapshotFromCompany(company));
     if (doc.poNo && !doc.poNumber) doc.poNumber = doc.poNo;
     if (doc.poNumber && !doc.poNo) doc.poNo = doc.poNumber;
+    await syncPoLinesToItemMaster({
+      companyId: req.companyId,
+      companyCode: req.companyCode || "",
+      poNo: doc.poNo,
+      supplierName: doc.supplierName,
+      header: doc,
+      lines: doc.lines,
+    });
     recalcPoTotals(doc);
     await doc.save();
     await writeAudit(req, {

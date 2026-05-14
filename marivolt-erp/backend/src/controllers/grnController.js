@@ -1,6 +1,5 @@
 import mongoose from "mongoose";
 import GRN from "../models/GRN.js";
-import ItemMaster, { UOM_VALUES } from "../models/itemMasterModel.js";
 import StockLocation from "../models/StockLocation.js";
 import PurchaseOrder from "../models/PurchaseOrder.js";
 import StockLedger from "../models/StockLedger.js";
@@ -10,6 +9,7 @@ import { writeAudit, writeStatusChange } from "../services/auditService.js";
 import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentController.js";
 import { nextGrnNo } from "../services/grnNumberService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
+import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js";
 
 function withCompany(req, filter = {}) {
   const cid = req.companyId;
@@ -107,8 +107,10 @@ function mapPoRowToGrnLine(l, po) {
     poNo: po.poNo || po.poNumber,
     article: article || "—",
     description: l?.description || l?.desc || l?.productName || "",
+    partNumber: l?.partNumber || l?.partNo || "",
     spn: l?.partNo || l?.spn || l?.partNumber || "",
     materialCode: itemCode || String(l?.materialCode || "").trim(),
+    drawingNo: l?.drawingNo || l?.drawingNumber || "",
     orderedQty: ordered,
     receivedQty: received,
     pendingQty: pending,
@@ -129,61 +131,28 @@ function upper(v) {
 const DEFAULT_GRN_WAREHOUSE_CODE = "MAIN";
 const DEFAULT_GRN_WAREHOUSE_NAME = "Main Warehouse";
 const MAX_GRN_NUMBER_RETRIES = 2;
-const VALID_ITEM_UOMS = new Set(UOM_VALUES);
 
 function resolveGrnWarehouseCode(warehouseRaw) {
   const w = upper(warehouseRaw || "");
   return w || DEFAULT_GRN_WAREHOUSE_CODE;
 }
 
-function normalizeItemUom(value) {
-  const uom = upper(value || "PCS");
-  return VALID_ITEM_UOMS.has(uom) ? uom : "PCS";
-}
-
-async function ensureGrnItemMaster({ session, companyId, companyCode = "", line }) {
+async function ensureGrnItemMaster({ session, companyId, companyCode = "", poNo = "", supplierName = "", header = {}, line }) {
   const article = upper(line?.article);
   if (!article) throw new Error("GRN line article is required.");
   console.info(`[GRN item lookup] companyId=${companyId} article=${article}`);
-  const existing = await ItemMaster.findOne({ companyId, article }).select("_id companyId article").session(session);
-  if (existing) {
-    if (String(existing.companyId) !== String(companyId)) {
-      throw new Error(`Item ${article} belongs to another company and cannot be used for this GRN.`);
-    }
-    console.info(`[GRN item lookup] companyId=${companyId} article=${article} status=found`);
-    return existing;
-  }
-
-  try {
-    const created = await ItemMaster.create(
-      [
-        {
-          companyId,
-          companyCode: upper(companyCode),
-          article,
-          itemName: t(line?.description) || article,
-          description: t(line?.description),
-          materialCode: t(line?.materialCode),
-          spn: t(line?.spn),
-          uom: normalizeItemUom(line?.uom),
-          status: "Active",
-          source: "PO_AUTO_CREATE",
-        },
-      ],
-      { session }
-    );
-    const item = Array.isArray(created) ? created[0] : created;
-    console.info(`[GRN item lookup] companyId=${companyId} article=${article} status=auto-created`);
-    return item;
-  } catch (err) {
-    if (err?.code !== 11000) throw err;
-    const raced = await ItemMaster.findOne({ companyId, article }).select("_id companyId article").session(session);
-    if (!raced || String(raced.companyId) !== String(companyId)) {
-      throw new Error(`Item ${article} could not be auto-created for this company.`);
-    }
-    console.info(`[GRN item lookup] companyId=${companyId} article=${article} status=found-after-race`);
-    return raced;
-  }
+  const summary = await syncPoLinesToItemMaster({
+    companyId,
+    companyCode,
+    poNo,
+    supplierName,
+    header,
+    lines: [line],
+    session,
+  });
+  console.info(
+    `[GRN item lookup] companyId=${companyId} article=${article} created=${summary.created} updated=${summary.updated}`
+  );
 }
 
 /**
@@ -288,8 +257,10 @@ async function buildGrnItemsFromPoLineSelection(req, poId, selections = [], opti
         src.itemCode || src.materialCode || src.article || src.articleNo || src.sku || ""
       ).toUpperCase() || "—",
       description: src.description || src.desc || src.productName || "",
+      partNumber: src.partNumber || src.partNo || "",
       spn: src.partNo || src.spn || "",
       materialCode: String(src.itemCode || src.materialCode || "").trim(),
+      drawingNo: src.drawingNo || src.drawingNumber || "",
       orderedQty: ordered,
       receivedQty: grnQty,
       pendingQty: pending,
@@ -331,8 +302,11 @@ function normalizeItems(items = []) {
     return {
       article: upper(r.article),
       description: t(r.description),
+      partNumber: upper(r.partNumber || r.partNo),
       spn: t(r.spn),
       materialCode: t(r.materialCode),
+      drawingNo: t(r.drawingNo || r.drawingNumber),
+      uom: upper(r.uom || "PCS") || "PCS",
       orderedQty: ordered,
       receivedQty: received,
       pendingQty: Number.isFinite(pending) ? pending : 0,
@@ -806,6 +780,9 @@ export async function postGrnFromPo(req, res) {
               session,
               companyId: poLean.companyId || req.companyId,
               companyCode: req.companyCode,
+              poNo: poLean.poNo || poLean.poNumber || grn.poNo,
+              supplierName: grn.supplierName,
+              header: poLean,
               line,
             });
             const wh = resolveGrnWarehouseCode(line.warehouse);
@@ -911,8 +888,10 @@ export async function postGrn(req, res) {
       }
 
       let allowOverPo = false;
+      let sourcePo = null;
       if (grn.poId) {
         const po = await PurchaseOrder.findOne(withCompany(req, { _id: grn.poId })).session(session);
+        sourcePo = po;
         if (po && String(po.status || "").toUpperCase() === "CANCELLED") {
           throw new Error("Cannot post GRN for a cancelled PO");
         }
@@ -968,6 +947,9 @@ export async function postGrn(req, res) {
           session,
           companyId: grn.companyId || req.companyId,
           companyCode: req.companyCode,
+          poNo: sourcePo?.poNo || sourcePo?.poNumber || grn.poNo,
+          supplierName: grn.supplierName,
+          header: sourcePo || {},
           line,
         });
         const wh = resolveGrnWarehouseCode(line.warehouse);
