@@ -83,21 +83,37 @@ function initialPoForm(company) {
   };
 }
 
-function buildPoPayload(form) {
+function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
   const cur = form.currency || "USD";
   const lines = form.lines
     .map((l) => {
       const articleNo = String(l.articleNo || "").trim();
       const partNo = String(l.partNo || "").trim();
-      const itemCode = String(l.itemCode || articleNo || partNo).trim().toUpperCase();
+      const article = String(l.article || articleNo || l.itemCode || "").trim().toUpperCase();
+      const itemCode = String(l.itemCode || article || articleNo || l.materialCode || l.partNumber || partNo)
+        .trim()
+        .toUpperCase();
       return {
+        _id: l._id,
+        article,
         articleNo: articleNo || itemCode,
         itemCode,
         partNo,
-        partNumber: partNo.toUpperCase(),
-        materialCode: itemCode,
+        partNumber: String(l.partNumber || partNo).trim().toUpperCase(),
+        materialCode: String(l.materialCode || itemCode).trim().toUpperCase(),
+        spn: String(l.spn || partNo).trim().toUpperCase(),
+        drawingNo: String(l.drawingNo || "").trim(),
+        vertical: String(l.vertical || form.vertical || "").trim(),
+        brand: String(l.brand || l.engine || form.brand || form.engine || "").trim(),
+        engine: String(l.engine || l.brand || form.engine || form.brand || "").trim(),
+        model: String(l.model || form.model || "").trim(),
+        config: String(l.config || form.config || "").trim(),
+        esn: String(l.esn || form.esn || "").trim(),
         description: String(l.description || "").trim(),
         qty: Number(l.qty) || 0,
+        orderedQty: Number(l.orderedQty ?? l.qty) || 0,
+        receivedQty: Number(l.receivedQty) || 0,
+        cancelledQty: Number(l.cancelledQty) || 0,
         uom: String(l.uom || "PCS").trim(),
         unitPrice: Number(l.unitPrice) || 0,
         remarks: String(l.remarks || "").trim(),
@@ -105,7 +121,7 @@ function buildPoPayload(form) {
         currency: cur,
       };
     })
-    .filter((l) => l.itemCode && l.qty > 0);
+    .filter((l) => includeIncompleteLines || (l.itemCode && l.qty > 0));
 
   const orderDate =
     form.orderDate && String(form.orderDate).trim()
@@ -165,11 +181,26 @@ function purchaseOrderApiToForm(po) {
   const lines =
     Array.isArray(po.lines) && po.lines.length > 0
       ? po.lines.map((l) => ({
-          articleNo: l.articleNo || "",
-          itemCode: l.itemCode || "",
-          partNo: l.partNo || "",
+          _id: l._id,
+          article: l.article || "",
+          articleNo: l.articleNo || l.article || l.itemCode || "",
+          itemCode: l.itemCode || l.article || "",
+          partNo: l.partNo || l.partNumber || "",
+          partNumber: l.partNumber || l.partNo || "",
+          materialCode: l.materialCode || l.itemCode || "",
+          spn: l.spn || "",
+          drawingNo: l.drawingNo || "",
+          vertical: l.vertical || "",
+          brand: l.brand || l.engine || "",
+          engine: l.engine || l.brand || "",
+          model: l.model || "",
+          config: l.config || "",
+          esn: l.esn || "",
           description: l.description || "",
-          qty: Number(l.qty) || 1,
+          qty: Number(l.qty ?? l.orderedQty) || 1,
+          orderedQty: Number(l.orderedQty ?? l.qty) || 1,
+          receivedQty: Number(l.receivedQty) || 0,
+          cancelledQty: Number(l.cancelledQty) || 0,
           uom: l.uom || "PCS",
           unitPrice: Number(l.unitPrice) || 0,
           remarks: l.remarks || "",
@@ -761,6 +792,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
   const [receiveWarehouse, setReceiveWarehouse] = useState("MAIN");
   const [receiveLines, setReceiveLines] = useState([]);
   const [err, setErr] = useState("");
+  const [notice, setNotice] = useState("");
 
   const poImportRef = useRef(null);
   const poLineCsvImportRef = useRef(null);
@@ -894,6 +926,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       qc.invalidateQueries({ queryKey: ["purchaseSummary"] });
       qc.invalidateQueries({ queryKey: ["pendingPoReport"] });
       setErr("");
+      setNotice("Purchase order created successfully.");
       setCreateOpen(false);
       setEditPoId(null);
       setForm(initialPoForm(auth?.company));
@@ -909,8 +942,10 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       qc.invalidateQueries({ queryKey: ["pendingPoReport"] });
       qc.invalidateQueries({ queryKey: ["purchaseOrder", id] });
       setErr("");
+      setNotice("Purchase order updated successfully.");
       setCreateOpen(false);
       setEditPoId(null);
+      setDetailId(id);
       setForm(initialPoForm(auth?.company));
     },
     onError: (e) => setErr(e.message || "Could not update purchase order"),
@@ -1379,6 +1414,11 @@ export default function Purchase({ procurementEmbed = false } = {}) {
           {error?.message || err}
         </div>
       )}
+      {notice && !err && !error ? (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+          {notice}
+        </div>
+      ) : null}
 
       {!procurementEmbed ? (
         <div className="flex flex-wrap gap-2 rounded-xl border border-gray-200 bg-white p-2 shadow-sm">
@@ -2919,12 +2959,14 @@ export default function Purchase({ procurementEmbed = false } = {}) {
             disabled={createMutation.isPending || updatePoMutation.isPending}
             onClick={() => {
               setErr("");
-              const body = buildPoPayload(form);
+              setNotice("");
+              const body = buildPoPayload(form, { includeIncompleteLines: Boolean(editPoId) });
               if (!body.supplierName) {
                 setErr("Supplier name is required.");
                 return;
               }
-              if (!body.lines.length) {
+              const validFinalLines = body.lines.filter((line) => line.itemCode && Number(line.qty) > 0);
+              if (!validFinalLines.length) {
                 setErr("Add at least one line with Article Nr., code, or Part Nr. and quantity.");
                 return;
               }

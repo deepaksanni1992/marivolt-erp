@@ -29,7 +29,9 @@ function isDuplicateGrnNoError(err) {
 function normalizePoLines(lines = []) {
   return lines
     .map((l) => {
-      const itemCode = String(l.itemCode || l.articleNo || l.partNo || "").trim().toUpperCase();
+      const itemCode = String(l.itemCode || l.article || l.articleNo || l.materialCode || l.partNumber || l.partNo || "")
+        .trim()
+        .toUpperCase();
       const articleNo =
         l.articleNo != null && String(l.articleNo).trim() !== ""
           ? String(l.articleNo).trim()
@@ -62,6 +64,54 @@ function normalizePoLines(lines = []) {
       };
     })
     .filter((l) => l.itemCode && l.qty > 0);
+}
+
+function poLineToPlain(line) {
+  if (!line) return {};
+  if (typeof line.toObject === "function") return line.toObject();
+  return { ...line };
+}
+
+function mergeLinePatch(baseLine, patchLine) {
+  const base = poLineToPlain(baseLine);
+  const patch = poLineToPlain(patchLine);
+  return {
+    ...base,
+    ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)),
+    _id: patch._id || base._id,
+  };
+}
+
+function mergePoLinesForUpdate(existingLines = [], incomingLines = []) {
+  const existing = Array.from(existingLines || []);
+  const byId = new Map(existing.map((line) => [String(line._id || ""), line]).filter(([id]) => id));
+  const usedIds = new Set();
+  const merged = [];
+
+  for (let i = 0; i < incomingLines.length; i += 1) {
+    const incoming = incomingLines[i] || {};
+    const id = String(incoming._id || incoming.id || "");
+    const base = (id && byId.get(id)) || existing[i] || null;
+    if (id) usedIds.add(id);
+    merged.push(mergeLinePatch(base, incoming));
+  }
+
+  for (const line of existing) {
+    const id = String(line._id || "");
+    if (id && usedIds.has(id)) continue;
+    if (!incomingLines.length) merged.push(poLineToPlain(line));
+  }
+
+  return normalizePoLines(merged);
+}
+
+function fillBlankBuyerSnapshot(doc, company) {
+  const snapshot = buyerSnapshotFromCompany(company);
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (doc[key] == null || String(doc[key]).trim() === "") {
+      doc[key] = value;
+    }
+  }
 }
 
 function recalcPoTotals(doc) {
@@ -244,6 +294,8 @@ export async function updatePurchaseOrder(req, res) {
       return res.status(400).json({ message: "Only draft or saved purchase orders can be modified." });
     }
     const company = await Company.findById(req.companyId).lean();
+    const previousSupplierId = String(doc.supplierId || "");
+    const previousSupplierName = String(doc.supplierName || "").trim();
 
     const allowed = [
       "buyerLegalName",
@@ -275,8 +327,6 @@ export async function updatePurchaseOrder(req, res) {
       "linkedPRs",
       "offerDate",
       "currency",
-      "lines",
-      "status",
       "remarks",
       "orderDate",
       "delivery",
@@ -292,13 +342,21 @@ export async function updatePurchaseOrder(req, res) {
     for (const k of allowed) {
       if (req.body[k] !== undefined) doc[k] = req.body[k];
     }
-    if (req.body.lines) {
-      doc.lines = normalizePoLines(doc.lines);
+    if (Array.isArray(req.body.lines)) {
+      doc.lines = mergePoLinesForUpdate(doc.lines, req.body.lines);
       if (!doc.lines.length) {
         return res.status(400).json({ message: "At least one valid line is required" });
       }
+    } else {
+      doc.lines = normalizePoLines(doc.lines);
+      if (!doc.lines.length) {
+        return res.status(400).json({ message: "Purchase order must retain at least one valid line." });
+      }
     }
-    if (req.body.supplierId !== undefined || req.body.supplierName !== undefined) {
+    const supplierChanged =
+      (req.body.supplierId !== undefined && String(req.body.supplierId || "") !== previousSupplierId) ||
+      (req.body.supplierName !== undefined && String(req.body.supplierName || "").trim() !== previousSupplierName);
+    if (supplierChanged) {
       const supplierSnapshot = await resolveSupplierSnapshot(req, doc);
       doc.supplierId = supplierSnapshot.supplierId;
       doc.supplierName = supplierSnapshot.supplierName;
@@ -308,7 +366,7 @@ export async function updatePurchaseOrder(req, res) {
       doc.paymentTerms = supplierSnapshot.paymentTerms || doc.paymentTerms;
       doc.currency = supplierSnapshot.currency || doc.currency;
     }
-    Object.assign(doc, buyerSnapshotFromCompany(company));
+    fillBlankBuyerSnapshot(doc, company);
     if (doc.poNo && !doc.poNumber) doc.poNumber = doc.poNo;
     if (doc.poNumber && !doc.poNo) doc.poNo = doc.poNumber;
     await syncPoLinesToItemMaster({
