@@ -515,12 +515,181 @@ function requireApprovedQuotationForConversion(quotation) {
   }
 }
 
-function isOAEditLocked(doc) {
+const OA_CANCELABLE_STATUSES = new Set(["ACTIVE", "APPROVED", "CONFIRMED", "CONVERTED"]);
+const OA_DOWNSTREAM_BLOCK_MESSAGE = "Cannot cancel OA because active downstream document exists.";
+
+function isOAEditLocked(doc, { hasActiveProforma = null } = {}) {
   if (!doc) return true;
   const st = String(doc.status || "").toUpperCase();
   if (["APPROVED", "CONVERTED", "CLOSED", "CANCELLED"].includes(st)) return true;
   const conv = Array.isArray(doc.convertedTo) ? doc.convertedTo.map(String) : [];
-  return conv.includes("PROFORMA") || conv.includes("SALES_INVOICE");
+  if (conv.includes("SALES_INVOICE")) return true;
+  if (hasActiveProforma === true) return true;
+  if (hasActiveProforma === false) return false;
+  return conv.includes("PROFORMA");
+}
+
+function isOACancelableStatus(status = "") {
+  return OA_CANCELABLE_STATUSES.has(String(status || "").toUpperCase());
+}
+
+async function activeProformaIdsForOAs(req, oaIds = []) {
+  if (!oaIds.length) return new Set();
+  const rows = await ProformaInvoice.find(
+    withCompany(req, { linkedOAId: { $in: oaIds }, status: { $ne: "CANCELLED" } })
+  )
+    .select("linkedOAId")
+    .lean();
+  return new Set(rows.map((r) => String(r.linkedOAId || "")).filter(Boolean));
+}
+
+async function findActiveDownstreamForOA(req, oaId) {
+  const oaOid = mongoose.Types.ObjectId.isValid(oaId) ? new mongoose.Types.ObjectId(String(oaId)) : null;
+  if (!oaOid) return null;
+
+  const activePi = await ProformaInvoice.findOne(
+    withCompany(req, { linkedOAId: oaOid, status: { $ne: "CANCELLED" } })
+  )
+    .select("proformaNo")
+    .lean();
+  if (activePi) return { kind: "proforma", ref: activePi.proformaNo };
+
+  const activeAlloc = await OrderAllocation.findOne(
+    withCompany(req, { linkedOAId: oaOid, status: { $ne: "CANCELLED" } })
+  )
+    .select("allocationNo _id")
+    .lean();
+  if (activeAlloc) return { kind: "order allocation", ref: activeAlloc.allocationNo };
+
+  const allocRows = await OrderAllocation.find(withCompany(req, { linkedOAId: oaOid }))
+    .select("_id allocationNo")
+    .lean();
+  const allocIds = allocRows.map((a) => a._id).filter(Boolean);
+  if (allocIds.length) {
+    const activePacking = await StorePacking.findOne({
+      companyId: req.companyId,
+      allocationId: { $in: allocIds },
+      status: { $in: POSTED_STORE_PACKING_STATUSES },
+    })
+      .select("packingNo")
+      .lean();
+    if (activePacking) return { kind: "packing", ref: activePacking.packingNo };
+
+    const activeDispatch = await StoreDispatch.findOne({
+      companyId: req.companyId,
+      allocationId: { $in: allocIds },
+      status: { $in: POSTED_STORE_DISPATCH_STATUSES },
+    })
+      .select("dispatchNo")
+      .lean();
+    if (activeDispatch) return { kind: "dispatch", ref: activeDispatch.dispatchNo };
+
+    const activeSiViaAlloc = await SalesInvoice.findOne(
+      withCompany(req, { linkedOrderAllocationId: { $in: allocIds }, status: { $ne: "CANCELLED" } })
+    )
+      .select("invoiceNo")
+      .lean();
+    if (activeSiViaAlloc) return { kind: "sales invoice", ref: activeSiViaAlloc.invoiceNo };
+  }
+
+  const activeSi = await SalesInvoice.findOne(
+    withCompany(req, { linkedOAId: oaOid, status: { $ne: "CANCELLED" } })
+  )
+    .select("invoiceNo")
+    .lean();
+  if (activeSi) return { kind: "sales invoice", ref: activeSi.invoiceNo };
+
+  return null;
+}
+
+async function releaseQuotationFromCancelledOA(req, oa, session = null) {
+  if (!oa?.linkedQuotationId) return null;
+  const q = Quotation.findOne(withCompany(req, { _id: oa.linkedQuotationId }));
+  if (session) q.session(session);
+  const quotation = await q;
+  if (!quotation) return null;
+  const qStatus = String(quotation.status || "").toUpperCase();
+  if (qStatus === "CONVERTED") {
+    quotation.status = "APPROVED";
+    quotation.convertedTo = (quotation.convertedTo || []).filter((x) => String(x).toUpperCase() !== "OA");
+    quotation.updatedBy = req.user?.email || "";
+    await quotation.save({ session });
+  }
+  return quotation;
+}
+
+async function tryReleaseOAAfterProformaCancel(req, proforma, session = null) {
+  if (!proforma?.linkedOAId) return;
+  const oaQ = OrderAcknowledgement.findOne(withCompany(req, { _id: proforma.linkedOAId }));
+  if (session) oaQ.session(session);
+  const oa = await oaQ;
+  if (!oa) return;
+  await releaseOAIfNoActiveProforma(req, oa, session);
+}
+
+async function releaseOAIfNoActiveProforma(req, oa, session = null) {
+  if (!oa || String(oa.status || "").toUpperCase() === "CANCELLED") return false;
+  const activePi = await ProformaInvoice.findOne(
+    withCompany(req, { linkedOAId: oa._id, status: { $ne: "CANCELLED" } })
+  )
+    .session(session || null)
+    .lean();
+  if (activePi) return false;
+
+  const conv = (oa.convertedTo || []).map(String);
+  const hadProforma = conv.includes("PROFORMA");
+  if (!hadProforma && String(oa.status || "").toUpperCase() !== "APPROVED") return false;
+
+  oa.convertedTo = conv.filter((x) => x.toUpperCase() !== "PROFORMA");
+  const nextConv = (oa.convertedTo || []).map(String);
+  if (!nextConv.includes("SALES_INVOICE") && !nextConv.includes("ORDER_ALLOCATION")) {
+    oa.status = "ACTIVE";
+  }
+  oa.updatedBy = req.user?.email || "";
+  await oa.save({ session });
+  return true;
+}
+
+async function enrichOAsWithCancelEligibility(req, oas = []) {
+  if (!oas.length) return oas;
+  const ids = oas.map((o) => o._id).filter(Boolean);
+  const activePiOaIds = await activeProformaIdsForOAs(req, ids);
+
+  return Promise.all(
+    oas.map(async (oaRaw) => {
+      let oa = oaRaw;
+      if (oaRaw?._id && !activePiOaIds.has(String(oaRaw._id))) {
+        const live = await OrderAcknowledgement.findOne(withCompany(req, { _id: oaRaw._id }));
+        if (live && (await releaseOAIfNoActiveProforma(req, live))) {
+          oa = live.toObject();
+        }
+      }
+      const st = String(oa.status || "").toUpperCase();
+      const hasActiveProforma = activePiOaIds.has(String(oa._id));
+      let canCancelOA = false;
+      let cancelOABlockReason = "";
+
+      if (st === "CANCELLED") {
+        cancelOABlockReason = "Order acknowledgement is already cancelled.";
+      } else if (!isOACancelableStatus(st)) {
+        cancelOABlockReason = "Only approved or active order acknowledgements can be cancelled.";
+      } else {
+        const downstream = await findActiveDownstreamForOA(req, oa._id);
+        if (downstream) {
+          cancelOABlockReason = OA_DOWNSTREAM_BLOCK_MESSAGE;
+        } else {
+          canCancelOA = true;
+        }
+      }
+
+      return {
+        ...oa,
+        hasActiveProforma,
+        canCancelOA,
+        cancelOABlockReason,
+      };
+    })
+  );
 }
 
 /** Only DRAFT proformas are editable (matches Sales UI). */
@@ -1576,7 +1745,8 @@ export async function listOAs(req, res) {
       OrderAcknowledgement.countDocuments(filter),
     ]);
     const items = await applyLinkedQuotationDiscountFallback(req, itemsRaw, { persistModel: OrderAcknowledgement });
-    res.json({ items, total, page, limit });
+    const enriched = await enrichOAsWithCancelEligibility(req, items);
+    res.json({ items: enriched, total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -1589,7 +1759,8 @@ export async function getOA(req, res) {
     const doc = await OrderAcknowledgement.findOne(withCompany(req, { _id: id })).lean();
     if (!doc) return res.status(404).json({ message: "Not found" });
     const [patched] = await applyLinkedQuotationDiscountFallback(req, [doc], { persistModel: OrderAcknowledgement });
-    res.json(patched || doc);
+    const [enriched] = await enrichOAsWithCancelEligibility(req, [patched || doc]);
+    res.json(enriched || patched || doc);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -1660,7 +1831,9 @@ export async function updateOA(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const doc = await OrderAcknowledgement.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
-    if (isOAEditLocked(doc)) {
+    const activePiIds = await activeProformaIdsForOAs(req, [doc._id]);
+    const hasActiveProforma = activePiIds.has(String(doc._id));
+    if (isOAEditLocked(doc, { hasActiveProforma })) {
       return res.status(400).json({
         message:
           "This order acknowledgement is locked after conversion to Proforma or Sales Invoice (or finalized status); it cannot be edited.",
@@ -1715,7 +1888,7 @@ export async function cancelOA(req, res) {
   try {
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
-    const reason = String(req.body?.cancellationReason ?? req.body?.reason ?? "").trim();
+    const reason = String(req.body?.cancellationReason ?? req.body?.cancelReason ?? req.body?.reason ?? "").trim();
     const dryRun = req.query.dryRun === "1" || req.body?.dryRun === true;
     if (!dryRun && !reason) {
       return res.status(400).json({ message: "cancellationReason is required" });
@@ -1725,43 +1898,47 @@ export async function cancelOA(req, res) {
     if (String(oa.status || "").toUpperCase() === "CANCELLED") {
       return res.status(400).json({ message: "Order acknowledgement is already cancelled" });
     }
-    const blockingAlloc = await OrderAllocation.findOne(
-      withCompany(req, { linkedOAId: oa._id, status: { $ne: "CANCELLED" } })
-    ).lean();
-    if (blockingAlloc) {
-      return res.status(400).json({
-        message: `Cannot cancel OA while order allocation ${blockingAlloc.allocationNo || ""} is active. Cancel allocation (and RTS) first.`,
-      });
+    if (!isOACancelableStatus(oa.status)) {
+      return res.status(400).json({ message: "Only approved or active order acknowledgements can be cancelled." });
+    }
+    const downstream = await findActiveDownstreamForOA(req, oa._id);
+    if (downstream) {
+      return res.status(400).json({ message: OA_DOWNSTREAM_BLOCK_MESSAGE });
     }
     if (dryRun) {
       return res.json({
         dryRun: true,
         stockImpact: [],
-        message: "OA cancel: no stock movement (no active allocation).",
+        message: "OA cancel: no stock movement (no active downstream documents).",
+        releaseQuotation: Boolean(oa.linkedQuotationId),
       });
     }
     const prevStatus = String(oa.status || "");
-    // OA in this controller maps to the Phase-8 QUOTATION/OA family; we
-    // protect cancellation through the lifecycle for parity with the
-    // other sales documents.
-    assertTransition(DOC_TYPES.QUOTATION, prevStatus, "CANCELLED", { documentNo: oa.oaNumber });
-    oa.status = "CANCELLED";
-    oa.cancelledAt = new Date();
-    oa.cancelledBy = req.user?.email || "";
-    oa.cancellationReason = reason;
-    oa.updatedBy = req.user?.email || "";
-    await oa.save();
+    assertTransition(DOC_TYPES.QUOTATION, prevStatus, "CANCELLED", { documentNo: oa.oaNo });
+    await withTransaction(async (session) => {
+      oa.status = "CANCELLED";
+      oa.cancelledAt = new Date();
+      oa.cancelledBy = req.user?.email || "";
+      oa.cancellationReason = reason;
+      oa.cancelReason = reason;
+      oa.releasedQuotationId = oa.linkedQuotationId || null;
+      oa.updatedBy = req.user?.email || "";
+      await oa.save({ session });
+      await releaseQuotationFromCancelledOA(req, oa, session);
+    });
     await writeStatusChange(req, {
       module: "SALES",
       entityType: "ORDER_ACKNOWLEDGEMENT",
       entityId: oa._id,
-      documentNo: oa.oaNumber || "",
+      documentNo: oa.oaNo || "",
       fromStatus: canonicalStatus(DOC_TYPES.QUOTATION, prevStatus),
       toStatus: "CANCELLED",
-      description: `OA ${oa.oaNumber || ""} cancelled`,
-      metadata: { reason },
+      description: `OA ${oa.oaNo || ""} cancelled`,
+      metadata: { reason, releasedQuotationId: oa.releasedQuotationId },
     });
-    res.json(oa);
+    const fresh = await OrderAcknowledgement.findOne(withCompany(req, { _id: id })).lean();
+    const [enriched] = await enrichOAsWithCancelEligibility(req, [fresh || oa.toObject?.() || oa]);
+    res.json(enriched || fresh || oa);
   } catch (err) {
     if (err?.code === "INVALID_TRANSITION") {
       return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
@@ -1909,13 +2086,17 @@ export async function cancelProforma(req, res) {
     if (dryRun) {
       return res.json({ dryRun: true, stockImpact: [] });
     }
-    doc.status = "CANCELLED";
-    doc.cancelledAt = new Date();
-    doc.cancelledBy = req.user?.email || "";
-    doc.cancellationReason = reason;
-    doc.updatedBy = req.user?.email || "";
-    await doc.save();
-    res.json(doc);
+    await withTransaction(async (session) => {
+      doc.status = "CANCELLED";
+      doc.cancelledAt = new Date();
+      doc.cancelledBy = req.user?.email || "";
+      doc.cancellationReason = reason;
+      doc.updatedBy = req.user?.email || "";
+      await doc.save({ session });
+      await tryReleaseOAAfterProformaCancel(req, doc, session);
+    });
+    const fresh = await ProformaInvoice.findOne(withCompany(req, { _id: id }));
+    res.json(fresh || doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }

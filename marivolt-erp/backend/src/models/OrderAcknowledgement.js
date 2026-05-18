@@ -54,6 +54,13 @@ const orderAcknowledgementSchema = new mongoose.Schema(
     cancelledAt: { type: Date, default: null },
     cancelledBy: { type: String, default: "" },
     cancellationReason: { type: String, default: "" },
+    cancelReason: { type: String, default: "" },
+    releasedQuotationId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Quotation",
+      default: null,
+      index: true,
+    },
     createdBy: { type: String, default: "" },
     updatedBy: { type: String, default: "" },
   },

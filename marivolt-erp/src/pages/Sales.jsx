@@ -352,21 +352,54 @@ function calcQuotationTotalsView(src) {
   };
 }
 
+function orderAcknowledgementHasActiveProforma(oa) {
+  if (!oa) return false;
+  if (typeof oa.hasActiveProforma === "boolean") return oa.hasActiveProforma;
+  const conv = Array.isArray(oa.convertedTo) ? oa.convertedTo.map(String) : [];
+  return conv.includes("PROFORMA");
+}
+
 function orderAcknowledgementLocked(oa) {
   if (!oa) return true;
   const st = String(oa.status || "").toUpperCase();
-  if (["APPROVED", "CONVERTED", "CLOSED", "CANCELLED"].includes(st)) return true;
+  if (["CLOSED", "CANCELLED"].includes(st)) return true;
+  if (st === "ACTIVE" || st === "DRAFT" || st === "CONFIRMED") return false;
   const conv = Array.isArray(oa.convertedTo) ? oa.convertedTo.map(String) : [];
-  return conv.includes("PROFORMA") || conv.includes("SALES_INVOICE");
+  if (conv.includes("SALES_INVOICE")) return true;
+  if (orderAcknowledgementHasActiveProforma(oa)) return true;
+  if (["APPROVED", "CONVERTED"].includes(st)) return true;
+  return false;
+}
+
+function orderAcknowledgementCanCancel(oa) {
+  if (!oa) return false;
+  if (typeof oa.canCancelOA === "boolean") return oa.canCancelOA;
+  const st = String(oa.status || "").toUpperCase();
+  if (st === "CANCELLED") return false;
+  if (!["ACTIVE", "APPROVED", "CONFIRMED", "CONVERTED"].includes(st)) return false;
+  return !orderAcknowledgementHasActiveProforma(oa);
+}
+
+function orderAcknowledgementCancelBlockReason(oa) {
+  if (!oa) return "Order acknowledgement not found.";
+  if (oa.cancelOABlockReason) return oa.cancelOABlockReason;
+  if (String(oa.status || "").toUpperCase() === "CANCELLED") return "Order acknowledgement is already cancelled.";
+  if (!orderAcknowledgementCanCancel(oa)) {
+    if (orderAcknowledgementHasActiveProforma(oa)) {
+      return "Cannot cancel OA because active downstream document exists.";
+    }
+    return "Only approved or active order acknowledgements can be cancelled.";
+  }
+  return "";
 }
 
 /** Shown badge when OA was converted to PI/SI even if legacy records never updated status to APPROVED. */
 function orderAcknowledgementDisplayStatus(oa) {
   if (!oa) return "";
   const st = String(oa.status || "").toUpperCase();
-  if (st === "CANCELLED" || st === "CLOSED" || st === "CONVERTED") return st;
+  if (st === "CANCELLED" || st === "CLOSED" || st === "CONVERTED" || st === "ACTIVE") return st;
   const conv = Array.isArray(oa.convertedTo) ? oa.convertedTo.map(String) : [];
-  if (conv.includes("PROFORMA") || conv.includes("SALES_INVOICE")) return "APPROVED";
+  if (orderAcknowledgementHasActiveProforma(oa) || conv.includes("SALES_INVOICE")) return "APPROVED";
   return String(oa.status || "");
 }
 
@@ -2568,18 +2601,19 @@ export default function Sales() {
 
   const salesCancelMutation = useMutation({
     mutationFn: async ({ kind, id, reason, dryRun }) => {
+      const dry = dryRun ? "?dryRun=1" : "";
       if (kind === "PI") {
-        const path = `/sales/proforma-invoices/${id}/cancel${dryRun ? "?dryRun=1" : ""}`;
-        return apiPatch(path, { cancellationReason: reason });
+        return apiPatch(`/sales/proforma-invoices/${id}/cancel${dry}`, { cancellationReason: reason, reason });
+      }
+      if (kind === "OA") {
+        return apiPatch(`/sales/order-acknowledgements/${id}/cancel${dry}`, { cancellationReason: reason, reason });
       }
       const paths = {
         SI: `/sales/invoices/${id}/cancel`,
         ALC: `/sales/allocations/${id}/cancel`,
         RTS: `/sales/rts/${id}/cancel`,
-        OA: `/sales/order-acknowledgements/${id}/cancel`,
       };
-      const path = `${paths[kind]}${dryRun ? "?dryRun=1" : ""}`;
-      return apiPost(path, { cancellationReason: reason });
+      return apiPost(`${paths[kind]}${dry}`, { cancellationReason: reason, reason });
     },
     onSuccess: (_data, variables) => {
       if (variables.dryRun) return;
@@ -2590,13 +2624,42 @@ export default function Sales() {
       qc.invalidateQueries({ queryKey: ["store-order-allocations"] });
       qc.invalidateQueries({ queryKey: ["sales-oa"] });
       qc.invalidateQueries({ queryKey: ["sales-proforma"] });
+      qc.invalidateQueries({ queryKey: ["sales-quotations"] });
+      qc.invalidateQueries({ queryKey: ["quotation-detail"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["oa-detail", detailId] });
       qc.invalidateQueries({ queryKey: ["stockBalances"] });
       qc.invalidateQueries({ queryKey: ["inventoryLedger"] });
       invalidateStockViews();
+      if (variables.kind === "OA") setDetailId(null);
       setErr("");
     },
     onError: (e) => setErr(e.message),
   });
+
+  const openOACancelModal = useCallback(
+    async (oaId) => {
+      setErr("");
+      try {
+        const preview = await salesCancelMutation.mutateAsync({
+          kind: "OA",
+          id: oaId,
+          reason: "-",
+          dryRun: true,
+        });
+        setSalesCancelModal({
+          open: true,
+          kind: "OA",
+          id: oaId,
+          reason: "",
+          preview,
+          confirmMessage: "Cancel this OA and release the quotation for editing?",
+        });
+      } catch (e) {
+        setErr(e.message);
+      }
+    },
+    [salesCancelMutation]
+  );
 
   const openShippingDispatchDocument = useCallback(async (docId, inline) => {
     setShippingDownloadBusyId(docId);
@@ -3078,17 +3141,23 @@ export default function Sales() {
         {salesCancelModal?.open ? (
           <div className="space-y-3 text-sm">
             <p className="text-gray-700">
-              Cancelling{" "}
-              {salesCancelModal.kind === "SI"
-                ? "this sales invoice"
-                : salesCancelModal.kind === "ALC"
-                ? "this order allocation"
-                : salesCancelModal.kind === "RTS"
-                ? "this RTS"
-                : salesCancelModal.kind === "OA"
-                ? "this order acknowledgement"
-                : "this proforma"}{" "}
-              applies a single-step stock reversal (see preview below).
+              {salesCancelModal.kind === "OA" && salesCancelModal.confirmMessage
+                ? salesCancelModal.confirmMessage
+                : (
+                  <>
+                    Cancelling{" "}
+                    {salesCancelModal.kind === "SI"
+                      ? "this sales invoice"
+                      : salesCancelModal.kind === "ALC"
+                      ? "this order allocation"
+                      : salesCancelModal.kind === "RTS"
+                      ? "this RTS"
+                      : salesCancelModal.kind === "OA"
+                      ? "this order acknowledgement"
+                      : "this proforma"}{" "}
+                    applies a single-step stock reversal (see preview below).
+                  </>
+                )}
             </p>
             {Array.isArray(salesCancelModal.preview?.stockImpact) && salesCancelModal.preview.stockImpact.length > 0 ? (
               <div className="rounded-lg border bg-gray-50 p-2">
@@ -4251,9 +4320,12 @@ export default function Sales() {
                     </tr>
                   ) : (
                     oaRows.map((r) => {
-                      const converted = Array.isArray(r.convertedTo) ? r.convertedTo.map(String) : [];
-                      const hasPIFromOA = converted.includes("PROFORMA");
+                      const hasPIFromOA = orderAcknowledgementHasActiveProforma(r);
                       const isCancelled = String(r.status || "").toUpperCase() === "CANCELLED";
+                      const canCancelOa = orderAcknowledgementCanCancel(r);
+                      const cancelOaTitle = canCancelOa
+                        ? "Cancel OA and release linked quotation"
+                        : orderAcknowledgementCancelBlockReason(r);
                       return (
                       <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
                         <td className="px-3 py-2 font-mono text-xs">{r.oaNo}</td>
@@ -4306,6 +4378,15 @@ export default function Sales() {
                               onClick={() => convertToOrderAllocationFromOAMutation.mutate({ id: r._id })}
                             >
                               Convert to Order Allocation
+                            </button>
+                            <button
+                              type="button"
+                              className={`rounded-lg border px-2 py-1 text-xs ${!canCancelOa ? "opacity-40" : ""}`}
+                              disabled={!canCancelOa}
+                              title={cancelOaTitle}
+                              onClick={() => openOACancelModal(r._id)}
+                            >
+                              Cancel OA
                             </button>
                           </div>
                         </td>
@@ -5967,19 +6048,28 @@ export default function Sales() {
                   Export PDF
                 </button>
                 {(() => {
-                  const conv = Array.isArray(oaDetail.convertedTo) ? oaDetail.convertedTo.map(String) : [];
-                  const hasPI = conv.includes("PROFORMA");
+                  const hasPI = orderAcknowledgementHasActiveProforma(oaDetail);
                   const isCancelled = String(oaDetail.status || "").toUpperCase() === "CANCELLED";
+                  const canCancelOa = orderAcknowledgementCanCancel(oaDetail);
                   return (
                     <>
                       <button
                         type="button"
                         className={`rounded-xl border px-2 py-1 text-xs ${hasPI || isCancelled ? "opacity-40" : ""}`}
                         disabled={hasPI || isCancelled || convertToProformaFromOAMutation.isPending}
-                        title={isCancelled ? "Cancelled OA cannot be converted" : hasPI ? "Proforma already linked" : ""}
+                        title={isCancelled ? "Cancelled OA cannot be converted" : hasPI ? "Active proforma exists for this OA" : ""}
                         onClick={() => convertToProformaFromOAMutation.mutate(oaDetail._id)}
                       >
                         Convert to PI
+                      </button>
+                      <button
+                        type="button"
+                        className={`rounded-xl border px-2 py-1 text-xs ${!canCancelOa ? "opacity-40" : ""}`}
+                        disabled={!canCancelOa}
+                        title={orderAcknowledgementCancelBlockReason(oaDetail)}
+                        onClick={() => openOACancelModal(oaDetail._id)}
+                      >
+                        Cancel OA
                       </button>
                     </>
                   );
@@ -6023,8 +6113,9 @@ export default function Sales() {
           ) : (
             (() => {
               const oc = Array.isArray(oaDetail.convertedTo) ? oaDetail.convertedTo.map(String) : [];
-              const dupPIOpen = oc.includes("PROFORMA");
+              const dupPIOpen = orderAcknowledgementHasActiveProforma(oaDetail);
               const dupSIOpen = oc.includes("SALES_INVOICE");
+              const canCancelOa = orderAcknowledgementCanCancel(oaDetail);
               const displaySt = orderAcknowledgementDisplayStatus(oaDetail);
               return (
             <div className="space-y-3 text-sm">
@@ -6147,6 +6238,15 @@ export default function Sales() {
                   onClick={() => convertToOrderAllocationFromOAMutation.mutate({ id: oaDetail._id })}
                 >
                   Convert to Order Allocation
+                </button>
+                <button
+                  type="button"
+                  className={`rounded-xl border px-2 py-1 text-xs ${!canCancelOa ? "opacity-40" : ""}`}
+                  disabled={!canCancelOa}
+                  title={orderAcknowledgementCancelBlockReason(oaDetail)}
+                  onClick={() => openOACancelModal(oaDetail._id)}
+                >
+                  Cancel OA
                 </button>
               </div>
             </div>
