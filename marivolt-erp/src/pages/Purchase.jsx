@@ -9,7 +9,9 @@ import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import {
   openPurchaseOrderDocumentWindow,
   writePurchaseOrderDocumentToWindow,
+  supplierPartNumberForPrint,
 } from "../lib/purchaseOrderDocumentPrint.js";
+import { calcPoGrandTotal, calcPoTotalsFromDoc, poHeaderCost, supplierPartNumberDisplay } from "../lib/poTotals.js";
 import {
   COMMERCIAL_DEFAULTS,
   DEFAULT_CLOSING_NOTE,
@@ -40,6 +42,8 @@ const defaultLine = () => ({
   articleNo: "",
   itemCode: "",
   partNo: "",
+  partNumber: "",
+  supplierPartNumber: "",
   description: "",
   qty: 1,
   uom: "PCS",
@@ -79,6 +83,9 @@ function initialPoForm(company) {
     specialRemarks: DEFAULT_SPECIAL_REMARKS,
     termsAndConditions: DEFAULT_PURCHASE_TERMS,
     closingNote: DEFAULT_CLOSING_NOTE,
+    packingCost: 0,
+    handlingCost: 0,
+    miscellaneousCost: 0,
     lines: [defaultLine()],
   };
 }
@@ -100,8 +107,9 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
         itemCode,
         partNo,
         partNumber: String(l.partNumber || partNo).trim().toUpperCase(),
+        supplierPartNumber: String(l.supplierPartNumber || "").trim(),
         materialCode: String(l.materialCode || itemCode).trim().toUpperCase(),
-        spn: String(l.spn || partNo).trim().toUpperCase(),
+        spn: String(l.spn || l.partNumber || partNo).trim().toUpperCase(),
         drawingNo: String(l.drawingNo || "").trim(),
         vertical: String(l.vertical || form.vertical || "").trim(),
         brand: String(l.brand || l.engine || form.brand || form.engine || "").trim(),
@@ -162,6 +170,9 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
     specialRemarks: form.specialRemarks ?? "",
     termsAndConditions: form.termsAndConditions ?? "",
     closingNote: form.closingNote ?? "",
+    packingCost: poHeaderCost(form.packingCost),
+    handlingCost: poHeaderCost(form.handlingCost),
+    miscellaneousCost: poHeaderCost(form.miscellaneousCost),
     lines,
   };
 }
@@ -187,6 +198,7 @@ function purchaseOrderApiToForm(po) {
           itemCode: l.itemCode || l.article || "",
           partNo: l.partNo || l.partNumber || "",
           partNumber: l.partNumber || l.partNo || "",
+          supplierPartNumber: l.supplierPartNumber || "",
           materialCode: l.materialCode || l.itemCode || "",
           spn: l.spn || "",
           drawingNo: l.drawingNo || "",
@@ -248,6 +260,9 @@ function purchaseOrderApiToForm(po) {
         : DEFAULT_PURCHASE_TERMS,
     closingNote:
       po.closingNote != null && po.closingNote !== "" ? po.closingNote : DEFAULT_CLOSING_NOTE,
+    packingCost: poHeaderCost(po.packingCost),
+    handlingCost: poHeaderCost(po.handlingCost),
+    miscellaneousCost: poHeaderCost(po.miscellaneousCost),
     lines,
   };
 }
@@ -294,7 +309,17 @@ function mapCsvRowToPurchaseOrderLine(raw) {
     pickCsvCell(m, ["article nr.", "article nr", "article no", "article", "articlenr", "item code", "itemcode"])
   ).trim();
   const partNo = String(
-    pickCsvCell(m, ["part nr.", "part nr", "part no", "part", "partnumber", "partnr"])
+    pickCsvCell(m, ["part nr.", "part nr", "part no", "part", "partnumber", "partnr", "spn"])
+  ).trim();
+  const supplierPartNumber = String(
+    pickCsvCell(m, [
+      "supplier part number",
+      "supplier part no",
+      "supplier part nr",
+      "supplier part",
+      "supplierpartnumber",
+      "vendor part number",
+    ])
   ).trim();
   const description = String(pickCsvCell(m, ["description", "desc"])).trim();
   const qty = Number(pickCsvCell(m, ["qty", "quantity"])) || 0;
@@ -307,6 +332,8 @@ function mapCsvRowToPurchaseOrderLine(raw) {
     articleNo,
     itemCode: "",
     partNo,
+    partNumber: partNo.toUpperCase(),
+    supplierPartNumber,
     description,
     qty: qty > 0 ? qty : 1,
     uom: uom || "PCS",
@@ -330,7 +357,8 @@ function poDocLineExportRows(lines) {
       pos: i + 1,
       articleNo: l.articleNo || l.itemCode || "",
       description: l.description || "",
-      partNo: l.partNo || "",
+      partNo: l.partNo || l.partNumber || "",
+      supplierPartNumber: l.supplierPartNumber || "",
       qty,
       uom: l.uom || "PCS",
       unitRate: rate.toFixed(2),
@@ -346,6 +374,7 @@ const PO_LINE_EXPORT_COLS = [
   { key: "articleNo", header: "Article Nr." },
   { key: "description", header: "Description" },
   { key: "partNo", header: "Part Nr." },
+  { key: "supplierPartNumber", header: "Supplier Part Number" },
   { key: "qty", header: "Qty" },
   { key: "uom", header: "UOM" },
   { key: "unitRate", header: "Unit rate" },
@@ -409,15 +438,12 @@ function StatusBadge({ status }) {
   );
 }
 
-function PurchaseOrderPreviewPanel({ doc, unsaved }) {
+function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
   const { auth } = useAuth();
   if (!doc) return null;
   const lines = doc.lines || [];
-  const subTotal =
-    doc.subTotal != null
-      ? Number(doc.subTotal)
-      : lines.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0), 0);
-  const grand = doc.grandTotal != null ? Number(doc.grandTotal) : subTotal;
+  const { subTotal, packingCost, handlingCost, miscellaneousCost, grandTotal: grand } =
+    calcPoTotalsFromDoc(doc);
   const cur = doc.currency || "USD";
   const buyer = {
     name: doc.buyerLegalName || "—",
@@ -646,9 +672,19 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
             <thead>
               <tr className="bg-[#1f3a5f]">
                 <th className={thCell}>S/N</th>
-                <th className={thCell}>Article</th>
-                <th className={thCell}>Part Number</th>
-                <th className={thCell}>Description</th>
+                {!supplierFacing ? <th className={thCell}>Article</th> : null}
+                {supplierFacing ? (
+                  <>
+                    <th className={thCell}>Description</th>
+                    <th className={thCell}>Supplier Part Number</th>
+                  </>
+                ) : (
+                  <>
+                    <th className={thCell}>Part Nr.</th>
+                    <th className={thCell}>Supplier Part No.</th>
+                    <th className={thCell}>Description</th>
+                  </>
+                )}
                 <th className={thCell}>UOM</th>
                 <th className={`${thCell} text-right`}>QTY</th>
                 <th className={`${thCell} text-right`}>Unit rate</th>
@@ -660,7 +696,7 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
             <tbody>
               {lines.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className={`${tdCell} py-8 text-center text-[#6b7280]`}>
+                  <td colSpan={supplierFacing ? 9 : 11} className={`${tdCell} py-8 text-center text-[#6b7280]`}>
                     No line items.
                   </td>
                 </tr>
@@ -669,11 +705,29 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
                   const tot = (Number(l.qty) || 0) * (Number(l.unitPrice) || 0);
                   const stripe = i % 2 === 0 ? "bg-white" : "bg-[#f9fafb]";
                   return (
-                    <tr key={l._id || i} className={stripe}>
-                      <td className={`${tdCell} text-[#6b7280]`}>{i + 1}</td>
-                      <td className={`${tdCell} font-mono text-[11px]`}>{l.article || l.articleNo || l.itemCode || "—"}</td>
-                      <td className={`${tdCell} font-mono text-[11px]`}>{l.partNumber || l.partNo || "—"}</td>
-                      <td className={tdCell}>{l.description || "—"}</td>
+                      <tr key={l._id || i} className={stripe}>
+                        <td className={`${tdCell} text-[#6b7280]`}>{i + 1}</td>
+                        {!supplierFacing ? (
+                          <td className={`${tdCell} font-mono text-[11px]`}>
+                            {l.article || l.articleNo || l.itemCode || "—"}
+                          </td>
+                        ) : null}
+                        {supplierFacing ? (
+                          <>
+                            <td className={tdCell}>{l.description || "—"}</td>
+                            <td className={`${tdCell} font-mono text-[11px]`}>
+                              {supplierPartNumberForPrint(l)}
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className={`${tdCell} font-mono text-[11px]`}>{l.partNumber || l.partNo || "—"}</td>
+                            <td className={`${tdCell} font-mono text-[11px]`}>
+                              {supplierPartNumberDisplay(l)}
+                            </td>
+                            <td className={tdCell}>{l.description || "—"}</td>
+                          </>
+                        )}
                       <td className={tdCell}>{l.uom || "PCS"}</td>
                       <td className={`${tdCell} text-right tabular-nums`}>{l.qty}</td>
                       <td className={`${tdCell} text-right tabular-nums`}>{Number(l.unitPrice || 0).toFixed(2)}</td>
@@ -691,10 +745,22 @@ function PurchaseOrderPreviewPanel({ doc, unsaved }) {
         <div className="mt-4 flex justify-end border-t border-[#e5e7eb] pt-4">
           <div className="w-full max-w-xs space-y-1.5 text-sm tabular-nums">
             <div className="flex justify-between text-[#4b5563]">
-              <span>Sub total</span>
+              <span>Line items subtotal</span>
               <span className="font-semibold text-[#111827]">
                 {cur} {subTotal.toFixed(2)}
               </span>
+            </div>
+            <div className="flex justify-between text-[#4b5563]">
+              <span>Packing cost</span>
+              <span className="font-semibold text-[#111827]">{cur} {packingCost.toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between text-[#4b5563]">
+              <span>Handling cost</span>
+              <span className="font-semibold text-[#111827]">{cur} {handlingCost.toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between text-[#4b5563]">
+              <span>Miscellaneous cost</span>
+              <span className="font-semibold text-[#111827]">{cur} {miscellaneousCost.toFixed(2)}</span>
             </div>
             <div className="flex justify-between border-t border-[#e5e7eb] pt-1 text-base font-bold text-[#1f3a5f]">
               <span>Grand total</span>
@@ -1012,8 +1078,17 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       (s, l) => s + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0),
       0
     );
-    return { subTotal: sub, grandTotal: sub };
-  }, [form.lines]);
+    const packingCost = poHeaderCost(form.packingCost);
+    const handlingCost = poHeaderCost(form.handlingCost);
+    const miscellaneousCost = poHeaderCost(form.miscellaneousCost);
+    return {
+      subTotal: sub,
+      packingCost,
+      handlingCost,
+      miscellaneousCost,
+      grandTotal: calcPoGrandTotal(sub, packingCost, handlingCost, miscellaneousCost),
+    };
+  }, [form.lines, form.packingCost, form.handlingCost, form.miscellaneousCost]);
 
   function applySupplierMasterDefaults(name) {
     const n = name.trim().toLowerCase();
@@ -1231,6 +1306,9 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       orderDate: form.orderDate,
       lines: form.lines,
       subTotal: poPreviewTotals.subTotal,
+      packingCost: poPreviewTotals.packingCost,
+      handlingCost: poPreviewTotals.handlingCost,
+      miscellaneousCost: poPreviewTotals.miscellaneousCost,
       grandTotal: poPreviewTotals.grandTotal,
       status: form.status || "DRAFT",
       __unsavedDraft: isNewDraft,
@@ -1248,7 +1326,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
         const imported = (res.data || []).map(mapCsvRowToPurchaseOrderLine).filter(lineIsImportable);
         if (!imported.length) {
           setErr(
-            "No valid lines in CSV. Use headers such as Article Nr., Description, Part Nr., Qty, UOM, Unit rate, Remarks, Lead time (Article or Part Nr. and Qty required per row)."
+            "No valid lines in CSV. Use headers: Article Nr., Description, Part Nr., Supplier Part Number, Qty, UOM, Unit rate, Remarks, Lead time (Article or Part Nr. and Qty required per row)."
           );
           return;
         }
@@ -2240,6 +2318,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                     <th className="px-2 py-2 font-bold text-gray-700">Article Nr.</th>
                     <th className="px-2 py-2 font-bold text-gray-700">Description</th>
                     <th className="px-2 py-2 font-bold text-gray-700">Part Nr.</th>
+                    <th className="px-2 py-2 font-bold text-gray-700">Supplier Part No.</th>
                     <th className="px-2 py-2 text-right font-bold text-gray-700">Qty</th>
                     <th className="px-2 py-2 font-bold text-gray-700">UOM</th>
                     <th className="px-2 py-2 text-right font-bold text-gray-700">Unit rate</th>
@@ -2255,7 +2334,8 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                       <td className="px-2 py-2 text-gray-500">{i + 1}</td>
                       <td className="px-2 py-2 font-mono text-[11px]">{l.articleNo || l.itemCode}</td>
                       <td className="px-2 py-2">{l.description || "—"}</td>
-                      <td className="px-2 py-2 font-mono text-[11px]">{l.partNo || "—"}</td>
+                      <td className="px-2 py-2 font-mono text-[11px]">{l.partNo || l.partNumber || "—"}</td>
+                      <td className="px-2 py-2 font-mono text-[11px]">{l.supplierPartNumber || "—"}</td>
                       <td className="px-2 py-2 text-right tabular-nums">{l.qty}</td>
                       <td className="px-2 py-2">{l.uom || "PCS"}</td>
                       <td className="px-2 py-2 text-right tabular-nums">
@@ -2292,21 +2372,36 @@ export default function Purchase({ procurementEmbed = false } = {}) {
             </div>
 
             <div className="flex flex-col items-end gap-1 border-t border-gray-100 pt-4 text-sm">
-              <div className="flex w-full max-w-xs justify-between tabular-nums">
-                <span className="text-gray-500">Sub total</span>
-                <span className="font-medium">
-                  {detail.currency} {Number(detail.subTotal ?? detail.grandTotal ?? 0).toFixed(2)}
-                </span>
-              </div>
-              <div className="flex w-full max-w-xs justify-between border-t border-gray-200 pt-1 text-base font-bold tabular-nums">
-                <span>Grand total</span>
-                <span>
-                  {detail.currency} {Number(detail.grandTotal || 0).toFixed(2)}
-                </span>
-              </div>
+              {(() => {
+                const t = calcPoTotalsFromDoc(detail);
+                return (
+                  <>
+                    <div className="flex w-full max-w-xs justify-between tabular-nums">
+                      <span className="text-gray-500">Line items subtotal</span>
+                      <span className="font-medium">{detail.currency} {t.subTotal.toFixed(2)}</span>
+                    </div>
+                    <div className="flex w-full max-w-xs justify-between tabular-nums text-gray-600">
+                      <span>Packing cost</span>
+                      <span>{detail.currency} {t.packingCost.toFixed(2)}</span>
+                    </div>
+                    <div className="flex w-full max-w-xs justify-between tabular-nums text-gray-600">
+                      <span>Handling cost</span>
+                      <span>{detail.currency} {t.handlingCost.toFixed(2)}</span>
+                    </div>
+                    <div className="flex w-full max-w-xs justify-between tabular-nums text-gray-600">
+                      <span>Miscellaneous cost</span>
+                      <span>{detail.currency} {t.miscellaneousCost.toFixed(2)}</span>
+                    </div>
+                    <div className="flex w-full max-w-xs justify-between border-t border-gray-200 pt-1 text-base font-bold tabular-nums">
+                      <span>Grand total</span>
+                      <span>{detail.currency} {t.grandTotal.toFixed(2)}</span>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
 
-            <div className="rounded-lg border border-gray-100 bg-amber-50/30 p-3 text-xs">
+                        <div className="rounded-lg border border-gray-100 bg-amber-50/30 p-3 text-xs">
               <div className="font-bold uppercase text-gray-600">Special remarks</div>
               <div className="mt-1 whitespace-pre-wrap text-gray-800">
                 {detail.specialRemarks != null && detail.specialRemarks !== ""
@@ -2739,17 +2834,18 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               </div>
             </div>
             <p className="mb-2 text-[10px] text-gray-500">
-              CSV columns (first row headers): Article Nr., Description, Part Nr., Qty, UOM, Unit rate, Remarks, Lead
-              time. Rows append to the grid; a blank first line is replaced when importing.
+              CSV columns (first row headers): Article Nr., Description, Part Nr., Supplier Part Number, Qty, UOM,
+              Unit rate, Remarks, Lead time. Rows append to the grid; a blank first line is replaced when importing.
             </p>
             <div className="overflow-x-auto rounded-lg border border-gray-200">
-              <table className="min-w-[1040px] w-full border-collapse text-xs">
+              <table className="min-w-[1180px] w-full border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-gray-200 bg-gray-100 text-left">
                     <th className="px-1.5 py-2 font-bold text-gray-700">Pos</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">Article Nr.</th>
                     <th className="min-w-[120px] px-1.5 py-2 font-bold text-gray-700">Description</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">Part Nr.</th>
+                    <th className="px-1.5 py-2 font-bold text-gray-700">Supplier Part No.</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">Qty</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">UOM</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">Unit rate</th>
@@ -2789,9 +2885,19 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                         <td className="px-1.5 py-1.5">
                           <TextInput
                             className="py-1.5 text-[11px]"
-                            placeholder="Part"
+                            placeholder="Internal part / SPN"
                             value={line.partNo}
-                            onChange={(e) => setLine({ partNo: e.target.value })}
+                            onChange={(e) =>
+                              setLine({ partNo: e.target.value, partNumber: e.target.value.toUpperCase() })
+                            }
+                          />
+                        </td>
+                        <td className="px-1.5 py-1.5">
+                          <TextInput
+                            className="py-1.5 text-[11px]"
+                            placeholder="Supplier part"
+                            value={line.supplierPartNumber ?? ""}
+                            onChange={(e) => setLine({ supplierPartNumber: e.target.value })}
                           />
                         </td>
                         <td className="px-1.5 py-1.5">
@@ -2906,20 +3012,29 @@ export default function Purchase({ procurementEmbed = false } = {}) {
 
           <div className="mt-4 flex flex-col items-end gap-1 border-t border-gray-100 pt-4 text-sm">
             <div className="flex w-full max-w-xs justify-between tabular-nums">
-              <span className="text-gray-500">Sub total</span>
+              <span className="text-gray-500">Line items subtotal</span>
               <span className="font-medium">
                 {form.currency} {poPreviewTotals.subTotal.toFixed(2)}
               </span>
             </div>
+            <div className="grid w-full max-w-md gap-2 sm:grid-cols-3">
+              <FormField label="Packing cost">
+                <TextInput type="number" min={0} step="0.01" value={form.packingCost ?? 0} onChange={(e) => setForm((f) => ({ ...f, packingCost: Number(e.target.value) || 0 }))} />
+              </FormField>
+              <FormField label="Handling cost">
+                <TextInput type="number" min={0} step="0.01" value={form.handlingCost ?? 0} onChange={(e) => setForm((f) => ({ ...f, handlingCost: Number(e.target.value) || 0 }))} />
+              </FormField>
+              <FormField label="Miscellaneous cost">
+                <TextInput type="number" min={0} step="0.01" value={form.miscellaneousCost ?? 0} onChange={(e) => setForm((f) => ({ ...f, miscellaneousCost: Number(e.target.value) || 0 }))} />
+              </FormField>
+            </div>
             <div className="flex w-full max-w-xs justify-between border-t border-gray-200 pt-1 text-base font-bold tabular-nums">
               <span>Grand total</span>
-              <span>
-                {form.currency} {poPreviewTotals.grandTotal.toFixed(2)}
-              </span>
+              <span>{form.currency} {poPreviewTotals.grandTotal.toFixed(2)}</span>
             </div>
           </div>
 
-          <FormField label="Special remarks" className="mt-4">
+                    <FormField label="Special remarks" className="mt-4">
             <TextInput
               value={form.specialRemarks}
               onChange={(e) => setForm((f) => ({ ...f, specialRemarks: e.target.value }))}

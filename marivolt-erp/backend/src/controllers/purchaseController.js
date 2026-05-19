@@ -11,6 +11,7 @@ import { writeAudit, writeStatusChange } from "../services/auditService.js";
 import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentController.js";
 import { nextGrnNo } from "../services/grnNumberService.js";
 import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js";
+import { calcPoGrandTotal, poHeaderCost } from "../utils/poTotals.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -61,6 +62,7 @@ function normalizePoLines(lines = []) {
         description: l.description ?? "",
         remarks: l.remarks ?? "",
         leadTime: l.leadTime != null ? String(l.leadTime).trim() : "",
+        supplierPartNumber: String(l.supplierPartNumber || "").trim(),
       };
     })
     .filter((l) => l.itemCode && l.qty > 0);
@@ -129,7 +131,10 @@ function recalcPoTotals(doc) {
     sub += line.lineTotal;
   }
   doc.subTotal = sub;
-  doc.grandTotal = sub;
+  doc.packingCost = poHeaderCost(doc.packingCost);
+  doc.handlingCost = poHeaderCost(doc.handlingCost);
+  doc.miscellaneousCost = poHeaderCost(doc.miscellaneousCost);
+  doc.grandTotal = calcPoGrandTotal(sub, doc.packingCost, doc.handlingCost, doc.miscellaneousCost);
 }
 
 async function resolveSupplierSnapshot(req, body = {}) {
@@ -338,6 +343,9 @@ export async function updatePurchaseOrder(req, res) {
       "specialRemarks",
       "termsAndConditions",
       "closingNote",
+      "packingCost",
+      "handlingCost",
+      "miscellaneousCost",
     ];
     for (const k of allowed) {
       if (req.body[k] !== undefined) doc[k] = req.body[k];

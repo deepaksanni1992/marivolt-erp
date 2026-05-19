@@ -7,6 +7,7 @@ const itemMasterSchema = new mongoose.Schema(
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
     article: { type: String, required: true, trim: true, uppercase: true },
     partNumber: { type: String, default: "", trim: true, uppercase: true },
+    supplierPartNumber: { type: String, default: "", trim: true },
     itemName: { type: String, required: true, trim: true },
     description: { type: String, default: "", trim: true },
     materialCode: { type: String, default: "", trim: true, uppercase: true },

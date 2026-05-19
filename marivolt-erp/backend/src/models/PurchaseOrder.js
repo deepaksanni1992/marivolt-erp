@@ -30,6 +30,8 @@ const poLineSchema = new mongoose.Schema(
     receivedQty: { type: Number, default: 0, min: 0 },
     remarks: { type: String, default: "" },
     leadTime: { type: String, default: "", trim: true },
+    /** Supplier-facing part reference on PO print; internal mapping uses partNumber/spn. */
+    supplierPartNumber: { type: String, default: "", trim: true },
   },
   { _id: true }
 );
@@ -82,6 +84,9 @@ const purchaseOrderSchema = new mongoose.Schema(
     currency: { type: String, default: "USD", trim: true },
     lines: { type: [poLineSchema], default: [] },
     subTotal: { type: Number, default: 0 },
+    packingCost: { type: Number, default: 0, min: 0 },
+    handlingCost: { type: Number, default: 0, min: 0 },
+    miscellaneousCost: { type: Number, default: 0, min: 0 },
     grandTotal: { type: Number, default: 0 },
 
     delivery: { type: String, default: "Ex-Works", trim: true },

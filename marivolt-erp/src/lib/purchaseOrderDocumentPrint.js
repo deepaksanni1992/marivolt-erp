@@ -1,6 +1,22 @@
 import { getReportBranding } from "./reportBranding.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 
+function poHeaderCost(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+function calcPoGrandTotal(subTotal, packingCost = 0, handlingCost = 0, miscellaneousCost = 0) {
+  const sub = Number(subTotal) || 0;
+  return sub + poHeaderCost(packingCost) + poHeaderCost(handlingCost) + poHeaderCost(miscellaneousCost);
+}
+
+/** Supplier-facing part reference only (no internal article / SPN). */
+export function supplierPartNumberForPrint(line) {
+  const v = String(line?.supplierPartNumber ?? "").trim();
+  return v || "—";
+}
+
 function escapeHtml(s) {
   if (s == null || s === "") return "";
   return String(s)
@@ -34,7 +50,13 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
     doc.subTotal != null
       ? Number(doc.subTotal)
       : lines.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0), 0);
-  const grand = doc.grandTotal != null ? Number(doc.grandTotal) : subTotal;
+  const packingCost = poHeaderCost(doc.packingCost);
+  const handlingCost = poHeaderCost(doc.handlingCost);
+  const miscellaneousCost = poHeaderCost(doc.miscellaneousCost);
+  const grand =
+    doc.grandTotal != null
+      ? Number(doc.grandTotal)
+      : calcPoGrandTotal(subTotal, packingCost, handlingCost, miscellaneousCost);
   const cur = escapeHtml(doc.currency || "USD");
 
   const buyer = {
@@ -93,9 +115,8 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
       const stripe = i % 2 === 0 ? "#ffffff" : "#f9fafb";
       return `<tr style="background:${stripe}">
         <td style="border:1px solid #e5e7eb;padding:6px 8px;color:#6b7280;font-size:11px">${i + 1}</td>
-        <td style="border:1px solid #e5e7eb;padding:6px 8px;font-family:ui-monospace,monospace;font-size:11px">${escapeHtml(l.article || l.articleNo || l.itemCode || "—")}</td>
-        <td style="border:1px solid #e5e7eb;padding:6px 8px;font-family:ui-monospace,monospace;font-size:11px">${escapeHtml(l.partNumber || l.partNo || "—")}</td>
         <td style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(l.description || "—")}</td>
+        <td style="border:1px solid #e5e7eb;padding:6px 8px;font-family:ui-monospace,monospace;font-size:11px">${escapeHtml(supplierPartNumberForPrint(l))}</td>
         <td style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(l.uom || "PCS")}</td>
         <td style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;font-size:12px">${escapeHtml(String(qty))}</td>
         <td style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;font-size:12px">${rate.toFixed(2)}</td>
@@ -106,7 +127,7 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
     })
     .join("");
 
-  const emptyLinesRow = `<tr><td colspan="10" style="border:1px solid #e5e7eb;padding:24px;text-align:center;color:#6b7280">No line items.</td></tr>`;
+  const emptyLinesRow = `<tr><td colspan="9" style="border:1px solid #e5e7eb;padding:24px;text-align:center;color:#6b7280">No line items.</td></tr>`;
 
   const headerOkeanos = `
     <header style="display:grid;grid-template-columns:1fr 1fr 1fr;align-items:center;gap:16px;border-bottom:2px solid #e5e7eb;padding-bottom:20px;margin-bottom:20px;" class="po-print-header">
@@ -262,9 +283,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
     <thead>
       <tr style="background:${thBg};color:${thColor}">
         <th style="border:1px solid ${thBorder};padding:8px;text-align:left;font-size:11px;text-transform:uppercase">S/N</th>
-        <th style="border:1px solid ${thBorder};padding:8px;text-align:left;font-size:11px;text-transform:uppercase">Article</th>
-        <th style="border:1px solid ${thBorder};padding:8px;text-align:left;font-size:11px;text-transform:uppercase">Part Number</th>
         <th style="border:1px solid ${thBorder};padding:8px;text-align:left;font-size:11px;text-transform:uppercase">Description</th>
+        <th style="border:1px solid ${thBorder};padding:8px;text-align:left;font-size:11px;text-transform:uppercase">Supplier Part Number</th>
         <th style="border:1px solid ${thBorder};padding:8px;text-align:left;font-size:11px;text-transform:uppercase">UOM</th>
         <th style="border:1px solid ${thBorder};padding:8px;text-align:right;font-size:11px;text-transform:uppercase">QTY</th>
         <th style="border:1px solid ${thBorder};padding:8px;text-align:right;font-size:11px;text-transform:uppercase">Unit rate</th>
@@ -278,7 +298,10 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
 
   <div style="margin-top:16px;display:flex;justify-content:flex-end;border-top:1px solid #e5e7eb;padding-top:16px">
     <div style="width:280px;font-size:13px">
-      <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Sub total</span><span style="font-weight:600;color:#111">${cur} ${subTotal.toFixed(2)}</span></div>
+      <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Line items subtotal</span><span style="font-weight:600;color:#111">${cur} ${subTotal.toFixed(2)}</span></div>
+      <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Packing cost</span><span style="font-weight:600;color:#111">${cur} ${packingCost.toFixed(2)}</span></div>
+      <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Handling cost</span><span style="font-weight:600;color:#111">${cur} ${handlingCost.toFixed(2)}</span></div>
+      <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Miscellaneous cost</span><span style="font-weight:600;color:#111">${cur} ${miscellaneousCost.toFixed(2)}</span></div>
       <div style="display:flex;justify-content:space-between;padding-top:8px;border-top:1px solid #e5e7eb;font-size:16px;font-weight:700;color:#1f3a5f"><span>Grand total</span><span>${cur} ${grand.toFixed(2)}</span></div>
     </div>
   </div>

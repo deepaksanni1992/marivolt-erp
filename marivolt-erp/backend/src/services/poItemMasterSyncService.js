@@ -41,7 +41,7 @@ function firstUpper(...values) {
 
 export function normalizePoItemIdentity(line = {}) {
   const article = firstUpper(line.article, line.articleNo, line.itemCode, line.materialCode, line.partNumber, line.partNo);
-  const partNumber = firstUpper(line.partNumber, line.partNo, line.supplierPartNumber);
+  const partNumber = firstUpper(line.partNumber, line.partNo, line.spn, line.SPN);
   const materialCode = firstUpper(line.materialCode, line.itemCode);
   return { article, partNumber, materialCode };
 }
@@ -61,6 +61,7 @@ function buildSyncPayload({ line = {}, header = {}, supplierName = "" }) {
     config: firstText(line.config, header.config),
     esn: firstText(line.esn, header.esn),
     spn: firstUpper(line.spn, line.SPN, line.partNo),
+    supplierPartNumber: firstText(line.supplierPartNumber),
     uom: normalizeUom(line.uom),
     drawingNo: firstText(line.drawingNo, line.drawingNumber),
     supplier: firstText(line.supplier, supplierName),
@@ -94,6 +95,7 @@ function fillMissingFields(item, payload) {
     "description",
     "materialCode",
     "spn",
+    "supplierPartNumber",
     "uom",
     "drawingNo",
     "supplier",
@@ -152,6 +154,7 @@ export async function syncPoLinesToItemMaster({
               description: payload.description,
               materialCode: payload.materialCode,
               spn: payload.spn,
+              supplierPartNumber: payload.supplierPartNumber,
               vertical: payload.vertical,
               brand: payload.brand,
               engine: payload.engine,
