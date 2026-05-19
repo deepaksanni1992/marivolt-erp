@@ -107,7 +107,8 @@ export function buildReportTableHtml({ columns, rows }) {
       const tds = columns
         .map((col, idx) => {
           const val = cells[idx] ?? "";
-          const cls = col.className || "";
+          const extra = (row.cellClasses || [])[idx] || "";
+          const cls = [col.className || "", extra].filter(Boolean).join(" ");
           return `<td class="${escHtml(cls)}">${escHtml(val)}</td>`;
         })
         .join("");
@@ -166,17 +167,34 @@ export function buildBrandedFooterHtml(brandingName = "") {
 
 export const PACKING_LIST_EXTRA_CSS = `
   .report-lines-table { margin-top: 14px; }
+  .report-lines-table th.col-sno,
+  .report-lines-table td.col-sno { width: 42px; text-align: center; }
+  .report-lines-table th.col-center,
+  .report-lines-table td.col-center { text-align: center; }
+  .report-lines-table th.col-right,
+  .report-lines-table td.col-right { text-align: right; }
   tr.package-group-header td {
     background: #eef2f7 !important;
     font-weight: 700;
     color: #1f3a5f;
     border-top: 2px solid #cbd5e1;
+    page-break-inside: avoid;
+    break-inside: avoid;
   }
-  tr.package-group-header td:first-child {
+  tr.package-group-header td:nth-child(2) {
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
   tr.package-item-row td { vertical-align: top; }
+  tr.package-group-header + tr.package-item-row,
+  tr.package-item-row + tr.package-group-header {
+    page-break-before: avoid;
+  }
+  tr.package-group-header,
+  tr.package-group-header + tr.package-item-row {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
   tr.package-item-row + tr.package-group-header td { padding-top: 10px; }
 `;
 

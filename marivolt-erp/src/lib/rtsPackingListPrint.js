@@ -7,15 +7,27 @@ import {
   buildReportTotalsHtml,
   fmtReportDate,
   openCommercialReportPrintWindow,
+  PACKING_LIST_EXTRA_CSS,
 } from "./commercialReportLayout.js";
 
 function money(n) {
   return Number(n || 0).toFixed(2);
 }
 
-/** RTS / sales packing list — same commercial layout as quotation/proforma. */
+const RTS_LINE_COLUMNS = [
+  { key: "sno", header: "S No.", className: "col-sno" },
+  { key: "part", header: "Part #" },
+  { key: "desc", header: "Description" },
+  { key: "uom", header: "UOM", className: "col-center" },
+  { key: "qty", header: "Qty", className: "col-center" },
+  { key: "unitWt", header: "Unit Wt (Kg)", className: "col-right" },
+  { key: "totalWt", header: "Total Wt (Kg)", className: "col-right" },
+  { key: "coo", header: "COO", className: "col-center" },
+];
+
+/** RTS / sales packing list — same commercial layout; no Article column. */
 export function renderRtsPackingListPrintWindow({ rts, company, autoPrint = false }) {
-  const rows = rts?.lines || [];
+  const lines = rts?.lines || [];
   const boxes = Array.isArray(rts?.packingDetails?.boxes) ? rts.packingDetails.boxes : [];
   const totalBoxes = boxes.reduce((acc, b) => acc + (Number(b.count || 0) || 0), 0);
   const brandingName = company?.name || company?.companyName || "";
@@ -56,37 +68,33 @@ export function renderRtsPackingListPrintWindow({ rts, company, autoPrint = fals
     },
   });
 
+  let serial = 0;
   const lineTable = buildReportTableHtml({
-    columns: [
-      { key: "sn", header: "S/N" },
-      { key: "part", header: "Part Number" },
-      { key: "desc", header: "Description" },
-      { key: "uom", header: "UOM" },
-      { key: "qty", header: "Qty", className: "right" },
-      { key: "unitWt", header: "Unit Wt (Kg)", className: "right" },
-      { key: "totalWt", header: "Total Wt (Kg)", className: "right" },
-      { key: "coo", header: "COO" },
-    ],
-    rows: rows.map((line) => ({
-      cells: [
-        String(line.serialNo ?? ""),
-        line.partNumber || line.article || "",
-        line.description || "",
-        line.uom || "",
-        String(line.qty || 0),
-        line.unitWeightKg == null ? "" : money(line.unitWeightKg),
-        line.totalWeightKg == null ? "" : money(line.totalWeightKg),
-        line.coo || "",
-      ],
-    })),
+    columns: RTS_LINE_COLUMNS,
+    rows: lines.map((line) => {
+      serial += 1;
+      return {
+        className: "package-item-row",
+        cells: [
+          String(serial),
+          line.partNumber || "",
+          line.description || "",
+          line.uom || "",
+          String(line.qty || 0),
+          line.unitWeightKg == null ? "" : money(line.unitWeightKg),
+          line.totalWeightKg == null ? "" : money(line.totalWeightKg),
+          line.coo || "",
+        ],
+      };
+    }),
   });
 
   const boxTable = boxes.length
     ? buildReportTableHtml({
         columns: [
-          { key: "sn", header: "S/N" },
+          { key: "sn", header: "S/N", className: "col-sno" },
           { key: "material", header: "Material" },
-          { key: "count", header: "Count", className: "right" },
+          { key: "count", header: "Count", className: "col-center" },
           { key: "dims", header: "Dimensions (mm)" },
         ],
         rows: boxes.map((b, i) => ({
@@ -106,5 +114,6 @@ export function renderRtsPackingListPrintWindow({ rts, company, autoPrint = fals
       header + cards + lineTable + boxTable + totals + buildMarivoltTermsHtml(brandingName) + buildReportDocNoteHtml(),
     brandingName,
     autoPrint,
+    extraCss: PACKING_LIST_EXTRA_CSS,
   });
 }

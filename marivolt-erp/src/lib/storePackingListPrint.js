@@ -9,6 +9,10 @@ import {
   openCommercialReportPrintWindow,
   PACKING_LIST_EXTRA_CSS,
 } from "./commercialReportLayout.js";
+import {
+  buildStorePackingListPrintRows,
+  PACKING_LIST_PRINT_COLUMNS,
+} from "./packingListTable.js";
 
 function packageTypeLabel(v) {
   return String(v || "")
@@ -41,7 +45,6 @@ function normalizeStorePackingPackages(packing) {
       netWeightKg: packing?.totalNetWeightKg || 0,
       packageRemarks: packing?.marksAndNumbers || "",
       items: legacyLines.map((ln) => ({
-        article: ln.article,
         spn: ln.spn || ln.partNumber || "",
         description: ln.description || "",
         uom: ln.uom || "PCS",
@@ -49,58 +52,6 @@ function normalizeStorePackingPackages(packing) {
       })),
     },
   ];
-}
-
-const PACKING_TABLE_COLUMNS = [
-  { key: "packageNo", header: "Package" },
-  { key: "packageType", header: "Type" },
-  { key: "dimensions", header: "Dimensions" },
-  { key: "grossWeightKg", header: "Gross Kg", className: "right" },
-  { key: "netWeightKg", header: "Net Kg", className: "right" },
-  { key: "article", header: "Article" },
-  { key: "partNumber", header: "Part #" },
-  { key: "description", header: "Description" },
-  { key: "uom", header: "UOM" },
-  { key: "qty", header: "Qty", className: "right" },
-];
-
-function buildGroupedTableRows(packages) {
-  const rows = [];
-  for (const pkg of packages) {
-    rows.push({
-      isGroupHeader: true,
-      cells: [
-        pkg.packageNo || "-",
-        packageTypeLabel(pkg.packageType),
-        pkg.dimensions || "-",
-        fmtWeight(pkg.grossWeightKg),
-        fmtWeight(pkg.netWeightKg),
-        "",
-        "",
-        pkg.packageRemarks || pkg.marksAndNumbers || "",
-        "",
-        "",
-      ],
-    });
-    for (const item of pkg.items || []) {
-      rows.push({
-        className: "package-item-row",
-        cells: [
-          "",
-          "",
-          "",
-          "",
-          "",
-          item.article || "",
-          item.spn || item.partNumber || "",
-          item.description || "",
-          item.uom || "PCS",
-          String(item.qty ?? item.packQty ?? 0),
-        ],
-      });
-    }
-  }
-  return rows;
 }
 
 /**
@@ -158,8 +109,8 @@ export function renderStorePackingListPrintWindow(packing, company = {}, autoPri
   });
 
   const table = buildReportTableHtml({
-    columns: PACKING_TABLE_COLUMNS,
-    rows: buildGroupedTableRows(packages),
+    columns: PACKING_LIST_PRINT_COLUMNS,
+    rows: buildStorePackingListPrintRows(packages, { packageTypeLabel, fmtWeight }),
   });
 
   const totals = buildReportTotalsHtml([
