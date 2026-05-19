@@ -3,7 +3,11 @@ import PurchaseOrder from "../models/PurchaseOrder.js";
 import GRN from "../models/GRN.js";
 import Supplier from "../models/Supplier.js";
 import Company from "../models/Company.js";
-import { nextSequentialNumber } from "../utils/docNumbers.js";
+import {
+  allocatePurchaseOrderNumber,
+  isDuplicatePoNumberError,
+  stripClientPoNumbers,
+} from "../services/poNumberService.js";
 import { applyPurchaseOrderDefaults } from "../constants/purchaseOrderDefaults.js";
 import { buyerSnapshotFromCompany } from "../utils/companyBuyer.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
@@ -225,9 +229,22 @@ export async function getPurchaseOrder(req, res) {
   }
 }
 
+const MAX_PO_NUMBER_SAVE_RETRIES = 4;
+
+async function assignNewPurchaseOrderNumbers(body, req, company) {
+  const allocated = await allocatePurchaseOrderNumber({
+    companyId: req.companyId,
+    companyCode: req.companyCode || company?.code || "",
+    companyName: company?.name || company?.companyName || "",
+  });
+  body.poNo = allocated.poNo;
+  body.poNumber = allocated.poNumber;
+  return allocated;
+}
+
 export async function createPurchaseOrder(req, res) {
   try {
-    let body = { ...req.body };
+    let body = stripClientPoNumbers(req.body);
     body.lines = normalizePoLines(body.lines);
     if (!body.lines.length) {
       return res.status(400).json({
@@ -237,16 +254,6 @@ export async function createPurchaseOrder(req, res) {
     const company = await Company.findById(req.companyId).lean();
     Object.assign(body, buyerSnapshotFromCompany(company));
     body = applyPurchaseOrderDefaults(body);
-    if (!body.poNo && !body.poNumber) {
-      body.poNo = await nextSequentialNumber(PurchaseOrder, "poNo", "PO", {
-        companyId: req.companyId,
-        branchId: body.branchId || null,
-        docKey: "PURCHASE_ORDER",
-        companyCode: req.companyCode || "",
-      });
-    }
-    body.poNumber = body.poNumber || body.poNo;
-    body.poNo = body.poNo || body.poNumber;
     const supplierSnapshot = await resolveSupplierSnapshot(req, body);
     body.supplierId = supplierSnapshot.supplierId;
     body.supplierName = supplierSnapshot.supplierName;
@@ -261,27 +268,41 @@ export async function createPurchaseOrder(req, res) {
     body.linkedPRs = Array.isArray(body.linkedPRs) ? body.linkedPRs.filter((x) => mongoose.Types.ObjectId.isValid(String(x))) : [];
     body.createdBy = req.user?.email || "";
     body.companyId = req.companyId;
-    await syncPoLinesToItemMaster({
-      companyId: req.companyId,
-      companyCode: req.companyCode || company?.code || "",
-      poNo: body.poNo,
-      supplierName: body.supplierName,
-      header: body,
-      lines: body.lines,
-    });
-    const doc = new PurchaseOrder(body);
-    recalcPoTotals(doc);
-    await doc.save();
-    await writeAudit(req, {
-      action: "CREATE",
-      module: "PURCHASE",
-      entityType: "PURCHASE_ORDER",
-      entityId: doc._id,
-      documentNo: doc.poNo,
-      description: `PO ${doc.poNo} created`,
-      metadata: { supplierName: doc.supplierName, lineCount: doc.lines.length },
-    });
-    res.status(201).json(doc);
+
+    let lastErr = null;
+    for (let attempt = 0; attempt < MAX_PO_NUMBER_SAVE_RETRIES; attempt += 1) {
+      try {
+        await assignNewPurchaseOrderNumbers(body, req, company);
+        await syncPoLinesToItemMaster({
+          companyId: req.companyId,
+          companyCode: req.companyCode || company?.code || "",
+          poNo: body.poNo,
+          supplierName: body.supplierName,
+          header: body,
+          lines: body.lines,
+        });
+        const doc = new PurchaseOrder(body);
+        recalcPoTotals(doc);
+        await doc.save();
+        await writeAudit(req, {
+          action: "CREATE",
+          module: "PURCHASE",
+          entityType: "PURCHASE_ORDER",
+          entityId: doc._id,
+          documentNo: doc.poNo,
+          description: `PO ${doc.poNo} created`,
+          metadata: { supplierName: doc.supplierName, lineCount: doc.lines.length },
+        });
+        return res.status(201).json(doc);
+      } catch (err) {
+        lastErr = err;
+        if (isDuplicatePoNumberError(err) && attempt < MAX_PO_NUMBER_SAVE_RETRIES - 1) {
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr || new Error("Could not create purchase order");
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -347,11 +368,12 @@ export async function updatePurchaseOrder(req, res) {
       "handlingCost",
       "miscellaneousCost",
     ];
+    const patch = stripClientPoNumbers(req.body);
     for (const k of allowed) {
-      if (req.body[k] !== undefined) doc[k] = req.body[k];
+      if (patch[k] !== undefined) doc[k] = patch[k];
     }
-    if (Array.isArray(req.body.lines)) {
-      doc.lines = mergePoLinesForUpdate(doc.lines, req.body.lines);
+    if (Array.isArray(patch.lines)) {
+      doc.lines = mergePoLinesForUpdate(doc.lines, patch.lines);
       if (!doc.lines.length) {
         return res.status(400).json({ message: "At least one valid line is required" });
       }
@@ -362,8 +384,8 @@ export async function updatePurchaseOrder(req, res) {
       }
     }
     const supplierChanged =
-      (req.body.supplierId !== undefined && String(req.body.supplierId || "") !== previousSupplierId) ||
-      (req.body.supplierName !== undefined && String(req.body.supplierName || "").trim() !== previousSupplierName);
+      (patch.supplierId !== undefined && String(patch.supplierId || "") !== previousSupplierId) ||
+      (patch.supplierName !== undefined && String(patch.supplierName || "").trim() !== previousSupplierName);
     if (supplierChanged) {
       const supplierSnapshot = await resolveSupplierSnapshot(req, doc);
       doc.supplierId = supplierSnapshot.supplierId;
@@ -877,28 +899,33 @@ export async function importPurchaseOrders(req, res) {
         if (!Array.isArray(row.lines) || row.lines.length === 0) {
           throw new Error("lines required");
         }
-        const poNumber =
-          row.poNumber ||
-          (await nextSequentialNumber(
-            PurchaseOrder,
-            "poNumber",
-            `${req.companyCode || "CMP"}-PO`,
-            { companyId: req.companyId }
-          ));
         let payload = applyPurchaseOrderDefaults({
           ...buyerSnap,
-          ...row,
+          ...stripClientPoNumbers(row),
           companyId: req.companyId,
-          poNumber,
           createdBy: userEmail,
           status: row.status || "DRAFT",
           lines: normalizePoLines(row.lines),
         });
         if (!payload.lines.length) throw new Error("no valid lines after normalize");
-        const doc = new PurchaseOrder(payload);
-        recalcPoTotals(doc);
-        await doc.save();
-        created.push(doc);
+        let saved = null;
+        for (let attempt = 0; attempt < MAX_PO_NUMBER_SAVE_RETRIES; attempt += 1) {
+          try {
+            await assignNewPurchaseOrderNumbers(payload, req, company);
+            const doc = new PurchaseOrder(payload);
+            recalcPoTotals(doc);
+            await doc.save();
+            saved = doc;
+            break;
+          } catch (saveErr) {
+            if (isDuplicatePoNumberError(saveErr) && attempt < MAX_PO_NUMBER_SAVE_RETRIES - 1) {
+              continue;
+            }
+            throw saveErr;
+          }
+        }
+        if (!saved) throw new Error("could not allocate PO number");
+        created.push(saved);
       } catch (e) {
         errors.push({ index: i, message: e.message });
       }

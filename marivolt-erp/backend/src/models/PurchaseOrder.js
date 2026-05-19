@@ -141,6 +141,7 @@ const purchaseOrderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+/** Per-company PO numbers only — never a global unique on poNo/poNumber alone (see migrate-po-number-indexes). */
 purchaseOrderSchema.index({ companyId: 1, poNumber: 1 }, { unique: true });
 purchaseOrderSchema.index({ companyId: 1, poNo: 1 }, { unique: true });
 

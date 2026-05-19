@@ -389,7 +389,7 @@ function exportPurchaseOrderLinesCsv(docLike, fileBase) {
 }
 
 function exportPurchaseOrderLinesPdf(docLike, fileBase) {
-  const poNo = docLike.poNumber || "draft-po";
+  const poNo = docLike.poNumber || docLike.poNo || "draft-po";
   const sub = [
     docLike.supplierName && `Supplier: ${docLike.supplierName}`,
     `Currency: ${docLike.currency || "USD"}`,
@@ -461,7 +461,7 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
     esn: doc.esn || "—",
     currency: cur,
   };
-  const poNo = unsaved ? "Draft (not saved)" : doc.poNumber || "—";
+  const poNo = unsaved ? "Auto generated on save" : doc.poNumber || doc.poNo || "—";
 
   const brandingName = String(doc.buyerLegalName || auth?.company?.name || "").trim();
   const b = getReportBranding(brandingName);
