@@ -7,9 +7,50 @@ import ItemTechnical from "../models/itemTechnicalModel.js";
 import OrderAcknowledgement from "../models/OrderAcknowledgement.js";
 import * as stockService from "../services/stockService.js";
 import { nextSalesDocNumber, nextUniqueSalesDocNumber } from "../utils/salesDocNumber.js";
+import {
+  isSalesQuotationDeleteAdmin,
+  quotationCanBeDeleted,
+  quotationDeleteBlockReason,
+} from "../utils/salesAdminAccess.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
+}
+
+async function enrichQuotationsWithDeleteEligibility(req, rows = []) {
+  if (!rows.length) return rows;
+  const isAdmin = isSalesQuotationDeleteAdmin(req);
+  if (!isAdmin) {
+    return rows.map((row) => ({
+      ...row,
+      canDeleteQuotation: false,
+      deleteQuotationBlockReason: "Only administrators can delete quotations.",
+    }));
+  }
+
+  const ids = rows.map((r) => r._id).filter(Boolean);
+  const linkedOAs = ids.length
+    ? await OrderAcknowledgement.find(withCompany(req, { linkedQuotationId: { $in: ids } }))
+        .select("linkedQuotationId status oaNo")
+        .lean()
+    : [];
+  const activeOAByQuotation = new Map();
+  for (const oa of linkedOAs) {
+    if (String(oa.status || "").toUpperCase() === "CANCELLED") continue;
+    activeOAByQuotation.set(String(oa.linkedQuotationId), oa.oaNo || "OA");
+  }
+
+  return rows.map((row) => {
+    const hasActiveOA = activeOAByQuotation.has(String(row._id));
+    const canDeleteQuotation = quotationCanBeDeleted(row, { hasActiveOA });
+    return {
+      ...row,
+      canDeleteQuotation,
+      deleteQuotationBlockReason: canDeleteQuotation
+        ? ""
+        : quotationDeleteBlockReason(row, { hasActiveOA }),
+    };
+  });
 }
 
 function normalizeLines(lines = []) {
@@ -189,7 +230,8 @@ export async function listQuotations(req, res) {
       Quotation.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       Quotation.countDocuments(filter),
     ]);
-    res.json({ items: rows, total, page, limit });
+    const items = await enrichQuotationsWithDeleteEligibility(req, rows);
+    res.json({ items, total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -219,7 +261,8 @@ export async function getQuotation(req, res) {
     }
     const row = await Quotation.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
-    res.json(row);
+    const [enriched] = await enrichQuotationsWithDeleteEligibility(req, [row]);
+    res.json(enriched || row);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -456,10 +499,7 @@ export async function stockOutFromQuotation(req, res) {
 
 export async function deleteQuotation(req, res) {
   try {
-    const role = String(req.user?.role || "")
-      .toLowerCase()
-      .trim();
-    if (!["super_admin", "company_admin", "admin"].includes(role)) {
+    if (!isSalesQuotationDeleteAdmin(req)) {
       return res.status(403).json({ message: "Only administrators can delete quotations." });
     }
     const { id } = req.params;
@@ -469,24 +509,15 @@ export async function deleteQuotation(req, res) {
     const row = await Quotation.findOne(withCompany(req, { _id: id }));
     if (!row) return res.status(404).json({ message: "Not found" });
 
-    const quotationStatus = String(row.status || "").toUpperCase();
     const linkedOAs = await OrderAcknowledgement.find(
       withCompany(req, { linkedQuotationId: row._id })
     )
       .select("status oaNo")
       .lean();
-    const hasLinkedOA = linkedOAs.length > 0;
     const hasActiveOA = linkedOAs.some((oa) => String(oa.status || "").toUpperCase() !== "CANCELLED");
-
-    if (!hasLinkedOA && !["DRAFT", "APPROVED"].includes(quotationStatus)) {
-      return res.status(400).json({
-        message: "Only DRAFT or APPROVED quotations can be deleted unless linked order confirmation is cancelled.",
-      });
-    }
-    if (hasActiveOA) {
-      return res.status(400).json({
-        message: "Cannot delete quotation because linked order confirmation is active. Cancel order confirmation first.",
-      });
+    const blockReason = quotationDeleteBlockReason(row, { hasActiveOA });
+    if (blockReason) {
+      return res.status(400).json({ message: blockReason });
     }
 
     await Quotation.deleteOne(withCompany(req, { _id: id }));

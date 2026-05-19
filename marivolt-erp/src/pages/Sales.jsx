@@ -1510,9 +1510,25 @@ function canEditSalesCustomerMaster(role) {
   return ["super_admin", "company_admin", "admin"].includes(r);
 }
 
-function canManageSalesQuotationDeletion(role) {
+function canManageSalesQuotationDeletion(role, username) {
   const r = String(role || "").toLowerCase().trim();
+  const u = String(username || "").toLowerCase().trim();
+  if (u === "deepak007") return true;
   return ["super_admin", "company_admin", "admin"].includes(r);
+}
+
+function quotationListCanDelete(row, hasAdminDelete) {
+  if (!hasAdminDelete || !row) return false;
+  if (typeof row.canDeleteQuotation === "boolean") return row.canDeleteQuotation;
+  const st = String(row.status || "").toUpperCase();
+  return ["DRAFT", "APPROVED", "CONVERTED"].includes(st);
+}
+
+function quotationListDeleteTitle(row, hasAdminDelete) {
+  if (!hasAdminDelete) return "Only administrators can delete quotations.";
+  if (row?.deleteQuotationBlockReason) return row.deleteQuotationBlockReason;
+  if (quotationListCanDelete(row, hasAdminDelete)) return "Delete quotation permanently";
+  return "This quotation cannot be deleted.";
 }
 
 function formatFileBytes(n) {
@@ -1564,7 +1580,7 @@ export default function Sales() {
     notes: "",
   });
   const canEditCustomers = canEditSalesCustomerMaster(auth?.user?.role);
-  const canDeleteQuotations = canManageSalesQuotationDeletion(auth?.user?.role);
+  const canDeleteQuotations = canManageSalesQuotationDeletion(auth?.user?.role, auth?.user?.username);
   const shippingFileRef = useRef(null);
   const [shippingDocsAfterDispatch, setShippingDocsAfterDispatch] = useState(null);
   const [shippingDocForm, setShippingDocForm] = useState({
@@ -4124,8 +4140,12 @@ export default function Sales() {
                               <button
                                 type="button"
                                 className="rounded-lg border border-rose-300 px-2 py-1 text-xs text-rose-700 disabled:opacity-50"
-                                disabled={deleteQuotationMutation.isPending}
+                                disabled={
+                                  deleteQuotationMutation.isPending || !quotationListCanDelete(r, canDeleteQuotations)
+                                }
+                                title={quotationListDeleteTitle(r, canDeleteQuotations)}
                                 onClick={() => {
+                                  if (!quotationListCanDelete(r, canDeleteQuotations)) return;
                                   if (!window.confirm("Delete this quotation? This action cannot be undone.")) return;
                                   deleteQuotationMutation.mutate(r._id);
                                 }}
@@ -4346,6 +4366,15 @@ export default function Sales() {
                             <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => setDetailId(r._id)}>
                               Open
                             </button>
+                            <button
+                              type="button"
+                              className={`rounded-lg border border-amber-300 px-2 py-1 text-xs text-amber-900 ${!canCancelOa ? "opacity-40" : "hover:bg-amber-50"}`}
+                              disabled={!canCancelOa}
+                              title={cancelOaTitle}
+                              onClick={() => openOACancelModal(r._id)}
+                            >
+                              Cancel OA
+                            </button>
                             <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("oa", r._id)}>
                               Print
                             </button>
@@ -4378,15 +4407,6 @@ export default function Sales() {
                               onClick={() => convertToOrderAllocationFromOAMutation.mutate({ id: r._id })}
                             >
                               Convert to Order Allocation
-                            </button>
-                            <button
-                              type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${!canCancelOa ? "opacity-40" : ""}`}
-                              disabled={!canCancelOa}
-                              title={cancelOaTitle}
-                              onClick={() => openOACancelModal(r._id)}
-                            >
-                              Cancel OA
                             </button>
                           </div>
                         </td>
@@ -5517,9 +5537,14 @@ export default function Sales() {
                 <button
                   type="button"
                   className="rounded-xl border border-rose-300 px-3 py-1.5 text-xs font-semibold text-rose-700 disabled:opacity-50"
-                  disabled={deleteQuotationMutation.isPending || !detail?._id}
+                  disabled={
+                    deleteQuotationMutation.isPending ||
+                    !detail?._id ||
+                    !quotationListCanDelete(detail, canDeleteQuotations)
+                  }
+                  title={quotationListDeleteTitle(detail, canDeleteQuotations)}
                   onClick={() => {
-                    if (!detail?._id) return;
+                    if (!detail?._id || !quotationListCanDelete(detail, canDeleteQuotations)) return;
                     if (!window.confirm("Delete this quotation? This action cannot be undone.")) return;
                     deleteQuotationMutation.mutate(detail._id);
                   }}
@@ -5556,9 +5581,14 @@ export default function Sales() {
                 <button
                   type="button"
                   className="rounded-xl border border-rose-300 px-2 py-1 text-xs text-rose-700 disabled:opacity-50"
-                  disabled={deleteQuotationMutation.isPending || !detail?._id}
+                  disabled={
+                    deleteQuotationMutation.isPending ||
+                    !detail?._id ||
+                    !quotationListCanDelete(detail, canDeleteQuotations)
+                  }
+                  title={quotationListDeleteTitle(detail, canDeleteQuotations)}
                   onClick={() => {
-                    if (!detail?._id) return;
+                    if (!detail?._id || !quotationListCanDelete(detail, canDeleteQuotations)) return;
                     if (!window.confirm("Delete this quotation? This action cannot be undone.")) return;
                     deleteQuotationMutation.mutate(detail._id);
                   }}
@@ -5720,6 +5750,25 @@ export default function Sales() {
               >
                 Export PDF
               </button>
+              {canDeleteQuotations ? (
+                <button
+                  type="button"
+                  className="rounded-xl border border-rose-300 px-2 py-1 text-xs text-rose-700 disabled:opacity-50"
+                  disabled={
+                    deleteQuotationMutation.isPending ||
+                    !detail?._id ||
+                    !quotationListCanDelete(detail, canDeleteQuotations)
+                  }
+                  title={quotationListDeleteTitle(detail, canDeleteQuotations)}
+                  onClick={() => {
+                    if (!detail?._id || !quotationListCanDelete(detail, canDeleteQuotations)) return;
+                    if (!window.confirm("Delete this quotation? This action cannot be undone.")) return;
+                    deleteQuotationMutation.mutate(detail._id);
+                  }}
+                >
+                  {deleteQuotationMutation.isPending ? "Deleting…" : "Delete quotation"}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className={`rounded-xl border px-2 py-1 text-xs ${detail.status !== "APPROVED" ? "opacity-40" : ""}`}
@@ -6064,7 +6113,7 @@ export default function Sales() {
                       </button>
                       <button
                         type="button"
-                        className={`rounded-xl border px-2 py-1 text-xs ${!canCancelOa ? "opacity-40" : ""}`}
+                        className={`rounded-xl border border-amber-300 px-2 py-1 text-xs text-amber-900 ${!canCancelOa ? "opacity-40" : "hover:bg-amber-50"}`}
                         disabled={!canCancelOa}
                         title={orderAcknowledgementCancelBlockReason(oaDetail)}
                         onClick={() => openOACancelModal(oaDetail._id)}
@@ -6241,7 +6290,7 @@ export default function Sales() {
                 </button>
                 <button
                   type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${!canCancelOa ? "opacity-40" : ""}`}
+                  className={`rounded-xl border border-amber-300 px-2 py-1 text-xs text-amber-900 ${!canCancelOa ? "opacity-40" : "hover:bg-amber-50"}`}
                   disabled={!canCancelOa}
                   title={orderAcknowledgementCancelBlockReason(oaDetail)}
                   onClick={() => openOACancelModal(oaDetail._id)}

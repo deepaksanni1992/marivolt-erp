@@ -8,12 +8,25 @@ import { recordActivity } from "../services/userActivityService.js";
 
 const router = express.Router();
 
+function userAuthPayload(user) {
+  return {
+    id: user._id,
+    name: user.name,
+    email: user.email,
+    username: user.username || "",
+    role: user.role,
+  };
+}
+
 function signToken(user, company, allowedCompanies = []) {
   return jwt.sign(
     {
       id: user._id,
       role: user.role,
       email: user.email,
+      username: String(user.username || "")
+        .toLowerCase()
+        .trim(),
       companyId: String(company?._id || ""),
       companyCode: String(company?.code || "").toUpperCase(),
       allowedCompanyIds: allowedCompanies.map((c) => String(c._id || c)),
@@ -114,7 +127,7 @@ router.post("/register", async (req, res) => {
 
     res.json({
       token,
-      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+      user: userAuthPayload(user),
       company: firstCompany ? normalizeCompany(firstCompany) : null,
     });
   } catch (err) {
@@ -186,7 +199,7 @@ router.post("/login", async (req, res) => {
       await recordLoginSuccess(req, user, selected);
       return res.json({
         token,
-        user: { id: user._id, name: user.name, email: user.email, role: user.role },
+        user: userAuthPayload(user),
         company: normalizeCompany(selected),
         companies: companies.map(normalizeCompany),
       });
@@ -198,7 +211,7 @@ router.post("/login", async (req, res) => {
       await recordLoginSuccess(req, user, selected);
       return res.json({
         token,
-        user: { id: user._id, name: user.name, email: user.email, role: user.role },
+        user: userAuthPayload(user),
         company: normalizeCompany(selected),
         companies: companies.map(normalizeCompany),
       });
@@ -212,7 +225,7 @@ router.post("/login", async (req, res) => {
       await recordLoginSuccess(req, user, defaultCompany);
       return res.json({
         token,
-        user: { id: user._id, name: user.name, email: user.email, role: user.role },
+        user: userAuthPayload(user),
         company: normalizeCompany(defaultCompany),
         companies: companies.map(normalizeCompany),
       });
@@ -222,7 +235,7 @@ router.post("/login", async (req, res) => {
     return res.json({
       requiresCompanySelection: true,
       loginTicket,
-      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+      user: userAuthPayload(user),
       companies: companies.map(normalizeCompany),
     });
   } catch (err) {
@@ -258,7 +271,7 @@ router.post("/select-company", async (req, res) => {
     await recordLoginSuccess(req, user, selected, "COMPANY_SELECT");
     res.json({
       token,
-      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+      user: userAuthPayload(user),
       company: normalizeCompany(selected),
       companies: companies.map(normalizeCompany),
     });
@@ -291,7 +304,7 @@ router.post("/switch-company", requireAuth, async (req, res) => {
     }
     res.json({
       token,
-      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+      user: userAuthPayload(user),
       company: normalizeCompany(selected),
       companies: companies.map(normalizeCompany),
     });
