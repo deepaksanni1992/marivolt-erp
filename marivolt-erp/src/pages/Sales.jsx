@@ -6,6 +6,7 @@ import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import ReceivePaymentModal from "../components/accounts/ReceivePaymentModal.jsx";
 import { apiDelete, apiGet, apiGetWithQuery, apiPatch, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
+import { GLOBAL_REPORT_PRINT_CSS } from "../lib/reportPrintLayout.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "../lib/salesQuotationPrintCss.js";
 import {
   buildTaxInvoiceHeaderHtml,
@@ -763,8 +764,8 @@ function renderPrintWindow(data, autoPrint = false) {
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
-      <body class="${isMarivolt ? "has-quote-terms" : ""}">
-        <div class="quote-header">
+      <body class="report-print ${isMarivolt ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
+        <div class="print-header quote-header">
           <div class="quote-left">
             ${
               useBrandedLayout
@@ -845,7 +846,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
               .join("")}
           </tbody>
         </table>
-        <div class="totals">
+        <div class="print-totals totals summary-section">
           <div><span>Subtotal</span><span>${money(q.subTotal)}</span></div>
           <div><span>Packing Cost</span><span>${money(q.packingCost)}</span></div>
           <div><span>Clearance Cost</span><span>${money(q.clearanceCost)}</span></div>
@@ -861,9 +862,10 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         <div class="footer">
           <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
         </div>
+        </div>
         ${
           useBrandedLayout
-            ? `<div class="page-footer">
+            ? `<div class="print-footer page-footer">
           <div class="page-footer-top">
             <div>
               <div>${reportFooterName || "-"}</div>
@@ -880,6 +882,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </div>`
             : ""
         }
+      </div>
       </body>
     </html>
   `;
@@ -910,8 +913,8 @@ function renderOrderAcknowledgementPrintWindow(payload, autoPrint = false) {
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
-      <body class="${isMarivolt ? "has-quote-terms" : ""}">
-        <div class="header">
+      <body class="report-print ${isMarivolt ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
+        <div class="print-header header">
           <div class="header-left">
             ${
               useBrandedLayout
@@ -992,7 +995,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
               .join("")}
           </tbody>
         </table>
-        <div class="totals">
+        <div class="print-totals totals summary-section">
           <div><span>Subtotal</span><span>${money(oa.subTotal)}</span></div>
           <div><span>Packing Cost</span><span>${money(oa.packingCost)}</span></div>
           <div><span>Clearance Cost</span><span>${money(oa.clearanceCost)}</span></div>
@@ -1008,9 +1011,10 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         <div class="footer">
           <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
         </div>
+        </div>
         ${
           useBrandedLayout
-            ? `<div class="page-footer">
+            ? `<div class="print-footer page-footer">
           <div class="page-footer-top">
             <div>
               <div>${reportFooterName || "-"}</div>
@@ -1027,6 +1031,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </div>`
             : ""
         }
+      </div>
       </body>
     </html>
   `;
@@ -1106,7 +1111,7 @@ function renderFlowDocPrintWindow({
         .join("");
   const invoiceDateFormatted = dateValue ? new Date(dateValue).toLocaleDateString() : "—";
   const flowDocClassicTop = `
-        <div class="header">
+        <div class="print-header header">
           <div class="header-left">
             ${
               useBrandedLayout
@@ -1174,7 +1179,7 @@ function renderFlowDocPrintWindow({
           </div>
         </div>`;
   const taxInvoiceQuotationHeader = `
-        <div class="header">
+        <div class="print-header header">
           <div class="header-left">
             ${
               useBrandedLayout
@@ -1227,7 +1232,7 @@ function renderFlowDocPrintWindow({
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
-      <body class="${isMarivolt ? "has-quote-terms" : ""}">
+      <body class="report-print ${isMarivolt ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
         ${salesInvoiceLayout ? taxInvoiceQuotationHeader + taxInvoiceGridHtml : flowDocClassicTop}
         <table>
           <thead>
@@ -1239,7 +1244,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             ${lineTableRowsHtml}
           </tbody>
         </table>
-        <div class="totals">
+        <div class="print-totals totals summary-section">
           <div><span>Subtotal</span><span>${money(doc?.subTotal)}</span></div>
           <div><span>Packing Cost</span><span>${money(doc?.packingCost)}</span></div>
           <div><span>Clearance Cost</span><span>${money(doc?.clearanceCost)}</span></div>
@@ -1269,9 +1274,10 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
               : "This is a computer generated documents and does not required signature or stamp."
           }</div>
         </div>
+        </div>
         ${
           useBrandedLayout
-            ? `<div class="page-footer">
+            ? `<div class="print-footer page-footer">
           <div class="page-footer-top">
             <div>
               <div>${reportFooterName || "-"}</div>
@@ -1288,6 +1294,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </div>`
             : ""
         }
+      </div>
       </body>
     </html>
   `;
@@ -1314,8 +1321,8 @@ function renderPackingListPrintWindow({ rts, company, autoPrint = false }) {
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
-      <body class="${isMarivolt ? "has-quote-terms" : ""}">
-        <div class="header">
+      <body class="report-print ${isMarivolt ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
+        <div class="print-header header">
           <div class="header-left">
             ${
               useBrandedLayout
@@ -1415,7 +1422,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             </table>`
             : ""
         }
-        <div class="totals">
+        <div class="print-totals totals summary-section">
           <div><span>Total Weight</span><span>${money(rts?.packingDetails?.totalWeightKg || 0)} Kg</span></div>
           <div><b>Total Boxes</b><b>${Number(totalBoxes || rts?.packingDetails?.boxCount || 0)}</b></div>
         </div>
@@ -1427,9 +1434,10 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         <div class="footer">
           <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
         </div>
+        </div>
         ${
           useBrandedLayout
-            ? `<div class="page-footer">
+            ? `<div class="print-footer page-footer">
           <div class="page-footer-top">
             <div>
               <div>${reportFooterName || "-"}</div>
@@ -1446,6 +1454,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </div>`
             : ""
         }
+      </div>
       </body>
     </html>
   `;
@@ -1942,15 +1951,20 @@ export default function Sales() {
             table { width: 100%; border-collapse: collapse; }
             th, td { border: 1px solid #ddd; padding: 7px; font-size: 12px; text-align: left; }
             th { background: #f3f4f6; }
+${GLOBAL_REPORT_PRINT_CSS}
           </style>
         </head>
-        <body>
+        <body class="report-print">
+          <div class="print-page">
+          <div class="print-body">
           <h1>${activeReportTitle}</h1>
           <div class="meta">Company: ${activeCompany?.name || activeCompany?.code || "-"} | Generated: ${new Date().toLocaleString()}</div>
           <table>
             <thead><tr>${headers}</tr></thead>
             <tbody>${rows}</tbody>
           </table>
+          </div>
+          </div>
         </body>
       </html>
     `;

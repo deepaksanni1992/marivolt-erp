@@ -1,7 +1,9 @@
+import { GLOBAL_REPORT_PRINT_CSS } from "./reportPrintLayout.js";
+
 /** Shared print styles for quotation-style sales documents (quotation, OA, etc.). */
 export const SALES_QUOTATION_STYLE_PRINT_CSS = `
-          body { font-family: Arial, sans-serif; margin: 24px; color: #111; padding-bottom: 90px; }
-          body.has-quote-terms { padding-bottom: 155px; }
+          body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
+          body.report-print.has-quote-terms { padding-bottom: 0; }
           .quote-header {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
@@ -151,10 +153,10 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             padding-top: 10px;
           }
           .page-footer {
-            position: fixed;
-            left: 24px;
-            right: 24px;
-            bottom: 16px;
+            position: static;
+            left: auto;
+            right: auto;
+            bottom: auto;
             color: #1f3a5f;
             font-size: 12px;
           }
@@ -258,6 +260,6 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             .header { page-break-inside: avoid; }
             .quote-header { page-break-inside: avoid; }
             .quote-terms { page-break-inside: avoid; }
-            .page-footer { position: fixed; bottom: 8px; }
           }
+${GLOBAL_REPORT_PRINT_CSS}
 `;

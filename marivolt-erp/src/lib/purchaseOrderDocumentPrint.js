@@ -1,5 +1,4 @@
 import { getReportBranding } from "./reportBranding.js";
-import { PO_DOCUMENT_PRINT_CSS } from "./poDocumentPrintCss.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 
 function poHeaderCost(value) {
@@ -228,14 +227,14 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
   <title>${poNo} — Purchase order</title>
   <style>
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
-${PO_DOCUMENT_PRINT_CSS}
     body.po-print-document { font-family: Arial, Helvetica, sans-serif; color: #111; font-size: 12px; }
     table { border-collapse: collapse; width: 100%; }
     .po-print-header { page-break-inside: avoid; }
   </style>
 </head>
-<body class="po-print-document${b.useBrandedLayout ? " has-branded-footer" : ""}${isMarivolt && doc.termsAndConditions && String(doc.termsAndConditions).trim() ? " has-quote-terms" : ""}">
-  <div class="po-page">
+<body class="report-print po-print-document${b.useBrandedLayout ? " has-branded-footer" : ""}${isMarivolt && doc.termsAndConditions && String(doc.termsAndConditions).trim() ? " has-quote-terms" : ""}">
+  <div class="print-page po-page">
+  <div class="print-body">
   ${isOkeanos ? headerOkeanos : headerDefault}
 
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
@@ -295,7 +294,7 @@ ${PO_DOCUMENT_PRINT_CSS}
     <tbody>${lines.length ? lineRows : emptyLinesRow}</tbody>
   </table>
 
-  <div class="po-totals" style="display:flex;justify-content:flex-end;border-top:1px solid #e5e7eb;padding-top:16px">
+  <div class="print-totals po-totals totals-section" style="display:flex;justify-content:flex-end;border-top:1px solid #e5e7eb;padding-top:16px">
     <div style="width:280px;font-size:13px">
       <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Line items subtotal</span><span style="font-weight:600;color:#111">${cur} ${subTotal.toFixed(2)}</span></div>
       <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Packing cost</span><span style="font-weight:600;color:#111">${cur} ${packingCost.toFixed(2)}</span></div>
@@ -320,7 +319,6 @@ ${PO_DOCUMENT_PRINT_CSS}
   <div class="footer po-doc-note">
     <div class="doc-note">This is a computer generated document and does not require signature or stamp.</div>
   </div>
-  <div class="po-bottom-reserve" aria-hidden="true"></div>
   ${
     !b.useBrandedLayout
       ? `<div class="po-footer-simple">${footerBranded}</div>`
@@ -329,7 +327,7 @@ ${PO_DOCUMENT_PRINT_CSS}
   </div>
   ${
     b.useBrandedLayout
-      ? `<div class="po-footer page-footer">
+      ? `<div class="print-footer po-footer page-footer">
           <div class="page-footer-top">
             <div>
               <div>${escapeHtml(b.reportFooterName) || "-"}</div>
@@ -346,7 +344,7 @@ ${PO_DOCUMENT_PRINT_CSS}
         </div>`
       : ""
   }
-
+  </div>
 
   <p class="no-print" style="margin-top:24px;font-size:11px;color:#6b7280">
     Tip: Use your browser <strong>Print</strong> dialog and choose <strong>Save as PDF</strong> to download.

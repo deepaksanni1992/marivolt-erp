@@ -4,6 +4,7 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
 import { apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
+import { GLOBAL_REPORT_PRINT_CSS } from "../lib/reportPrintLayout.js";
 
 const emptyShipment = {
   direction: "EXPORT",
@@ -172,7 +173,9 @@ export default function Logistics() {
         .join("");
       const w = window.open("", "_blank");
       if (!w) return;
-      w.document.write(`<html><head><title>${p.packingListNo || "Packing List"}</title></head><body style="font-family:Arial;padding:24px"><h2>Packing List</h2><div><b>No:</b> ${p.packingListNo || ""}</div><div><b>Customer:</b> ${p.customerName || ""}</div><div><b>Invoice:</b> ${p.invoiceNo || ""}</div><div><b>RTS:</b> ${p.rtsNo || ""}</div><table border="1" cellspacing="0" cellpadding="6" width="100%" style="margin-top:16px;border-collapse:collapse;font-size:12px"><thead><tr><th>Article</th><th>Description</th><th>Qty</th><th>UOM</th><th>Weight</th><th>Dimensions</th><th>Packages</th><th>Marks</th><th>COO</th></tr></thead><tbody>${lineRows}</tbody></table></body></html>`);
+      w.document.write(
+        `<html><head><title>${p.packingListNo || "Packing List"}</title><style>body{font-family:Arial;margin:24px;color:#111}${GLOBAL_REPORT_PRINT_CSS}</style></head><body class="report-print"><div class="print-page"><div class="print-body"><h2 class="print-header">Packing List</h2><div><b>No:</b> ${p.packingListNo || ""}</div><div><b>Customer:</b> ${p.customerName || ""}</div><div><b>Invoice:</b> ${p.invoiceNo || ""}</div><div><b>RTS:</b> ${p.rtsNo || ""}</div><table border="1" cellspacing="0" cellpadding="6" width="100%" style="margin-top:16px;border-collapse:collapse;font-size:12px"><thead><tr><th>Article</th><th>Description</th><th>Qty</th><th>UOM</th><th>Weight</th><th>Dimensions</th><th>Packages</th><th>Marks</th><th>COO</th></tr></thead><tbody>${lineRows}</tbody></table></div></div></body></html>`,
+      );
       w.document.close();
       w.focus();
       w.print();
