@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "../context/AuthContext.jsx";
 import { api, apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
+import { renderStorePackingListPrintWindow } from "../lib/storePackingListPrint.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import {
   exportCurrentPackingCsv,
@@ -195,6 +197,7 @@ function packageTypeLabel(v) {
 }
 
 export default function StoreModule() {
+  const { auth } = useAuth();
   const qc = useQueryClient();
   const [searchParams] = useSearchParams();
   const [tab, setTab] = useState("GRN");
@@ -3195,58 +3198,14 @@ export default function StoreModule() {
                             <button
                               type="button"
                               className="rounded border px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
-                              onClick={() =>
-                                {
-                                  const packages = (p.packages || []).length
-                                    ? p.packages
-                                    : [{ packageNo: "Legacy package", packageType: "Carton", dimensions: "", grossWeightKg: "", netWeightKg: "", items: p.lines || [] }];
-                                  const rows = packages.flatMap((pkg) => {
-                                    const header = {
-                                      packageNo: pkg.packageNo,
-                                      packageType: packageTypeLabel(pkg.packageType),
-                                      dimensions: pkg.dimensions || "",
-                                      grossWeightKg: pkg.grossWeightKg || "",
-                                      netWeightKg: pkg.netWeightKg || "",
-                                      article: "",
-                                      partNumber: "",
-                                      description: pkg.packageRemarks || pkg.marksAndNumbers || "",
-                                      uom: "",
-                                      qty: "",
-                                    };
-                                    const lineRows = (pkg.items || []).map((item) => ({
-                                      packageNo: pkg.packageNo,
-                                      packageType: "",
-                                      dimensions: "",
-                                      grossWeightKg: "",
-                                      netWeightKg: "",
-                                      article: item.article,
-                                      partNumber: item.spn || item.partNumber || "",
-                                      description: item.description || "",
-                                      uom: item.uom || "PCS",
-                                      qty: item.qty ?? item.packQty ?? 0,
-                                    }));
-                                    return lineRows.length ? [header, ...lineRows] : [header];
-                                  });
-                                  downloadPdfTable(
-                                    `Packing List ${p.packingNo}`,
-                                    `${p.customerName || ""} | Allocation ${p.allocationNo || ""} | Packages ${p.totalPackages || packages.length} | Gross ${p.totalGrossWeightKg || 0} | Net ${p.totalNetWeightKg || 0}`,
-                                    [
-                                      { key: "packageNo", header: "Package" },
-                                      { key: "packageType", header: "Type" },
-                                      { key: "dimensions", header: "Dimensions" },
-                                      { key: "grossWeightKg", header: "Gross Kg" },
-                                      { key: "netWeightKg", header: "Net Kg" },
-                                      { key: "article", header: "Article" },
-                                      { key: "partNumber", header: "Part #" },
-                                      { key: "description", header: "Description" },
-                                      { key: "uom", header: "UOM" },
-                                      { key: "qty", header: "Qty" },
-                                    ],
-                                    rows,
-                                    p.packingNo || "packing-list"
-                                  );
-                                }
-                              }
+                              onClick={() => renderStorePackingListPrintWindow(p, auth?.company || {}, false)}
+                            >
+                              Print
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded border px-2 py-0.5 text-xs text-slate-700 hover:bg-slate-50"
+                              onClick={() => renderStorePackingListPrintWindow(p, auth?.company || {}, true)}
                             >
                               PDF
                             </button>
