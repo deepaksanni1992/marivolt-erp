@@ -1,8 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
+import {
+  exportCurrentPackingCsv,
+  exportPackingTemplateCsv,
+  mapImportPackagesToUi,
+} from "../lib/storePackingCsv.js";
 import Modal from "../components/erp/Modal.jsx";
 
 const TABS = [
@@ -213,6 +218,10 @@ export default function StoreModule() {
   const [packAllocInputId, setPackAllocInputId] = useState("");
   const [packAllocQueryId, setPackAllocQueryId] = useState("");
   const [packPackages, setPackPackages] = useState([]);
+  const [packAddArticlePkgId, setPackAddArticlePkgId] = useState("");
+  const [packAddArticleSearch, setPackAddArticleSearch] = useState("");
+  const [packCsvPreview, setPackCsvPreview] = useState(null);
+  const packCsvInputRef = useRef(null);
   const [packingStatusFilter, setPackingStatusFilter] = useState("");
   const [dispatchPackInputId, setDispatchPackInputId] = useState("");
   const [dispatchPackQueryId, setDispatchPackQueryId] = useState("");
@@ -475,6 +484,8 @@ export default function StoreModule() {
       return;
     }
     setPackPackages([newPackingPackage(1)]);
+    setPackCsvPreview(null);
+    setPackAddArticlePkgId("");
   }, [packAllocQueryId, packingFromAlloc]);
 
   const packingPackageStats = useMemo(() => {
@@ -505,6 +516,92 @@ export default function StoreModule() {
       totalNetWeightKg: packPackages.reduce((sum, pkg) => sum + (Number(pkg.netWeightKg) || 0), 0),
     };
   }, [packPackages, packingFromAlloc]);
+
+  const packingDraftValidation = useMemo(() => {
+    const msgs = [];
+    if (!packPackages.length) msgs.push("Add at least one package.");
+    for (const pkg of packPackages) {
+      const pno = String(pkg.packageNo || "").trim();
+      if (!pno) msgs.push("Each package needs a Package No.");
+      if (!String(pkg.dimensions || "").trim()) msgs.push(`Package ${pno || "?"}: Dimensions required.`);
+      const gross = Number(pkg.grossWeightKg);
+      const net = Number(pkg.netWeightKg);
+      if (!Number.isFinite(gross) || gross <= 0) msgs.push(`Package ${pno || "?"}: Gross weight required.`);
+      if (!Number.isFinite(net) || net <= 0) msgs.push(`Package ${pno || "?"}: Net weight required.`);
+      const items = (pkg.items || []).filter((it) => Number(it.qty) > 0);
+      if (!items.length) msgs.push(`Package ${pno || "?"} is empty.`);
+    }
+    if (packingPackageStats.hasOverPacked) msgs.push("Correct over-packed lines.");
+    if (packingPackageStats.totalPackageQty <= 0) msgs.push("Pack at least one quantity.");
+    return { msgs, ok: msgs.length === 0 };
+  }, [packPackages, packingPackageStats]);
+
+  const pendingLinesForAddArticle = useMemo(() => {
+    const q = packAddArticleSearch.trim().toLowerCase();
+    return (packingPackageStats.lines || []).filter((ln) => {
+      if ((Number(ln.balancePack) || 0) <= 0) return false;
+      if (!q) return true;
+      const hay = [ln.article, ln.description, ln.partNumber, ln.uom].join(" ").toLowerCase();
+      return hay.includes(q);
+    });
+  }, [packingPackageStats.lines, packAddArticleSearch]);
+
+  const updatePackPackage = useCallback((pkgId, patch) => {
+    setPackPackages((prev) => prev.map((p) => (p.id === pkgId ? { ...p, ...patch } : p)));
+  }, []);
+
+  const setPackItemQty = useCallback((pkgId, lineId, rawQty) => {
+    const qty = Math.max(0, Number(rawQty) || 0);
+    setPackPackages((prev) =>
+      prev.map((p) => {
+        if (p.id !== pkgId) return p;
+        const without = (p.items || []).filter((it) => String(it.allocationLineId) !== String(lineId));
+        if (qty <= 0) return { ...p, items: without };
+        const ln = (packingFromAlloc?.lines || []).find((x) => String(x.allocationLineId) === String(lineId));
+        const existing = (p.items || []).find((it) => String(it.allocationLineId) === String(lineId));
+        const nextItem = {
+          allocationLineId: lineId,
+          article: ln?.article || existing?.article || "",
+          description: ln?.description || existing?.description || "",
+          spn: ln?.partNumber || existing?.spn || "",
+          materialCode: ln?.materialCode || existing?.materialCode || "",
+          qty,
+          uom: ln?.uom || existing?.uom || "PCS",
+        };
+        return { ...p, items: [...without, nextItem] };
+      })
+    );
+  }, [packingFromAlloc?.lines]);
+
+  const removePackItem = useCallback((pkgId, lineId) => {
+    setPackPackages((prev) =>
+      prev.map((p) =>
+        p.id === pkgId ? { ...p, items: (p.items || []).filter((it) => String(it.allocationLineId) !== String(lineId)) } : p
+      )
+    );
+  }, []);
+
+  const onPickPackingCsvFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !packingFromAlloc?.allocation?._id) return;
+    try {
+      const csvText = await file.text();
+      const data = await apiPost("/packing/import-preview", {
+        allocationId: packingFromAlloc.allocation._id,
+        csvText,
+      });
+      setPackCsvPreview(data);
+    } catch (err) {
+      setPackCsvPreview({ preview: [], errors: [{ line: 0, message: err.message }], blockingErrors: [], canApply: false });
+    }
+  };
+
+  const applyPackingCsvImport = () => {
+    if (!packCsvPreview?.canApply || !packCsvPreview.packages?.length) return;
+    setPackPackages(mapImportPackagesToUi(packCsvPreview.packages));
+    setPackCsvPreview(null);
+  };
 
   const createPackingDraft = useMutation({
     mutationFn: (body) => apiPost("/packing/draft", body),
@@ -2695,16 +2792,48 @@ export default function StoreModule() {
                     <div>
                       <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Package builder</h4>
                       <p className="text-xs text-slate-500">
-                        Dimensions and weights are package-level only. Assign articles inside each carton/pallet.
+                        Packages start empty. Add articles manually or use CSV import/export for long lists.
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      className="rounded border bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
-                      onClick={() => setPackPackages((prev) => [...prev, newPackingPackage(prev.length + 1)])}
-                    >
-                      Add package
-                    </button>
+                    <div className="flex flex-wrap gap-1">
+                      <button
+                        type="button"
+                        className="rounded border px-2 py-1.5 text-xs hover:bg-slate-50"
+                        onClick={() =>
+                          exportPackingTemplateCsv(
+                            packingFromAlloc?.lines,
+                            packingFromAlloc?.allocation?.allocationNo
+                          )
+                        }
+                      >
+                        Export Packing CSV Template
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border px-2 py-1.5 text-xs hover:bg-slate-50"
+                        onClick={() => packCsvInputRef.current?.click()}
+                      >
+                        Import Packing CSV
+                      </button>
+                      <input ref={packCsvInputRef} type="file" accept=".csv,text/csv" className="hidden" onChange={onPickPackingCsvFile} />
+                      <button
+                        type="button"
+                        className="rounded border px-2 py-1.5 text-xs hover:bg-slate-50"
+                        disabled={!packPackages.length}
+                        onClick={() =>
+                          exportCurrentPackingCsv(packPackages, packingFromAlloc?.allocation?.allocationNo)
+                        }
+                      >
+                        Export Current Packing CSV
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+                        onClick={() => setPackPackages((prev) => [...prev, newPackingPackage(prev.length + 1)])}
+                      >
+                        Add package
+                      </button>
+                    </div>
                   </div>
                   <div className="space-y-3">
                     {packPackages.map((pkg) => (
@@ -2712,7 +2841,7 @@ export default function StoreModule() {
                         <div className="grid gap-2 md:grid-cols-5">
                           <input
                             className="rounded border bg-white px-2 py-1.5 text-xs"
-                            placeholder="Package no"
+                            placeholder="Package no *"
                             value={pkg.packageNo}
                             onChange={(e) =>
                               setPackPackages((prev) => prev.map((p) => (p.id === pkg.id ? { ...p, packageNo: e.target.value } : p)))
@@ -2731,7 +2860,7 @@ export default function StoreModule() {
                           </select>
                           <input
                             className="rounded border bg-white px-2 py-1.5 text-xs"
-                            placeholder="Dimensions LxWxH"
+                            placeholder="Dimensions LxWxH *"
                             value={pkg.dimensions}
                             onChange={(e) =>
                               setPackPackages((prev) => prev.map((p) => (p.id === pkg.id ? { ...p, dimensions: e.target.value } : p)))
@@ -2739,7 +2868,7 @@ export default function StoreModule() {
                           />
                           <input
                             className="rounded border bg-white px-2 py-1.5 text-xs"
-                            placeholder="Gross wt"
+                            placeholder="Gross wt (kg) *"
                             value={pkg.grossWeightKg}
                             onChange={(e) =>
                               setPackPackages((prev) => prev.map((p) => (p.id === pkg.id ? { ...p, grossWeightKg: e.target.value } : p)))
@@ -2747,22 +2876,30 @@ export default function StoreModule() {
                           />
                           <input
                             className="rounded border bg-white px-2 py-1.5 text-xs"
-                            placeholder="Net wt"
+                            placeholder="Net wt (kg) *"
                             value={pkg.netWeightKg}
                             onChange={(e) =>
                               setPackPackages((prev) => prev.map((p) => (p.id === pkg.id ? { ...p, netWeightKg: e.target.value } : p)))
                             }
                           />
                         </div>
-                        <div className="mt-2 grid gap-2 md:grid-cols-[1fr_auto]">
+                        <div className="mt-2 grid gap-2 md:grid-cols-[1fr_auto_auto]">
                           <input
                             className="rounded border bg-white px-2 py-1.5 text-xs"
                             placeholder="Package remarks / marks & numbers"
                             value={pkg.packageRemarks}
-                            onChange={(e) =>
-                              setPackPackages((prev) => prev.map((p) => (p.id === pkg.id ? { ...p, packageRemarks: e.target.value, marksAndNumbers: e.target.value } : p)))
-                            }
+                            onChange={(e) => updatePackPackage(pkg.id, { packageRemarks: e.target.value, marksAndNumbers: e.target.value })}
                           />
+                          <button
+                            type="button"
+                            className="rounded border border-slate-300 bg-white px-2 py-1.5 text-xs font-medium hover:bg-slate-100"
+                            onClick={() => {
+                              setPackAddArticlePkgId(pkg.id);
+                              setPackAddArticleSearch("");
+                            }}
+                          >
+                            + Add Article
+                          </button>
                           <button
                             type="button"
                             className="rounded border px-2 py-1.5 text-xs text-rose-700 hover:bg-rose-50"
@@ -2773,58 +2910,64 @@ export default function StoreModule() {
                           </button>
                         </div>
                         <div className="mt-3 overflow-auto">
-                          <table className="w-full text-xs">
-                            <thead className="bg-white text-slate-600">
-                              <tr>
-                                <th className="px-2 py-1 text-left">Article</th>
-                                <th className="px-2 py-1 text-left">Qty in package</th>
-                                <th className="px-2 py-1 text-left">Balance</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {packingPackageStats.lines.map((ln) => {
-                                const lineId = String(ln.allocationLineId);
-                                const item = (pkg.items || []).find((it) => String(it.allocationLineId) === lineId);
-                                return (
-                                  <tr key={`${pkg.id}-${lineId}`} className="border-t">
-                                    <td className="px-2 py-1 font-mono">{ln.article}</td>
-                                    <td className="px-2 py-1">
-                                      <input
-                                        type="number"
-                                        min={0}
-                                        className="w-24 rounded border bg-white px-2 py-1 text-xs"
-                                        value={item?.qty ?? ""}
-                                        onChange={(e) => {
-                                          const qty = Math.max(0, Number(e.target.value) || 0);
-                                          setPackPackages((prev) =>
-                                            prev.map((p) => {
-                                              if (p.id !== pkg.id) return p;
-                                              const without = (p.items || []).filter((it) => String(it.allocationLineId) !== lineId);
-                                              const nextItem = qty > 0
-                                                ? [{
-                                                    allocationLineId: ln.allocationLineId,
-                                                    article: ln.article,
-                                                    description: ln.description || "",
-                                                    spn: ln.partNumber || "",
-                                                    materialCode: ln.materialCode || "",
-                                                    qty,
-                                                    uom: ln.uom || "PCS",
-                                                  }]
-                                                : [];
-                                              return { ...p, items: [...without, ...nextItem] };
-                                            })
-                                          );
-                                        }}
-                                      />
-                                    </td>
-                                    <td className={`px-2 py-1 ${ln.overPacked > 0 ? "font-semibold text-rose-700" : ""}`}>
-                                      {ln.overPacked > 0 ? `Over ${ln.overPacked}` : ln.balancePack}
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
+                          {(pkg.items || []).length === 0 ? (
+                            <p className="text-xs text-slate-500">No articles in this package yet.</p>
+                          ) : (
+                            <table className="w-full text-xs">
+                              <thead className="bg-white text-slate-600">
+                                <tr>
+                                  <th className="px-2 py-1 text-left">Article</th>
+                                  <th className="px-2 py-1 text-left">Description</th>
+                                  <th className="px-2 py-1 text-left">Part #</th>
+                                  <th className="px-2 py-1 text-left">Qty</th>
+                                  <th className="px-2 py-1 text-left">UOM</th>
+                                  <th className="px-2 py-1 text-right">Balance</th>
+                                  <th className="px-2 py-1" />
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(pkg.items || []).map((item) => {
+                                  const ln = packingPackageStats.lines.find(
+                                    (x) => String(x.allocationLineId) === String(item.allocationLineId)
+                                  );
+                                  return (
+                                    <tr key={`${pkg.id}-${item.allocationLineId}`} className="border-t">
+                                      <td className="px-2 py-1 font-mono">{item.article}</td>
+                                      <td className="max-w-[120px] truncate px-2 py-1" title={item.description}>
+                                        {item.description || "—"}
+                                      </td>
+                                      <td className="px-2 py-1">{item.spn || "—"}</td>
+                                      <td className="px-2 py-1">
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          step="any"
+                                          className="w-20 rounded border bg-white px-2 py-1 text-xs"
+                                          value={item.qty ?? ""}
+                                          onChange={(e) => setPackItemQty(pkg.id, item.allocationLineId, e.target.value)}
+                                        />
+                                      </td>
+                                      <td className="px-2 py-1">{item.uom || "PCS"}</td>
+                                      <td
+                                        className={`px-2 py-1 text-right ${ln?.overPacked > 0 ? "font-semibold text-rose-700" : ""}`}
+                                      >
+                                        {ln?.overPacked > 0 ? `Over ${ln.overPacked}` : ln?.balancePack ?? "—"}
+                                      </td>
+                                      <td className="px-2 py-1">
+                                        <button
+                                          type="button"
+                                          className="text-xs text-rose-700 hover:underline"
+                                          onClick={() => removePackItem(pkg.id, item.allocationLineId)}
+                                        >
+                                          Remove
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -2832,18 +2975,19 @@ export default function StoreModule() {
                   <div className="mt-3 rounded border bg-slate-50 p-2 text-xs text-slate-700">
                     Total packages {packingPackageStats.totalPackages} · Gross {packingPackageStats.totalGrossWeightKg} · Net{" "}
                     {packingPackageStats.totalNetWeightKg}
-                    {packingPackageStats.hasOverPacked ? <span className="ml-2 font-semibold text-rose-700">Over-packed lines must be corrected.</span> : null}
+                    {packingPackageStats.hasOverPacked ? (
+                      <span className="ml-2 font-semibold text-rose-700">Over-packed lines must be corrected.</span>
+                    ) : null}
+                    {!packingDraftValidation.ok && packingDraftValidation.msgs.length ? (
+                      <span className="mt-1 block text-rose-700">{packingDraftValidation.msgs[0]}</span>
+                    ) : null}
                   </div>
                 </div>
                 <button
                   type="button"
                   className="xl:col-span-2 rounded border border-emerald-700 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-900 hover:bg-emerald-100 disabled:opacity-50"
-                  disabled={
-                    createPackingDraft.isPending ||
-                    !packingFromAlloc?.allocation ||
-                    packingPackageStats.hasOverPacked ||
-                    packingPackageStats.totalPackageQty <= 0
-                  }
+                  disabled={createPackingDraft.isPending || !packingFromAlloc?.allocation || !packingDraftValidation.ok}
+                  title={packingDraftValidation.msgs[0] || ""}
                   onClick={() => {
                     const packages = packPackages
                       .map((pkg) => ({
@@ -2870,6 +3014,131 @@ export default function StoreModule() {
             ) : packAllocQueryId ? (
               <p className="text-xs text-slate-500">No lines to pack (or allocation not found).</p>
             ) : null}
+
+            <Modal
+              open={Boolean(packAddArticlePkgId)}
+              title="Add article to package"
+              onClose={() => setPackAddArticlePkgId("")}
+            >
+              <input
+                className="mb-3 w-full rounded border px-2 py-1.5 text-sm"
+                placeholder="Search article, description, part number…"
+                value={packAddArticleSearch}
+                onChange={(e) => setPackAddArticleSearch(e.target.value)}
+                autoFocus
+              />
+              <div className="max-h-72 overflow-auto rounded border">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-slate-100 text-slate-600">
+                    <tr>
+                      <th className="px-2 py-2 text-left">Article</th>
+                      <th className="px-2 py-2 text-left">Description</th>
+                      <th className="px-2 py-2 text-left">Part #</th>
+                      <th className="px-2 py-2 text-left">UOM</th>
+                      <th className="px-2 py-2 text-right">Balance</th>
+                      <th className="px-2 py-2" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pendingLinesForAddArticle.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="px-2 py-4 text-center text-slate-500">
+                          No pending lines match your search.
+                        </td>
+                      </tr>
+                    ) : (
+                      pendingLinesForAddArticle.map((ln) => (
+                        <tr key={String(ln.allocationLineId)} className="border-t hover:bg-slate-50">
+                          <td className="px-2 py-2 font-mono">{ln.article}</td>
+                          <td className="max-w-[160px] truncate px-2 py-2" title={ln.description}>
+                            {ln.description || "—"}
+                          </td>
+                          <td className="px-2 py-2">{ln.partNumber || "—"}</td>
+                          <td className="px-2 py-2">{ln.uom || "PCS"}</td>
+                          <td className="px-2 py-2 text-right font-semibold">{ln.balancePack}</td>
+                          <td className="px-2 py-2 text-right">
+                            <button
+                              type="button"
+                              className="rounded border px-2 py-0.5 text-xs hover:bg-white"
+                              onClick={() => {
+                                const max = Number(ln.balancePack) || 0;
+                                const raw = window.prompt(`Qty for ${ln.article} (max ${max})`, String(max));
+                                if (raw == null) return;
+                                const qty = Number(raw);
+                                if (!Number.isFinite(qty) || qty <= 0) return;
+                                setPackItemQty(packAddArticlePkgId, ln.allocationLineId, qty);
+                                setPackAddArticlePkgId("");
+                              }}
+                            >
+                              Add
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Modal>
+
+            <Modal
+              open={Boolean(packCsvPreview)}
+              title="Import packing CSV — preview"
+              onClose={() => setPackCsvPreview(null)}
+              wide
+            >
+              {(packCsvPreview?.blockingErrors || packCsvPreview?.errors || []).length > 0 ? (
+                <div className="mb-3 rounded border border-rose-200 bg-rose-50 p-2 text-xs text-rose-800">
+                  {(packCsvPreview.blockingErrors || packCsvPreview.errors || []).map((e, i) => (
+                    <div key={i}>
+                      {e.line ? `Row ${e.line}: ` : ""}
+                      {e.message}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <div className="max-h-64 overflow-auto rounded border">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-slate-100">
+                    <tr>
+                      <th className="px-2 py-1 text-left">Row</th>
+                      <th className="px-2 py-1 text-left">Package</th>
+                      <th className="px-2 py-1 text-left">Article</th>
+                      <th className="px-2 py-1 text-left">Description</th>
+                      <th className="px-2 py-1 text-right">Qty</th>
+                      <th className="px-2 py-1 text-left">Status</th>
+                      <th className="px-2 py-1 text-left">Message</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(packCsvPreview?.preview || []).map((row, i) => (
+                      <tr key={i} className={`border-t ${row.status === "error" ? "bg-rose-50" : ""}`}>
+                        <td className="px-2 py-1">{row.line}</td>
+                        <td className="px-2 py-1">{row.packageNo}</td>
+                        <td className="px-2 py-1 font-mono">{row.article}</td>
+                        <td className="px-2 py-1">{row.description}</td>
+                        <td className="px-2 py-1 text-right">{row.qty}</td>
+                        <td className="px-2 py-1">{row.status}</td>
+                        <td className="px-2 py-1 text-slate-600">{row.message}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="mt-3 flex justify-end gap-2">
+                <button type="button" className="rounded border px-3 py-1.5 text-xs" onClick={() => setPackCsvPreview(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="rounded border border-emerald-700 bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                  disabled={!packCsvPreview?.canApply}
+                  onClick={applyPackingCsvImport}
+                >
+                  Apply import
+                </button>
+              </div>
+            </Modal>
           </div>
 
           <div className="rounded-2xl border bg-white p-4">
@@ -2931,28 +3200,33 @@ export default function StoreModule() {
                                   const packages = (p.packages || []).length
                                     ? p.packages
                                     : [{ packageNo: "Legacy package", packageType: "Carton", dimensions: "", grossWeightKg: "", netWeightKg: "", items: p.lines || [] }];
-                                  const rows = packages.flatMap((pkg) => [
-                                    {
+                                  const rows = packages.flatMap((pkg) => {
+                                    const header = {
                                       packageNo: pkg.packageNo,
                                       packageType: packageTypeLabel(pkg.packageType),
                                       dimensions: pkg.dimensions || "",
                                       grossWeightKg: pkg.grossWeightKg || "",
                                       netWeightKg: pkg.netWeightKg || "",
-                                      article: "Package",
+                                      article: "",
+                                      partNumber: "",
                                       description: pkg.packageRemarks || pkg.marksAndNumbers || "",
+                                      uom: "",
                                       qty: "",
-                                    },
-                                    ...(pkg.items || []).map((item) => ({
+                                    };
+                                    const lineRows = (pkg.items || []).map((item) => ({
                                       packageNo: pkg.packageNo,
                                       packageType: "",
                                       dimensions: "",
                                       grossWeightKg: "",
                                       netWeightKg: "",
                                       article: item.article,
+                                      partNumber: item.spn || item.partNumber || "",
                                       description: item.description || "",
+                                      uom: item.uom || "PCS",
                                       qty: item.qty ?? item.packQty ?? 0,
-                                    })),
-                                  ]);
+                                    }));
+                                    return lineRows.length ? [header, ...lineRows] : [header];
+                                  });
                                   downloadPdfTable(
                                     `Packing List ${p.packingNo}`,
                                     `${p.customerName || ""} | Allocation ${p.allocationNo || ""} | Packages ${p.totalPackages || packages.length} | Gross ${p.totalGrossWeightKg || 0} | Net ${p.totalNetWeightKg || 0}`,
@@ -2963,7 +3237,9 @@ export default function StoreModule() {
                                       { key: "grossWeightKg", header: "Gross Kg" },
                                       { key: "netWeightKg", header: "Net Kg" },
                                       { key: "article", header: "Article" },
-                                      { key: "description", header: "Description / Marks" },
+                                      { key: "partNumber", header: "Part #" },
+                                      { key: "description", header: "Description" },
+                                      { key: "uom", header: "UOM" },
                                       { key: "qty", header: "Qty" },
                                     ],
                                     rows,

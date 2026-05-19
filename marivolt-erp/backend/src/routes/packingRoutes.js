@@ -13,6 +13,8 @@ const storeCancel = requirePermission("STORE", "cancel");
 router.get("/", storeView, c.listStorePacking);
 router.get("/allocations/pending", storeView, c.listPendingPackingAllocations);
 router.get("/from-allocation/:allocationId", storeView, c.getPackingFromAllocation);
+router.get("/csv-template", storeView, c.getPackingCsvTemplate);
+router.post("/import-preview", storeCreate, c.importPackingCsvPreview);
 router.get("/:id", storeView, c.getStorePacking);
 router.post("/draft", storeCreate, c.createStorePackingDraft);
 router.post("/:id/post", storeApprove, c.postStorePacking);

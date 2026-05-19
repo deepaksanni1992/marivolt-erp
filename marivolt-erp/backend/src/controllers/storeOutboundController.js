@@ -6,6 +6,11 @@ import SalesInvoice from "../models/SalesInvoice.js";
 import * as stockService from "../services/stockService.js";
 import { writeAudit } from "../services/auditService.js";
 import { nextUniqueSalesDocNumber } from "../utils/salesDocNumber.js";
+import {
+  PACKING_CSV_HEADER,
+  buildPackingImportPreview,
+  validatePackingPackagesForSave,
+} from "../services/packingCsvService.js";
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -132,10 +137,22 @@ function normalizePackageItems(bodyItems = [], allocation) {
     .filter((ln) => ln.article && ln.qty > 0 && ln.allocationLineId);
 }
 
+function mergeDuplicatePackageItems(items = []) {
+  const map = new Map();
+  for (const it of items) {
+    const k = String(it.allocationLineId || "");
+    if (!k) continue;
+    const prev = map.get(k);
+    if (!prev) map.set(k, { ...it });
+    else prev.qty = (Number(prev.qty) || 0) + (Number(it.qty) || 0);
+  }
+  return Array.from(map.values()).filter((ln) => ln.qty > 0);
+}
+
 function normalizePackingPackages(bodyPackages = [], allocation) {
   return (bodyPackages || [])
     .map((pkg, idx) => {
-      const items = normalizePackageItems(pkg.items || [], allocation);
+      const items = mergeDuplicatePackageItems(normalizePackageItems(pkg.items || [], allocation));
       return {
         packageNo: t(pkg.packageNo) || `Carton-${idx + 1}`,
         packageType: normalizePackageType(pkg.packageType),
@@ -277,6 +294,44 @@ export async function listPendingPackingAllocations(req, res) {
   }
 }
 
+/** GET /packing/csv-template — column headers for packing CSV import. */
+export async function getPackingCsvTemplate(req, res) {
+  try {
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", "attachment; filename=\"packing-import-template.csv\"");
+    res.send(`${PACKING_CSV_HEADER}\n`);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+/** POST /packing/import-preview — validate CSV; returns packages for UI when canApply. */
+export async function importPackingCsvPreview(req, res) {
+  try {
+    const allocationId = req.body?.allocationId;
+    const csvText = String(req.body?.csvText ?? "");
+    if (!mongoose.Types.ObjectId.isValid(String(allocationId || ""))) {
+      return res.status(400).json({ message: "Valid allocationId is required" });
+    }
+    if (!csvText.trim()) return res.status(400).json({ message: "csvText is required" });
+    const allocation = await OrderAllocation.findOne(withCompany(req, { _id: allocationId })).lean();
+    if (!allocation) return res.status(404).json({ message: "Allocation not found" });
+    if (String(allocation.status || "").toUpperCase() === "CANCELLED") {
+      return res.status(400).json({ message: "Allocation is cancelled" });
+    }
+    const postedByLine = await sumPostedPackQtyByLine(req.companyId, allocation._id);
+    const result = buildPackingImportPreview({
+      allocation,
+      postedByLine,
+      draftPackages: req.body?.draftPackages || [],
+      csvText,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
 export async function getPackingFromAllocation(req, res) {
   try {
     const allocationId = req.params.allocationId;
@@ -332,11 +387,16 @@ export async function createStorePackingDraft(req, res) {
       return res.status(400).json({ message: "Cannot pack a cancelled allocation" });
     }
     const packingNo = t(req.body.packingNo) || (await nextPackingNo(req.companyId, req.companyCode));
-    const packages = normalizePackingPackages(req.body.packages || [], allocation);
+    const rawPackages = req.body.packages || [];
+    const packedByLine = await sumPostedPackQtyByLine(req.companyId, allocation._id);
+    const saveErrors = validatePackingPackagesForSave(rawPackages, allocation, packedByLine);
+    if (saveErrors.length) {
+      return res.status(400).json({ message: saveErrors[0], errors: saveErrors });
+    }
+    const packages = normalizePackingPackages(rawPackages, allocation);
     const normalizedPackages = packages.length ? packages : legacyLinesToPackages(req.body.lines || [], allocation);
     const lines = aggregatePackingLines(normalizedPackages, allocation);
     if (!lines.length) return res.status(400).json({ message: "At least one packing line required" });
-    const packedByLine = await sumPostedPackQtyByLine(req.companyId, allocation._id);
     for (const ln of lines) {
       const allocLine = (allocation.lines || []).find((x) => String(x._id) === String(ln.allocationLineId));
       const maxQty = Number(allocLine?.qty) || 0;
@@ -400,6 +460,8 @@ export async function postStorePacking(req, res) {
       if (String(allocation.status || "").toUpperCase() === "CANCELLED") throw new Error("Allocation cancelled");
 
       const packedByLine = await sumPostedPackQtyByLine(req.companyId, allocation._id);
+      const postPkgErrors = validatePackingPackagesForSave(doc.packages || [], allocation, packedByLine);
+      if (postPkgErrors.length) throw new Error(postPkgErrors[0]);
       const wh = String(doc.warehouse || allocation.warehouse || "MAIN").toUpperCase();
       if (doc.packages?.length) {
         const totals = packageTotals(doc.packages);
