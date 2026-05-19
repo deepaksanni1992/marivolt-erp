@@ -1,4 +1,5 @@
 import { getReportBranding } from "./reportBranding.js";
+import { PO_DOCUMENT_PRINT_CSS } from "./poDocumentPrintCss.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 
 function poHeaderCost(value) {
@@ -227,16 +228,14 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
   <title>${poNo} — Purchase order</title>
   <style>
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
-    @media print {
-      body { margin: 12mm; }
-      .no-print { display: none !important; }
-    }
-    body { font-family: Arial, Helvetica, sans-serif; margin: 24px; color: #111; font-size: 12px; }
+${PO_DOCUMENT_PRINT_CSS}
+    body.po-print-document { font-family: Arial, Helvetica, sans-serif; color: #111; font-size: 12px; }
     table { border-collapse: collapse; width: 100%; }
     .po-print-header { page-break-inside: avoid; }
   </style>
 </head>
-<body class="${isMarivolt ? "has-quote-terms" : ""}">
+<body class="po-print-document${b.useBrandedLayout ? " has-branded-footer" : ""}${isMarivolt && doc.termsAndConditions && String(doc.termsAndConditions).trim() ? " has-quote-terms" : ""}">
+  <div class="po-page">
   ${isOkeanos ? headerOkeanos : headerDefault}
 
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
@@ -279,7 +278,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
 
   ${commercialHtml}
 
-  <table style="margin-top:12px">
+  <table class="po-lines-table" style="margin-top:12px">
     <thead>
       <tr style="background:${thBg};color:${thColor}">
         <th style="border:1px solid ${thBorder};padding:8px;text-align:left;font-size:11px;text-transform:uppercase">S/N</th>
@@ -296,7 +295,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
     <tbody>${lines.length ? lineRows : emptyLinesRow}</tbody>
   </table>
 
-  <div style="margin-top:16px;display:flex;justify-content:flex-end;border-top:1px solid #e5e7eb;padding-top:16px">
+  <div class="po-totals" style="display:flex;justify-content:flex-end;border-top:1px solid #e5e7eb;padding-top:16px">
     <div style="width:280px;font-size:13px">
       <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Line items subtotal</span><span style="font-weight:600;color:#111">${cur} ${subTotal.toFixed(2)}</span></div>
       <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Packing cost</span><span style="font-weight:600;color:#111">${cur} ${packingCost.toFixed(2)}</span></div>
@@ -306,6 +305,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
     </div>
   </div>
 
+  <div class="po-post-totals">
   ${doc.specialRemarks != null && String(doc.specialRemarks).trim() !== "" ? `
   <div style="margin-top:16px;border:1px solid #fef3c7;background:#fffbeb;border-radius:8px;padding:12px;font-size:11px">
     <div style="font-weight:700;text-transform:uppercase;color:#92400e;margin-bottom:6px">Special remarks</div>
@@ -315,13 +315,21 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
   ${termsBlock}
 
   ${closing ? `<div style="margin-top:14px;padding:12px;border:1px solid #e5e7eb;border-radius:8px;font-size:11px;font-style:italic;color:#4b5563">${closing}</div>` : ""}
+  </div>
 
-  <div class="footer">
+  <div class="footer po-doc-note">
     <div class="doc-note">This is a computer generated document and does not require signature or stamp.</div>
+  </div>
+  <div class="po-bottom-reserve" aria-hidden="true"></div>
+  ${
+    !b.useBrandedLayout
+      ? `<div class="po-footer-simple">${footerBranded}</div>`
+      : ""
+  }
   </div>
   ${
     b.useBrandedLayout
-      ? `<div class="page-footer">
+      ? `<div class="po-footer page-footer">
           <div class="page-footer-top">
             <div>
               <div>${escapeHtml(b.reportFooterName) || "-"}</div>
@@ -336,8 +344,9 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           </div>
           <div class="page-footer-line"></div>
         </div>`
-      : `<div style="margin-top:28px;padding-top:12px;border-top:1px dashed #cfd8e3;text-align:center;font-size:11px;color:#4b5563">${footerBranded}</div>`
+      : ""
   }
+
 
   <p class="no-print" style="margin-top:24px;font-size:11px;color:#6b7280">
     Tip: Use your browser <strong>Print</strong> dialog and choose <strong>Save as PDF</strong> to download.
