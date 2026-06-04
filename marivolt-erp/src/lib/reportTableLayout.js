@@ -3,19 +3,27 @@
  * Safe fixed layout with colgroup — no letter-by-letter wrapping.
  */
 
-/**
- * Puppeteer options aligned with browser Print preview (@page in GLOBAL_REPORT_PRINT_CSS).
- * Same HTML/CSS as Print — no separate landscape or PDF-only margins.
- */
+/** Browser Print preview window width (unchanged) */
 export const PRINT_PREVIEW_VIEWPORT_WIDTH = 1200;
 
+/**
+ * Export PDF only — wide custom page for item-heavy reports (quotation, OA, PI, SI, PO, packing, GRN).
+ * Does not affect browser Print preview.
+ */
 export const PDF_OPTS_ITEM_LINES = {
-  format: "A4",
-  landscape: false,
+  wideExport: true,
+  width: "420mm",
+  height: "297mm",
   printBackground: true,
   preferCSSPageSize: true,
+  margin: {
+    top: "8mm",
+    right: "8mm",
+    bottom: "10mm",
+    left: "8mm",
+  },
   viewport: {
-    width: PRINT_PREVIEW_VIEWPORT_WIDTH,
+    width: 1600,
     height: 900,
     deviceScaleFactor: 1,
   },

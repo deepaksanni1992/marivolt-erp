@@ -1,8 +1,16 @@
 import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium";
+import {
+  PDF_EXPORT_PAGE_HEIGHT,
+  PDF_EXPORT_PAGE_WIDTH,
+  PDF_EXPORT_WIDE_CSS,
+} from "../constants/pdfExportCss.js";
 
-/** Same window size as openReportHtmlPreview() in reportPdfClient.js */
+/** Browser Print preview window (unchanged) */
 export const PRINT_PREVIEW_VIEWPORT = { width: 1200, height: 900, deviceScaleFactor: 1 };
+
+/** Viewport for wide export PDF layout (~420mm at 96dpi) */
+export const PDF_EXPORT_VIEWPORT = { width: 1600, height: 900, deviceScaleFactor: 1 };
 
 const LAUNCH_ARGS = [
   "--no-sandbox",
@@ -17,11 +25,34 @@ function escapeBaseHref(url) {
     .replace(/"/g, "%22");
 }
 
+function injectWideExportStyles(doc) {
+  if (/<style[^>]*id=["']pdf-export-wide-styles["']/i.test(doc)) {
+    return doc;
+  }
+  const styleTag = `<style id="pdf-export-wide-styles">${PDF_EXPORT_WIDE_CSS}</style>`;
+  if (/<\/head>/i.test(doc)) {
+    return doc.replace(/<\/head>/i, `${styleTag}</head>`);
+  }
+  return doc.replace(
+    /<html([^>]*)>/i,
+    `<html$1><head><meta charset="utf-8"/>${styleTag}</head>`,
+  );
+}
+
+function tagBodyForWideExport(doc) {
+  return doc.replace(/<body([^>]*)>/i, (match, attrs) => {
+    if (/class\s*=/i.test(attrs)) {
+      if (/pdf-export-page/i.test(attrs)) return match;
+      return `<body${attrs.replace(/class=(["'])([^"']*)\1/i, (_, q, cls) => `class=${q}${cls} pdf-export-page${q}`)}>`;
+    }
+    return `<body${attrs} class="pdf-export-page">`;
+  });
+}
+
 /**
- * Minimal HTML prep for PDF: same document as Print preview, plus <base href> for logos only.
- * Does not inject PDF-specific layout CSS (that diverged from Print).
+ * HTML prep for PDF: base href for logos; optional wide export-only CSS (not Print preview).
  */
-export function prepareHtmlForPdf(html, assetBaseUrl = "") {
+export function prepareHtmlForPdf(html, assetBaseUrl = "", { wideExport = false } = {}) {
   let doc = String(html || "").trim();
   if (!doc) {
     throw new Error("HTML content is required");
@@ -40,6 +71,11 @@ export function prepareHtmlForPdf(html, assetBaseUrl = "") {
     } else {
       doc = doc.replace(/<html([^>]*)>/i, `<html$1><head><meta charset="utf-8"/>${baseTag}</head>`);
     }
+  }
+
+  if (wideExport) {
+    doc = injectWideExportStyles(doc);
+    doc = tagBodyForWideExport(doc);
   }
 
   return doc;
@@ -72,7 +108,7 @@ async function launchBrowser() {
   });
 }
 
-async function logPrintLayoutMetrics(page) {
+async function logPrintLayoutMetrics(page, label = "export") {
   const metrics = await page.evaluate(() => {
     const container =
       document.querySelector(".print-page") ||
@@ -92,52 +128,53 @@ async function logPrintLayoutMetrics(page) {
       tableClassName: table?.className ?? "",
     };
   });
-  console.log("[reportPdf] print-layout metrics:", metrics);
+  console.log(`[reportPdf] ${label} layout metrics:`, metrics);
   if (metrics.tableOverflow) {
-    console.warn(
-      "[reportPdf] table.scrollWidth > table.clientWidth — export may not match Print preview",
-      metrics,
-    );
+    console.warn(`[reportPdf] ${label}: table wider than container`, metrics);
   }
   return metrics;
 }
 
 /**
- * Generate a searchable text PDF from the same HTML/CSS as browser Print preview.
+ * Generate a searchable text PDF from report HTML.
  */
 export async function generatePdfFromHtml(html, options = {}) {
-  const prepared = prepareHtmlForPdf(html, options.assetBaseUrl);
+  const wideExport = Boolean(options.wideExport || (options.width && options.height));
+  const prepared = prepareHtmlForPdf(html, options.assetBaseUrl, { wideExport });
   const browser = await launchBrowser();
 
   try {
     const page = await browser.newPage();
-    const viewport = options.viewport || PRINT_PREVIEW_VIEWPORT;
+    const viewport = options.viewport || (wideExport ? PDF_EXPORT_VIEWPORT : PRINT_PREVIEW_VIEWPORT);
     await page.setViewport(viewport);
     await page.setContent(prepared, {
       waitUntil: ["load", "networkidle0"],
       timeout: options.timeoutMs ?? 90000,
     });
 
-    // Apply the same @media print rules as the browser Print dialog
     await page.emulateMediaType("print");
-    await logPrintLayoutMetrics(page);
+    await logPrintLayoutMetrics(page, wideExport ? "wide-export" : "export");
 
-    const preferCSSPageSize = options.preferCSSPageSize !== false;
     const pdfOptions = {
-      format: options.format || "A4",
       printBackground: options.printBackground !== false,
-      preferCSSPageSize,
-      landscape: Boolean(options.landscape),
+      preferCSSPageSize: options.preferCSSPageSize !== false,
     };
 
-    if (!preferCSSPageSize && options.margin) {
-      pdfOptions.margin = options.margin;
-    }
-
     if (options.width && options.height) {
-      delete pdfOptions.format;
       pdfOptions.width = options.width;
       pdfOptions.height = options.height;
+      pdfOptions.margin = options.margin || {
+        top: "8mm",
+        right: "8mm",
+        bottom: "10mm",
+        left: "8mm",
+      };
+    } else {
+      pdfOptions.format = options.format || "A4";
+      pdfOptions.landscape = Boolean(options.landscape);
+      if (options.margin) {
+        pdfOptions.margin = options.margin;
+      }
     }
 
     const pdfBytes = await page.pdf(pdfOptions);
@@ -146,3 +183,5 @@ export async function generatePdfFromHtml(html, options = {}) {
     await browser.close();
   }
 }
+
+export { PDF_EXPORT_PAGE_WIDTH, PDF_EXPORT_PAGE_HEIGHT };

@@ -93,7 +93,6 @@ export async function downloadSearchableReportPdf({
       filename,
       assetBaseUrl,
       options: {
-        format: "A4",
         printBackground: true,
         preferCSSPageSize: true,
         ...options,
