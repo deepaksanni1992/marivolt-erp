@@ -1,7 +1,13 @@
-import puppeteerCore from "puppeteer-core";
+import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium";
 
 const DEFAULT_MARGIN = { top: "12mm", right: "12mm", bottom: "12mm", left: "12mm" };
+
+const LAUNCH_ARGS = [
+  "--no-sandbox",
+  "--disable-setuid-sandbox",
+  "--disable-dev-shm-usage",
+];
 
 function escapeBaseHref(url) {
   return String(url || "")
@@ -37,51 +43,38 @@ export function prepareHtmlForPdf(html, assetBaseUrl = "") {
   return doc;
 }
 
-function useSparticuzChromium() {
+function isRenderHost() {
   return (
     process.env.PDF_USE_SPARTICUZ === "true" ||
     Boolean(process.env.RENDER) ||
-    Boolean(process.env.RENDER_EXTERNAL_URL) ||
-    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME)
+    Boolean(process.env.RENDER_EXTERNAL_URL)
   );
 }
 
-async function launchBrowser() {
-  const args = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"];
-
-  if (useSparticuzChromium()) {
-    return puppeteerCore.launch({
-      args: [...chromium.args, ...args],
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: true,
-    });
-  }
-
+/**
+ * Resolve Chromium binary without installing full puppeteer (no Chrome download at npm install).
+ */
+async function resolveExecutablePath() {
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    return puppeteerCore.launch({
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
-      headless: true,
-      args,
-    });
+    return process.env.PUPPETEER_EXECUTABLE_PATH;
   }
+  return chromium.executablePath();
+}
 
-  const puppeteer = await import("puppeteer");
-  return puppeteer.default.launch({ headless: true, args });
+async function launchBrowser() {
+  const executablePath = await resolveExecutablePath();
+  const onRender = isRenderHost();
+
+  return puppeteer.launch({
+    headless: true,
+    executablePath,
+    args: onRender ? [...chromium.args, ...LAUNCH_ARGS] : LAUNCH_ARGS,
+    defaultViewport: chromium.defaultViewport,
+  });
 }
 
 /**
  * Generate a searchable text PDF from HTML using Puppeteer page.pdf().
- *
- * @param {string} html - Full or partial HTML document
- * @param {object} options
- * @param {string} [options.assetBaseUrl] - Frontend origin for logos (/brand/*)
- * @param {string} [options.format] - Paper format (default A4)
- * @param {boolean} [options.printBackground] - Default true
- * @param {object} [options.margin] - Page margins
- * @param {boolean} [options.landscape] - Landscape orientation
- * @param {number} [options.timeoutMs] - setContent timeout
- * @returns {Promise<Buffer>}
  */
 export async function generatePdfFromHtml(html, options = {}) {
   const prepared = prepareHtmlForPdf(html, options.assetBaseUrl);
