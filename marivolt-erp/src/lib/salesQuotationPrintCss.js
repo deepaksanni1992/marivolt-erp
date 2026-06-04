@@ -1,4 +1,5 @@
-import { GLOBAL_REPORT_PRINT_CSS, REPORT_TABLE_WRAP_CSS } from "./reportPrintLayout.js";
+import { GLOBAL_REPORT_PRINT_CSS } from "./reportPrintLayout.js";
+import { GLOBAL_REPORT_TABLE_CSS } from "./reportTableLayout.js";
 
 /** Shared print styles for quotation-style sales documents (quotation, OA, etc.). */
 export const SALES_QUOTATION_STYLE_PRINT_CSS = `
@@ -124,10 +125,26 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             box-sizing: border-box;
           }
           .info-box-title { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #6b7280; margin-bottom: 6px; letter-spacing: 0.3px; }
-          table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-          th, td { border: 1px solid #ddd; padding: 8px; font-size: 12px; }
+          table.report-table,
+          table.report-lines-table,
+          table.po-lines-table,
+          table:not(.si-bank-table) {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+            table-layout: fixed;
+          }
+          table.report-table th,
+          table.report-table td,
+          table.report-lines-table th,
+          table.report-lines-table td,
+          table.po-lines-table th,
+          table.po-lines-table td,
+          table:not(.si-bank-table) th,
+          table:not(.si-bank-table) td {
+            border: 1px solid #ddd;
+          }
           th { background: #f5f5f5; text-align: left; }
-          th.remarks-col, td.remarks-col { width: 22%; min-width: 180px; }
           .right { text-align: right; }
           .totals { margin-top: 12px; width: 320px; margin-left: auto; }
           .totals div { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
@@ -262,5 +279,5 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             .quote-terms { page-break-inside: avoid; }
           }
 ${GLOBAL_REPORT_PRINT_CSS}
-${REPORT_TABLE_WRAP_CSS}
+${GLOBAL_REPORT_TABLE_CSS}
 `;

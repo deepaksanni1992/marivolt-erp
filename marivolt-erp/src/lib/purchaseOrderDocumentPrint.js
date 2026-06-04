@@ -1,5 +1,6 @@
 import { getReportBranding } from "./reportBranding.js";
 import { downloadSearchableReportPdf } from "./reportPdfClient.js";
+import { PO_LINE_TABLE_HEAD } from "./reportTableLayout.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 
 function poHeaderCost(value) {
@@ -115,15 +116,15 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
       const tot = qty * rate;
       const stripe = i % 2 === 0 ? "#ffffff" : "#f9fafb";
       return `<tr style="background:${stripe}">
-        <td style="border:1px solid #e5e7eb;padding:6px 8px;color:#6b7280;font-size:11px">${i + 1}</td>
-        <td style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(l.description || "—")}</td>
-        <td style="border:1px solid #e5e7eb;padding:6px 8px;font-family:ui-monospace,monospace;font-size:11px">${escapeHtml(supplierPartNumberForPrint(l))}</td>
-        <td style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(l.uom || "PCS")}</td>
-        <td style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;font-size:12px">${escapeHtml(String(qty))}</td>
-        <td style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;font-size:12px">${rate.toFixed(2)}</td>
-        <td style="border:1px solid #e5e7eb;padding:6px 8px;text-align:right;font-size:12px;font-weight:600">${tot.toFixed(2)}</td>
-        <td style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(l.leadTime || "—")}</td>
-        <td style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px;color:#4b5563">${escapeHtml(l.remarks || "—")}</td>
+        <td class="col-sno" style="border:1px solid #e5e7eb;padding:6px 8px;color:#6b7280;font-size:11px">${i + 1}</td>
+        <td class="col-desc" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(l.description || "—")}</td>
+        <td class="col-part" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:11px">${escapeHtml(supplierPartNumberForPrint(l))}</td>
+        <td class="col-uom" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(l.uom || "PCS")}</td>
+        <td class="col-qty right" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(String(qty))}</td>
+        <td class="col-price right" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${rate.toFixed(2)}</td>
+        <td class="col-total right" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px;font-weight:600">${tot.toFixed(2)}</td>
+        <td class="col-lead" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(l.leadTime || "—")}</td>
+        <td class="col-remarks" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px;color:#4b5563">${escapeHtml(l.remarks || "—")}</td>
       </tr>`;
     })
     .join("");
@@ -278,18 +279,10 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
 
   ${commercialHtml}
 
-  <table class="po-lines-table" style="margin-top:12px">
+  <table class="po-lines-table report-table" style="margin-top:12px">
     <thead>
       <tr style="background:${thBg};color:${thColor}">
-        <th style="border:1px solid ${thBorder};padding:8px;text-align:left;font-size:11px;text-transform:uppercase">S/N</th>
-        <th style="border:1px solid ${thBorder};padding:8px;text-align:left;font-size:11px;text-transform:uppercase">Description</th>
-        <th style="border:1px solid ${thBorder};padding:8px;text-align:left;font-size:11px;text-transform:uppercase">Supplier Part Number</th>
-        <th style="border:1px solid ${thBorder};padding:8px;text-align:left;font-size:11px;text-transform:uppercase">UOM</th>
-        <th style="border:1px solid ${thBorder};padding:8px;text-align:right;font-size:11px;text-transform:uppercase">QTY</th>
-        <th style="border:1px solid ${thBorder};padding:8px;text-align:right;font-size:11px;text-transform:uppercase">Unit rate</th>
-        <th style="border:1px solid ${thBorder};padding:8px;text-align:right;font-size:11px;text-transform:uppercase">Total</th>
-        <th style="border:1px solid ${thBorder};padding:8px;text-align:left;font-size:11px;text-transform:uppercase">Lead time</th>
-        <th style="border:1px solid ${thBorder};padding:8px;text-align:left;font-size:11px;text-transform:uppercase">Remarks</th>
+        ${PO_LINE_TABLE_HEAD(thBorder, thBg, thColor)}
       </tr>
     </thead>
     <tbody>${lines.length ? lineRows : emptyLinesRow}</tbody>

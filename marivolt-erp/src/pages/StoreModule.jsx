@@ -7,6 +7,7 @@ import { renderStorePackingListPrintWindow } from "../lib/storePackingListPrint.
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import { deliverReportHtml } from "../lib/reportPdfClient.js";
 import { GLOBAL_REPORT_PRINT_CSS } from "../lib/reportPrintLayout.js";
+import { GLOBAL_REPORT_TABLE_CSS } from "../lib/reportTableLayout.js";
 import {
   exportCurrentPackingCsv,
   exportPackingTemplateCsv,
@@ -66,19 +67,19 @@ function buildGrnRegisterReportHtml(g) {
   const rows = (g?.items || [])
     .map(
       (it) =>
-        `<tr><td>${escGrnHtml(it.article)}</td><td style="text-align:right">${Number(it.acceptedQty ?? it.receivedQty) || 0}</td><td>${escGrnHtml(it.warehouse || "—")}</td><td>${escGrnHtml(it.location || "—")}</td></tr>`,
+        `<tr><td class="col-part">${escGrnHtml(it.article)}</td><td class="col-qty right">${Number(it.acceptedQty ?? it.receivedQty) || 0}</td><td class="col-flex">${escGrnHtml(it.warehouse || "—")}</td><td class="col-flex">${escGrnHtml(it.location || "—")}</td></tr>`,
     )
     .join("");
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"/><title>GRN ${escGrnHtml(g?.grnNo)}</title>
-<style>body{font-family:Arial,sans-serif;margin:24px;color:#111} table{width:100%;border-collapse:collapse;font-size:12px;margin-top:16px} th,td{border:1px solid #ddd;padding:6px}${GLOBAL_REPORT_PRINT_CSS}</style></head>
+<style>body{font-family:Arial,sans-serif;margin:24px;color:#111} th,td{border:1px solid #ddd}${GLOBAL_REPORT_PRINT_CSS}${GLOBAL_REPORT_TABLE_CSS}</style></head>
 <body class="report-print">
 <h2>GRN ${escGrnHtml(g?.grnNo)}</h2>
 <div><b>Date:</b> ${g?.grnDate ? new Date(g.grnDate).toLocaleDateString() : "—"}</div>
 <div><b>PO:</b> ${escGrnHtml(g?.poNo)}</div>
 <div><b>Supplier:</b> ${escGrnHtml(g?.supplierName)}</div>
 <div><b>Status:</b> ${escGrnHtml(g?.status)}</div>
-<table><thead><tr><th>Article</th><th>Qty</th><th>Warehouse</th><th>Location</th></tr></thead><tbody>${rows}</tbody></table>
+<table class="report-table"><thead><tr><th class="col-part">Article</th><th class="col-qty right">Qty</th><th class="col-flex">Warehouse</th><th class="col-flex">Location</th></tr></thead><tbody>${rows}</tbody></table>
 </body></html>`;
 }
 

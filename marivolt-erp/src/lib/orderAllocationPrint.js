@@ -1,4 +1,5 @@
 import { deliverReportHtml } from "./reportPdfClient.js";
+import { ORDER_ALLOCATION_LINE_TABLE_HEAD } from "./reportTableLayout.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 
 function money(n) {
@@ -97,28 +98,24 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             <div><b>Grand total:</b> ${allocation.currency || "USD"} ${money(allocation.grandTotal)}</div>
           </div>
         </div>
-        <table>
+        <table class="report-table">
           <thead>
-            <tr>
-              <th>S/N</th><th>Article</th><th>Part no</th><th>Description</th><th>UOM</th>
-              <th class="right">Qty</th><th class="right">Shipped</th><th class="right">Pending</th>
-              <th class="remarks-col">Remarks</th><th>Availability</th>
-            </tr>
+            <tr>${ORDER_ALLOCATION_LINE_TABLE_HEAD}</tr>
           </thead>
           <tbody>
             ${lines
               .map(
                 (line, i) => `<tr>
-                  <td>${line.serialNo ?? i + 1}</td>
-                  <td>${line.article || ""}</td>
-                  <td>${line.partNumber || ""}</td>
-                  <td>${line.description || ""}</td>
-                  <td>${line.uom || "PCS"}</td>
-                  <td class="right">${line.qty ?? 0}</td>
-                  <td class="right">${line.shippedQty ?? 0}</td>
-                  <td class="right">${line.pendingQty ?? ""}</td>
-                  <td class="remarks-col">${line.remarks || ""}</td>
-                  <td>${line.availability || ""}</td>
+                  <td class="col-sno">${line.serialNo ?? i + 1}</td>
+                  <td class="col-article">${line.article || ""}</td>
+                  <td class="col-part">${line.partNumber || ""}</td>
+                  <td class="col-desc">${line.description || ""}</td>
+                  <td class="col-uom">${line.uom || "PCS"}</td>
+                  <td class="col-qty right">${line.qty ?? 0}</td>
+                  <td class="col-qty right">${line.shippedQty ?? 0}</td>
+                  <td class="col-qty right">${line.pendingQty ?? ""}</td>
+                  <td class="col-remarks">${line.remarks || ""}</td>
+                  <td class="col-avail">${line.availability || ""}</td>
                 </tr>`
               )
               .join("")}

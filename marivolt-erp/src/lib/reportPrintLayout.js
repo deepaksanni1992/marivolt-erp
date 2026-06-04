@@ -149,14 +149,6 @@ export const GLOBAL_REPORT_PRINT_CSS = `
       page-break-inside: auto;
     }
 
-    th,
-    td {
-      word-wrap: break-word;
-      overflow-wrap: anywhere;
-      hyphens: auto;
-      vertical-align: top;
-    }
-
     tr {
       page-break-inside: avoid;
       break-inside: avoid;
@@ -174,19 +166,6 @@ export const GLOBAL_REPORT_PRINT_CSS = `
     .no-print {
       display: none !important;
     }
-  }
-`;
-
-/** Screen + print: long part numbers and descriptions wrap cleanly. */
-export const REPORT_TABLE_WRAP_CSS = `
-  table th,
-  table td,
-  .report-lines-table th,
-  .report-lines-table td {
-    word-wrap: break-word;
-    overflow-wrap: anywhere;
-    hyphens: auto;
-    vertical-align: top;
   }
 `;
 

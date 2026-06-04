@@ -22,6 +22,12 @@ import { useAuth } from "../context/AuthContext.jsx";
 import { getReportBranding } from "../lib/reportBranding.js";
 import { renderRtsPackingListPrintWindow } from "../lib/rtsPackingListPrint.js";
 import { deliverReportHtml, downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
+import {
+  exportColumnClass,
+  GLOBAL_REPORT_TABLE_CSS,
+  SALES_COMMERCIAL_LINE_TABLE_HEAD,
+  SALES_INVOICE_LINE_TABLE_HEAD,
+} from "../lib/reportTableLayout.js";
 
 /** Document types allowed when uploading from Sales Dispatch flow (subset of backend DOCUMENT_TYPES). */
 const SHIPPING_DOC_TYPE_OPTIONS = ["Shipping Document", "Packing List", "Other"];
@@ -823,26 +829,24 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             <div><b>Currency:</b> ${q.currency || "-"}</div>
           </div>
         </div>
-        <table>
+        <table class="report-table">
           <thead>
-            <tr>
-              <th>Serial number</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Price</th><th class="right">Total price</th><th class="remarks-col">Remarks</th><th>Availability</th>
-            </tr>
+            <tr>${SALES_COMMERCIAL_LINE_TABLE_HEAD}</tr>
           </thead>
           <tbody>
             ${rows
               .map(
                 (line) => `
               <tr>
-                <td>${line.serialNo || ""}</td>
-                <td>${line.partNumber || ""}</td>
-                <td>${line.description || ""}</td>
-                <td>${line.uom || ""}</td>
-                <td class="right">${line.qty || 0}</td>
-                <td class="right">${money(line.price)}</td>
-                <td class="right">${money(line.totalPrice)}</td>
-                <td class="remarks-col">${line.remarks || ""}</td>
-                <td>${line.availability || ""}</td>
+                <td class="col-sno">${line.serialNo || ""}</td>
+                <td class="col-part">${line.partNumber || ""}</td>
+                <td class="col-desc">${line.description || ""}</td>
+                <td class="col-uom">${line.uom || ""}</td>
+                <td class="col-qty right">${line.qty || 0}</td>
+                <td class="col-price right">${money(line.price)}</td>
+                <td class="col-total right">${money(line.totalPrice)}</td>
+                <td class="col-remarks">${line.remarks || ""}</td>
+                <td class="col-avail">${line.availability || ""}</td>
               </tr>`
               )
               .join("")}
@@ -968,26 +972,24 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             <div><b>Currency:</b> ${oa.currency || "-"}</div>
           </div>
         </div>
-        <table>
+        <table class="report-table">
           <thead>
-            <tr>
-              <th>Serial number</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Price</th><th class="right">Total price</th><th class="remarks-col">Remarks</th><th>Availability</th>
-            </tr>
+            <tr>${SALES_COMMERCIAL_LINE_TABLE_HEAD}</tr>
           </thead>
           <tbody>
             ${rows
               .map(
                 (line) => `
               <tr>
-                <td>${line.serialNo ?? ""}</td>
-                <td>${line.partNumber || ""}</td>
-                <td>${line.description || ""}</td>
-                <td>${line.uom || ""}</td>
-                <td class="right">${line.qty || 0}</td>
-                <td class="right">${money(line.price)}</td>
-                <td class="right">${money(line.totalPrice)}</td>
-                <td class="remarks-col">${line.remarks || ""}</td>
-                <td>${line.availability || ""}</td>
+                <td class="col-sno">${line.serialNo ?? ""}</td>
+                <td class="col-part">${line.partNumber || ""}</td>
+                <td class="col-desc">${line.description || ""}</td>
+                <td class="col-uom">${line.uom || ""}</td>
+                <td class="col-qty right">${line.qty || 0}</td>
+                <td class="col-price right">${money(line.price)}</td>
+                <td class="col-total right">${money(line.totalPrice)}</td>
+                <td class="col-remarks">${line.remarks || ""}</td>
+                <td class="col-avail">${line.availability || ""}</td>
               </tr>`
               )
               .join("")}
@@ -1058,32 +1060,22 @@ function renderFlowDocPrintWindow({
   const companyName = String(company?.name || company?.companyName || "").toLowerCase();
   const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite, reportFooterName, reportFooterSubline } = getReportBranding(companyName);
   const lineTableHeaderHtml = salesInvoiceLayout
-    ? `
-              <th style="width:6%;">Pos.</th>
-              <th style="width:13%;">Part Number</th>
-              <th style="width:22%;">Description</th>
-              <th style="width:8%;">UOM</th>
-              <th class="right" style="width:7%;">QTY</th>
-              <th class="right" style="width:11%;">Unit price</th>
-              <th class="right" style="width:11%;">Total price</th>
-              <th class="right" style="width:11%;">Unit Wt</th>
-              <th class="right" style="width:11%;">Total Wt</th>
-            `
-    : `<th>Serial number</th><th>Part number</th><th>Description</th><th>UOM</th><th class="right">QTY</th><th class="right">Price</th><th class="right">Total price</th><th class="remarks-col">Remarks</th><th>Availability</th>`;
+    ? SALES_INVOICE_LINE_TABLE_HEAD
+    : SALES_COMMERCIAL_LINE_TABLE_HEAD;
   const lineTableRowsHtml = salesInvoiceLayout
     ? rows
         .map(
           (line) => `
               <tr>
-                <td>${line.serialNo ?? ""}</td>
-                <td>${line.partNumber || ""}</td>
-                <td>${line.description || ""}</td>
-                <td>${line.uom || ""}</td>
-                <td class="right">${line.qty || 0}</td>
-                <td class="right">${money(line.price)}</td>
-                <td class="right">${money(line.totalPrice)}</td>
-                <td class="right">${line.unitWeightKg == null ? "" : money(line.unitWeightKg)}</td>
-                <td class="right">${line.totalWeightKg == null ? "" : money(line.totalWeightKg)}</td>
+                <td class="col-sno">${line.serialNo ?? ""}</td>
+                <td class="col-part">${line.partNumber || ""}</td>
+                <td class="col-desc">${line.description || ""}</td>
+                <td class="col-uom">${line.uom || ""}</td>
+                <td class="col-qty right">${line.qty || 0}</td>
+                <td class="col-price right">${money(line.price)}</td>
+                <td class="col-total right">${money(line.totalPrice)}</td>
+                <td class="col-weight right">${line.unitWeightKg == null ? "" : money(line.unitWeightKg)}</td>
+                <td class="col-weight right">${line.totalWeightKg == null ? "" : money(line.totalWeightKg)}</td>
               </tr>`
         )
         .join("")
@@ -1091,15 +1083,15 @@ function renderFlowDocPrintWindow({
         .map(
           (line) => `
               <tr>
-                <td>${line.serialNo ?? ""}</td>
-                <td>${line.partNumber || ""}</td>
-                <td>${line.description || ""}</td>
-                <td>${line.uom || ""}</td>
-                <td class="right">${line.qty || 0}</td>
-                <td class="right">${money(line.price)}</td>
-                <td class="right">${money(line.totalPrice)}</td>
-                <td class="remarks-col">${line.remarks || ""}</td>
-                <td>${line.availability || ""}</td>
+                <td class="col-sno">${line.serialNo ?? ""}</td>
+                <td class="col-part">${line.partNumber || ""}</td>
+                <td class="col-desc">${line.description || ""}</td>
+                <td class="col-uom">${line.uom || ""}</td>
+                <td class="col-qty right">${line.qty || 0}</td>
+                <td class="col-price right">${money(line.price)}</td>
+                <td class="col-total right">${money(line.totalPrice)}</td>
+                <td class="col-remarks">${line.remarks || ""}</td>
+                <td class="col-avail">${line.availability || ""}</td>
               </tr>`
         )
         .join("");
@@ -1228,7 +1220,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
       </head>
       <body class="report-print ${isMarivolt ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
         ${salesInvoiceLayout ? taxInvoiceQuotationHeader + taxInvoiceGridHtml : flowDocClassicTop}
-        <table>
+        <table class="report-table${salesInvoiceLayout ? " cols-invoice" : ""}">
           <thead>
             <tr>
               ${lineTableHeaderHtml}
@@ -1772,10 +1764,25 @@ export default function Sales() {
 
   function openReportPrintWindow(autoPrint = false) {
     if (!activeExportColumns.length) return;
-    const headers = activeExportColumns.map(([label]) => `<th>${label}</th>`).join("");
+    const headers = activeExportColumns
+      .map(([label]) => {
+        const cls = exportColumnClass("", label);
+        const align = ["col-qty", "col-price", "col-total"].includes(cls) ? " right" : "";
+        return `<th class="${cls}${align}">${label}</th>`;
+      })
+      .join("");
     const rows = activeReportRows.length
       ? activeReportRows
-          .map((row) => `<tr>${activeExportColumns.map(([, getter]) => `<td>${String(getter(row) ?? "")}</td>`).join("")}</tr>`)
+          .map((row) => {
+            const cells = activeExportColumns
+              .map(([label, getter]) => {
+                const cls = exportColumnClass("", label);
+                const align = ["col-qty", "col-price", "col-total"].includes(cls) ? " right" : "";
+                return `<td class="${cls}${align}">${String(getter(row) ?? "")}</td>`;
+              })
+              .join("");
+            return `<tr>${cells}</tr>`;
+          })
           .join("")
       : `<tr><td colspan="${activeExportColumns.length}" style="padding:12px;color:#666;">No data for current filters.</td></tr>`;
     const html = `
@@ -1786,10 +1793,10 @@ export default function Sales() {
             body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
             h1 { margin: 0 0 8px; font-size: 20px; }
             .meta { margin-bottom: 14px; color: #444; font-size: 12px; }
-            table { width: 100%; border-collapse: collapse; }
-            th, td { border: 1px solid #ddd; padding: 7px; font-size: 12px; text-align: left; }
+            th, td { border: 1px solid #ddd; }
             th { background: #f3f4f6; }
 ${GLOBAL_REPORT_PRINT_CSS}
+${GLOBAL_REPORT_TABLE_CSS}
           </style>
         </head>
         <body class="report-print">
@@ -1797,7 +1804,7 @@ ${GLOBAL_REPORT_PRINT_CSS}
           <div class="print-body">
           <h1>${activeReportTitle}</h1>
           <div class="meta">Company: ${activeCompany?.name || activeCompany?.code || "-"} | Generated: ${new Date().toLocaleString()}</div>
-          <table>
+          <table class="report-table data-table">
             <thead><tr>${headers}</tr></thead>
             <tbody>${rows}</tbody>
           </table>

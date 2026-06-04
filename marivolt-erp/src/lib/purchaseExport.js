@@ -1,5 +1,10 @@
 import { GLOBAL_REPORT_PRINT_CSS } from "./reportPrintLayout.js";
 import { downloadSearchableReportPdf } from "./reportPdfClient.js";
+import {
+  buildExportTableHeadHtml,
+  buildExportTableRowHtml,
+  GLOBAL_REPORT_TABLE_CSS,
+} from "./reportTableLayout.js";
 
 function escCsv(v) {
   const s = v == null ? "" : String(v);
@@ -33,21 +38,7 @@ const TABLE_EXPORT_CSS = `
   body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
   h1 { font-size: 18px; margin: 0 0 6px; }
   .subtitle, .meta { color: #555; font-size: 12px; margin-bottom: 12px; }
-  table.data-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-  table.data-table th,
-  table.data-table td {
-    border: 1px solid #ddd;
-    padding: 6px;
-    text-align: left;
-    word-wrap: break-word;
-    overflow-wrap: anywhere;
-    vertical-align: top;
-  }
-  table.data-table th {
-    background: #1c1c1c;
-    color: #fff;
-    font-weight: 700;
-  }
+  table.data-table th { background: #1c1c1c; color: #fff; }
   table.data-table tr:nth-child(even) td { background: #f8f8f8; }
 `;
 
@@ -60,15 +51,10 @@ export async function downloadPdfTable(
   fileBaseName,
   company = null,
 ) {
-  const head = columns
-    .map((c) => `<th>${escHtml(c.header || c.key)}</th>`)
-    .join("");
+  const head = buildExportTableHeadHtml(columns);
   const body = (rows || []).length
     ? (rows || [])
-        .map(
-          (row) =>
-            `<tr>${columns.map((c) => `<td>${escHtml(row[c.key])}</td>`).join("")}</tr>`,
-        )
+        .map((row) => `<tr>${buildExportTableRowHtml(columns, row)}</tr>`)
         .join("")
     : `<tr><td colspan="${columns.length}">No data</td></tr>`;
 
@@ -91,6 +77,7 @@ export async function downloadPdfTable(
     <style>
 ${TABLE_EXPORT_CSS}
 ${GLOBAL_REPORT_PRINT_CSS}
+${GLOBAL_REPORT_TABLE_CSS}
     </style>
   </head>
   <body class="report-print">

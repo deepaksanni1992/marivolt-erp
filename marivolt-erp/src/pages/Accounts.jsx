@@ -16,6 +16,7 @@ import { apiDelete, apiGet, apiGetWithQuery, apiPatch, apiPost, apiPostFormData,
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import { downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 import { GLOBAL_REPORT_PRINT_CSS } from "../lib/reportPrintLayout.js";
+import { GLOBAL_REPORT_TABLE_CSS } from "../lib/reportTableLayout.js";
 
 function canManageBankDetails(role) {
   const r = String(role || "").toLowerCase().trim();
@@ -866,7 +867,7 @@ export default function Accounts() {
       const r = data?.receipt || {};
       const html = `<!DOCTYPE html>
         <html><head><meta charset="utf-8"/><title>${r.receiptNo || "Payment Receipt"}</title>
-        <style>body{font-family:Arial;padding:24px}${GLOBAL_REPORT_PRINT_CSS}</style></head>
+        <style>body{font-family:Arial;padding:24px}${GLOBAL_REPORT_PRINT_CSS}${GLOBAL_REPORT_TABLE_CSS}</style></head>
         <body class="report-print" style="font-family:Arial;padding:24px">
           <h2 style="margin:0 0 16px 0">PAYMENT RECEIPT</h2>
           <div><b>Receipt No:</b> ${r.receiptNo || "-"}</div>
@@ -981,26 +982,26 @@ export default function Accounts() {
     const htmlRows = rows
       .map(
         (r) => `<tr>
-          <td>${r.transactionDate ? new Date(r.transactionDate).toLocaleDateString() : ""}</td>
-          <td>${r.documentNo || ""}</td>
-          <td>${String(r.movementType || "").replaceAll("_", " ")}</td>
-          <td style="text-align:right">${Number(r.debitAmount || 0).toFixed(2)}</td>
-          <td style="text-align:right">${Number(r.creditAmount || 0).toFixed(2)}</td>
-          <td style="text-align:right">${Number(r.runningBalance || 0).toFixed(2)}</td>
-          <td>${r.remarks || ""}</td>
+          <td class="col-flex">${r.transactionDate ? new Date(r.transactionDate).toLocaleDateString() : ""}</td>
+          <td class="col-flex">${r.documentNo || ""}</td>
+          <td class="col-flex">${String(r.movementType || "").replaceAll("_", " ")}</td>
+          <td class="col-price right">${Number(r.debitAmount || 0).toFixed(2)}</td>
+          <td class="col-price right">${Number(r.creditAmount || 0).toFixed(2)}</td>
+          <td class="col-total right">${Number(r.runningBalance || 0).toFixed(2)}</td>
+          <td class="col-remarks">${r.remarks || ""}</td>
         </tr>`
       )
       .join("");
     const html = `<!DOCTYPE html>
       <html><head><meta charset="utf-8"/><title>Customer Statement</title>
-      <style>body{font-family:Arial;padding:24px}${GLOBAL_REPORT_PRINT_CSS}</style></head>
+      <style>body{font-family:Arial;padding:24px}${GLOBAL_REPORT_PRINT_CSS}${GLOBAL_REPORT_TABLE_CSS}</style></head>
       <body class="report-print" style="font-family:Arial;padding:24px">
         <h2 style="margin:0 0 8px 0">Customer Statement</h2>
         <div><b>Customer:</b> ${customer}</div>
         <div><b>Currency:</b> ${statementFilters.currency || statementQ.data?.currency || "All"}</div>
         <div><b>Period:</b> ${statementFilters.fromDate || "Start"} to ${statementFilters.toDate || "Today"}</div>
-        <table width="100%" cellspacing="0" cellpadding="6" border="1" style="margin-top:16px;border-collapse:collapse;font-size:12px">
-          <thead><tr><th>Date</th><th>Document No</th><th>Movement</th><th>Debit</th><th>Credit</th><th>Balance</th><th>Remarks</th></tr></thead>
+        <table class="report-table" width="100%" cellspacing="0" cellpadding="6" border="1" style="margin-top:16px;border-collapse:collapse;font-size:12px">
+          <thead><tr><th class="col-flex">Date</th><th class="col-flex">Document No</th><th class="col-flex">Movement</th><th class="col-price right">Debit</th><th class="col-price right">Credit</th><th class="col-total right">Balance</th><th class="col-remarks">Remarks</th></tr></thead>
           <tbody>${htmlRows}</tbody>
         </table>
       </body></html>`;

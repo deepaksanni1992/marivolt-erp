@@ -117,7 +117,7 @@ export function buildReportTableHtml({ columns, rows }) {
     })
     .join("");
   return `
-    <table class="report-lines-table">
+    <table class="report-lines-table report-table">
       <thead><tr>${head}</tr></thead>
       <tbody>${body}</tbody>
     </table>`;
@@ -168,12 +168,6 @@ export function buildBrandedFooterHtml(brandingName = "") {
 
 export const PACKING_LIST_EXTRA_CSS = `
   .report-lines-table { margin-top: 14px; }
-  .report-lines-table th.col-sno,
-  .report-lines-table td.col-sno { width: 42px; text-align: center; }
-  .report-lines-table th.col-center,
-  .report-lines-table td.col-center { text-align: center; }
-  .report-lines-table th.col-right,
-  .report-lines-table td.col-right { text-align: right; }
   tr.package-group-header td {
     background: #eef2f7 !important;
     font-weight: 700;

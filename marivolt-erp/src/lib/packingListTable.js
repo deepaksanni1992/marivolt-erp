@@ -2,15 +2,15 @@
 
 export const PACKING_LIST_PRINT_COLUMNS = [
   { key: "sno", header: "S No.", className: "col-sno" },
-  { key: "packageNo", header: "Package" },
-  { key: "packageType", header: "Type" },
-  { key: "dimensions", header: "Dimensions" },
-  { key: "grossWeightKg", header: "Gross Kg", className: "col-right" },
-  { key: "netWeightKg", header: "Net Kg", className: "col-right" },
-  { key: "partNumber", header: "Part #" },
-  { key: "description", header: "Description" },
-  { key: "uom", header: "UOM", className: "col-center" },
-  { key: "qty", header: "Qty", className: "col-center" },
+  { key: "packageNo", header: "Package", className: "col-pack" },
+  { key: "packageType", header: "Type", className: "col-pack-type" },
+  { key: "dimensions", header: "Dimensions", className: "col-dim" },
+  { key: "grossWeightKg", header: "Gross Kg", className: "col-weight col-right" },
+  { key: "netWeightKg", header: "Net Kg", className: "col-weight col-right" },
+  { key: "partNumber", header: "Part #", className: "col-part" },
+  { key: "description", header: "Description", className: "col-desc" },
+  { key: "uom", header: "UOM", className: "col-uom col-center" },
+  { key: "qty", header: "Qty", className: "col-qty col-center" },
 ];
 
 /**
