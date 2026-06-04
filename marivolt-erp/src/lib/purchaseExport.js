@@ -1,10 +1,18 @@
-import { jsPDF } from "jspdf";
-import autoTable from "jspdf-autotable";
+import { GLOBAL_REPORT_PRINT_CSS } from "./reportPrintLayout.js";
+import { downloadSearchableReportPdf } from "./reportPdfClient.js";
 
 function escCsv(v) {
   const s = v == null ? "" : String(v);
   if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
+}
+
+function escHtml(v) {
+  return String(v ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 /** columns: { key, header }[] — rows are plain objects */
@@ -21,33 +29,92 @@ export function downloadCsv(filename, columns, rows) {
   URL.revokeObjectURL(a.href);
 }
 
-export function downloadPdfTable(title, subtitle, columns, rows, fileBaseName, company = null) {
-  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(14);
-  doc.setTextColor(30, 30, 30);
-  doc.text(title, 14, 14);
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
-  doc.setTextColor(80, 80, 80);
+const TABLE_EXPORT_CSS = `
+  body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
+  h1 { font-size: 18px; margin: 0 0 6px; }
+  .subtitle, .meta { color: #555; font-size: 12px; margin-bottom: 12px; }
+  table.data-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  table.data-table th,
+  table.data-table td {
+    border: 1px solid #ddd;
+    padding: 6px;
+    text-align: left;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+    vertical-align: top;
+  }
+  table.data-table th {
+    background: #1c1c1c;
+    color: #fff;
+    font-weight: 700;
+  }
+  table.data-table tr:nth-child(even) td { background: #f8f8f8; }
+`;
+
+/** Searchable PDF export for tabular reports (stock, GRN, ledgers, etc.). */
+export async function downloadPdfTable(
+  title,
+  subtitle,
+  columns,
+  rows,
+  fileBaseName,
+  company = null,
+) {
+  const head = columns
+    .map((c) => `<th>${escHtml(c.header || c.key)}</th>`)
+    .join("");
+  const body = (rows || []).length
+    ? (rows || [])
+        .map(
+          (row) =>
+            `<tr>${columns.map((c) => `<td>${escHtml(row[c.key])}</td>`).join("")}</tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="${columns.length}">No data</td></tr>`;
+
+  let companyBlock = "";
   if (company?.name) {
     const companyLine = [company.name, company.address, company.email, company.phone]
       .filter(Boolean)
+      .map(escHtml)
       .join(" | ");
-    if (companyLine) doc.text(companyLine, 14, 20);
+    if (companyLine) {
+      companyBlock = `<div class="meta">${companyLine}</div>`;
+    }
   }
-  if (subtitle) doc.text(subtitle, 14, company?.name ? 25 : 20);
-  const head = [columns.map((c) => c.header || c.key)];
-  const body = rows.map((row) => columns.map((c) => row[c.key] ?? ""));
-  autoTable(doc, {
-    startY: subtitle ? (company?.name ? 29 : 24) : company?.name ? 24 : 18,
-    head,
-    body,
-    styles: { fontSize: 7, cellPadding: 1.5 },
-    headStyles: { fillColor: [28, 28, 28], textColor: 255, fontStyle: "bold" },
-    alternateRowStyles: { fillColor: [248, 248, 248] },
-    margin: { left: 14, right: 14 },
+
+  const html = `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <title>${escHtml(title)}</title>
+    <style>
+${TABLE_EXPORT_CSS}
+${GLOBAL_REPORT_PRINT_CSS}
+    </style>
+  </head>
+  <body class="report-print">
+    <div class="print-page">
+      <div class="print-body">
+        <h1>${escHtml(title)}</h1>
+        ${subtitle ? `<div class="subtitle">${escHtml(subtitle)}</div>` : ""}
+        ${companyBlock}
+        <table class="data-table">
+          <thead><tr>${head}</tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </div>
+  </body>
+</html>`;
+
+  const name = (fileBaseName || title)
+    .replace(/[^\w-]+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  await downloadSearchableReportPdf({
+    html,
+    filename: name || "export",
+    options: { landscape: true, printBackground: true },
   });
-  const name = (fileBaseName || title).replace(/[^\w-]+/g, "-").replace(/^-|-$/g, "");
-  doc.save(`${name || "export"}.pdf`);
 }

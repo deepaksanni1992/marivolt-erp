@@ -7,8 +7,8 @@ import PoSupplierDocUploadModal from "../components/purchase/PoSupplierDocUpload
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import {
+  exportPurchaseOrderDocumentPdf,
   openPurchaseOrderDocumentWindow,
-  writePurchaseOrderDocumentToWindow,
   supplierPartNumberForPrint,
 } from "../lib/purchaseOrderDocumentPrint.js";
 import { calcPoGrandTotal, calcPoTotalsFromDoc, poHeaderCost, supplierPartNumberDisplay } from "../lib/poTotals.js";
@@ -884,29 +884,13 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       })();
       return;
     }
-    /** Pop-up must open in the same synchronous click turn; opening after `await apiGet` is blocked. */
-    const w = window.open("about:blank", "_blank");
-    if (!w) {
-      setErr("Pop-up blocked. Allow pop-ups for this site to save the PO as PDF.");
-      return;
-    }
-    w.document.open();
-    w.document.write(
-      `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>Loading…</title></head><body style="font-family:system-ui,sans-serif;padding:24px;color:#374151"><p>Loading purchase order…</p></body></html>`,
-    );
-    w.document.close();
     setPoCopyBusyId(poId);
     void (async () => {
       try {
         const full = await apiGet(`/purchase-orders/${poId}`);
-        writePurchaseOrderDocumentToWindow(w, full, auth?.company, { autoPrint: true });
+        await exportPurchaseOrderDocumentPdf(full, auth?.company);
       } catch (e) {
-        try {
-          w.close();
-        } catch {
-          /* ignore */
-        }
-        setErr(e.message || "Could not load purchase order");
+        setErr(e.message || "Could not export purchase order PDF");
       } finally {
         setPoCopyBusyId(null);
       }
@@ -2456,7 +2440,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                 type="button"
                 title="Opens print dialog — choose Save as PDF"
                 className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
-                onClick={() => openPurchaseOrderDocumentWindow(detail, auth?.company, { autoPrint: true })}
+                onClick={() => openPurchaseOrderDocumentWindow(detail, auth?.company, { exportPdf: true })}
               >
                 Download PO (PDF)
               </button>
@@ -2803,7 +2787,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                   title="Opens print dialog — choose Save as PDF"
                   className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
                   onClick={() =>
-                    openPurchaseOrderDocumentWindow(draftDocSnapshotForExport(), auth?.company, { autoPrint: true })
+                    openPurchaseOrderDocumentWindow(draftDocSnapshotForExport(), auth?.company, { exportPdf: true })
                   }
                 >
                   Download PO (PDF)

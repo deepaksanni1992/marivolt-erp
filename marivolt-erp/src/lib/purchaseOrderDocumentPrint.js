@@ -1,4 +1,5 @@
 import { getReportBranding } from "./reportBranding.js";
+import { downloadSearchableReportPdf } from "./reportPdfClient.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 
 function poHeaderCost(value) {
@@ -347,43 +348,45 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
   </div>
 
   <p class="no-print" style="margin-top:24px;font-size:11px;color:#6b7280">
-    Tip: Use your browser <strong>Print</strong> dialog and choose <strong>Save as PDF</strong> to download.
+    Use <strong>Export PDF</strong> in the ERP for a searchable PDF download.
   </p>
 </body>
 </html>`;
 }
 
 /**
+ * Download a searchable PDF for the full formatted PO document.
+ */
+export function exportPurchaseOrderDocumentPdf(doc, company) {
+  const html = buildPurchaseOrderDocumentHtml(doc, company);
+  const poNo = doc?.__unsavedDraft ? "purchase-order-draft" : doc?.poNumber || "purchase-order";
+  return downloadSearchableReportPdf({ html, filename: poNo });
+}
+
+/**
  * Writes the PO HTML into an existing window (e.g. opened synchronously on click to avoid pop-up blocking).
  */
-export function writePurchaseOrderDocumentToWindow(win, doc, company, { autoPrint = false } = {}) {
+export function writePurchaseOrderDocumentToWindow(win, doc, company) {
   if (!win || win.closed) return;
   const html = buildPurchaseOrderDocumentHtml(doc, company);
   win.document.open();
   win.document.write(html);
   win.document.close();
-  if (autoPrint) {
-    const run = () => {
-      try {
-        win.focus();
-        win.print();
-      } catch {
-        /* ignore */
-      }
-    };
-    if (win.document.readyState === "complete") setTimeout(run, 300);
-    else win.onload = () => setTimeout(run, 300);
-  }
 }
 
 /**
- * Opens a new tab with the full PO document. Call synchronously from a click handler so the browser allows the tab.
+ * Opens a new tab with the full PO document, or downloads searchable PDF when exportPdf is true.
  */
-export function openPurchaseOrderDocumentWindow(doc, company, { autoPrint = false } = {}) {
+export function openPurchaseOrderDocumentWindow(doc, company, { autoPrint = false, exportPdf = false } = {}) {
+  const html = buildPurchaseOrderDocumentHtml(doc, company);
+  if (exportPdf || autoPrint) {
+    const poNo = doc?.__unsavedDraft ? "purchase-order-draft" : doc?.poNumber || "purchase-order";
+    return downloadSearchableReportPdf({ html, filename: poNo });
+  }
   const w = window.open("about:blank", "_blank");
   if (!w) {
     window.alert("Pop-up blocked. Allow pop-ups for this site to view or print the PO.");
     return;
   }
-  writePurchaseOrderDocumentToWindow(w, doc, company, { autoPrint });
+  writePurchaseOrderDocumentToWindow(w, doc, company);
 }

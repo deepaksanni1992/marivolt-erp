@@ -1,4 +1,5 @@
 import { getReportBranding } from "./reportBranding.js";
+import { deliverReportHtml } from "./reportPdfClient.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 
 export function escHtml(v) {
@@ -198,15 +199,14 @@ export const PACKING_LIST_EXTRA_CSS = `
   tr.package-item-row + tr.package-group-header td { padding-top: 10px; }
 `;
 
-export function openCommercialReportPrintWindow({
+export function buildCommercialReportDocumentHtml({
   title,
   bodyInnerHtml,
   brandingName = "",
-  autoPrint = false,
   extraCss = "",
 }) {
   const b = getReportBranding(brandingName);
-  const html = `
+  return `
     <html>
       <head>
         <title>${escHtml(title)}</title>
@@ -224,11 +224,23 @@ ${extraCss}
         </div>
       </body>
     </html>`;
+}
 
-  const win = window.open("", "_blank", "width=1200,height=900");
-  if (!win) return;
-  win.document.write(html);
-  win.document.close();
-  win.focus();
-  if (autoPrint) setTimeout(() => win.print(), 300);
+export function openCommercialReportPrintWindow({
+  title,
+  bodyInnerHtml,
+  brandingName = "",
+  autoPrint = false,
+  extraCss = "",
+}) {
+  const html = buildCommercialReportDocumentHtml({
+    title,
+    bodyInnerHtml,
+    brandingName,
+    extraCss,
+  });
+  return deliverReportHtml(html, {
+    exportPdf: autoPrint,
+    filename: title,
+  });
 }

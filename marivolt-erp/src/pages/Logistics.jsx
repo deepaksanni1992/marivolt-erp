@@ -5,6 +5,7 @@ import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
 import { apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
 import { GLOBAL_REPORT_PRINT_CSS } from "../lib/reportPrintLayout.js";
+import { downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 
 const emptyShipment = {
   direction: "EXPORT",
@@ -171,16 +172,13 @@ export default function Logistics() {
           (l) => `<tr><td>${l.article || ""}</td><td>${l.description || ""}</td><td style="text-align:right">${l.qty || 0}</td><td>${l.uom || ""}</td><td>${l.weight || ""}</td><td>${l.dimensions || ""}</td><td>${l.packageCount || ""}</td><td>${l.marksAndNumbers || ""}</td><td>${l.countryOfOrigin || ""}</td></tr>`
         )
         .join("");
-      const w = window.open("", "_blank");
-      if (!w) return;
-      w.document.write(
-        `<html><head><title>${p.packingListNo || "Packing List"}</title><style>body{font-family:Arial;margin:24px;color:#111}${GLOBAL_REPORT_PRINT_CSS}</style></head><body class="report-print"><div class="print-page"><div class="print-body"><h2 class="print-header">Packing List</h2><div><b>No:</b> ${p.packingListNo || ""}</div><div><b>Customer:</b> ${p.customerName || ""}</div><div><b>Invoice:</b> ${p.invoiceNo || ""}</div><div><b>RTS:</b> ${p.rtsNo || ""}</div><table border="1" cellspacing="0" cellpadding="6" width="100%" style="margin-top:16px;border-collapse:collapse;font-size:12px"><thead><tr><th>Article</th><th>Description</th><th>Qty</th><th>UOM</th><th>Weight</th><th>Dimensions</th><th>Packages</th><th>Marks</th><th>COO</th></tr></thead><tbody>${lineRows}</tbody></table></div></div></body></html>`,
-      );
-      w.document.close();
-      w.focus();
-      w.print();
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>${p.packingListNo || "Packing List"}</title><style>body{font-family:Arial;margin:24px;color:#111}${GLOBAL_REPORT_PRINT_CSS}</style></head><body class="report-print"><div class="print-page"><div class="print-body"><h2 class="print-header">Packing List</h2><div><b>No:</b> ${p.packingListNo || ""}</div><div><b>Customer:</b> ${p.customerName || ""}</div><div><b>Invoice:</b> ${p.invoiceNo || ""}</div><div><b>RTS:</b> ${p.rtsNo || ""}</div><table border="1" cellspacing="0" cellpadding="6" width="100%" style="margin-top:16px;border-collapse:collapse;font-size:12px"><thead><tr><th>Article</th><th>Description</th><th>Qty</th><th>UOM</th><th>Weight</th><th>Dimensions</th><th>Packages</th><th>Marks</th><th>COO</th></tr></thead><tbody>${lineRows}</tbody></table></div></div></body></html>`;
+      await downloadSearchableReportPdf({
+        html,
+        filename: p.packingListNo || "packing-list",
+      });
     } catch (e) {
-      setErr(e.message || "Could not print packing list");
+      setErr(e.message || "Could not export packing list PDF");
     }
   }
 

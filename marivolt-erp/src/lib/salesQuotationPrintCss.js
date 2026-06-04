@@ -1,4 +1,4 @@
-import { GLOBAL_REPORT_PRINT_CSS } from "./reportPrintLayout.js";
+import { GLOBAL_REPORT_PRINT_CSS, REPORT_TABLE_WRAP_CSS } from "./reportPrintLayout.js";
 
 /** Shared print styles for quotation-style sales documents (quotation, OA, etc.). */
 export const SALES_QUOTATION_STYLE_PRINT_CSS = `
@@ -262,4 +262,5 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             .quote-terms { page-break-inside: avoid; }
           }
 ${GLOBAL_REPORT_PRINT_CSS}
+${REPORT_TABLE_WRAP_CSS}
 `;

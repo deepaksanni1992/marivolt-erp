@@ -14,6 +14,8 @@ import PaymentReceiptView from "../components/accounts/PaymentReceiptView.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiDelete, apiGet, apiGetWithQuery, apiPatch, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
+import { downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
+import { GLOBAL_REPORT_PRINT_CSS } from "../lib/reportPrintLayout.js";
 
 function canManageBankDetails(role) {
   const r = String(role || "").toLowerCase().trim();
@@ -862,9 +864,10 @@ export default function Accounts() {
     try {
       const data = await apiGet(`/payment-receipts/${receiptId}/print`);
       const r = data?.receipt || {};
-      const html = `
-        <html><head><title>${r.receiptNo || "Payment Receipt"}</title></head>
-        <body style="font-family:Arial;padding:24px">
+      const html = `<!DOCTYPE html>
+        <html><head><meta charset="utf-8"/><title>${r.receiptNo || "Payment Receipt"}</title>
+        <style>body{font-family:Arial;padding:24px}${GLOBAL_REPORT_PRINT_CSS}</style></head>
+        <body class="report-print" style="font-family:Arial;padding:24px">
           <h2 style="margin:0 0 16px 0">PAYMENT RECEIPT</h2>
           <div><b>Receipt No:</b> ${r.receiptNo || "-"}</div>
           <div><b>Receipt Date:</b> ${r.receiptDate ? new Date(r.receiptDate).toLocaleDateString() : "-"}</div>
@@ -879,14 +882,12 @@ export default function Accounts() {
           <div><b>Status:</b> ${r.status || "-"}</div>
           <div style="margin-top:12px"><b>Remarks:</b> ${r.remarks || "-"}</div>
         </body></html>`;
-      const w = window.open("", "_blank");
-      if (!w) return;
-      w.document.write(html);
-      w.document.close();
-      w.focus();
-      w.print();
+      await downloadSearchableReportPdf({
+        html,
+        filename: r.receiptNo || "payment-receipt",
+      });
     } catch (e) {
-      setErr(e.message || "Could not open print");
+      setErr(e.message || "Could not export payment receipt PDF");
     }
   }
 
@@ -990,11 +991,10 @@ export default function Accounts() {
         </tr>`
       )
       .join("");
-    const w = window.open("", "_blank");
-    if (!w) return;
-    w.document.write(`
-      <html><head><title>Customer Statement</title></head>
-      <body style="font-family:Arial;padding:24px">
+    const html = `<!DOCTYPE html>
+      <html><head><meta charset="utf-8"/><title>Customer Statement</title>
+      <style>body{font-family:Arial;padding:24px}${GLOBAL_REPORT_PRINT_CSS}</style></head>
+      <body class="report-print" style="font-family:Arial;padding:24px">
         <h2 style="margin:0 0 8px 0">Customer Statement</h2>
         <div><b>Customer:</b> ${customer}</div>
         <div><b>Currency:</b> ${statementFilters.currency || statementQ.data?.currency || "All"}</div>
@@ -1003,11 +1003,11 @@ export default function Accounts() {
           <thead><tr><th>Date</th><th>Document No</th><th>Movement</th><th>Debit</th><th>Credit</th><th>Balance</th><th>Remarks</th></tr></thead>
           <tbody>${htmlRows}</tbody>
         </table>
-      </body></html>
-    `);
-    w.document.close();
-    w.focus();
-    w.print();
+      </body></html>`;
+    void downloadSearchableReportPdf({
+      html,
+      filename: `customer-statement-${customer}`,
+    });
   }
 
   const cancelPaymentReceiptMut = useMutation({

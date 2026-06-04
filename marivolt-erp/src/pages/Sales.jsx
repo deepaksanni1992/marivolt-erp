@@ -21,6 +21,7 @@ import {
 import { useAuth } from "../context/AuthContext.jsx";
 import { getReportBranding } from "../lib/reportBranding.js";
 import { renderRtsPackingListPrintWindow } from "../lib/rtsPackingListPrint.js";
+import { deliverReportHtml, downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 
 /** Document types allowed when uploading from Sales Dispatch flow (subset of backend DOCUMENT_TYPES). */
 const SHIPPING_DOC_TYPE_OPTIONS = ["Shipping Document", "Packing List", "Other"];
@@ -887,14 +888,10 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
       </body>
     </html>
   `;
-  const w = window.open("", "_blank", "width=1200,height=900");
-  if (!w) return;
-  w.document.write(html);
-  w.document.close();
-  w.focus();
-  if (autoPrint) {
-    setTimeout(() => w.print(), 300);
-  }
+  return deliverReportHtml(html, {
+    exportPdf: autoPrint,
+    filename: q.quotationNo || "quotation",
+  });
 }
 
 function renderOrderAcknowledgementPrintWindow(payload, autoPrint = false) {
@@ -1036,12 +1033,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
       </body>
     </html>
   `;
-  const w = window.open("", "_blank", "width=1200,height=900");
-  if (!w) return;
-  w.document.write(html);
-  w.document.close();
-  w.focus();
-  if (autoPrint) setTimeout(() => w.print(), 300);
+  const oaNo = oa.oaNo || "order-acknowledgement";
+  return deliverReportHtml(html, { exportPdf: autoPrint, filename: oaNo });
 }
 
 function renderFlowDocPrintWindow({
@@ -1299,12 +1292,12 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
       </body>
     </html>
   `;
-  const win = window.open("", "_blank", "width=1200,height=900");
-  if (!win) return;
-  win.document.write(html);
-  win.document.close();
-  win.focus();
-  if (autoPrint) setTimeout(() => win.print(), 300);
+  const fileBase =
+    docNoValue || doc?.proformaNo || doc?.invoiceNo || doc?.dispatchNo || title || "document";
+  return deliverReportHtml(html, {
+    exportPdf: autoPrint,
+    filename: String(fileBase).replace(/[^\w.\-]+/g, "-") || "document",
+  });
 }
 
 function renderPackingListPrintWindow({ rts, company, autoPrint = false }) {
@@ -1813,21 +1806,18 @@ ${GLOBAL_REPORT_PRINT_CSS}
         </body>
       </html>
     `;
-    const win = window.open("", "_blank", "width=1200,height=900");
-    if (!win) {
-      window.alert(
-        "Your browser blocked the pop-up. Allow pop-ups for this site to export PDF or print the report."
-      );
-      return;
-    }
-    win.document.write(html);
-    win.document.close();
-    win.focus();
     if (autoPrint) {
-      setTimeout(() => {
-        win.print();
-      }, 300);
+      const fileBase = `${activeReportId}-${new Date().toISOString().slice(0, 10)}`;
+      return downloadSearchableReportPdf({
+        html,
+        filename: fileBase,
+        options: { landscape: true },
+      });
     }
+    return deliverReportHtml(html, {
+      exportPdf: false,
+      filename: activeReportTitle || "report",
+    });
   }
 
   function exportListCsv(filename, rows, columns) {

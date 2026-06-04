@@ -34,6 +34,7 @@ import analyticsRoutes from "./routes/analyticsRoutes.js";
 import communicationRoutes from "./routes/communicationRoutes.js";
 import packingRoutes from "./routes/packingRoutes.js";
 import dispatchRoutes from "./routes/dispatchRoutes.js";
+import reportPdfRoutes from "./routes/reportPdfRoutes.js";
 import { isS3Configured } from "./config/s3.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -126,6 +127,7 @@ async function startServer() {
     app.use("/api/communication", communicationRoutes);
     app.use("/api/packing", packingRoutes);
     app.use("/api/dispatch", dispatchRoutes);
+    app.use("/api/reports", reportPdfRoutes);
 
     app.get("/api/health", (req, res) => {
       res.json({ ok: true, message: "Marivoltz API running" });

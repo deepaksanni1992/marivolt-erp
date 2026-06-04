@@ -1,3 +1,4 @@
+import { deliverReportHtml } from "./reportPdfClient.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 
 function money(n) {
@@ -155,15 +156,10 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
       </body>
     </html>
   `;
-  const win = window.open("", "_blank", "width=1200,height=900");
-  if (!win) {
-    window.alert("Allow pop-ups for this site to print or export PDF.");
-    return;
-  }
-  win.document.write(html);
-  win.document.close();
-  win.focus();
-  if (autoPrint) setTimeout(() => win.print(), 300);
+  return deliverReportHtml(html, {
+    exportPdf: autoPrint,
+    filename: allocation?.allocationNo || "order-allocation",
+  });
 }
 
 export function orderAllocationCsvHeaders() {

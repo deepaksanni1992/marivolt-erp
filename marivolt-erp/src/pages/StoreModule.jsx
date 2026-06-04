@@ -5,6 +5,8 @@ import { useAuth } from "../context/AuthContext.jsx";
 import { api, apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
 import { renderStorePackingListPrintWindow } from "../lib/storePackingListPrint.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
+import { deliverReportHtml } from "../lib/reportPdfClient.js";
+import { GLOBAL_REPORT_PRINT_CSS } from "../lib/reportPrintLayout.js";
 import {
   exportCurrentPackingCsv,
   exportPackingTemplateCsv,
@@ -51,6 +53,42 @@ const GRN_PO_RECEIPT_LABEL = {
 
 /** Default GRN warehouse `locationCode` (hidden in UI; must match backend). */
 const GRN_DEFAULT_WAREHOUSE_CODE = "MAIN";
+
+function escGrnHtml(v) {
+  return String(v ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function buildGrnRegisterReportHtml(g) {
+  const rows = (g?.items || [])
+    .map(
+      (it) =>
+        `<tr><td>${escGrnHtml(it.article)}</td><td style="text-align:right">${Number(it.acceptedQty ?? it.receivedQty) || 0}</td><td>${escGrnHtml(it.warehouse || "—")}</td><td>${escGrnHtml(it.location || "—")}</td></tr>`,
+    )
+    .join("");
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"/><title>GRN ${escGrnHtml(g?.grnNo)}</title>
+<style>body{font-family:Arial,sans-serif;margin:24px;color:#111} table{width:100%;border-collapse:collapse;font-size:12px;margin-top:16px} th,td{border:1px solid #ddd;padding:6px}${GLOBAL_REPORT_PRINT_CSS}</style></head>
+<body class="report-print">
+<h2>GRN ${escGrnHtml(g?.grnNo)}</h2>
+<div><b>Date:</b> ${g?.grnDate ? new Date(g.grnDate).toLocaleDateString() : "—"}</div>
+<div><b>PO:</b> ${escGrnHtml(g?.poNo)}</div>
+<div><b>Supplier:</b> ${escGrnHtml(g?.supplierName)}</div>
+<div><b>Status:</b> ${escGrnHtml(g?.status)}</div>
+<table><thead><tr><th>Article</th><th>Qty</th><th>Warehouse</th><th>Location</th></tr></thead><tbody>${rows}</tbody></table>
+</body></html>`;
+}
+
+function openGrnRegisterReport(g, { exportPdf = false } = {}) {
+  if (!g) return;
+  return deliverReportHtml(buildGrnRegisterReportHtml(g), {
+    exportPdf,
+    filename: `grn-${g.grnNo || "register"}`,
+  });
+}
 
 function fmtPoDateShort(d) {
   if (!d) return "—";
@@ -1580,35 +1618,14 @@ export default function StoreModule() {
                               <button
                                 type="button"
                                 className="rounded border px-2 py-0.5 text-[11px] font-semibold text-slate-800"
-                                onClick={() => {
-                                  setGrnRegisterDetail(g);
-                                  setTimeout(() => window.print(), 200);
-                                }}
+                                onClick={() => openGrnRegisterReport(g, { exportPdf: false })}
                               >
                                 Print
                               </button>
                               <button
                                 type="button"
                                 className="rounded border px-2 py-0.5 text-[11px] font-semibold text-slate-800"
-                                onClick={() =>
-                                  downloadPdfTable(
-                                    `GRN ${g.grnNo}`,
-                                    "",
-                                    [
-                                      { key: "article", header: "Article" },
-                                      { key: "qty", header: "Qty" },
-                                      { key: "warehouse", header: "Warehouse" },
-                                      { key: "location", header: "Location" },
-                                    ],
-                                    (g.items || []).map((it) => ({
-                                      article: it.article,
-                                      qty: Number(it.acceptedQty ?? it.receivedQty) || 0,
-                                      warehouse: it.warehouse || "—",
-                                      location: it.location || "—",
-                                    })),
-                                    `grn-${g.grnNo}`
-                                  )
-                                }
+                                onClick={() => openGrnRegisterReport(g, { exportPdf: true })}
                               >
                                 Export PDF
                               </button>
