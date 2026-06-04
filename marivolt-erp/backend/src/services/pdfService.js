@@ -1,7 +1,17 @@
 import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium";
+import { buildPdfExportCss } from "../constants/pdfExportCss.js";
 
 const DEFAULT_MARGIN = { top: "12mm", right: "12mm", bottom: "12mm", left: "12mm" };
+
+const PDF_EXPORT_VIEWPORT = { width: 1400, height: 1800, deviceScaleFactor: 1 };
+
+const PDF_EXPORT_ITEM_MARGIN = {
+  top: "10mm",
+  right: "10mm",
+  bottom: "12mm",
+  left: "10mm",
+};
 
 const LAUNCH_ARGS = [
   "--no-sandbox",
@@ -16,10 +26,35 @@ function escapeBaseHref(url) {
     .replace(/"/g, "%22");
 }
 
+function injectPdfExportStyles(doc, landscape = false) {
+  if (/<style[^>]*id=["']pdf-export-styles["']/i.test(doc)) {
+    return doc;
+  }
+  const exportCss = buildPdfExportCss(landscape);
+  const styleTag = `<style id="pdf-export-styles">${exportCss}</style>`;
+  if (/<head[\s>]/i.test(doc)) {
+    return doc.replace(/<head([^>]*)>/i, `<head$1>${styleTag}`);
+  }
+  return doc.replace(
+    /<html([^>]*)>/i,
+    `<html$1><head><meta charset="utf-8"/>${styleTag}</head>`,
+  );
+}
+
+function tagBodyForPdfExport(doc) {
+  return doc.replace(/<body([^>]*)>/i, (match, attrs) => {
+    if (/class\s*=/i.test(attrs)) {
+      if (/pdf-export-page/i.test(attrs)) return match;
+      return `<body${attrs.replace(/class=(["'])([^"']*)\1/i, (_, q, cls) => `class=${q}${cls} pdf-export-page${q}`)}>`;
+    }
+    return `<body${attrs} class="pdf-export-page">`;
+  });
+}
+
 /**
- * Ensures a full HTML document and injects <base href> so /brand/* assets resolve on the server.
+ * Ensures a full HTML document, injects <base href> and export-only PDF layout CSS.
  */
-export function prepareHtmlForPdf(html, assetBaseUrl = "") {
+export function prepareHtmlForPdf(html, assetBaseUrl = "", { landscape = false } = {}) {
   let doc = String(html || "").trim();
   if (!doc) {
     throw new Error("HTML content is required");
@@ -40,6 +75,8 @@ export function prepareHtmlForPdf(html, assetBaseUrl = "") {
     }
   }
 
+  doc = injectPdfExportStyles(doc, landscape);
+  doc = tagBodyForPdfExport(doc);
   return doc;
 }
 
@@ -69,7 +106,7 @@ async function launchBrowser() {
     headless: true,
     executablePath,
     args: onRender ? [...chromium.args, ...LAUNCH_ARGS] : LAUNCH_ARGS,
-    defaultViewport: chromium.defaultViewport,
+    defaultViewport: null,
   });
 }
 
@@ -77,11 +114,13 @@ async function launchBrowser() {
  * Generate a searchable text PDF from HTML using Puppeteer page.pdf().
  */
 export async function generatePdfFromHtml(html, options = {}) {
-  const prepared = prepareHtmlForPdf(html, options.assetBaseUrl);
+  const landscape = Boolean(options.landscape);
+  const prepared = prepareHtmlForPdf(html, options.assetBaseUrl, { landscape });
   const browser = await launchBrowser();
 
   try {
     const page = await browser.newPage();
+    await page.setViewport(options.viewport || PDF_EXPORT_VIEWPORT);
     await page.setContent(prepared, {
       waitUntil: ["load", "networkidle0"],
       timeout: options.timeoutMs ?? 90000,
@@ -109,9 +148,12 @@ export async function generatePdfFromHtml(html, options = {}) {
     const pdfOptions = {
       format: options.format || "A4",
       printBackground: options.printBackground !== false,
-      margin: options.margin || DEFAULT_MARGIN,
-      preferCSSPageSize: Boolean(options.preferCSSPageSize),
-      landscape: Boolean(options.landscape),
+      margin: options.margin || (landscape ? PDF_EXPORT_ITEM_MARGIN : DEFAULT_MARGIN),
+      preferCSSPageSize:
+        options.preferCSSPageSize !== undefined
+          ? Boolean(options.preferCSSPageSize)
+          : landscape,
+      landscape,
     };
 
     if (options.width && options.height) {

@@ -3,11 +3,18 @@
  * Safe fixed layout with colgroup — no letter-by-letter wrapping.
  */
 
-/** Puppeteer / export PDF options for wide line-item tables */
+/** Puppeteer / export PDF options for wide line-item tables (quotation, OA, PI, SI, PO, packing, GRN) */
 export const PDF_OPTS_ITEM_LINES = {
   format: "A4",
   landscape: true,
   printBackground: true,
+  preferCSSPageSize: true,
+  margin: {
+    top: "10mm",
+    right: "10mm",
+    bottom: "12mm",
+    left: "10mm",
+  },
 };
 
 /** Prevent print/PDF wrappers from clipping table right edge */
