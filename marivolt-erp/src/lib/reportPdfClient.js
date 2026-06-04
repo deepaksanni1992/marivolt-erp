@@ -1,5 +1,9 @@
 import { api } from "./api.js";
-import { logReportTableOverflowCheck } from "./reportTableLayout.js";
+import {
+  findOverflowingReportTables,
+  logReportTableOverflowCheck,
+  PRINT_PREVIEW_VIEWPORT_WIDTH,
+} from "./reportTableLayout.js";
 
 function sanitizeFilename(name) {
   const base = String(name || "report")
@@ -9,7 +13,68 @@ function sanitizeFilename(name) {
 }
 
 /**
+ * Measure layout in a hidden iframe at the same width as Print preview (1200px).
+ */
+export function logPreExportPrintLayout(html) {
+  if (typeof document === "undefined") return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("title", "report-pdf-layout-probe");
+    iframe.style.cssText = `position:fixed;left:-9999px;top:0;width:${PRINT_PREVIEW_VIEWPORT_WIDTH}px;height:900px;border:0;visibility:hidden;pointer-events:none`;
+    document.body.appendChild(iframe);
+
+    const finish = () => {
+      try {
+        const idoc = iframe.contentDocument;
+        const container =
+          idoc?.querySelector(".print-page") ||
+          idoc?.querySelector(".print-body") ||
+          idoc?.body;
+        const table = idoc?.querySelector(
+          ".report-table, table.report-lines-table, table.po-lines-table, table.data-table",
+        );
+        const metrics = {
+          containerClientWidth: container?.clientWidth ?? 0,
+          tableClientWidth: table?.clientWidth ?? 0,
+          tableScrollWidth: table?.scrollWidth ?? 0,
+          tableOverflow:
+            (table?.scrollWidth ?? 0) > (table?.clientWidth ?? 0) + 1,
+        };
+        console.log("[reportPdf] client pre-export layout (print preview width):", metrics);
+        if (metrics.tableOverflow) {
+          console.warn(
+            "[reportPdf] table.scrollWidth > table.clientWidth before export",
+            metrics,
+          );
+        }
+        resolve(metrics);
+      } catch (e) {
+        console.warn("[reportPdf] pre-export layout probe failed:", e);
+        resolve(null);
+      } finally {
+        document.body.removeChild(iframe);
+      }
+    };
+
+    let done = false;
+    const runOnce = () => {
+      if (done) return;
+      done = true;
+      finish();
+    };
+    iframe.onload = runOnce;
+    const idoc = iframe.contentDocument;
+    idoc.open();
+    idoc.write(html);
+    idoc.close();
+    requestAnimationFrame(runOnce);
+  });
+}
+
+/**
  * Request a searchable text PDF from the backend (Puppeteer page.pdf).
+ * Uses the same HTML as Print preview; server applies print media + matching viewport.
  */
 export async function downloadSearchableReportPdf({
   html,
@@ -18,6 +83,8 @@ export async function downloadSearchableReportPdf({
 }) {
   const assetBaseUrl =
     typeof window !== "undefined" ? window.location.origin : "";
+
+  await logPreExportPrintLayout(html);
 
   const res = await api.post(
     "/reports/pdf",
@@ -28,6 +95,7 @@ export async function downloadSearchableReportPdf({
       options: {
         format: "A4",
         printBackground: true,
+        preferCSSPageSize: true,
         ...options,
       },
     },
@@ -62,7 +130,7 @@ export async function downloadSearchableReportPdf({
 
 /** Open report HTML in a new tab for browser print preview (physical printer). */
 export function openReportHtmlPreview(html) {
-  const win = window.open("", "_blank", "width=1200,height=900");
+  const win = window.open("", "_blank", `width=${PRINT_PREVIEW_VIEWPORT_WIDTH},height=900`);
   if (!win) {
     window.alert(
       "Your browser blocked the pop-up. Allow pop-ups for this site to print or preview the report.",
@@ -74,14 +142,26 @@ export function openReportHtmlPreview(html) {
   win.focus();
   win.addEventListener("load", () => {
     logReportTableOverflowCheck(win.document);
+    const issues = findOverflowingReportTables(win.document);
+    const container =
+      win.document.querySelector(".print-page") ||
+      win.document.querySelector(".print-body");
+    const table = win.document.querySelector(
+      ".report-table, table.report-lines-table, table.po-lines-table, table.data-table",
+    );
+    console.log("[reportPdf] print preview layout:", {
+      containerClientWidth: container?.clientWidth,
+      tableClientWidth: table?.clientWidth,
+      tableScrollWidth: table?.scrollWidth,
+      overflow: issues.length > 0,
+    });
   });
   return win;
 }
 
 /**
  * Deliver a report: searchable PDF download (exportPdf) or print preview window.
- * @param {string} html
- * @param {{ exportPdf?: boolean, filename?: string, pdfOptions?: object }} opts
+ * Both paths use the same html string — no alternate PDF report template.
  */
 export function deliverReportHtml(html, { exportPdf = false, filename = "report", pdfOptions = {} } = {}) {
   if (exportPdf) {

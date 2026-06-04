@@ -3,17 +3,21 @@
  * Safe fixed layout with colgroup — no letter-by-letter wrapping.
  */
 
-/** Puppeteer / export PDF options for wide line-item tables (quotation, OA, PI, SI, PO, packing, GRN) */
+/**
+ * Puppeteer options aligned with browser Print preview (@page in GLOBAL_REPORT_PRINT_CSS).
+ * Same HTML/CSS as Print — no separate landscape or PDF-only margins.
+ */
+export const PRINT_PREVIEW_VIEWPORT_WIDTH = 1200;
+
 export const PDF_OPTS_ITEM_LINES = {
   format: "A4",
-  landscape: true,
+  landscape: false,
   printBackground: true,
   preferCSSPageSize: true,
-  margin: {
-    top: "10mm",
-    right: "10mm",
-    bottom: "12mm",
-    left: "10mm",
+  viewport: {
+    width: PRINT_PREVIEW_VIEWPORT_WIDTH,
+    height: 900,
+    deviceScaleFactor: 1,
   },
 };
 

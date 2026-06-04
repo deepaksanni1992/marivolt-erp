@@ -1,17 +1,8 @@
 import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium";
-import { buildPdfExportCss } from "../constants/pdfExportCss.js";
 
-const DEFAULT_MARGIN = { top: "12mm", right: "12mm", bottom: "12mm", left: "12mm" };
-
-const PDF_EXPORT_VIEWPORT = { width: 1400, height: 1800, deviceScaleFactor: 1 };
-
-const PDF_EXPORT_ITEM_MARGIN = {
-  top: "10mm",
-  right: "10mm",
-  bottom: "12mm",
-  left: "10mm",
-};
+/** Same window size as openReportHtmlPreview() in reportPdfClient.js */
+export const PRINT_PREVIEW_VIEWPORT = { width: 1200, height: 900, deviceScaleFactor: 1 };
 
 const LAUNCH_ARGS = [
   "--no-sandbox",
@@ -26,35 +17,11 @@ function escapeBaseHref(url) {
     .replace(/"/g, "%22");
 }
 
-function injectPdfExportStyles(doc, landscape = false) {
-  if (/<style[^>]*id=["']pdf-export-styles["']/i.test(doc)) {
-    return doc;
-  }
-  const exportCss = buildPdfExportCss(landscape);
-  const styleTag = `<style id="pdf-export-styles">${exportCss}</style>`;
-  if (/<head[\s>]/i.test(doc)) {
-    return doc.replace(/<head([^>]*)>/i, `<head$1>${styleTag}`);
-  }
-  return doc.replace(
-    /<html([^>]*)>/i,
-    `<html$1><head><meta charset="utf-8"/>${styleTag}</head>`,
-  );
-}
-
-function tagBodyForPdfExport(doc) {
-  return doc.replace(/<body([^>]*)>/i, (match, attrs) => {
-    if (/class\s*=/i.test(attrs)) {
-      if (/pdf-export-page/i.test(attrs)) return match;
-      return `<body${attrs.replace(/class=(["'])([^"']*)\1/i, (_, q, cls) => `class=${q}${cls} pdf-export-page${q}`)}>`;
-    }
-    return `<body${attrs} class="pdf-export-page">`;
-  });
-}
-
 /**
- * Ensures a full HTML document, injects <base href> and export-only PDF layout CSS.
+ * Minimal HTML prep for PDF: same document as Print preview, plus <base href> for logos only.
+ * Does not inject PDF-specific layout CSS (that diverged from Print).
  */
-export function prepareHtmlForPdf(html, assetBaseUrl = "", { landscape = false } = {}) {
+export function prepareHtmlForPdf(html, assetBaseUrl = "") {
   let doc = String(html || "").trim();
   if (!doc) {
     throw new Error("HTML content is required");
@@ -75,8 +42,6 @@ export function prepareHtmlForPdf(html, assetBaseUrl = "", { landscape = false }
     }
   }
 
-  doc = injectPdfExportStyles(doc, landscape);
-  doc = tagBodyForPdfExport(doc);
   return doc;
 }
 
@@ -88,9 +53,6 @@ function isRenderHost() {
   );
 }
 
-/**
- * Resolve Chromium binary without installing full puppeteer (no Chrome download at npm install).
- */
 async function resolveExecutablePath() {
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
     return process.env.PUPPETEER_EXECUTABLE_PATH;
@@ -110,51 +72,67 @@ async function launchBrowser() {
   });
 }
 
+async function logPrintLayoutMetrics(page) {
+  const metrics = await page.evaluate(() => {
+    const container =
+      document.querySelector(".print-page") ||
+      document.querySelector(".print-body") ||
+      document.body;
+    const table = document.querySelector(
+      ".report-table, table.report-lines-table, table.po-lines-table, table.data-table",
+    );
+    const tableClientWidth = table?.clientWidth ?? 0;
+    const tableScrollWidth = table?.scrollWidth ?? 0;
+    return {
+      viewportWidth: window.innerWidth,
+      containerClientWidth: container?.clientWidth ?? 0,
+      tableClientWidth,
+      tableScrollWidth,
+      tableOverflow: tableScrollWidth > tableClientWidth + 1,
+      tableClassName: table?.className ?? "",
+    };
+  });
+  console.log("[reportPdf] print-layout metrics:", metrics);
+  if (metrics.tableOverflow) {
+    console.warn(
+      "[reportPdf] table.scrollWidth > table.clientWidth — export may not match Print preview",
+      metrics,
+    );
+  }
+  return metrics;
+}
+
 /**
- * Generate a searchable text PDF from HTML using Puppeteer page.pdf().
+ * Generate a searchable text PDF from the same HTML/CSS as browser Print preview.
  */
 export async function generatePdfFromHtml(html, options = {}) {
-  const landscape = Boolean(options.landscape);
-  const prepared = prepareHtmlForPdf(html, options.assetBaseUrl, { landscape });
+  const prepared = prepareHtmlForPdf(html, options.assetBaseUrl);
   const browser = await launchBrowser();
 
   try {
     const page = await browser.newPage();
-    await page.setViewport(options.viewport || PDF_EXPORT_VIEWPORT);
+    const viewport = options.viewport || PRINT_PREVIEW_VIEWPORT;
+    await page.setViewport(viewport);
     await page.setContent(prepared, {
       waitUntil: ["load", "networkidle0"],
       timeout: options.timeoutMs ?? 90000,
     });
 
-    const overflowTables = await page.evaluate(() => {
-      const sel =
-        ".report-table, table.report-lines-table, table.po-lines-table, table.data-table";
-      return [...document.querySelectorAll(sel)]
-        .map((table, index) => ({
-          index,
-          scrollWidth: table.scrollWidth,
-          clientWidth: table.clientWidth,
-          className: table.className,
-        }))
-        .filter((t) => t.scrollWidth > t.clientWidth + 1);
-    });
-    if (overflowTables.length) {
-      console.warn(
-        "[reportPdf] Table wider than container (right border may clip):",
-        overflowTables,
-      );
-    }
+    // Apply the same @media print rules as the browser Print dialog
+    await page.emulateMediaType("print");
+    await logPrintLayoutMetrics(page);
 
+    const preferCSSPageSize = options.preferCSSPageSize !== false;
     const pdfOptions = {
       format: options.format || "A4",
       printBackground: options.printBackground !== false,
-      margin: options.margin || (landscape ? PDF_EXPORT_ITEM_MARGIN : DEFAULT_MARGIN),
-      preferCSSPageSize:
-        options.preferCSSPageSize !== undefined
-          ? Boolean(options.preferCSSPageSize)
-          : landscape,
-      landscape,
+      preferCSSPageSize,
+      landscape: Boolean(options.landscape),
     };
+
+    if (!preferCSSPageSize && options.margin) {
+      pdfOptions.margin = options.margin;
+    }
 
     if (options.width && options.height) {
       delete pdfOptions.format;
