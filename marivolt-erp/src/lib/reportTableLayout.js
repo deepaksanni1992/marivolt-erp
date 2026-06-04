@@ -10,15 +10,38 @@ export const PDF_OPTS_ITEM_LINES = {
   printBackground: true,
 };
 
+/** Prevent print/PDF wrappers from clipping table right edge */
+export const REPORT_PRINT_CONTAINER_CSS = `
+  .report-page,
+  .report-content,
+  .print-page,
+  .print-body {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    overflow: visible;
+  }
+
+  body.report-print,
+  body.po-print-document {
+    overflow: visible;
+    max-width: 100%;
+  }
+`;
+
 export const GLOBAL_REPORT_TABLE_CSS = `
+${REPORT_PRINT_CONTAINER_CSS}
+
   .report-table,
   table.report-lines-table,
   table.po-lines-table,
   table.data-table {
     width: 100%;
-    border-collapse: collapse;
+    max-width: 100%;
     table-layout: fixed;
+    border-collapse: collapse;
     border: 1px solid #cfcfcf;
+    box-sizing: border-box;
   }
 
   .report-table th,
@@ -38,6 +61,7 @@ export const GLOBAL_REPORT_TABLE_CSS = `
     overflow-wrap: break-word;
     white-space: normal;
     box-sizing: border-box;
+    max-width: 100%;
   }
 
   .report-table th,
@@ -67,109 +91,39 @@ export const GLOBAL_REPORT_TABLE_CSS = `
     break-inside: avoid;
   }
 
-  col.col-sno { width: 55px; }
-  col.col-part { width: 185px; }
-  col.col-article { width: 120px; }
-  col.col-desc { width: auto; }
-  col.col-uom { width: 55px; }
-  col.col-qty { width: 55px; }
-  col.col-price { width: 85px; }
-  col.col-total { width: 95px; }
-  col.col-remarks { width: 160px; }
-  col.col-availability,
-  col.col-avail { width: 90px; }
-  col.col-lead { width: 75px; }
-  col.col-weight { width: 70px; }
-  col.col-pack { width: 80px; }
-  col.col-pack-type { width: 60px; }
-  col.col-dim { width: 95px; }
-  col.col-flex { width: 100px; }
-
+  /* Alignment only — widths come from colgroup % */
   .report-table .col-sno,
   table.report-lines-table .col-sno,
   table.po-lines-table .col-sno {
-    width: 55px;
     text-align: center;
-  }
-
-  .report-table .col-part,
-  .report-table .col-article,
-  table.report-lines-table .col-part {
-    width: 185px;
-  }
-
-  .report-table .col-article {
-    width: 120px;
-  }
-
-  .report-table .col-desc,
-  table.report-lines-table .col-desc,
-  table.po-lines-table .col-desc {
-    width: auto;
-    min-width: 260px;
   }
 
   .report-table .col-uom,
   table.report-lines-table .col-uom,
-  table.po-lines-table .col-uom {
-    width: 55px;
+  table.po-lines-table .col-uom,
+  table.report-lines-table td.col-center {
     text-align: center;
   }
 
   .report-table .col-qty,
-  table.report-lines-table .col-qty,
-  table.po-lines-table .col-qty {
-    width: 55px;
-    text-align: right;
-  }
-
   .report-table .col-price,
-  table.po-lines-table .col-price {
-    width: 85px;
-    text-align: right;
-  }
-
   .report-table .col-total,
+  .report-table .col-weight,
+  .report-table td.right,
+  table.report-lines-table td.col-right,
+  table.po-lines-table .col-qty,
+  table.po-lines-table .col-price,
   table.po-lines-table .col-total {
-    width: 95px;
     text-align: right;
   }
 
-  .report-table .col-remarks,
-  table.report-lines-table .col-remarks,
-  table.po-lines-table .col-remarks {
-    width: 160px;
-  }
-
-  .report-table .col-availability,
-  .report-table .col-avail,
-  table.report-lines-table .col-availability,
-  table.report-lines-table .col-avail {
-    width: 90px;
-  }
-
-  .report-table th.col-uom,
   .report-table th.col-qty,
   .report-table th.col-price,
   .report-table th.col-total,
   .report-table th.col-sno,
   .report-table th.col-weight,
-  .report-table th.right {
-    text-align: center;
-  }
-
-  .report-table td.col-qty,
-  .report-table td.col-price,
-  .report-table td.col-total,
-  .report-table td.col-weight,
-  .report-table td.right,
-  table.report-lines-table td.col-right {
-    text-align: right;
-  }
-
-  .report-table td.col-uom,
-  .report-table td.col-sno,
-  table.report-lines-table td.col-center {
+  .report-table th.right,
+  table.report-lines-table th.col-right {
     text-align: center;
   }
 
@@ -182,7 +136,6 @@ export const GLOBAL_REPORT_TABLE_CSS = `
     break-inside: avoid;
   }
 
-  /* Complete outer table border (print + PDF) */
   .report-table th:first-child,
   .report-table td:first-child,
   table.report-lines-table th:first-child,
@@ -220,98 +173,184 @@ export const GLOBAL_REPORT_TABLE_CSS = `
   }
 `;
 
+/** Quotation / OA / PI / Proforma — 100% column split */
 export const SALES_COMMERCIAL_COLGROUP = `
 <colgroup>
-  <col class="col-sno" />
-  <col class="col-part" />
-  <col class="col-desc" />
-  <col class="col-uom" />
-  <col class="col-qty" />
-  <col class="col-price" />
-  <col class="col-total" />
-  <col class="col-remarks" />
-  <col class="col-availability" />
+  <col style="width:5%" />
+  <col style="width:18%" />
+  <col style="width:25%" />
+  <col style="width:6%" />
+  <col style="width:5%" />
+  <col style="width:8%" />
+  <col style="width:9%" />
+  <col style="width:15%" />
+  <col style="width:9%" />
 </colgroup>`;
 
 export const SALES_INVOICE_COLGROUP = `
 <colgroup>
-  <col class="col-sno" />
-  <col class="col-part" />
-  <col class="col-desc" />
-  <col class="col-uom" />
-  <col class="col-qty" />
-  <col class="col-price" />
-  <col class="col-total" />
-  <col class="col-weight" />
-  <col class="col-weight" />
+  <col style="width:5%" />
+  <col style="width:15%" />
+  <col style="width:27%" />
+  <col style="width:6%" />
+  <col style="width:5%" />
+  <col style="width:9%" />
+  <col style="width:9%" />
+  <col style="width:9%" />
+  <col style="width:15%" />
 </colgroup>`;
 
 export const ORDER_ALLOCATION_COLGROUP = `
 <colgroup>
-  <col class="col-sno" />
-  <col class="col-article" />
-  <col class="col-part" />
-  <col class="col-desc" />
-  <col class="col-uom" />
-  <col class="col-qty" />
-  <col class="col-qty" />
-  <col class="col-qty" />
-  <col class="col-remarks" />
-  <col class="col-availability" />
+  <col style="width:4%" />
+  <col style="width:9%" />
+  <col style="width:13%" />
+  <col style="width:24%" />
+  <col style="width:5%" />
+  <col style="width:5%" />
+  <col style="width:5%" />
+  <col style="width:5%" />
+  <col style="width:15%" />
+  <col style="width:10%" />
 </colgroup>`;
 
 export const PO_LINE_COLGROUP = `
 <colgroup>
-  <col class="col-sno" />
-  <col class="col-desc" />
-  <col class="col-part" />
-  <col class="col-uom" />
-  <col class="col-qty" />
-  <col class="col-price" />
-  <col class="col-total" />
-  <col class="col-lead" />
-  <col class="col-remarks" />
+  <col style="width:4%" />
+  <col style="width:24%" />
+  <col style="width:18%" />
+  <col style="width:5%" />
+  <col style="width:5%" />
+  <col style="width:9%" />
+  <col style="width:10%" />
+  <col style="width:9%" />
+  <col style="width:16%" />
 </colgroup>`;
 
 export const PACKING_LIST_COLGROUP = `
 <colgroup>
-  <col class="col-sno" />
-  <col class="col-pack" />
-  <col class="col-pack-type" />
-  <col class="col-dim" />
-  <col class="col-weight" />
-  <col class="col-weight" />
-  <col class="col-part" />
-  <col class="col-desc" />
-  <col class="col-uom" />
-  <col class="col-qty" />
+  <col style="width:5%" />
+  <col style="width:10%" />
+  <col style="width:8%" />
+  <col style="width:11%" />
+  <col style="width:9%" />
+  <col style="width:9%" />
+  <col style="width:15%" />
+  <col style="width:24%" />
+  <col style="width:5%" />
+  <col style="width:4%" />
 </colgroup>`;
 
 export const LOGISTICS_PACKING_COLGROUP = `
 <colgroup>
-  <col class="col-part" />
-  <col class="col-desc" />
-  <col class="col-qty" />
-  <col class="col-uom" />
-  <col class="col-weight" />
-  <col class="col-dim" />
-  <col class="col-qty" />
-  <col class="col-flex" />
-  <col class="col-availability" />
+  <col style="width:14%" />
+  <col style="width:26%" />
+  <col style="width:6%" />
+  <col style="width:6%" />
+  <col style="width:8%" />
+  <col style="width:10%" />
+  <col style="width:6%" />
+  <col style="width:14%" />
+  <col style="width:10%" />
 </colgroup>`;
 
-/** Build colgroup from column class names (packing list, dynamic exports). */
+/** Default % width per column class (dynamic export tables). */
+const COL_CLASS_WIDTH_PCT = {
+  "col-sno": 5,
+  "col-part": 18,
+  "col-article": 12,
+  "col-desc": 25,
+  "col-uom": 6,
+  "col-qty": 5,
+  "col-price": 8,
+  "col-total": 9,
+  "col-remarks": 15,
+  "col-availability": 9,
+  "col-avail": 9,
+  "col-weight": 8,
+  "col-lead": 8,
+  "col-pack": 8,
+  "col-pack-type": 7,
+  "col-dim": 10,
+};
+
+/** Build colgroup with percentage widths that fit the printable page. */
 export function buildColgroupHtml(colClasses) {
-  const cols = (colClasses || [])
-    .map((cls) => {
-      const primary =
-        String(cls || "")
-          .split(/\s+/)
-          .find((c) => c.startsWith("col-")) || "col-flex";
-      return `<col class="${primary}" />`;
+  const classes = (colClasses || []).map((cls) => {
+    return (
+      String(cls || "")
+        .split(/\s+/)
+        .find((c) => c.startsWith("col-")) || "col-flex"
+    );
+  });
+  if (!classes.length) return "<colgroup></colgroup>";
+
+  const flexIdx = [];
+  let fixedSum = 0;
+  const widths = classes.map((primary, i) => {
+    const pct = COL_CLASS_WIDTH_PCT[primary];
+    if (pct == null) {
+      flexIdx.push(i);
+      return null;
+    }
+    fixedSum += pct;
+    return pct;
+  });
+
+  const flexCount = flexIdx.length;
+  const remain = Math.max(0, 100 - fixedSum);
+  const flexEach = flexCount ? remain / flexCount : 0;
+
+  const cols = widths
+    .map((pct, i) => {
+      const w = pct != null ? pct : flexEach;
+      const label = Number.isFinite(w) ? `${Math.max(1, w).toFixed(2)}%` : "10%";
+      return `<col style="width:${label}" />`;
     })
     .join("");
   return `<colgroup>${cols}</colgroup>`;
+}
+
+const REPORT_TABLE_OVERFLOW_SELECTOR =
+  ".report-table, table.report-lines-table, table.po-lines-table, table.data-table";
+
+/**
+ * Debug: tables wider than their container clip the right border in PDF.
+ * @param {Document} [doc]
+ * @returns {{ index: number, scrollWidth: number, clientWidth: number, className: string }[]}
+ */
+export function findOverflowingReportTables(doc = typeof document !== "undefined" ? document : null) {
+  if (!doc) return [];
+  return [...doc.querySelectorAll(REPORT_TABLE_OVERFLOW_SELECTOR)]
+    .map((table, index) => {
+      const scrollWidth = table.scrollWidth;
+      const clientWidth = table.clientWidth;
+      return {
+        index,
+        scrollWidth,
+        clientWidth,
+        className: table.className,
+        overflow: scrollWidth > clientWidth + 1,
+      };
+    })
+    .filter((row) => row.overflow);
+}
+
+/** Log overflow tables to the console (browser preview / dev). */
+export function logReportTableOverflowCheck(doc = typeof document !== "undefined" ? document : null) {
+  const issues = findOverflowingReportTables(doc);
+  if (issues.length) {
+    console.warn(
+      "[report-table] scrollWidth > clientWidth — table may clip right border:",
+      issues.map(({ index, scrollWidth, clientWidth, className }) => ({
+        index,
+        scrollWidth,
+        clientWidth,
+        className,
+      })),
+    );
+  }
+  return issues;
 }
 
 /** Quotation / OA / Proforma / standard sales line table header */

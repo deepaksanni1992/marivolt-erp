@@ -12,14 +12,18 @@ export const GLOBAL_REPORT_PRINT_CSS = `
     padding-bottom: 0;
   }
 
-  .print-page {
-    position: relative;
-    box-sizing: border-box;
-    width: 100%;
-  }
-
+  .report-page,
+  .report-content,
+  .print-page,
   .print-body {
     box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    overflow: visible;
+  }
+
+  .print-page {
+    position: relative;
   }
 
   .print-header,
@@ -96,6 +100,15 @@ export const GLOBAL_REPORT_PRINT_CSS = `
     body.report-print.has-quote-terms,
     body.po-print-document.has-quote-terms {
       padding-bottom: 0 !important;
+    }
+
+    .report-page,
+    .report-content,
+    .print-page,
+    .print-body {
+      width: 100% !important;
+      max-width: 100% !important;
+      overflow: visible !important;
     }
 
     .print-page {

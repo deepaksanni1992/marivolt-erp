@@ -1,4 +1,5 @@
 import { api } from "./api.js";
+import { logReportTableOverflowCheck } from "./reportTableLayout.js";
 
 function sanitizeFilename(name) {
   const base = String(name || "report")
@@ -71,6 +72,9 @@ export function openReportHtmlPreview(html) {
   win.document.write(html);
   win.document.close();
   win.focus();
+  win.addEventListener("load", () => {
+    logReportTableOverflowCheck(win.document);
+  });
   return win;
 }
 

@@ -87,6 +87,25 @@ export async function generatePdfFromHtml(html, options = {}) {
       timeout: options.timeoutMs ?? 90000,
     });
 
+    const overflowTables = await page.evaluate(() => {
+      const sel =
+        ".report-table, table.report-lines-table, table.po-lines-table, table.data-table";
+      return [...document.querySelectorAll(sel)]
+        .map((table, index) => ({
+          index,
+          scrollWidth: table.scrollWidth,
+          clientWidth: table.clientWidth,
+          className: table.className,
+        }))
+        .filter((t) => t.scrollWidth > t.clientWidth + 1);
+    });
+    if (overflowTables.length) {
+      console.warn(
+        "[reportPdf] Table wider than container (right border may clip):",
+        overflowTables,
+      );
+    }
+
     const pdfOptions = {
       format: options.format || "A4",
       printBackground: options.printBackground !== false,
