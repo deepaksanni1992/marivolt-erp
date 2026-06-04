@@ -11,18 +11,14 @@ export const PDF_OPTS_ITEM_LINES = {
 };
 
 export const GLOBAL_REPORT_TABLE_CSS = `
-  .report-table {
-    width: 100%;
-    border-collapse: collapse;
-    table-layout: fixed;
-  }
-
+  .report-table,
   table.report-lines-table,
   table.po-lines-table,
   table.data-table {
     width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
+    border: 1px solid #cfcfcf;
   }
 
   .report-table th,
@@ -184,6 +180,43 @@ export const GLOBAL_REPORT_TABLE_CSS = `
     border-top: 2px solid #cbd5e1;
     page-break-inside: avoid;
     break-inside: avoid;
+  }
+
+  /* Complete outer table border (print + PDF) */
+  .report-table th:first-child,
+  .report-table td:first-child,
+  table.report-lines-table th:first-child,
+  table.report-lines-table td:first-child,
+  table.po-lines-table th:first-child,
+  table.po-lines-table td:first-child,
+  table.data-table th:first-child,
+  table.data-table td:first-child {
+    border-left: 1px solid #cfcfcf !important;
+  }
+
+  .report-table th:last-child,
+  .report-table td:last-child,
+  table.report-lines-table th:last-child,
+  table.report-lines-table td:last-child,
+  table.po-lines-table th:last-child,
+  table.po-lines-table td:last-child,
+  table.data-table th:last-child,
+  table.data-table td:last-child {
+    border-right: 1px solid #cfcfcf !important;
+  }
+
+  .report-table thead tr:first-child th,
+  table.report-lines-table thead tr:first-child th,
+  table.po-lines-table thead tr:first-child th,
+  table.data-table thead tr:first-child th {
+    border-top: 1px solid #cfcfcf !important;
+  }
+
+  .report-table tbody tr:last-child td,
+  table.report-lines-table tbody tr:last-child td,
+  table.po-lines-table tbody tr:last-child td,
+  table.data-table tbody tr:last-child td {
+    border-bottom: 1px solid #cfcfcf !important;
   }
 `;
 
