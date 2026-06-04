@@ -5,7 +5,7 @@ import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
 import { apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
 import { GLOBAL_REPORT_PRINT_CSS } from "../lib/reportPrintLayout.js";
-import { GLOBAL_REPORT_TABLE_CSS } from "../lib/reportTableLayout.js";
+import { GLOBAL_REPORT_TABLE_CSS, LOGISTICS_PACKING_COLGROUP, PDF_OPTS_ITEM_LINES } from "../lib/reportTableLayout.js";
 import { downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 
 const emptyShipment = {
@@ -170,13 +170,14 @@ export default function Logistics() {
       const p = data?.packingList || {};
       const lineRows = (p.lines || [])
         .map(
-          (l) => `<tr><td class="col-part">${l.article || ""}</td><td class="col-desc">${l.description || ""}</td><td class="col-qty right">${l.qty || 0}</td><td class="col-uom">${l.uom || ""}</td><td class="col-weight right">${l.weight || ""}</td><td class="col-dim">${l.dimensions || ""}</td><td class="col-qty right">${l.packageCount || ""}</td><td class="col-flex">${l.marksAndNumbers || ""}</td><td class="col-avail">${l.countryOfOrigin || ""}</td></tr>`
+          (l) => `<tr><td class="col-part">${l.article || ""}</td><td class="col-desc">${l.description || ""}</td><td class="col-qty">${l.qty || 0}</td><td class="col-uom">${l.uom || ""}</td><td class="col-weight">${l.weight || ""}</td><td class="col-dim">${l.dimensions || ""}</td><td class="col-qty">${l.packageCount || ""}</td><td class="col-flex">${l.marksAndNumbers || ""}</td><td class="col-availability">${l.countryOfOrigin || ""}</td></tr>`
         )
         .join("");
-      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>${p.packingListNo || "Packing List"}</title><style>body{font-family:Arial;margin:24px;color:#111} th,td{border:1px solid #ddd}${GLOBAL_REPORT_PRINT_CSS}${GLOBAL_REPORT_TABLE_CSS}</style></head><body class="report-print"><div class="print-page"><div class="print-body"><h2 class="print-header">Packing List</h2><div><b>No:</b> ${p.packingListNo || ""}</div><div><b>Customer:</b> ${p.customerName || ""}</div><div><b>Invoice:</b> ${p.invoiceNo || ""}</div><div><b>RTS:</b> ${p.rtsNo || ""}</div><table class="report-table" border="1" cellspacing="0" cellpadding="6" width="100%" style="margin-top:16px;border-collapse:collapse;font-size:12px"><thead><tr><th class="col-part">Article</th><th class="col-desc">Description</th><th class="col-qty right">Qty</th><th class="col-uom">UOM</th><th class="col-weight right">Weight</th><th class="col-dim">Dimensions</th><th class="col-qty right">Packages</th><th class="col-flex">Marks</th><th class="col-avail">COO</th></tr></thead><tbody>${lineRows}</tbody></table></div></div></body></html>`;
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>${p.packingListNo || "Packing List"}</title><style>body{font-family:Arial;margin:24px;color:#111} th,td{border:1px solid #ddd}${GLOBAL_REPORT_PRINT_CSS}${GLOBAL_REPORT_TABLE_CSS}</style></head><body class="report-print"><div class="print-page"><div class="print-body"><h2 class="print-header">Packing List</h2><div><b>No:</b> ${p.packingListNo || ""}</div><div><b>Customer:</b> ${p.customerName || ""}</div><div><b>Invoice:</b> ${p.invoiceNo || ""}</div><div><b>RTS:</b> ${p.rtsNo || ""}</div><table class="report-table" border="1" cellspacing="0" cellpadding="6" width="100%" style="margin-top:16px;border-collapse:collapse;font-size:12px">${LOGISTICS_PACKING_COLGROUP}<thead><tr><th class="col-part">Article</th><th class="col-desc">Description</th><th class="col-qty">Qty</th><th class="col-uom">UOM</th><th class="col-weight">Weight</th><th class="col-dim">Dimensions</th><th class="col-qty">Packages</th><th class="col-flex">Marks</th><th class="col-availability">COO</th></tr></thead><tbody>${lineRows}</tbody></table></div></div></body></html>`;
       await downloadSearchableReportPdf({
         html,
         filename: p.packingListNo || "packing-list",
+        options: PDF_OPTS_ITEM_LINES,
       });
     } catch (e) {
       setErr(e.message || "Could not export packing list PDF");

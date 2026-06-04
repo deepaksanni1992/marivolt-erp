@@ -23,9 +23,13 @@ import { getReportBranding } from "../lib/reportBranding.js";
 import { renderRtsPackingListPrintWindow } from "../lib/rtsPackingListPrint.js";
 import { deliverReportHtml, downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 import {
+  buildColgroupHtml,
   exportColumnClass,
   GLOBAL_REPORT_TABLE_CSS,
+  PDF_OPTS_ITEM_LINES,
+  SALES_COMMERCIAL_COLGROUP,
   SALES_COMMERCIAL_LINE_TABLE_HEAD,
+  SALES_INVOICE_COLGROUP,
   SALES_INVOICE_LINE_TABLE_HEAD,
 } from "../lib/reportTableLayout.js";
 
@@ -830,6 +834,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           </div>
         </div>
         <table class="report-table">
+          ${SALES_COMMERCIAL_COLGROUP}
           <thead>
             <tr>${SALES_COMMERCIAL_LINE_TABLE_HEAD}</tr>
           </thead>
@@ -842,11 +847,11 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
                 <td class="col-part">${line.partNumber || ""}</td>
                 <td class="col-desc">${line.description || ""}</td>
                 <td class="col-uom">${line.uom || ""}</td>
-                <td class="col-qty right">${line.qty || 0}</td>
-                <td class="col-price right">${money(line.price)}</td>
-                <td class="col-total right">${money(line.totalPrice)}</td>
+                <td class="col-qty">${line.qty || 0}</td>
+                <td class="col-price">${money(line.price)}</td>
+                <td class="col-total">${money(line.totalPrice)}</td>
                 <td class="col-remarks">${line.remarks || ""}</td>
-                <td class="col-avail">${line.availability || ""}</td>
+                <td class="col-availability">${line.availability || ""}</td>
               </tr>`
               )
               .join("")}
@@ -895,6 +900,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
   return deliverReportHtml(html, {
     exportPdf: autoPrint,
     filename: q.quotationNo || "quotation",
+    pdfOptions: autoPrint ? PDF_OPTS_ITEM_LINES : {},
   });
 }
 
@@ -973,6 +979,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           </div>
         </div>
         <table class="report-table">
+          ${SALES_COMMERCIAL_COLGROUP}
           <thead>
             <tr>${SALES_COMMERCIAL_LINE_TABLE_HEAD}</tr>
           </thead>
@@ -985,11 +992,11 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
                 <td class="col-part">${line.partNumber || ""}</td>
                 <td class="col-desc">${line.description || ""}</td>
                 <td class="col-uom">${line.uom || ""}</td>
-                <td class="col-qty right">${line.qty || 0}</td>
-                <td class="col-price right">${money(line.price)}</td>
-                <td class="col-total right">${money(line.totalPrice)}</td>
+                <td class="col-qty">${line.qty || 0}</td>
+                <td class="col-price">${money(line.price)}</td>
+                <td class="col-total">${money(line.totalPrice)}</td>
                 <td class="col-remarks">${line.remarks || ""}</td>
-                <td class="col-avail">${line.availability || ""}</td>
+                <td class="col-availability">${line.availability || ""}</td>
               </tr>`
               )
               .join("")}
@@ -1036,7 +1043,11 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
     </html>
   `;
   const oaNo = oa.oaNo || "order-acknowledgement";
-  return deliverReportHtml(html, { exportPdf: autoPrint, filename: oaNo });
+  return deliverReportHtml(html, {
+    exportPdf: autoPrint,
+    filename: oaNo,
+    pdfOptions: autoPrint ? PDF_OPTS_ITEM_LINES : {},
+  });
 }
 
 function renderFlowDocPrintWindow({
@@ -1059,6 +1070,7 @@ function renderFlowDocPrintWindow({
   const hasCompanyLogo = String(company?.logo || company?.logoUrl || "").trim().length > 0;
   const companyName = String(company?.name || company?.companyName || "").toLowerCase();
   const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite, reportFooterName, reportFooterSubline } = getReportBranding(companyName);
+  const lineTableColgroup = salesInvoiceLayout ? SALES_INVOICE_COLGROUP : SALES_COMMERCIAL_COLGROUP;
   const lineTableHeaderHtml = salesInvoiceLayout
     ? SALES_INVOICE_LINE_TABLE_HEAD
     : SALES_COMMERCIAL_LINE_TABLE_HEAD;
@@ -1071,11 +1083,11 @@ function renderFlowDocPrintWindow({
                 <td class="col-part">${line.partNumber || ""}</td>
                 <td class="col-desc">${line.description || ""}</td>
                 <td class="col-uom">${line.uom || ""}</td>
-                <td class="col-qty right">${line.qty || 0}</td>
-                <td class="col-price right">${money(line.price)}</td>
-                <td class="col-total right">${money(line.totalPrice)}</td>
-                <td class="col-weight right">${line.unitWeightKg == null ? "" : money(line.unitWeightKg)}</td>
-                <td class="col-weight right">${line.totalWeightKg == null ? "" : money(line.totalWeightKg)}</td>
+                <td class="col-qty">${line.qty || 0}</td>
+                <td class="col-price">${money(line.price)}</td>
+                <td class="col-total">${money(line.totalPrice)}</td>
+                <td class="col-weight">${line.unitWeightKg == null ? "" : money(line.unitWeightKg)}</td>
+                <td class="col-weight">${line.totalWeightKg == null ? "" : money(line.totalWeightKg)}</td>
               </tr>`
         )
         .join("")
@@ -1087,11 +1099,11 @@ function renderFlowDocPrintWindow({
                 <td class="col-part">${line.partNumber || ""}</td>
                 <td class="col-desc">${line.description || ""}</td>
                 <td class="col-uom">${line.uom || ""}</td>
-                <td class="col-qty right">${line.qty || 0}</td>
-                <td class="col-price right">${money(line.price)}</td>
-                <td class="col-total right">${money(line.totalPrice)}</td>
+                <td class="col-qty">${line.qty || 0}</td>
+                <td class="col-price">${money(line.price)}</td>
+                <td class="col-total">${money(line.totalPrice)}</td>
                 <td class="col-remarks">${line.remarks || ""}</td>
-                <td class="col-avail">${line.availability || ""}</td>
+                <td class="col-availability">${line.availability || ""}</td>
               </tr>`
         )
         .join("");
@@ -1220,7 +1232,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
       </head>
       <body class="report-print ${isMarivolt ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
         ${salesInvoiceLayout ? taxInvoiceQuotationHeader + taxInvoiceGridHtml : flowDocClassicTop}
-        <table class="report-table${salesInvoiceLayout ? " cols-invoice" : ""}">
+        <table class="report-table">
+          ${lineTableColgroup}
           <thead>
             <tr>
               ${lineTableHeaderHtml}
@@ -1289,6 +1302,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
   return deliverReportHtml(html, {
     exportPdf: autoPrint,
     filename: String(fileBase).replace(/[^\w.\-]+/g, "-") || "document",
+    pdfOptions: autoPrint ? PDF_OPTS_ITEM_LINES : {},
   });
 }
 
@@ -1764,21 +1778,21 @@ export default function Sales() {
 
   function openReportPrintWindow(autoPrint = false) {
     if (!activeExportColumns.length) return;
-    const headers = activeExportColumns
-      .map(([label]) => {
-        const cls = exportColumnClass("", label);
-        const align = ["col-qty", "col-price", "col-total"].includes(cls) ? " right" : "";
-        return `<th class="${cls}${align}">${label}</th>`;
-      })
+    const exportCols = activeExportColumns.map(([label]) => ({
+      key: label,
+      header: label,
+    }));
+    const headers = exportCols
+      .map((c) => `<th class="${exportColumnClass(c.key, c.header)}">${c.header}</th>`)
       .join("");
+    const colgroup = buildColgroupHtml(exportCols.map((c) => exportColumnClass(c.key, c.header)));
     const rows = activeReportRows.length
       ? activeReportRows
           .map((row) => {
             const cells = activeExportColumns
               .map(([label, getter]) => {
                 const cls = exportColumnClass("", label);
-                const align = ["col-qty", "col-price", "col-total"].includes(cls) ? " right" : "";
-                return `<td class="${cls}${align}">${String(getter(row) ?? "")}</td>`;
+                return `<td class="${cls}">${String(getter(row) ?? "")}</td>`;
               })
               .join("");
             return `<tr>${cells}</tr>`;
@@ -1805,6 +1819,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
           <h1>${activeReportTitle}</h1>
           <div class="meta">Company: ${activeCompany?.name || activeCompany?.code || "-"} | Generated: ${new Date().toLocaleString()}</div>
           <table class="report-table data-table">
+            ${colgroup}
             <thead><tr>${headers}</tr></thead>
             <tbody>${rows}</tbody>
           </table>
@@ -1818,7 +1833,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
       return downloadSearchableReportPdf({
         html,
         filename: fileBase,
-        options: { landscape: true },
+        options: PDF_OPTS_ITEM_LINES,
       });
     }
     return deliverReportHtml(html, {

@@ -1,6 +1,6 @@
 import { getReportBranding } from "./reportBranding.js";
 import { downloadSearchableReportPdf } from "./reportPdfClient.js";
-import { PO_LINE_TABLE_HEAD } from "./reportTableLayout.js";
+import { PDF_OPTS_ITEM_LINES, PO_LINE_COLGROUP, PO_LINE_TABLE_HEAD } from "./reportTableLayout.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 
 function poHeaderCost(value) {
@@ -120,9 +120,9 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
         <td class="col-desc" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(l.description || "—")}</td>
         <td class="col-part" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:11px">${escapeHtml(supplierPartNumberForPrint(l))}</td>
         <td class="col-uom" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(l.uom || "PCS")}</td>
-        <td class="col-qty right" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(String(qty))}</td>
-        <td class="col-price right" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${rate.toFixed(2)}</td>
-        <td class="col-total right" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px;font-weight:600">${tot.toFixed(2)}</td>
+        <td class="col-qty" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(String(qty))}</td>
+        <td class="col-price" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${rate.toFixed(2)}</td>
+        <td class="col-total" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px;font-weight:600">${tot.toFixed(2)}</td>
         <td class="col-lead" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(l.leadTime || "—")}</td>
         <td class="col-remarks" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px;color:#4b5563">${escapeHtml(l.remarks || "—")}</td>
       </tr>`;
@@ -280,6 +280,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
   ${commercialHtml}
 
   <table class="po-lines-table report-table" style="margin-top:12px">
+    ${PO_LINE_COLGROUP}
     <thead>
       <tr style="background:${thBg};color:${thColor}">
         ${PO_LINE_TABLE_HEAD(thBorder, thBg, thColor)}
@@ -353,7 +354,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
 export function exportPurchaseOrderDocumentPdf(doc, company) {
   const html = buildPurchaseOrderDocumentHtml(doc, company);
   const poNo = doc?.__unsavedDraft ? "purchase-order-draft" : doc?.poNumber || "purchase-order";
-  return downloadSearchableReportPdf({ html, filename: poNo });
+  return downloadSearchableReportPdf({ html, filename: poNo, options: PDF_OPTS_ITEM_LINES });
 }
 
 /**
@@ -374,7 +375,7 @@ export function openPurchaseOrderDocumentWindow(doc, company, { autoPrint = fals
   const html = buildPurchaseOrderDocumentHtml(doc, company);
   if (exportPdf || autoPrint) {
     const poNo = doc?.__unsavedDraft ? "purchase-order-draft" : doc?.poNumber || "purchase-order";
-    return downloadSearchableReportPdf({ html, filename: poNo });
+    return downloadSearchableReportPdf({ html, filename: poNo, options: PDF_OPTS_ITEM_LINES });
   }
   const w = window.open("about:blank", "_blank");
   if (!w) {

@@ -1,5 +1,6 @@
 import { getReportBranding } from "./reportBranding.js";
 import { deliverReportHtml } from "./reportPdfClient.js";
+import { buildColgroupHtml, PACKING_LIST_COLGROUP, PDF_OPTS_ITEM_LINES } from "./reportTableLayout.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 
 export function escHtml(v) {
@@ -116,8 +117,13 @@ export function buildReportTableHtml({ columns, rows }) {
       return `<tr class="${escHtml(trClass)}">${tds}</tr>`;
     })
     .join("");
+  const colgroup =
+    columns.length === 10 && columns[0]?.className === "col-sno"
+      ? PACKING_LIST_COLGROUP
+      : buildColgroupHtml(columns.map((c) => c.className || ""));
   return `
     <table class="report-lines-table report-table">
+      ${colgroup}
       <thead><tr>${head}</tr></thead>
       <tbody>${body}</tbody>
     </table>`;
@@ -236,5 +242,6 @@ export function openCommercialReportPrintWindow({
   return deliverReportHtml(html, {
     exportPdf: autoPrint,
     filename: title,
+    pdfOptions: autoPrint ? PDF_OPTS_ITEM_LINES : {},
   });
 }

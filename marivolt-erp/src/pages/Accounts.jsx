@@ -985,9 +985,9 @@ export default function Accounts() {
           <td class="col-flex">${r.transactionDate ? new Date(r.transactionDate).toLocaleDateString() : ""}</td>
           <td class="col-flex">${r.documentNo || ""}</td>
           <td class="col-flex">${String(r.movementType || "").replaceAll("_", " ")}</td>
-          <td class="col-price right">${Number(r.debitAmount || 0).toFixed(2)}</td>
-          <td class="col-price right">${Number(r.creditAmount || 0).toFixed(2)}</td>
-          <td class="col-total right">${Number(r.runningBalance || 0).toFixed(2)}</td>
+          <td class="col-price">${Number(r.debitAmount || 0).toFixed(2)}</td>
+          <td class="col-price">${Number(r.creditAmount || 0).toFixed(2)}</td>
+          <td class="col-total">${Number(r.runningBalance || 0).toFixed(2)}</td>
           <td class="col-remarks">${r.remarks || ""}</td>
         </tr>`
       )
@@ -1001,7 +1001,8 @@ export default function Accounts() {
         <div><b>Currency:</b> ${statementFilters.currency || statementQ.data?.currency || "All"}</div>
         <div><b>Period:</b> ${statementFilters.fromDate || "Start"} to ${statementFilters.toDate || "Today"}</div>
         <table class="report-table" width="100%" cellspacing="0" cellpadding="6" border="1" style="margin-top:16px;border-collapse:collapse;font-size:12px">
-          <thead><tr><th class="col-flex">Date</th><th class="col-flex">Document No</th><th class="col-flex">Movement</th><th class="col-price right">Debit</th><th class="col-price right">Credit</th><th class="col-total right">Balance</th><th class="col-remarks">Remarks</th></tr></thead>
+          <colgroup><col class="col-flex" /><col class="col-flex" /><col class="col-flex" /><col class="col-price" /><col class="col-price" /><col class="col-total" /><col class="col-remarks" /></colgroup>
+          <thead><tr><th class="col-flex">Date</th><th class="col-flex">Document No</th><th class="col-flex">Movement</th><th class="col-price">Debit</th><th class="col-price">Credit</th><th class="col-total">Balance</th><th class="col-remarks">Remarks</th></tr></thead>
           <tbody>${htmlRows}</tbody>
         </table>
       </body></html>`;

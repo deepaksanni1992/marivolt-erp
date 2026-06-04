@@ -127,24 +127,20 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
           .info-box-title { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #6b7280; margin-bottom: 6px; letter-spacing: 0.3px; }
           table.report-table,
           table.report-lines-table,
-          table.po-lines-table,
-          table:not(.si-bank-table) {
+          table.po-lines-table {
+            margin-top: 12px;
+          }
+          table:not(.si-bank-table):not(.report-table):not(.report-lines-table):not(.po-lines-table) {
             width: 100%;
             border-collapse: collapse;
             margin-top: 12px;
-            table-layout: fixed;
           }
-          table.report-table th,
-          table.report-table td,
-          table.report-lines-table th,
-          table.report-lines-table td,
-          table.po-lines-table th,
-          table.po-lines-table td,
-          table:not(.si-bank-table) th,
-          table:not(.si-bank-table) td {
+          table:not(.si-bank-table):not(.report-table):not(.report-lines-table):not(.po-lines-table) th,
+          table:not(.si-bank-table):not(.report-table):not(.report-lines-table):not(.po-lines-table) td {
             border: 1px solid #ddd;
+            padding: 8px;
+            font-size: 12px;
           }
-          th { background: #f5f5f5; text-align: left; }
           .right { text-align: right; }
           .totals { margin-top: 12px; width: 320px; margin-left: auto; }
           .totals div { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }

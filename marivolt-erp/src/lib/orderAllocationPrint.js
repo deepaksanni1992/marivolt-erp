@@ -1,5 +1,9 @@
 import { deliverReportHtml } from "./reportPdfClient.js";
-import { ORDER_ALLOCATION_LINE_TABLE_HEAD } from "./reportTableLayout.js";
+import {
+  ORDER_ALLOCATION_COLGROUP,
+  ORDER_ALLOCATION_LINE_TABLE_HEAD,
+  PDF_OPTS_ITEM_LINES,
+} from "./reportTableLayout.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 
 function money(n) {
@@ -99,6 +103,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           </div>
         </div>
         <table class="report-table">
+          ${ORDER_ALLOCATION_COLGROUP}
           <thead>
             <tr>${ORDER_ALLOCATION_LINE_TABLE_HEAD}</tr>
           </thead>
@@ -111,11 +116,11 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
                   <td class="col-part">${line.partNumber || ""}</td>
                   <td class="col-desc">${line.description || ""}</td>
                   <td class="col-uom">${line.uom || "PCS"}</td>
-                  <td class="col-qty right">${line.qty ?? 0}</td>
-                  <td class="col-qty right">${line.shippedQty ?? 0}</td>
-                  <td class="col-qty right">${line.pendingQty ?? ""}</td>
+                  <td class="col-qty">${line.qty ?? 0}</td>
+                  <td class="col-qty">${line.shippedQty ?? 0}</td>
+                  <td class="col-qty">${line.pendingQty ?? ""}</td>
                   <td class="col-remarks">${line.remarks || ""}</td>
-                  <td class="col-avail">${line.availability || ""}</td>
+                  <td class="col-availability">${line.availability || ""}</td>
                 </tr>`
               )
               .join("")}
@@ -156,6 +161,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
   return deliverReportHtml(html, {
     exportPdf: autoPrint,
     filename: allocation?.allocationNo || "order-allocation",
+    pdfOptions: autoPrint ? PDF_OPTS_ITEM_LINES : {},
   });
 }
 

@@ -1,9 +1,11 @@
 import { GLOBAL_REPORT_PRINT_CSS } from "./reportPrintLayout.js";
 import { downloadSearchableReportPdf } from "./reportPdfClient.js";
 import {
+  buildExportTableColgroup,
   buildExportTableHeadHtml,
   buildExportTableRowHtml,
   GLOBAL_REPORT_TABLE_CSS,
+  PDF_OPTS_ITEM_LINES,
 } from "./reportTableLayout.js";
 
 function escCsv(v) {
@@ -86,7 +88,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
         <h1>${escHtml(title)}</h1>
         ${subtitle ? `<div class="subtitle">${escHtml(subtitle)}</div>` : ""}
         ${companyBlock}
-        <table class="data-table">
+        <table class="data-table report-table">
+          ${buildExportTableColgroup(columns)}
           <thead><tr>${head}</tr></thead>
           <tbody>${body}</tbody>
         </table>
@@ -102,6 +105,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
   await downloadSearchableReportPdf({
     html,
     filename: name || "export",
-    options: { landscape: true, printBackground: true },
+    options: PDF_OPTS_ITEM_LINES,
   });
 }

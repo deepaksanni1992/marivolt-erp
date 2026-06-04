@@ -7,7 +7,7 @@ import { renderStorePackingListPrintWindow } from "../lib/storePackingListPrint.
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import { deliverReportHtml } from "../lib/reportPdfClient.js";
 import { GLOBAL_REPORT_PRINT_CSS } from "../lib/reportPrintLayout.js";
-import { GLOBAL_REPORT_TABLE_CSS } from "../lib/reportTableLayout.js";
+import { GLOBAL_REPORT_TABLE_CSS, PDF_OPTS_ITEM_LINES } from "../lib/reportTableLayout.js";
 import {
   exportCurrentPackingCsv,
   exportPackingTemplateCsv,
@@ -67,7 +67,7 @@ function buildGrnRegisterReportHtml(g) {
   const rows = (g?.items || [])
     .map(
       (it) =>
-        `<tr><td class="col-part">${escGrnHtml(it.article)}</td><td class="col-qty right">${Number(it.acceptedQty ?? it.receivedQty) || 0}</td><td class="col-flex">${escGrnHtml(it.warehouse || "—")}</td><td class="col-flex">${escGrnHtml(it.location || "—")}</td></tr>`,
+        `<tr><td class="col-part">${escGrnHtml(it.article)}</td><td class="col-qty">${Number(it.acceptedQty ?? it.receivedQty) || 0}</td><td class="col-flex">${escGrnHtml(it.warehouse || "—")}</td><td class="col-flex">${escGrnHtml(it.location || "—")}</td></tr>`,
     )
     .join("");
   return `<!DOCTYPE html>
@@ -79,7 +79,7 @@ function buildGrnRegisterReportHtml(g) {
 <div><b>PO:</b> ${escGrnHtml(g?.poNo)}</div>
 <div><b>Supplier:</b> ${escGrnHtml(g?.supplierName)}</div>
 <div><b>Status:</b> ${escGrnHtml(g?.status)}</div>
-<table class="report-table"><thead><tr><th class="col-part">Article</th><th class="col-qty right">Qty</th><th class="col-flex">Warehouse</th><th class="col-flex">Location</th></tr></thead><tbody>${rows}</tbody></table>
+<table class="report-table"><colgroup><col class="col-part" /><col class="col-qty" /><col class="col-flex" /><col class="col-flex" /></colgroup><thead><tr><th class="col-part">Article</th><th class="col-qty">Qty</th><th class="col-flex">Warehouse</th><th class="col-flex">Location</th></tr></thead><tbody>${rows}</tbody></table>
 </body></html>`;
 }
 
@@ -88,6 +88,7 @@ function openGrnRegisterReport(g, { exportPdf = false } = {}) {
   return deliverReportHtml(buildGrnRegisterReportHtml(g), {
     exportPdf,
     filename: `grn-${g.grnNo || "register"}`,
+    pdfOptions: exportPdf ? PDF_OPTS_ITEM_LINES : {},
   });
 }
 
