@@ -10,6 +10,13 @@ import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentControll
 import { nextGrnNo } from "../services/grnNumberService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js";
+import {
+  createCustomsLotFromGrn,
+  assertGrnCancelAllowed,
+  reverseCustomsLotForCancelledGrn,
+  hasCustomsPayload,
+  isCustomsEnabled,
+} from "../services/customsService.js";
 
 function withCompany(req, filter = {}) {
   const cid = req.companyId;
@@ -849,6 +856,10 @@ export async function postGrnFromPo(req, res) {
             description: `GRN ${grn.grnNo} ${postedStatus === "RECEIVED" ? "fully received" : "partially received"} (${grn.items?.length || 0} lines)`,
             metadata: { supplierName: grn.supplierName || "" },
           });
+
+          if (isCustomsEnabled() && hasCustomsPayload(req.body)) {
+            await createCustomsLotFromGrn({ session, req, grn, body: req.body });
+          }
         });
         completed = true;
         break;
@@ -1090,6 +1101,15 @@ export async function cancelGrn(req, res) {
         throw Object.assign(new Error("APPROVAL_REQUIRED"), { _approval: approvalRequiredPayload(gate.request) });
       }
 
+      if (isCustomsEnabled()) {
+        await assertGrnCancelAllowed({
+          companyId: req.companyId,
+          grnId: grn._id,
+          grnNo: grn.grnNo,
+          session,
+        });
+      }
+
       const prevGrnStatus = grn.status;
       for (const line of grn.items) {
         if (!(Number(line.acceptedQty) > 0)) continue;
@@ -1134,6 +1154,11 @@ export async function cancelGrn(req, res) {
       grn.cancellationReason = t(req.body?.reason || req.body?.cancellationReason);
       grn.updatedBy = req.user?.email || "";
       await grn.save({ session });
+
+      if (isCustomsEnabled()) {
+        await reverseCustomsLotForCancelledGrn({ session, req, grn });
+      }
+
       await writeStatusChange(req, {
         module: "STORE",
         entityType: "GRN",

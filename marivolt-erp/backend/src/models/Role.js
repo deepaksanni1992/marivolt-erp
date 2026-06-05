@@ -13,8 +13,9 @@ import mongoose from "mongoose";
  * uses a single boolean per (module, action) pair which keeps the
  * UI simple and matches the spec:
  *     module = SALES | STORE | ACCOUNTS | LOGISTICS | REPORTS |
- *              ITEM_MASTER | PURCHASE | SETTINGS | AUDIT
- *     action = view | create | edit | approve | cancel | export | delete
+ *              ITEM_MASTER | PURCHASE | SETTINGS | AUDIT | CUSTOMS
+ *     action = view | create | edit | approve | cancel | export | delete |
+ *              override | reconcile
  */
 export const PERMISSION_MODULES = [
   "SALES",
@@ -26,6 +27,7 @@ export const PERMISSION_MODULES = [
   "PURCHASE",
   "SETTINGS",
   "AUDIT",
+  "CUSTOMS",
 ];
 
 export const PERMISSION_ACTIONS = [
@@ -36,6 +38,8 @@ export const PERMISSION_ACTIONS = [
   "cancel",
   "export",
   "delete",
+  "override",
+  "reconcile",
 ];
 
 export const SYSTEM_ROLE_CODES = [
