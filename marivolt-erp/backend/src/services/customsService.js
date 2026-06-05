@@ -43,6 +43,37 @@ function deriveBlAwbParts(payload = {}, grn = {}) {
   return { blNumber, awbNumber };
 }
 
+function resolveDocumentId(value) {
+  if (value == null) return null;
+  if (typeof value === "object") {
+    const id = t(value._id || value.id);
+    return mongoose.Types.ObjectId.isValid(id) ? id : null;
+  }
+  const id = t(value);
+  return mongoose.Types.ObjectId.isValid(id) ? id : null;
+}
+
+function hasCustomsDocuments(customs = {}) {
+  const docs = customs?.documents;
+  if (!docs || typeof docs !== "object") return false;
+  if (
+    resolveDocumentId(docs.blDocumentId) ||
+    resolveDocumentId(docs.blCopy) ||
+    resolveDocumentId(docs.supplierInvoiceDocumentId) ||
+    resolveDocumentId(docs.supplierInvoiceCopy) ||
+    resolveDocumentId(docs.packingListDocumentId) ||
+    resolveDocumentId(docs.packingListCopy)
+  ) {
+    return true;
+  }
+  const otherLists = [docs.otherDocumentIds, docs.otherDocuments];
+  for (const list of otherLists) {
+    if (!Array.isArray(list)) continue;
+    if (list.some((entry) => resolveDocumentId(entry))) return true;
+  }
+  return false;
+}
+
 /**
  * True when optional customs payload contains at least one identifying field.
  */
@@ -56,7 +87,13 @@ export function hasCustomsPayload(body = {}) {
     customs?.customsDocRef,
     customs?.supplierInvoiceNumber,
     customs?.supplierInvoiceDate,
+    customs?.supplierInvoiceNo,
     customs?.countryOfOrigin,
+    customs?.hsCode,
+    customs?.currency,
+    customs?.unitPrice,
+    customs?.weightKg,
+    customs?.remarks,
     body?.boeNumber,
     body?.blNumber,
     body?.awbNumber,
@@ -65,7 +102,19 @@ export function hasCustomsPayload(body = {}) {
     body?.supplierInvoiceNo,
     body?.supplierInvoiceNumber,
   ];
-  return fields.some((f) => t(f));
+  if (fields.some((f) => t(f))) return true;
+  if (hasCustomsDocuments(customs)) return true;
+
+  for (const row of customs?.lineOverrides || []) {
+    if (
+      [row?.hsCode, row?.countryOfOrigin, row?.unitPrice, row?.weightKg, row?.currency, row?.remarks].some(
+        (f) => t(f),
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function normalizeCustomsPayload(body = {}, grn = {}) {
@@ -79,17 +128,33 @@ export function normalizeCustomsPayload(body = {}, grn = {}) {
 
   if (!hasCustomsPayload(body)) return null;
 
+  const docSrc = customs.documents && typeof customs.documents === "object" ? customs.documents : {};
+  const otherDocumentIds = [
+    ...(Array.isArray(docSrc.otherDocumentIds) ? docSrc.otherDocumentIds : []),
+    ...(Array.isArray(docSrc.otherDocuments) ? docSrc.otherDocuments : []),
+    ...(Array.isArray(customs.otherDocumentIds) ? customs.otherDocumentIds : []),
+    ...(Array.isArray(customs.otherDocuments) ? customs.otherDocuments : []),
+  ]
+    .map((entry) => resolveDocumentId(entry))
+    .filter(Boolean);
+
   const documents = {
-    blDocumentId: customs.documents?.blDocumentId || customs.blDocumentId || null,
+    blDocumentId:
+      resolveDocumentId(docSrc.blDocumentId) ||
+      resolveDocumentId(docSrc.blCopy) ||
+      resolveDocumentId(customs.blDocumentId) ||
+      null,
     supplierInvoiceDocumentId:
-      customs.documents?.supplierInvoiceDocumentId || customs.supplierInvoiceDocumentId || null,
+      resolveDocumentId(docSrc.supplierInvoiceDocumentId) ||
+      resolveDocumentId(docSrc.supplierInvoiceCopy) ||
+      resolveDocumentId(customs.supplierInvoiceDocumentId) ||
+      null,
     packingListDocumentId:
-      customs.documents?.packingListDocumentId || customs.packingListDocumentId || null,
-    otherDocumentIds: Array.isArray(customs.documents?.otherDocumentIds)
-      ? customs.documents.otherDocumentIds
-      : Array.isArray(customs.otherDocumentIds)
-        ? customs.otherDocumentIds
-        : [],
+      resolveDocumentId(docSrc.packingListDocumentId) ||
+      resolveDocumentId(docSrc.packingListCopy) ||
+      resolveDocumentId(customs.packingListDocumentId) ||
+      null,
+    otherDocumentIds: [...new Set(otherDocumentIds.map(String))],
   };
 
   const lineOverrides = new Map();
@@ -105,7 +170,10 @@ export function normalizeCustomsPayload(body = {}, grn = {}) {
     supplierInvoiceNumber,
     supplierInvoiceDate,
     countryOfOrigin: upper(customs.countryOfOrigin || ""),
+    hsCode: upper(customs.hsCode || ""),
     currency: upper(customs.currency || grn.currency || "USD"),
+    unitPrice: Number(customs.unitPrice) || 0,
+    weightKg: Number(customs.weightKg) || 0,
     remarks: t(customs.remarks || grn.remarks),
     documents,
     lineOverrides,
@@ -184,8 +252,9 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {} }) 
 
     const lineKey = String(line.poLineId ?? "");
     const override = payload.lineOverrides.get(lineKey) || {};
-    const unitPrice = Number(override.unitPrice ?? line.unitCost) || 0;
-    const weightKg = Number(override.weightKg) || 0;
+    const unitPrice =
+      Number(override.unitPrice ?? (payload.unitPrice || undefined) ?? line.unitCost) || 0;
+    const weightKg = Number(override.weightKg ?? payload.weightKg) || 0;
     const totalValue = qty * unitPrice;
 
     const itemRows = await CustomsLotItem.create(
@@ -202,8 +271,8 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {} }) 
           partNumber: upper(line.partNumber || line.spn || ""),
           partName: line.description || "",
           description: line.description || "",
-          hsCode: upper(override.hsCode || ""),
-          currency: upper(line.currency || payload.currency),
+          hsCode: upper(override.hsCode || payload.hsCode || ""),
+          currency: upper(override.currency || line.currency || payload.currency),
           unitPrice,
           qtyImported: qty,
           qtyAvailable: qty,
@@ -217,7 +286,7 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {} }) 
           boeNumber: payload.boeNumber,
           blNumber: payload.blNumber,
           awbNumber: payload.awbNumber,
-          countryOfOrigin: payload.countryOfOrigin,
+          countryOfOrigin: upper(override.countryOfOrigin || payload.countryOfOrigin || ""),
           status: "IN_STOCK",
           remarks1: t(override.remarks1 || line.remarks),
           remarks2: t(override.remarks2),

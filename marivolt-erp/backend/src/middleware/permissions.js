@@ -42,4 +42,28 @@ export function requirePermission(moduleName, action) {
   };
 }
 
-export default { requirePermission };
+/** Pass if the user has any one of the listed module.action permissions. */
+export function requireAnyPermission(...checks) {
+  const pairs = checks.map(([moduleName, action]) => [moduleName, action]);
+  return async function anyPermissionGuard(req, res, next) {
+    try {
+      const role = normaliseRoleCode(req.user?.role || "");
+      if (ALWAYS_ALLOW.has(role)) return next();
+      for (const [moduleName, action] of pairs) {
+        if (await hasPermission(req, moduleName, action)) return next();
+      }
+      const label = pairs.map(([m, a]) => `${m}.${a}`).join(" | ");
+      return res.status(403).json({
+        message: `Permission denied: requires one of ${label}`,
+        code: "PERMISSION_DENIED",
+      });
+    } catch {
+      return res.status(403).json({
+        message: "Permission check failed",
+        code: "PERMISSION_DENIED",
+      });
+    }
+  };
+}
+
+export default { requirePermission, requireAnyPermission };

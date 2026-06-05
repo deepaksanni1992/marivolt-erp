@@ -14,6 +14,13 @@ import {
   mapImportPackagesToUi,
 } from "../lib/storePackingCsv.js";
 import Modal from "../components/erp/Modal.jsx";
+import GrnCustomsSection from "../components/store/GrnCustomsSection.jsx";
+import GrnCustomsStockModal from "../components/store/GrnCustomsStockModal.jsx";
+import {
+  buildGrnCustomsPayload,
+  defaultGrnLineCustomsFields,
+  emptyGrnCustomsState,
+} from "../lib/grnCustomsPayload.js";
 
 const TABS = [
   "GRN",
@@ -256,6 +263,8 @@ export default function StoreModule() {
   const [grnLineEdits, setGrnLineEdits] = useState({});
   const [grnUiErr, setGrnUiErr] = useState("");
   const [grnRegisterDetail, setGrnRegisterDetail] = useState(null);
+  const [grnCustoms, setGrnCustoms] = useState(emptyGrnCustomsState);
+  const [customsStockOpen, setCustomsStockOpen] = useState(false);
   const grnUrlPoLoadedRef = useRef("");
   const grnCsvInputRef = useRef(null);
   const [packAllocInputId, setPackAllocInputId] = useState("");
@@ -376,9 +385,11 @@ export default function StoreModule() {
           warehouse: GRN_DEFAULT_WAREHOUSE_CODE,
           location: "",
           remarks: "",
+          ...defaultGrnLineCustomsFields(),
         };
       }
       setGrnLineEdits(init);
+      setGrnCustoms(emptyGrnCustomsState());
     },
     onError: (e) => {
       setGrnPoSnapshot(null);
@@ -394,8 +405,10 @@ export default function StoreModule() {
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
       qc.invalidateQueries({ queryKey: ["store-purchase-orders"] });
+      qc.invalidateQueries({ queryKey: ["customs-stock"] });
       const pid = grnPoSnapshot?.header?._id;
       setGrnLineEdits({});
+      setGrnCustoms(emptyGrnCustomsState());
       if (pid) loadGrnPoMut.mutate(String(pid));
       setGrnUiErr(data?.grnNo ? `Posted ${data.grnNo}` : "GRN posted.");
     },
@@ -1197,7 +1210,16 @@ export default function StoreModule() {
       {tab === "GRN" ? (
         <div className="space-y-4">
           <div className="rounded-2xl border bg-white p-4">
-            <h3 className="mb-2 text-sm font-semibold text-slate-800">GRN from purchase order</h3>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-slate-800">GRN from purchase order</h3>
+              <button
+                type="button"
+                className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                onClick={() => setCustomsStockOpen(true)}
+              >
+                View Customs Stock
+              </button>
+            </div>
             <div className="flex flex-wrap items-end gap-2">
               <select
                 className="min-w-[260px] rounded border px-3 py-2 text-sm"
@@ -1206,6 +1228,7 @@ export default function StoreModule() {
                   setGrnPoId(e.target.value);
                   setGrnPoSnapshot(null);
                   setGrnLineEdits({});
+                  setGrnCustoms(emptyGrnCustomsState());
                   setGrnUiErr("");
                 }}
               >
@@ -1381,7 +1404,7 @@ export default function StoreModule() {
                   />
                 </div>
                 <div className="mt-3 overflow-auto rounded border border-slate-200">
-                  <table className="w-full min-w-[1000px] text-xs">
+                  <table className="w-full min-w-[1400px] text-xs">
                     <thead className="bg-slate-100 text-left text-[11px] uppercase tracking-wide text-slate-600">
                       <tr>
                         <th className="px-2 py-2">Sel</th>
@@ -1396,6 +1419,11 @@ export default function StoreModule() {
                         <th className="px-2 py-2 text-right">GRN qty</th>
                         <th className="px-2 py-2">Location</th>
                         <th className="px-2 py-2">Remarks</th>
+                        <th className="px-2 py-2">HS Code</th>
+                        <th className="px-2 py-2">COO</th>
+                        <th className="px-2 py-2 text-right">Unit Price</th>
+                        <th className="px-2 py-2">Curr</th>
+                        <th className="px-2 py-2 text-right">Wt KG</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1409,6 +1437,7 @@ export default function StoreModule() {
                           warehouse: GRN_DEFAULT_WAREHOUSE_CODE,
                           location: "",
                           remarks: "",
+                          ...defaultGrnLineCustomsFields(),
                         };
                         const pend = Math.max(0, Number(ln.pendingQty) || 0);
                         const qtyNum = Number(ed.grnQty);
@@ -1479,12 +1508,98 @@ export default function StoreModule() {
                                 }
                               />
                             </td>
+                            <td className="px-2 py-1.5">
+                              <input
+                                className="w-20 rounded border px-1 py-0.5 font-mono text-[11px]"
+                                placeholder={grnCustoms.hsCode || "—"}
+                                disabled={pend <= 0 || !selectable}
+                                value={ed.customsHsCode}
+                                onChange={(e) =>
+                                  setGrnLineEdits((p) => ({
+                                    ...p,
+                                    [id]: { ...ed, customsHsCode: e.target.value },
+                                  }))
+                                }
+                              />
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input
+                                className="w-16 rounded border px-1 py-0.5 text-[11px]"
+                                placeholder={grnCustoms.countryOfOrigin || "—"}
+                                disabled={pend <= 0 || !selectable}
+                                value={ed.customsCountryOfOrigin}
+                                onChange={(e) =>
+                                  setGrnLineEdits((p) => ({
+                                    ...p,
+                                    [id]: { ...ed, customsCountryOfOrigin: e.target.value.toUpperCase() },
+                                  }))
+                                }
+                              />
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                className="w-20 rounded border px-1 py-0.5 text-right tabular-nums"
+                                placeholder={grnCustoms.unitPrice || ln.unitCost || "—"}
+                                disabled={pend <= 0 || !selectable}
+                                value={ed.customsUnitPrice}
+                                onChange={(e) =>
+                                  setGrnLineEdits((p) => ({
+                                    ...p,
+                                    [id]: { ...ed, customsUnitPrice: e.target.value },
+                                  }))
+                                }
+                              />
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input
+                                className="w-14 rounded border px-1 py-0.5 text-[11px]"
+                                placeholder={grnCustoms.currency || grnPoSnapshot?.header?.currency || "USD"}
+                                disabled={pend <= 0 || !selectable}
+                                value={ed.customsCurrency}
+                                onChange={(e) =>
+                                  setGrnLineEdits((p) => ({
+                                    ...p,
+                                    [id]: { ...ed, customsCurrency: e.target.value.toUpperCase() },
+                                  }))
+                                }
+                              />
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                className="w-16 rounded border px-1 py-0.5 text-right tabular-nums"
+                                placeholder={grnCustoms.weightKg || "—"}
+                                disabled={pend <= 0 || !selectable}
+                                value={ed.customsWeightKg}
+                                onChange={(e) =>
+                                  setGrnLineEdits((p) => ({
+                                    ...p,
+                                    [id]: { ...ed, customsWeightKg: e.target.value },
+                                  }))
+                                }
+                              />
+                            </td>
                           </tr>
                         );
                       })}
                     </tbody>
                   </table>
                 </div>
+                <GrnCustomsSection
+                  value={grnCustoms}
+                  onChange={setGrnCustoms}
+                  poId={grnPoSnapshot?.header?._id}
+                  poNo={grnPoSnapshot?.header?.poNo || grnPoSnapshot?.header?.poNumber}
+                  supplierName={grnPoSnapshot?.header?.supplierName}
+                  defaultCurrency={grnPoSnapshot?.header?.currency || "USD"}
+                  disabled={postGrnFromPoMut.isPending}
+                  onError={setGrnUiErr}
+                />
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
@@ -1502,6 +1617,7 @@ export default function StoreModule() {
                         return;
                       }
                       const linesOut = [];
+                      const selectedLines = [];
                       for (const ln of grnLinesForUi) {
                         const id = ln.poLineId != null ? String(ln.poLineId) : "";
                         const ed = grnLineEdits[id];
@@ -1525,6 +1641,7 @@ export default function StoreModule() {
                           setGrnUiErr("Location is required for each selected GRN line.");
                           return;
                         }
+                        selectedLines.push(ln);
                         linesOut.push({
                           poLineId: ln.poLineId,
                           grnQty: q,
@@ -1537,7 +1654,13 @@ export default function StoreModule() {
                         setGrnUiErr("Select at least one line with pending quantity and enter GRN qty.");
                         return;
                       }
-                      postGrnFromPoMut.mutate({
+                      const customsPayload = buildGrnCustomsPayload(
+                        grnCustoms,
+                        grnLineEdits,
+                        selectedLines,
+                        h.currency || "USD"
+                      );
+                      const postBody = {
                         poId: h._id,
                         poNo: h.poNo || h.poNumber,
                         supplierId: h.supplierId,
@@ -1546,7 +1669,9 @@ export default function StoreModule() {
                         branchId: h.branchId || undefined,
                         grnDate: new Date().toISOString().slice(0, 10),
                         lines: linesOut,
-                      });
+                      };
+                      if (customsPayload) postBody.customs = customsPayload;
+                      postGrnFromPoMut.mutate(postBody);
                     }}
                   >
                     {postGrnFromPoMut.isPending ? "Posting GRN..." : "Post GRN"}
@@ -1724,6 +1849,7 @@ export default function StoreModule() {
               </div>
             ) : null}
           </Modal>
+          <GrnCustomsStockModal open={customsStockOpen} onClose={() => setCustomsStockOpen(false)} />
         </div>
       ) : null}
 

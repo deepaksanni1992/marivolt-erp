@@ -1,7 +1,7 @@
 import express from "express";
 import multer from "multer";
 import { requireErpAccess } from "../middleware/erpAccess.js";
-import { requirePermission } from "../middleware/permissions.js";
+import { requirePermission, requireAnyPermission } from "../middleware/permissions.js";
 import { getS3EnvPresence, isS3Configured } from "../config/s3.js";
 import * as doc from "../controllers/documentController.js";
 
@@ -33,17 +33,24 @@ function uploadSingleFile(req, res, next) {
   });
 }
 
-router.post("/upload", reportsCreate, uploadSingleFile, doc.uploadDocument);
+router.post(
+  "/upload",
+  requireAnyPermission(["REPORTS", "create"], ["CUSTOMS", "create"], ["STORE", "create"]),
+  uploadSingleFile,
+  doc.uploadDocument,
+);
 router.get("/", reportsView, doc.listDocuments);
-/** Before /:id — lets the UI show why View/Download may fail on a given server */
 router.get("/s3-status", reportsView, (req, res) => {
   res.json({
     s3Configured: isS3Configured(),
     awsEnvPresence: getS3EnvPresence(),
   });
 });
-/** More specific routes before /:id */
-router.get("/:id/download", reportsExport, doc.downloadDocument);
+router.get(
+  "/:id/download",
+  requireAnyPermission(["REPORTS", "export"], ["CUSTOMS", "view"], ["STORE", "export"]),
+  doc.downloadDocument,
+);
 router.get("/:id", reportsView, doc.getDocument);
 router.delete("/:id", reportsDelete, doc.deleteDocument);
 
