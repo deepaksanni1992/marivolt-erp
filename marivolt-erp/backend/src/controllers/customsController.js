@@ -4,7 +4,7 @@ import CustomsMovement from "../models/CustomsMovement.js";
 import {
   buildCustomsReconciliation,
   customsWithCompanyId,
-  listCustomsStockRows,
+  listCustomsStockPage,
 } from "../services/customsService.js";
 
 function disabled(res) {
@@ -16,27 +16,35 @@ function disabled(res) {
 
 function parsePaging(req) {
   const page = Math.max(1, Number(req.query.page) || 1);
-  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
-  return { page, limit, skip: (page - 1) * limit };
+  const exportAll = String(req.query.exportAll || "").toLowerCase() === "true";
+  const cap = exportAll ? 5000 : 200;
+  const limit = Math.min(cap, Math.max(1, Number(req.query.limit) || 50));
+  return { page, limit, skip: (page - 1) * limit, maxLimit: cap };
+}
+
+function stockFilters(req) {
+  return {
+    search: req.query.search,
+    articleNumber: req.query.articleNumber,
+    partNumber: req.query.partNumber,
+    status: req.query.status,
+    supplier: req.query.supplier,
+    countryOfOrigin: req.query.countryOfOrigin || req.query.coo,
+    dateFrom: req.query.dateFrom,
+    dateTo: req.query.dateTo,
+    companyCode: req.query.companyCode,
+  };
 }
 
 export async function getCustomsStock(req, res) {
   try {
     if (!isCustomsEnabled()) return disabled(res);
-    const rows = await listCustomsStockRows(req.companyId, {
-      search: req.query.search,
-      articleNumber: req.query.articleNumber,
-      partNumber: req.query.partNumber,
-      status: req.query.status,
-    });
-    const { page, limit, skip } = parsePaging(req);
-    const items = rows.slice(skip, skip + limit);
+    const paging = parsePaging(req);
+    const result = await listCustomsStockPage(req.companyId, stockFilters(req), paging);
     res.json({
       enabled: true,
-      items,
-      total: rows.length,
-      page,
-      limit,
+      companyCode: req.companyCode || "",
+      ...result,
     });
   } catch (err) {
     res.status(400).json({ message: err.message || "Failed to load customs stock" });

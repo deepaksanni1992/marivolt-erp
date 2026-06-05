@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../context/AuthContext.jsx";
 import { api, apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
@@ -15,7 +15,6 @@ import {
 } from "../lib/storePackingCsv.js";
 import Modal from "../components/erp/Modal.jsx";
 import GrnCustomsSection from "../components/store/GrnCustomsSection.jsx";
-import GrnCustomsStockModal from "../components/store/GrnCustomsStockModal.jsx";
 import {
   buildGrnCustomsPayload,
   defaultGrnLineCustomsFields,
@@ -245,6 +244,7 @@ function packageTypeLabel(v) {
 
 export default function StoreModule() {
   const { auth } = useAuth();
+  const nav = useNavigate();
   const qc = useQueryClient();
   const [searchParams] = useSearchParams();
   const [tab, setTab] = useState("GRN");
@@ -264,7 +264,6 @@ export default function StoreModule() {
   const [grnUiErr, setGrnUiErr] = useState("");
   const [grnRegisterDetail, setGrnRegisterDetail] = useState(null);
   const [grnCustoms, setGrnCustoms] = useState(emptyGrnCustomsState);
-  const [customsStockOpen, setCustomsStockOpen] = useState(false);
   const grnUrlPoLoadedRef = useRef("");
   const grnCsvInputRef = useRef(null);
   const [packAllocInputId, setPackAllocInputId] = useState("");
@@ -520,6 +519,14 @@ export default function StoreModule() {
       }
     }
   }, [searchParams]);
+
+  useEffect(() => {
+    const grnNo = String(searchParams.get("grnNo") || "").trim().toUpperCase();
+    if (!grnNo) return;
+    setTab("GRN");
+    const found = (grns?.items || []).find((g) => String(g.grnNo || "").toUpperCase() === grnNo);
+    if (found) setGrnRegisterDetail(found);
+  }, [searchParams, grns?.items]);
 
   const { data: packingFromAlloc } = useQuery({
     queryKey: ["packing-from-allocation", packAllocQueryId],
@@ -1215,7 +1222,7 @@ export default function StoreModule() {
               <button
                 type="button"
                 className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
-                onClick={() => setCustomsStockOpen(true)}
+                onClick={() => nav("/customs/stock")}
               >
                 View Customs Stock
               </button>
@@ -1849,7 +1856,6 @@ export default function StoreModule() {
               </div>
             ) : null}
           </Modal>
-          <GrnCustomsStockModal open={customsStockOpen} onClose={() => setCustomsStockOpen(false)} />
         </div>
       ) : null}
 

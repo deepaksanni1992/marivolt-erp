@@ -534,34 +534,148 @@ export async function allocateCustomsStockFIFO({
   return allocations;
 }
 
-/** Aggregate customs stock rows for list/report APIs. */
-export async function listCustomsStockRows(companyId, filters = {}) {
-  const query = withCompanyId(companyId, {});
-  if (filters.articleNumber) query.articleNumber = upper(filters.articleNumber);
-  if (filters.partNumber) query.partNumber = upper(filters.partNumber);
-  if (filters.status) query.status = String(filters.status).toUpperCase();
+function parseStockDateRange(dateFrom, dateTo) {
+  const range = {};
+  const from = parseDate(dateFrom);
+  const to = parseDate(dateTo);
+  if (from) {
+    from.setHours(0, 0, 0, 0);
+    range.$gte = from;
+  }
+  if (to) {
+    to.setHours(23, 59, 59, 999);
+    range.$lte = to;
+  }
+  return Object.keys(range).length ? range : null;
+}
+
+async function buildCustomsStockItemQuery(companyId, filters = {}) {
+  const base = {};
+  if (filters.articleNumber) base.articleNumber = upper(filters.articleNumber);
+  if (filters.partNumber) base.partNumber = upper(filters.partNumber);
+  if (filters.status) base.status = String(filters.status).toUpperCase();
+  if (filters.countryOfOrigin) base.countryOfOrigin = upper(filters.countryOfOrigin);
+
+  const dateRange = parseStockDateRange(filters.dateFrom, filters.dateTo);
+  if (dateRange) base.supplierInvoiceDate = dateRange;
+
+  if (filters.supplier) {
+    const lots = await CustomsLot.find(
+      withCompanyId(companyId, {
+        supplierName: new RegExp(t(filters.supplier), "i"),
+      }),
+    )
+      .select("_id")
+      .lean();
+    const lotIds = lots.map((l) => l._id);
+    base.customsLotId = lotIds.length ? { $in: lotIds } : { $in: [] };
+  }
+
+  if (filters.companyCode) {
+    base.companyCode = upper(filters.companyCode);
+  }
+
   if (filters.search) {
     const s = t(filters.search);
-    query.$or = [
+    base.$or = [
       { boeNumber: new RegExp(s, "i") },
       { blNumber: new RegExp(s, "i") },
       { awbNumber: new RegExp(s, "i") },
       { supplierInvoiceNumber: new RegExp(s, "i") },
       { articleNumber: new RegExp(s, "i") },
       { partNumber: new RegExp(s, "i") },
+      { partName: new RegExp(s, "i") },
       { grnNo: new RegExp(s, "i") },
+      { hsCode: new RegExp(s, "i") },
+      { countryOfOrigin: new RegExp(s, "i") },
     ];
   }
 
-  const items = await CustomsLotItem.find(query)
-    .sort({ supplierInvoiceDate: 1, createdAt: 1 })
-    .lean();
+  return withCompanyId(companyId, base);
+}
 
-  return items.map((row, index) => ({
-    srNo: index + 1,
-    ...row,
-    totalPrice: Number(row.totalValue) || Number(row.qtyImported) * Number(row.unitPrice),
-  }));
+export function mapCustomsStockRow(item, lot, srNo) {
+  const qtyImported = Number(item.qtyImported) || 0;
+  const qtyAvailable = Number(item.qtyAvailable) || 0;
+  const unitPrice = Number(item.unitPrice) || 0;
+  const totalValue = Number(item.totalValue) || qtyImported * unitPrice;
+
+  return {
+    srNo,
+    _id: item._id,
+    customsLotId: item.customsLotId,
+    customsLotRef: item.customsLotRef || lot?.customsLotRef || "",
+    companyCode: item.companyCode || lot?.companyCode || "",
+    boeNumber: item.boeNumber || lot?.boeNumber || "",
+    awbNumber: item.awbNumber || lot?.awbNumber || "",
+    blNumber: item.blNumber || lot?.blNumber || "",
+    date: item.supplierInvoiceDate || lot?.supplierInvoiceDate || null,
+    supplier: lot?.supplierName || "",
+    invoiceNo: item.supplierInvoiceNumber || lot?.supplierInvoiceNumber || "",
+    countryOfOrigin: item.countryOfOrigin || lot?.countryOfOrigin || "",
+    articleNumber: item.articleNumber || "",
+    partName: item.partName || item.description || "",
+    partNumber: item.partNumber || "",
+    hsCode: item.hsCode || "",
+    currency: item.currency || lot?.currency || "USD",
+    unitPrice,
+    qtyImported,
+    weightKg: Number(item.weightKg) || 0,
+    totalValue,
+    customsStock: qtyImported,
+    customsStockBalance: qtyAvailable,
+    remarks1: item.remarks1 || "",
+    remarks2: item.remarks2 || "",
+    status: item.status || "IN_STOCK",
+    grnId: item.grnId || lot?.grnId || null,
+    grnNo: item.grnNo || lot?.grnNo || "",
+    documents: {
+      blDocumentId: lot?.documents?.blDocumentId || null,
+      supplierInvoiceDocumentId: lot?.documents?.supplierInvoiceDocumentId || null,
+    },
+  };
+}
+
+/** Paginated customs stock list with lot metadata for UI / export. */
+export async function listCustomsStockPage(companyId, filters = {}, paging = {}) {
+  const page = Math.max(1, Number(paging.page) || 1);
+  const limit = Math.min(Number(paging.limit) || 50, Number(paging.maxLimit) || 200);
+  const skip = (page - 1) * limit;
+  const query = await buildCustomsStockItemQuery(companyId, filters);
+
+  const [items, total] = await Promise.all([
+    CustomsLotItem.find(query)
+      .sort({ supplierInvoiceDate: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    CustomsLotItem.countDocuments(query),
+  ]);
+
+  const lotIds = [...new Set(items.map((row) => String(row.customsLotId)).filter(Boolean))];
+  const lots = lotIds.length
+    ? await CustomsLot.find({ _id: { $in: lotIds } })
+        .select("supplierName supplierInvoiceNumber supplierInvoiceDate countryOfOrigin currency boeNumber blNumber awbNumber grnId grnNo customsLotRef companyCode documents")
+        .lean()
+    : [];
+  const lotMap = new Map(lots.map((lot) => [String(lot._id), lot]));
+
+  return {
+    items: items.map((row, index) => mapCustomsStockRow(row, lotMap.get(String(row.customsLotId)), skip + index + 1)),
+    total,
+    page,
+    limit,
+  };
+}
+
+/** @deprecated Use listCustomsStockPage — kept for internal callers expecting full list. */
+export async function listCustomsStockRows(companyId, filters = {}) {
+  const { items } = await listCustomsStockPage(companyId, filters, {
+    page: 1,
+    limit: 5000,
+    maxLimit: 5000,
+  });
+  return items;
 }
 
 /** ERP stock vs customs stock by article. */
