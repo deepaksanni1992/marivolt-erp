@@ -41,7 +41,7 @@ const SYSTEM_DEFAULTS = {
   COMPANY_ADMIN: FULL_ACCESS,
   SALES: buildMatrix({
     SALES: ["view", "create", "edit", "approve", "cancel", "export"],
-    CUSTOMS: ["view", "create"],
+    CUSTOMS: ["view", "create", "cancel"],
     REPORTS: READ_ONLY_ACTIONS,
     ITEM_MASTER: ["view", "export"],
     ACCOUNTS: ["view"],
@@ -56,7 +56,7 @@ const SYSTEM_DEFAULTS = {
   }),
   STORE: buildMatrix({
     STORE: ["view", "create", "edit", "approve", "cancel", "export"],
-    CUSTOMS: ["view", "create"],
+    CUSTOMS: ["view", "create", "cancel"],
     ITEM_MASTER: ["view", "export"],
     REPORTS: READ_ONLY_ACTIONS,
     PURCHASE: ["view"],

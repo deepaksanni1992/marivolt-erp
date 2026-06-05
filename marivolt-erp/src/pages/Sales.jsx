@@ -21,6 +21,7 @@ import {
 import { useAuth } from "../context/AuthContext.jsx";
 import { getReportBranding } from "../lib/reportBranding.js";
 import { renderRtsPackingListPrintWindow } from "../lib/rtsPackingListPrint.js";
+import SalesCustomsInvoicePanel from "../components/customs/SalesCustomsInvoicePanel.jsx";
 import { deliverReportHtml, downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 import {
   buildColgroupHtml,
@@ -6794,6 +6795,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 </div>
               </div>
               <div className="text-xs text-gray-600">Linked PI: {salesInvoiceDetail.linkedProformaNo || "-"} | Linked OA: {salesInvoiceDetail.linkedOANo || "-"}</div>
+              <SalesCustomsInvoicePanel salesInvoice={salesInvoiceDetail} />
               <div className="overflow-x-auto rounded-xl border">
                 <table className="min-w-full text-sm">
                   <thead className="bg-gray-100 text-xs uppercase tracking-wide text-gray-600">

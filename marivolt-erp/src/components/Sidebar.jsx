@@ -22,6 +22,7 @@ const customsGroup = {
   items: [
     { to: "/customs/stock", label: "Customs Stock" },
     { to: "/customs/ledger", label: "Customs Stock Ledger" },
+    { to: "/customs/invoices", label: "Customs Invoice" },
   ],
 };
 
