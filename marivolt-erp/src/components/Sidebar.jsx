@@ -19,7 +19,10 @@ const flatLinks = [
 
 const customsGroup = {
   label: "Customs",
-  items: [{ to: "/customs/stock", label: "Customs Stock" }],
+  items: [
+    { to: "/customs/stock", label: "Customs Stock" },
+    { to: "/customs/ledger", label: "Customs Stock Ledger" },
+  ],
 };
 
 function linkClass(isActive) {

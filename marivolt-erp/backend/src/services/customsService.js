@@ -678,6 +678,167 @@ export async function listCustomsStockRows(companyId, filters = {}) {
   return items;
 }
 
+function deriveQtyInOut(movement = {}) {
+  const qty = Number(movement.qty) || 0;
+  const type = String(movement.movementType || "").toUpperCase();
+  if (type === "INBOUND") return { qtyIn: qty, qtyOut: 0 };
+  if (type === "OUTBOUND" || type === "REVERSAL") return { qtyIn: 0, qtyOut: qty };
+  if (type === "ADJUSTMENT") {
+    if (qty < 0) return { qtyIn: 0, qtyOut: Math.abs(qty) };
+    return { qtyIn: qty, qtyOut: 0 };
+  }
+  return { qtyIn: 0, qtyOut: 0 };
+}
+
+async function buildCustomsLedgerQuery(companyId, filters = {}) {
+  const base = {};
+  if (filters.articleNumber) base.articleNumber = upper(filters.articleNumber);
+  if (filters.partNumber) base.partNumber = upper(filters.partNumber);
+  if (filters.movementType) base.movementType = upper(filters.movementType);
+  if (filters.referenceType) base.referenceType = upper(filters.referenceType);
+
+  const dateRange = parseStockDateRange(filters.dateFrom, filters.dateTo);
+  if (dateRange) base.movementDate = dateRange;
+
+  const lotPredicates = [];
+  if (filters.supplier) lotPredicates.push({ supplierName: new RegExp(t(filters.supplier), "i") });
+  if (filters.boeNumber) lotPredicates.push({ boeNumber: new RegExp(t(filters.boeNumber), "i") });
+  if (filters.blNumber) lotPredicates.push({ blNumber: new RegExp(t(filters.blNumber), "i") });
+  if (filters.awbNumber) lotPredicates.push({ awbNumber: new RegExp(t(filters.awbNumber), "i") });
+
+  if (lotPredicates.length) {
+    const lotFilter = withCompanyId(companyId, lotPredicates.length === 1 ? lotPredicates[0] : { $and: lotPredicates });
+    const lots = await CustomsLot.find(lotFilter).select("_id").lean();
+    base.customsLotId = { $in: lots.map((l) => l._id) };
+    if (!lots.length) base.customsLotId = { $in: [] };
+  }
+
+  if (filters.search) {
+    const s = t(filters.search);
+    base.$or = [
+      { referenceNumber: new RegExp(s, "i") },
+      { articleNumber: new RegExp(s, "i") },
+      { partNumber: new RegExp(s, "i") },
+      { remarks: new RegExp(s, "i") },
+      { createdBy: new RegExp(s, "i") },
+    ];
+  }
+
+  return withCompanyId(companyId, base);
+}
+
+async function computeOpeningBalances(companyId, filters = {}, beforeDate) {
+  const q = await buildCustomsLedgerQuery(companyId, {
+    ...filters,
+    dateFrom: undefined,
+    dateTo: undefined,
+  });
+  const cutoff = parseDate(beforeDate);
+  if (cutoff) {
+    cutoff.setHours(0, 0, 0, 0);
+    q.movementDate = { ...(q.movementDate || {}), $lt: cutoff };
+  }
+  const prior = await CustomsMovement.find(q).sort({ movementDate: 1, createdAt: 1 }).lean();
+  const balances = new Map();
+  for (const movement of prior) {
+    const key = String(movement.customsLotItemId || "");
+    const { qtyIn, qtyOut } = deriveQtyInOut(movement);
+    balances.set(key, (Number(balances.get(key)) || 0) + qtyIn - qtyOut);
+  }
+  return balances;
+}
+
+export function mapCustomsLedgerRow(movement, lot, item, balanceAfter, srNo) {
+  const { qtyIn, qtyOut } = deriveQtyInOut(movement);
+  return {
+    srNo,
+    _id: movement._id,
+    date: movement.movementDate || movement.createdAt,
+    movementType: movement.movementType,
+    company: movement.companyCode || lot?.companyCode || item?.companyCode || "",
+    articleNumber: movement.articleNumber || item?.articleNumber || "",
+    partNumber: movement.partNumber || item?.partNumber || "",
+    partName: item?.partName || item?.description || "",
+    boeNumber: item?.boeNumber || lot?.boeNumber || "",
+    blNumber: item?.blNumber || lot?.blNumber || "",
+    awbNumber: item?.awbNumber || lot?.awbNumber || "",
+    supplierInvoiceNumber: item?.supplierInvoiceNumber || lot?.supplierInvoiceNumber || "",
+    supplier: lot?.supplierName || "",
+    qtyIn,
+    qtyOut,
+    balance: balanceAfter,
+    referenceType: movement.referenceType,
+    referenceNumber: movement.referenceNumber || "",
+    user: movement.createdBy || "",
+    remarks: movement.remarks || "",
+    customsLotItemId: movement.customsLotItemId,
+    customsLotId: movement.customsLotId,
+  };
+}
+
+/** Paginated customs stock ledger from CustomsMovement with running balance per lot item. */
+export async function listCustomsLedgerPage(companyId, filters = {}, paging = {}) {
+  const page = Math.max(1, Number(paging.page) || 1);
+  const limit = Math.min(Number(paging.limit) || 50, Number(paging.maxLimit) || 200);
+  const query = await buildCustomsLedgerQuery(companyId, filters);
+
+  const movements = await CustomsMovement.find(query)
+    .sort({ movementDate: 1, createdAt: 1 })
+    .lean();
+
+  const lotIds = [...new Set(movements.map((m) => String(m.customsLotId)).filter(Boolean))];
+  const itemIds = [...new Set(movements.map((m) => String(m.customsLotItemId)).filter(Boolean))];
+
+  const [lots, items] = await Promise.all([
+    lotIds.length
+      ? CustomsLot.find({ _id: { $in: lotIds } })
+          .select(
+            "supplierName supplierInvoiceNumber boeNumber blNumber awbNumber companyCode grnNo customsLotRef",
+          )
+          .lean()
+      : [],
+    itemIds.length
+      ? CustomsLotItem.find({ _id: { $in: itemIds } })
+          .select("articleNumber partNumber partName description boeNumber blNumber awbNumber supplierInvoiceNumber companyCode")
+          .lean()
+      : [],
+  ]);
+
+  const lotMap = new Map(lots.map((lot) => [String(lot._id), lot]));
+  const itemMap = new Map(items.map((item) => [String(item._id), item]));
+  const balanceByItem = filters.dateFrom
+    ? await computeOpeningBalances(companyId, filters, filters.dateFrom)
+    : new Map();
+
+  const enriched = movements.map((movement, index) => {
+    const itemKey = String(movement.customsLotItemId || "");
+    const lot = lotMap.get(String(movement.customsLotId));
+    const item = itemMap.get(itemKey);
+    const { qtyIn, qtyOut } = deriveQtyInOut(movement);
+    const prev = Number(balanceByItem.get(itemKey)) || 0;
+    const nextBalance = prev + qtyIn - qtyOut;
+    balanceByItem.set(itemKey, nextBalance);
+    return mapCustomsLedgerRow(movement, lot, item, nextBalance, index + 1);
+  });
+
+  enriched.sort((a, b) => {
+    const da = new Date(a.date).getTime();
+    const db = new Date(b.date).getTime();
+    if (db !== da) return db - da;
+    return String(b._id).localeCompare(String(a._id));
+  });
+
+  enriched.forEach((row, idx) => {
+    row.srNo = idx + 1;
+  });
+
+  const total = enriched.length;
+  const skip = (page - 1) * limit;
+  const pageItems = enriched.slice(skip, skip + limit);
+
+  return { items: pageItems, total, page, limit };
+}
+
 /** ERP stock vs customs stock by article. */
 export async function buildCustomsReconciliation(companyId) {
   const customsAgg = await CustomsLotItem.aggregate([

@@ -4,6 +4,7 @@ import CustomsMovement from "../models/CustomsMovement.js";
 import {
   buildCustomsReconciliation,
   customsWithCompanyId,
+  listCustomsLedgerPage,
   listCustomsStockPage,
 } from "../services/customsService.js";
 
@@ -34,6 +35,37 @@ function stockFilters(req) {
     dateTo: req.query.dateTo,
     companyCode: req.query.companyCode,
   };
+}
+
+function ledgerFilters(req) {
+  return {
+    search: req.query.search,
+    articleNumber: req.query.articleNumber || req.query.article,
+    partNumber: req.query.partNumber,
+    supplier: req.query.supplier,
+    boeNumber: req.query.boeNumber || req.query.boe,
+    blNumber: req.query.blNumber || req.query.bl,
+    awbNumber: req.query.awbNumber || req.query.awb,
+    movementType: req.query.movementType,
+    referenceType: req.query.referenceType,
+    dateFrom: req.query.dateFrom,
+    dateTo: req.query.dateTo,
+  };
+}
+
+export async function getCustomsLedger(req, res) {
+  try {
+    if (!isCustomsEnabled()) return disabled(res);
+    const paging = parsePaging(req);
+    const result = await listCustomsLedgerPage(req.companyId, ledgerFilters(req), paging);
+    res.json({
+      enabled: true,
+      companyCode: req.companyCode || "",
+      ...result,
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to load customs ledger" });
+  }
 }
 
 export async function getCustomsStock(req, res) {
