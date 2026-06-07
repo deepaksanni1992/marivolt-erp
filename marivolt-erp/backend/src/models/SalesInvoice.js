@@ -92,11 +92,10 @@ const salesInvoiceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-salesInvoiceSchema.pre("validate", function syncInvoiceNumber(next) {
+salesInvoiceSchema.pre("validate", function syncInvoiceNumber() {
   const invoiceNo = String(this.invoiceNo || this.invoiceNumber || "").trim();
   this.invoiceNo = invoiceNo;
   this.invoiceNumber = invoiceNo;
-  next();
 });
 
 salesInvoiceSchema.index({ companyId: 1, invoiceNo: 1 }, { unique: true });
