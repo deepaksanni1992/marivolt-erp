@@ -464,6 +464,36 @@ export async function createCustomsMovement({
   return rows[0];
 }
 
+function hasValidSupplierInvoiceDate(item) {
+  const raw = item?.supplierInvoiceDate;
+  if (raw == null || raw === "") return false;
+  const d = raw instanceof Date ? raw : new Date(raw);
+  return !Number.isNaN(d.getTime());
+}
+
+/** FIFO: dated lots first (oldest invoice date), null dates last, then createdAt, then customsLotRef. */
+export function compareCustomsFifoOrder(a, b) {
+  const aDated = hasValidSupplierInvoiceDate(a);
+  const bDated = hasValidSupplierInvoiceDate(b);
+  if (aDated !== bDated) return aDated ? -1 : 1;
+
+  if (aDated && bDated) {
+    const ad = new Date(a.supplierInvoiceDate).getTime();
+    const bd = new Date(b.supplierInvoiceDate).getTime();
+    if (ad !== bd) return ad - bd;
+  }
+
+  const ac = new Date(a?.createdAt || 0).getTime();
+  const bc = new Date(b?.createdAt || 0).getTime();
+  if (ac !== bc) return ac - bc;
+
+  return String(a?.customsLotRef || "").localeCompare(String(b?.customsLotRef || ""));
+}
+
+export function sortCustomsLotsForFifo(items = []) {
+  return [...items].sort(compareCustomsFifoOrder);
+}
+
 /**
  * List available customs lot items for an article (FIFO order).
  */
@@ -481,11 +511,11 @@ export async function getAvailableCustomsLots({
   });
   if (partNumber) filter.partNumber = upper(partNumber);
 
-  const q = CustomsLotItem.find(filter)
-    .sort({ supplierInvoiceDate: 1, createdAt: 1 })
-    .limit(Math.min(Number(limit) || 100, 500));
+  const cap = Math.min(Number(limit) || 100, 500);
+  const q = CustomsLotItem.find(filter).limit(cap);
   if (session) q.session(session);
-  return q.lean();
+  const rows = await q.lean();
+  return sortCustomsLotsForFifo(rows);
 }
 
 /**
