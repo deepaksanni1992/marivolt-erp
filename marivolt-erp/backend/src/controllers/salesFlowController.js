@@ -2401,7 +2401,7 @@ export async function listPackingsReadyForInvoice(req, res) {
   try {
     const q = String(req.query.search || "").trim();
     const filter = withCompany(req, {
-      status: { $in: POSTED_STORE_PACKING_STATUSES },
+      status: "FULLY_PACKED",
       invoiceStatus: { $ne: "FULLY_INVOICED" },
     });
     if (q) {
@@ -2422,6 +2422,7 @@ export async function listPackingsReadyForInvoice(req, res) {
       if (pendingInvoiceQty <= 0) continue;
       items.push({
         _id: packing._id,
+        allocationId: packing.allocationId,
         packingNo: packing.packingNo,
         customerName: packing.customerName,
         allocationNo: packing.allocationNo,
@@ -2448,8 +2449,11 @@ export async function getPackingInvoicePreview(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid packing id" });
     const packing = await StorePacking.findOne(withCompany(req, { _id: id })).lean();
     if (!packing) return res.status(404).json({ message: "Packing not found" });
-    if (!POSTED_STORE_PACKING_STATUSES.includes(String(packing.status || "").toUpperCase())) {
-      return res.status(400).json({ message: "Packing must be completed before creating Sales Invoice" });
+    if (String(packing.invoiceStatus || "").toUpperCase() === "FULLY_INVOICED") {
+      return res.status(400).json({ message: "Sales invoice already created for this packing" });
+    }
+    if (String(packing.status || "").toUpperCase() !== "FULLY_PACKED") {
+      return res.status(400).json({ message: "Packing must be FULLY_PACKED before creating Sales Invoice" });
     }
     const allocation = await OrderAllocation.findOne(withCompany(req, { _id: packing.allocationId })).lean();
     const invoicedByLine = await invoicedQtyByPackingLine(req.companyId, packing._id);
@@ -2477,11 +2481,14 @@ export async function convertPackingToSalesInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid packing id" });
     const packingPre = await StorePacking.findOne(withCompany(req, { _id: id })).lean();
     if (!packingPre) return res.status(404).json({ message: "Packing not found" });
+    if (String(packingPre.invoiceStatus || "").toUpperCase() === "FULLY_INVOICED") {
+      return res.status(400).json({ message: "Sales invoice already created for this packing" });
+    }
     if (String(packingPre.status || "").toUpperCase() === "CANCELLED") {
       return res.status(400).json({ message: "Cannot invoice cancelled packing" });
     }
-    if (!POSTED_STORE_PACKING_STATUSES.includes(String(packingPre.status || "").toUpperCase())) {
-      return res.status(400).json({ message: "Packing must be completed before creating Sales Invoice" });
+    if (String(packingPre.status || "").toUpperCase() !== "FULLY_PACKED") {
+      return res.status(400).json({ message: "Packing must be FULLY_PACKED before creating Sales Invoice" });
     }
     const allocationPre = await OrderAllocation.findOne(withCompany(req, { _id: packingPre.allocationId })).lean();
     if (!allocationPre) return res.status(404).json({ message: "Linked allocation not found" });
@@ -2527,9 +2534,12 @@ export async function convertPackingToSalesInvoice(req, res) {
     await withTransaction(async (session) => {
       const packing = await StorePacking.findOne(withCompany(req, { _id: id })).session(session);
       if (!packing) throw new Error("Packing not found");
+      if (String(packing.invoiceStatus || "").toUpperCase() === "FULLY_INVOICED") {
+        throw new Error("Sales invoice already created for this packing");
+      }
       if (String(packing.status || "").toUpperCase() === "CANCELLED") throw new Error("Cannot invoice cancelled packing");
-      if (!POSTED_STORE_PACKING_STATUSES.includes(String(packing.status || "").toUpperCase())) {
-        throw new Error("Packing must be completed before creating Sales Invoice");
+      if (String(packing.status || "").toUpperCase() !== "FULLY_PACKED") {
+        throw new Error("Packing must be FULLY_PACKED before creating Sales Invoice");
       }
       const allocation = await OrderAllocation.findOne(withCompany(req, { _id: packing.allocationId })).session(session);
       if (!allocation) throw new Error("Linked allocation not found");

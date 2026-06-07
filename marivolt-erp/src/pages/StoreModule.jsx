@@ -14,6 +14,7 @@ import {
   mapImportPackagesToUi,
 } from "../lib/storePackingCsv.js";
 import Modal from "../components/erp/Modal.jsx";
+import CreateInvoiceFromPackingModal, { packingReadyForSalesInvoice } from "../components/sales/CreateInvoiceFromPackingModal.jsx";
 import GrnCustomsSection from "../components/store/GrnCustomsSection.jsx";
 import {
   buildGrnCustomsPayload,
@@ -274,6 +275,9 @@ export default function StoreModule() {
   const [packCsvPreview, setPackCsvPreview] = useState(null);
   const packCsvInputRef = useRef(null);
   const [packingStatusFilter, setPackingStatusFilter] = useState("");
+  const [packInvoiceModalOpen, setPackInvoiceModalOpen] = useState(false);
+  const [packInvoicePresetId, setPackInvoicePresetId] = useState("");
+  const [packInvoiceUiMsg, setPackInvoiceUiMsg] = useState("");
   const [dispatchPackInputId, setDispatchPackInputId] = useState("");
   const [dispatchPackQueryId, setDispatchPackQueryId] = useState("");
   const [dispatchLineQty, setDispatchLineQty] = useState({});
@@ -3311,6 +3315,11 @@ export default function StoreModule() {
                 ))}
               </div>
             </div>
+            {packInvoiceUiMsg ? (
+              <p className={`mb-2 text-xs ${packInvoiceUiMsg.startsWith("Created") ? "text-emerald-700" : "text-rose-700"}`}>
+                {packInvoiceUiMsg}
+              </p>
+            ) : null}
             <div className="overflow-auto">
               <table className="w-full text-sm">
                 <thead className="bg-slate-100 text-xs uppercase text-slate-600">
@@ -3382,9 +3391,20 @@ export default function StoreModule() {
                                 Cancel
                               </button>
                             </>
-                          ) : (
-                            <span className="text-xs text-slate-400">—</span>
-                          )}
+                          ) : null}
+                          {packingReadyForSalesInvoice(p) ? (
+                            <button
+                              type="button"
+                              className="rounded border px-2 py-0.5 text-xs text-sky-800 hover:bg-sky-50"
+                              onClick={() => {
+                                setPackInvoiceUiMsg("");
+                                setPackInvoicePresetId(p._id);
+                                setPackInvoiceModalOpen(true);
+                              }}
+                            >
+                              Create Invoice
+                            </button>
+                          ) : null}
                           </span>
                         </td>
                       </tr>
@@ -4016,6 +4036,22 @@ export default function StoreModule() {
           </div>
         </div>
       </Modal>
+
+      <CreateInvoiceFromPackingModal
+        open={packInvoiceModalOpen}
+        onClose={() => {
+          setPackInvoiceModalOpen(false);
+          setPackInvoicePresetId("");
+        }}
+        initialPackingId={packInvoicePresetId}
+        onError={(msg) => setPackInvoiceUiMsg(msg || "Failed to create sales invoice")}
+        onCreated={(doc) => {
+          qc.invalidateQueries({ queryKey: ["store-packing"] });
+          if (doc?.invoiceNo) {
+            setPackInvoiceUiMsg(`Created sales invoice ${doc.invoiceNo}. View it under Sales → Sales Invoice.`);
+          }
+        }}
+      />
     </div>
   );
 }

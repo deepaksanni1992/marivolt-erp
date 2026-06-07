@@ -22,6 +22,7 @@ import { useAuth } from "../context/AuthContext.jsx";
 import { getReportBranding } from "../lib/reportBranding.js";
 import { renderRtsPackingListPrintWindow } from "../lib/rtsPackingListPrint.js";
 import SalesCustomsInvoicePanel from "../components/customs/SalesCustomsInvoicePanel.jsx";
+import CreateInvoiceFromPackingModal from "../components/sales/CreateInvoiceFromPackingModal.jsx";
 import { deliverReportHtml, downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 import {
   buildColgroupHtml,
@@ -1482,6 +1483,8 @@ export default function Sales() {
   const [oaCreateOpen, setOaCreateOpen] = useState(false);
   const [proformaCreateOpen, setProformaCreateOpen] = useState(false);
   const [salesInvoiceCreateOpen, setSalesInvoiceCreateOpen] = useState(false);
+  const [packingInvoiceModalOpen, setPackingInvoiceModalOpen] = useState(false);
+  const [packingInvoicePresetId, setPackingInvoicePresetId] = useState("");
   const [ciplCreateOpen, setCiplCreateOpen] = useState(false);
   const [err, setErr] = useState("");
   /** { open, kind: "SI"|"ALC"|"RTS"|"OA"|"PI", id, reason, preview, step: "form"|"confirm" } */
@@ -1650,8 +1653,18 @@ export default function Sales() {
       apiGetWithQuery("/sales/sales-invoices/packings/ready", {
         search: search || undefined,
       }),
-    enabled: activeTab === "Sales Invoice",
+    enabled:
+      activeTab === "Sales Invoice" ||
+      activeTab === "Order Acknowledgement" ||
+      activeTab === "Order Allocation" ||
+      packingInvoiceModalOpen,
   });
+
+  const openPackingInvoiceModal = useCallback((packingId = "") => {
+    setErr("");
+    setPackingInvoicePresetId(packingId || "");
+    setPackingInvoiceModalOpen(true);
+  }, []);
 
   const { data: salesDispatchData, isLoading: legacySalesDispatchLoading } = useQuery({
     queryKey: ["sales-sales-dispatch", page, search],
@@ -2859,16 +2872,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
     onError: (e) => setErr(e.message),
   });
 
-  const createSalesInvoiceFromPackingMutation = useMutation({
-    mutationFn: (packingId) => apiPost(`/sales/sales-invoices/from-packing/${packingId}`, {}),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
-      qc.invalidateQueries({ queryKey: ["sales-packings-ready-invoice"] });
-      qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
-    },
-    onError: (e) => setErr(e.message),
-  });
-
   const createCiplMutation = useMutation({
     mutationFn: () => apiPost("/sales/cipls", ciplForm),
     onSuccess: () => {
@@ -2893,6 +2896,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
   const proformaRows = proformaData?.items ?? [];
   const allocationRows = allocationData?.items ?? [];
   const salesInvoiceRows = salesInvoiceData?.items ?? [];
+  const readyPackingInvoiceRows = readyPackingInvoiceData?.items ?? [];
   const salesDispatchRows =
     activeTab === "Dispatch Status" ? dispatchStatusData?.items ?? [] : salesDispatchData?.items ?? [];
   const salesDispatchLoading =
@@ -2938,8 +2942,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
             disabled={
               activeTab === "Order Allocation" ||
               activeTab === "Reports" ||
-              activeTab === "Dispatch Status" ||
-              activeTab === "Sales Invoice"
+              activeTab === "Dispatch Status"
             }
             onClick={() => {
               setErr("");
@@ -2950,7 +2953,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               }
               else if (activeTab === "Order Acknowledgement") setOaCreateOpen(true);
               else if (activeTab === "Proforma Invoice") setProformaCreateOpen(true);
-              else if (activeTab === "Sales Invoice") setSalesInvoiceCreateOpen(true);
+              else if (activeTab === "Sales Invoice") openPackingInvoiceModal();
               else if (activeTab === "Sales Return") setSrCreateOpen(true);
             }}
             className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
@@ -4123,7 +4126,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
                 <h3 className="text-sm font-semibold">Ready for Invoice</h3>
-                <p className="text-xs text-gray-500">Posted packing documents with pending invoice quantity.</p>
+                <p className="text-xs text-gray-500">Fully packed documents with pending invoice quantity.</p>
               </div>
               <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200">
                 Packing → Sales Invoice
@@ -4170,8 +4173,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                           <button
                             type="button"
                             className="rounded-lg border px-2 py-1 text-xs"
-                            disabled={createSalesInvoiceFromPackingMutation.isPending}
-                            onClick={() => createSalesInvoiceFromPackingMutation.mutate(p._id)}
+                            onClick={() => openPackingInvoiceModal(p._id)}
                           >
                             Create Invoice
                           </button>
@@ -4573,7 +4575,15 @@ ${GLOBAL_REPORT_TABLE_CSS}
                       </td>
                     </tr>
                   ) : (
-                    allocationRows.map((r) => (
+                    allocationRows.map((r) => {
+                      const readyPacking = readyPackingInvoiceRows.find(
+                        (p) => String(p.allocationId) === String(r._id),
+                      );
+                      const canCreateInvoiceFromPacking =
+                        String(r.packingStatus || "").toUpperCase() === "FULLY_PACKED" &&
+                        String(r.invoiceStatus || "NOT_INVOICED").toUpperCase() !== "FULLY_INVOICED" &&
+                        !!readyPacking;
+                      return (
                       <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
                         <td className="px-3 py-2 font-mono text-xs">{r.allocationNo}</td>
                         <td className="px-3 py-2">{r.allocationDate ? new Date(r.allocationDate).toLocaleDateString() : "-"}</td>
@@ -4672,10 +4682,20 @@ ${GLOBAL_REPORT_TABLE_CSS}
                             >
                               Export CSV
                             </button>
+                            {canCreateInvoiceFromPacking ? (
+                              <button
+                                type="button"
+                                className="rounded-lg border px-2 py-1 text-xs"
+                                onClick={() => openPackingInvoiceModal(readyPacking._id)}
+                              >
+                                Create Invoice
+                              </button>
+                            ) : null}
                           </div>
                         </td>
                       </tr>
-                    ))
+                    );
+                    })
                   )}
                 </tbody>
               </table>
@@ -4728,6 +4748,53 @@ ${GLOBAL_REPORT_TABLE_CSS}
             >
               Export CSV
             </button>
+          </div>
+          <div className="mb-3 rounded-2xl border bg-white p-3 shadow-sm">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-semibold">Ready for Invoice</h3>
+                <p className="text-xs text-gray-500">Fully packed documents not yet invoiced.</p>
+              </div>
+              <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openPackingInvoiceModal()}>
+                Create from Packing
+              </button>
+            </div>
+            <div className="max-h-48 overflow-auto">
+              <table className="min-w-full text-left text-xs">
+                <thead className="bg-gray-100 uppercase text-gray-600">
+                  <tr>
+                    <th className="px-2 py-2">Packing No</th>
+                    <th className="px-2 py-2">Customer</th>
+                    <th className="px-2 py-2">Allocation</th>
+                    <th className="px-2 py-2 text-right">Pending</th>
+                    <th className="px-2 py-2 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {readyPackingInvoiceRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-2 py-4 text-center text-gray-500">
+                        No fully packed documents ready for invoice.
+                      </td>
+                    </tr>
+                  ) : (
+                    readyPackingInvoiceRows.map((p) => (
+                      <tr key={p._id} className="border-t">
+                        <td className="px-2 py-2 font-mono">{p.packingNo}</td>
+                        <td className="px-2 py-2">{p.customerName}</td>
+                        <td className="px-2 py-2 font-mono">{p.allocationNo}</td>
+                        <td className="px-2 py-2 text-right">{p.pendingInvoiceQty}</td>
+                        <td className="px-2 py-2 text-right">
+                          <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openPackingInvoiceModal(p._id)}>
+                            Create Invoice
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
@@ -8626,6 +8693,22 @@ ${GLOBAL_REPORT_TABLE_CSS}
           </button>
         </div>
       </Modal>
+
+      <CreateInvoiceFromPackingModal
+        open={packingInvoiceModalOpen}
+        onClose={() => {
+          setPackingInvoiceModalOpen(false);
+          setPackingInvoicePresetId("");
+        }}
+        initialPackingId={packingInvoicePresetId}
+        onError={setErr}
+        onCreated={(doc) => {
+          if (doc?._id) {
+            setDetailId(doc._id);
+            setActiveTab("Sales Invoice");
+          }
+        }}
+      />
     </div>
   );
 }
