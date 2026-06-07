@@ -69,7 +69,7 @@ const SYSTEM_DEFAULTS = {
   }),
   ACCOUNTS: buildMatrix({
     ACCOUNTS: ["view", "create", "edit", "approve", "cancel", "export"],
-    CUSTOMS: ["view", "export", "reconcile"],
+    CUSTOMS: ["view", "export", "reconcile", "reconciliation_view", "reconciliation_export"],
     REPORTS: READ_ONLY_ACTIONS,
     SALES: ["view"],
   }),

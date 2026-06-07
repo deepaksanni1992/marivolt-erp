@@ -869,57 +869,6 @@ export async function listCustomsLedgerPage(companyId, filters = {}, paging = {}
   return { items: pageItems, total, page, limit };
 }
 
-/** ERP stock vs customs stock by article. */
-export async function buildCustomsReconciliation(companyId) {
-  const customsAgg = await CustomsLotItem.aggregate([
-    { $match: withCompanyId(companyId, { status: { $ne: "CANCELLED" } }) },
-    {
-      $group: {
-        _id: { article: "$articleNumber", partNumber: "$partNumber" },
-        customsStock: { $sum: "$qtyAvailable" },
-      },
-    },
-  ]);
-
-  const erpAgg = await StockBalance.aggregate([
-    { $match: withCompanyId(companyId, {}) },
-    {
-      $group: {
-        _id: { article: "$article", partNumber: "$itemCode" },
-        erpStock: { $sum: { $ifNull: ["$availableQty", "$quantity"] } },
-      },
-    },
-  ]);
-
-  const map = new Map();
-  for (const row of erpAgg) {
-    const key = `${row._id.article || ""}::${row._id.partNumber || ""}`;
-    map.set(key, {
-      article: row._id.article || "",
-      partNumber: row._id.partNumber || "",
-      erpStock: Number(row.erpStock) || 0,
-      customsStock: 0,
-    });
-  }
-  for (const row of customsAgg) {
-    const key = `${row._id.article || ""}::${row._id.partNumber || ""}`;
-    const existing = map.get(key) || {
-      article: row._id.article || "",
-      partNumber: row._id.partNumber || "",
-      erpStock: 0,
-      customsStock: 0,
-    };
-    existing.customsStock = Number(row.customsStock) || 0;
-    map.set(key, existing);
-  }
-
-  return [...map.values()]
-    .map((row) => ({
-      ...row,
-      difference: Number(row.erpStock) - Number(row.customsStock),
-      actionRequired: Math.abs(Number(row.erpStock) - Number(row.customsStock)) > 0.0001,
-    }))
-    .sort((a, b) => Math.abs(b.difference) - Math.abs(a.difference));
-}
+export { buildCustomsReconciliation } from "./customsReconciliationService.js";
 
 export { withCompanyId as customsWithCompanyId };

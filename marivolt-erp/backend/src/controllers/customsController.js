@@ -1,12 +1,16 @@
 import { isCustomsEnabled } from "../config/customsConfig.js";
 import CustomsLot from "../models/CustomsLot.js";
 import CustomsMovement from "../models/CustomsMovement.js";
+import { hasPermission } from "../services/roleService.js";
 import {
-  buildCustomsReconciliation,
   customsWithCompanyId,
   listCustomsLedgerPage,
   listCustomsStockPage,
 } from "../services/customsService.js";
+import {
+  getCustomsReconciliationDetail,
+  listCustomsReconciliationPage,
+} from "../services/customsReconciliationService.js";
 
 function disabled(res) {
   return res.status(404).json({
@@ -131,19 +135,64 @@ export async function listCustomsMovements(req, res) {
   }
 }
 
+function reconciliationFilters(req) {
+  return {
+    search: req.query.search,
+    article: req.query.article || req.query.articleNumber,
+    partNumber: req.query.partNumber,
+    supplier: req.query.supplier,
+    boe: req.query.boe || req.query.boeNumber,
+    bl: req.query.bl || req.query.blNumber,
+    awb: req.query.awb || req.query.awbNumber,
+    status: req.query.status,
+    dateFrom: req.query.dateFrom,
+    dateTo: req.query.dateTo,
+    onlyMismatches: req.query.onlyMismatches || req.query.onlyMismatch,
+  };
+}
+
 export async function getCustomsReconciliation(req, res) {
   try {
     if (!isCustomsEnabled()) return disabled(res);
-    const rows = await buildCustomsReconciliation(req.companyId);
-    const mismatches = rows.filter((r) => r.actionRequired);
+    const exportAll = String(req.query.exportAll || "").toLowerCase() === "true";
+    if (exportAll) {
+      const canExport =
+        (await hasPermission(req, "CUSTOMS", "reconciliation_export")) ||
+        (await hasPermission(req, "CUSTOMS", "reconcile")) ||
+        (await hasPermission(req, "CUSTOMS", "export"));
+      if (!canExport) {
+        return res.status(403).json({
+          message: "Permission denied: CUSTOMS.reconciliation_export",
+          code: "PERMISSION_DENIED",
+        });
+      }
+    }
+    const paging = parsePaging(req);
+    const result = await listCustomsReconciliationPage(
+      req.companyId,
+      req.companyCode || "",
+      reconciliationFilters(req),
+      paging,
+    );
     res.json({
       enabled: true,
-      items: rows,
-      total: rows.length,
-      mismatchCount: mismatches.length,
+      companyCode: req.companyCode || "",
+      ...result,
     });
   } catch (err) {
     res.status(400).json({ message: err.message || "Failed to build reconciliation" });
+  }
+}
+
+export async function getCustomsReconciliationDetailHandler(req, res) {
+  try {
+    if (!isCustomsEnabled()) return disabled(res);
+    const article = req.query.article || req.query.articleNumber;
+    const partNumber = req.query.partNumber || "";
+    const detail = await getCustomsReconciliationDetail(req.companyId, article, partNumber);
+    res.json({ enabled: true, ...detail });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to load reconciliation detail" });
   }
 }
 

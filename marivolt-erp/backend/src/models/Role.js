@@ -15,7 +15,7 @@ import mongoose from "mongoose";
  *     module = SALES | STORE | ACCOUNTS | LOGISTICS | REPORTS |
  *              ITEM_MASTER | PURCHASE | SETTINGS | AUDIT | CUSTOMS
  *     action = view | create | edit | approve | cancel | export | delete |
- *              override | reconcile
+ *              override | reconcile | reconciliation_view | reconciliation_export
  */
 export const PERMISSION_MODULES = [
   "SALES",
@@ -40,6 +40,8 @@ export const PERMISSION_ACTIONS = [
   "delete",
   "override",
   "reconcile",
+  "reconciliation_view",
+  "reconciliation_export",
 ];
 
 export const SYSTEM_ROLE_CODES = [

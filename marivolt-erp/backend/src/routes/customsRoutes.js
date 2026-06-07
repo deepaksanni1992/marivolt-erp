@@ -1,6 +1,6 @@
 import express from "express";
 import { requireErpAccess } from "../middleware/erpAccess.js";
-import { requirePermission } from "../middleware/permissions.js";
+import { requireAnyPermission, requirePermission } from "../middleware/permissions.js";
 import * as c from "../controllers/customsController.js";
 import * as ci from "../controllers/customsInvoiceController.js";
 
@@ -10,7 +10,10 @@ router.use(...requireErpAccess);
 const customsView = requirePermission("CUSTOMS", "view");
 const customsCreate = requirePermission("CUSTOMS", "create");
 const customsCancel = requirePermission("CUSTOMS", "cancel");
-const customsReconcile = requirePermission("CUSTOMS", "reconcile");
+const customsReconciliationView = requireAnyPermission(
+  ["CUSTOMS", "reconciliation_view"],
+  ["CUSTOMS", "reconcile"],
+);
 
 router.get("/status", customsView, c.getCustomsStatus);
 router.get("/stock", customsView, c.getCustomsStock);
@@ -27,6 +30,7 @@ router.post("/invoices/:id/finalize", customsCreate, ci.finalizeCustomsInvoice);
 router.post("/invoices/:id/cancel", customsCancel, ci.cancelCustomsInvoice);
 router.get("/lots", customsView, c.listCustomsLots);
 router.get("/movements", customsView, c.listCustomsMovements);
-router.get("/reconciliation", customsReconcile, c.getCustomsReconciliation);
+router.get("/reconciliation", customsReconciliationView, c.getCustomsReconciliation);
+router.get("/reconciliation/detail", customsReconciliationView, c.getCustomsReconciliationDetailHandler);
 
 export default router;
