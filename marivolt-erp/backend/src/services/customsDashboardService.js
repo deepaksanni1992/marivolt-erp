@@ -9,6 +9,7 @@ import { customsWithCompanyId } from "./customsService.js";
 import { listCustomsReconciliationPage } from "./customsReconciliationService.js";
 
 const EPS = 0.0001;
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
 
 function t(v) {
   return String(v ?? "").trim();
@@ -115,7 +116,28 @@ async function buildStockOverview(companyId, filters) {
   }));
 }
 
-async function buildOpenBlSummary(companyId, filters) {
+function blAgingStatus(ageDays) {
+  if (ageDays <= 30) return "Fresh";
+  if (ageDays <= 90) return "Warning";
+  return "Critical";
+}
+
+function blAgingBucket(ageDays) {
+  if (ageDays < 30) return "under30";
+  if (ageDays <= 60) return "days30to60";
+  if (ageDays <= 90) return "days61to90";
+  return "over90";
+}
+
+function ageDaysFromDate(blDate, now = new Date()) {
+  if (!blDate) return 0;
+  const d = new Date(blDate);
+  if (Number.isNaN(d.getTime())) return 0;
+  const days = Math.floor((now.getTime() - d.getTime()) / MS_PER_DAY);
+  return Math.max(0, days);
+}
+
+async function buildBlAgingRows(companyId, filters, now = new Date()) {
   const match = await buildItemMatch(companyId, filters);
   match.qtyAvailable = { $gt: EPS };
   match.blNumber = { $nin: ["", null] };
@@ -134,23 +156,106 @@ async function buildOpenBlSummary(companyId, filters) {
     {
       $group: {
         _id: "$blNumber",
+        boeNumber: { $first: "$boeNumber" },
         supplier: { $first: { $ifNull: ["$lot.supplierName", ""] } },
-        qty: { $sum: "$qtyImported" },
-        balance: { $sum: "$qtyAvailable" },
-        value: { $sum: { $multiply: ["$qtyAvailable", { $ifNull: ["$unitPrice", 0] }] } },
+        blDate: {
+          $min: {
+            $ifNull: ["$lot.supplierInvoiceDate", { $ifNull: ["$supplierInvoiceDate", "$createdAt"] }],
+          },
+        },
+        openQty: { $sum: "$qtyAvailable" },
+        openValue: { $sum: { $multiply: ["$qtyAvailable", { $ifNull: ["$unitPrice", 0] }] } },
       },
     },
-    { $sort: { value: -1 } },
-    { $limit: 50 },
+    { $sort: { openValue: -1 } },
   ]);
 
-  return rows.map((r) => ({
-    blNumber: t(r._id),
-    supplier: t(r.supplier) || "—",
-    qty: parseNum(r.qty),
-    balance: parseNum(r.balance),
-    value: Number(parseNum(r.value).toFixed(2)),
-  }));
+  return rows.map((r) => {
+    const ageDays = ageDaysFromDate(r.blDate, now);
+    return {
+      blNumber: t(r._id),
+      boeNumber: t(r.boeNumber) || "—",
+      supplier: t(r.supplier) || "—",
+      blDate: r.blDate || null,
+      ageDays,
+      openQty: parseNum(r.openQty),
+      openValue: Number(parseNum(r.openValue).toFixed(2)),
+      status: blAgingStatus(ageDays),
+      bucket: blAgingBucket(ageDays),
+    };
+  });
+}
+
+function buildBlAgingBuckets(rows = []) {
+  const counts = { under30: 0, days30to60: 0, days61to90: 0, over90: 0 };
+  for (const row of rows) {
+    if (counts[row.bucket] != null) counts[row.bucket] += 1;
+  }
+  return counts;
+}
+
+async function buildTopValueArticles(companyId, filters) {
+  const match = await buildItemMatch(companyId, filters);
+  const rows = await CustomsLotItem.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: "$articleNumber",
+        customsQty: { $sum: "$qtyImported" },
+        balanceQty: { $sum: "$qtyAvailable" },
+        customsValue: { $sum: { $multiply: ["$qtyAvailable", { $ifNull: ["$unitPrice", 0] }] } },
+        valueQty: { $sum: { $cond: [{ $gt: ["$qtyAvailable", 0] }, "$qtyAvailable", 0] } },
+        valueAmount: { $sum: { $multiply: ["$qtyAvailable", { $ifNull: ["$unitPrice", 0] }] } },
+        partName: { $first: "$partName" },
+      },
+    },
+    { $sort: { customsValue: -1 } },
+    { $limit: 10 },
+  ]);
+
+  const descMap = await loadDescriptions(
+    companyId,
+    rows.map((r) => r._id).filter(Boolean),
+  );
+
+  return rows.map((r) => {
+    const balanceQty = parseNum(r.balanceQty);
+    const customsValue = Number(parseNum(r.customsValue).toFixed(2));
+    const unitPrice = balanceQty > EPS ? Number((customsValue / balanceQty).toFixed(4)) : 0;
+    return {
+      article: upper(r._id),
+      description: descMap.get(upper(r._id)) || t(r.partName) || "—",
+      customsQty: parseNum(r.customsQty),
+      balanceQty,
+      unitPrice,
+      customsValue,
+    };
+  });
+}
+
+function buildExposureSummary(summary, blAgingRows = []) {
+  const ages = blAgingRows.map((r) => r.ageDays).filter((a) => Number.isFinite(a));
+  const averageBlAge = ages.length ? Math.round(ages.reduce((s, a) => s + a, 0) / ages.length) : 0;
+  const oldestBlAge = ages.length ? Math.max(...ages) : 0;
+  return {
+    totalCustomsStockValue: parseNum(summary.customsStockValue),
+    totalOpenBl: parseNum(summary.openBlCount),
+    totalOpenBoe: parseNum(summary.openBoeCount),
+    averageBlAge,
+    oldestBlAge,
+  };
+}
+
+function buildTopOpenBlValue(blAgingRows = []) {
+  return [...blAgingRows]
+    .sort((a, b) => b.openValue - a.openValue)
+    .slice(0, 10)
+    .map((r) => ({
+      blNumber: r.blNumber,
+      supplier: r.supplier,
+      balanceQty: r.openQty,
+      balanceValue: r.openValue,
+    }));
 }
 
 async function buildOpenBoeSummary(companyId, filters) {
@@ -312,25 +417,45 @@ async function buildSummaryKpis(companyId, filters, reconSummary) {
 
 export async function buildCustomsDashboard(companyId, companyCode = "", rawFilters = {}) {
   const filters = parseFilters(rawFilters);
+  const now = new Date();
 
-  const recon = await listCustomsReconciliationPage(companyId, companyCode, {
-    article: filters.article,
-    supplier: filters.supplier,
-    dateFrom: rawFilters.dateFrom,
-    dateTo: rawFilters.dateTo,
-  }, { page: 1, limit: 1 });
+  const reconPromise = listCustomsReconciliationPage(
+    companyId,
+    companyCode,
+    {
+      article: filters.article,
+      supplier: filters.supplier,
+      dateFrom: rawFilters.dateFrom,
+      dateTo: rawFilters.dateTo,
+    },
+    { page: 1, limit: 1 },
+  );
 
-  const [summary, stockOverview, openBl, openBoe, movementTrend, statusCards] = await Promise.all([
-    buildSummaryKpis(companyId, filters, recon.summary),
-    buildStockOverview(companyId, filters),
-    buildOpenBlSummary(companyId, filters),
-    buildOpenBoeSummary(companyId, filters),
-    buildMovementTrend(companyId, filters),
-    buildStatusCards(companyId, filters, recon.summary),
-  ]);
+  const blAgingPromise = buildBlAgingRows(companyId, filters, now);
+  const [recon, blAging, stockOverview, openBoe, movementTrend, topValueArticles, summary, statusCards] =
+    await Promise.all([
+      reconPromise,
+      blAgingPromise,
+      buildStockOverview(companyId, filters),
+      buildOpenBoeSummary(companyId, filters),
+      buildMovementTrend(companyId, filters),
+      buildTopValueArticles(companyId, filters),
+      reconPromise.then((r) => buildSummaryKpis(companyId, filters, r.summary)),
+      reconPromise.then((r) => buildStatusCards(companyId, filters, r.summary)),
+    ]);
+  const blAgingBuckets = buildBlAgingBuckets(blAging);
+  const topOpenBlValue = buildTopOpenBlValue(blAging);
+  const exposure = buildExposureSummary(summary, blAging);
+  const openBl = blAging.map((r) => ({
+    blNumber: r.blNumber,
+    supplier: r.supplier,
+    qty: r.openQty,
+    balance: r.openQty,
+    value: r.openValue,
+  }));
 
   return {
-    generatedAt: new Date().toISOString(),
+    generatedAt: now.toISOString(),
     filters: {
       article: filters.article || "",
       supplier: filters.supplier || "",
@@ -338,6 +463,11 @@ export async function buildCustomsDashboard(companyId, companyCode = "", rawFilt
       dateTo: filters.dateTo,
     },
     summary,
+    exposure,
+    blAgingBuckets,
+    blAging,
+    topValueArticles,
+    topOpenBlValue,
     stockOverview,
     openBl,
     openBoe,

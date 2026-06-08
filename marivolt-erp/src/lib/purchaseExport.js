@@ -22,6 +22,54 @@ function escHtml(v) {
     .replace(/"/g, "&quot;");
 }
 
+function escXml(v) {
+  return String(v ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Multi-sheet Excel (.xls) via SpreadsheetML — sheets: { name, columns, rows }[] */
+export function downloadExcelWorkbook(filename, sheets = []) {
+  const sheetXml = sheets
+    .map((sheet) => {
+      const cols = sheet.columns || [];
+      const header = cols.map((c) => `<Cell><Data ss:Type="String">${escXml(c.header || c.key)}</Data></Cell>`).join("");
+      const body = (sheet.rows || [])
+        .map(
+          (row) =>
+            `<Row>${cols
+              .map((c) => {
+                const raw = row[c.key];
+                const isNum = typeof raw === "number" && Number.isFinite(raw);
+                const type = isNum ? "Number" : "String";
+                const val = isNum ? raw : escXml(raw ?? "");
+                return `<Cell><Data ss:Type="${type}">${val}</Data></Cell>`;
+              })
+              .join("")}</Row>`,
+        )
+        .join("");
+      const safeName = escXml(String(sheet.name || "Sheet").slice(0, 31));
+      return `<Worksheet ss:Name="${safeName}"><Table><Row>${header}</Row>${body}</Table></Worksheet>`;
+    })
+    .join("");
+
+  const xml = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+${sheetXml}
+</Workbook>`;
+
+  const blob = new Blob([xml], { type: "application/vnd.ms-excel" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename.endsWith(".xls") ? filename : `${filename}.xls`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 /** columns: { key, header }[] — rows are plain objects */
 export function downloadCsv(filename, columns, rows) {
   const header = columns.map((c) => c.header || c.key).join(",");

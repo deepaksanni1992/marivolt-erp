@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiGetWithQuery, apiPost } from "../lib/api.js";
-import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
+import { downloadExcelWorkbook, downloadPdfTable } from "../lib/purchaseExport.js";
 
 const STOCK_COLUMNS = [
   { key: "article", header: "Article" },
@@ -13,6 +13,33 @@ const STOCK_COLUMNS = [
   { key: "qtyOut", header: "Qty Out" },
   { key: "balance", header: "Balance" },
   { key: "stockValue", header: "Stock Value" },
+];
+
+const BL_AGING_COLUMNS = [
+  { key: "blNumber", header: "BL Number" },
+  { key: "boeNumber", header: "BOE Number" },
+  { key: "supplier", header: "Supplier" },
+  { key: "blDate", header: "BL Date" },
+  { key: "ageDays", header: "Age (Days)" },
+  { key: "openQty", header: "Open Qty" },
+  { key: "openValue", header: "Open Value" },
+  { key: "status", header: "Status" },
+];
+
+const TOP_ARTICLE_COLUMNS = [
+  { key: "article", header: "Article" },
+  { key: "description", header: "Description" },
+  { key: "customsQty", header: "Customs Qty" },
+  { key: "balanceQty", header: "Balance Qty" },
+  { key: "unitPrice", header: "Unit Price" },
+  { key: "customsValue", header: "Customs Value" },
+];
+
+const TOP_BL_COLUMNS = [
+  { key: "blNumber", header: "BL Number" },
+  { key: "supplier", header: "Supplier" },
+  { key: "balanceQty", header: "Balance Qty" },
+  { key: "balanceValue", header: "Balance Value" },
 ];
 
 const BL_COLUMNS = [
@@ -47,6 +74,14 @@ function fmtMoney(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "—";
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function statusTone(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "fresh") return "bg-emerald-50 text-emerald-800 ring-emerald-200";
+  if (s === "warning") return "bg-amber-50 text-amber-900 ring-amber-200";
+  if (s === "critical") return "bg-rose-50 text-rose-800 ring-rose-200";
+  return "bg-slate-50 text-slate-700 ring-slate-200";
 }
 
 function KpiCard({ title, value, hint, tone = "slate" }) {
@@ -121,7 +156,7 @@ function MovementTrendChart({ series = [] }) {
   );
 }
 
-function DataTable({ title, columns, rows, emptyText = "No data." }) {
+function DataTable({ title, columns, rows, emptyText = "No data.", sortable, sortKey, sortDir, onSort }) {
   return (
     <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
       <div className="border-b px-4 py-2 text-sm font-semibold text-slate-800">{title}</div>
@@ -131,7 +166,18 @@ function DataTable({ title, columns, rows, emptyText = "No data." }) {
             <tr>
               {columns.map((c) => (
                 <th key={c.key} className="px-2 py-2 whitespace-nowrap">
-                  {c.header}
+                  {sortable && c.sortable !== false ? (
+                    <button
+                      type="button"
+                      className="font-semibold hover:text-slate-900"
+                      onClick={() => onSort?.(c.key)}
+                    >
+                      {c.header}
+                      {sortKey === c.key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                    </button>
+                  ) : (
+                    c.header
+                  )}
                 </th>
               ))}
             </tr>
@@ -161,6 +207,16 @@ function DataTable({ title, columns, rows, emptyText = "No data." }) {
   );
 }
 
+function sortRows(rows, key, dir) {
+  const mult = dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const av = a[key];
+    const bv = b[key];
+    if (typeof av === "number" && typeof bv === "number") return (av - bv) * mult;
+    return String(av ?? "").localeCompare(String(bv ?? "")) * mult;
+  });
+}
+
 export default function CustomsDashboard() {
   const { auth, selectCompany } = useAuth();
   const [article, setArticle] = useState("");
@@ -168,6 +224,7 @@ export default function CustomsDashboard() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [blSort, setBlSort] = useState({ key: "ageDays", dir: "desc" });
 
   const queryParams = useMemo(
     () => ({
@@ -188,7 +245,20 @@ export default function CustomsDashboard() {
   const enabled = data?.enabled !== false;
   const currentCompany = auth?.company?.code || data?.companyCode || "—";
   const summary = data?.summary || {};
+  const exposure = data?.exposure || {};
+  const blBuckets = data?.blAgingBuckets || {};
   const statusCards = data?.statusCards || {};
+
+  const sortedBlAging = useMemo(
+    () => sortRows(data?.blAging || [], blSort.key, blSort.dir),
+    [data?.blAging, blSort],
+  );
+
+  const onBlSort = (key) => {
+    setBlSort((prev) =>
+      prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" },
+    );
+  };
 
   const onCompanyChange = useCallback(
     async (e) => {
@@ -207,49 +277,62 @@ export default function CustomsDashboard() {
     try {
       await apiPost("/customs/dashboard/export-log", { format, filters: queryParams });
     } catch {
-      // Audit logging is best-effort; export still proceeds.
+      // Best-effort audit log.
     }
   };
 
-  const buildExportRows = () => {
-    const stock = (data?.stockOverview || []).map((r) => ({
-      section: "Stock Overview",
+  const summaryExportRows = () => [
+    { metric: "Open BL Count", value: summary.openBlCount },
+    { metric: "Open BOE Count", value: summary.openBoeCount },
+    { metric: "Customs Stock Value", value: summary.customsStockValue },
+    { metric: "Pending Reconciliation", value: summary.pendingReconciliation },
+    { metric: "Total Customs Stock Value", value: exposure.totalCustomsStockValue },
+    { metric: "Total Open BL", value: exposure.totalOpenBl },
+    { metric: "Total Open BOE", value: exposure.totalOpenBoe },
+    { metric: "Average BL Age (days)", value: exposure.averageBlAge },
+    { metric: "Oldest BL Age (days)", value: exposure.oldestBlAge },
+    { metric: "Open BL < 30 Days", value: blBuckets.under30 },
+    { metric: "Open BL 30–60 Days", value: blBuckets.days30to60 },
+    { metric: "Open BL 61–90 Days", value: blBuckets.days61to90 },
+    { metric: "Open BL > 90 Days", value: blBuckets.over90 },
+  ];
+
+  const blAgingExportRows = () =>
+    (data?.blAging || []).map((r) => ({
       ...r,
-      stockValue: fmtMoney(r.stockValue),
+      blDate: fmtDate(r.blDate),
+      openValue: r.openValue,
     }));
-    const bl = (data?.openBl || []).map((r) => ({
-      section: "Open BL",
-      ...r,
-      value: fmtMoney(r.value),
-    }));
-    const boe = (data?.openBoe || []).map((r) => ({
-      section: "Open BOE",
-      ...r,
-      date: fmtDate(r.date),
-      balanceValue: fmtMoney(r.balanceValue),
-    }));
-    return [...stock, ...bl, ...boe];
-  };
 
   const exportExcel = async () => {
     setExporting(true);
     try {
       await logExport("excel");
-      const rows = buildExportRows();
-      const columns = [
-        { key: "section", header: "Section" },
-        { key: "article", header: "Article" },
-        { key: "description", header: "Description" },
-        { key: "blNumber", header: "BL Number" },
-        { key: "boeNumber", header: "BOE Number" },
-        { key: "supplier", header: "Supplier" },
-        { key: "qtyIn", header: "Qty In" },
-        { key: "qtyOut", header: "Qty Out" },
-        { key: "balance", header: "Balance" },
-        { key: "stockValue", header: "Stock Value" },
-        { key: "date", header: "Date" },
-      ];
-      downloadCsv(`customs-dashboard-${currentCompany}-${Date.now()}.xls`, columns, rows);
+      downloadExcelWorkbook(`customs-dashboard-${currentCompany}-${Date.now()}.xls`, [
+        {
+          name: "Summary",
+          columns: [
+            { key: "metric", header: "Metric" },
+            { key: "value", header: "Value" },
+          ],
+          rows: summaryExportRows(),
+        },
+        {
+          name: "BL Aging",
+          columns: BL_AGING_COLUMNS,
+          rows: blAgingExportRows(),
+        },
+        {
+          name: "Article Value",
+          columns: TOP_ARTICLE_COLUMNS,
+          rows: data?.topValueArticles || [],
+        },
+        {
+          name: "Open BL",
+          columns: TOP_BL_COLUMNS,
+          rows: data?.topOpenBlValue || [],
+        },
+      ]);
     } catch (e) {
       window.alert(e.message || "Excel export failed");
     } finally {
@@ -261,12 +344,6 @@ export default function CustomsDashboard() {
     setExporting(true);
     try {
       await logExport("pdf");
-      const summaryRows = [
-        { metric: "Open BL Count", value: summary.openBlCount },
-        { metric: "Open BOE Count", value: summary.openBoeCount },
-        { metric: "Customs Stock Value", value: fmtMoney(summary.customsStockValue) },
-        { metric: "Pending Reconciliation", value: summary.pendingReconciliation },
-      ];
       const base = `customs-dashboard-${currentCompany}-${Date.now()}`;
       await downloadPdfTable(
         "Customs Dashboard",
@@ -275,19 +352,36 @@ export default function CustomsDashboard() {
           { key: "metric", header: "Metric" },
           { key: "value", header: "Value" },
         ],
-        summaryRows,
+        summaryExportRows().map((r) => ({
+          ...r,
+          value: typeof r.value === "number" && r.metric.includes("Value") ? fmtMoney(r.value) : r.value,
+        })),
         base,
         auth?.company,
       );
-      if ((data?.stockOverview || []).length) {
-        await downloadPdfTable(`${base}-stock`, "Customs Stock Overview", STOCK_COLUMNS, data.stockOverview, `${base}-stock`, auth?.company);
+      if ((data?.blAging || []).length) {
+        const rows = blAgingExportRows();
+        await downloadPdfTable(`${base}-aging`, "BL Aging Analysis", BL_AGING_COLUMNS, rows, `${base}-aging`, auth?.company);
       }
-      if ((data?.openBl || []).length) {
-        await downloadPdfTable(`${base}-bl`, "Open BL Summary", BL_COLUMNS, data.openBl, `${base}-bl`, auth?.company);
+      if ((data?.topValueArticles || []).length) {
+        await downloadPdfTable(
+          `${base}-articles`,
+          "Top Customs Value Articles",
+          TOP_ARTICLE_COLUMNS,
+          data.topValueArticles,
+          `${base}-articles`,
+          auth?.company,
+        );
       }
-      if ((data?.openBoe || []).length) {
-        const boeRows = (data.openBoe || []).map((r) => ({ ...r, date: fmtDate(r.date), balanceValue: fmtMoney(r.balanceValue) }));
-        await downloadPdfTable(`${base}-boe`, "Open BOE Summary", BOE_COLUMNS, boeRows, `${base}-boe`, auth?.company);
+      if ((data?.topOpenBlValue || []).length) {
+        await downloadPdfTable(
+          `${base}-top-bl`,
+          "Top Open BL Value",
+          TOP_BL_COLUMNS,
+          data.topOpenBlValue,
+          `${base}-top-bl`,
+          auth?.company,
+        );
       }
     } catch (e) {
       window.alert(e.message || "PDF export failed");
@@ -296,11 +390,30 @@ export default function CustomsDashboard() {
     }
   };
 
+  const blAgingCols = BL_AGING_COLUMNS.map((c) => {
+    if (c.key === "blDate") return { ...c, sortable: true, render: (r) => fmtDate(r.blDate) };
+    if (c.key === "openQty") return { ...c, sortable: true, render: (r) => fmtNum(r.openQty, 0) };
+    if (c.key === "openValue") return { ...c, sortable: true, render: (r) => fmtMoney(r.openValue) };
+    if (c.key === "ageDays") return { ...c, sortable: true, render: (r) => fmtNum(r.ageDays, 0) };
+    if (c.key === "status") {
+      return {
+        ...c,
+        render: (r) => (
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${statusTone(r.status)}`}>
+            {r.status}
+          </span>
+        ),
+      };
+    }
+    if (c.key === "supplier") return { ...c, sortable: true };
+    return { ...c, sortable: c.key === "openValue" };
+  });
+
   return (
     <div className="p-4 md:p-6">
       <PageHeader
         title="Customs Dashboard"
-        subtitle="Executive view of customs stock, open BL/BOE, movement trends, and reconciliation status."
+        subtitle="Executive customs analytics — BL aging, stock value, exposure, and reconciliation."
       >
         <div className="flex flex-wrap gap-2">
           <button
@@ -351,17 +464,6 @@ export default function CustomsDashboard() {
             <input type="date" className="rounded-lg border px-2 py-2 text-sm" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
           </label>
         </div>
-        <div className="mt-3 flex flex-wrap gap-2 text-xs">
-          <Link to="/customs/stock" className="text-sky-700 underline">
-            Customs Stock
-          </Link>
-          <Link to="/customs/ledger" className="text-sky-700 underline">
-            Ledger
-          </Link>
-          <Link to="/customs/reconciliation" className="text-sky-700 underline">
-            Reconciliation
-          </Link>
-        </div>
       </div>
 
       {dashQ.error ? (
@@ -369,22 +471,72 @@ export default function CustomsDashboard() {
       ) : null}
 
       {!enabled ? (
-        <div className="rounded-2xl border bg-white p-8 text-center text-sm text-slate-500 shadow-sm">
-          Customs module is disabled on this environment.
-        </div>
+        <div className="rounded-2xl border bg-white p-8 text-center text-sm text-slate-500 shadow-sm">Customs module is disabled.</div>
       ) : dashQ.isLoading ? (
         <div className="rounded-2xl border bg-white p-8 text-center text-sm text-slate-500 shadow-sm">Loading dashboard…</div>
       ) : (
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <KpiCard title="Open BL Count" value={fmtNum(summary.openBlCount, 0)} hint="BL numbers with stock remaining" tone="sky" />
-            <KpiCard title="Open BOE Count" value={fmtNum(summary.openBoeCount, 0)} hint="BOE numbers with stock remaining" tone="violet" />
-            <KpiCard title="Customs Stock Value" value={fmtMoney(summary.customsStockValue)} hint={`Balance ${fmtNum(summary.customsStockBalance, 0)} units`} tone="emerald" />
-            <KpiCard
-              title="Pending Reconciliation"
-              value={fmtNum(summary.pendingReconciliation, 0)}
-              hint={`Match ${summary.matchPct ?? 0}%`}
-              tone="rose"
+            <KpiCard title="Open BL Count" value={fmtNum(summary.openBlCount, 0)} tone="sky" />
+            <KpiCard title="Open BOE Count" value={fmtNum(summary.openBoeCount, 0)} tone="violet" />
+            <KpiCard title="Customs Stock Value" value={fmtMoney(summary.customsStockValue)} tone="emerald" />
+            <KpiCard title="Pending Reconciliation" value={fmtNum(summary.pendingReconciliation, 0)} tone="rose" />
+          </div>
+
+          <div>
+            <h2 className="mb-2 text-sm font-semibold text-slate-800">Customs Exposure Summary</h2>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <KpiCard title="Total Customs Stock Value" value={fmtMoney(exposure.totalCustomsStockValue)} tone="emerald" />
+              <KpiCard title="Total Open BL" value={fmtNum(exposure.totalOpenBl, 0)} tone="sky" />
+              <KpiCard title="Total Open BOE" value={fmtNum(exposure.totalOpenBoe, 0)} tone="violet" />
+              <KpiCard title="Average BL Age" value={`${fmtNum(exposure.averageBlAge, 0)} days`} tone="amber" />
+              <KpiCard title="Oldest BL Age" value={`${fmtNum(exposure.oldestBlAge, 0)} days`} tone="rose" />
+            </div>
+          </div>
+
+          <div>
+            <h2 className="mb-2 text-sm font-semibold text-slate-800">BL Aging Analysis</h2>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <KpiCard title="Open BL < 30 Days" value={fmtNum(blBuckets.under30, 0)} tone="emerald" />
+              <KpiCard title="Open BL 30–60 Days" value={fmtNum(blBuckets.days30to60, 0)} tone="sky" />
+              <KpiCard title="Open BL 61–90 Days" value={fmtNum(blBuckets.days61to90, 0)} tone="amber" />
+              <KpiCard title="Open BL > 90 Days" value={fmtNum(blBuckets.over90, 0)} tone="rose" />
+            </div>
+          </div>
+
+          <DataTable
+            title="BL Aging Table"
+            columns={blAgingCols}
+            rows={sortedBlAging}
+            sortable
+            sortKey={blSort.key}
+            sortDir={blSort.dir}
+            onSort={onBlSort}
+            emptyText="No open BL records with remaining balance."
+          />
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <DataTable
+              title="Top 10 Customs Value Articles"
+              columns={TOP_ARTICLE_COLUMNS.map((c) =>
+                ["customsQty", "balanceQty"].includes(c.key)
+                  ? { ...c, render: (r) => fmtNum(r[c.key], 0) }
+                  : c.key === "unitPrice" || c.key === "customsValue"
+                    ? { ...c, render: (r) => fmtMoney(r[c.key]) }
+                    : c,
+              )}
+              rows={data?.topValueArticles || []}
+            />
+            <DataTable
+              title="Top 10 Open BL Value"
+              columns={TOP_BL_COLUMNS.map((c) =>
+                c.key === "balanceQty"
+                  ? { ...c, render: (r) => fmtNum(r.balanceQty, 0) }
+                  : c.key === "balanceValue"
+                    ? { ...c, render: (r) => fmtMoney(r.balanceValue) }
+                    : c,
+              )}
+              rows={data?.topOpenBlValue || []}
             />
           </div>
 

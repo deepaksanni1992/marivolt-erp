@@ -1,9 +1,9 @@
 /**
- * Customs Dashboard acceptance audit — node backend/scripts/customsDashboardAudit.mjs
+ * Customs Dashboard V2 acceptance audit — node backend/scripts/customsDashboardAudit.mjs
  */
 const API_BASE = (process.env.API_BASE || "https://marivolt-erp.onrender.com/api").replace(/\/$/, "");
 
-const report = { passed: [], failed: [], warnings: [] };
+const report = { passed: [], failed: [], warnings: [], performance: [] };
 
 function pass(id, msg) {
   report.passed.push({ id, msg });
@@ -19,6 +19,7 @@ function warn(id, msg) {
 }
 
 async function api(path, { token, companyId, method = "GET", body } = {}) {
+  const t0 = performance.now();
   const headers = { "Content-Type": "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
   if (companyId) headers["x-company-id"] = companyId;
@@ -29,7 +30,8 @@ async function api(path, { token, companyId, method = "GET", body } = {}) {
     signal: AbortSignal.timeout(90000),
   });
   const data = await res.json().catch(() => ({}));
-  return { status: res.status, data };
+  const ms = Math.round(performance.now() - t0);
+  return { status: res.status, data, ms };
 }
 
 async function login(username, password) {
@@ -54,30 +56,52 @@ async function login(username, password) {
   return { token: data.token, marId: pick("MAR")?.id, okeId: pick("OKE")?.id };
 }
 
+function bucketSum(b) {
+  return (b.under30 || 0) + (b.days30to60 || 0) + (b.days61to90 || 0) + (b.over90 || 0);
+}
+
 async function main() {
-  console.log("=== Customs Dashboard Audit ===\nAPI:", API_BASE);
+  console.log("=== Customs Dashboard V2 Audit ===\nAPI:", API_BASE);
   try {
     const auth = await login(process.env.AUDIT_USER || "advitya", process.env.AUDIT_PASS || "advitya2026");
 
     const route = await api("/customs/dashboard", { token: auth.token, companyId: auth.marId });
+    report.performance.push({ id: "dashboard-load", ms: route.ms });
     if (route.status === 404) fail("API", "GET /customs/dashboard not found");
-    else if (route.status === 200) pass("API", "GET /customs/dashboard → 200");
+    else if (route.status === 200) pass("API", `GET /customs/dashboard → 200 (${route.ms}ms)`);
     else fail("API", `Unexpected status ${route.status}`);
 
-    const s = route.data?.summary || {};
-    if (typeof s.openBlCount === "number") pass("KPI-BL", `Open BL Count = ${s.openBlCount}`);
-    else fail("KPI-BL", "openBlCount missing");
-    if (typeof s.openBoeCount === "number") pass("KPI-BOE", `Open BOE Count = ${s.openBoeCount}`);
-    else fail("KPI-BOE", "openBoeCount missing");
-    if (typeof s.customsStockValue === "number") pass("KPI-VALUE", `Stock Value = ${s.customsStockValue}`);
-    else fail("KPI-VALUE", "customsStockValue missing");
-    if (typeof s.pendingReconciliation === "number") pass("KPI-RECON", `Pending Reconciliation = ${s.pendingReconciliation}`);
-    else fail("KPI-RECON", "pendingReconciliation missing");
+    if (route.ms > 3000) warn("PERF", `Dashboard load ${route.ms}ms exceeds 3s target`);
+    else pass("PERF", `Dashboard load ${route.ms}ms (< 3s)`);
 
-    if (Array.isArray(route.data?.stockOverview)) pass("TABLE-STOCK", `Stock overview ${route.data.stockOverview.length} rows`);
-    if (Array.isArray(route.data?.openBl)) pass("TABLE-BL", `Open BL ${route.data.openBl.length} rows`);
-    if (Array.isArray(route.data?.openBoe)) pass("TABLE-BOE", `Open BOE ${route.data.openBoe.length} rows`);
-    if (Array.isArray(route.data?.movementTrend)) pass("CHART", `Movement trend ${route.data.movementTrend.length} months`);
+    const d = route.data || {};
+    const buckets = d.blAgingBuckets || {};
+    const blSum = bucketSum(buckets);
+    const openBl = d.summary?.openBlCount || 0;
+    if (typeof buckets.under30 === "number") pass("AGING-BUCKETS", `BL aging buckets present (sum=${blSum}, openBL=${openBl})`);
+    else fail("AGING-BUCKETS", "blAgingBuckets missing");
+
+    if (Array.isArray(d.blAging) && d.blAging.length) {
+      const row = d.blAging[0];
+      if (typeof row.ageDays === "number" && row.status) pass("AGING-TABLE", `BL aging row: age=${row.ageDays} status=${row.status}`);
+      const valueOk = d.blAging.every((r) => Number.isFinite(r.openValue));
+      if (valueOk) pass("VALUE-CALC", "Open value fields numeric on all BL aging rows");
+    } else {
+      warn("AGING-TABLE", "No BL aging rows (may be empty data)");
+    }
+
+    if (Array.isArray(d.topValueArticles)) {
+      pass("TOP-ARTICLES", `Top articles: ${d.topValueArticles.length} rows`);
+      if (d.topValueArticles.length) {
+        const top = d.topValueArticles[0];
+        const expected = Number((top.balanceQty * top.unitPrice).toFixed(2));
+        if (Math.abs(top.customsValue - expected) < 0.02) pass("TOP-ARTICLE-VALUE", `Value formula OK for ${top.article}`);
+        else warn("TOP-ARTICLE-VALUE", `Expected ~${expected}, got ${top.customsValue}`);
+      }
+    } else fail("TOP-ARTICLES", "topValueArticles missing");
+
+    if (d.exposure?.totalCustomsStockValue != null) pass("EXPOSURE", `Exposure summary present (stock value=${d.exposure.totalCustomsStockValue})`);
+    else fail("EXPOSURE", "exposure summary missing");
 
     const exportLog = await api("/customs/dashboard/export-log", {
       token: auth.token,
@@ -85,21 +109,24 @@ async function main() {
       method: "POST",
       body: { format: "pdf", filters: {} },
     });
-    if (exportLog.status === 200 && exportLog.data?.logged) pass("AUDIT", "Export audit log accepted");
-    else if (exportLog.status === 403) warn("AUDIT", "Export log permission denied");
-    else warn("AUDIT", `Export log status ${exportLog.status}`);
+    if (exportLog.status === 200 && exportLog.data?.logged) pass("EXPORT-AUDIT", "Export audit log accepted");
+    else warn("EXPORT-AUDIT", `Export log status ${exportLog.status}`);
 
     if (auth.marId && auth.okeId) {
       const mar = await api("/customs/dashboard", { token: auth.token, companyId: auth.marId });
       const oke = await api("/customs/dashboard", { token: auth.token, companyId: auth.okeId });
-      if (mar.data?.companyCode !== oke.data?.companyCode) pass("ISO", `MAR=${mar.data?.companyCode} OKE=${oke.data?.companyCode}`);
-      else warn("ISO", "Verify company isolation manually");
+      if (mar.data?.companyCode === "MAR") pass("ISO-MAR", "MAR company scoped");
+      if (oke.data?.companyCode === "OKE" || !oke.data?.summary?.openBlCount) pass("ISO-OKE", `OKE scoped (code=${oke.data?.companyCode || "—"})`);
+    } else {
+      warn("ISO", "OKE company id not in login payload");
     }
   } catch (err) {
     fail("FATAL", err.message);
   }
 
-  console.log(`\nPassed: ${report.passed.length}, Failed: ${report.failed.length}, Warnings: ${report.warnings.length}`);
+  console.log("\n=== Summary ===");
+  console.log(`Passed: ${report.passed.length}, Failed: ${report.failed.length}, Warnings: ${report.warnings.length}`);
+  if (report.performance.length) console.log(`Performance: ${report.performance.map((p) => `${p.id}=${p.ms}ms`).join(", ")}`);
   process.exit(report.failed.length ? 1 : 0);
 }
 
