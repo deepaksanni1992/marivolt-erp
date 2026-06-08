@@ -74,14 +74,22 @@ async function main() {
     if (!Array.isArray(mar.items)) fail("T0", "items array missing");
     else pass("T0", `MAR search returned ${mar.total} hit(s)`);
 
+    if (Array.isArray(mar.groups)) pass("T10", `groups summary: ${mar.groups.map((g) => `${g.label} (${g.count})`).join(", ") || "none"}`);
+    else warn("T10", "groups field missing from API response");
+
     const articleQ = process.env.SEARCH_ARTICLE || "911161522";
     const art = await api(`/search/global?q=${encodeURIComponent(articleQ)}&limit=50`, { token: auth.token, companyId: auth.marId });
     if (art.total > 0) {
-      const types = [...new Set(art.items.map((r) => r.type))].join(", ");
-      pass("T1", `Article ${articleQ}: ${art.total} hit(s) — ${types}`);
-      if (!hasType(art.items, "article") && !art.items.some((r) => r.article === articleQ)) {
-        warn("T1", "No direct article row in first page");
-      }
+      const types = [...new Set(art.items.map((r) => r.group || r.type))].join(", ");
+      pass("T1", `Article ${articleQ}: ${art.total} hit(s) — groups on page: ${types}`);
+      const gc = art.groupCounts || {};
+      const hasPo = (gc["Purchase Orders"] || 0) > 0 || art.items.some((r) => r.group === "Purchase Orders" || r.type === "Purchase Order");
+      const hasGrn = (gc.GRNs || 0) > 0 || art.items.some((r) => r.group === "GRNs" || r.type === "GRN");
+      const hasCs = (gc["Customs Stock"] || 0) > 0 || art.items.some((r) => r.group === "Customs Stock");
+      const hasCi = (gc["Customs Invoices"] || 0) > 0 || art.items.some((r) => r.group === "Customs Invoices");
+      const hasSi = (gc["Sales Invoices"] || 0) > 0 || art.items.some((r) => r.group === "Sales Invoices");
+      if (hasPo && hasGrn && hasCs && hasCi && hasSi) pass("T1-coverage", "Article search spans PO, GRN, Customs Stock, Customs Invoice, Sales Invoice");
+      else warn("T1-coverage", `Article coverage partial — PO:${hasPo} GRN:${hasGrn} CS:${hasCs} CI:${hasCi} SI:${hasSi}`);
     } else {
       warn("T1", `No hits for article ${articleQ} in MAR`);
     }

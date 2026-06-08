@@ -9,6 +9,7 @@ import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 const CATEGORIES = ["All", "Sales", "Purchase", "Inventory", "Accounts", "Customs", "Documents"];
 
 const EXPORT_COLUMNS = [
+  { key: "group", header: "Group" },
   { key: "type", header: "Type" },
   { key: "documentNumber", header: "Document Number" },
   { key: "company", header: "Company" },
@@ -98,8 +99,25 @@ export default function GlobalSearch() {
 
   const rows = searchQ.data?.items || [];
   const total = searchQ.data?.total ?? 0;
+  const groups = searchQ.data?.groups || [];
   const totalPages = Math.max(1, Math.ceil(total / 50));
   const companyCode = auth?.company?.code || searchQ.data?.companyCode || "—";
+
+  const groupedPageRows = useMemo(() => {
+    const order = groups.length ? groups.map((g) => g.label) : [...new Set(rows.map((r) => r.group || r.type))];
+    const out = [];
+    for (const label of order) {
+      const groupItems = rows.filter((r) => (r.group || r.type) === label);
+      if (!groupItems.length) continue;
+      const count = groups.find((g) => g.label === label)?.count ?? groupItems.length;
+      out.push({ kind: "header", label, count });
+      for (const item of groupItems) out.push({ kind: "row", item });
+    }
+    if (!out.length && rows.length) {
+      for (const item of rows) out.push({ kind: "row", item });
+    }
+    return out;
+  }, [rows, groups]);
 
   useEffect(() => {
     const urlQ = searchParams.get("q") || "";
@@ -243,6 +261,15 @@ export default function GlobalSearch() {
             "Enter a search term to begin."
           )}
         </div>
+        {groups.length > 0 ? (
+          <div className="flex flex-wrap gap-2 border-b px-4 py-2">
+            {groups.map((g) => (
+              <span key={g.label} className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-700">
+                {g.label} ({g.count})
+              </span>
+            ))}
+          </div>
+        ) : null}
         <div className="overflow-x-auto">
           <table className="min-w-full text-left text-xs">
             <thead className="bg-slate-100 text-[11px] uppercase tracking-wide text-slate-600">
@@ -276,37 +303,45 @@ export default function GlobalSearch() {
                   </td>
                 </tr>
               ) : (
-                rows.map((r) => (
-                  <tr key={`${r.type}-${r.entityId}-${r.documentNumber}`} className="border-t hover:bg-slate-50/80">
-                    <td className="px-2 py-2">
-                      <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${typeTone(r.type)}`}>{r.type}</span>
-                    </td>
-                    <td className="px-2 py-2 font-mono">{r.documentNumber || "—"}</td>
-                    <td className="px-2 py-2">{r.company || companyCode}</td>
-                    <td className="px-2 py-2 whitespace-nowrap">{fmtDate(r.date)}</td>
-                    <td className="px-2 py-2 max-w-[8rem] truncate" title={r.party}>
-                      {r.party || "—"}
-                    </td>
-                    <td className="px-2 py-2 font-mono">{r.article || "—"}</td>
-                    <td className="px-2 py-2 font-mono">{r.partNumber || "—"}</td>
-                    <td className="px-2 py-2 max-w-[10rem] truncate" title={r.description}>
-                      {r.description || "—"}
-                    </td>
-                    <td className="px-2 py-2">{r.status || "—"}</td>
-                    <td className="px-2 py-2 text-right tabular-nums">
-                      {r.amount != null ? fmtNum(r.amount) : r.qty != null ? fmtNum(r.qty) : "—"}
-                    </td>
-                    <td className="px-2 py-2 text-right">
-                      {r.openPath ? (
-                        <Link to={r.openPath} className="rounded border px-2 py-0.5 text-[11px] font-semibold hover:bg-white">
-                          Open
-                        </Link>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                  </tr>
-                ))
+                groupedPageRows.map((entry, idx) =>
+                  entry.kind === "header" ? (
+                    <tr key={`hdr-${entry.label}`} className="bg-slate-50">
+                      <td colSpan={11} className="px-3 py-2 text-xs font-semibold text-slate-800">
+                        {entry.label} ({entry.count})
+                      </td>
+                    </tr>
+                  ) : (
+                    <tr key={`${entry.item.type}-${entry.item.entityId}-${entry.item.documentNumber}-${idx}`} className="border-t hover:bg-slate-50/80">
+                      <td className="px-2 py-2">
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${typeTone(entry.item.type)}`}>{entry.item.type}</span>
+                      </td>
+                      <td className="px-2 py-2 font-mono">{entry.item.documentNumber || "—"}</td>
+                      <td className="px-2 py-2">{entry.item.company || companyCode}</td>
+                      <td className="px-2 py-2 whitespace-nowrap">{fmtDate(entry.item.date)}</td>
+                      <td className="px-2 py-2 max-w-[8rem] truncate" title={entry.item.party}>
+                        {entry.item.party || "—"}
+                      </td>
+                      <td className="px-2 py-2 font-mono">{entry.item.article || "—"}</td>
+                      <td className="px-2 py-2 font-mono">{entry.item.partNumber || "—"}</td>
+                      <td className="px-2 py-2 max-w-[10rem] truncate" title={entry.item.description}>
+                        {entry.item.description || "—"}
+                      </td>
+                      <td className="px-2 py-2">{entry.item.status || "—"}</td>
+                      <td className="px-2 py-2 text-right tabular-nums">
+                        {entry.item.amount != null ? fmtNum(entry.item.amount) : entry.item.qty != null ? fmtNum(entry.item.qty) : "—"}
+                      </td>
+                      <td className="px-2 py-2 text-right">
+                        {entry.item.openPath ? (
+                          <Link to={entry.item.openPath} className="rounded border px-2 py-0.5 text-[11px] font-semibold hover:bg-white">
+                            Open
+                          </Link>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                    </tr>
+                  ),
+                )
               )}
             </tbody>
           </table>

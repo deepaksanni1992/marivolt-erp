@@ -17,6 +17,7 @@ import StoreDispatch from "../models/StoreDispatch.js";
 import CustomsInvoice from "../models/CustomsInvoice.js";
 import CustomsLot from "../models/CustomsLot.js";
 import CustomsLotItem from "../models/CustomsLotItem.js";
+import CustomsMovement from "../models/CustomsMovement.js";
 import ItemMaster from "../models/itemMasterModel.js";
 import PurchaseInvoice from "../models/PurchaseInvoice.js";
 import Document from "../models/Document.js";
@@ -25,6 +26,52 @@ import { hasPermission } from "./roleService.js";
 
 const PER_SOURCE_LIMIT = 25;
 const MERGE_CAP = 500;
+
+export const SEARCH_GROUPS = {
+  ITEM_MASTER: "Item Master",
+  PURCHASE_ORDERS: "Purchase Orders",
+  GRNS: "GRNs",
+  CUSTOMS_STOCK: "Customs Stock",
+  CUSTOMS_LEDGER: "Customs Ledger",
+  CUSTOMS_INVOICES: "Customs Invoices",
+  SALES_INVOICES: "Sales Invoices",
+  DISPATCHES: "Dispatches",
+  OTHER: "Other",
+};
+
+const GROUP_DISPLAY_ORDER = [
+  SEARCH_GROUPS.SALES_INVOICES,
+  SEARCH_GROUPS.CUSTOMS_INVOICES,
+  SEARCH_GROUPS.GRNS,
+  SEARCH_GROUPS.PURCHASE_ORDERS,
+  SEARCH_GROUPS.CUSTOMS_STOCK,
+  SEARCH_GROUPS.CUSTOMS_LEDGER,
+  SEARCH_GROUPS.ITEM_MASTER,
+  SEARCH_GROUPS.DISPATCHES,
+  SEARCH_GROUPS.OTHER,
+];
+
+export function groupForType(type) {
+  const key = String(type || "");
+  if (key === "Article") return SEARCH_GROUPS.ITEM_MASTER;
+  if (key === "Purchase Order") return SEARCH_GROUPS.PURCHASE_ORDERS;
+  if (key === "GRN") return SEARCH_GROUPS.GRNS;
+  if (key === "Customs Stock") return SEARCH_GROUPS.CUSTOMS_STOCK;
+  if (key === "Customs Ledger") return SEARCH_GROUPS.CUSTOMS_LEDGER;
+  if (key === "Customs Invoice") return SEARCH_GROUPS.CUSTOMS_INVOICES;
+  if (key === "Sales Invoice") return SEARCH_GROUPS.SALES_INVOICES;
+  if (key === "Dispatch" || key === "Sales Dispatch") return SEARCH_GROUPS.DISPATCHES;
+  return SEARCH_GROUPS.OTHER;
+}
+
+const ARTICLE_PRIORITY_GROUPS = new Set([
+  SEARCH_GROUPS.PURCHASE_ORDERS,
+  SEARCH_GROUPS.GRNS,
+  SEARCH_GROUPS.CUSTOMS_STOCK,
+  SEARCH_GROUPS.CUSTOMS_INVOICES,
+  SEARCH_GROUPS.SALES_INVOICES,
+  SEARCH_GROUPS.ITEM_MASTER,
+]);
 
 const CATEGORIES = {
   ALL: "All",
@@ -78,13 +125,66 @@ function applyDateStatus(filter, { dateField, statusField, filters }) {
 }
 
 function firstLineArticle(lines = []) {
-  const ln = (lines || []).find((l) => t(l?.article || l?.articleNumber));
+  const ln = (lines || []).find((l) => t(l?.article || l?.articleNumber || l?.itemCode));
   if (!ln) return { article: "", partNumber: "", description: "" };
   return {
-    article: t(ln.article || ln.articleNumber).toUpperCase(),
+    article: t(ln.article || ln.articleNumber || ln.itemCode).toUpperCase(),
     partNumber: t(ln.partNumber || ln.partNo || ln.spn).toUpperCase(),
     description: t(ln.description || ln.partName || ln.itemName),
   };
+}
+
+function lineInfoFromDoc(lines = [], q = "") {
+  const ql = t(q).toUpperCase();
+  if (ql) {
+    for (const ln of lines || []) {
+      const art = t(ln.article || ln.articleNumber || ln.itemCode || ln.articleNo).toUpperCase();
+      const part = t(ln.partNumber || ln.partNo || ln.spn).toUpperCase();
+      if (art === ql || part === ql || (art && art.includes(ql)) || (part && part.includes(ql))) {
+        return {
+          article: art,
+          partNumber: part,
+          description: t(ln.description || ln.partName || ln.itemName),
+        };
+      }
+    }
+  }
+  return firstLineArticle(lines);
+}
+
+function lineInfoFromCustomsItems(items = [], q = "") {
+  const ql = t(q).toUpperCase();
+  for (const it of items || []) {
+    const art = t(it.articleNumber).toUpperCase();
+    const part = t(it.partNumber).toUpperCase();
+    if (!ql || art === ql || part === ql || art.includes(ql) || part.includes(ql)) {
+      return {
+        article: art,
+        partNumber: part,
+        description: t(it.partName || it.description),
+      };
+    }
+  }
+  const first = (items || [])[0];
+  if (!first) return { article: "", partNumber: "", description: "" };
+  return {
+    article: t(first.articleNumber).toUpperCase(),
+    partNumber: t(first.partNumber).toUpperCase(),
+    description: t(first.partName || first.description),
+  };
+}
+
+function lineArticleOrs(re) {
+  return [
+    { "lines.article": re },
+    { "lines.partNumber": re },
+    { "lines.itemCode": re },
+    { "lines.articleNo": re },
+    { "lines.partNo": re },
+    { "items.article": re },
+    { "items.partNumber": re },
+    { "items.itemCode": re },
+  ];
 }
 
 function scoreHit(hit, q) {
@@ -106,7 +206,33 @@ function scoreHit(hit, q) {
     else if (p.startsWith(ql)) score = Math.max(score, 800);
     else if (p.includes(ql)) score = Math.max(score, 500);
   }
+  const art = t(hit.article).toLowerCase();
+  const part = t(hit.partNumber).toLowerCase();
+  if (art && (art === ql || art.includes(ql))) score = Math.max(score, 920);
+  if (part && (part === ql || part.includes(ql))) score = Math.max(score, 900);
+  if (ARTICLE_PRIORITY_GROUPS.has(hit.group) && (art === ql || part === ql)) {
+    score = Math.max(score, 960);
+  }
   return score;
+}
+
+function buildGroupSummary(items) {
+  const counts = new Map();
+  for (const item of items) {
+    const g = item.group || groupForType(item.type);
+    counts.set(g, (counts.get(g) || 0) + 1);
+  }
+  const groups = GROUP_DISPLAY_ORDER.filter((label) => counts.get(label)).map((label) => ({
+    label,
+    count: counts.get(label),
+  }));
+  for (const [label, count] of counts) {
+    if (!GROUP_DISPLAY_ORDER.includes(label)) {
+      groups.push({ label, count });
+    }
+  }
+  const groupCounts = Object.fromEntries(counts);
+  return { groups, groupCounts };
 }
 
 function baseHit({
@@ -125,9 +251,12 @@ function baseHit({
   qty,
   entityId,
   openPath,
+  group,
 }) {
+  const resolvedGroup = group || groupForType(type);
   return {
     type,
+    group: resolvedGroup,
     category,
     module,
     documentNumber: t(documentNumber),
@@ -157,7 +286,7 @@ async function searchQuotations(companyId, companyCode, re, filters) {
   });
   const rows = await Quotation.find(filter).sort({ quotationDate: -1 }).limit(PER_SOURCE_LIMIT).lean();
   return rows.map((r) => {
-    const line = firstLineArticle(r.lines);
+    const line = lineInfoFromDoc(r.lines, filters.q);
     return baseHit({
       type: "Quotation",
       category: CATEGORIES.SALES,
@@ -185,7 +314,7 @@ async function searchOa(companyId, companyCode, re, filters) {
   });
   const rows = await OrderAcknowledgement.find(filter).sort({ oaDate: -1 }).limit(PER_SOURCE_LIMIT).lean();
   return rows.map((r) => {
-    const line = firstLineArticle(r.lines);
+    const line = lineInfoFromDoc(r.lines, filters.q);
     return baseHit({
       type: "Order Acknowledgement",
       category: CATEGORIES.SALES,
@@ -213,7 +342,7 @@ async function searchProforma(companyId, companyCode, re, filters) {
   });
   const rows = await ProformaInvoice.find(filter).sort({ proformaDate: -1 }).limit(PER_SOURCE_LIMIT).lean();
   return rows.map((r) => {
-    const line = firstLineArticle(r.lines);
+    const line = lineInfoFromDoc(r.lines, filters.q);
     return baseHit({
       type: "Proforma Invoice",
       category: CATEGORIES.SALES,
@@ -234,14 +363,18 @@ async function searchProforma(companyId, companyCode, re, filters) {
 }
 
 async function searchSalesInvoices(companyId, companyCode, re, filters) {
-  const filter = applyDateStatus(withCompany(companyId, { $or: [{ invoiceNo: re }, { invoiceNumber: re }, { customerName: re }, { "lines.article": re }, { "lines.partNumber": re }] }), {
+  const filter = applyDateStatus(
+    withCompany(companyId, {
+      $or: [{ invoiceNo: re }, { invoiceNumber: re }, { customerName: re }, ...lineArticleOrs(re)],
+    }),
+    {
     dateField: "invoiceDate",
     statusField: "status",
     filters,
   });
   const rows = await SalesInvoice.find(filter).sort({ invoiceDate: -1 }).limit(PER_SOURCE_LIMIT).lean();
   return rows.map((r) => {
-    const line = firstLineArticle(r.lines);
+    const line = lineInfoFromDoc(r.lines, filters.q);
     return baseHit({
       type: "Sales Invoice",
       category: CATEGORIES.SALES,
@@ -269,7 +402,7 @@ async function searchAllocations(companyId, companyCode, re, filters) {
   });
   const rows = await OrderAllocation.find(filter).sort({ allocationDate: -1 }).limit(PER_SOURCE_LIMIT).lean();
   return rows.map((r) => {
-    const line = firstLineArticle(r.lines);
+    const line = lineInfoFromDoc(r.lines, filters.q);
     return baseHit({
       type: "Order Allocation",
       category: CATEGORIES.SALES,
@@ -338,14 +471,18 @@ async function searchCustomers(companyId, companyCode, re) {
 }
 
 async function searchPurchaseOrders(companyId, companyCode, re, filters) {
-  const filter = applyDateStatus(withCompany(companyId, { $or: [{ poNo: re }, { poNumber: re }, { supplierName: re }, { "lines.article": re }, { "lines.partNumber": re }, { "lines.partNo": re }] }), {
+  const filter = applyDateStatus(
+    withCompany(companyId, {
+      $or: [{ poNo: re }, { poNumber: re }, { supplierName: re }, ...lineArticleOrs(re)],
+    }),
+    {
     dateField: "poDate",
     statusField: "status",
     filters,
   });
   const rows = await PurchaseOrder.find(filter).sort({ poDate: -1 }).limit(PER_SOURCE_LIMIT).lean();
   return rows.map((r) => {
-    const line = firstLineArticle(r.lines);
+    const line = lineInfoFromDoc(r.lines, filters.q);
     return baseHit({
       type: "Purchase Order",
       category: CATEGORIES.PURCHASE,
@@ -390,13 +527,20 @@ async function searchSuppliers(companyId, companyCode, re) {
 async function searchGrn(companyId, companyCode, re, filters) {
   const filter = applyDateStatus(
     withCompany(companyId, {
-      $or: [{ grnNo: re }, { supplierName: re }, { supplierInvoiceNo: re }, { poNo: re }, { blAwbNo: re }, { "items.article": re }],
+      $or: [
+        { grnNo: re },
+        { supplierName: re },
+        { supplierInvoiceNo: re },
+        { poNo: re },
+        { blAwbNo: re },
+        ...lineArticleOrs(re),
+      ],
     }),
     { dateField: "grnDate", statusField: "status", filters },
   );
   const rows = await GRN.find(filter).sort({ grnDate: -1 }).limit(PER_SOURCE_LIMIT).lean();
   return rows.map((r) => {
-    const line = firstLineArticle(r.items || r.lines);
+    const line = lineInfoFromDoc(r.items || r.lines, filters.q);
     return baseHit({
       type: "GRN",
       category: CATEGORIES.INVENTORY,
@@ -424,7 +568,7 @@ async function searchPacking(companyId, companyCode, re, filters) {
   });
   const rows = await StorePacking.find(filter).sort({ packingDate: -1 }).limit(PER_SOURCE_LIMIT).lean();
   return rows.map((r) => {
-    const line = firstLineArticle(r.lines);
+    const line = lineInfoFromDoc(r.lines, filters.q);
     return baseHit({
       type: "Packing List",
       category: CATEGORIES.INVENTORY,
@@ -528,6 +672,7 @@ async function searchCustomsInvoices(companyId, companyCode, re, filters) {
         { salesInvoiceNumber: re },
         { customerName: re },
         { "items.articleNumber": re },
+        { "items.partNumber": re },
         { "items.allocations.blNumber": re },
         { "items.allocations.boeNumber": re },
         { "items.allocations.awbNumber": re },
@@ -538,8 +683,7 @@ async function searchCustomsInvoices(companyId, companyCode, re, filters) {
   );
   const rows = await CustomsInvoice.find(filter).sort({ invoiceDate: -1 }).limit(PER_SOURCE_LIMIT).lean();
   return rows.map((r) => {
-    const item = (r.items || [])[0];
-    const alloc = item?.allocations?.[0];
+    const line = lineInfoFromCustomsItems(r.items, filters.q);
     return baseHit({
       type: "Customs Invoice",
       category: CATEGORIES.CUSTOMS,
@@ -548,9 +692,9 @@ async function searchCustomsInvoices(companyId, companyCode, re, filters) {
       companyCode,
       date: r.invoiceDate,
       party: r.customerName,
-      article: item?.articleNumber || "",
-      partNumber: item?.partNumber || "",
-      description: r.salesInvoiceNumber ? `SI ${r.salesInvoiceNumber}` : "",
+      article: line.article,
+      partNumber: line.partNumber,
+      description: line.description || (r.salesInvoiceNumber ? `SI ${r.salesInvoiceNumber}` : ""),
       status: r.status,
       amount: r.grandTotal,
       entityId: r._id,
@@ -623,6 +767,43 @@ async function searchCustomsStock(companyId, companyCode, re, filters) {
   );
 }
 
+async function searchCustomsLedger(companyId, companyCode, re, filters) {
+  const filter = applyDateStatus(
+    withCompany(companyId, {
+      $or: [
+        { articleNumber: re },
+        { partNumber: re },
+        { referenceNumber: re },
+        { referenceType: re },
+        { movementType: re },
+      ],
+    }),
+    { dateField: "movementDate", statusField: null, filters },
+  );
+  if (filters.status) filter.movementType = filters.status;
+  const rows = await CustomsMovement.find(filter).sort({ movementDate: -1 }).limit(PER_SOURCE_LIMIT).lean();
+  const qEnc = encodeURIComponent(filters.q || "");
+  return rows.map((r) =>
+    baseHit({
+      type: "Customs Ledger",
+      group: SEARCH_GROUPS.CUSTOMS_LEDGER,
+      category: CATEGORIES.CUSTOMS,
+      module: "CUSTOMS",
+      documentNumber: r.referenceNumber || r.movementType,
+      companyCode,
+      date: r.movementDate || r.createdAt,
+      party: "",
+      article: r.articleNumber,
+      partNumber: r.partNumber,
+      description: `${r.movementType} · ${r.referenceType}`,
+      status: r.movementType,
+      qty: r.qty,
+      entityId: r._id,
+      openPath: `/customs/ledger?article=${encodeURIComponent(r.articleNumber || "")}&search=${qEnc}`,
+    }),
+  );
+}
+
 async function searchDocuments(companyId, companyCode, re) {
   const rows = await Document.find(
     withCompany(companyId, {
@@ -663,11 +844,11 @@ export async function globalSearch(req, rawPaging = {}) {
   const companyCode = req.companyCode || "";
 
   if (!filters.q || filters.q.length < 1) {
-    return { items: [], total: 0, page, limit, query: "", categories: Object.values(CATEGORIES) };
+    return { items: [], total: 0, page, limit, query: "", categories: Object.values(CATEGORIES), groups: [], groupCounts: {} };
   }
 
   const re = buildRegex(filters.q);
-  if (!re) return { items: [], total: 0, page, limit, query: filters.q };
+  if (!re) return { items: [], total: 0, page, limit, query: filters.q, groups: [], groupCounts: {} };
 
   const tasks = [];
   const salesOk = await hasPermission(req, "SALES", "view");
@@ -693,7 +874,7 @@ export async function globalSearch(req, rawPaging = {}) {
     tasks.push(searchPurchaseInvoices);
   }
   if (customsOk && categoryEnabled(CATEGORIES.CUSTOMS, filters)) {
-    tasks.push(searchCustomsInvoices, searchCustomsLots, searchCustomsStock);
+    tasks.push(searchCustomsInvoices, searchCustomsLots, searchCustomsStock, searchCustomsLedger);
   }
   if (categoryEnabled(CATEGORIES.DOCUMENTS, filters)) {
     tasks.push(searchDocuments);
@@ -704,7 +885,11 @@ export async function globalSearch(req, rawPaging = {}) {
   );
   let items = batches.flat();
   items = items
-    .map((hit) => ({ ...hit, _score: scoreHit(hit, filters.q) }))
+    .map((hit) => ({
+      ...hit,
+      group: hit.group || groupForType(hit.type),
+      _score: scoreHit({ ...hit, group: hit.group || groupForType(hit.type) }, filters.q),
+    }))
     .sort((a, b) => {
       if (b._score !== a._score) return b._score - a._score;
       const db = new Date(b.date || 0).getTime();
@@ -714,6 +899,7 @@ export async function globalSearch(req, rawPaging = {}) {
     .slice(0, MERGE_CAP)
     .map(({ _score, ...hit }) => hit);
 
+  const { groups, groupCounts } = buildGroupSummary(items);
   const total = items.length;
   const skip = (page - 1) * limit;
   const pageItems = items.slice(skip, skip + limit);
@@ -726,5 +912,7 @@ export async function globalSearch(req, rawPaging = {}) {
     query: filters.q,
     category: filters.category,
     categories: Object.values(CATEGORIES),
+    groups,
+    groupCounts,
   };
 }

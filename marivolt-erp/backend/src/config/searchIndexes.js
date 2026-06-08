@@ -11,6 +11,7 @@ import StorePacking from "../models/StorePacking.js";
 import StoreDispatch from "../models/StoreDispatch.js";
 import CustomsLot from "../models/CustomsLot.js";
 import CustomsLotItem from "../models/CustomsLotItem.js";
+import CustomsMovement from "../models/CustomsMovement.js";
 import CustomsInvoice from "../models/CustomsInvoice.js";
 import ItemMaster from "../models/itemMasterModel.js";
 import Customer from "../models/Customer.js";
@@ -36,6 +37,8 @@ const INDEX_SPECS = [
   [CustomsLot, { companyId: 1, supplierInvoiceNumber: 1 }],
   [CustomsLotItem, { companyId: 1, articleNumber: 1, blNumber: 1 }],
   [CustomsLotItem, { companyId: 1, supplierInvoiceNumber: 1 }],
+  [CustomsMovement, { companyId: 1, articleNumber: 1 }],
+  [CustomsMovement, { companyId: 1, referenceNumber: 1 }],
   [CustomsInvoice, { companyId: 1, customsInvoiceNumber: 1 }],
   [ItemMaster, { companyId: 1, article: 1 }],
   [ItemMaster, { companyId: 1, partNumber: 1 }],
