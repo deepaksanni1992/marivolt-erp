@@ -444,6 +444,44 @@ export async function listCustomsReconciliationPage(companyId, companyCode, rawF
   };
 }
 
+/** Lightweight mismatch list for data-health scans (no movement dates / part-name lookups). */
+export async function getCustomsReconciliationMismatches(companyId, _companyCode = "", cap = 40) {
+  const [erpMap, customsMap] = await Promise.all([
+    aggregateErpStock(companyId, {}),
+    aggregateCustomsStock(companyId, {}),
+  ]);
+
+  const keys = [...new Set([...erpMap.keys(), ...customsMap.keys()])].sort((a, b) => a.localeCompare(b));
+  const rows = [];
+
+  for (const key of keys) {
+    const erp = erpMap.get(key) || {
+      article: key.split("::")[0],
+      partNumber: key.split("::")[1] || "",
+      erpStock: 0,
+    };
+    const customs = customsMap.get(key);
+    const erpStock = parseNum(erp.erpStock);
+    const customsStock = parseNum(customs?.customsStock);
+    if (erpStock <= EPS && customsStock <= EPS && !customs?.hasCustomsRecord) continue;
+
+    const statusRow = computeRowStatus(erpStock, customsStock, !!customs?.hasCustomsRecord);
+    if (statusRow.status === RECON_STATUS.MATCH) continue;
+
+    rows.push({
+      article: erp.article || customs?.article || key.split("::")[0],
+      partNumber: erp.partNumber || customs?.partNumber || key.split("::")[1] || "",
+      erpStock,
+      customsStock,
+      status: statusRow.status,
+      actionRequired: statusRow.actionRequired,
+    });
+    if (rows.length >= cap) break;
+  }
+
+  return rows;
+}
+
 /** Backward-compatible full list helper used by legacy callers. */
 export async function buildCustomsReconciliation(companyId, companyCode = "") {
   const { items } = await listCustomsReconciliationPage(companyId, companyCode, {}, {

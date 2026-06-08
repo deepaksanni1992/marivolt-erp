@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiGetWithQuery, apiPost } from "../lib/api.js";
@@ -24,6 +24,13 @@ function fmtDate(v) {
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toISOString().slice(0, 10);
+}
+
+function fmtDateTime(v) {
+  if (!v) return "—";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString();
 }
 
 function fmtNum(v) {
@@ -88,6 +95,7 @@ function BarList({ items = [], labelKey = "label", valueKey = "count" }) {
 
 export default function DataHealthDashboard() {
   const { auth, selectCompany } = useAuth();
+  const queryClient = useQueryClient();
   const [module, setModule] = useState("");
   const [severity, setSeverity] = useState("");
   const [documentNumber, setDocumentNumber] = useState("");
@@ -97,6 +105,7 @@ export default function DataHealthDashboard() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const queryParams = useMemo(
     () => ({
@@ -122,6 +131,18 @@ export default function DataHealthDashboard() {
   const charts = data?.charts || {};
   const issues = data?.issues || [];
   const currentCompany = auth?.company?.code || data?.companyCode || "—";
+
+  const refreshAudit = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const fresh = await apiGetWithQuery("/data-health", { ...queryParams, refresh: "true" });
+      queryClient.setQueryData(["data-health", queryParams, auth?.company?.id], fresh);
+    } catch (err) {
+      window.alert(err.message || "Failed to refresh audit");
+    } finally {
+      setRefreshing(false);
+    }
+  }, [auth?.company?.id, queryClient, queryParams]);
 
   const onCompanyChange = useCallback(
     async (e) => {
@@ -206,7 +227,19 @@ export default function DataHealthDashboard() {
   return (
     <div className="p-4 md:p-6">
       <PageHeader title="Data Health Dashboard" subtitle="Read-only ERP self-audit — workflow, inventory, customs, master data, and accounts integrity.">
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm font-semibold text-sky-800 hover:bg-sky-100 disabled:opacity-40"
+            disabled={refreshing || healthQ.isLoading}
+            onClick={refreshAudit}
+          >
+            {refreshing ? "Refreshing…" : "Refresh Audit"}
+          </button>
+          <span className="text-xs text-slate-500">
+            Last audit: {fmtDateTime(data?.lastAuditRun || data?.generatedAt)}
+            {data?.fromCache ? " (cached)" : ""}
+          </span>
           <button type="button" className="rounded-lg border px-3 py-2 text-sm font-semibold hover:bg-slate-50 disabled:opacity-40" disabled={exporting || healthQ.isLoading} onClick={exportCsv}>
             Export CSV
           </button>
@@ -292,9 +325,15 @@ export default function DataHealthDashboard() {
               <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Health Rating</div>
               <div className={`mt-1 text-xl font-semibold ${ratingTone(data?.healthRating)}`}>{data?.healthRating || "—"}</div>
             </div>
-            <KpiCard title="Critical Issues" value={fmtNum(data?.criticalCount)} tone="rose" />
-            <KpiCard title="Major Issues" value={fmtNum(data?.majorCount)} tone="amber" />
-            <KpiCard title="Minor Issues" value={fmtNum(data?.minorCount)} tone="slate" />
+          </div>
+
+          <div>
+            <h2 className="mb-2 text-sm font-semibold text-slate-800">Issue Summary</h2>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <KpiCard title="Critical Issues" value={fmtNum(data?.criticalCount)} tone="rose" />
+              <KpiCard title="Major Issues" value={fmtNum(data?.majorCount)} tone="amber" />
+              <KpiCard title="Minor Issues" value={fmtNum(data?.minorCount)} tone="slate" />
+            </div>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -380,7 +419,8 @@ export default function DataHealthDashboard() {
           </div>
 
           <p className="text-xs text-slate-500">
-            Company <strong>{currentCompany}</strong> · Generated {fmtDate(data?.generatedAt)} · Read-only scan (no data modified)
+            Company <strong>{currentCompany}</strong> · Last audit run {fmtDateTime(data?.lastAuditRun || data?.generatedAt)}
+            {data?.fromCache ? " · Served from cache" : ""} · Read-only scan (no data modified)
           </p>
         </div>
       )}

@@ -55,15 +55,23 @@ async function main() {
   try {
     const auth = await login(process.env.AUDIT_USER || "advitya", process.env.AUDIT_PASS || "advitya2026");
 
+    const warm = await api("/data-health?refresh=true", { token: auth.token, companyId: auth.marId });
+    if (warm.status === 404) fail("API", "GET /data-health not found");
+    else if (warm.status === 200) pass("API", `GET /data-health → 200 (refresh ${warm.ms}ms)`);
+    else fail("API", `Status ${warm.status}`);
+
     const route = await api("/data-health", { token: auth.token, companyId: auth.marId });
-    if (route.status === 404) fail("API", "GET /data-health not found");
-    else if (route.status === 200) pass("API", `GET /data-health → 200 (${route.ms}ms)`);
-    else fail("API", `Status ${route.status}`);
+    if (route.status === 200) pass("CACHE", `Cached load ${route.ms}ms${route.data?.fromCache ? " (fromCache)" : ""}`);
+    else warn("CACHE", `Cached load status ${route.status}`);
 
-    if (route.ms > 3000) warn("PERF", `Load ${route.ms}ms exceeds 3s target`);
-    else pass("PERF", `Load ${route.ms}ms`);
+    if (route.ms > 3000) warn("PERF", `Cached load ${route.ms}ms exceeds 3s target`);
+    else pass("PERF", `Cached load ${route.ms}ms`);
 
-    const d = route.data || {};
+    if (warm.ms > 3000) warn("PERF-REFRESH", `Full refresh ${warm.ms}ms exceeds 3s target`);
+
+    const d = warm.data || route.data || {};
+    if (d.lastAuditRun || d.generatedAt) pass("AUDIT-RUN", `lastAuditRun=${d.lastAuditRun || d.generatedAt}`);
+    else fail("AUDIT-RUN", "lastAuditRun missing");
     if (typeof d.healthScore === "number" && d.healthScore >= 0 && d.healthScore <= 100) {
       const expected = 100 - d.criticalCount * 10 - d.majorCount * 5 - d.minorCount * 1;
       const clamped = Math.max(0, expected);
