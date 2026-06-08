@@ -19,6 +19,7 @@ const flatLinks = [
 const customsGroup = {
   label: "Customs",
   items: [
+    { to: "/customs/dashboard", label: "Customs Dashboard" },
     { to: "/customs/stock", label: "Customs Stock" },
     { to: "/customs/ledger", label: "Customs Stock Ledger" },
     { to: "/customs/invoices", label: "Customs Invoice" },

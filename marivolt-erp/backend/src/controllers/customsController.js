@@ -11,6 +11,8 @@ import {
   getCustomsReconciliationDetail,
   listCustomsReconciliationPage,
 } from "../services/customsReconciliationService.js";
+import { buildCustomsDashboard } from "../services/customsDashboardService.js";
+import { writeAudit } from "../services/auditService.js";
 
 function disabled(res) {
   return res.status(404).json({
@@ -198,4 +200,59 @@ export async function getCustomsReconciliationDetailHandler(req, res) {
 
 export async function getCustomsStatus(req, res) {
   res.json({ enabled: isCustomsEnabled() });
+}
+
+function dashboardFilters(req) {
+  return {
+    article: req.query.article || req.query.articleNumber,
+    supplier: req.query.supplier,
+    dateFrom: req.query.dateFrom,
+    dateTo: req.query.dateTo,
+  };
+}
+
+export async function getCustomsDashboard(req, res) {
+  try {
+    if (!isCustomsEnabled()) return disabled(res);
+    const result = await buildCustomsDashboard(req.companyId, req.companyCode || "", dashboardFilters(req));
+    res.json({
+      enabled: true,
+      companyCode: req.companyCode || "",
+      ...result,
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to load customs dashboard" });
+  }
+}
+
+export async function logCustomsDashboardExport(req, res) {
+  try {
+    if (!isCustomsEnabled()) return disabled(res);
+    const canExport =
+      (await hasPermission(req, "CUSTOMS", "export")) ||
+      (await hasPermission(req, "CUSTOMS", "reconciliation_export")) ||
+      (await hasPermission(req, "CUSTOMS", "reconcile"));
+    if (!canExport) {
+      return res.status(403).json({
+        message: "Permission denied: CUSTOMS.export",
+        code: "PERMISSION_DENIED",
+      });
+    }
+    const format = String(req.body?.format || req.query?.format || "unknown").toLowerCase();
+    await writeAudit(req, {
+      action: "OTHER",
+      module: "CUSTOMS",
+      entityType: "CUSTOMS_DASHBOARD",
+      documentNo: `DASHBOARD-${req.companyCode || ""}`,
+      description: `Customs dashboard ${format} export`,
+      metadata: {
+        format,
+        filters: req.body?.filters || dashboardFilters(req),
+        companyCode: req.companyCode || "",
+      },
+    });
+    res.json({ ok: true, logged: true });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to log export" });
+  }
 }

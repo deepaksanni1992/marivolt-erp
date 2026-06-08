@@ -16,6 +16,8 @@ const customsReconciliationView = requireAnyPermission(
 );
 
 router.get("/status", customsView, c.getCustomsStatus);
+router.get("/dashboard", customsView, c.getCustomsDashboard);
+router.post("/dashboard/export-log", customsView, c.logCustomsDashboardExport);
 router.get("/stock", customsView, c.getCustomsStock);
 router.get("/ledger", customsView, c.getCustomsLedger);
 router.get("/available-lots", customsView, ci.listAvailableLots);

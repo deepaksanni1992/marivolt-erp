@@ -11,6 +11,7 @@ import ProcurementFoundation from "./pages/ProcurementFoundation.jsx";
 import Sales from "./pages/Sales.jsx";
 import Inventory from "./pages/Inventory.jsx";
 import Store from "./pages/StoreModule.jsx";
+import CustomsDashboard from "./pages/CustomsDashboard.jsx";
 import CustomsStock from "./pages/CustomsStock.jsx";
 import CustomsStockLedger from "./pages/CustomsStockLedger.jsx";
 import CustomsInvoice from "./pages/CustomsInvoice.jsx";
@@ -54,6 +55,7 @@ export default function App() {
           <Route path="purchase" element={<ProcurementFoundation />} />
           <Route path="sales" element={<Sales />} />
           <Route path="store" element={<Store />} />
+          <Route path="customs/dashboard" element={<CustomsDashboard />} />
           <Route path="customs/stock" element={<CustomsStock />} />
           <Route path="customs/ledger" element={<CustomsStockLedger />} />
           <Route path="customs/invoices" element={<CustomsInvoice />} />
