@@ -9,7 +9,6 @@ const flatLinks = [
   { to: "/store", label: "Store" },
   { to: "/logistics", label: "Logistics" },
   { to: "/accounts", label: "Accounts" },
-  { to: "/documents", label: "Documents" },
   { to: "/bom", label: "BOM" },
   { to: "/kitting", label: "Kitting" },
   { to: "/dekitting", label: "De-Kitting" },
@@ -27,6 +26,14 @@ const customsGroup = {
   ],
 };
 
+const documentsGroup = {
+  label: "Documents",
+  items: [
+    { to: "/documents", label: "Documents" },
+    { to: "/traceability/article", label: "Article Traceability" },
+  ],
+};
+
 function linkClass(isActive) {
   return [
     "block rounded-xl px-3 py-2 text-sm",
@@ -36,6 +43,7 @@ function linkClass(isActive) {
 
 export default function Sidebar({ open, onClose }) {
   const [customsOpen, setCustomsOpen] = useState(true);
+  const [documentsOpen, setDocumentsOpen] = useState(true);
 
   return (
     <aside
@@ -84,6 +92,28 @@ export default function Sidebar({ open, onClose }) {
                 {customsGroup.items.map(({ to, label }) => (
                   <li key={to}>
                     <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
+                      {label}
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </li>
+
+          <li>
+            <button
+              type="button"
+              className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
+              onClick={() => setDocumentsOpen((v) => !v)}
+            >
+              <span>{documentsGroup.label}</span>
+              <span className="text-xs text-gray-400">{documentsOpen ? "▾" : "▸"}</span>
+            </button>
+            {documentsOpen ? (
+              <ul className="ml-3 mt-1 space-y-1 border-l border-gray-200 pl-2">
+                {documentsGroup.items.map(({ to, label }) => (
+                  <li key={to}>
+                    <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/documents"}>
                       {label}
                     </NavLink>
                   </li>

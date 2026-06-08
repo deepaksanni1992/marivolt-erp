@@ -42,6 +42,7 @@ const SYSTEM_DEFAULTS = {
   SALES: buildMatrix({
     SALES: ["view", "create", "edit", "approve", "cancel", "export"],
     CUSTOMS: ["view", "create", "cancel"],
+    TRACEABILITY: ["article_view"],
     REPORTS: READ_ONLY_ACTIONS,
     ITEM_MASTER: ["view", "export"],
     ACCOUNTS: ["view"],
@@ -51,18 +52,21 @@ const SYSTEM_DEFAULTS = {
   PURCHASE: buildMatrix({
     PURCHASE: ["view", "create", "edit", "approve", "cancel", "export"],
     ITEM_MASTER: ["view", "create", "edit", "export"],
+    TRACEABILITY: ["article_view"],
     REPORTS: READ_ONLY_ACTIONS,
     STORE: ["view"],
   }),
   STORE: buildMatrix({
     STORE: ["view", "create", "edit", "approve", "cancel", "export"],
     CUSTOMS: ["view", "create", "cancel"],
+    TRACEABILITY: ["article_view"],
     ITEM_MASTER: ["view", "export"],
     REPORTS: READ_ONLY_ACTIONS,
     PURCHASE: ["view"],
   }),
   LOGISTICS: buildMatrix({
     LOGISTICS: ["view", "create", "edit", "approve", "cancel", "export"],
+    TRACEABILITY: ["article_view"],
     REPORTS: READ_ONLY_ACTIONS,
     SALES: ["view"],
     STORE: ["view"],
@@ -70,12 +74,14 @@ const SYSTEM_DEFAULTS = {
   ACCOUNTS: buildMatrix({
     ACCOUNTS: ["view", "create", "edit", "approve", "cancel", "export"],
     CUSTOMS: ["view", "export", "reconcile", "reconciliation_view", "reconciliation_export"],
+    TRACEABILITY: ["article_view", "article_export"],
     REPORTS: READ_ONLY_ACTIONS,
     SALES: ["view"],
   }),
-  VIEW_ONLY: buildMatrix(
-    Object.fromEntries(PERMISSION_MODULES.map((m) => [m, READ_ONLY_ACTIONS]))
-  ),
+  VIEW_ONLY: buildMatrix({
+    ...Object.fromEntries(PERMISSION_MODULES.map((m) => [m, READ_ONLY_ACTIONS])),
+    TRACEABILITY: ["article_view"],
+  }),
 };
 
 /** Map legacy enum codes → Phase-10 system role codes. */

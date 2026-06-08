@@ -37,6 +37,7 @@ import dispatchRoutes from "./routes/dispatchRoutes.js";
 import reportPdfRoutes from "./routes/reportPdfRoutes.js";
 import customsRoutes from "./routes/customsRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
+import traceabilityRoutes from "./routes/traceabilityRoutes.js";
 import { isCustomsEnabled } from "./config/customsConfig.js";
 import { ensureSearchIndexes } from "./config/searchIndexes.js";
 import { isS3Configured } from "./config/s3.js";
@@ -138,6 +139,7 @@ async function startServer() {
     app.use("/api/reports", reportPdfRoutes);
     app.use("/api/customs", customsRoutes);
     app.use("/api/search", searchRoutes);
+    app.use("/api/traceability", traceabilityRoutes);
 
     console.log("Customs module:", isCustomsEnabled() ? "enabled (CUSTOMS_ENABLED=true)" : "disabled");
 
