@@ -38,6 +38,7 @@ import reportPdfRoutes from "./routes/reportPdfRoutes.js";
 import customsRoutes from "./routes/customsRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
 import traceabilityRoutes from "./routes/traceabilityRoutes.js";
+import dataHealthRoutes from "./routes/dataHealthRoutes.js";
 import { isCustomsEnabled } from "./config/customsConfig.js";
 import { ensureSearchIndexes } from "./config/searchIndexes.js";
 import { isS3Configured } from "./config/s3.js";
@@ -140,6 +141,7 @@ async function startServer() {
     app.use("/api/customs", customsRoutes);
     app.use("/api/search", searchRoutes);
     app.use("/api/traceability", traceabilityRoutes);
+    app.use("/api/data-health", dataHealthRoutes);
 
     console.log("Customs module:", isCustomsEnabled() ? "enabled (CUSTOMS_ENABLED=true)" : "disabled");
 

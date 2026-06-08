@@ -1,8 +1,16 @@
 import { NavLink } from "react-router-dom";
 import { useState } from "react";
 
+const dashboardGroup = {
+  label: "Dashboard",
+  items: [
+    { to: "/dashboard", label: "ERP BI Dashboard" },
+    { to: "/customs/dashboard", label: "Customs Dashboard" },
+    { to: "/dashboard/data-health", label: "Data Health Dashboard" },
+  ],
+};
+
 const flatLinks = [
-  { to: "/dashboard", label: "Dashboard" },
   { to: "/items", label: "Item Master" },
   { to: "/purchase", label: "Purchase" },
   { to: "/sales", label: "Sales" },
@@ -19,7 +27,6 @@ const flatLinks = [
 const customsGroup = {
   label: "Customs",
   items: [
-    { to: "/customs/dashboard", label: "Customs Dashboard" },
     { to: "/customs/stock", label: "Customs Stock" },
     { to: "/customs/ledger", label: "Customs Stock Ledger" },
     { to: "/customs/invoices", label: "Customs Invoice" },
@@ -43,6 +50,7 @@ function linkClass(isActive) {
 }
 
 export default function Sidebar({ open, onClose }) {
+  const [dashboardOpen, setDashboardOpen] = useState(true);
   const [customsOpen, setCustomsOpen] = useState(true);
   const [documentsOpen, setDocumentsOpen] = useState(true);
 
@@ -71,9 +79,31 @@ export default function Sidebar({ open, onClose }) {
       <nav className="max-h-[calc(100vh-4rem)] overflow-y-auto p-3">
         <div className="mb-2 px-2 text-xs font-semibold text-gray-500">Menu</div>
         <ul className="space-y-1">
-          {flatLinks.slice(0, 6).map(({ to, label }) => (
+          <li>
+            <button
+              type="button"
+              className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
+              onClick={() => setDashboardOpen((v) => !v)}
+            >
+              <span>{dashboardGroup.label}</span>
+              <span className="text-xs text-gray-400">{dashboardOpen ? "▾" : "▸"}</span>
+            </button>
+            {dashboardOpen ? (
+              <ul className="ml-3 mt-1 space-y-1 border-l border-gray-200 pl-2">
+                {dashboardGroup.items.map(({ to, label }) => (
+                  <li key={to}>
+                    <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/dashboard"}>
+                      {label}
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </li>
+
+          {flatLinks.slice(0, 5).map(({ to, label }) => (
             <li key={to}>
-              <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/dashboard"}>
+              <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
                 {label}
               </NavLink>
             </li>
@@ -123,7 +153,7 @@ export default function Sidebar({ open, onClose }) {
             ) : null}
           </li>
 
-          {flatLinks.slice(6).map(({ to, label }) => (
+          {flatLinks.slice(5).map(({ to, label }) => (
             <li key={to}>
               <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
                 {label}
