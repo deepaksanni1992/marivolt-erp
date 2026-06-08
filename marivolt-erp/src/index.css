@@ -1,2 +1,101 @@
 @import "tailwindcss";
-  
+
+/* Marivolt ERP — sidebar theme (navigation only) */
+.erp-sidebar {
+  --sidebar-bg: #fff8f0;
+  --sidebar-hover: #ffe8cc;
+  --sidebar-active: #08152f;
+  --sidebar-border: #efd8b5;
+  --sidebar-header: #c96a00;
+  --sidebar-text: #2f3a4a;
+  background-color: var(--sidebar-bg);
+  border-color: var(--sidebar-border);
+  color: var(--sidebar-text);
+}
+
+.erp-sidebar__logo {
+  border-bottom: 1px solid var(--sidebar-border);
+}
+
+.erp-sidebar__subtitle {
+  color: color-mix(in srgb, var(--sidebar-text) 65%, transparent);
+}
+
+.erp-sidebar__section-header {
+  color: var(--sidebar-header);
+  font-weight: 600;
+}
+
+.erp-sidebar__menu {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.erp-sidebar__submenu {
+  margin-top: 0.25rem;
+  margin-left: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  border-left: 1px solid var(--sidebar-border);
+  padding-left: 0.5rem;
+}
+
+.erp-sidebar__link {
+  display: block;
+  border-radius: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--sidebar-text);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.erp-sidebar__link:hover {
+  background-color: var(--sidebar-hover);
+  color: var(--sidebar-active);
+}
+
+.erp-sidebar__link--active {
+  background-color: var(--sidebar-active);
+  color: #ffffff;
+}
+
+.erp-sidebar__link--active:hover {
+  background-color: var(--sidebar-active);
+  color: #ffffff;
+}
+
+.erp-sidebar__group-btn {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--sidebar-text);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.erp-sidebar__group-btn:hover {
+  background-color: var(--sidebar-hover);
+  color: var(--sidebar-active);
+}
+
+.erp-sidebar__chevron {
+  font-size: 0.75rem;
+  color: color-mix(in srgb, var(--sidebar-text) 55%, transparent);
+}
+
+.erp-sidebar__close-btn {
+  border-color: var(--sidebar-border);
+  color: var(--sidebar-text);
+}
+
+.erp-sidebar__close-btn:hover {
+  background-color: var(--sidebar-hover);
+  color: var(--sidebar-active);
+}

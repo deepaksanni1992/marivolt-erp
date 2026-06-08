@@ -43,10 +43,7 @@ const documentsGroup = {
 };
 
 function linkClass(isActive) {
-  return [
-    "block rounded-xl px-3 py-2 text-sm",
-    isActive ? "bg-gray-900 text-white" : "text-gray-700 hover:bg-gray-100",
-  ].join(" ");
+  return ["erp-sidebar__link", isActive ? "erp-sidebar__link--active" : ""].filter(Boolean).join(" ");
 }
 
 export default function Sidebar({ open, onClose }) {
@@ -57,39 +54,39 @@ export default function Sidebar({ open, onClose }) {
   return (
     <aside
       className={[
-        "fixed z-50 h-screen w-64 border-r bg-white",
+        "erp-sidebar fixed z-50 h-screen w-64 border-r",
         "md:translate-x-0",
         open ? "translate-x-0" : "-translate-x-full",
         "transition-transform duration-200 ease-in-out",
       ].join(" ")}
     >
-      <div className="flex h-16 items-center justify-between border-b px-4">
+      <div className="erp-sidebar__logo flex h-16 items-center justify-between px-4">
         <div className="flex items-center gap-2">
           <img src="/marivolt-logo.png" alt="Marivolt logo" className="h-9 w-9 rounded-lg object-contain" />
           <div>
             <div className="text-sm font-semibold leading-4">Marivoltz</div>
-            <div className="text-xs text-gray-500">ERP</div>
+            <div className="erp-sidebar__subtitle text-xs">ERP</div>
           </div>
         </div>
-        <button className="rounded-lg border px-2 py-1 text-sm md:hidden" onClick={onClose}>
+        <button
+          type="button"
+          className="erp-sidebar__close-btn rounded-lg border px-2 py-1 text-sm md:hidden"
+          onClick={onClose}
+        >
           Close
         </button>
       </div>
 
       <nav className="max-h-[calc(100vh-4rem)] overflow-y-auto p-3">
-        <div className="mb-2 px-2 text-xs font-semibold text-gray-500">Menu</div>
-        <ul className="space-y-1">
+        <div className="erp-sidebar__section-header mb-2 px-2 text-xs">Menu</div>
+        <ul className="erp-sidebar__menu">
           <li>
-            <button
-              type="button"
-              className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
-              onClick={() => setDashboardOpen((v) => !v)}
-            >
+            <button type="button" className="erp-sidebar__group-btn" onClick={() => setDashboardOpen((v) => !v)}>
               <span>{dashboardGroup.label}</span>
-              <span className="text-xs text-gray-400">{dashboardOpen ? "▾" : "▸"}</span>
+              <span className="erp-sidebar__chevron">{dashboardOpen ? "▾" : "▸"}</span>
             </button>
             {dashboardOpen ? (
-              <ul className="ml-3 mt-1 space-y-1 border-l border-gray-200 pl-2">
+              <ul className="erp-sidebar__submenu">
                 {dashboardGroup.items.map(({ to, label }) => (
                   <li key={to}>
                     <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/dashboard"}>
@@ -110,16 +107,12 @@ export default function Sidebar({ open, onClose }) {
           ))}
 
           <li>
-            <button
-              type="button"
-              className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
-              onClick={() => setCustomsOpen((v) => !v)}
-            >
+            <button type="button" className="erp-sidebar__group-btn" onClick={() => setCustomsOpen((v) => !v)}>
               <span>{customsGroup.label}</span>
-              <span className="text-xs text-gray-400">{customsOpen ? "▾" : "▸"}</span>
+              <span className="erp-sidebar__chevron">{customsOpen ? "▾" : "▸"}</span>
             </button>
             {customsOpen ? (
-              <ul className="ml-3 mt-1 space-y-1 border-l border-gray-200 pl-2">
+              <ul className="erp-sidebar__submenu">
                 {customsGroup.items.map(({ to, label }) => (
                   <li key={to}>
                     <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
@@ -132,16 +125,12 @@ export default function Sidebar({ open, onClose }) {
           </li>
 
           <li>
-            <button
-              type="button"
-              className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
-              onClick={() => setDocumentsOpen((v) => !v)}
-            >
+            <button type="button" className="erp-sidebar__group-btn" onClick={() => setDocumentsOpen((v) => !v)}>
               <span>{documentsGroup.label}</span>
-              <span className="text-xs text-gray-400">{documentsOpen ? "▾" : "▸"}</span>
+              <span className="erp-sidebar__chevron">{documentsOpen ? "▾" : "▸"}</span>
             </button>
             {documentsOpen ? (
-              <ul className="ml-3 mt-1 space-y-1 border-l border-gray-200 pl-2">
+              <ul className="erp-sidebar__submenu">
                 {documentsGroup.items.map(({ to, label }) => (
                   <li key={to}>
                     <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/documents"}>
