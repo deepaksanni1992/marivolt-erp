@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
@@ -429,6 +430,13 @@ function DashboardTab() {
 
 export default function ProcurementFoundation() {
   const [tab, setTab] = useState("suppliers");
+  const [searchParams] = useSearchParams();
+
+  useEffect(() => {
+    const tabq = searchParams.get("tab");
+    if (tabq && TABS.some((t) => t.id === tabq)) setTab(tabq);
+  }, [searchParams]);
+
   return (
     <div className="space-y-4">
       <PageHeader title="Procurement Foundation" subtitle="Supplier Master, purchase orders, GRN, reports, and dashboard." />

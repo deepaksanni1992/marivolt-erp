@@ -513,7 +513,14 @@ export default function StoreModule() {
   useEffect(() => {
     const tabq = searchParams.get("tab");
     const po = searchParams.get("grnPoId");
+    const packingNo = String(searchParams.get("packingNo") || "").trim();
+    const dispatchNo = String(searchParams.get("dispatchNo") || "").trim();
     if (tabq && TABS.includes(tabq)) setTab(tabq);
+    if (packingNo) {
+      setTab("Packing");
+      setPackingStatusFilter("FULLY_PACKED");
+    }
+    if (dispatchNo) setTab("Dispatch");
     if (po) {
       setGrnPoId(po);
       if (!tabq || tabq === "GRN") setTab("GRN");

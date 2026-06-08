@@ -36,7 +36,9 @@ import packingRoutes from "./routes/packingRoutes.js";
 import dispatchRoutes from "./routes/dispatchRoutes.js";
 import reportPdfRoutes from "./routes/reportPdfRoutes.js";
 import customsRoutes from "./routes/customsRoutes.js";
+import searchRoutes from "./routes/searchRoutes.js";
 import { isCustomsEnabled } from "./config/customsConfig.js";
+import { ensureSearchIndexes } from "./config/searchIndexes.js";
 import { isS3Configured } from "./config/s3.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -62,6 +64,10 @@ async function startServer() {
     });
 
     console.log("✅ MongoDB connected");
+
+    ensureSearchIndexes().catch((err) => {
+      console.warn("Search index ensure skipped:", err?.message || err);
+    });
 
     const app = express();
 
@@ -131,6 +137,7 @@ async function startServer() {
     app.use("/api/dispatch", dispatchRoutes);
     app.use("/api/reports", reportPdfRoutes);
     app.use("/api/customs", customsRoutes);
+    app.use("/api/search", searchRoutes);
 
     console.log("Customs module:", isCustomsEnabled() ? "enabled (CUSTOMS_ENABLED=true)" : "disabled");
 

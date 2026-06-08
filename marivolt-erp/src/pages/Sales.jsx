@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Papa from "papaparse";
 import PageHeader from "../components/erp/PageHeader.jsx";
@@ -1480,6 +1481,17 @@ export default function Sales() {
     lines: [{ article: "", partNumber: "", description: "", qty: 1, uom: "PCS", unitPrice: 0, reason: "" }],
   });
   const [detailId, setDetailId] = useState(null);
+  const [searchParams] = useSearchParams();
+
+  useEffect(() => {
+    const tab = searchParams.get("tab");
+    const id = searchParams.get("id");
+    const q = searchParams.get("q");
+    if (tab) setActiveTab(tab);
+    if (id) setDetailId(id);
+    if (q) setSearch(q);
+  }, [searchParams]);
+
   const [oaCreateOpen, setOaCreateOpen] = useState(false);
   const [proformaCreateOpen, setProformaCreateOpen] = useState(false);
   const [salesInvoiceCreateOpen, setSalesInvoiceCreateOpen] = useState(false);

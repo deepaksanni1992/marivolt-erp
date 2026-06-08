@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -68,6 +68,7 @@ async function openDocument(documentId) {
 
 export default function CustomsStock() {
   const nav = useNavigate();
+  const [searchParams] = useSearchParams();
   const { auth, selectCompany } = useAuth();
   const [page, setPage] = useState(1);
   const [limit] = useState(50);
@@ -84,14 +85,22 @@ export default function CustomsStock() {
       page,
       limit,
       search: search.trim() || undefined,
+      articleNumber: searchParams.get("articleNumber") || undefined,
       supplier: supplier.trim() || undefined,
       countryOfOrigin: countryOfOrigin.trim() || undefined,
       status: status || undefined,
       dateFrom: dateFrom || undefined,
       dateTo: dateTo || undefined,
     }),
-    [page, limit, search, supplier, countryOfOrigin, status, dateFrom, dateTo],
+    [page, limit, search, supplier, countryOfOrigin, status, dateFrom, dateTo, searchParams],
   );
+
+  useEffect(() => {
+    const q = searchParams.get("search") || searchParams.get("q");
+    const article = searchParams.get("articleNumber");
+    if (q) setSearch(q);
+    else if (article) setSearch(article);
+  }, [searchParams]);
 
   const stockQ = useQuery({
     queryKey: ["customs-stock-page", queryParams, auth?.company?.id],

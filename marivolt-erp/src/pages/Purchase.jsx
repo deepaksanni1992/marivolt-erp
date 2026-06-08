@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Papa from "papaparse";
 import Modal from "../components/erp/Modal.jsx";
@@ -853,6 +854,13 @@ export default function Purchase({ procurementEmbed = false } = {}) {
   const [createOpen, setCreateOpen] = useState(false);
   const [editPoId, setEditPoId] = useState(null);
   const [detailId, setDetailId] = useState(null);
+  const [searchParams] = useSearchParams();
+
+  useEffect(() => {
+    const id = searchParams.get("id");
+    if (id) setDetailId(id);
+  }, [searchParams]);
+
   const [receiveOpen, setReceiveOpen] = useState(false);
   const [form, setForm] = useState(() => initialPoForm(null));
   const [receiveWarehouse, setReceiveWarehouse] = useState("MAIN");

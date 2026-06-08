@@ -15,6 +15,7 @@ import CustomsStock from "./pages/CustomsStock.jsx";
 import CustomsStockLedger from "./pages/CustomsStockLedger.jsx";
 import CustomsInvoice from "./pages/CustomsInvoice.jsx";
 import CustomsReconciliation from "./pages/CustomsReconciliation.jsx";
+import GlobalSearch from "./pages/GlobalSearch.jsx";
 import Logistics from "./pages/Logistics.jsx";
 import Accounts from "./pages/Accounts.jsx";
 import BOMPage from "./pages/BOM.jsx";
@@ -57,6 +58,7 @@ export default function App() {
           <Route path="customs/invoices" element={<CustomsInvoice />} />
           <Route path="customs/invoices/:id" element={<CustomsInvoice />} />
           <Route path="customs/reconciliation" element={<CustomsReconciliation />} />
+          <Route path="search" element={<GlobalSearch />} />
           <Route path="inventory" element={<Inventory />} />
           <Route path="logistics" element={<Logistics />} />
           <Route path="accounts" element={<Accounts />} />

@@ -1,9 +1,18 @@
 import { useNavigate } from "react-router-dom";
+import { useState } from "react";
 import { useAuth } from "../context/AuthContext.jsx";
 
 export default function Topbar({ onMenuClick }) {
   const nav = useNavigate();
   const { auth, logout, selectCompany } = useAuth();
+  const [headerQ, setHeaderQ] = useState("");
+
+  function submitHeaderSearch(e) {
+    e?.preventDefault?.();
+    const q = headerQ.trim();
+    if (!q) return;
+    nav(`/search?q=${encodeURIComponent(q)}`);
+  }
 
   function onLogout() {
     logout();
@@ -43,6 +52,16 @@ export default function Topbar({ onMenuClick }) {
             </span>
           )}
         </div>
+
+        <form onSubmit={submitHeaderSearch} className="mx-4 hidden flex-1 max-w-xl md:flex">
+          <input
+            type="search"
+            value={headerQ}
+            onChange={(e) => setHeaderQ(e.target.value)}
+            placeholder="Search ERP — document, article, customer, BL, BOE…"
+            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-slate-400 focus:bg-white"
+          />
+        </form>
 
         <div className="flex items-center gap-3">
           {!!auth?.companies?.length && (

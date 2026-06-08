@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FileUp, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { apiDelete, apiGet, apiGetWithQuery, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
@@ -157,6 +158,15 @@ export default function ItemMaster() {
   const lookupImportRef = useRef(null);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
+  const [searchParams] = useSearchParams();
+
+  useEffect(() => {
+    const q = searchParams.get("q") || searchParams.get("search");
+    const article = searchParams.get("articleNumber");
+    if (q) setSearch(q);
+    else if (article) setSearch(article);
+  }, [searchParams]);
+
   const [vertical, setVertical] = useState("");
   const [engine, setEngine] = useState("");
   const [engineModel, setEngineModel] = useState("");
