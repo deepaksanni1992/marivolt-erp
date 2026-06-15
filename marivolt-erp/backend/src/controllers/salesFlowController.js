@@ -155,18 +155,30 @@ function computeTotals(lines = [], source = {}) {
   for (const line of lines) {
     subTotal += Number(line.totalPrice) || 0;
   }
-  const discountTotal = Math.max(0, Number(source?.discountTotal) || 0);
+  const discountType = String(source?.discountType || "NONE").toUpperCase();
+  const discountValue = Math.max(0, Number(source?.discountValue) || 0);
+  let discountTotal = Math.max(0, Number(source?.discountTotal) || 0);
+  if (discountType === "PERCENT") {
+    discountTotal = Math.min(subTotal, (subTotal * discountValue) / 100);
+  } else if (discountType === "FLAT") {
+    discountTotal = Math.min(subTotal, discountValue);
+  } else if (discountTotal > 0) {
+    discountTotal = Math.min(subTotal, discountTotal);
+  } else {
+    discountTotal = 0;
+  }
   const taxTotal = Math.max(0, Number(source?.taxTotal) || 0);
   const packingCost = Math.max(0, Number(source?.packingCost) || 0);
   const clearanceCost = Math.max(0, Number(source?.clearanceCost) || 0);
-  const effectiveDiscount = Math.min(subTotal, discountTotal);
   return {
     subTotal,
-    discountTotal: effectiveDiscount,
+    discountType: ["PERCENT", "FLAT"].includes(discountType) ? discountType : "NONE",
+    discountValue: ["PERCENT", "FLAT"].includes(discountType) ? discountValue : 0,
+    discountTotal,
     taxTotal,
     packingCost,
     clearanceCost,
-    grandTotal: subTotal - effectiveDiscount + taxTotal + packingCost + clearanceCost,
+    grandTotal: subTotal - discountTotal + taxTotal + packingCost + clearanceCost,
   };
 }
 
@@ -352,7 +364,7 @@ async function applyLinkedQuotationDiscountFallback(req, docs = [], { persistMod
   if (!quotationIds.length) return rows;
   const quotations = await Quotation.find(
     withCompany(req, { _id: { $in: quotationIds } }),
-    { _id: 1, discountTotal: 1, taxTotal: 1, packingCost: 1, clearanceCost: 1 }
+    { _id: 1, discountType: 1, discountValue: 1, discountTotal: 1, taxTotal: 1, packingCost: 1, clearanceCost: 1 }
   ).lean();
   const byQuotationId = new Map(quotations.map((q) => [String(q._id), q]));
   const out = rows.map((doc) => {
@@ -362,20 +374,41 @@ async function applyLinkedQuotationDiscountFallback(req, docs = [], { persistMod
     const currentDiscount = Number(doc.discountTotal) || 0;
     const currentPacking = Math.max(0, Number(doc.packingCost) || 0);
     const currentClearance = Math.max(0, Number(doc.clearanceCost) || 0);
+    const currentDiscountType = String(doc.discountType || "NONE").toUpperCase();
+    const currentDiscountValue = Math.max(0, Number(doc.discountValue) || 0);
     if (subTotal <= 0) return doc;
+    const quoteDiscountType = String(q.discountType || "NONE").toUpperCase();
+    const quoteDiscountValue = Math.max(0, Number(q.discountValue) || 0);
     const quoteDiscount = Math.max(0, Number(q.discountTotal) || 0);
-    const discountTotal = currentDiscount > 0 ? Math.min(subTotal, currentDiscount) : Math.min(subTotal, quoteDiscount);
+    const discountType =
+      ["PERCENT", "FLAT"].includes(currentDiscountType) ? currentDiscountType : ["PERCENT", "FLAT"].includes(quoteDiscountType) ? quoteDiscountType : "NONE";
+    const discountValue =
+      ["PERCENT", "FLAT"].includes(currentDiscountType) && currentDiscountValue > 0
+        ? currentDiscountValue
+        : ["PERCENT", "FLAT"].includes(quoteDiscountType)
+          ? quoteDiscountValue
+          : 0;
+    const discountTotal =
+      currentDiscount > 0
+        ? Math.min(subTotal, currentDiscount)
+        : ["PERCENT", "FLAT"].includes(discountType)
+          ? discountType === "PERCENT"
+            ? Math.min(subTotal, (subTotal * discountValue) / 100)
+            : Math.min(subTotal, discountValue)
+          : Math.min(subTotal, quoteDiscount);
     const taxTotal = Math.max(0, Number(doc.taxTotal) || Number(q.taxTotal) || 0);
     const packingCost = currentPacking > 0 ? currentPacking : Math.max(0, Number(q.packingCost) || 0);
     const clearanceCost = currentClearance > 0 ? currentClearance : Math.max(0, Number(q.clearanceCost) || 0);
     const changed =
       Math.abs(discountTotal - currentDiscount) > 0.000001 ||
+      discountType !== currentDiscountType ||
+      Math.abs(discountValue - currentDiscountValue) > 0.000001 ||
       Math.abs(taxTotal - (Number(doc.taxTotal) || 0)) > 0.000001 ||
       Math.abs(packingCost - currentPacking) > 0.000001 ||
       Math.abs(clearanceCost - currentClearance) > 0.000001;
     if (!changed) return doc;
     const grandTotal = subTotal - discountTotal + taxTotal + packingCost + clearanceCost;
-    return { ...doc, discountTotal, taxTotal, packingCost, clearanceCost, grandTotal, _discountBackfilled: true };
+    return { ...doc, discountType, discountValue, discountTotal, taxTotal, packingCost, clearanceCost, grandTotal, _discountBackfilled: true };
   });
   if (persistModel) {
     const ops = out
@@ -385,6 +418,8 @@ async function applyLinkedQuotationDiscountFallback(req, docs = [], { persistMod
           filter: withCompany(req, { _id: doc._id }),
           update: {
             $set: {
+              discountType: doc.discountType || "NONE",
+              discountValue: Number(doc.discountValue) || 0,
               discountTotal: Number(doc.discountTotal) || 0,
               taxTotal: Number(doc.taxTotal) || 0,
               packingCost: Number(doc.packingCost) || 0,
@@ -2033,6 +2068,8 @@ export async function updateProforma(req, res) {
       "remarks",
       "currency",
       "lines",
+      "discountType",
+      "discountValue",
       "packingCost",
       "clearanceCost",
       "vertical",
@@ -2240,7 +2277,22 @@ export async function convertOAToProforma(req, res) {
       field: "proformaNo",
     });
     const lines = normalizeLines(oa.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines, oa);
+    let discountType = "NONE";
+    let discountValue = 0;
+    if (oa.linkedQuotationId) {
+      const linkedQuote = await Quotation.findOne(withCompany(req, { _id: oa.linkedQuotationId }))
+        .select("discountType discountValue discountTotal")
+        .lean();
+      if (linkedQuote) {
+        discountType = linkedQuote.discountType || "NONE";
+        discountValue = Number(linkedQuote.discountValue) || 0;
+      }
+    }
+    if (!["PERCENT", "FLAT"].includes(String(discountType).toUpperCase()) && Number(oa.discountTotal) > 0) {
+      discountType = "FLAT";
+      discountValue = Number(oa.discountTotal) || 0;
+    }
+    const totals = computeTotals(lines, { ...oa, discountType, discountValue });
     const doc = await ProformaInvoice.create({
       companyId: req.companyId,
       proformaNo,

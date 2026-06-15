@@ -348,7 +348,10 @@ function quotationDetailToEditableForm(q) {
 }
 
 function calcQuotationTotalsView(src) {
-  const subTotal = (src?.lines || []).reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0);
+  const subTotal = (src?.lines || []).reduce(
+    (acc, l) => acc + Number(l.qty || 0) * Number(l.price ?? l.salePrice ?? 0),
+    0,
+  );
   const discountType = String(src?.discountType || "NONE").toUpperCase();
   const discountValue = Math.max(0, Number(src?.discountValue) || 0);
   const discountTotal =
@@ -356,15 +359,17 @@ function calcQuotationTotalsView(src) {
       ? Math.min(subTotal, (subTotal * discountValue) / 100)
       : discountType === "FLAT"
       ? Math.min(subTotal, discountValue)
-      : 0;
+      : Math.min(subTotal, Math.max(0, Number(src?.discountTotal) || 0));
   const packingCost = Math.max(0, Number(src?.packingCost) || 0);
   const clearanceCost = Math.max(0, Number(src?.clearanceCost) || 0);
+  const taxTotal = Math.max(0, Number(src?.taxTotal) || 0);
   return {
     subTotal,
     discountTotal,
     packingCost,
     clearanceCost,
-    grandTotal: subTotal - discountTotal + packingCost + clearanceCost,
+    taxTotal,
+    grandTotal: subTotal - discountTotal + taxTotal + packingCost + clearanceCost,
   };
 }
 
@@ -515,6 +520,20 @@ function proformaDetailToEditableForm(p) {
       : p.validity
         ? new Date(p.validity).toISOString().slice(0, 10)
         : "";
+  const storedDiscountType = String(p.discountType || "NONE").toUpperCase();
+  const storedDiscountValue = Math.max(0, Number(p.discountValue) || 0);
+  const legacyDiscountTotal = Math.max(0, Number(p.discountTotal) || 0);
+  const discountType = ["PERCENT", "FLAT"].includes(storedDiscountType)
+    ? storedDiscountType
+    : legacyDiscountTotal > 0
+      ? "FLAT"
+      : "NONE";
+  const discountValue =
+    ["PERCENT", "FLAT"].includes(storedDiscountType) && storedDiscountValue > 0
+      ? storedDiscountValue
+      : legacyDiscountTotal > 0
+        ? legacyDiscountTotal
+        : 0;
   return {
     proformaDate: pd,
     customerName: p.customerName || "",
@@ -530,6 +549,11 @@ function proformaDetailToEditableForm(p) {
     config: p.config || "",
     esn: p.esn || "",
     status: p.status || "DRAFT",
+    discountType,
+    discountValue,
+    packingCost: Number(p.packingCost) || 0,
+    clearanceCost: Number(p.clearanceCost) || 0,
+    taxTotal: Number(p.taxTotal) || 0,
     lines,
   };
 }
@@ -2759,6 +2783,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
     model: "",
     config: "",
     esn: "",
+    discountType: "NONE",
+    discountValue: 0,
+    packingCost: 0,
+    clearanceCost: 0,
     lines: [emptyLine()],
   });
 
@@ -2849,6 +2877,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
         model: "",
         config: "",
         esn: "",
+        discountType: "NONE",
+        discountValue: 0,
+        packingCost: 0,
+        clearanceCost: 0,
         lines: [emptyLine()],
       });
     },
@@ -6337,6 +6369,44 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, esn: e.target.value }))}
                   />
                 </FormField>
+                <FormField label="Packing Cost">
+                  <TextInput
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={detailProformaDraftForm.packingCost ?? 0}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, packingCost: Number(e.target.value) || 0 }))}
+                  />
+                </FormField>
+                <FormField label="Discount Type">
+                  <select
+                    className="w-full rounded-xl border px-3 py-2 text-sm"
+                    value={detailProformaDraftForm.discountType || "NONE"}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, discountType: e.target.value }))}
+                  >
+                    <option value="NONE">None</option>
+                    <option value="PERCENT">Percentage (%)</option>
+                    <option value="FLAT">Flat amount</option>
+                  </select>
+                </FormField>
+                <FormField label={detailProformaDraftForm.discountType === "PERCENT" ? "Discount %" : "Discount Amount"}>
+                  <TextInput
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={detailProformaDraftForm.discountValue ?? 0}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, discountValue: Number(e.target.value) || 0 }))}
+                  />
+                </FormField>
+                <FormField label="Clearance Cost">
+                  <TextInput
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={detailProformaDraftForm.clearanceCost ?? 0}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, clearanceCost: Number(e.target.value) || 0 }))}
+                  />
+                </FormField>
               </div>
               <FormField label="Bank details">
                 <textarea
@@ -6487,21 +6557,27 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   </table>
                 </div>
               </div>
-              <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
-                <div className="flex justify-between py-1">
-                  <span>Subtotal</span>
-                  <span>
-                    {money(detailProformaDraftForm.lines.reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0))}
-                  </span>
-                </div>
-                <div className="flex justify-between py-1 text-base font-semibold">
-                  <span>Grand Total</span>
-                  <span>
-                    {money(detailProformaDraftForm.lines.reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0))}{" "}
-                    {detailProformaDraftForm.currency || ""}
-                  </span>
-                </div>
-              </div>
+              {(() => {
+                const t = calcQuotationTotalsView(detailProformaDraftForm);
+                return (
+                  <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
+                    <div className="flex justify-between py-1">
+                      <span>Subtotal</span>
+                      <span>{money(t.subTotal)}</span>
+                    </div>
+                    <div className="flex justify-between py-1"><span>Packing Cost</span><span>{money(t.packingCost)}</span></div>
+                    <div className="flex justify-between py-1"><span>Clearance Cost</span><span>{money(t.clearanceCost)}</span></div>
+                    <div className="flex justify-between py-1"><span>Discount</span><span>{money(t.discountTotal)}</span></div>
+                    <div className="flex justify-between py-1"><span>Tax</span><span>{money(t.taxTotal)}</span></div>
+                    <div className="flex justify-between py-1 text-base font-semibold">
+                      <span>Grand Total</span>
+                      <span>
+                        {money(t.grandTotal)} {detailProformaDraftForm.currency || ""}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -8295,6 +8371,44 @@ ${GLOBAL_REPORT_TABLE_CSS}
           <FormField label="ESN">
             <TextInput value={proformaForm.esn || ""} onChange={(e) => setProformaForm((f) => ({ ...f, esn: e.target.value }))} />
           </FormField>
+          <FormField label="Packing Cost">
+            <TextInput
+              type="number"
+              min="0"
+              step="0.01"
+              value={proformaForm.packingCost ?? 0}
+              onChange={(e) => setProformaForm((f) => ({ ...f, packingCost: Number(e.target.value) || 0 }))}
+            />
+          </FormField>
+          <FormField label="Discount Type">
+            <select
+              className="w-full rounded-xl border px-3 py-2 text-sm"
+              value={proformaForm.discountType || "NONE"}
+              onChange={(e) => setProformaForm((f) => ({ ...f, discountType: e.target.value }))}
+            >
+              <option value="NONE">None</option>
+              <option value="PERCENT">Percentage (%)</option>
+              <option value="FLAT">Flat amount</option>
+            </select>
+          </FormField>
+          <FormField label={proformaForm.discountType === "PERCENT" ? "Discount %" : "Discount Amount"}>
+            <TextInput
+              type="number"
+              min="0"
+              step="0.01"
+              value={proformaForm.discountValue ?? 0}
+              onChange={(e) => setProformaForm((f) => ({ ...f, discountValue: Number(e.target.value) || 0 }))}
+            />
+          </FormField>
+          <FormField label="Clearance Cost">
+            <TextInput
+              type="number"
+              min="0"
+              step="0.01"
+              value={proformaForm.clearanceCost ?? 0}
+              onChange={(e) => setProformaForm((f) => ({ ...f, clearanceCost: Number(e.target.value) || 0 }))}
+            />
+          </FormField>
         </div>
         <div className="mt-4">
           <div className="mb-2 flex items-center justify-between">
@@ -8394,6 +8508,18 @@ ${GLOBAL_REPORT_TABLE_CSS}
             ))}
           </div>
         </div>
+        {(() => {
+          const t = calcQuotationTotalsView(proformaForm);
+          return (
+            <div className="mt-4 ml-auto w-full max-w-sm rounded-xl border bg-white p-3 text-sm">
+              <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(t.subTotal)}</span></div>
+              <div className="flex justify-between py-1"><span>Packing Cost</span><span>{money(t.packingCost)}</span></div>
+              <div className="flex justify-between py-1"><span>Clearance Cost</span><span>{money(t.clearanceCost)}</span></div>
+              <div className="flex justify-between py-1"><span>Discount</span><span>{money(t.discountTotal)}</span></div>
+              <div className="flex justify-between py-1 font-semibold"><span>Grand Total</span><span>{money(t.grandTotal)} {proformaForm.currency || ""}</span></div>
+            </div>
+          );
+        })()}
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={() => setProformaCreateOpen(false)}>
             Cancel
