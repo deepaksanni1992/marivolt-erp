@@ -88,6 +88,8 @@ const purchaseOrderSchema = new mongoose.Schema(
     handlingCost: { type: Number, default: 0, min: 0 },
     miscellaneousCost: { type: Number, default: 0, min: 0 },
     grandTotal: { type: Number, default: 0 },
+    /** When true, material code column appears on supplier-facing PO print/PDF. */
+    showMaterialCodeOnPrint: { type: Boolean, default: false },
 
     delivery: { type: String, default: "Ex-Works", trim: true },
     insurance: { type: String, default: "On buyers account", trim: true },

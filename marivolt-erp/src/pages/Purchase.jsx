@@ -11,6 +11,7 @@ import {
   exportPurchaseOrderDocumentPdf,
   openPurchaseOrderDocumentWindow,
   supplierPartNumberForPrint,
+  materialCodeForPrint,
 } from "../lib/purchaseOrderDocumentPrint.js";
 import { calcPoGrandTotal, calcPoTotalsFromDoc, poHeaderCost, supplierPartNumberDisplay } from "../lib/poTotals.js";
 import {
@@ -45,6 +46,7 @@ const defaultLine = () => ({
   partNo: "",
   partNumber: "",
   supplierPartNumber: "",
+  materialCode: "",
   description: "",
   qty: 1,
   uom: "PCS",
@@ -87,6 +89,7 @@ function initialPoForm(company) {
     packingCost: 0,
     handlingCost: 0,
     miscellaneousCost: 0,
+    showMaterialCodeOnPrint: false,
     lines: [defaultLine()],
   };
 }
@@ -174,6 +177,7 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
     packingCost: poHeaderCost(form.packingCost),
     handlingCost: poHeaderCost(form.handlingCost),
     miscellaneousCost: poHeaderCost(form.miscellaneousCost),
+    showMaterialCodeOnPrint: !!form.showMaterialCodeOnPrint,
     lines,
   };
 }
@@ -264,6 +268,7 @@ function purchaseOrderApiToForm(po) {
     packingCost: poHeaderCost(po.packingCost),
     handlingCost: poHeaderCost(po.handlingCost),
     miscellaneousCost: poHeaderCost(po.miscellaneousCost),
+    showMaterialCodeOnPrint: !!po.showMaterialCodeOnPrint,
     lines,
   };
 }
@@ -329,12 +334,16 @@ function mapCsvRowToPurchaseOrderLine(raw) {
     Number(pickCsvCell(m, ["unit rate", "unitrate", "unit price", "unitprice", "rate", "price"])) || 0;
   const remarks = String(pickCsvCell(m, ["remarks", "remark", "note", "notes"])).trim();
   const leadTime = String(pickCsvCell(m, ["lead time", "leadtime", "lead-time", "delivery time"])).trim();
+  const materialCode = String(
+    pickCsvCell(m, ["material code", "materialcode", "material", "mat code", "matcode"])
+  ).trim();
   return {
     articleNo,
     itemCode: "",
     partNo,
     partNumber: partNo.toUpperCase(),
     supplierPartNumber,
+    materialCode: materialCode.toUpperCase(),
     description,
     qty: qty > 0 ? qty : 1,
     uom: uom || "PCS",
@@ -360,6 +369,7 @@ function poDocLineExportRows(lines) {
       description: l.description || "",
       partNo: l.partNo || l.partNumber || "",
       supplierPartNumber: l.supplierPartNumber || "",
+      materialCode: l.materialCode || l.itemCode || "",
       qty,
       uom: l.uom || "PCS",
       unitRate: rate.toFixed(2),
@@ -370,12 +380,15 @@ function poDocLineExportRows(lines) {
   });
 }
 
-const PO_LINE_EXPORT_COLS = [
+const PO_LINE_EXPORT_COLS_BASE = [
   { key: "pos", header: "Pos" },
   { key: "articleNo", header: "Article Nr." },
   { key: "description", header: "Description" },
   { key: "partNo", header: "Part Nr." },
   { key: "supplierPartNumber", header: "Supplier Part Number" },
+];
+
+const PO_LINE_EXPORT_COLS_TAIL = [
   { key: "qty", header: "Qty" },
   { key: "uom", header: "UOM" },
   { key: "unitRate", header: "Unit rate" },
@@ -384,9 +397,16 @@ const PO_LINE_EXPORT_COLS = [
   { key: "leadTime", header: "Lead time" },
 ];
 
+function poLineExportCols(showMaterialCode = false) {
+  const cols = [...PO_LINE_EXPORT_COLS_BASE];
+  if (showMaterialCode) cols.push({ key: "materialCode", header: "Material Code" });
+  return [...cols, ...PO_LINE_EXPORT_COLS_TAIL];
+}
+
 function exportPurchaseOrderLinesCsv(docLike, fileBase) {
   const rows = poDocLineExportRows(docLike.lines);
-  downloadCsv(`${fileBase}-${Date.now()}.csv`, PO_LINE_EXPORT_COLS, rows);
+  const cols = poLineExportCols(!!docLike.showMaterialCodeOnPrint);
+  downloadCsv(`${fileBase}-${Date.now()}.csv`, cols, rows);
 }
 
 function exportPurchaseOrderLinesPdf(docLike, fileBase) {
@@ -402,7 +422,8 @@ function exportPurchaseOrderLinesPdf(docLike, fileBase) {
     ...r,
     qty: String(r.qty),
   }));
-  downloadPdfTable(`Purchase order ${poNo}`, sub, PO_LINE_EXPORT_COLS, rows, fileBase);
+  const cols = poLineExportCols(!!docLike.showMaterialCodeOnPrint);
+  downloadPdfTable(`Purchase order ${poNo}`, sub, cols, rows, fileBase);
 }
 
 const defaultPrLine = () => ({
@@ -443,6 +464,7 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
   const { auth } = useAuth();
   if (!doc) return null;
   const lines = doc.lines || [];
+  const showMaterialCode = supplierFacing ? !!doc.showMaterialCodeOnPrint : true;
   const { subTotal, packingCost, handlingCost, miscellaneousCost, grandTotal: grand } =
     calcPoTotalsFromDoc(doc);
   const cur = doc.currency || "USD";
@@ -678,11 +700,13 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
                   <>
                     <th className={thCell}>Description</th>
                     <th className={thCell}>Supplier Part Number</th>
+                    {showMaterialCode ? <th className={thCell}>Material Code</th> : null}
                   </>
                 ) : (
                   <>
                     <th className={thCell}>Part Nr.</th>
                     <th className={thCell}>Supplier Part No.</th>
+                    <th className={thCell}>Material Code</th>
                     <th className={thCell}>Description</th>
                   </>
                 )}
@@ -697,7 +721,7 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
             <tbody>
               {lines.length === 0 ? (
                 <tr>
-                  <td colSpan={supplierFacing ? 9 : 11} className={`${tdCell} py-8 text-center text-[#6b7280]`}>
+                  <td colSpan={supplierFacing ? (showMaterialCode ? 10 : 9) : 12} className={`${tdCell} py-8 text-center text-[#6b7280]`}>
                     No line items.
                   </td>
                 </tr>
@@ -719,12 +743,18 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
                             <td className={`${tdCell} font-mono text-[11px]`}>
                               {supplierPartNumberForPrint(l)}
                             </td>
+                            {showMaterialCode ? (
+                              <td className={`${tdCell} font-mono text-[11px]`}>{materialCodeForPrint(l)}</td>
+                            ) : null}
                           </>
                         ) : (
                           <>
                             <td className={`${tdCell} font-mono text-[11px]`}>{l.partNumber || l.partNo || "—"}</td>
                             <td className={`${tdCell} font-mono text-[11px]`}>
                               {supplierPartNumberDisplay(l)}
+                            </td>
+                            <td className={`${tdCell} font-mono text-[11px]`}>
+                              {l.materialCode || l.itemCode || "—"}
                             </td>
                             <td className={tdCell}>{l.description || "—"}</td>
                           </>
@@ -1318,7 +1348,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
         const imported = (res.data || []).map(mapCsvRowToPurchaseOrderLine).filter(lineIsImportable);
         if (!imported.length) {
           setErr(
-            "No valid lines in CSV. Use headers: Article Nr., Description, Part Nr., Supplier Part Number, Qty, UOM, Unit rate, Remarks, Lead time (Article or Part Nr. and Qty required per row)."
+            "No valid lines in CSV. Use headers: Article Nr., Description, Part Nr., Supplier Part Number, Material Code, Qty, UOM, Unit rate, Remarks, Lead time (Article or Part Nr. and Qty required per row)."
           );
           return;
         }
@@ -2311,6 +2341,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                     <th className="px-2 py-2 font-bold text-gray-700">Description</th>
                     <th className="px-2 py-2 font-bold text-gray-700">Part Nr.</th>
                     <th className="px-2 py-2 font-bold text-gray-700">Supplier Part No.</th>
+                    <th className="px-2 py-2 font-bold text-gray-700">Material Code</th>
                     <th className="px-2 py-2 text-right font-bold text-gray-700">Qty</th>
                     <th className="px-2 py-2 font-bold text-gray-700">UOM</th>
                     <th className="px-2 py-2 text-right font-bold text-gray-700">Unit rate</th>
@@ -2328,6 +2359,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                       <td className="px-2 py-2">{l.description || "—"}</td>
                       <td className="px-2 py-2 font-mono text-[11px]">{l.partNo || l.partNumber || "—"}</td>
                       <td className="px-2 py-2 font-mono text-[11px]">{l.supplierPartNumber || "—"}</td>
+                      <td className="px-2 py-2 font-mono text-[11px]">{l.materialCode || l.itemCode || "—"}</td>
                       <td className="px-2 py-2 text-right tabular-nums">{l.qty}</td>
                       <td className="px-2 py-2">{l.uom || "PCS"}</td>
                       <td className="px-2 py-2 text-right tabular-nums">
@@ -2772,7 +2804,18 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               onChange={onPoLinesCsvFile}
             />
             <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <span className="text-xs font-bold uppercase tracking-wide text-gray-600">Line items</span>
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-xs font-bold uppercase tracking-wide text-gray-600">Line items</span>
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-gray-700">
+                  <input
+                    type="checkbox"
+                    className="rounded border-gray-300"
+                    checked={!!form.showMaterialCodeOnPrint}
+                    onChange={(e) => setForm((f) => ({ ...f, showMaterialCodeOnPrint: e.target.checked }))}
+                  />
+                  Show material code on PO print / PDF
+                </label>
+              </div>
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
@@ -2826,11 +2869,11 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               </div>
             </div>
             <p className="mb-2 text-[10px] text-gray-500">
-              CSV columns (first row headers): Article Nr., Description, Part Nr., Supplier Part Number, Qty, UOM,
-              Unit rate, Remarks, Lead time. Rows append to the grid; a blank first line is replaced when importing.
+              CSV columns (first row headers): Article Nr., Description, Part Nr., Supplier Part Number, Material Code,
+              Qty, UOM, Unit rate, Remarks, Lead time. Rows append to the grid; a blank first line is replaced when importing.
             </p>
             <div className="overflow-x-auto rounded-lg border border-gray-200">
-              <table className="min-w-[1180px] w-full border-collapse text-xs">
+              <table className="min-w-[1280px] w-full border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-gray-200 bg-gray-100 text-left">
                     <th className="px-1.5 py-2 font-bold text-gray-700">Pos</th>
@@ -2838,6 +2881,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                     <th className="min-w-[120px] px-1.5 py-2 font-bold text-gray-700">Description</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">Part Nr.</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">Supplier Part No.</th>
+                    <th className="px-1.5 py-2 font-bold text-gray-700">Material Code</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">Qty</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">UOM</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">Unit rate</th>
@@ -2890,6 +2934,14 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                             placeholder="Supplier part"
                             value={line.supplierPartNumber ?? ""}
                             onChange={(e) => setLine({ supplierPartNumber: e.target.value })}
+                          />
+                        </td>
+                        <td className="px-1.5 py-1.5">
+                          <TextInput
+                            className="py-1.5 text-[11px] font-mono"
+                            placeholder="Material code"
+                            value={line.materialCode ?? ""}
+                            onChange={(e) => setLine({ materialCode: e.target.value.toUpperCase() })}
                           />
                         </td>
                         <td className="px-1.5 py-1.5">

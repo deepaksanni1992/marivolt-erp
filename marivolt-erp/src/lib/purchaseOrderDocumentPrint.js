@@ -19,6 +19,12 @@ export function supplierPartNumberForPrint(line) {
   return v || "—";
 }
 
+/** Material code for supplier-facing PO print when enabled on the PO. */
+export function materialCodeForPrint(line) {
+  const v = String(line?.materialCode ?? line?.itemCode ?? "").trim();
+  return v || "—";
+}
+
 function escapeHtml(s) {
   if (s == null || s === "") return "";
   return String(s)
@@ -109,6 +115,9 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
   const thColor = isOkeanos ? "#374151" : "#ffffff";
   const thBorder = isOkeanos ? "#ddd" : "#1f3a5f";
 
+  const showMaterialCode = doc?.showMaterialCodeOnPrint === true;
+  const lineColSpan = showMaterialCode ? 10 : 9;
+
   const lineRows = lines
     .map((l, i) => {
       const qty = Number(l.qty) || 0;
@@ -119,6 +128,11 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
         <td class="col-sno" style="border:1px solid #e5e7eb;padding:6px 8px;color:#6b7280;font-size:11px">${i + 1}</td>
         <td class="col-desc" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(l.description || "—")}</td>
         <td class="col-part" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:11px">${escapeHtml(supplierPartNumberForPrint(l))}</td>
+        ${
+          showMaterialCode
+            ? `<td class="col-article" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:11px;font-family:monospace">${escapeHtml(materialCodeForPrint(l))}</td>`
+            : ""
+        }
         <td class="col-uom" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(l.uom || "PCS")}</td>
         <td class="col-qty" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${escapeHtml(String(qty))}</td>
         <td class="col-price" style="border:1px solid #e5e7eb;padding:6px 8px;font-size:12px">${rate.toFixed(2)}</td>
@@ -129,7 +143,7 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
     })
     .join("");
 
-  const emptyLinesRow = `<tr><td colspan="9" style="border:1px solid #e5e7eb;padding:24px;text-align:center;color:#6b7280">No line items.</td></tr>`;
+  const emptyLinesRow = `<tr><td colspan="${lineColSpan}" style="border:1px solid #e5e7eb;padding:24px;text-align:center;color:#6b7280">No line items.</td></tr>`;
 
   const headerOkeanos = `
     <header style="display:grid;grid-template-columns:1fr 1fr 1fr;align-items:center;gap:16px;border-bottom:2px solid #e5e7eb;padding-bottom:20px;margin-bottom:20px;" class="po-print-header">
@@ -280,10 +294,10 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
   ${commercialHtml}
 
   <table class="po-lines-table report-table" style="margin-top:12px">
-    ${PO_LINE_COLGROUP}
+    ${PO_LINE_COLGROUP(showMaterialCode)}
     <thead>
       <tr style="background:${thBg};color:${thColor}">
-        ${PO_LINE_TABLE_HEAD(thBorder, thBg, thColor)}
+        ${PO_LINE_TABLE_HEAD(thBorder, thBg, thColor, showMaterialCode)}
       </tr>
     </thead>
     <tbody>${lines.length ? lineRows : emptyLinesRow}</tbody>

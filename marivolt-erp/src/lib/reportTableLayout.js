@@ -233,18 +233,22 @@ export const ORDER_ALLOCATION_COLGROUP = `
   <col style="width:10%" />
 </colgroup>`;
 
-export const PO_LINE_COLGROUP = `
+export const PO_LINE_COLGROUP = (showMaterialCode = false) => `
 <colgroup>
   <col style="width:4%" />
-  <col style="width:24%" />
-  <col style="width:18%" />
+  <col style="width:${showMaterialCode ? "20%" : "24%"}" />
+  <col style="width:${showMaterialCode ? "14%" : "18%"}" />
+  ${showMaterialCode ? '<col style="width:12%" />' : ""}
   <col style="width:5%" />
   <col style="width:5%" />
   <col style="width:9%" />
   <col style="width:10%" />
   <col style="width:9%" />
-  <col style="width:16%" />
+  <col style="width:${showMaterialCode ? "12%" : "16%"}" />
 </colgroup>`;
+
+/** @deprecated use PO_LINE_COLGROUP(showMaterialCode) */
+export const PO_LINE_COLGROUP_LEGACY = PO_LINE_COLGROUP(false);
 
 export const PACKING_LIST_COLGROUP = `
 <colgroup>
@@ -409,11 +413,16 @@ export const ORDER_ALLOCATION_LINE_TABLE_HEAD = `
   <th class="col-remarks">Remarks</th>
   <th class="col-availability">Availability</th>`;
 
-/** PO line table header (column order unchanged) */
-export const PO_LINE_TABLE_HEAD = (thBorder, thBg, thColor) => `
+/** PO line table header (column order unchanged; material code optional after supplier part) */
+export const PO_LINE_TABLE_HEAD = (thBorder, thBg, thColor, showMaterialCode = false) => `
   <th class="col-sno" style="border:1px solid ${thBorder};padding:8px;font-size:11px;text-transform:uppercase;background:${thBg};color:${thColor}">S/N</th>
   <th class="col-desc" style="border:1px solid ${thBorder};padding:8px;font-size:11px;text-transform:uppercase;background:${thBg};color:${thColor}">Description</th>
   <th class="col-part" style="border:1px solid ${thBorder};padding:8px;font-size:11px;text-transform:uppercase;background:${thBg};color:${thColor}">Supplier Part Number</th>
+  ${
+    showMaterialCode
+      ? `<th class="col-article" style="border:1px solid ${thBorder};padding:8px;font-size:11px;text-transform:uppercase;background:${thBg};color:${thColor}">Material Code</th>`
+      : ""
+  }
   <th class="col-uom" style="border:1px solid ${thBorder};padding:8px;font-size:11px;text-transform:uppercase;background:${thBg};color:${thColor}">UOM</th>
   <th class="col-qty" style="border:1px solid ${thBorder};padding:8px;font-size:11px;text-transform:uppercase;background:${thBg};color:${thColor}">QTY</th>
   <th class="col-price" style="border:1px solid ${thBorder};padding:8px;font-size:11px;text-transform:uppercase;background:${thBg};color:${thColor}">Unit rate</th>
