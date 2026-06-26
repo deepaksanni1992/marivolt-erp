@@ -1,10 +1,11 @@
 import { useNavigate } from "react-router-dom";
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext.jsx";
+import UserMenu from "./UserMenu.jsx";
 
 export default function Topbar({ onMenuClick }) {
   const nav = useNavigate();
-  const { auth, logout, selectCompany } = useAuth();
+  const { auth, selectCompany } = useAuth();
   const [headerQ, setHeaderQ] = useState("");
 
   function submitHeaderSearch(e) {
@@ -12,11 +13,6 @@ export default function Topbar({ onMenuClick }) {
     const q = headerQ.trim();
     if (!q) return;
     nav(`/search?q=${encodeURIComponent(q)}`);
-  }
-
-  function onLogout() {
-    logout();
-    nav("/login");
   }
 
   async function onSwitchCompany(e) {
@@ -77,20 +73,7 @@ export default function Topbar({ onMenuClick }) {
               ))}
             </select>
           )}
-          <button
-            type="button"
-            onClick={() => nav("/profile/security")}
-            className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-          >
-            Security
-          </button>
-          <button
-            onClick={onLogout}
-            className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-          >
-            Logout
-          </button>
-          <div className="h-9 w-9 rounded-full bg-gray-200" />
+          <UserMenu />
         </div>
       </div>
     </header>

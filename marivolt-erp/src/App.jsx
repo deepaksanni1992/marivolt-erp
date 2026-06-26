@@ -28,6 +28,7 @@ import DeKitting from "./pages/DeKitting.jsx";
 import Documents from "./pages/Documents.jsx";
 import AuditTrail from "./pages/AuditTrail.jsx";
 import Settings from "./pages/Settings.jsx";
+import MyProfile from "./pages/MyProfile.jsx";
 import ProfileSecurity from "./pages/ProfileSecurity.jsx";
 
 function CatchAllRedirect() {
@@ -78,6 +79,7 @@ export default function App() {
           <Route path="dekitting" element={<DeKitting />} />
           <Route path="audit" element={<AuditTrail />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="profile" element={<MyProfile />} />
           <Route path="profile/security" element={<ProfileSecurity />} />
         </Route>
       </Route>

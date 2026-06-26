@@ -21,7 +21,7 @@ const TABS = [
   { id: "numbering", label: "Number Series" },
   { id: "approvals", label: "Approval Rules" },
   { id: "approvalQueue", label: "Approval Queue" },
-  { id: "users", label: "Users & 2FA" },
+  { id: "users", label: "User Management" },
   { id: "activity", label: "User Activity" },
 ];
 
@@ -1603,7 +1603,7 @@ function ApprovalQueueTab() {
 }
 
 /* ----------------------------------------------------------------- */
-/* Users & 2FA (admin)                                                */
+/* User Management (admin — 2FA status / reset only, no secrets)      */
 /* ----------------------------------------------------------------- */
 
 function UsersTab() {
@@ -1621,11 +1621,18 @@ function UsersTab() {
     },
   });
 
+  function userLabel(u) {
+    const name = String(u.name || "").trim();
+    const email = String(u.email || "").trim();
+    if (name && email) return `${name} (${email})`;
+    return name || email || u.username || "—";
+  }
+
   function onReset2fa(user) {
-    const label = user.email || user.username || user.name || user._id;
+    const label = userLabel(user);
     if (
       !window.confirm(
-        `Reset Authenticator for ${label}? This clears only that user's 2FA. You will not see their secret.`
+        `Reset Authenticator for ${label}? This clears only that user's 2FA. Their secret and QR code are not shown.`
       )
     ) {
       return;
@@ -1639,8 +1646,8 @@ function UsersTab() {
   return (
     <div>
       <p className="mb-3 text-sm text-slate-600">
-        View whether each user has Authenticator enabled. Admins can reset 2FA if a user loses their phone.
-        TOTP secrets are never shown.
+        View 2FA status per user and reset if someone loses their phone. Users enable Authenticator from their own
+        Security page (profile menu). Secrets and QR codes are never shown here.
       </p>
       <div className="mb-3 flex justify-end">
         <button
@@ -1655,37 +1662,31 @@ function UsersTab() {
         <table className="min-w-full text-sm">
           <thead className="bg-slate-50">
             <tr>
-              <Th>Name</Th>
-              <Th>Email</Th>
-              <Th>Username</Th>
-              <Th>Role</Th>
-              <Th>2FA</Th>
-              <Th>Enabled at</Th>
+              <Th>User</Th>
+              <Th>2FA enabled</Th>
+              <Th>Enabled date</Th>
               <Th></Th>
             </tr>
           </thead>
           <tbody>
             {isLoading ? (
               <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                <td colSpan={4} className="px-3 py-6 text-center text-slate-500">
                   Loading...
                 </td>
               </tr>
             ) : users.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                <td colSpan={4} className="px-3 py-6 text-center text-slate-500">
                   No users found.
                 </td>
               </tr>
             ) : (
               users.map((u) => (
                 <tr key={u._id} className="border-t border-slate-100 hover:bg-slate-50">
-                  <Td>{u.name || "—"}</Td>
-                  <Td>{u.email}</Td>
-                  <Td>{u.username || "—"}</Td>
-                  <Td>{u.role}</Td>
+                  <Td className="font-medium">{userLabel(u)}</Td>
                   <Td>
-                    {u.twoFactorEnabled ? badge("Enabled", "green") : badge("Disabled", "slate")}
+                    {u.twoFactorEnabled ? badge("Yes", "green") : badge("No", "slate")}
                   </Td>
                   <Td>{fmtDate(u.twoFactorEnabledAt)}</Td>
                   <Td>
@@ -1696,7 +1697,7 @@ function UsersTab() {
                         disabled={reset2fa.isPending || String(u._id) === String(auth?.user?.id)}
                         title={
                           String(u._id) === String(auth?.user?.id)
-                            ? "Use Profile / Security to manage your own 2FA"
+                            ? "Use Security in your profile menu to manage your own 2FA"
                             : "Reset this user's 2FA"
                         }
                         onClick={() => onReset2fa(u)}
