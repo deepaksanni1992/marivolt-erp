@@ -56,9 +56,33 @@ export function AuthProvider({ children }) {
     const { data } = await api.post("/auth/login", { email: identifier, password });
     if (data?.token) {
       persist(data);
+    } else if (data?.requires2FA) {
+      persist({
+        user: data?.user || null,
+        twoFactorTicket: data?.twoFactorTicket || null,
+        requires2FA: true,
+      });
     } else {
       persist({
         user: data?.user || null,
+        companies: data?.companies || [],
+        loginTicket: data?.loginTicket || null,
+        requiresCompanySelection: !!data?.requiresCompanySelection,
+      });
+    }
+    return data;
+  }
+
+  async function verify2FA(code) {
+    const { data } = await api.post("/auth/2fa/verify-login", {
+      twoFactorTicket: auth?.twoFactorTicket,
+      code,
+    });
+    if (data?.token) {
+      persist(data);
+    } else {
+      persist({
+        user: data?.user || auth?.user || null,
         companies: data?.companies || [],
         loginTicket: data?.loginTicket || null,
         requiresCompanySelection: !!data?.requiresCompanySelection,
@@ -92,7 +116,9 @@ export function AuthProvider({ children }) {
     authReady,
     isLoggedIn: !!auth?.token && !!auth?.user,
     requiresCompanySelection: !!auth?.requiresCompanySelection && !auth?.token,
+    requires2FA: !!auth?.requires2FA && !auth?.token,
     login,
+    verify2FA,
     selectCompany,
     logout,
   };

@@ -134,6 +134,7 @@ api.interceptors.request.use((config) => {
   const url = String(config.url || "");
   const isAuthPath =
     url.includes("/auth/login") ||
+    url.includes("/auth/2fa/verify-login") ||
     url.includes("/auth/select-company") ||
     url.includes("/auth/switch-company");
   const companyId = getActiveCompanyId();

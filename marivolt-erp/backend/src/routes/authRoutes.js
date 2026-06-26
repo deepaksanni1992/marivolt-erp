@@ -5,6 +5,15 @@ import User from "../models/User.js";
 import Company from "../models/Company.js";
 import { requireAuth, requireCompanyContext, requireRole } from "../middleware/auth.js";
 import { recordActivity } from "../services/userActivityService.js";
+import {
+  buildOtpAuthUrl,
+  buildTotpQrDataUrl,
+  clearUserTwoFactorFields,
+  encryptTotpSecret,
+  generateUserTotpSecret,
+  userTwoFactorPublicStatus,
+  verifyUserTotpCode,
+} from "../services/twoFactorService.js";
 
 const router = express.Router();
 
@@ -42,6 +51,95 @@ function signCompanySelectionTicket(user) {
     process.env.JWT_SECRET,
     { expiresIn: "10m" }
   );
+}
+
+function signTwoFactorTicket(user, { companyId } = {}) {
+  return jwt.sign(
+    {
+      purpose: "2fa_verify",
+      id: user._id,
+      email: user.email,
+      companyId: String(companyId || "").trim(),
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "10m" }
+  );
+}
+
+async function resolveUserCompanies(user) {
+  const allowedIds = Array.isArray(user.allowedCompanies)
+    ? user.allowedCompanies.map((x) => String(x))
+    : [];
+  const companies = await Company.find({ _id: { $in: allowedIds }, isActive: true })
+    .select("name code logoUrl currency isActive address email phone trnNo website")
+    .sort({ name: 1 })
+    .lean();
+  return companies;
+}
+
+async function pickCompanyForTotpLabel(user) {
+  const companies = await resolveUserCompanies(user);
+  if (!companies.length) return null;
+  if (user.defaultCompany) {
+    const match = companies.find((c) => String(c._id) === String(user.defaultCompany));
+    if (match) return match;
+  }
+  return companies[0];
+}
+
+async function completeAuthenticatedLogin(req, res, user, { requestedCompanyId } = {}) {
+  const companies = await resolveUserCompanies(user);
+  if (!companies.length) {
+    return res.status(403).json({ message: "No active company access assigned" });
+  }
+
+  const companyId = String(requestedCompanyId || "").trim();
+  if (companyId) {
+    const selected = companies.find((c) => String(c._id) === companyId);
+    if (!selected) return res.status(403).json({ message: "Invalid company access" });
+    const token = signToken(user, selected, companies);
+    await recordLoginSuccess(req, user, selected);
+    return res.json({
+      token,
+      user: userAuthPayload(user),
+      company: normalizeCompany(selected),
+      companies: companies.map(normalizeCompany),
+    });
+  }
+
+  if (companies.length === 1) {
+    const selected = companies[0];
+    const token = signToken(user, selected, companies);
+    await recordLoginSuccess(req, user, selected);
+    return res.json({
+      token,
+      user: userAuthPayload(user),
+      company: normalizeCompany(selected),
+      companies: companies.map(normalizeCompany),
+    });
+  }
+
+  const defaultCompany = user.defaultCompany
+    ? companies.find((c) => String(c._id) === String(user.defaultCompany))
+    : null;
+  if (defaultCompany) {
+    const token = signToken(user, defaultCompany, companies);
+    await recordLoginSuccess(req, user, defaultCompany);
+    return res.json({
+      token,
+      user: userAuthPayload(user),
+      company: normalizeCompany(defaultCompany),
+      companies: companies.map(normalizeCompany),
+    });
+  }
+
+  const loginTicket = signCompanySelectionTicket(user);
+  return res.json({
+    requiresCompanySelection: true,
+    loginTicket,
+    user: userAuthPayload(user),
+    companies: companies.map(normalizeCompany),
+  });
 }
 
 async function recordLoginSuccess(req, user, company, action = "LOGIN_SUCCESS") {
@@ -180,64 +278,192 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    const allowedIds = Array.isArray(user.allowedCompanies)
-      ? user.allowedCompanies.map((x) => String(x))
-      : [];
-    const companies = await Company.find({ _id: { $in: allowedIds }, isActive: true })
-      .select("name code logoUrl currency isActive address email phone trnNo")
-      .sort({ name: 1 })
-      .lean();
-    if (!companies.length) {
-      return res.status(403).json({ message: "No active company access assigned" });
-    }
-
-    const requestedCompanyId = String(req.body?.companyId || "").trim();
-    if (requestedCompanyId) {
-      const selected = companies.find((c) => String(c._id) === requestedCompanyId);
-      if (!selected) return res.status(403).json({ message: "Invalid company access" });
-      const token = signToken(user, selected, companies);
-      await recordLoginSuccess(req, user, selected);
+    if (user.twoFactorEnabled) {
+      const requestedCompanyId = String(req.body?.companyId || "").trim();
+      const twoFactorTicket = signTwoFactorTicket(user, { companyId: requestedCompanyId });
       return res.json({
-        token,
+        requires2FA: true,
+        twoFactorTicket,
         user: userAuthPayload(user),
-        company: normalizeCompany(selected),
-        companies: companies.map(normalizeCompany),
       });
     }
 
-    if (companies.length === 1) {
-      const selected = companies[0];
-      const token = signToken(user, selected, companies);
-      await recordLoginSuccess(req, user, selected);
-      return res.json({
-        token,
-        user: userAuthPayload(user),
-        company: normalizeCompany(selected),
-        companies: companies.map(normalizeCompany),
-      });
-    }
-
-    const defaultCompany = user.defaultCompany
-      ? companies.find((c) => String(c._id) === String(user.defaultCompany))
-      : null;
-    if (defaultCompany) {
-      const token = signToken(user, defaultCompany, companies);
-      await recordLoginSuccess(req, user, defaultCompany);
-      return res.json({
-        token,
-        user: userAuthPayload(user),
-        company: normalizeCompany(defaultCompany),
-        companies: companies.map(normalizeCompany),
-      });
-    }
-
-    const loginTicket = signCompanySelectionTicket(user);
-    return res.json({
-      requiresCompanySelection: true,
-      loginTicket,
-      user: userAuthPayload(user),
-      companies: companies.map(normalizeCompany),
+    return completeAuthenticatedLogin(req, res, user, {
+      requestedCompanyId: req.body?.companyId,
     });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+router.post("/2fa/verify-login", async (req, res) => {
+  try {
+    const twoFactorTicket = String(req.body?.twoFactorTicket || "").trim();
+    const code = String(req.body?.code || "").trim();
+    if (!twoFactorTicket || !code) {
+      return res.status(400).json({ message: "twoFactorTicket and code required" });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(twoFactorTicket, process.env.JWT_SECRET);
+    } catch {
+      return res.status(401).json({ message: "Invalid or expired 2FA ticket" });
+    }
+    if (decoded?.purpose !== "2fa_verify" || !decoded?.id) {
+      return res.status(401).json({ message: "Invalid 2FA ticket" });
+    }
+
+    const user = await User.findById(decoded.id).select("+twoFactorSecret");
+    if (!user || !user.isActive) {
+      return res.status(401).json({ message: "User not found" });
+    }
+    if (!user.twoFactorEnabled || !user.twoFactorSecret) {
+      return res.status(400).json({ message: "Two-factor authentication is not enabled for this user" });
+    }
+
+    const valid = verifyUserTotpCode(user.twoFactorSecret, code);
+    if (!valid) {
+      await recordActivity(req, {
+        action: "TWO_FACTOR_VERIFY_FAILED",
+        success: false,
+        userId: user._id,
+        userEmail: user.email,
+        userName: user.name || "",
+        description: `2FA verification failed for ${user.email}`,
+      });
+      return res.status(401).json({ message: "Invalid authenticator code" });
+    }
+
+    user.twoFactorLastVerifiedAt = new Date();
+    await user.save();
+
+    const requestedCompanyId =
+      String(req.body?.companyId || "").trim() || String(decoded.companyId || "").trim();
+    return completeAuthenticatedLogin(req, res, user, { requestedCompanyId });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+router.get("/2fa/status", requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select(
+      "twoFactorEnabled twoFactorEnabledAt twoFactorLastVerifiedAt"
+    );
+    if (!user) return res.status(404).json({ message: "User not found" });
+    res.json(userTwoFactorPublicStatus(user));
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+router.post("/2fa/setup", requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("+twoFactorSecret name email username");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (user.twoFactorEnabled) {
+      return res.status(400).json({ message: "Authenticator is already enabled for your account" });
+    }
+
+    const plainSecret = generateUserTotpSecret();
+    user.twoFactorSecret = encryptTotpSecret(plainSecret);
+    user.twoFactorEnabled = false;
+    user.twoFactorEnabledAt = null;
+    user.twoFactorLastVerifiedAt = null;
+    await user.save();
+
+    const company = await pickCompanyForTotpLabel(user);
+    const otpauthUrl = buildOtpAuthUrl(user, plainSecret, company);
+    const qrDataUrl = await buildTotpQrDataUrl(otpauthUrl);
+
+    res.json({
+      qrDataUrl,
+      otpauthUrl,
+      account: user.email || user.username || user.name || "",
+      company: company ? { name: company.name, code: company.code } : null,
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+router.post("/2fa/confirm", requireAuth, async (req, res) => {
+  try {
+    const code = String(req.body?.code || "").trim();
+    if (!code) return res.status(400).json({ message: "code required" });
+
+    const user = await User.findById(req.user.id).select("+twoFactorSecret");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (user.twoFactorEnabled) {
+      return res.status(400).json({ message: "Authenticator is already enabled" });
+    }
+    if (!user.twoFactorSecret) {
+      return res.status(400).json({ message: "Start setup first (Enable Authenticator)" });
+    }
+
+    const valid = verifyUserTotpCode(user.twoFactorSecret, code);
+    if (!valid) {
+      return res.status(401).json({ message: "Invalid authenticator code" });
+    }
+
+    user.twoFactorEnabled = true;
+    user.twoFactorEnabledAt = new Date();
+    user.twoFactorLastVerifiedAt = new Date();
+    await user.save();
+
+    await recordActivity(req, {
+      action: "TWO_FACTOR_ENABLED",
+      success: true,
+      userId: user._id,
+      userEmail: user.email,
+      userName: user.name || "",
+      description: `Authenticator enabled for ${user.email}`,
+    });
+
+    res.json({ success: true, ...userTwoFactorPublicStatus(user) });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+router.post("/2fa/disable", requireAuth, async (req, res) => {
+  try {
+    const password = String(req.body?.password || "");
+    const code = String(req.body?.code || "").trim();
+    if (!password || !code) {
+      return res.status(400).json({ message: "password and code required" });
+    }
+
+    const user = await User.findById(req.user.id).select("+passwordHash +twoFactorSecret");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user.twoFactorEnabled) {
+      return res.status(400).json({ message: "Authenticator is not enabled" });
+    }
+
+    const passwordOk = await bcrypt.compare(password, user.passwordHash);
+    if (!passwordOk) {
+      return res.status(401).json({ message: "Invalid password" });
+    }
+
+    const valid = verifyUserTotpCode(user.twoFactorSecret, code);
+    if (!valid) {
+      return res.status(401).json({ message: "Invalid authenticator code" });
+    }
+
+    Object.assign(user, clearUserTwoFactorFields());
+    await user.save();
+
+    await recordActivity(req, {
+      action: "TWO_FACTOR_DISABLED",
+      success: true,
+      userId: user._id,
+      userEmail: user.email,
+      userName: user.name || "",
+      description: `Authenticator disabled for ${user.email}`,
+    });
+
+    res.json({ success: true, ...userTwoFactorPublicStatus(user) });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -353,7 +579,9 @@ router.get("/users", requireAuth, requireCompanyContext, requireRole("super_admi
         ? {}
         : { allowedCompanies: req.companyId };
     const users = await User.find(filter)
-      .select("name email username role allowedCompanies defaultCompany createdAt")
+      .select(
+        "name email username role allowedCompanies defaultCompany createdAt twoFactorEnabled twoFactorEnabledAt"
+      )
       .populate("allowedCompanies", "name code")
       .populate("defaultCompany", "name code")
       .sort({ createdAt: -1 });
@@ -387,6 +615,44 @@ router.delete(
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
+  }
+);
+
+router.post(
+  "/users/:id/reset-2fa",
+  requireAuth,
+  requireCompanyContext,
+  requireRole("super_admin", "company_admin", "admin"),
+  async (req, res) => {
+    try {
+      const targetId = req.params.id;
+      const filter =
+        String(req.user?.role || "").toLowerCase() === "super_admin"
+          ? { _id: targetId }
+          : { _id: targetId, allowedCompanies: req.companyId };
+      const user = await User.findOne(filter).select("name email twoFactorEnabled");
+      if (!user) return res.status(404).json({ message: "User not found" });
+      if (!user.twoFactorEnabled) {
+        return res.json({ success: true, message: "2FA was not enabled for this user" });
+      }
+
+      await User.updateOne({ _id: user._id }, { $set: clearUserTwoFactorFields() });
+
+      await recordActivity(req, {
+        action: "TWO_FACTOR_RESET",
+        success: true,
+        userId: user._id,
+        userEmail: user.email,
+        userName: user.name || "",
+        companyId: req.companyId,
+        description: `Admin reset 2FA for ${user.email}`,
+        metadata: { resetBy: req.user?.email || "" },
+      });
+
+      res.json({ success: true, message: "2FA reset for user" });
+    } catch (err) {
+      res.status(400).json({ message: err.message });
+    }
   }
 );
 

@@ -11,6 +11,7 @@ import {
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
+import { useAuth } from "../context/AuthContext.jsx";
 
 const TABS = [
   { id: "companies", label: "Companies" },
@@ -20,6 +21,7 @@ const TABS = [
   { id: "numbering", label: "Number Series" },
   { id: "approvals", label: "Approval Rules" },
   { id: "approvalQueue", label: "Approval Queue" },
+  { id: "users", label: "Users & 2FA" },
   { id: "activity", label: "User Activity" },
 ];
 
@@ -82,6 +84,7 @@ export default function Settings() {
       {tab === "numbering" && <NumberSeriesTab />}
       {tab === "approvals" && <ApprovalRulesTab />}
       {tab === "approvalQueue" && <ApprovalQueueTab />}
+      {tab === "users" && <UsersTab />}
       {tab === "activity" && <ActivityTab />}
     </div>
   );
@@ -1587,6 +1590,121 @@ function ApprovalQueueTab() {
                           Reject
                         </button>
                       </div>
+                    )}
+                  </Td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ----------------------------------------------------------------- */
+/* Users & 2FA (admin)                                                */
+/* ----------------------------------------------------------------- */
+
+function UsersTab() {
+  const qc = useQueryClient();
+  const { auth } = useAuth();
+  const { data: users = [], isLoading, refetch } = useQuery({
+    queryKey: ["authUsers"],
+    queryFn: () => apiGet("/auth/users"),
+  });
+
+  const reset2fa = useMutation({
+    mutationFn: (userId) => apiPost(`/auth/users/${userId}/reset-2fa`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["authUsers"] });
+    },
+  });
+
+  function onReset2fa(user) {
+    const label = user.email || user.username || user.name || user._id;
+    if (
+      !window.confirm(
+        `Reset Authenticator for ${label}? This clears only that user's 2FA. You will not see their secret.`
+      )
+    ) {
+      return;
+    }
+    reset2fa.mutate(user._id, {
+      onError: (err) => window.alert(err.message || "Reset failed"),
+      onSuccess: () => window.alert(`2FA reset for ${label}`),
+    });
+  }
+
+  return (
+    <div>
+      <p className="mb-3 text-sm text-slate-600">
+        View whether each user has Authenticator enabled. Admins can reset 2FA if a user loses their phone.
+        TOTP secrets are never shown.
+      </p>
+      <div className="mb-3 flex justify-end">
+        <button
+          type="button"
+          className="rounded-xl border px-3 py-2 text-sm"
+          onClick={() => refetch()}
+        >
+          Refresh
+        </button>
+      </div>
+      <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+        <table className="min-w-full text-sm">
+          <thead className="bg-slate-50">
+            <tr>
+              <Th>Name</Th>
+              <Th>Email</Th>
+              <Th>Username</Th>
+              <Th>Role</Th>
+              <Th>2FA</Th>
+              <Th>Enabled at</Th>
+              <Th></Th>
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading ? (
+              <tr>
+                <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                  Loading...
+                </td>
+              </tr>
+            ) : users.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                  No users found.
+                </td>
+              </tr>
+            ) : (
+              users.map((u) => (
+                <tr key={u._id} className="border-t border-slate-100 hover:bg-slate-50">
+                  <Td>{u.name || "—"}</Td>
+                  <Td>{u.email}</Td>
+                  <Td>{u.username || "—"}</Td>
+                  <Td>{u.role}</Td>
+                  <Td>
+                    {u.twoFactorEnabled ? badge("Enabled", "green") : badge("Disabled", "slate")}
+                  </Td>
+                  <Td>{fmtDate(u.twoFactorEnabledAt)}</Td>
+                  <Td>
+                    {u.twoFactorEnabled ? (
+                      <button
+                        type="button"
+                        className="text-xs font-medium text-rose-700 underline disabled:opacity-50"
+                        disabled={reset2fa.isPending || String(u._id) === String(auth?.user?.id)}
+                        title={
+                          String(u._id) === String(auth?.user?.id)
+                            ? "Use Profile / Security to manage your own 2FA"
+                            : "Reset this user's 2FA"
+                        }
+                        onClick={() => onReset2fa(u)}
+                      >
+                        Reset 2FA
+                      </button>
+                    ) : (
+                      <span className="text-xs text-slate-400">—</span>
                     )}
                   </Td>
                 </tr>

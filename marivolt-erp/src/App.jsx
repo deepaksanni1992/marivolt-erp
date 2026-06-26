@@ -4,6 +4,7 @@ import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
 
 import Login from "./pages/Login.jsx";
+import TwoFactorVerify from "./pages/TwoFactorVerify.jsx";
 import CompanySelect from "./pages/CompanySelect.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import DataHealthDashboard from "./pages/DataHealthDashboard.jsx";
@@ -27,9 +28,10 @@ import DeKitting from "./pages/DeKitting.jsx";
 import Documents from "./pages/Documents.jsx";
 import AuditTrail from "./pages/AuditTrail.jsx";
 import Settings from "./pages/Settings.jsx";
+import ProfileSecurity from "./pages/ProfileSecurity.jsx";
 
 function CatchAllRedirect() {
-  const { isLoggedIn, requiresCompanySelection, authReady } = useAuth();
+  const { isLoggedIn, requiresCompanySelection, requires2FA, authReady } = useAuth();
   if (!authReady) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50 text-sm text-gray-600">
@@ -38,6 +40,7 @@ function CatchAllRedirect() {
     );
   }
   if (requiresCompanySelection) return <Navigate to="/select-company" replace />;
+  if (requires2FA) return <Navigate to="/verify-2fa" replace />;
   if (isLoggedIn) return <Navigate to="/dashboard" replace />;
   return <Navigate to="/login" replace />;
 }
@@ -46,6 +49,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/verify-2fa" element={<TwoFactorVerify />} />
       <Route path="/select-company" element={<CompanySelect />} />
 
       <Route element={<ProtectedRoute />}>
@@ -74,6 +78,7 @@ export default function App() {
           <Route path="dekitting" element={<DeKitting />} />
           <Route path="audit" element={<AuditTrail />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="profile/security" element={<ProfileSecurity />} />
         </Route>
       </Route>
 

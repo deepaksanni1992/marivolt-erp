@@ -78,6 +78,13 @@ export default function Topbar({ onMenuClick }) {
             </select>
           )}
           <button
+            type="button"
+            onClick={() => nav("/profile/security")}
+            className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+          >
+            Security
+          </button>
+          <button
             onClick={onLogout}
             className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
           >

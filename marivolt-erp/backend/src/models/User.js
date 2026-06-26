@@ -61,6 +61,12 @@ const userSchema = new mongoose.Schema(
     lastLoginIp: { type: String, default: "" },
     lastLoginAgent: { type: String, default: "" },
     isActive: { type: Boolean, default: true, index: true },
+    /** Per-user TOTP — each user has their own secret; never shared across users. */
+    twoFactorEnabled: { type: Boolean, default: false, index: true },
+    /** AES-256-GCM encrypted base32 secret for this user only. */
+    twoFactorSecret: { type: String, default: "", select: false },
+    twoFactorEnabledAt: { type: Date, default: null },
+    twoFactorLastVerifiedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

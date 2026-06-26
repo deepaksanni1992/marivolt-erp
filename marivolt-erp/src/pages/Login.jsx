@@ -4,7 +4,7 @@ import { useAuth } from "../context/AuthContext.jsx";
 
 export default function Login() {
   const nav = useNavigate();
-  const { login, authReady, isLoggedIn, requiresCompanySelection } = useAuth();
+  const { login, authReady, isLoggedIn, requiresCompanySelection, requires2FA } = useAuth();
   const [form, setForm] = useState({ email: "", password: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -16,8 +16,9 @@ export default function Login() {
   useEffect(() => {
     if (!authReady) return;
     if (requiresCompanySelection) nav("/select-company", { replace: true });
+    else if (requires2FA) nav("/verify-2fa", { replace: true });
     else if (isLoggedIn) nav("/dashboard", { replace: true });
-  }, [authReady, requiresCompanySelection, isLoggedIn, nav]);
+  }, [authReady, requiresCompanySelection, requires2FA, isLoggedIn, nav]);
 
   if (!authReady) {
     return (
@@ -44,7 +45,8 @@ export default function Login() {
       const password = passwordInput || form.password;
 
       const data = await login(email, password);
-      if (data?.requiresCompanySelection) nav("/select-company");
+      if (data?.requires2FA) nav("/verify-2fa");
+      else if (data?.requiresCompanySelection) nav("/select-company");
       else nav("/dashboard");
     } catch (e2) {
       setError(e2.message || "Login failed");
