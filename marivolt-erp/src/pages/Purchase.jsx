@@ -90,6 +90,7 @@ function initialPoForm(company) {
     handlingCost: 0,
     miscellaneousCost: 0,
     showMaterialCodeOnPrint: false,
+    showMachineDetailsOnPrint: false,
     lines: [defaultLine()],
   };
 }
@@ -178,6 +179,7 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
     handlingCost: poHeaderCost(form.handlingCost),
     miscellaneousCost: poHeaderCost(form.miscellaneousCost),
     showMaterialCodeOnPrint: !!form.showMaterialCodeOnPrint,
+    showMachineDetailsOnPrint: !!form.showMachineDetailsOnPrint,
     lines,
   };
 }
@@ -269,6 +271,7 @@ function purchaseOrderApiToForm(po) {
     handlingCost: poHeaderCost(po.handlingCost),
     miscellaneousCost: poHeaderCost(po.miscellaneousCost),
     showMaterialCodeOnPrint: !!po.showMaterialCodeOnPrint,
+    showMachineDetailsOnPrint: !!po.showMachineDetailsOnPrint,
     lines,
   };
 }
@@ -465,6 +468,7 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
   if (!doc) return null;
   const lines = doc.lines || [];
   const showMaterialCode = supplierFacing ? !!doc.showMaterialCodeOnPrint : true;
+  const showMachineDetails = supplierFacing ? !!doc.showMachineDetailsOnPrint : true;
   const { subTotal, packingCost, handlingCost, miscellaneousCost, grandTotal: grand } =
     calcPoTotalsFromDoc(doc);
   const cur = doc.currency || "USD";
@@ -629,7 +633,7 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
           </header>
         )}
 
-        <div className="mt-5 grid gap-3 lg:grid-cols-3">
+        <div className={`mt-5 grid gap-3 ${showMachineDetails ? "lg:grid-cols-3" : "lg:grid-cols-2"}`}>
           <div className="min-h-[140px] rounded-[10px] border border-[#e5e7eb] bg-[#fafafa] p-3">
             <p className="text-[11px] font-bold uppercase tracking-[0.3px] text-[#6b7280]">Buyer</p>
             <p className="mt-1 text-sm font-semibold text-[#111827]">{buyer.name}</p>
@@ -649,15 +653,17 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
               {doc.supplierEmail ? <p>{doc.supplierEmail}</p> : null}
             </div>
           </div>
-          <div className="min-h-[140px] rounded-[10px] border border-[#e5e7eb] bg-[#fafafa] p-3 text-xs leading-relaxed text-[#555]">
-            <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.3px] text-[#6b7280]">Machine Details</p>
-            <p><b>Vertical:</b> {machine.vertical}</p>
-            <p><b>Brand:</b> {machine.brand}</p>
-            <p><b>Model:</b> {machine.model}</p>
-            <p><b>Config:</b> {machine.config}</p>
-            <p><b>ESN:</b> {machine.esn}</p>
-            <p><b>Currency:</b> {machine.currency}</p>
-          </div>
+          {showMachineDetails ? (
+            <div className="min-h-[140px] rounded-[10px] border border-[#e5e7eb] bg-[#fafafa] p-3 text-xs leading-relaxed text-[#555]">
+              <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.3px] text-[#6b7280]">Machine Details</p>
+              <p><b>Vertical:</b> {machine.vertical}</p>
+              <p><b>Brand:</b> {machine.brand}</p>
+              <p><b>Model:</b> {machine.model}</p>
+              <p><b>Config:</b> {machine.config}</p>
+              <p><b>ESN:</b> {machine.esn}</p>
+              <p><b>Currency:</b> {machine.currency}</p>
+            </div>
+          ) : null}
         </div>
 
         {(doc.delivery || doc.payment || doc.contactPerson) && (
@@ -2769,7 +2775,18 @@ export default function Purchase({ procurementEmbed = false } = {}) {
           </div>
 
           <div className="mt-4 rounded-lg border border-gray-100 bg-gray-50/90 p-3">
-            <div className="mb-2 text-[10px] font-bold uppercase text-gray-500">Machine Details</div>
+            <div className="mb-2 flex flex-wrap items-center gap-3">
+              <span className="text-[10px] font-bold uppercase text-gray-500">Machine Details</span>
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-gray-700">
+                <input
+                  type="checkbox"
+                  className="rounded border-gray-300"
+                  checked={!!form.showMachineDetailsOnPrint}
+                  onChange={(e) => setForm((f) => ({ ...f, showMachineDetailsOnPrint: e.target.checked }))}
+                />
+                Show machine details on PO print / PDF
+              </label>
+            </div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
               <FormField label="Vertical">
                 <TextInput value={form.vertical} onChange={(e) => setForm((f) => ({ ...f, vertical: e.target.value }))} />

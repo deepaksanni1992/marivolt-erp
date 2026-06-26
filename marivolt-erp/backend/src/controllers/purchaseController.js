@@ -368,6 +368,7 @@ export async function updatePurchaseOrder(req, res) {
       "handlingCost",
       "miscellaneousCost",
       "showMaterialCodeOnPrint",
+      "showMachineDetailsOnPrint",
     ];
     const patch = stripClientPoNumbers(req.body);
     for (const k of allowed) {

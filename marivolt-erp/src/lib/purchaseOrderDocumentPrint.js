@@ -116,7 +116,9 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
   const thBorder = isOkeanos ? "#ddd" : "#1f3a5f";
 
   const showMaterialCode = doc?.showMaterialCodeOnPrint === true;
+  const showMachineDetails = doc?.showMachineDetailsOnPrint === true;
   const lineColSpan = showMaterialCode ? 10 : 9;
+  const partyGridCols = showMachineDetails ? "1fr 1fr 1fr" : "1fr 1fr";
 
   const lineRows = lines
     .map((l, i) => {
@@ -253,7 +255,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
   <div class="print-body">
   ${isOkeanos ? headerOkeanos : headerDefault}
 
-  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+  <div style="display:grid;grid-template-columns:${partyGridCols};gap:12px;margin-bottom:16px">
     <div class="info-box muted">
       <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;color:#6b7280">Buyer</div>
       <div style="margin-top:8px;font-size:14px;font-weight:600;color:#111">${buyer.name}</div>
@@ -271,7 +273,9 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         ${doc.supplierEmail ? `<div>${escapeHtml(doc.supplierEmail)}</div>` : ""}
       </div>
     </div>
-    <div class="info-box muted">
+    ${
+      showMachineDetails
+        ? `<div class="info-box muted">
       <div class="info-box-title">Machine Details</div>
       <div><b>Vertical:</b> ${machine.vertical}</div>
       <div><b>Brand:</b> ${machine.brand}</div>
@@ -279,7 +283,9 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
       <div><b>Config:</b> ${machine.config}</div>
       <div><b>ESN:</b> ${machine.esn}</div>
       <div><b>Currency:</b> ${machine.currency}</div>
-    </div>
+    </div>`
+        : ""
+    }
   </div>
 
   ${doc.contactPerson || doc.delivery || doc.payment ? `
