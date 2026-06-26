@@ -11,6 +11,7 @@ import authRoutes from "./routes/authRoutes.js";
 import itemRoutes from "./routes/itemRoutes.js";
 import purchaseRoutes from "./routes/purchaseRoutes.js";
 import quotationRoutes from "./routes/quotationRoutes.js";
+import documentSnapshotRoutes from "./routes/documentSnapshotRoutes.js";
 import inventoryRoutes from "./routes/inventoryRoutes.js";
 import grnRoutes from "./routes/grnRoutes.js";
 import stockRoutes from "./routes/stockRoutes.js";
@@ -116,6 +117,7 @@ async function startServer() {
     app.use("/api/suppliers", supplierRoutes);
     app.use("/api/purchase-returns", purchaseReturnRoutes);
     app.use("/api/quotations", quotationRoutes);
+    app.use("/api/document-snapshot", documentSnapshotRoutes);
     app.use("/api/inventory", inventoryRoutes);
     app.use("/api/grn", grnRoutes);
     app.use("/api/stock", stockRoutes);

@@ -1,18 +1,31 @@
 import mongoose from "mongoose";
+import { documentSourceMetadataFields } from "../services/documentSnapshot/documentSourceMetadata.js";
 
 const oaLineSchema = new mongoose.Schema(
   {
     serialNo: { type: Number, default: 0, min: 0 },
+    /** Reference-only link to quotation line when OA created from quotation snapshot. */
+    sourceQuotationLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
     article: { type: String, required: true, trim: true, uppercase: true },
     partNumber: { type: String, default: "", trim: true },
     description: { type: String, default: "" },
+    /** Ordered quantity (persisted as qty for downstream compatibility). */
     qty: { type: Number, required: true, min: 0.0001 },
+    quotedQty: { type: Number, default: null, min: 0 },
+    orderedQty: { type: Number, default: null, min: 0 },
     uom: { type: String, default: "PCS", trim: true },
     price: { type: Number, default: 0, min: 0 },
+    quotedPrice: { type: Number, default: null, min: 0 },
+    orderedPrice: { type: Number, default: null, min: 0 },
     totalPrice: { type: Number, default: 0, min: 0 },
+    lineDiscount: { type: Number, default: 0, min: 0 },
+    lineTax: { type: Number, default: 0, min: 0 },
     remarks: { type: String, default: "" },
     materialCode: { type: String, default: "", trim: true },
     availability: { type: String, default: "", trim: true },
+    /** When false, line is excluded from OA totals (reference-only rows). */
+    includeInOA: { type: Boolean, default: true },
+    supplierInfo: { type: String, default: "", trim: true },
   },
   { _id: true }
 );
@@ -24,6 +37,9 @@ const orderAcknowledgementSchema = new mongoose.Schema(
     oaDate: { type: Date, default: () => new Date() },
     linkedQuotationId: { type: mongoose.Schema.Types.ObjectId, ref: "Quotation", index: true },
     linkedQuotationNo: { type: String, default: "", trim: true },
+    oaSourceType: { type: String, enum: ["BLANK", "FROM_QUOTATION"], default: "BLANK", trim: true },
+    ...documentSourceMetadataFields,
+    attention: { type: String, default: "", trim: true },
     customerName: { type: String, required: true, trim: true, index: true },
     customerPORef: { type: String, default: "", trim: true },
     customerPODate: { type: Date, default: null },
@@ -40,6 +56,8 @@ const orderAcknowledgementSchema = new mongoose.Schema(
     esn: { type: String, default: "", trim: true },
     lines: { type: [oaLineSchema], default: [] },
     subTotal: { type: Number, default: 0 },
+    discountType: { type: String, enum: ["NONE", "PERCENT", "FLAT"], default: "NONE", trim: true },
+    discountValue: { type: Number, default: 0, min: 0 },
     discountTotal: { type: Number, default: 0 },
     taxTotal: { type: Number, default: 0 },
     packingCost: { type: Number, default: 0, min: 0 },

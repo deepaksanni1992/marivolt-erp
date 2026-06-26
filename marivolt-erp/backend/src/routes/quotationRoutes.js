@@ -14,8 +14,11 @@ const salesExport = requirePermission("SALES", "export");
 const salesDelete = requirePermission("SALES", "delete");
 
 router.get("/", salesView, c.listQuotations);
+router.get("/search-for-oa", salesView, c.searchQuotationsForOA);
 router.get("/facets", salesView, c.getQuotationFacets);
 router.get("/next-number", salesCreate, c.getNextQuotationNumber);
+router.get("/:id/consumption", salesView, c.getQuotationConsumption);
+router.get("/:id/oa-source", salesView, c.getQuotationOaSource);
 router.get("/:id/print-data", salesExport, c.getQuotationPrintData);
 router.post("/:id/duplicate", salesCreate, c.duplicateQuotation);
 router.get("/:id", salesView, c.getQuotation);

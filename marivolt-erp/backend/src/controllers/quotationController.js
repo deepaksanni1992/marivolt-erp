@@ -12,6 +12,12 @@ import {
   quotationCanBeDeleted,
   quotationDeleteBlockReason,
 } from "../utils/salesAdminAccess.js";
+import {
+  buildOaWorkingCopyFromQuotation,
+  buildQuotationSearchFilterForOA,
+  mapQuotationSearchRowForOA,
+} from "../services/documentSnapshot/documentSnapshotService.js";
+import { getQuotationConsumptionReport } from "../services/documentSnapshot/documentChainService.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -562,6 +568,69 @@ export async function duplicateQuotation(req, res) {
     res.status(201).json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
+  }
+}
+
+export async function searchQuotationsForOA(req, res) {
+  try {
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
+    const skip = (page - 1) * limit;
+    const filter = buildQuotationSearchFilterForOA(req.companyId, req.query);
+    const [rows, total] = await Promise.all([
+      Quotation.find(filter)
+        .sort({ quotationDate: -1, createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select(
+          "quotationNo quotationDate customerName customerReference vertical engine model esn currency grandTotal status"
+        )
+        .lean(),
+      Quotation.countDocuments(filter),
+    ]);
+    res.json({
+      items: rows.map(mapQuotationSearchRowForOA),
+      total,
+      page,
+      limit,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+/** Read-only snapshot for New OA "From Quotation" — never mutates the quotation. */
+export async function getQuotationOaSource(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid id" });
+    }
+    const row = await Quotation.findOne(withCompany(req, { _id: id })).lean();
+    if (!row) return res.status(404).json({ message: "Not found" });
+    const st = String(row.status || "").toUpperCase();
+    if (["CANCELLED", "REJECTED"].includes(st)) {
+      return res.status(400).json({ message: `Cannot use quotation with status ${st} as OA source` });
+    }
+    if (!row.lines?.length) {
+      return res.status(400).json({ message: "Quotation has no lines to copy into OA" });
+    }
+    res.json(await buildOaWorkingCopyFromQuotation(req.companyId, row, { copiedBy: req.user?.email || "" }));
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getQuotationConsumption(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid id" });
+    }
+    const report = await getQuotationConsumptionReport(req.companyId, id);
+    res.json(report);
+  } catch (err) {
+    res.status(err.message === "Quotation not found" ? 404 : 500).json({ message: err.message });
   }
 }
 

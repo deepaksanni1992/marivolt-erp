@@ -31,6 +31,13 @@ import {
   reverseSalesInvoiceReceivable,
 } from "../services/customerReceivableService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
+import {
+  isOaWorkingCopyPayload,
+  normalizeOALinesFromWorkingCopy,
+  validateOaWorkingCopyBeforeSave,
+  buildOaSourceMetadataForPersist,
+} from "../services/documentSnapshot/documentSnapshotService.js";
+import { validateOaLineFields } from "../services/documentSnapshot/oaCreateValidation.js";
 
 const { withTransaction } = stockService;
 
@@ -1834,8 +1841,48 @@ export async function getOAPdfData(req, res) {
 export async function createOA(req, res) {
   try {
     const body = { ...req.body };
-    const lines = normalizeLines(body.lines || []);
-    if (!lines.length) return res.status(400).json({ message: "OA requires at least one line" });
+    const fromWorkingCopy = isOaWorkingCopyPayload(body);
+
+    if (!String(body.customerName || "").trim()) {
+      return res.status(400).json({ message: "Customer name is required", code: "VALIDATION" });
+    }
+
+    const lineErrors = validateOaLineFields(body.lines || [], { fromWorkingCopy });
+    if (lineErrors.length) {
+      return res.status(400).json({
+        message: lineErrors[0],
+        code: "VALIDATION",
+        errors: lineErrors,
+      });
+    }
+
+    if (fromWorkingCopy) {
+      const validation = await validateOaWorkingCopyBeforeSave({
+        companyId: req.companyId,
+        body,
+      });
+      if (!validation.ok) {
+        return res.status(validation.code === "STALE_CONSUMPTION" ? 409 : 400).json({
+          message: validation.message,
+          code: validation.code,
+          violations: validation.violations,
+          reasons: validation.reasons,
+          errors: validation.errors,
+        });
+      }
+    }
+
+    const lines = fromWorkingCopy
+      ? normalizeOALinesFromWorkingCopy(body.lines || [])
+      : normalizeLines(body.lines || []);
+    if (!lines.length) {
+      return res.status(400).json({
+        message: fromWorkingCopy
+          ? "OA requires at least one included line with ordered quantity > 0"
+          : "OA requires at least one line",
+        code: "VALIDATION",
+      });
+    }
     const oaNo =
       body.oaNo ||
       (await nextUniqueSalesDocNumber({
@@ -1846,14 +1893,43 @@ export async function createOA(req, res) {
         field: "oaNo",
       }));
     const totals = computeTotals(lines, body);
+    const linkedQtnId = body.linkedQuotationId || body.sourceQuotationId;
+    const sourceMeta = fromWorkingCopy ? buildOaSourceMetadataForPersist(body, req.user) : {};
     const doc = await OrderAcknowledgement.create({
-      ...body,
+      companyId: req.companyId,
+      oaNo,
+      oaDate: body.oaDate ? new Date(body.oaDate) : new Date(),
+      oaSourceType: String(body.oaSourceType || "").toUpperCase() === "FROM_QUOTATION" ? "FROM_QUOTATION" : "BLANK",
+      linkedQuotationId: mongoose.Types.ObjectId.isValid(String(linkedQtnId || ""))
+        ? new mongoose.Types.ObjectId(String(linkedQtnId))
+        : null,
+      linkedQuotationNo: String(body.linkedQuotationNo || body.sourceQuotationNo || sourceMeta.sourceDocumentNumber || "").trim(),
+      ...sourceMeta,
+      customerName: String(body.customerName || "").trim(),
+      customerPORef: String(body.customerPORef || body.customerReference || "").trim(),
+      attention: String(body.attention || "").trim(),
+      acknowledgementNotes: String(body.acknowledgementNotes || "").trim(),
+      deliverySchedule: String(body.deliverySchedule || "").trim(),
+      paymentTerms: String(body.paymentTerms || "").trim(),
+      incoterm: String(body.incoterm || "").trim(),
+      dispatchTerms: String(body.dispatchTerms || "").trim(),
+      currency: String(body.currency || "USD").toUpperCase(),
+      vertical: String(body.vertical || "").trim(),
+      engine: String(body.engine || "").trim(),
+      model: String(body.model || "").trim(),
+      config: String(body.config || "").trim(),
+      esn: String(body.esn || "").trim(),
+      discountType: body.discountType || "NONE",
+      discountValue: Number(body.discountValue) || 0,
+      packingCost: Math.max(0, Number(body.packingCost) || 0),
+      clearanceCost: Math.max(0, Number(body.clearanceCost) || 0),
+      taxTotal: Math.max(0, Number(body.taxTotal) || 0),
       lines,
       ...totals,
-      oaNo,
-      companyId: req.companyId,
+      status: "ACTIVE",
       createdBy: req.user?.email || "",
     });
+    // Snapshot OA creation never mutates the source quotation.
     res.status(201).json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });

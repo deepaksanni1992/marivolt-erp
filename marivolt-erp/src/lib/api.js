@@ -153,6 +153,9 @@ api.interceptors.response.use(
     wrapped.status = err.response?.status || 0;
     if (err.response?.data && typeof err.response.data === "object") {
       if (err.response.data.code) wrapped.code = err.response.data.code;
+      if (err.response.data.violations) wrapped.violations = err.response.data.violations;
+      if (err.response.data.reasons) wrapped.reasons = err.response.data.reasons;
+      if (err.response.data.errors) wrapped.errors = err.response.data.errors;
       if (err.response.data.details) wrapped.details = err.response.data.details;
       wrapped.body = err.response.data;
     }

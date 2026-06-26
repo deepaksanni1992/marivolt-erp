@@ -24,6 +24,7 @@ import { getReportBranding } from "../lib/reportBranding.js";
 import { renderRtsPackingListPrintWindow } from "../lib/rtsPackingListPrint.js";
 import SalesCustomsInvoicePanel from "../components/customs/SalesCustomsInvoicePanel.jsx";
 import CreateInvoiceFromPackingModal from "../components/sales/CreateInvoiceFromPackingModal.jsx";
+import OaCreateModal from "../components/sales/OaCreateModal.jsx";
 import { deliverReportHtml, downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 import {
   buildColgroupHtml,
@@ -1517,6 +1518,7 @@ export default function Sales() {
   }, [searchParams]);
 
   const [oaCreateOpen, setOaCreateOpen] = useState(false);
+  const [oaInitialForm, setOaInitialForm] = useState(null);
   const [proformaCreateOpen, setProformaCreateOpen] = useState(false);
   const [salesInvoiceCreateOpen, setSalesInvoiceCreateOpen] = useState(false);
   const [packingInvoiceModalOpen, setPackingInvoiceModalOpen] = useState(false);
@@ -2331,10 +2333,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
   });
 
   const convertToOAMutation = useMutation({
-    mutationFn: (id) => apiPost(`/sales/convert/quotation/${id}/to-oa`, {}),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["sales-oa"] });
-      qc.invalidateQueries({ queryKey: ["sales-quotations"] });
+    mutationFn: (id) => apiGet(`/quotations/${id}/oa-source`),
+    onSuccess: (working) => {
+      setOaInitialForm(working);
+      setOaCreateOpen(true);
     },
     onError: (e) => setErr(e.message),
   });
@@ -2757,19 +2759,11 @@ ${GLOBAL_REPORT_TABLE_CSS}
     onError: (e) => setErr(e.message),
   });
 
-  const [oaForm, setOaForm] = useState({
-    oaDate: new Date().toISOString().slice(0, 10),
-    customerName: "",
-    paymentTerms: "",
-    deliverySchedule: "",
-    currency: "USD",
-    vertical: "",
-    engine: "",
-    model: "",
-    config: "",
-    esn: "",
-    lines: [emptyLine()],
-  });
+  const openLinkedQuotation = useCallback((quotationId) => {
+    if (!quotationId) return;
+    setActiveTab("Quotation");
+    setDetailId(String(quotationId));
+  }, []);
 
   const [proformaForm, setProformaForm] = useState({
     proformaDate: new Date().toISOString().slice(0, 10),
@@ -2837,28 +2831,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
       return { ...prev, quotationNo: nextNo };
     });
   }, [createOpen, isQuotationNoEdited, nextQuotationNoData?.quotationNo]);
-
-  const createOAMutation = useMutation({
-    mutationFn: () => apiPost("/sales/order-acknowledgements", oaForm),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["sales-oa"] });
-      setOaCreateOpen(false);
-      setOaForm({
-        oaDate: new Date().toISOString().slice(0, 10),
-        customerName: "",
-        paymentTerms: "",
-        deliverySchedule: "",
-        currency: "USD",
-        vertical: "",
-        engine: "",
-        model: "",
-        config: "",
-        esn: "",
-        lines: [emptyLine()],
-      });
-    },
-    onError: (e) => setErr(e.message),
-  });
 
   const createProformaMutation = useMutation({
     mutationFn: () => apiPost("/sales/proforma-invoices", proformaForm),
@@ -2995,7 +2967,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 setIsQuotationNoEdited(false);
                 setCreateOpen(true);
               }
-              else if (activeTab === "Order Acknowledgement") setOaCreateOpen(true);
+              else if (activeTab === "Order Acknowledgement") {
+                setOaInitialForm(null);
+                setOaCreateOpen(true);
+              }
               else if (activeTab === "Proforma Invoice") setProformaCreateOpen(true);
               else if (activeTab === "Sales Invoice") openPackingInvoiceModal();
               else if (activeTab === "Sales Return") setSrCreateOpen(true);
@@ -5756,7 +5731,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 type="button"
                 className={`rounded-xl border px-2 py-1 text-xs ${detail.status !== "APPROVED" ? "opacity-40" : ""}`}
                 disabled={detail.status !== "APPROVED" || convertToOAMutation.isPending}
-                title={detail.status !== "APPROVED" ? "Quotation must be APPROVED" : ""}
+                title={detail.status !== "APPROVED" ? "Quotation must be APPROVED" : "Open New OA form from this quotation (snapshot)"}
                 onClick={() => convertToOAMutation.mutate(detail._id)}
               >
                 Convert to OA
@@ -5893,7 +5868,27 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   onChange={(e) => setDetailOADraftForm((f) => ({ ...f, acknowledgementNotes: e.target.value }))}
                 />
               </FormField>
-              <div className="text-xs text-gray-600">Linked Quotation: {oaDetail.linkedQuotationNo || "-"}</div>
+              <div className="text-xs text-gray-600">
+                Source Quotation:{" "}
+                {oaDetail.linkedQuotationId && oaDetail.linkedQuotationNo ? (
+                  <button
+                    type="button"
+                    className="font-mono text-sky-700 underline"
+                    onClick={() => openLinkedQuotation(oaDetail.linkedQuotationId)}
+                  >
+                    {oaDetail.linkedQuotationNo}
+                  </button>
+                ) : (
+                  oaDetail.linkedQuotationNo || oaDetail.sourceDocumentNumber || "-"
+                )}
+              </div>
+              {(oaDetail.sourceDocumentNumber || oaDetail.copiedBy) && (
+                <div className="text-xs text-gray-500">
+                  Snapshot: {oaDetail.sourceDocumentType || "QUOTATION"} {oaDetail.sourceDocumentNumber || ""}
+                  {oaDetail.copiedBy ? ` · copied by ${oaDetail.copiedBy}` : ""}
+                  {oaDetail.copiedAt ? ` · ${new Date(oaDetail.copiedAt).toISOString().slice(0, 10)}` : ""}
+                </div>
+              )}
 
               <div className="mt-1">
                 <div className="mb-2 flex items-center justify-between">
@@ -6174,7 +6169,27 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   </div>
                 </div>
               </div>
-              <div className="text-xs text-gray-600">Linked Quotation: {oaDetail.linkedQuotationNo || "-"}</div>
+              <div className="text-xs text-gray-600">
+                Source Quotation:{" "}
+                {oaDetail.linkedQuotationId && oaDetail.linkedQuotationNo ? (
+                  <button
+                    type="button"
+                    className="font-mono text-sky-700 underline"
+                    onClick={() => openLinkedQuotation(oaDetail.linkedQuotationId)}
+                  >
+                    {oaDetail.linkedQuotationNo}
+                  </button>
+                ) : (
+                  oaDetail.linkedQuotationNo || oaDetail.sourceDocumentNumber || "-"
+                )}
+              </div>
+              {(oaDetail.sourceDocumentNumber || oaDetail.copiedBy) && (
+                <div className="text-xs text-gray-500">
+                  Snapshot: {oaDetail.sourceDocumentType || "QUOTATION"} {oaDetail.sourceDocumentNumber || ""}
+                  {oaDetail.copiedBy ? ` · copied by ${oaDetail.copiedBy}` : ""}
+                  {oaDetail.copiedAt ? ` · ${new Date(oaDetail.copiedAt).toISOString().slice(0, 10)}` : ""}
+                </div>
+              )}
               {(oaDetail.vertical || oaDetail.engine || oaDetail.model || oaDetail.config || oaDetail.esn) && (
                 <div className="rounded-xl border bg-gray-50 p-3 text-xs">
                   <span className="font-semibold text-gray-500">Machine:</span>
@@ -8195,146 +8210,20 @@ ${GLOBAL_REPORT_TABLE_CSS}
         ) : null}
       </Modal>
 
-      <Modal open={oaCreateOpen} onClose={() => setOaCreateOpen(false)} title="New Order Acknowledgement" wide>
-        <div className="grid gap-3 sm:grid-cols-4">
-          <FormField label="OA Date">
-            <TextInput type="date" value={oaForm.oaDate} onChange={(e) => setOaForm((f) => ({ ...f, oaDate: e.target.value }))} />
-          </FormField>
-          <FormField label="Customer *">
-            <TextInput value={oaForm.customerName} onChange={(e) => setOaForm((f) => ({ ...f, customerName: e.target.value }))} />
-          </FormField>
-          <FormField label="Payment Terms">
-            <TextInput value={oaForm.paymentTerms} onChange={(e) => setOaForm((f) => ({ ...f, paymentTerms: e.target.value }))} />
-          </FormField>
-          <FormField label="Currency">
-            <TextInput value={oaForm.currency} onChange={(e) => setOaForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))} />
-          </FormField>
-        </div>
-        <div className="mt-3 grid gap-3 sm:grid-cols-3 md:grid-cols-5">
-          <FormField label="Vertical">
-            <TextInput value={oaForm.vertical || ""} onChange={(e) => setOaForm((f) => ({ ...f, vertical: e.target.value }))} />
-          </FormField>
-          <FormField label="Brand">
-            <TextInput value={oaForm.engine || ""} onChange={(e) => setOaForm((f) => ({ ...f, engine: e.target.value }))} />
-          </FormField>
-          <FormField label="Model">
-            <TextInput value={oaForm.model || ""} onChange={(e) => setOaForm((f) => ({ ...f, model: e.target.value }))} />
-          </FormField>
-          <FormField label="Config">
-            <TextInput value={oaForm.config || ""} onChange={(e) => setOaForm((f) => ({ ...f, config: e.target.value }))} />
-          </FormField>
-          <FormField label="ESN">
-            <TextInput value={oaForm.esn || ""} onChange={(e) => setOaForm((f) => ({ ...f, esn: e.target.value }))} />
-          </FormField>
-        </div>
-        <div className="mt-4">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm font-medium">OA Lines</span>
-            <button type="button" className="text-sm underline" onClick={() => setOaForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }))}>
-              + Add line
-            </button>
-          </div>
-          <div className="space-y-2">
-            {oaForm.lines.map((line, idx) => (
-              <div key={idx} className="grid gap-2 rounded-xl border p-2 sm:grid-cols-8">
-                <TextInput
-                  placeholder="Item code"
-                  value={line.itemCode}
-                  onChange={(e) => {
-                    const lines = [...oaForm.lines];
-                    lines[idx] = { ...line, itemCode: e.target.value };
-                    setOaForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  placeholder="Description"
-                  value={line.description}
-                  onChange={(e) => {
-                    const lines = [...oaForm.lines];
-                    lines[idx] = { ...line, description: e.target.value };
-                    setOaForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  type="number"
-                  placeholder="Qty"
-                  value={line.qty}
-                  onChange={(e) => {
-                    const lines = [...oaForm.lines];
-                    lines[idx] = { ...line, qty: Number(e.target.value) };
-                    setOaForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  placeholder="Unit"
-                  value={line.unit}
-                  onChange={(e) => {
-                    const lines = [...oaForm.lines];
-                    lines[idx] = { ...line, unit: e.target.value };
-                    setOaForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  type="number"
-                  step="0.01"
-                  placeholder="Price"
-                  value={line.salePrice}
-                  onChange={(e) => {
-                    const lines = [...oaForm.lines];
-                    lines[idx] = { ...line, salePrice: Number(e.target.value) };
-                    setOaForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  type="number"
-                  step="0.01"
-                  placeholder="Disc %"
-                  value={line.discountPct}
-                  onChange={(e) => {
-                    const lines = [...oaForm.lines];
-                    lines[idx] = { ...line, discountPct: Number(e.target.value) };
-                    setOaForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <TextInput
-                  type="number"
-                  step="0.01"
-                  placeholder="Tax %"
-                  value={line.taxPct}
-                  onChange={(e) => {
-                    const lines = [...oaForm.lines];
-                    lines[idx] = { ...line, taxPct: Number(e.target.value) };
-                    setOaForm((f) => ({ ...f, lines }));
-                  }}
-                />
-                <button
-                  type="button"
-                  className="rounded-xl border px-2 py-1 text-xs"
-                  onClick={() => {
-                    const lines = oaForm.lines.filter((_, i) => i !== idx);
-                    setOaForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
-                  }}
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="mt-4 flex justify-end gap-2">
-          <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={() => setOaCreateOpen(false)}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-            disabled={createOAMutation.isPending}
-            onClick={() => createOAMutation.mutate()}
-          >
-            {createOAMutation.isPending ? "Saving..." : "Create OA"}
-          </button>
-        </div>
-      </Modal>
+      <OaCreateModal
+        open={oaCreateOpen}
+        onClose={() => {
+          setOaCreateOpen(false);
+          setOaInitialForm(null);
+        }}
+        initialForm={oaInitialForm}
+        onSuccess={() => {
+          qc.invalidateQueries({ queryKey: ["sales-oa"] });
+          qc.invalidateQueries({ queryKey: ["sales-quotations"] });
+          setOaInitialForm(null);
+        }}
+        onError={(msg) => setErr(msg)}
+      />
 
       <Modal open={proformaCreateOpen} onClose={() => setProformaCreateOpen(false)} title="New Proforma Invoice" wide>
         <div className="grid gap-3 sm:grid-cols-4">
