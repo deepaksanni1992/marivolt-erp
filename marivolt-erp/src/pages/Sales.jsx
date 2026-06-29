@@ -11,6 +11,7 @@ import { GLOBAL_REPORT_PRINT_CSS } from "../lib/reportPrintLayout.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "../lib/salesQuotationPrintCss.js";
 import {
   buildTaxInvoiceHeaderHtml,
+  formatBankDetailAsPlainText,
   formatInvoiceAmountInWords,
   renderSiBankFooterHtml,
 } from "../lib/salesInvoicePrint.js";
@@ -1929,6 +1930,24 @@ ${GLOBAL_REPORT_TABLE_CSS}
     return null;
   }
 
+  async function fetchBankDetailsTextForCurrency(currencyCode) {
+    const bankDetail = await fetchBankDetailForCurrency(currencyCode);
+    return formatBankDetailAsPlainText(bankDetail);
+  }
+
+  async function applyProformaCurrencyChange(currencyCode, setForm) {
+    const currency = String(currencyCode || "USD").trim().toUpperCase();
+    setForm((f) => ({ ...f, currency }));
+    try {
+      const bankDetails = await fetchBankDetailsTextForCurrency(currency);
+      if (bankDetails) {
+        setForm((f) => ({ ...f, currency, bankDetails }));
+      }
+    } catch {
+      // keep currency even if bank lookup fails
+    }
+  }
+
   async function openFlowDocumentPrint(type, id, autoPrint = false) {
     try {
       const company = activeCompany || {};
@@ -2264,7 +2283,23 @@ ${GLOBAL_REPORT_TABLE_CSS}
       setDetailProformaDraftForm(null);
       return;
     }
-    setDetailProformaDraftForm(proformaDetailToEditableForm(proformaDetail));
+    const base = proformaDetailToEditableForm(proformaDetail);
+    let cancelled = false;
+    (async () => {
+      try {
+        const bankDetails = await fetchBankDetailsTextForCurrency(base.currency);
+        if (cancelled) return;
+        setDetailProformaDraftForm({
+          ...base,
+          ...(bankDetails ? { bankDetails } : {}),
+        });
+      } catch {
+        if (!cancelled) setDetailProformaDraftForm(base);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [activeTab, detailId, proformaDetail]);
 
   const putSalesInvoiceMutation = useMutation({
@@ -2831,6 +2866,24 @@ ${GLOBAL_REPORT_TABLE_CSS}
       return { ...prev, quotationNo: nextNo };
     });
   }, [createOpen, isQuotationNoEdited, nextQuotationNoData?.quotationNo]);
+
+  useEffect(() => {
+    if (!proformaCreateOpen) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const bankDetails = await fetchBankDetailsTextForCurrency(proformaForm.currency);
+        if (!cancelled && bankDetails) {
+          setProformaForm((f) => ({ ...f, bankDetails }));
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [proformaCreateOpen]);
 
   const createProformaMutation = useMutation({
     mutationFn: () => apiPost("/sales/proforma-invoices", proformaForm),
@@ -6324,7 +6377,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <FormField label="Currency">
                   <TextInput
                     value={detailProformaDraftForm.currency}
-                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
+                    onChange={(e) => applyProformaCurrencyChange(e.target.value, setDetailProformaDraftForm)}
                   />
                 </FormField>
                 <FormField label="Status">
@@ -6424,9 +6477,12 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 </FormField>
               </div>
               <FormField label="Bank details">
+                <p className="mb-1 text-xs text-gray-500">
+                  Auto-filled from Accounts → Bank details for the PI currency above (not quotation currency).
+                </p>
                 <textarea
                   className="w-full rounded-xl border px-3 py-2 text-sm"
-                  rows={2}
+                  rows={4}
                   value={detailProformaDraftForm.bankDetails || ""}
                   onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, bankDetails: e.target.value }))}
                 />
@@ -8241,7 +8297,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
             <TextInput value={proformaForm.paymentTerms} onChange={(e) => setProformaForm((f) => ({ ...f, paymentTerms: e.target.value }))} />
           </FormField>
           <FormField label="Currency">
-            <TextInput value={proformaForm.currency} onChange={(e) => setProformaForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))} />
+            <TextInput
+              value={proformaForm.currency}
+              onChange={(e) => applyProformaCurrencyChange(e.target.value, setProformaForm)}
+            />
           </FormField>
         </div>
         <div className="mt-3 grid gap-3 sm:grid-cols-3 md:grid-cols-5">

@@ -38,6 +38,7 @@ import {
   buildOaSourceMetadataForPersist,
 } from "../services/documentSnapshot/documentSnapshotService.js";
 import { validateOaLineFields } from "../services/documentSnapshot/oaCreateValidation.js";
+import { resolveBankDetailsTextForCurrency } from "../services/bankDetailResolveService.js";
 
 const { withTransaction } = stockService;
 
@@ -2109,8 +2110,14 @@ export async function createProforma(req, res) {
         field: "proformaNo",
       }));
     const totals = computeTotals(lines, body);
+    const currency = body.currency || "USD";
+    let bankDetails = String(body.bankDetails || "").trim();
+    if (!bankDetails) {
+      bankDetails = (await resolveBankDetailsTextForCurrency(withCompany(req), currency)) || "";
+    }
     const doc = await ProformaInvoice.create({
       ...body,
+      bankDetails,
       lines,
       ...totals,
       proformaNo,
@@ -2134,6 +2141,7 @@ export async function updateProforma(req, res) {
         message: "Proforma can only be edited while in DRAFT (after SI/CIPL conversion it is approved and locked).",
       });
     }
+    const previousCurrency = String(doc.currency || "USD").trim().toUpperCase();
     const allowed = [
       "proformaDate",
       "customerName",
@@ -2156,6 +2164,11 @@ export async function updateProforma(req, res) {
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
+    }
+    const newCurrency = String(doc.currency || "USD").trim().toUpperCase();
+    if (newCurrency !== previousCurrency) {
+      const bankText = await resolveBankDetailsTextForCurrency(withCompany(req), doc.currency);
+      if (bankText) doc.bankDetails = bankText;
     }
     if (req.body.status !== undefined) {
       const st = String(req.body.status || "").toUpperCase();
@@ -2302,6 +2315,8 @@ export async function convertQuotationToProforma(req, res) {
     });
     const lines = normalizeLines(quotation.lines.map((line) => line.toObject?.() || line));
     const totals = computeTotals(lines, quotation);
+    const currency = quotation.currency || "USD";
+    const bankDetails = (await resolveBankDetailsTextForCurrency(withCompany(req), currency)) || "";
     const doc = await ProformaInvoice.create({
       companyId: req.companyId,
       proformaNo,
@@ -2312,7 +2327,8 @@ export async function convertQuotationToProforma(req, res) {
       paymentTerms: quotation.paymentTerms || "",
       validity: quotation.validityDate ? new Date(quotation.validityDate).toISOString().slice(0, 10) : "",
       shipmentTerms: quotation.deliveryTerms || "",
-      currency: quotation.currency || "USD",
+      currency,
+      bankDetails,
       remarks: quotation.remarks || "",
       vertical: quotation.vertical || "",
       engine: quotation.engine || "",
@@ -2369,6 +2385,8 @@ export async function convertOAToProforma(req, res) {
       discountValue = Number(oa.discountTotal) || 0;
     }
     const totals = computeTotals(lines, { ...oa, discountType, discountValue });
+    const currency = oa.currency || "USD";
+    const bankDetails = (await resolveBankDetailsTextForCurrency(withCompany(req), currency)) || "";
     const doc = await ProformaInvoice.create({
       companyId: req.companyId,
       proformaNo,
@@ -2380,7 +2398,8 @@ export async function convertOAToProforma(req, res) {
       customerName: oa.customerName,
       paymentTerms: oa.paymentTerms || "",
       shipmentTerms: oa.deliverySchedule || "",
-      currency: oa.currency || "USD",
+      currency,
+      bankDetails,
       remarks: oa.acknowledgementNotes || "",
       vertical: oa.vertical || "",
       engine: oa.engine || "",

@@ -132,6 +132,31 @@ function buildBeneficiaryBodyHtml(esc, bankDetail, company) {
     ${fallbackAddr ? `<div class="si-beneficiary-addr">${esc(fallbackAddr).replace(/\r?\n/g, "<br/>")}</div>` : ""}`;
 }
 
+/** Plain-text bank block for proforma bankDetails field (resolved from Accounts → Bank details by currency). */
+export function formatBankDetailAsPlainText(bankDetail) {
+  if (!bankDetail) return "";
+  const lines = [];
+  const push = (label, value) => {
+    const v = String(value || "").trim();
+    if (!v) return;
+    lines.push(label ? `${label}: ${v}` : v);
+  };
+  push("", bankDetail.bankName);
+  push("", bankDetail.bankAddress);
+  push("", bankDetail.branchName);
+  push("Account name", bankDetail.accountName);
+  push("Account number", bankDetail.accountNumber);
+  push("IBAN", bankDetail.iban);
+  push("Swift Code", bankDetail.swiftCode);
+  push("Currency", bankDetail.currency);
+  push("Beneficiary", bankDetail.beneficiaryName);
+  push("Beneficiary address", bankDetail.beneficiaryAddress);
+  push("Correspondent bank", bankDetail.correspondentBankName);
+  push("Correspondent SWIFT", bankDetail.correspondentSwiftCode);
+  push("Purpose of payment", bankDetail.purposeOfPayment);
+  return lines.join("\n");
+}
+
 export function renderSiBankFooterHtml({ bankDetail, amountInWords, company, docCurrency }) {
   const esc = escapePrintHtml;
   const purposeDefault = "Purchase of Spare Parts";
