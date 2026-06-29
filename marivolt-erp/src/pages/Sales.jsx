@@ -245,6 +245,83 @@ function renumberQuotationSerialLines(lines) {
   });
 }
 
+const SALES_LINES_CSV_HEADER =
+  "Article,Part number,Description,UOM,QTY,Price,Remarks,Material code,Availability";
+
+function exportSalesDocumentLinesCsv(lines, fileBase) {
+  const body = (lines || [])
+    .filter((l) => String(l?.article || "").trim() || String(l?.description || "").trim())
+    .map((l) =>
+      [
+        escapeCsvValue(l.article || ""),
+        escapeCsvValue(l.partNumber || ""),
+        escapeCsvValue(l.description || ""),
+        escapeCsvValue(l.uom || "PCS"),
+        escapeCsvValue(l.qty ?? ""),
+        escapeCsvValue(l.price ?? ""),
+        escapeCsvValue(l.remarks || ""),
+        escapeCsvValue(l.materialCode || ""),
+        escapeCsvValue(l.availability || ""),
+      ].join(",")
+    );
+  const csv = body.length ? [SALES_LINES_CSV_HEADER, ...body].join("\n") : SALES_LINES_CSV_HEADER;
+  downloadBlobFile(
+    `${fileBase}-${new Date().toISOString().slice(0, 10)}.csv`,
+    `\ufeff${csv}`,
+    "text/csv;charset=utf-8;"
+  );
+}
+
+function processSalesLinesCsvImport(file, baseLines, onLinesMerged, { onError, onDupModal, contextLabel = "document" }) {
+  Papa.parse(file, {
+    header: true,
+    skipEmptyLines: "greedy",
+    dynamicTyping: false,
+    complete: (results) => {
+      const importedRaw = quotationLinesFromCsvRows(results.data || []);
+      if (!importedRaw.length) {
+        onError(
+          "No valid CSV rows. Each row needs Article (or Item/SKU), Description, and a positive QTY. Optional: Part number, UOM, Price, Remarks, Material code, Availability."
+        );
+        return;
+      }
+      onError("");
+      const prev = baseLines || [];
+      const hasRealLine = prev.some(
+        (l) => String(l.article || "").trim() !== "" || String(l.description || "").trim() !== ""
+      );
+      const base = hasRealLine ? prev.map((l) => ({ ...l })) : [];
+      const dedupedImported = dedupeQuotationCsvRowsByArticlePartLastWins(importedRaw);
+      const internalDupRemoved = importedRaw.length - dedupedImported.length;
+      const conflicts = findQuotationImportConflicts(base, dedupedImported);
+      if (conflicts.length > 0) {
+        onDupModal({
+          base,
+          dedupedImported,
+          conflicts,
+          internalDupRemoved,
+          contextLabel,
+          applyMerge: (mode) => onLinesMerged(mergeQuotationCsvLinesIntoBase(base, dedupedImported, mode)),
+        });
+        return;
+      }
+      onLinesMerged(mergeQuotationCsvLinesIntoBase(base, dedupedImported, "skip"));
+    },
+    error: (parseErr) => onError(parseErr.message || "Could not read CSV file"),
+  });
+}
+
+function salesLinesCsvFileHandler(fileInputEvent, getBaseLines, onLinesMerged, contextLabel, setErr, setDupModal) {
+  const file = fileInputEvent.target.files?.[0];
+  fileInputEvent.target.value = "";
+  if (!file) return;
+  processSalesLinesCsvImport(file, getBaseLines(), onLinesMerged, {
+    onError: setErr,
+    onDupModal: setDupModal,
+    contextLabel,
+  });
+}
+
 /**
  * @param {"override"|"skip"} mode — override replaces matching rows; skip only appends rows whose Article+Part are new.
  */
@@ -787,6 +864,17 @@ function escapeCsvValue(value) {
   const raw = String(value ?? "");
   const escaped = raw.replace(/"/g, '""');
   return /[",\n]/.test(escaped) ? `"${escaped}"` : escaped;
+}
+
+function downloadBlobFile(filename, blob, type) {
+  const url = URL.createObjectURL(new Blob([blob], { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function renderPrintWindow(data, autoPrint = false) {
@@ -1445,7 +1533,13 @@ export default function Sales() {
   const quotationCsvInputRef = useRef(null);
   /** Latest quotation line grid for CSV import (Papa.parse completes async). */
   const quotationFormLinesRef = useRef([]);
-  /** { base, dedupedImported, conflicts, internalDupRemoved } */
+  const detailQuotationCsvInputRef = useRef(null);
+  const detailOACsvInputRef = useRef(null);
+  const detailProformaCsvInputRef = useRef(null);
+  const detailQuotationFormLinesRef = useRef([]);
+  const detailOAFormLinesRef = useRef([]);
+  const detailProformaFormLinesRef = useRef([]);
+  /** { base, dedupedImported, conflicts, internalDupRemoved, contextLabel, applyMerge } */
   const [quotationCsvDupModal, setQuotationCsvDupModal] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [isQuotationNoEdited, setIsQuotationNoEdited] = useState(false);
@@ -1584,6 +1678,18 @@ export default function Sales() {
   useEffect(() => {
     quotationFormLinesRef.current = form.lines;
   }, [form.lines]);
+
+  useEffect(() => {
+    detailQuotationFormLinesRef.current = detailQuotationDraftForm?.lines || [];
+  }, [detailQuotationDraftForm?.lines]);
+
+  useEffect(() => {
+    detailOAFormLinesRef.current = detailOADraftForm?.lines || [];
+  }, [detailOADraftForm?.lines]);
+
+  useEffect(() => {
+    detailProformaFormLinesRef.current = detailProformaDraftForm?.lines || [];
+  }, [detailProformaDraftForm?.lines]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["sales-quotations", page, search, status, brandFilter, verticalFilter],
@@ -1797,17 +1903,6 @@ export default function Sales() {
   });
   const activeReportRows = activeReportData?.rows || activeReportData?.items || [];
   const activeExportColumns = reportColumnsById[activeReportId] || [];
-
-  function downloadBlobFile(filename, blob, type) {
-    const url = URL.createObjectURL(new Blob([blob], { type }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-  }
 
   function exportActiveReportCsv() {
     if (!activeExportColumns.length) return;
@@ -2146,41 +2241,47 @@ ${GLOBAL_REPORT_TABLE_CSS}
   }
 
   function handleQuotationLinesCsvSelected(e) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: "greedy",
-      dynamicTyping: false,
-      complete: (results) => {
-        const importedRaw = quotationLinesFromCsvRows(results.data || []);
-        if (!importedRaw.length) {
-          setErr(
-            "No valid CSV rows. Each row needs Article (or Item/SKU), Description, and a positive QTY. Optional: Part number, UOM, Price, Remarks, Material code, Availability.",
-          );
-          return;
-        }
-        setErr("");
-        const prev = quotationFormLinesRef.current || [];
-        const hasRealLine = prev.some(
-          (l) => String(l.article || "").trim() !== "" || String(l.description || "").trim() !== "",
-        );
-        const base = hasRealLine ? prev.map((l) => ({ ...l })) : [];
-        const dedupedImported = dedupeQuotationCsvRowsByArticlePartLastWins(importedRaw);
-        const internalDupRemoved = importedRaw.length - dedupedImported.length;
-        const conflicts = findQuotationImportConflicts(base, dedupedImported);
-        if (conflicts.length > 0) {
-          setQuotationCsvDupModal({ base, dedupedImported, conflicts, internalDupRemoved });
-          return;
-        }
-        setForm((f) => ({
-          ...f,
-          lines: mergeQuotationCsvLinesIntoBase(base, dedupedImported, "skip"),
-        }));
-      },
-      error: (parseErr) => setErr(parseErr.message || "Could not read CSV file"),
-    });
+    salesLinesCsvFileHandler(
+      e,
+      () => quotationFormLinesRef.current || [],
+      (lines) => setForm((f) => ({ ...f, lines })),
+      "quotation",
+      setErr,
+      setQuotationCsvDupModal
+    );
+  }
+
+  function handleDetailQuotationLinesCsvSelected(e) {
+    salesLinesCsvFileHandler(
+      e,
+      () => detailQuotationFormLinesRef.current || [],
+      (lines) => setDetailQuotationDraftForm((f) => (f ? { ...f, lines } : f)),
+      "quotation",
+      setErr,
+      setQuotationCsvDupModal
+    );
+  }
+
+  function handleDetailOALinesCsvSelected(e) {
+    salesLinesCsvFileHandler(
+      e,
+      () => detailOAFormLinesRef.current || [],
+      (lines) => setDetailOADraftForm((f) => (f ? { ...f, lines } : f)),
+      "order acknowledgement",
+      setErr,
+      setQuotationCsvDupModal
+    );
+  }
+
+  function handleDetailProformaLinesCsvSelected(e) {
+    salesLinesCsvFileHandler(
+      e,
+      () => detailProformaFormLinesRef.current || [],
+      (lines) => setDetailProformaDraftForm((f) => (f ? { ...f, lines } : f)),
+      "proforma",
+      setErr,
+      setQuotationCsvDupModal
+    );
   }
 
   const statusMutation = useMutation({
@@ -5361,15 +5462,43 @@ ${GLOBAL_REPORT_TABLE_CSS}
             </div>
 
             <div className="mt-1">
-              <div className="mb-2 flex items-center justify-between">
+              <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <span className="text-sm font-medium">Quotation Lines</span>
-                <button
-                  type="button"
-                  className="text-sm underline"
-                  onClick={() => setDetailQuotationDraftForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }))}
-                >
-                  + Add line
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    ref={detailQuotationCsvInputRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="hidden"
+                    onChange={handleDetailQuotationLinesCsvSelected}
+                  />
+                  <button
+                    type="button"
+                    className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
+                    onClick={() => detailQuotationCsvInputRef.current?.click()}
+                  >
+                    Import CSV
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
+                    onClick={() =>
+                      exportSalesDocumentLinesCsv(
+                        detailQuotationDraftForm.lines,
+                        `quotation-${detailQuotationDraftForm.quotationNo || detail?.quotationNo || detailId}-lines`
+                      )
+                    }
+                  >
+                    Export CSV
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-xl bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
+                    onClick={() => setDetailQuotationDraftForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }))}
+                  >
+                    + Add line
+                  </button>
+                </div>
               </div>
               <div className="w-full overflow-x-auto rounded-xl border">
                 <table className="min-w-[1400px] w-full text-xs">
@@ -5944,15 +6073,43 @@ ${GLOBAL_REPORT_TABLE_CSS}
               )}
 
               <div className="mt-1">
-                <div className="mb-2 flex items-center justify-between">
+                <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-sm font-medium">OA Lines</span>
-                  <button
-                    type="button"
-                    className="text-sm underline"
-                    onClick={() => setDetailOADraftForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }))}
-                  >
-                    + Add line
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={detailOACsvInputRef}
+                      type="file"
+                      accept=".csv,text/csv"
+                      className="hidden"
+                      onChange={handleDetailOALinesCsvSelected}
+                    />
+                    <button
+                      type="button"
+                      className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
+                      onClick={() => detailOACsvInputRef.current?.click()}
+                    >
+                      Import CSV
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
+                      onClick={() =>
+                        exportSalesDocumentLinesCsv(
+                          detailOADraftForm.lines,
+                          `oa-${oaDetail?.oaNo || detailId}-lines`
+                        )
+                      }
+                    >
+                      Export CSV
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-xl bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
+                      onClick={() => setDetailOADraftForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }))}
+                    >
+                      + Add line
+                    </button>
+                  </div>
                 </div>
                 <div className="w-full overflow-x-auto rounded-xl border">
                   <table className="min-w-[1200px] w-full text-xs">
@@ -6499,15 +6656,43 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 Linked Quotation: {proformaDetail.linkedQuotationNo || "-"} | Linked OA: {proformaDetail.linkedOANo || "-"}
               </div>
               <div className="mt-1">
-                <div className="mb-2 flex items-center justify-between">
+                <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-sm font-medium">Lines</span>
-                  <button
-                    type="button"
-                    className="text-sm underline"
-                    onClick={() => setDetailProformaDraftForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }))}
-                  >
-                    + Add line
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={detailProformaCsvInputRef}
+                      type="file"
+                      accept=".csv,text/csv"
+                      className="hidden"
+                      onChange={handleDetailProformaLinesCsvSelected}
+                    />
+                    <button
+                      type="button"
+                      className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
+                      onClick={() => detailProformaCsvInputRef.current?.click()}
+                    >
+                      Import CSV
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
+                      onClick={() =>
+                        exportSalesDocumentLinesCsv(
+                          detailProformaDraftForm.lines,
+                          `proforma-${proformaDetail?.proformaNo || detailId}-lines`
+                        )
+                      }
+                    >
+                      Export CSV
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-xl bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
+                      onClick={() => setDetailProformaDraftForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }))}
+                    >
+                      + Add line
+                    </button>
+                  </div>
                 </div>
                 <div className="w-full overflow-x-auto rounded-xl border">
                   <table className="min-w-[1100px] w-full text-xs">
@@ -8181,8 +8366,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
       <Modal
         open={!!quotationCsvDupModal}
         onClose={() => setQuotationCsvDupModal(null)}
-        title="Duplicate lines in CSV import"
-        subtitle="Rows match on Article and Part number (case-insensitive). The same pair cannot be added twice unless you replace the existing row."
+        title="Line conflicts in CSV import"
+        subtitle="Rows match on Article and Part number (case-insensitive). Choose how to apply imported QTY, Price, Description, and other fields when a line already exists."
         wide
       >
         {quotationCsvDupModal ? (
@@ -8198,7 +8383,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
               {quotationCsvDupModal.conflicts.length === 1
                 ? "One imported line conflicts"
                 : `${quotationCsvDupModal.conflicts.length} imported lines conflict`}{" "}
-              with the quotation grid (same Article and Part number).
+              with the {quotationCsvDupModal.contextLabel || "document"} grid (same Article and Part number). Review changes below
+              before confirming.
             </p>
             <div className="max-h-56 overflow-auto rounded-lg border border-slate-200">
               <table className="w-full text-xs">
@@ -8206,19 +8392,30 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   <tr>
                     <th className="px-2 py-2">Article</th>
                     <th className="px-2 py-2">Part number</th>
-                    <th className="px-2 py-2">Description (import)</th>
-                    <th className="px-2 py-2 text-right">Grid row</th>
+                    <th className="px-2 py-2">Description</th>
+                    <th className="px-2 py-2 text-right">QTY (grid → import)</th>
+                    <th className="px-2 py-2 text-right">Price (grid → import)</th>
+                    <th className="px-2 py-2 text-right">Row</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {quotationCsvDupModal.conflicts.slice(0, 40).map((c, i) => (
-                    <tr key={`${c.key}-${i}`} className="border-t border-slate-100">
-                      <td className="px-2 py-1.5 font-mono">{c.importedRow.article}</td>
-                      <td className="px-2 py-1.5 font-mono">{c.importedRow.partNumber || "—"}</td>
-                      <td className="px-2 py-1.5">{c.importedRow.description}</td>
-                      <td className="px-2 py-1.5 text-right tabular-nums">{c.existingIndex + 1}</td>
-                    </tr>
-                  ))}
+                  {quotationCsvDupModal.conflicts.slice(0, 40).map((c, i) => {
+                    const existing = quotationCsvDupModal.base[c.existingIndex] || {};
+                    return (
+                      <tr key={`${c.key}-${i}`} className="border-t border-slate-100">
+                        <td className="px-2 py-1.5 font-mono">{c.importedRow.article}</td>
+                        <td className="px-2 py-1.5 font-mono">{c.importedRow.partNumber || "—"}</td>
+                        <td className="px-2 py-1.5">{c.importedRow.description}</td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">
+                          {existing.qty ?? "—"} → {c.importedRow.qty ?? "—"}
+                        </td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">
+                          {existing.price ?? "—"} → {c.importedRow.price ?? "—"}
+                        </td>
+                        <td className="px-2 py-1.5 text-right tabular-nums">{c.existingIndex + 1}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -8237,8 +8434,13 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 type="button"
                 className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
                 onClick={() => {
-                  const { base, dedupedImported } = quotationCsvDupModal;
+                  const { applyMerge } = quotationCsvDupModal;
                   setQuotationCsvDupModal(null);
+                  if (applyMerge) {
+                    applyMerge("skip");
+                    return;
+                  }
+                  const { base, dedupedImported } = quotationCsvDupModal;
                   setForm((f) => ({
                     ...f,
                     lines: mergeQuotationCsvLinesIntoBase(base, dedupedImported, "skip"),
@@ -8251,8 +8453,13 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 type="button"
                 className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
                 onClick={() => {
-                  const { base, dedupedImported } = quotationCsvDupModal;
+                  const { applyMerge } = quotationCsvDupModal;
                   setQuotationCsvDupModal(null);
+                  if (applyMerge) {
+                    applyMerge("override");
+                    return;
+                  }
+                  const { base, dedupedImported } = quotationCsvDupModal;
                   setForm((f) => ({
                     ...f,
                     lines: mergeQuotationCsvLinesIntoBase(base, dedupedImported, "override"),
