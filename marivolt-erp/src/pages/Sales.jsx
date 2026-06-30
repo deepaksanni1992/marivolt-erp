@@ -1081,6 +1081,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             <div class="info-box-title">Customer &amp; Address Info</div>
             <div><b>Customer:</b> ${oa.customerName || "-"}</div>
             <div><b>Customer Ref:</b> ${oa.customerPORef || "-"}</div>
+            <div><b>Payment Terms:</b> ${oa.paymentTerms || "-"}</div>
+            <div><b>Incoterm:</b> ${oa.incoterm || "-"}</div>
             <div><b>Attention:</b> -</div>
             <div><b>Billing:</b> -</div>
             <div><b>Shipping:</b> -</div>
