@@ -40,7 +40,7 @@ export function renderOrderAllocationPrintWindow(allocation, company = {}, autoP
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
-      <body class="report-print ${isMarivolt ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
+      <body class="report-print ${isMarivolt ? "has-quote-terms" : ""}"><div class="print-page main-page"><div class="print-body">
         <div class="print-header header">
           <div class="header-left">
             ${
@@ -131,13 +131,12 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             ? `<div class="quote-terms">Only Marivolt terms and condition applicable, check here-<a href="https://marivolt.co/about-us">https://marivolt.co/about-us</a></div>`
             : ""
         }
-        <div class="footer">
+        <div class="footer document-footer footer-note computer-generated-note">
           <div class="doc-note">This is a computer generated document and does not require signature or stamp.</div>
-        </div>
         </div>
         ${
           useBrandedLayout
-            ? `<div class="print-footer page-footer">
+            ? `<div class="print-footer page-footer document-footer">
           <div class="page-footer-top">
             <div>
               <div>${reportFooterName || "-"}</div>
@@ -154,6 +153,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </div>`
             : ""
         }
+        </div>
       </div>
       </body>
     </html>

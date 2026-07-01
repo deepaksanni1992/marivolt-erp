@@ -32,6 +32,7 @@ import {
   buildQuotationPrintBrandedFooterHtml,
   buildQuotationPrintHeaderHtml,
   buildQuotationTermsContinuationPagesHtml,
+  buildPrintPageClosingHtml,
   quotationHasPrintTerms,
   quotationPrintTermsText,
 } from "../lib/salesQuotationDocumentPrint.js";
@@ -922,7 +923,7 @@ function renderPrintWindow(data, autoPrint = false) {
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
-      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
+      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page main-page"><div class="print-body">
         ${headerHtml}
         <div class="info-grid">
           <div class="info-box muted">
@@ -976,29 +977,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           <div><span>Tax</span><span>${money(q.taxTotal)}</span></div>
           <div><b>Grand Total</b><b>${money(q.grandTotal)} ${q.currency || ""}</b></div>
         </div>
-        <div class="footer">
-          <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
+        ${buildPrintPageClosingHtml(branding)}
         </div>
-        </div>
-        ${
-          useBrandedLayout
-            ? `<div class="print-footer page-footer">
-          <div class="page-footer-top">
-            <div>
-              <div>${reportFooterName || "-"}</div>
-              ${reportFooterSubline ? `<div>${reportFooterSubline}</div>` : ""}
-            </div>
-            <div class="page-footer-center">${reportAddress}</div>
-            <div class="page-footer-right">
-              <div>Mob: ${reportPhone}</div>
-              <div>Email: ${reportEmail}</div>
-              <div>Web: ${reportWebsite}</div>
-            </div>
-          </div>
-          <div class="page-footer-line"></div>
-        </div>`
-            : ""
-        }
       </div>
       ${termsPagesHtml}
       </body>
@@ -1033,7 +1013,7 @@ function renderOrderAcknowledgementPrintWindow(payload, autoPrint = false) {
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
-      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
+      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page main-page"><div class="print-body">
         ${headerHtml}
         <div class="info-grid">
           <div class="info-box muted">
@@ -1088,29 +1068,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           <div><span>Tax</span><span>${money(oa.taxTotal)}</span></div>
           <div><b>Grand Total</b><b>${money(oa.grandTotal)} ${oa.currency || ""}</b></div>
         </div>
-        <div class="footer">
-          <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
+        ${buildPrintPageClosingHtml(branding)}
         </div>
-        </div>
-        ${
-          useBrandedLayout
-            ? `<div class="print-footer page-footer">
-          <div class="page-footer-top">
-            <div>
-              <div>${reportFooterName || "-"}</div>
-              ${reportFooterSubline ? `<div>${reportFooterSubline}</div>` : ""}
-            </div>
-            <div class="page-footer-center">${reportAddress}</div>
-            <div class="page-footer-right">
-              <div>Mob: ${reportPhone}</div>
-              <div>Email: ${reportEmail}</div>
-              <div>Web: ${reportWebsite}</div>
-            </div>
-          </div>
-          <div class="page-footer-line"></div>
-        </div>`
-            : ""
-        }
       </div>
       ${termsPagesHtml}
       </body>
@@ -1310,7 +1269,7 @@ function renderFlowDocPrintWindow({
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
-      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
+      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page main-page"><div class="print-body">
         ${salesInvoiceLayout ? taxInvoiceQuotationHeader + taxInvoiceGridHtml : flowDocClassicTop}
         <table class="report-table">
           ${lineTableColgroup}
@@ -1341,33 +1300,13 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
               })
             : ""
         }
-        <div class="footer">
-          <div class="doc-note">${
-            salesInvoiceLayout
-              ? "This is a computer generated document."
-              : "This is a computer generated documents and does not required signature or stamp."
-          }</div>
+        ${buildPrintPageClosingHtml(
+          branding,
+          salesInvoiceLayout
+            ? "This is a computer generated document."
+            : undefined
+        )}
         </div>
-        </div>
-        ${
-          useBrandedLayout
-            ? `<div class="print-footer page-footer">
-          <div class="page-footer-top">
-            <div>
-              <div>${reportFooterName || "-"}</div>
-              ${reportFooterSubline ? `<div>${reportFooterSubline}</div>` : ""}
-            </div>
-            <div class="page-footer-center">${reportAddress}</div>
-            <div class="page-footer-right">
-              <div>Mob: ${reportPhone}</div>
-              <div>Email: ${reportEmail}</div>
-              <div>Web: ${reportWebsite}</div>
-            </div>
-          </div>
-          <div class="page-footer-line"></div>
-        </div>`
-            : ""
-        }
       </div>
       ${termsPagesHtml}
       </body>

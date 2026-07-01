@@ -251,7 +251,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
   </style>
 </head>
 <body class="report-print po-print-document${b.useBrandedLayout ? " has-branded-footer" : ""}${isMarivolt && doc.termsAndConditions && String(doc.termsAndConditions).trim() ? " has-quote-terms" : ""}">
-  <div class="print-page po-page">
+  <div class="print-page main-page po-page">
   <div class="print-body">
   ${isOkeanos ? headerOkeanos : headerDefault}
 
@@ -331,7 +331,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
   ${closing ? `<div style="margin-top:14px;padding:12px;border:1px solid #e5e7eb;border-radius:8px;font-size:11px;font-style:italic;color:#4b5563">${closing}</div>` : ""}
   </div>
 
-  <div class="footer po-doc-note">
+  <div class="footer po-doc-note document-footer footer-note computer-generated-note">
     <div class="doc-note">This is a computer generated document and does not require signature or stamp.</div>
   </div>
   ${
@@ -339,10 +339,9 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
       ? `<div class="po-footer-simple">${footerBranded}</div>`
       : ""
   }
-  </div>
   ${
     b.useBrandedLayout
-      ? `<div class="print-footer po-footer page-footer">
+      ? `<div class="print-footer po-footer page-footer document-footer">
           <div class="page-footer-top">
             <div>
               <div>${escapeHtml(b.reportFooterName) || "-"}</div>
@@ -359,6 +358,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </div>`
       : ""
   }
+  </div>
   </div>
 
   <p class="no-print" style="margin-top:24px;font-size:11px;color:#6b7280">

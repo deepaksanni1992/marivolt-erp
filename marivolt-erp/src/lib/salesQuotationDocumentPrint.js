@@ -135,7 +135,7 @@ export function buildQuotationPrintBrandedFooterHtml(branding) {
   } = branding;
   if (!useBrandedLayout) return "";
   return `
-        <div class="print-footer page-footer">
+        <div class="print-footer page-footer document-footer">
           <div class="page-footer-top">
             <div>
               <div>${escHtml(reportFooterName || "-")}</div>
@@ -152,19 +152,30 @@ export function buildQuotationPrintBrandedFooterHtml(branding) {
         </div>`;
 }
 
+export const DEFAULT_PRINT_DOC_NOTE =
+  "This is a computer generated documents and does not required signature or stamp.";
+
+export function buildPrintDocNoteHtml(noteText = DEFAULT_PRINT_DOC_NOTE) {
+  return `<div class="footer document-footer footer-note computer-generated-note"><div class="doc-note">${escHtml(noteText)}</div></div>`;
+}
+
+/** Doc note + branded footer — must stay inside .print-body (same page wrapper as content). */
+export function buildPrintPageClosingHtml(branding, noteText = DEFAULT_PRINT_DOC_NOTE) {
+  return `${buildPrintDocNoteHtml(noteText)}${buildQuotationPrintBrandedFooterHtml(branding)}`;
+}
+
 export function buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, brandedFooterHtml) {
   const terms = String(termsText || "").trim();
   if (!terms) return "";
+  const docNote = buildPrintDocNoteHtml();
   return `
-      <div class="print-page quote-terms-print-page">
+      <div class="print-page terms-page quote-terms-print-page">
         <div class="print-body">
           ${headerHtml}
           <div class="quote-terms-heading">Terms &amp; Conditions</div>
           <div class="quote-terms quote-terms-full">${escHtml(terms)}</div>
-          <div class="footer">
-            <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
-          </div>
+          ${docNote}
+          ${brandedFooterHtml}
         </div>
-        ${brandedFooterHtml}
       </div>`;
 }

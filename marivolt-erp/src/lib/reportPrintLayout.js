@@ -1,7 +1,7 @@
 /**
  * Shared print/PDF layout for all Okeanos & Marivolt reports.
- * Footer sits at the bottom of .print-page (absolute, not fixed overlay).
- * Totals stay in .print-body with reserved space above the footer.
+ * Screen preview: footer anchored to bottom of main page via absolute positioning.
+ * Print/PDF: footer flows inside .print-body — never as a separate page fragment.
  */
 
 export const GLOBAL_REPORT_PRINT_CSS = `
@@ -34,19 +34,34 @@ export const GLOBAL_REPORT_PRINT_CSS = `
     break-inside: avoid;
   }
 
-  /* Screen: footer anchored to bottom of page container */
-  .print-page > .print-footer,
-  .print-page > .page-footer.print-footer {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: auto;
-    min-height: 32mm;
-    box-sizing: border-box;
+  /* Screen preview only — anchor footer to bottom of main page without affecting print pagination */
+  @media screen {
+    .print-page.main-page,
+    .print-page.po-page {
+      min-height: 270mm;
+      padding-bottom: 45mm;
+      box-sizing: border-box;
+    }
+
+    .print-page.main-page .print-body,
+    .print-page.po-page .print-body {
+      padding-bottom: 45mm;
+    }
+
+    .print-page.main-page .print-body > .print-footer,
+    .print-page.main-page .print-body > .page-footer.print-footer,
+    .print-page.po-page .print-body > .print-footer,
+    .print-page.po-page .print-body > .page-footer.print-footer {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: auto;
+      min-height: 32mm;
+      box-sizing: border-box;
+    }
   }
 
-  /* Legacy footers outside .print-page — stay in document flow */
   .page-footer:not(.print-footer) {
     position: static;
     margin-top: 24px;
@@ -97,11 +112,6 @@ export const GLOBAL_REPORT_PRINT_CSS = `
       padding: 0 !important;
     }
 
-    body.report-print.has-quote-terms,
-    body.po-print-document.has-quote-terms {
-      padding-bottom: 0 !important;
-    }
-
     .report-page,
     .report-content,
     .print-page,
@@ -109,32 +119,41 @@ export const GLOBAL_REPORT_PRINT_CSS = `
       width: 100% !important;
       max-width: 100% !important;
       overflow: visible !important;
+      min-height: unset !important;
+      padding-bottom: 0 !important;
     }
 
     .print-page {
       position: relative;
-      min-height: 270mm;
-      padding-bottom: 45mm !important;
+      break-after: page;
+      page-break-after: always;
+      min-height: unset !important;
+      padding-bottom: 0 !important;
       box-sizing: border-box;
     }
 
-    /* Terms continuation — no forced full-page height (prevents blank pages) */
+    .print-page:last-of-type,
+    .print-page:last-child {
+      break-after: auto !important;
+      page-break-after: auto !important;
+    }
+
+    .print-page.terms-page,
     .print-page.quote-terms-print-page {
-      min-height: unset !important;
-      page-break-before: always;
       break-before: page;
-      page-break-after: avoid;
+      page-break-before: always;
+      min-height: unset !important;
+      padding-bottom: 0 !important;
     }
 
     .print-body {
-      padding-bottom: 45mm !important;
+      padding-bottom: 0 !important;
     }
 
-    body.report-print.has-quote-terms .print-page,
-    body.po-print-document.has-quote-terms .print-page,
+    body.report-print.has-quote-terms .print-page.main-page .print-body,
     body.report-print.has-quote-terms .print-body,
     body.po-print-document.has-quote-terms .print-body {
-      padding-bottom: 72mm !important;
+      padding-bottom: 0 !important;
     }
 
     body.report-print.has-quote-terms .page-footer-line,
@@ -142,24 +161,38 @@ export const GLOBAL_REPORT_PRINT_CSS = `
       display: none !important;
     }
 
-    .print-page > .print-footer,
-    .print-page > .page-footer.print-footer {
-      position: absolute !important;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      height: 32mm;
-      page-break-inside: avoid;
-      break-inside: avoid;
-      page-break-before: avoid;
-      break-before: avoid;
+    .print-page .print-footer,
+    .print-page .page-footer.print-footer,
+    .print-page .document-footer,
+    .print-page .footer,
+    .print-page .footer-note,
+    .print-page .computer-generated-note {
+      position: static !important;
+      left: auto !important;
+      right: auto !important;
+      bottom: auto !important;
+      height: auto !important;
+      min-height: 0 !important;
+      break-before: avoid !important;
+      page-break-before: avoid !important;
+      break-after: avoid !important;
+      page-break-after: avoid !important;
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
     }
 
-    /* No fixed overlay — only direct footer children of .print-page */
-    .print-page > .print-footer,
-    .print-page > .page-footer.print-footer,
-    .print-page > .po-footer.print-footer {
-      position: absolute !important;
+    .footer-only-page,
+    .blank-page,
+    .empty-page,
+    .print-spacer-page {
+      display: none !important;
+    }
+
+    .page-break:last-child,
+    .force-page-break:last-child {
+      display: none !important;
+      break-after: auto !important;
+      page-break-after: auto !important;
     }
 
     .print-totals,
@@ -225,7 +258,7 @@ export function renderBrandedPrintFooterHtml({
     ? "<motion.div>" + String(reportFooterSubline) + "</motion.div>"
     : "";
   return (
-    '<motion.div class="print-footer page-footer">' +
+    '<motion.div class="print-footer page-footer document-footer">' +
     '<motion.div class="page-footer-top">' +
     "<motion.div><motion.div>" +
     String(reportFooterName) +

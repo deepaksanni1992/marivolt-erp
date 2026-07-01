@@ -155,7 +155,7 @@ export function buildBrandedFooterHtml(brandingName = "") {
   const b = getReportBranding(brandingName);
   if (!b.useBrandedLayout) return "";
   return `
-    <div class="print-footer page-footer">
+    <div class="print-footer page-footer document-footer">
       <div class="page-footer-top">
         <div>
           <div>${escHtml(b.reportFooterName || "-")}</div>
@@ -216,11 +216,11 @@ ${extraCss}
         </style>
       </head>
       <body class="report-print ${b.isMarivolt ? "has-quote-terms" : ""}">
-        <div class="print-page">
+        <div class="print-page main-page">
           <div class="print-body">
             ${bodyInnerHtml}
+            ${buildBrandedFooterHtml(brandingName)}
           </div>
-          ${buildBrandedFooterHtml(brandingName)}
         </div>
       </body>
     </html>`;
