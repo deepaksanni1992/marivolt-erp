@@ -159,23 +159,75 @@ export function buildPrintDocNoteHtml(noteText = DEFAULT_PRINT_DOC_NOTE) {
   return `<div class="footer document-footer footer-note computer-generated-note"><div class="doc-note">${escHtml(noteText)}</div></div>`;
 }
 
-/** Doc note + branded footer — must stay inside .print-body (same page wrapper as content). */
-export function buildPrintPageClosingHtml(branding, noteText = DEFAULT_PRINT_DOC_NOTE) {
-  return `${buildPrintDocNoteHtml(noteText)}${buildQuotationPrintBrandedFooterHtml(branding)}`;
+/** Footer slot: doc note + branded band — direct child of .print-page */
+export function buildPrintPageFooterHtml(branding, noteText = DEFAULT_PRINT_DOC_NOTE) {
+  return `<div class="print-page-footer">${buildPrintDocNoteHtml(noteText)}${buildQuotationPrintBrandedFooterHtml(branding)}</div>`;
 }
 
-export function buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, brandedFooterHtml) {
-  const terms = String(termsText || "").trim();
-  if (!terms) return "";
-  const docNote = buildPrintDocNoteHtml();
-  return `
-      <div class="print-page terms-page quote-terms-print-page">
-        <div class="print-body">
-          ${headerHtml}
-          <div class="quote-terms-heading">Terms &amp; Conditions</div>
-          <div class="quote-terms quote-terms-full">${escHtml(terms)}</div>
-          ${docNote}
-          ${brandedFooterHtml}
-        </div>
-      </div>`;
+/** @deprecated Use buildPrintPageFooterHtml */
+export function buildPrintPageClosingHtml(branding, noteText = DEFAULT_PRINT_DOC_NOTE) {
+  return buildPrintPageFooterHtml(branding, noteText);
+}
+
+/** Standard print page: header + body + footer siblings inside .print-page */
+export function buildPrintPageShellHtml({ pageClass = "", headerHtml = "", bodyHtml = "", footerHtml = "" }) {
+  const classes = ["print-page", pageClass].filter(Boolean).join(" ");
+  return `<div class="${classes}">
+${headerHtml}
+<div class="print-body">${bodyHtml}</div>
+${footerHtml}
+</div>`;
+}
+
+/**
+ * Split terms into page-sized chunks (paragraphs / lines) for explicit terms pages.
+ * Each chunk becomes one .print-page with its own header and footer.
+ */
+export function paginateTermsHtml(termsText, maxCharsPerPage = 2200) {
+  const text = String(termsText || "").trim();
+  if (!text) return [];
+
+  let blocks = text
+    .split(/\n\n+/)
+    .map((b) => b.trim())
+    .filter(Boolean);
+
+  if (blocks.length <= 1) {
+    const lines = text
+      .split(/\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (lines.length > 1) blocks = lines;
+    else blocks = [text];
+  }
+
+  const chunks = [];
+  let current = "";
+  for (const block of blocks) {
+    const addition = current ? `\n\n${block}` : block;
+    if (current && current.length + addition.length > maxCharsPerPage) {
+      chunks.push(current);
+      current = block;
+    } else {
+      current = current ? `${current}\n\n${block}` : block;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks;
+}
+
+export function buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, branding, noteText = DEFAULT_PRINT_DOC_NOTE) {
+  const chunks = paginateTermsHtml(termsText);
+  if (!chunks.length) return "";
+  const footerHtml = buildPrintPageFooterHtml(branding, noteText);
+  return chunks
+    .map((chunk, index) =>
+      buildPrintPageShellHtml({
+        pageClass: "terms-page quote-terms-print-page",
+        headerHtml,
+        bodyHtml: `${index === 0 ? '<div class="quote-terms-heading">Terms &amp; Conditions</div>' : ""}<div class="quote-terms quote-terms-full">${escHtml(chunk)}</div>`,
+        footerHtml,
+      }),
+    )
+    .join("");
 }

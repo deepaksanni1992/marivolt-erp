@@ -331,6 +331,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
   ${closing ? `<div style="margin-top:14px;padding:12px;border:1px solid #e5e7eb;border-radius:8px;font-size:11px;font-style:italic;color:#4b5563">${closing}</div>` : ""}
   </div>
 
+  </div>
+  <div class="print-page-footer">
   <div class="footer po-doc-note document-footer footer-note computer-generated-note">
     <div class="doc-note">This is a computer generated document and does not require signature or stamp.</div>
   </div>

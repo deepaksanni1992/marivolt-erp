@@ -219,8 +219,8 @@ ${extraCss}
         <div class="print-page main-page">
           <div class="print-body">
             ${bodyInnerHtml}
-            ${buildBrandedFooterHtml(brandingName)}
           </div>
+          <div class="print-page-footer">${buildBrandedFooterHtml(brandingName)}</div>
         </div>
       </body>
     </html>`;

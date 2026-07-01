@@ -5,8 +5,8 @@ import { GLOBAL_REPORT_TABLE_CSS } from "./reportTableLayout.js";
 export const SALES_QUOTATION_STYLE_PRINT_CSS = `
           body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
           @media screen {
-            body.report-print.has-quote-terms .print-body {
-              padding-bottom: 72mm;
+            body.report-print.has-quote-terms .print-page.main-page .print-body {
+              padding-bottom: 0;
             }
           }
           .quote-header {

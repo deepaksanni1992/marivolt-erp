@@ -1,7 +1,6 @@
 /**
  * Shared print/PDF layout for all Okeanos & Marivolt reports.
- * Screen preview: footer anchored to bottom of main page via absolute positioning.
- * Print/PDF: footer flows inside .print-body — never as a separate page fragment.
+ * Each .print-page is a flex column: header (top) + body (grow) + footer (bottom).
  */
 
 export const GLOBAL_REPORT_PRINT_CSS = `
@@ -23,43 +22,38 @@ export const GLOBAL_REPORT_PRINT_CSS = `
   }
 
   .print-page {
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
     position: relative;
   }
 
-  .print-header,
-  .quote-header,
-  .header.po-print-header,
-  header.po-print-header {
+  .print-page .print-header,
+  .print-page .quote-header,
+  .print-page .header.po-print-header,
+  .print-page header.po-print-header {
+    flex: 0 0 auto;
     page-break-inside: avoid;
     break-inside: avoid;
   }
 
-  /* Screen preview only — anchor footer to bottom of main page without affecting print pagination */
-  @media screen {
-    .print-page.main-page,
-    .print-page.po-page {
-      min-height: 270mm;
-      padding-bottom: 45mm;
-      box-sizing: border-box;
-    }
+  .print-page .print-body {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
 
-    .print-page.main-page .print-body,
-    .print-page.po-page .print-body {
-      padding-bottom: 45mm;
-    }
+  .print-page-footer,
+  .print-page .print-page-footer {
+    flex: 0 0 auto;
+    margin-top: auto;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
 
-    .print-page.main-page .print-body > .print-footer,
-    .print-page.main-page .print-body > .page-footer.print-footer,
-    .print-page.po-page .print-body > .print-footer,
-    .print-page.po-page .print-body > .page-footer.print-footer {
-      position: absolute;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      height: auto;
-      min-height: 32mm;
-      box-sizing: border-box;
-    }
+  .print-page-footer .print-footer,
+  .print-page-footer .page-footer {
+    page-break-inside: avoid;
+    break-inside: avoid;
   }
 
   .page-footer:not(.print-footer) {
@@ -94,6 +88,13 @@ export const GLOBAL_REPORT_PRINT_CSS = `
     page-break-inside: avoid;
   }
 
+  @media screen {
+    .print-page.main-page,
+    .print-page.po-page {
+      min-height: 270mm;
+    }
+  }
+
   @media print {
     @page {
       size: A4;
@@ -119,17 +120,17 @@ export const GLOBAL_REPORT_PRINT_CSS = `
       width: 100% !important;
       max-width: 100% !important;
       overflow: visible !important;
-      min-height: unset !important;
       padding-bottom: 0 !important;
     }
 
     .print-page {
-      position: relative;
+      display: flex !important;
+      flex-direction: column !important;
+      box-sizing: border-box;
+      min-height: 255mm;
       break-after: page;
       page-break-after: always;
-      min-height: unset !important;
       padding-bottom: 0 !important;
-      box-sizing: border-box;
     }
 
     .print-page:last-of-type,
@@ -138,35 +139,28 @@ export const GLOBAL_REPORT_PRINT_CSS = `
       page-break-after: auto !important;
     }
 
-    .print-page.terms-page,
-    .print-page.quote-terms-print-page {
-      break-before: page;
-      page-break-before: always;
-      min-height: unset !important;
+    .print-page .print-header,
+    .print-page .quote-header,
+    .print-page .header {
+      flex: 0 0 auto;
+    }
+
+    .print-page .print-body {
+      flex: 1 1 auto;
+      min-height: 0;
       padding-bottom: 0 !important;
     }
 
-    .print-body {
-      padding-bottom: 0 !important;
-    }
-
-    body.report-print.has-quote-terms .print-page.main-page .print-body,
-    body.report-print.has-quote-terms .print-body,
-    body.po-print-document.has-quote-terms .print-body {
-      padding-bottom: 0 !important;
-    }
-
-    body.report-print.has-quote-terms .page-footer-line,
-    body.po-print-document.has-quote-terms .page-footer-line {
-      display: none !important;
-    }
-
+    .print-page-footer,
+    .print-page .print-page-footer,
     .print-page .print-footer,
     .print-page .page-footer.print-footer,
     .print-page .document-footer,
     .print-page .footer,
     .print-page .footer-note,
     .print-page .computer-generated-note {
+      flex: 0 0 auto;
+      margin-top: auto;
       position: static !important;
       left: auto !important;
       right: auto !important;
@@ -179,6 +173,11 @@ export const GLOBAL_REPORT_PRINT_CSS = `
       page-break-after: avoid !important;
       page-break-inside: avoid !important;
       break-inside: avoid !important;
+    }
+
+    body.report-print.has-quote-terms .page-footer-line,
+    body.po-print-document.has-quote-terms .page-footer-line {
+      display: none !important;
     }
 
     .footer-only-page,
@@ -203,14 +202,6 @@ export const GLOBAL_REPORT_PRINT_CSS = `
       break-inside: avoid;
       page-break-inside: avoid;
       margin-bottom: 6mm !important;
-    }
-
-    .print-totals + .footer,
-    .totals + .footer,
-    .summary-section + .footer {
-      break-inside: avoid;
-      page-break-inside: avoid;
-      page-break-after: avoid;
     }
 
     .po-post-totals {

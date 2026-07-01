@@ -32,7 +32,8 @@ import {
   buildQuotationPrintBrandedFooterHtml,
   buildQuotationPrintHeaderHtml,
   buildQuotationTermsContinuationPagesHtml,
-  buildPrintPageClosingHtml,
+  buildPrintPageFooterHtml,
+  buildPrintPageShellHtml,
   quotationHasPrintTerms,
   quotationPrintTermsText,
 } from "../lib/salesQuotationDocumentPrint.js";
@@ -913,18 +914,8 @@ function renderPrintWindow(data, autoPrint = false) {
   const { useBrandedLayout, reportFooterName, reportFooterSubline, reportAddress, reportEmail, reportPhone, reportWebsite } =
     branding;
   const headerHtml = buildQuotationPrintHeaderHtml(q, company);
-  const brandedFooterHtml = buildQuotationPrintBrandedFooterHtml(branding);
-  const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, brandedFooterHtml);
-  const html = `
-    <html>
-      <head>
-        <title>${q.quotationNo || "Quotation"}</title>
-        <style>
-${SALES_QUOTATION_STYLE_PRINT_CSS}
-        </style>
-      </head>
-      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page main-page"><div class="print-body">
-        ${headerHtml}
+  const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, branding);
+  const mainBodyHtml = `
         <div class="info-grid">
           <div class="info-box muted">
             <div class="info-box-title">Customer &amp; Address Info</div>
@@ -976,10 +967,22 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           <div><span>Discount</span><span>${money(q.discountTotal)}</span></div>
           <div><span>Tax</span><span>${money(q.taxTotal)}</span></div>
           <div><b>Grand Total</b><b>${money(q.grandTotal)} ${q.currency || ""}</b></div>
-        </div>
-        ${buildPrintPageClosingHtml(branding)}
-        </div>
-      </div>
+        </div>`;
+  const html = `
+    <html>
+      <head>
+        <title>${q.quotationNo || "Quotation"}</title>
+        <style>
+${SALES_QUOTATION_STYLE_PRINT_CSS}
+        </style>
+      </head>
+      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}">
+      ${buildPrintPageShellHtml({
+        pageClass: "main-page",
+        headerHtml,
+        bodyHtml: mainBodyHtml,
+        footerHtml: buildPrintPageFooterHtml(branding),
+      })}
       ${termsPagesHtml}
       </body>
     </html>
@@ -1002,19 +1005,8 @@ function renderOrderAcknowledgementPrintWindow(payload, autoPrint = false) {
   const { useBrandedLayout, reportFooterName, reportFooterSubline, reportAddress, reportEmail, reportPhone, reportWebsite } =
     branding;
   const headerHtml = buildOAPrintHeaderHtml(oa, company);
-  const brandedFooterHtml = buildQuotationPrintBrandedFooterHtml(branding);
-  const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, brandedFooterHtml);
-
-  const html = `
-    <html>
-      <head>
-        <title>${oa.oaNo || "Order Acknowledgement"}</title>
-        <style>
-${SALES_QUOTATION_STYLE_PRINT_CSS}
-        </style>
-      </head>
-      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page main-page"><div class="print-body">
-        ${headerHtml}
+  const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, branding);
+  const mainBodyHtml = `
         <div class="info-grid">
           <div class="info-box muted">
             <div class="info-box-title">Customer &amp; Address Info</div>
@@ -1067,10 +1059,22 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           <div><span>Discount</span><span>${money(oa.discountTotal)}</span></div>
           <div><span>Tax</span><span>${money(oa.taxTotal)}</span></div>
           <div><b>Grand Total</b><b>${money(oa.grandTotal)} ${oa.currency || ""}</b></div>
-        </div>
-        ${buildPrintPageClosingHtml(branding)}
-        </div>
-      </div>
+        </div>`;
+  const html = `
+    <html>
+      <head>
+        <title>${oa.oaNo || "Order Acknowledgement"}</title>
+        <style>
+${SALES_QUOTATION_STYLE_PRINT_CSS}
+        </style>
+      </head>
+      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}">
+      ${buildPrintPageShellHtml({
+        pageClass: "main-page",
+        headerHtml,
+        bodyHtml: mainBodyHtml,
+        footerHtml: buildPrintPageFooterHtml(branding),
+      })}
       ${termsPagesHtml}
       </body>
     </html>
@@ -1144,7 +1148,7 @@ function renderFlowDocPrintWindow({
         )
         .join("");
   const invoiceDateFormatted = dateValue ? new Date(dateValue).toLocaleDateString() : "—";
-  const flowDocClassicTop = `
+  const flowDocHeaderHtml = `
         <div class="print-header header">
           <div class="header-left">
             ${
@@ -1182,7 +1186,8 @@ function renderFlowDocPrintWindow({
                 <div>${company?.phone || ""}</div>
               </div>`
           }
-        </div>
+        </div>`;
+  const flowDocBodyTop = `
         <div class="info-grid">
           <div class="info-box muted">
             <div class="info-box-title">Customer &amp; Address Info</div>
@@ -1258,19 +1263,15 @@ function renderFlowDocPrintWindow({
         isMarivolt,
       })
     : "";
-  const termsHeaderHtml = salesInvoiceLayout ? taxInvoiceQuotationHeader + taxInvoiceGridHtml : flowDocClassicTop;
-  const brandedFooterHtml = buildQuotationPrintBrandedFooterHtml(branding);
-  const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(termsHeaderHtml, termsText, brandedFooterHtml);
-  const html = `
-    <html>
-      <head>
-        <title>${docNoValue || title}</title>
-        <style>
-${SALES_QUOTATION_STYLE_PRINT_CSS}
-        </style>
-      </head>
-      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page main-page"><div class="print-body">
-        ${salesInvoiceLayout ? taxInvoiceQuotationHeader + taxInvoiceGridHtml : flowDocClassicTop}
+  const mainHeaderHtml = salesInvoiceLayout ? taxInvoiceQuotationHeader : flowDocHeaderHtml;
+  const termsHeaderHtml = mainHeaderHtml;
+  const flowDocNote =
+    salesInvoiceLayout
+      ? "This is a computer generated document."
+      : undefined;
+  const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(termsHeaderHtml, termsText, branding, flowDocNote);
+  const mainBodyHtml = `
+        ${salesInvoiceLayout ? taxInvoiceGridHtml : flowDocBodyTop}
         <table class="report-table">
           ${lineTableColgroup}
           <thead>
@@ -1299,15 +1300,22 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
                 docCurrency: doc?.currency,
               })
             : ""
-        }
-        ${buildPrintPageClosingHtml(
-          branding,
-          salesInvoiceLayout
-            ? "This is a computer generated document."
-            : undefined
-        )}
-        </div>
-      </div>
+        }`;
+  const html = `
+    <html>
+      <head>
+        <title>${docNoValue || title}</title>
+        <style>
+${SALES_QUOTATION_STYLE_PRINT_CSS}
+        </style>
+      </head>
+      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}">
+      ${buildPrintPageShellHtml({
+        pageClass: "main-page",
+        headerHtml: mainHeaderHtml,
+        bodyHtml: mainBodyHtml,
+        footerHtml: buildPrintPageFooterHtml(branding, flowDocNote),
+      })}
       ${termsPagesHtml}
       </body>
     </html>

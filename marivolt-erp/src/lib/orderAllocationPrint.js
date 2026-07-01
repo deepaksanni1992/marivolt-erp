@@ -1,5 +1,10 @@
 import { deliverReportHtml } from "./reportPdfClient.js";
 import {
+  buildPrintPageFooterHtml,
+  buildPrintPageShellHtml,
+} from "./salesQuotationDocumentPrint.js";
+import { getReportBranding } from "./reportBranding.js";
+import {
   ORDER_ALLOCATION_COLGROUP,
   ORDER_ALLOCATION_LINE_TABLE_HEAD,
   PDF_OPTS_ITEM_LINES,
@@ -30,17 +35,8 @@ export function renderOrderAllocationPrintWindow(allocation, company = {}, autoP
   const reportEmail = isMarivolt ? "sales@marivolt.co" : isOkeanos ? "Sales@okeanos.pro" : (company?.email || "");
   const reportPhone = isMarivolt ? "+971-543053047" : isOkeanos ? "+971-543050000" : (company?.phone || "");
   const reportWebsite = isMarivolt ? "www.marivolt.co" : isOkeanos ? "www.okfze.com" : "";
-  const reportFooterName = isMarivolt ? "Marivolt FZE" : isOkeanos ? "Okeanos FZE" : companyDisplayName;
-  const reportFooterSubline = isMarivolt ? "LV09B" : "";
-  const html = `
-    <html>
-      <head>
-        <title>Order Allocation ${allocation.allocationNo || ""}</title>
-        <style>
-${SALES_QUOTATION_STYLE_PRINT_CSS}
-        </style>
-      </head>
-      <body class="report-print ${isMarivolt ? "has-quote-terms" : ""}"><div class="print-page main-page"><div class="print-body">
+  const branding = getReportBranding(companyName);
+  const headerHtml = `
         <div class="print-header header">
           <div class="header-left">
             ${
@@ -78,7 +74,8 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
                 <div>${company?.phone || ""}</div>
               </div>`
           }
-        </div>
+        </div>`;
+  const bodyHtml = `
         <div class="info-grid">
           <div class="info-box muted">
             <div class="info-box-title">Customer &amp; References</div>
@@ -130,31 +127,25 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           isMarivolt
             ? `<div class="quote-terms">Only Marivolt terms and condition applicable, check here-<a href="https://marivolt.co/about-us">https://marivolt.co/about-us</a></div>`
             : ""
-        }
-        <div class="footer document-footer footer-note computer-generated-note">
-          <div class="doc-note">This is a computer generated document and does not require signature or stamp.</div>
-        </div>
-        ${
-          useBrandedLayout
-            ? `<div class="print-footer page-footer document-footer">
-          <div class="page-footer-top">
-            <div>
-              <div>${reportFooterName || "-"}</div>
-              ${reportFooterSubline ? `<div>${reportFooterSubline}</div>` : ""}
-            </div>
-            <div class="page-footer-center">${reportAddress}</div>
-            <div class="page-footer-right">
-              <div>Mob: ${reportPhone}</div>
-              <div>Email: ${reportEmail}</div>
-              <div>Web: ${reportWebsite}</div>
-            </div>
-          </div>
-          <div class="page-footer-line"></div>
-        </div>`
-            : ""
-        }
-        </div>
-      </div>
+        }`;
+  const html = `
+    <html>
+      <head>
+        <title>Order Allocation ${allocation.allocationNo || ""}</title>
+        <style>
+${SALES_QUOTATION_STYLE_PRINT_CSS}
+        </style>
+      </head>
+      <body class="report-print ${isMarivolt ? "has-quote-terms" : ""}">
+      ${buildPrintPageShellHtml({
+        pageClass: "main-page",
+        headerHtml,
+        bodyHtml,
+        footerHtml: buildPrintPageFooterHtml(
+          branding,
+          "This is a computer generated document and does not require signature or stamp.",
+        ),
+      })}
       </body>
     </html>
   `;
