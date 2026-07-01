@@ -67,6 +67,7 @@ const quotationSchema = new mongoose.Schema(
     portOfDischarge: { type: String, default: "", trim: true },
     finalDestination: { type: String, default: "", trim: true },
     remarks: { type: String, default: "" },
+    termsAndConditions: { type: String, default: "" },
     internalNotes: { type: String, default: "" },
 
     customer: { type: partySnapshotSchema, default: () => ({}) },

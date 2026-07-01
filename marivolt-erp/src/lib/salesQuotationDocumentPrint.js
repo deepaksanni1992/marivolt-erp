@@ -1,0 +1,111 @@
+import { escHtml } from "./commercialReportLayout.js";
+import { getReportBranding } from "./reportBranding.js";
+
+export function quotationPrintTermsText(quotation) {
+  return String(quotation?.termsAndConditions || "").trim();
+}
+
+export function quotationHasPrintTerms(quotation) {
+  return quotationPrintTermsText(quotation).length > 0;
+}
+
+export function buildQuotationPrintHeaderHtml(quotation, company = {}) {
+  const q = quotation || {};
+  const hasCompanyLogo = String(company.logo || "").trim().length > 0;
+  const companyName = String(company.companyName || "").toLowerCase();
+  const {
+    useBrandedLayout,
+    printLogo,
+    companyDisplayName,
+    companySubtitle,
+    reportAddress,
+    reportEmail,
+    reportPhone,
+  } = getReportBranding(companyName);
+  const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "-");
+
+  return `
+        <div class="print-header quote-header">
+          <div class="quote-left">
+            ${
+              useBrandedLayout
+                ? `<img src="${printLogo}" alt="${escHtml(companyDisplayName || "Company")} logo" class="quote-logo" />`
+                : hasCompanyLogo
+                  ? `<img src="${escHtml(company.logo)}" alt="${escHtml(company.companyName || "Company")} logo" class="quote-logo" />`
+                  : `<div class="brand-fallback">MV</div>`
+            }
+          </div>
+          <div class="quote-center">
+            <div class="quote-title">Quotation</div>
+            <div class="quote-meta">
+              <div><b>No:</b> ${escHtml(q.quotationNo || "-")}</div>
+              <div><b>Date:</b> ${fmtDate(q.quotationDate)}</div>
+              <div><b>Validity:</b> ${fmtDate(q.validityDate)}</div>
+            </div>
+          </div>
+          ${
+            useBrandedLayout
+              ? `<div class="quote-right">
+                <h1 class="company-name">${escHtml(companyDisplayName || company.companyName || "")}</h1>
+                ${companySubtitle ? `<div class="company-subtitle">${escHtml(companySubtitle)}</div>` : ""}
+                <div class="company-details">
+                  <div>${escHtml(company.address || reportAddress)}</div>
+                  <div>${escHtml(company.email || reportEmail)}</div>
+                  <div>${escHtml(company.phone || reportPhone)}</div>
+                </div>
+              </div>`
+              : `<div class="quote-right company-details">
+                <div><b>${escHtml(company.companyName || "")}</b></div>
+                <div>${escHtml(company.address || "")}</div>
+                <div>${escHtml(company.email || "")}</div>
+                <div>${escHtml(company.phone || "")}</div>
+              </div>`
+          }
+        </div>`;
+}
+
+export function buildQuotationPrintBrandedFooterHtml(branding) {
+  const {
+    useBrandedLayout,
+    reportFooterName,
+    reportFooterSubline,
+    reportAddress,
+    reportPhone,
+    reportEmail,
+    reportWebsite,
+  } = branding;
+  if (!useBrandedLayout) return "";
+  return `
+        <div class="print-footer page-footer">
+          <div class="page-footer-top">
+            <div>
+              <div>${escHtml(reportFooterName || "-")}</div>
+              ${reportFooterSubline ? `<div>${escHtml(reportFooterSubline)}</div>` : ""}
+            </div>
+            <div class="page-footer-center">${escHtml(reportAddress)}</div>
+            <div class="page-footer-right">
+              <div>Mob: ${escHtml(reportPhone)}</div>
+              <div>Email: ${escHtml(reportEmail)}</div>
+              <div>Web: ${escHtml(reportWebsite)}</div>
+            </div>
+          </div>
+          <div class="page-footer-line"></div>
+        </div>`;
+}
+
+export function buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, brandedFooterHtml) {
+  const terms = String(termsText || "").trim();
+  if (!terms) return "";
+  return `
+      <div class="print-page quote-terms-print-page">
+        <div class="print-body">
+          ${headerHtml}
+          <div class="quote-terms-heading">Terms &amp; Conditions</div>
+          <div class="quote-terms quote-terms-full">${escHtml(terms)}</div>
+          <div class="footer">
+            <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
+          </div>
+        </div>
+        ${brandedFooterHtml}
+      </div>`;
+}

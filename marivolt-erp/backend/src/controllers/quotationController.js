@@ -378,6 +378,7 @@ export async function updateQuotation(req, res) {
       "finalDestination",
       "lines",
       "remarks",
+      "termsAndConditions",
       "internalNotes",
       "customer",
       "quotationDate",

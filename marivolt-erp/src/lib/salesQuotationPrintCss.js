@@ -159,6 +159,24 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             border-radius: 8px;
             background: #f9fafb;
           }
+          .quote-terms-heading {
+            margin: 8px 0 10px;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+            text-transform: uppercase;
+            color: #374151;
+          }
+          .quote-terms-full {
+            white-space: pre-wrap;
+            word-break: break-word;
+            min-height: 180mm;
+            page-break-inside: auto;
+          }
+          .quote-terms-print-page {
+            page-break-before: always;
+            break-before: page;
+          }
           .quote-terms a { color: #1d4ed8; word-break: break-all; }
           .doc-note {
             margin-top: 30px;
@@ -275,7 +293,29 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             }
             .header { page-break-inside: avoid; }
             .quote-header { page-break-inside: avoid; }
-            .quote-terms { page-break-inside: avoid; }
+            .quote-terms { page-break-inside: auto; }
+            .quote-terms-print-page {
+              page-break-before: always;
+              break-before: page;
+            }
+            .quote-terms-print-page .quote-header {
+              position: fixed;
+              top: 0;
+              left: 0;
+              right: 0;
+              background: #fff;
+              z-index: 2;
+            }
+            .quote-terms-print-page .print-body {
+              padding-top: 128px;
+              padding-bottom: 72mm !important;
+            }
+            .quote-terms-print-page > .print-footer {
+              position: fixed;
+              left: 0;
+              right: 0;
+              bottom: 0;
+            }
           }
 ${GLOBAL_REPORT_PRINT_CSS}
 ${GLOBAL_REPORT_TABLE_CSS}

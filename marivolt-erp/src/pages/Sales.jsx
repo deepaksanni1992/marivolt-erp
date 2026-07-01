@@ -28,6 +28,13 @@ import CreateInvoiceFromPackingModal from "../components/sales/CreateInvoiceFrom
 import OaCreateModal from "../components/sales/OaCreateModal.jsx";
 import { deliverReportHtml, downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 import {
+  buildQuotationPrintBrandedFooterHtml,
+  buildQuotationPrintHeaderHtml,
+  buildQuotationTermsContinuationPagesHtml,
+  quotationHasPrintTerms,
+  quotationPrintTermsText,
+} from "../lib/salesQuotationDocumentPrint.js";
+import {
   buildColgroupHtml,
   exportColumnClass,
   GLOBAL_REPORT_TABLE_CSS,
@@ -413,6 +420,7 @@ function quotationDetailToEditableForm(q) {
     portOfDischarge: q.portOfDischarge || "",
     finalDestination: q.finalDestination || "",
     remarks: q.remarks || "",
+    termsAndConditions: q.termsAndConditions || "",
     internalNotes: q.internalNotes || "",
     customer: q.customer || {
       billingAddress: "",
@@ -882,9 +890,15 @@ function renderPrintWindow(data, autoPrint = false) {
   const company = q.companySnapshot || {};
   const customer = q.customer || {};
   const rows = q.lines || [];
-  const hasCompanyLogo = String(company.logo || "").trim().length > 0;
+  const termsText = quotationPrintTermsText(q);
+  const hasTerms = quotationHasPrintTerms(q);
   const companyName = String(company.companyName || "").toLowerCase();
-  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite, reportFooterName, reportFooterSubline } = getReportBranding(companyName);
+  const branding = getReportBranding(companyName);
+  const { useBrandedLayout, reportFooterName, reportFooterSubline, reportAddress, reportEmail, reportPhone, reportWebsite } =
+    branding;
+  const headerHtml = buildQuotationPrintHeaderHtml(q, company);
+  const brandedFooterHtml = buildQuotationPrintBrandedFooterHtml(branding);
+  const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, brandedFooterHtml);
   const html = `
     <html>
       <head>
@@ -893,44 +907,8 @@ function renderPrintWindow(data, autoPrint = false) {
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
-      <body class="report-print ${isMarivolt ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
-        <div class="print-header quote-header">
-          <div class="quote-left">
-            ${
-              useBrandedLayout
-                ? `<img src="${printLogo}" alt="${companyDisplayName || "Company"} logo" class="quote-logo" />`
-                : hasCompanyLogo
-                ? `<img src="${company.logo}" alt="${company.companyName || "Company"} logo" class="quote-logo" />`
-                : `<div class="brand-fallback">MV</div>`
-            }
-          </div>
-          <div class="quote-center">
-            <div class="quote-title">Quotation</div>
-            <div class="quote-meta">
-              <div><b>No:</b> ${q.quotationNo || "-"}</div>
-              <div><b>Date:</b> ${q.quotationDate ? new Date(q.quotationDate).toLocaleDateString() : "-"}</div>
-              <div><b>Validity:</b> ${q.validityDate ? new Date(q.validityDate).toLocaleDateString() : "-"}</div>
-            </div>
-          </div>
-          ${
-            useBrandedLayout
-              ? `<div class="quote-right">
-                <h1 class="company-name">${companyDisplayName || (company.companyName || "")}</h1>
-                ${companySubtitle ? `<div class="company-subtitle">${companySubtitle}</div>` : ""}
-                <div class="company-details">
-                  <div>${company.address || reportAddress}</div>
-                  <div>${company.email || reportEmail}</div>
-                  <div>${company.phone || reportPhone}</div>
-                </div>
-              </div>`
-              : `<div class="quote-right company-details">
-                <div><b>${company.companyName || ""}</b></div>
-                <div>${company.address || ""}</div>
-                <div>${company.email || ""}</div>
-                <div>${company.phone || ""}</div>
-              </div>`
-          }
-        </div>
+      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
+        ${headerHtml}
         <div class="info-grid">
           <div class="info-box muted">
             <div class="info-box-title">Customer &amp; Address Info</div>
@@ -983,11 +961,6 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           <div><span>Tax</span><span>${money(q.taxTotal)}</span></div>
           <div><b>Grand Total</b><b>${money(q.grandTotal)} ${q.currency || ""}</b></div>
         </div>
-        ${
-          isMarivolt
-            ? `<div class="quote-terms">Only Marivolt terms and condition applicable, check here-<a href="https://marivolt.co/about-us">https://marivolt.co/about-us</a></div>`
-            : ""
-        }
         <div class="footer">
           <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
         </div>
@@ -1012,6 +985,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             : ""
         }
       </div>
+      ${termsPagesHtml}
       </body>
     </html>
   `;
@@ -1666,6 +1640,7 @@ export default function Sales() {
     portOfDischarge: "",
     finalDestination: "",
     remarks: "",
+    termsAndConditions: "",
     internalNotes: "",
     customer: {
       billingAddress: "",
@@ -2215,6 +2190,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
         portOfDischarge: "",
         finalDestination: "",
         remarks: "",
+        termsAndConditions: "",
         internalNotes: "",
         customer: {
           billingAddress: "",
@@ -5464,6 +5440,16 @@ ${GLOBAL_REPORT_TABLE_CSS}
               </FormField>
             </div>
 
+            <FormField label="Terms &amp; Conditions (printed on quotation PDF)">
+              <textarea
+                className="min-h-[320px] w-full rounded-xl border px-3 py-2 text-sm leading-relaxed"
+                rows={18}
+                placeholder="Enter terms and conditions to print after the quotation (supports multiple pages with header and footer)."
+                value={detailQuotationDraftForm.termsAndConditions || ""}
+                onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, termsAndConditions: e.target.value }))}
+              />
+            </FormField>
+
             <div className="mt-1">
               <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <span className="text-sm font-medium">Quotation Lines</span>
@@ -5856,6 +5842,13 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <span>{money(detail.grandTotal)} {detail.currency || ""}</span>
               </div>
             </div>
+
+            {detail.termsAndConditions?.trim() ? (
+              <div className="rounded-xl border bg-gray-50 p-3 text-sm">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Terms &amp; Conditions</div>
+                <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-gray-800">{detail.termsAndConditions}</pre>
+              </div>
+            ) : null}
 
             <div className="flex flex-wrap gap-2">
               {statusOptions.map((s) => (
@@ -8340,6 +8333,16 @@ ${GLOBAL_REPORT_TABLE_CSS}
             </table>
           </div>
         </div>
+
+        <FormField label="Terms &amp; Conditions (printed on quotation PDF)" className="mt-4">
+          <textarea
+            className="min-h-[320px] w-full rounded-xl border px-3 py-2 text-sm leading-relaxed"
+            rows={18}
+            placeholder="Enter terms and conditions to print after the quotation (supports multiple pages with header and footer)."
+            value={form.termsAndConditions || ""}
+            onChange={(e) => setForm((f) => ({ ...f, termsAndConditions: e.target.value }))}
+          />
+        </FormField>
 
         <div className="mt-4 flex justify-end gap-2">
           <button
