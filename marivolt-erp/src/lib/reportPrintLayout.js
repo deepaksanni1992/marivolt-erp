@@ -122,6 +122,18 @@ export const GLOBAL_REPORT_PRINT_CSS = `
       padding-bottom: 45mm !important;
     }
 
+    body.report-print.has-quote-terms .print-page,
+    body.po-print-document.has-quote-terms .print-page,
+    body.report-print.has-quote-terms .print-body,
+    body.po-print-document.has-quote-terms .print-body {
+      padding-bottom: 72mm !important;
+    }
+
+    body.report-print.has-quote-terms .page-footer-line,
+    body.po-print-document.has-quote-terms .page-footer-line {
+      display: none !important;
+    }
+
     .print-page > .print-footer,
     .print-page > .page-footer.print-footer {
       position: absolute !important;

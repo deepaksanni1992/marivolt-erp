@@ -5,6 +5,9 @@ import { GLOBAL_REPORT_TABLE_CSS } from "./reportTableLayout.js";
 export const SALES_QUOTATION_STYLE_PRINT_CSS = `
           body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
           body.report-print.has-quote-terms { padding-bottom: 0; }
+          body.report-print.has-quote-terms .print-body {
+            padding-bottom: 72mm;
+          }
           .quote-header {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
@@ -182,10 +185,7 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
           .page-footer-center { text-align: center; }
           .page-footer-right { text-align: right; }
           .page-footer-line {
-            margin-top: 8px;
-            height: 5px;
-            background: #1f3a5f;
-            border-radius: 2px;
+            display: none;
           }
           .si-tax-print-wrap { margin-top: 10px; margin-bottom: 14px; page-break-inside: avoid; }
           .si-header-3col {
@@ -261,7 +261,10 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             .brand-subtitle { color: #1f4e79 !important; }
             .brand-fallback { color: #1f5a96 !important; }
             .page-footer { color: #1f3a5f !important; }
-            .page-footer-line { background: #1f3a5f !important; }
+            body.report-print.has-quote-terms .print-page,
+            body.report-print.has-quote-terms .print-body {
+              padding-bottom: 72mm !important;
+            }
             th { background: #f5f5f5 !important; color: #111 !important; }
             .info-box {
               background: #fafafa !important;
