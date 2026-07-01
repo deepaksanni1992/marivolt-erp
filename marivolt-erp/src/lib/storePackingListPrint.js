@@ -120,11 +120,17 @@ export function renderStorePackingListPrintWindow(packing, company = {}, autoPri
     { label: "Total Qty", value: String(totalQty), bold: true },
   ]);
 
+  const body =
+    header +
+    cards +
+    table +
+    totals +
+    buildMarivoltTermsHtml(brandingName) +
+    buildReportDocNoteHtml();
 
   openCommercialReportPrintWindow({
     title: `Packing List ${packing.packingNo || ""}`,
-    headerHtml: header,
-    contentHtml: cards + table + totals + buildMarivoltTermsHtml(brandingName) + buildReportDocNoteHtml(),
+    bodyInnerHtml: body,
     brandingName,
     autoPrint,
     extraCss: PACKING_LIST_EXTRA_CSS,

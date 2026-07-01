@@ -4,6 +4,10 @@ import { GLOBAL_REPORT_TABLE_CSS } from "./reportTableLayout.js";
 /** Shared print styles for quotation-style sales documents (quotation, OA, etc.). */
 export const SALES_QUOTATION_STYLE_PRINT_CSS = `
           body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
+          body.report-print.has-quote-terms { padding-bottom: 0; }
+          body.report-print.has-quote-terms .print-body {
+            padding-bottom: 72mm;
+          }
           .quote-header {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
@@ -166,7 +170,12 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
           .quote-terms-full {
             white-space: pre-wrap;
             word-break: break-word;
+            min-height: 180mm;
             page-break-inside: auto;
+          }
+          .quote-terms-print-page {
+            page-break-before: always;
+            break-before: page;
           }
           .quote-terms a { color: #1d4ed8; word-break: break-all; }
           .doc-note {
@@ -272,7 +281,7 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             .page-footer { color: #1f3a5f !important; }
             body.report-print.has-quote-terms .print-page,
             body.report-print.has-quote-terms .print-body {
-              padding-bottom: 0 !important;
+              padding-bottom: 72mm !important;
             }
             th { background: #f5f5f5 !important; color: #111 !important; }
             .info-box {
@@ -285,6 +294,23 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             .header { page-break-inside: avoid; }
             .quote-header { page-break-inside: avoid; }
             .quote-terms { page-break-inside: auto; }
+            .quote-terms-print-page {
+              page-break-before: always;
+              break-before: page;
+            }
+            .quote-terms-print-page .quote-header,
+            .quote-terms-print-page .header {
+              page-break-inside: avoid;
+            }
+            .quote-terms-print-page .print-body {
+              padding-top: 0;
+              padding-bottom: 45mm !important;
+            }
+            .quote-terms-print-page .quote-terms-full {
+              page-break-inside: auto;
+              break-inside: auto;
+              min-height: unset;
+            }
           }
 ${GLOBAL_REPORT_PRINT_CSS}
 ${GLOBAL_REPORT_TABLE_CSS}

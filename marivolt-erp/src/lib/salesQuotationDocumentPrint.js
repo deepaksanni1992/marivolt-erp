@@ -1,8 +1,5 @@
 import { escHtml } from "./commercialReportLayout.js";
-import { buildPrintTermsSectionHtml, PRINT_DOC_NOTE_HTML } from "./printDocumentLayout.js";
 import { getReportBranding } from "./reportBranding.js";
-
-export { buildPrintTermsSectionHtml, PRINT_DOC_NOTE_HTML };
 
 export function quotationPrintTermsText(quotation) {
   return String(quotation?.termsAndConditions || quotation?.resolvedTermsAndConditions || "").trim();
@@ -155,6 +152,19 @@ export function buildQuotationPrintBrandedFooterHtml(branding) {
         </div>`;
 }
 
-export function buildQuotationTermsContinuationPagesHtml(_headerHtml, termsText, _brandedFooterHtml, docNoteHtml = "") {
-  return buildPrintTermsSectionHtml(termsText, docNoteHtml);
+export function buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, brandedFooterHtml) {
+  const terms = String(termsText || "").trim();
+  if (!terms) return "";
+  return `
+      <div class="print-page quote-terms-print-page">
+        <div class="print-body">
+          ${headerHtml}
+          <div class="quote-terms-heading">Terms &amp; Conditions</div>
+          <div class="quote-terms quote-terms-full">${escHtml(terms)}</div>
+          <div class="footer">
+            <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
+          </div>
+        </div>
+        ${brandedFooterHtml}
+      </div>`;
 }

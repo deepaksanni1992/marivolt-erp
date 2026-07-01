@@ -110,8 +110,8 @@ export function renderRtsPackingListPrintWindow({ rts, company, autoPrint = fals
 
   openCommercialReportPrintWindow({
     title: rts?.rtsNo || "Packing List",
-    headerHtml: header,
-    contentHtml: cards + lineTable + boxTable + totals + buildMarivoltTermsHtml(brandingName) + buildReportDocNoteHtml(),
+    bodyInnerHtml:
+      header + cards + lineTable + boxTable + totals + buildMarivoltTermsHtml(brandingName) + buildReportDocNoteHtml(),
     brandingName,
     autoPrint,
     extraCss: PACKING_LIST_EXTRA_CSS,

@@ -1,6 +1,5 @@
 import { getReportBranding } from "./reportBranding.js";
 import { deliverReportHtml } from "./reportPdfClient.js";
-import { buildPrintDocumentHtml } from "./printDocumentLayout.js";
 import { buildColgroupHtml, PACKING_LIST_COLGROUP, PDF_OPTS_ITEM_LINES } from "./reportTableLayout.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 
@@ -203,32 +202,33 @@ export const PACKING_LIST_EXTRA_CSS = `
 export function buildCommercialReportDocumentHtml({
   title,
   bodyInnerHtml,
-  headerHtml = "",
-  contentHtml = "",
-  footerHtml = "",
   brandingName = "",
   extraCss = "",
 }) {
   const b = getReportBranding(brandingName);
-  const footer = footerHtml || buildBrandedFooterHtml(brandingName);
-  const content = contentHtml || bodyInnerHtml || "";
-  return buildPrintDocumentHtml({
-    title,
-    bodyClass: `report-print print-document${b.isMarivolt ? " is-marivolt" : ""}`,
-    headerHtml,
-    contentHtml: content,
-    footerHtml: footer,
-    styleCss: SALES_QUOTATION_STYLE_PRINT_CSS,
-    extraCss,
-  });
+  return `
+    <html>
+      <head>
+        <title>${escHtml(title)}</title>
+        <style>
+${SALES_QUOTATION_STYLE_PRINT_CSS}
+${extraCss}
+        </style>
+      </head>
+      <body class="report-print ${b.isMarivolt ? "has-quote-terms" : ""}">
+        <div class="print-page">
+          <div class="print-body">
+            ${bodyInnerHtml}
+          </div>
+          ${buildBrandedFooterHtml(brandingName)}
+        </div>
+      </body>
+    </html>`;
 }
 
 export function openCommercialReportPrintWindow({
   title,
   bodyInnerHtml,
-  headerHtml = "",
-  contentHtml = "",
-  footerHtml = "",
   brandingName = "",
   autoPrint = false,
   extraCss = "",
@@ -236,9 +236,6 @@ export function openCommercialReportPrintWindow({
   const html = buildCommercialReportDocumentHtml({
     title,
     bodyInnerHtml,
-    headerHtml,
-    contentHtml,
-    footerHtml,
     brandingName,
     extraCss,
   });

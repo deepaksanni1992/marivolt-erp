@@ -9,10 +9,7 @@ export const PDF_EXPORT_CONTENT_WIDTH = "404mm";
 export const PDF_EXPORT_WIDE_CSS = `
 @page {
   size: 420mm 297mm;
-  margin-top: 42mm;
-  margin-right: 8mm;
-  margin-bottom: 26mm;
-  margin-left: 8mm;
+  margin: 8mm;
 }
 
 .pdf-export-page,

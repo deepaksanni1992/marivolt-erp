@@ -1,5 +1,4 @@
 import { getReportBranding } from "./reportBranding.js";
-import { buildPrintDocumentHtml } from "./printDocumentLayout.js";
 import { downloadSearchableReportPdf } from "./reportPdfClient.js";
 import { PDF_OPTS_ITEM_LINES, PO_LINE_COLGROUP, PO_LINE_TABLE_HEAD } from "./reportTableLayout.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
@@ -239,26 +238,23 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
     ? `${escapeHtml(b.reportFooterName)}${b.reportWebsite ? ` · ${escapeHtml(b.reportWebsite)}` : ""}`
     : `Purchase order — ${buyer.name}`;
 
-  const headerHtml = isOkeanos ? headerOkeanos : headerDefault;
-  const poFooterHtml = b.useBrandedLayout
-    ? `<div class="print-footer po-footer page-footer">
-          <div class="page-footer-top">
-            <div>
-              <div>${escapeHtml(b.reportFooterName) || "-"}</div>
-              ${b.reportFooterSubline ? `<div>${escapeHtml(b.reportFooterSubline)}</div>` : ""}
-            </div>
-            <div class="page-footer-center">${escapeHtml(b.reportAddress)}</div>
-            <div class="page-footer-right">
-              <div>Mob: ${escapeHtml(b.reportPhone)}</div>
-              <div>Email: ${escapeHtml(b.reportEmail)}</div>
-              <div>Web: ${escapeHtml(b.reportWebsite)}</div>
-            </div>
-          </div>
-          <div class="page-footer-line"></div>
-        </div>`
-    : "";
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>${poNo} — Purchase order</title>
+  <style>
+${SALES_QUOTATION_STYLE_PRINT_CSS}
+    body.po-print-document { font-family: Arial, Helvetica, sans-serif; color: #111; font-size: 12px; }
+    table { border-collapse: collapse; width: 100%; }
+    .po-print-header { page-break-inside: avoid; }
+  </style>
+</head>
+<body class="report-print po-print-document${b.useBrandedLayout ? " has-branded-footer" : ""}${isMarivolt && doc.termsAndConditions && String(doc.termsAndConditions).trim() ? " has-quote-terms" : ""}">
+  <div class="print-page po-page">
+  <div class="print-body">
+  ${isOkeanos ? headerOkeanos : headerDefault}
 
-  const contentHtml = `
   <div style="display:grid;grid-template-columns:${partyGridCols};gap:12px;margin-bottom:16px">
     <div class="info-box muted">
       <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;color:#6b7280">Buyer</div>
@@ -343,22 +339,33 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
       ? `<div class="po-footer-simple">${footerBranded}</div>`
       : ""
   }
+  </div>
+  ${
+    b.useBrandedLayout
+      ? `<div class="print-footer po-footer page-footer">
+          <div class="page-footer-top">
+            <div>
+              <div>${escapeHtml(b.reportFooterName) || "-"}</div>
+              ${b.reportFooterSubline ? `<div>${escapeHtml(b.reportFooterSubline)}</div>` : ""}
+            </div>
+            <div class="page-footer-center">${escapeHtml(b.reportAddress)}</div>
+            <div class="page-footer-right">
+              <div>Mob: ${escapeHtml(b.reportPhone)}</div>
+              <div>Email: ${escapeHtml(b.reportEmail)}</div>
+              <div>Web: ${escapeHtml(b.reportWebsite)}</div>
+            </div>
+          </div>
+          <div class="page-footer-line"></div>
+        </div>`
+      : ""
+  }
+  </div>
 
   <p class="no-print" style="margin-top:24px;font-size:11px;color:#6b7280">
     Use <strong>Export PDF</strong> in the ERP for a searchable PDF download.
-  </p>`;
-
-  return buildPrintDocumentHtml({
-    title: `${poNo} — Purchase order`,
-    bodyClass: `report-print po-print-document print-document${b.useBrandedLayout ? " has-branded-footer" : ""}`,
-    headerHtml,
-    contentHtml,
-    footerHtml: poFooterHtml,
-    styleCss: `${SALES_QUOTATION_STYLE_PRINT_CSS}
-    body.po-print-document { font-family: Arial, Helvetica, sans-serif; color: #111; font-size: 12px; }
-    table { border-collapse: collapse; width: 100%; }
-    .po-print-header { page-break-inside: avoid; }`,
-  });
+  </p>
+</body>
+</html>`;
 }
 
 /**

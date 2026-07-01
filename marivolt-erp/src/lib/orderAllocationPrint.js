@@ -1,7 +1,4 @@
 import { deliverReportHtml } from "./reportPdfClient.js";
-import { buildPrintDocumentHtml, PRINT_DOC_NOTE_HTML_ALT } from "./printDocumentLayout.js";
-import { getReportBranding } from "./reportBranding.js";
-import { buildQuotationPrintBrandedFooterHtml } from "./salesQuotationDocumentPrint.js";
 import {
   ORDER_ALLOCATION_COLGROUP,
   ORDER_ALLOCATION_LINE_TABLE_HEAD,
@@ -19,10 +16,31 @@ export function renderOrderAllocationPrintWindow(allocation, company = {}, autoP
   const lines = Array.isArray(allocation.lines) ? allocation.lines : [];
   const hasCompanyLogo = String(company?.logo || company?.logoUrl || "").trim().length > 0;
   const companyName = String(company?.name || company?.companyName || "").toLowerCase();
-  const branding = getReportBranding(companyName);
-  const { useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone } =
-    branding;
-  const headerHtml = `
+  const isMarivolt = companyName.includes("marivolt");
+  const isOkeanos = companyName.includes("okeanos");
+  const useBrandedLayout = isMarivolt || isOkeanos;
+  const printLogo = isMarivolt ? "/brand/marivolt-icon.png" : isOkeanos ? "/brand/okeanos-logo.png" : "";
+  const companyDisplayName = isMarivolt ? "MariVolt" : isOkeanos ? "OKEANOS" : (company?.name || company?.companyName || "-");
+  const companySubtitle = useBrandedLayout ? "Marine Engine Spares" : "";
+  const reportAddress = isMarivolt
+    ? "LV09B, Hamriyah freezone phase 2, Sharjah, UAE"
+    : isOkeanos
+      ? "C1 Building, Ajman Freezone, Ajman, UAE"
+      : (company?.address || "");
+  const reportEmail = isMarivolt ? "sales@marivolt.co" : isOkeanos ? "Sales@okeanos.pro" : (company?.email || "");
+  const reportPhone = isMarivolt ? "+971-543053047" : isOkeanos ? "+971-543050000" : (company?.phone || "");
+  const reportWebsite = isMarivolt ? "www.marivolt.co" : isOkeanos ? "www.okfze.com" : "";
+  const reportFooterName = isMarivolt ? "Marivolt FZE" : isOkeanos ? "Okeanos FZE" : companyDisplayName;
+  const reportFooterSubline = isMarivolt ? "LV09B" : "";
+  const html = `
+    <html>
+      <head>
+        <title>Order Allocation ${allocation.allocationNo || ""}</title>
+        <style>
+${SALES_QUOTATION_STYLE_PRINT_CSS}
+        </style>
+      </head>
+      <body class="report-print ${isMarivolt ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
         <div class="print-header header">
           <div class="header-left">
             ${
@@ -60,8 +78,8 @@ export function renderOrderAllocationPrintWindow(allocation, company = {}, autoP
                 <div>${company?.phone || ""}</div>
               </div>`
           }
-        </div>`;
-  const contentHtml = `
+        </div>
+        <div class="info-grid">
           <div class="info-box muted">
             <div class="info-box-title">Customer &amp; References</div>
             <div><b>Customer:</b> ${allocation.customerName || "-"}</div>
@@ -109,19 +127,37 @@ export function renderOrderAllocationPrintWindow(allocation, company = {}, autoP
           </tbody>
         </table>
         ${
-          branding.isMarivolt
+          isMarivolt
             ? `<div class="quote-terms">Only Marivolt terms and condition applicable, check here-<a href="https://marivolt.co/about-us">https://marivolt.co/about-us</a></div>`
             : ""
         }
-        ${PRINT_DOC_NOTE_HTML_ALT}`;
-  const html = buildPrintDocumentHtml({
-    title: `Order Allocation ${allocation.allocationNo || ""}`,
-    bodyClass: "report-print print-document",
-    headerHtml,
-    contentHtml,
-    footerHtml: buildQuotationPrintBrandedFooterHtml(branding),
-    styleCss: SALES_QUOTATION_STYLE_PRINT_CSS,
-  });
+        <div class="footer">
+          <div class="doc-note">This is a computer generated document and does not require signature or stamp.</div>
+        </div>
+        </div>
+        ${
+          useBrandedLayout
+            ? `<div class="print-footer page-footer">
+          <div class="page-footer-top">
+            <div>
+              <div>${reportFooterName || "-"}</div>
+              ${reportFooterSubline ? `<div>${reportFooterSubline}</div>` : ""}
+            </div>
+            <div class="page-footer-center">${reportAddress}</div>
+            <div class="page-footer-right">
+              <div>Mob: ${reportPhone}</div>
+              <div>Email: ${reportEmail}</div>
+              <div>Web: ${reportWebsite}</div>
+            </div>
+          </div>
+          <div class="page-footer-line"></div>
+        </div>`
+            : ""
+        }
+      </div>
+      </body>
+    </html>
+  `;
   return deliverReportHtml(html, {
     exportPdf: autoPrint,
     filename: allocation?.allocationNo || "order-allocation",
