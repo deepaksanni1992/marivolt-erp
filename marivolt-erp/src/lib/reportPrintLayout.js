@@ -1,15 +1,20 @@
 /**
  * Shared print/PDF layout for all Okeanos & Marivolt reports.
- * Footer sits at the bottom of .print-page (absolute, not fixed overlay).
- * Totals stay in .print-body with reserved space above the footer.
+ * Header/footer repeat on every page via printDocumentLayout.js (position: fixed in print).
+ * Only document body content flows between pages.
  */
 
+import { PRINT_DOCUMENT_LAYOUT_CSS } from "./printDocumentLayout.js";
+
 export const GLOBAL_REPORT_PRINT_CSS = `
+${PRINT_DOCUMENT_LAYOUT_CSS}
+
   body.report-print,
-  body.po-print-document {
+  body.po-print-document,
+  body.print-document {
     box-sizing: border-box;
     margin: 24px;
-    padding-bottom: 0;
+    padding: 0;
   }
 
   .report-page,
@@ -22,6 +27,7 @@ export const GLOBAL_REPORT_PRINT_CSS = `
     overflow: visible;
   }
 
+  /* Legacy wrappers — no min-height or padding hacks */
   .print-page {
     position: relative;
   }
@@ -32,24 +38,6 @@ export const GLOBAL_REPORT_PRINT_CSS = `
   header.po-print-header {
     page-break-inside: avoid;
     break-inside: avoid;
-  }
-
-  /* Screen: footer anchored to bottom of page container */
-  .print-page > .print-footer,
-  .print-page > .page-footer.print-footer {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: auto;
-    min-height: 32mm;
-    box-sizing: border-box;
-  }
-
-  /* Legacy footers outside .print-page — stay in document flow */
-  .page-footer:not(.print-footer) {
-    position: static;
-    margin-top: 24px;
   }
 
   .print-totals,
@@ -81,7 +69,6 @@ export const GLOBAL_REPORT_PRINT_CSS = `
 
   @media print {
     @page {
-      size: A4;
       margin: 12mm;
     }
 
@@ -92,14 +79,10 @@ export const GLOBAL_REPORT_PRINT_CSS = `
     }
 
     body.report-print,
-    body.po-print-document {
+    body.po-print-document,
+    body.print-document {
       margin: 0 !important;
       padding: 0 !important;
-    }
-
-    body.report-print.has-quote-terms,
-    body.po-print-document.has-quote-terms {
-      padding-bottom: 0 !important;
     }
 
     .report-page,
@@ -109,47 +92,8 @@ export const GLOBAL_REPORT_PRINT_CSS = `
       width: 100% !important;
       max-width: 100% !important;
       overflow: visible !important;
-    }
-
-    .print-page {
-      position: relative;
-      min-height: 270mm;
-      padding-bottom: 45mm !important;
-      box-sizing: border-box;
-    }
-
-    .print-body {
-      padding-bottom: 45mm !important;
-    }
-
-    body.report-print.has-quote-terms .print-page,
-    body.po-print-document.has-quote-terms .print-page,
-    body.report-print.has-quote-terms .print-body,
-    body.po-print-document.has-quote-terms .print-body {
-      padding-bottom: 72mm !important;
-    }
-
-    body.report-print.has-quote-terms .page-footer-line,
-    body.po-print-document.has-quote-terms .page-footer-line {
-      display: none !important;
-    }
-
-    .print-page > .print-footer,
-    .print-page > .page-footer.print-footer {
-      position: absolute !important;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      height: 32mm;
-      page-break-inside: avoid;
-      break-inside: avoid;
-    }
-
-    /* No fixed overlay — only direct footer children of .print-page */
-    .print-page > .print-footer,
-    .print-page > .page-footer.print-footer,
-    .print-page > .po-footer.print-footer {
-      position: absolute !important;
+      min-height: unset !important;
+      padding-bottom: 0 !important;
     }
 
     .print-totals,
@@ -159,15 +103,6 @@ export const GLOBAL_REPORT_PRINT_CSS = `
     .po-totals {
       break-inside: avoid;
       page-break-inside: avoid;
-      margin-bottom: 12mm !important;
-    }
-
-    .po-post-totals {
-      margin-bottom: 8mm !important;
-    }
-
-    .po-doc-note.footer {
-      margin-bottom: 4mm !important;
     }
 
     table {
@@ -177,7 +112,6 @@ export const GLOBAL_REPORT_PRINT_CSS = `
     tr {
       page-break-inside: avoid;
       break-inside: avoid;
-      page-break-after: auto;
     }
 
     thead {
@@ -203,35 +137,20 @@ export function renderBrandedPrintFooterHtml({
   reportEmail = "",
   reportWebsite = "",
 }) {
-  const subline = reportFooterSubline
-    ? "<motion.div>" + String(reportFooterSubline) + "</motion.div>"
-    : "";
-  return (
-    '<motion.div class="print-footer page-footer">' +
-    '<motion.div class="page-footer-top">' +
-    "<motion.div><motion.div>" +
-    String(reportFooterName) +
-    "</motion.div>" +
-    subline +
-    "</motion.div>" +
-    '<motion.div class="page-footer-center">' +
-    String(reportAddress) +
-    "</motion.div>" +
-    '<motion.div class="page-footer-right">' +
-    "<motion.div>Mob: " +
-    String(reportPhone) +
-    "</motion.div>" +
-    "<motion.div>Email: " +
-    String(reportEmail) +
-    "</motion.div>" +
-    "<motion.div>Web: " +
-    String(reportWebsite) +
-    "</motion.div>" +
-    "</motion.div>" +
-    "</motion.div>" +
-    '<motion.div class="page-footer-line"></motion.div>' +
-    "</motion.div>"
-  )
-    .split("motion.")
-    .join("");
+  const subline = reportFooterSubline ? `<div>${String(reportFooterSubline)}</div>` : "";
+  return `<div class="print-footer page-footer">
+      <div class="page-footer-top">
+        <div>
+          <div>${String(reportFooterName)}</div>
+          ${subline}
+        </div>
+        <div class="page-footer-center">${String(reportAddress)}</div>
+        <div class="page-footer-right">
+          <div>Mob: ${String(reportPhone)}</div>
+          <div>Email: ${String(reportEmail)}</div>
+          <div>Web: ${String(reportWebsite)}</div>
+        </div>
+      </div>
+      <div class="page-footer-line"></div>
+    </div>`;
 }

@@ -31,10 +31,9 @@ import {
   buildOAPrintHeaderHtml,
   buildQuotationPrintBrandedFooterHtml,
   buildQuotationPrintHeaderHtml,
-  buildQuotationTermsContinuationPagesHtml,
-  quotationHasPrintTerms,
   quotationPrintTermsText,
 } from "../lib/salesQuotationDocumentPrint.js";
+import { buildPrintDocumentHtml, PRINT_DOC_NOTE_HTML } from "../lib/printDocumentLayout.js";
 import {
   buildColgroupHtml,
   exportColumnClass,
@@ -906,24 +905,11 @@ function renderPrintWindow(data, autoPrint = false) {
   const customer = q.customer || {};
   const rows = q.lines || [];
   const termsText = quotationPrintTermsText(q);
-  const hasTerms = quotationHasPrintTerms(q);
   const companyName = String(company.companyName || "").toLowerCase();
   const branding = getReportBranding(companyName);
-  const { useBrandedLayout, reportFooterName, reportFooterSubline, reportAddress, reportEmail, reportPhone, reportWebsite } =
-    branding;
   const headerHtml = buildQuotationPrintHeaderHtml(q, company);
   const brandedFooterHtml = buildQuotationPrintBrandedFooterHtml(branding);
-  const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, brandedFooterHtml);
-  const html = `
-    <html>
-      <head>
-        <title>${q.quotationNo || "Quotation"}</title>
-        <style>
-${SALES_QUOTATION_STYLE_PRINT_CSS}
-        </style>
-      </head>
-      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
-        ${headerHtml}
+  const contentHtml = `
         <div class="info-grid">
           <div class="info-box muted">
             <div class="info-box-title">Customer &amp; Address Info</div>
@@ -968,7 +954,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
               .join("")}
           </tbody>
         </table>
-        <div class="print-totals totals summary-section">
+        <div class="print-totals totals summary-section print-keep-together">
           <div><span>Subtotal</span><span>${money(q.subTotal)}</span></div>
           <div><span>Packing Cost</span><span>${money(q.packingCost)}</span></div>
           <div><span>Clearance Cost</span><span>${money(q.clearanceCost)}</span></div>
@@ -976,34 +962,16 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           <div><span>Tax</span><span>${money(q.taxTotal)}</span></div>
           <div><b>Grand Total</b><b>${money(q.grandTotal)} ${q.currency || ""}</b></div>
         </div>
-        <div class="footer">
-          <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
-        </div>
-        </div>
-        ${
-          useBrandedLayout
-            ? `<div class="print-footer page-footer">
-          <div class="page-footer-top">
-            <div>
-              <div>${reportFooterName || "-"}</div>
-              ${reportFooterSubline ? `<div>${reportFooterSubline}</div>` : ""}
-            </div>
-            <div class="page-footer-center">${reportAddress}</div>
-            <div class="page-footer-right">
-              <div>Mob: ${reportPhone}</div>
-              <div>Email: ${reportEmail}</div>
-              <div>Web: ${reportWebsite}</div>
-            </div>
-          </div>
-          <div class="page-footer-line"></div>
-        </div>`
-            : ""
-        }
-      </div>
-      ${termsPagesHtml}
-      </body>
-    </html>
-  `;
+        ${PRINT_DOC_NOTE_HTML}`;
+  const html = buildPrintDocumentHtml({
+    title: q.quotationNo || "Quotation",
+    bodyClass: "report-print print-document",
+    headerHtml,
+    contentHtml,
+    footerHtml: brandedFooterHtml,
+    termsText,
+    styleCss: SALES_QUOTATION_STYLE_PRINT_CSS,
+  });
   return deliverReportHtml(html, {
     exportPdf: autoPrint,
     filename: q.quotationNo || "quotation",
@@ -1016,25 +984,11 @@ function renderOrderAcknowledgementPrintWindow(payload, autoPrint = false) {
   const company = payload?.company || {};
   const rows = oa.lines || [];
   const termsText = quotationPrintTermsText(oa);
-  const hasTerms = quotationHasPrintTerms(oa);
   const companyName = String(company.companyName || "").toLowerCase();
   const branding = getReportBranding(companyName);
-  const { useBrandedLayout, reportFooterName, reportFooterSubline, reportAddress, reportEmail, reportPhone, reportWebsite } =
-    branding;
   const headerHtml = buildOAPrintHeaderHtml(oa, company);
   const brandedFooterHtml = buildQuotationPrintBrandedFooterHtml(branding);
-  const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, brandedFooterHtml);
-
-  const html = `
-    <html>
-      <head>
-        <title>${oa.oaNo || "Order Acknowledgement"}</title>
-        <style>
-${SALES_QUOTATION_STYLE_PRINT_CSS}
-        </style>
-      </head>
-      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
-        ${headerHtml}
+  const contentHtml = `
         <div class="info-grid">
           <div class="info-box muted">
             <div class="info-box-title">Customer &amp; Address Info</div>
@@ -1080,7 +1034,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
               .join("")}
           </tbody>
         </table>
-        <div class="print-totals totals summary-section">
+        <div class="print-totals totals summary-section print-keep-together">
           <div><span>Subtotal</span><span>${money(oa.subTotal)}</span></div>
           <div><span>Packing Cost</span><span>${money(oa.packingCost)}</span></div>
           <div><span>Clearance Cost</span><span>${money(oa.clearanceCost)}</span></div>
@@ -1088,34 +1042,16 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           <div><span>Tax</span><span>${money(oa.taxTotal)}</span></div>
           <div><b>Grand Total</b><b>${money(oa.grandTotal)} ${oa.currency || ""}</b></div>
         </div>
-        <div class="footer">
-          <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
-        </div>
-        </div>
-        ${
-          useBrandedLayout
-            ? `<div class="print-footer page-footer">
-          <div class="page-footer-top">
-            <div>
-              <div>${reportFooterName || "-"}</div>
-              ${reportFooterSubline ? `<div>${reportFooterSubline}</div>` : ""}
-            </div>
-            <div class="page-footer-center">${reportAddress}</div>
-            <div class="page-footer-right">
-              <div>Mob: ${reportPhone}</div>
-              <div>Email: ${reportEmail}</div>
-              <div>Web: ${reportWebsite}</div>
-            </div>
-          </div>
-          <div class="page-footer-line"></div>
-        </div>`
-            : ""
-        }
-      </div>
-      ${termsPagesHtml}
-      </body>
-    </html>
-  `;
+        ${PRINT_DOC_NOTE_HTML}`;
+  const html = buildPrintDocumentHtml({
+    title: oa.oaNo || "Order Acknowledgement",
+    bodyClass: "report-print print-document",
+    headerHtml,
+    contentHtml,
+    footerHtml: brandedFooterHtml,
+    termsText,
+    styleCss: SALES_QUOTATION_STYLE_PRINT_CSS,
+  });
   const oaNo = oa.oaNo || "order-acknowledgement";
   return deliverReportHtml(html, {
     exportPdf: autoPrint,
@@ -1142,7 +1078,6 @@ function renderFlowDocPrintWindow({
 }) {
   const rows = doc?.lines || [];
   const termsText = quotationPrintTermsText(doc);
-  const hasTerms = quotationHasPrintTerms(doc);
   const hasCompanyLogo = String(company?.logo || company?.logoUrl || "").trim().length > 0;
   const companyName = String(company?.name || company?.companyName || "").toLowerCase();
   const branding = getReportBranding(companyName);
@@ -1185,7 +1120,7 @@ function renderFlowDocPrintWindow({
         )
         .join("");
   const invoiceDateFormatted = dateValue ? new Date(dateValue).toLocaleDateString() : "—";
-  const flowDocClassicTop = `
+  const flowDocHeaderHtml = `
         <div class="print-header header">
           <div class="header-left">
             ${
@@ -1223,7 +1158,8 @@ function renderFlowDocPrintWindow({
                 <div>${company?.phone || ""}</div>
               </div>`
           }
-        </div>
+        </div>`;
+  const flowDocInfoHtml = `
         <div class="info-grid">
           <div class="info-box muted">
             <div class="info-box-title">Customer &amp; Address Info</div>
@@ -1299,19 +1235,13 @@ function renderFlowDocPrintWindow({
         isMarivolt,
       })
     : "";
-  const termsHeaderHtml = salesInvoiceLayout ? taxInvoiceQuotationHeader + taxInvoiceGridHtml : flowDocClassicTop;
+  const headerHtml = salesInvoiceLayout ? taxInvoiceQuotationHeader : flowDocHeaderHtml;
   const brandedFooterHtml = buildQuotationPrintBrandedFooterHtml(branding);
-  const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(termsHeaderHtml, termsText, brandedFooterHtml);
-  const html = `
-    <html>
-      <head>
-        <title>${docNoValue || title}</title>
-        <style>
-${SALES_QUOTATION_STYLE_PRINT_CSS}
-        </style>
-      </head>
-      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
-        ${salesInvoiceLayout ? taxInvoiceQuotationHeader + taxInvoiceGridHtml : flowDocClassicTop}
+  const docNoteHtml = salesInvoiceLayout
+    ? '<div class="footer"><div class="doc-note">This is a computer generated document.</div></div>'
+    : PRINT_DOC_NOTE_HTML;
+  const contentHtml = `
+        ${salesInvoiceLayout ? taxInvoiceGridHtml : flowDocInfoHtml}
         <table class="report-table">
           ${lineTableColgroup}
           <thead>
@@ -1323,7 +1253,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             ${lineTableRowsHtml}
           </tbody>
         </table>
-        <div class="print-totals totals summary-section">
+        <div class="print-totals totals summary-section print-keep-together">
           <div><span>Subtotal</span><span>${money(doc?.subTotal)}</span></div>
           <div><span>Packing Cost</span><span>${money(doc?.packingCost)}</span></div>
           <div><span>Clearance Cost</span><span>${money(doc?.clearanceCost)}</span></div>
@@ -1341,38 +1271,17 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
               })
             : ""
         }
-        <div class="footer">
-          <div class="doc-note">${
-            salesInvoiceLayout
-              ? "This is a computer generated document."
-              : "This is a computer generated documents and does not required signature or stamp."
-          }</div>
-        </div>
-        </div>
-        ${
-          useBrandedLayout
-            ? `<div class="print-footer page-footer">
-          <div class="page-footer-top">
-            <div>
-              <div>${reportFooterName || "-"}</div>
-              ${reportFooterSubline ? `<div>${reportFooterSubline}</div>` : ""}
-            </div>
-            <div class="page-footer-center">${reportAddress}</div>
-            <div class="page-footer-right">
-              <div>Mob: ${reportPhone}</div>
-              <div>Email: ${reportEmail}</div>
-              <div>Web: ${reportWebsite}</div>
-            </div>
-          </div>
-          <div class="page-footer-line"></div>
-        </div>`
-            : ""
-        }
-      </div>
-      ${termsPagesHtml}
-      </body>
-    </html>
-  `;
+        ${docNoteHtml}`;
+  const html = buildPrintDocumentHtml({
+    title: docNoValue || title,
+    bodyClass: "report-print print-document",
+    headerHtml,
+    contentHtml,
+    footerHtml: brandedFooterHtml,
+    termsText,
+    termsDocNoteHtml: docNoteHtml,
+    styleCss: SALES_QUOTATION_STYLE_PRINT_CSS,
+  });
   const fileBase =
     docNoValue || doc?.proformaNo || doc?.invoiceNo || doc?.dispatchNo || title || "document";
   return deliverReportHtml(html, {
