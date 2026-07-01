@@ -948,6 +948,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             <div><b>Config:</b> ${q.config || "-"}</div>
             <div><b>ESN:</b> ${q.esn || "-"}</div>
             <div><b>Currency:</b> ${q.currency || "-"}</div>
+            <div><b>Validity Date:</b> ${q.validityDate ? new Date(q.validityDate).toLocaleDateString() : "-"}</div>
           </div>
         </div>
         <table class="report-table">
@@ -5378,8 +5379,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <FormField label="Quotation Date">
                 <TextInput type="date" value={detailQuotationDraftForm.quotationDate} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, quotationDate: e.target.value }))} />
               </FormField>
-              <FormField label="Validity Date">
-                <TextInput type="date" value={detailQuotationDraftForm.validityDate || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, validityDate: e.target.value }))} />
+              <FormField label="Vertical">
+                <TextInput value={detailQuotationDraftForm.vertical || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, vertical: e.target.value }))} />
               </FormField>
               <FormField label="Currency">
                 <TextInput value={detailQuotationDraftForm.currency} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))} />
@@ -5408,8 +5409,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <FormField label="Attention">
                 <TextInput value={detailQuotationDraftForm.attention || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, attention: e.target.value }))} />
               </FormField>
-              <FormField label="Vertical">
-                <TextInput value={detailQuotationDraftForm.vertical || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, vertical: e.target.value }))} />
+              <FormField label="Validity Date">
+                <TextInput type="date" value={detailQuotationDraftForm.validityDate || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, validityDate: e.target.value }))} />
               </FormField>
               <FormField label="Brand">
                 <TextInput value={detailQuotationDraftForm.engine || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, engine: e.target.value }))} />
@@ -5804,6 +5805,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <div><span className="font-medium">Config:</span> {detail.config || "-"}</div>
                 <div><span className="font-medium">ESN:</span> {detail.esn || "-"}</div>
                 <div><span className="font-medium">Currency:</span> {detail.currency || "-"}</div>
+                <div>
+                  <span className="font-medium">Validity Date:</span>{" "}
+                  {detail.validityDate ? new Date(detail.validityDate).toLocaleDateString() : "-"}
+                </div>
               </div>
             </div>
 
@@ -8043,12 +8048,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
               }}
             />
           </FormField>
-          <FormField label="Validity Date">
-            <TextInput
-              type="date"
-              value={form.validityDate}
-              onChange={(e) => setForm((f) => ({ ...f, validityDate: e.target.value }))}
-            />
+          <FormField label="Vertical">
+            <TextInput value={form.vertical || ""} onChange={(e) => setForm((f) => ({ ...f, vertical: e.target.value }))} />
           </FormField>
           <FormField label="Currency">
             <TextInput
@@ -8090,8 +8091,12 @@ ${GLOBAL_REPORT_TABLE_CSS}
               onChange={(e) => setForm((f) => ({ ...f, attention: e.target.value }))}
             />
           </FormField>
-          <FormField label="Vertical">
-            <TextInput value={form.vertical || ""} onChange={(e) => setForm((f) => ({ ...f, vertical: e.target.value }))} />
+          <FormField label="Validity Date">
+            <TextInput
+              type="date"
+              value={form.validityDate}
+              onChange={(e) => setForm((f) => ({ ...f, validityDate: e.target.value }))}
+            />
           </FormField>
           <FormField label="Brand">
             <TextInput value={form.engine} onChange={(e) => setForm((f) => ({ ...f, engine: e.target.value }))} />
