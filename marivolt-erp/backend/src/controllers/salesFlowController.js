@@ -46,6 +46,37 @@ function t(v) {
   return String(v ?? "").trim();
 }
 
+async function resolveTermsForSalesInvoice(req, { proformaId, oaId, quotationId } = {}) {
+  if (proformaId && mongoose.Types.ObjectId.isValid(String(proformaId))) {
+    const pi = await ProformaInvoice.findOne(withCompany(req, { _id: proformaId }))
+      .select("termsAndConditions")
+      .lean();
+    const text = t(pi?.termsAndConditions);
+    if (text) return text;
+  }
+  if (oaId && mongoose.Types.ObjectId.isValid(String(oaId))) {
+    const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: oaId }))
+      .select("termsAndConditions")
+      .lean();
+    const text = t(oa?.termsAndConditions);
+    if (text) return text;
+  }
+  if (quotationId && mongoose.Types.ObjectId.isValid(String(quotationId))) {
+    const q = await Quotation.findOne(withCompany(req, { _id: quotationId }))
+      .select("termsAndConditions")
+      .lean();
+    const text = t(q?.termsAndConditions);
+    if (text) return text;
+  }
+  return "";
+}
+
+async function resolveTermsFromQuotation(req, quotationId) {
+  if (!quotationId || !mongoose.Types.ObjectId.isValid(String(quotationId))) return "";
+  const q = await Quotation.findOne(withCompany(req, { _id: quotationId })).select("termsAndConditions").lean();
+  return t(q?.termsAndConditions);
+}
+
 /**
  * Phase-4 helpers — wrap the per-line stockService calls used by the
  * sales flow controllers. These keep the existing controller code
@@ -1895,6 +1926,10 @@ export async function createOA(req, res) {
       }));
     const totals = computeTotals(lines, body);
     const linkedQtnId = body.linkedQuotationId || body.sourceQuotationId;
+    let termsAndConditions = t(body.termsAndConditions);
+    if (!termsAndConditions && linkedQtnId && mongoose.Types.ObjectId.isValid(String(linkedQtnId))) {
+      termsAndConditions = await resolveTermsFromQuotation(req, linkedQtnId);
+    }
     const sourceMeta = fromWorkingCopy ? buildOaSourceMetadataForPersist(body, req.user) : {};
     const doc = await OrderAcknowledgement.create({
       companyId: req.companyId,
@@ -1910,6 +1945,7 @@ export async function createOA(req, res) {
       customerPORef: String(body.customerPORef || body.customerReference || "").trim(),
       attention: String(body.attention || "").trim(),
       acknowledgementNotes: String(body.acknowledgementNotes || "").trim(),
+      termsAndConditions,
       deliverySchedule: String(body.deliverySchedule || "").trim(),
       paymentTerms: String(body.paymentTerms || "").trim(),
       incoterm: String(body.incoterm || "").trim(),
@@ -1956,6 +1992,7 @@ export async function updateOA(req, res) {
       "customerName",
       "customerPORef",
       "acknowledgementNotes",
+      "termsAndConditions",
       "deliverySchedule",
       "paymentTerms",
       "incoterm",
@@ -2165,6 +2202,7 @@ export async function updateProforma(req, res) {
       "validity",
       "shipmentTerms",
       "remarks",
+      "termsAndConditions",
       "currency",
       "lines",
       "discountType",
@@ -2300,6 +2338,7 @@ export async function convertQuotationToOA(req, res) {
       incoterm: quotation.incoterm || "",
       currency: quotation.currency || "USD",
       acknowledgementNotes: quotation.remarks || "",
+      termsAndConditions: quotation.termsAndConditions || "",
       deliverySchedule: quotation.deliveryTerms || "",
       vertical: quotation.vertical || "",
       engine: quotation.engine || "",
@@ -2360,6 +2399,7 @@ export async function convertQuotationToProforma(req, res) {
       currency,
       bankDetails,
       remarks: quotation.remarks || "",
+      termsAndConditions: quotation.termsAndConditions || "",
       vertical: quotation.vertical || "",
       engine: quotation.engine || "",
       model: quotation.model || "",
@@ -2417,6 +2457,10 @@ export async function convertOAToProforma(req, res) {
     const totals = computeTotals(lines, { ...oa, discountType, discountValue });
     const currency = oa.currency || "USD";
     const bankDetails = (await resolveBankDetailsTextForCurrency(withCompany(req), currency)) || "";
+    let termsAndConditions = t(oa.termsAndConditions);
+    if (!termsAndConditions && oa.linkedQuotationId) {
+      termsAndConditions = await resolveTermsFromQuotation(req, oa.linkedQuotationId);
+    }
     const doc = await ProformaInvoice.create({
       companyId: req.companyId,
       proformaNo,
@@ -2431,6 +2475,7 @@ export async function convertOAToProforma(req, res) {
       currency,
       bankDetails,
       remarks: oa.acknowledgementNotes || "",
+      termsAndConditions,
       vertical: oa.vertical || "",
       engine: oa.engine || "",
       model: oa.model || "",
@@ -2699,6 +2744,13 @@ export async function convertPackingToSalesInvoice(req, res) {
       description: `Post sales invoice from packing ${packingPre.packingNo}`,
     });
     if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
+    const termsAndConditions =
+      t(req.body?.termsAndConditions) ||
+      (await resolveTermsForSalesInvoice(req, {
+        proformaId: allocationPre.linkedProformaId,
+        oaId: allocationPre.linkedOAId,
+        quotationId: allocationPre.linkedQuotationId,
+      }));
     const invoiceNo = await nextUniqueSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
@@ -2758,6 +2810,7 @@ export async function convertPackingToSalesInvoice(req, res) {
             config: allocation.config || "",
             esn: packing.esn || allocation.esn || "",
             remarks: t(req.body?.remarks),
+            termsAndConditions,
             lines,
             ...totals,
             status: "ISSUED",
@@ -2834,6 +2887,7 @@ export async function updateSalesInvoice(req, res) {
       "currency",
       "status",
       "remarks",
+      "termsAndConditions",
       "lines",
       "packingCost",
       "clearanceCost",

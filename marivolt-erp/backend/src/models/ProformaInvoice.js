@@ -32,6 +32,7 @@ const proformaInvoiceSchema = new mongoose.Schema(
     validity: { type: String, default: "" },
     shipmentTerms: { type: String, default: "" },
     remarks: { type: String, default: "" },
+    termsAndConditions: { type: String, default: "" },
     currency: { type: String, default: "USD", trim: true, uppercase: true },
     vertical: { type: String, default: "", trim: true },
     engine: { type: String, default: "", trim: true },

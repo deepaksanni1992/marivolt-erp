@@ -46,6 +46,7 @@ export function defaultOaForm() {
     paymentTerms: "",
     deliverySchedule: "",
     acknowledgementNotes: "",
+    termsAndConditions: "",
     incoterm: "",
     currency: "USD",
     vertical: "",
@@ -105,6 +106,7 @@ function buildOaCreatePayload(form, { allowOverOrder = false, allowStaleConsumpt
     paymentTerms: form.paymentTerms || "",
     deliverySchedule: form.deliverySchedule || "",
     acknowledgementNotes: form.acknowledgementNotes || "",
+    termsAndConditions: form.termsAndConditions || "",
     incoterm: form.incoterm || "",
     currency: form.currency,
     vertical: form.vertical || "",
@@ -616,12 +618,22 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
           </FormField>
         </div>
 
-        <FormField label="Remarks / Terms" className="mt-3">
+        <FormField label="Acknowledgement notes" className="mt-3">
           <textarea
             className="w-full rounded-xl border px-3 py-2 text-sm"
             rows={2}
             value={form.acknowledgementNotes || ""}
             onChange={(e) => setForm((f) => ({ ...f, acknowledgementNotes: e.target.value }))}
+          />
+        </FormField>
+
+        <FormField label="Terms &amp; Conditions (printed on OA PDF)" className="mt-3">
+          <textarea
+            className="min-h-[200px] w-full rounded-xl border px-3 py-2 text-sm leading-relaxed"
+            rows={12}
+            placeholder="Pre-filled from quotation when creating from quote."
+            value={form.termsAndConditions || ""}
+            onChange={(e) => setForm((f) => ({ ...f, termsAndConditions: e.target.value }))}
           />
         </FormField>
 

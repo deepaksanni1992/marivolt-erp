@@ -64,6 +64,7 @@ export const COPY_ROUTE_REGISTRY = {
         deliverySchedule: source.deliveryTerms || "",
         incoterm: source.incoterm || "",
         acknowledgementNotes: source.remarks || "",
+        termsAndConditions: source.termsAndConditions || "",
         currency: String(source.currency || "USD").toUpperCase(),
         vertical: source.vertical || "",
         engine: source.engine || "",

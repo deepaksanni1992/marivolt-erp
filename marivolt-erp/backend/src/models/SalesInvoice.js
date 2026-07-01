@@ -86,6 +86,7 @@ const salesInvoiceSchema = new mongoose.Schema(
     convertedFromRtsAt: { type: Date, default: null },
     convertedFromRtsBy: { type: String, default: "" },
     remarks: { type: String, default: "" },
+    termsAndConditions: { type: String, default: "" },
     createdBy: { type: String, default: "" },
     updatedBy: { type: String, default: "" },
   },

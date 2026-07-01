@@ -44,6 +44,7 @@ const orderAcknowledgementSchema = new mongoose.Schema(
     customerPORef: { type: String, default: "", trim: true },
     customerPODate: { type: Date, default: null },
     acknowledgementNotes: { type: String, default: "" },
+    termsAndConditions: { type: String, default: "" },
     deliverySchedule: { type: String, default: "" },
     paymentTerms: { type: String, default: "" },
     incoterm: { type: String, default: "" },

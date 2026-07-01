@@ -5,9 +5,13 @@ export function quotationPrintTermsText(quotation) {
   return String(quotation?.termsAndConditions || "").trim();
 }
 
+export const documentPrintTermsText = quotationPrintTermsText;
+
 export function quotationHasPrintTerms(quotation) {
   return quotationPrintTermsText(quotation).length > 0;
 }
+
+export const documentHasPrintTerms = quotationHasPrintTerms;
 
 export function buildQuotationPrintHeaderHtml(quotation, company = {}) {
   const q = quotation || {};
@@ -55,6 +59,61 @@ export function buildQuotationPrintHeaderHtml(quotation, company = {}) {
                 </div>
               </div>`
               : `<div class="quote-right company-details">
+                <div><b>${escHtml(company.companyName || "")}</b></div>
+                <div>${escHtml(company.address || "")}</div>
+                <div>${escHtml(company.email || "")}</div>
+                <div>${escHtml(company.phone || "")}</div>
+              </div>`
+          }
+        </div>`;
+}
+
+export function buildOAPrintHeaderHtml(oa, company = {}) {
+  const o = oa || {};
+  const hasCompanyLogo = String(company.logo || "").trim().length > 0;
+  const companyName = String(company.companyName || "").toLowerCase();
+  const {
+    useBrandedLayout,
+    printLogo,
+    companyDisplayName,
+    companySubtitle,
+    reportAddress,
+    reportEmail,
+    reportPhone,
+  } = getReportBranding(companyName);
+  const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "-");
+
+  return `
+        <div class="print-header header">
+          <div class="header-left">
+            ${
+              useBrandedLayout
+                ? `<img src="${printLogo}" alt="${escHtml(companyDisplayName || "Company")} logo" class="logo" />`
+                : hasCompanyLogo
+                  ? `<img src="${escHtml(company.logo)}" alt="${escHtml(company.companyName || "Company")} logo" class="logo" />`
+                  : `<div class="brand-fallback">MV</div>`
+            }
+          </div>
+          <div class="header-center">
+            <div class="title">Order Acknowledgement</div>
+            <div class="muted">
+              <div><b>No:</b> ${escHtml(o.oaNo || "-")}</div>
+              <div><b>Date:</b> ${fmtDate(o.oaDate)}</div>
+              <div><b>Linked Quotation:</b> ${escHtml(o.linkedQuotationNo || "-")}</div>
+            </div>
+          </div>
+          ${
+            useBrandedLayout
+              ? `<div class="header-right is-marivolt">
+                <h1 class="brand-title">${escHtml(companyDisplayName || company.companyName || "")}</h1>
+                ${companySubtitle ? `<div class="brand-subtitle">${escHtml(companySubtitle)}</div>` : ""}
+                <div class="muted" style="margin-top:8px;">
+                  <div>${escHtml(company.address || reportAddress)}</div>
+                  <div>${escHtml(company.email || reportEmail)}</div>
+                  <div>${escHtml(company.phone || reportPhone)}</div>
+                </div>
+              </div>`
+              : `<div class="header-right muted">
                 <div><b>${escHtml(company.companyName || "")}</b></div>
                 <div>${escHtml(company.address || "")}</div>
                 <div>${escHtml(company.email || "")}</div>

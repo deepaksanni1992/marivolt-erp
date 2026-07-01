@@ -28,6 +28,7 @@ import CreateInvoiceFromPackingModal from "../components/sales/CreateInvoiceFrom
 import OaCreateModal from "../components/sales/OaCreateModal.jsx";
 import { deliverReportHtml, downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 import {
+  buildOAPrintHeaderHtml,
   buildQuotationPrintBrandedFooterHtml,
   buildQuotationPrintHeaderHtml,
   buildQuotationTermsContinuationPagesHtml,
@@ -548,6 +549,7 @@ function oaDetailToEditableForm(oa) {
     customerPORef: oa.customerPORef || "",
     customerPODate: pod,
     acknowledgementNotes: oa.acknowledgementNotes || "",
+    termsAndConditions: oa.termsAndConditions || "",
     deliverySchedule: oa.deliverySchedule || "",
     paymentTerms: oa.paymentTerms || "",
     incoterm: oa.incoterm || "",
@@ -635,6 +637,7 @@ function proformaDetailToEditableForm(p) {
     validity: validityStr,
     shipmentTerms: p.shipmentTerms || "",
     remarks: p.remarks || "",
+    termsAndConditions: p.termsAndConditions || "",
     currency: String(p.currency || "USD").toUpperCase(),
     vertical: p.vertical || "",
     engine: p.engine || "",
@@ -700,6 +703,7 @@ function salesInvoiceDetailToEditableForm(inv) {
     esn: inv.esn || "",
     status: inv.status || "DRAFT",
     remarks: inv.remarks || "",
+    termsAndConditions: inv.termsAndConditions || "",
     lines,
   };
 }
@@ -1006,10 +1010,15 @@ function renderOrderAcknowledgementPrintWindow(payload, autoPrint = false) {
   const oa = payload?.orderAcknowledgement || {};
   const company = payload?.company || {};
   const rows = oa.lines || [];
-  const hasCompanyLogo = String(company.logo || "").trim().length > 0;
+  const termsText = quotationPrintTermsText(oa);
+  const hasTerms = quotationHasPrintTerms(oa);
   const companyName = String(company.companyName || "").toLowerCase();
-  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite, reportFooterName, reportFooterSubline } = getReportBranding(companyName);
-  const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "-");
+  const branding = getReportBranding(companyName);
+  const { useBrandedLayout, reportFooterName, reportFooterSubline, reportAddress, reportEmail, reportPhone, reportWebsite } =
+    branding;
+  const headerHtml = buildOAPrintHeaderHtml(oa, company);
+  const brandedFooterHtml = buildQuotationPrintBrandedFooterHtml(branding);
+  const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, brandedFooterHtml);
 
   const html = `
     <html>
@@ -1019,44 +1028,8 @@ function renderOrderAcknowledgementPrintWindow(payload, autoPrint = false) {
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
-      <body class="report-print ${isMarivolt ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
-        <div class="print-header header">
-          <div class="header-left">
-            ${
-              useBrandedLayout
-                ? `<img src="${printLogo}" alt="${companyDisplayName || "Company"} logo" class="logo" />`
-                : hasCompanyLogo
-                ? `<img src="${company.logo}" alt="${company.companyName || "Company"} logo" class="logo" />`
-                : `<div class="brand-fallback">MV</div>`
-            }
-          </div>
-          <div class="header-center">
-            <div class="title">Order Acknowledgement</div>
-            <div class="muted">
-              <div><b>No:</b> ${oa.oaNo || "-"}</div>
-              <div><b>Date:</b> ${fmtDate(oa.oaDate)}</div>
-              <div><b>Linked Quotation:</b> ${oa.linkedQuotationNo || "-"}</div>
-            </div>
-          </div>
-          ${
-            useBrandedLayout
-              ? `<div class="header-right is-marivolt">
-                <h1 class="brand-title">${companyDisplayName || (company.companyName || "")}</h1>
-                ${companySubtitle ? `<div class="brand-subtitle">${companySubtitle}</div>` : ""}
-                <div class="muted" style="margin-top:8px;">
-                  <div>${company.address || reportAddress}</div>
-                  <div>${company.email || reportEmail}</div>
-                  <div>${company.phone || reportPhone}</div>
-                </div>
-              </div>`
-              : `<div class="header-right muted">
-                <div><b>${company.companyName || ""}</b></div>
-                <div>${company.address || ""}</div>
-                <div>${company.email || ""}</div>
-                <div>${company.phone || ""}</div>
-              </div>`
-          }
-        </div>
+      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
+        ${headerHtml}
         <div class="info-grid">
           <div class="info-box muted">
             <div class="info-box-title">Customer &amp; Address Info</div>
@@ -1110,11 +1083,6 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
           <div><span>Tax</span><span>${money(oa.taxTotal)}</span></div>
           <div><b>Grand Total</b><b>${money(oa.grandTotal)} ${oa.currency || ""}</b></div>
         </div>
-        ${
-          isMarivolt
-            ? `<div class="quote-terms">Only Marivolt terms and condition applicable, check here-<a href="https://marivolt.co/about-us">https://marivolt.co/about-us</a></div>`
-            : ""
-        }
         <div class="footer">
           <div class="doc-note">This is a computer generated documents and does not required signature or stamp.</div>
         </div>
@@ -1139,6 +1107,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             : ""
         }
       </div>
+      ${termsPagesHtml}
       </body>
     </html>
   `;
@@ -1167,9 +1136,12 @@ function renderFlowDocPrintWindow({
   autoPrint = false,
 }) {
   const rows = doc?.lines || [];
+  const termsText = quotationPrintTermsText(doc);
+  const hasTerms = quotationHasPrintTerms(doc);
   const hasCompanyLogo = String(company?.logo || company?.logoUrl || "").trim().length > 0;
   const companyName = String(company?.name || company?.companyName || "").toLowerCase();
-  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite, reportFooterName, reportFooterSubline } = getReportBranding(companyName);
+  const branding = getReportBranding(companyName);
+  const { isMarivolt, useBrandedLayout, printLogo, companyDisplayName, companySubtitle, reportAddress, reportEmail, reportPhone, reportWebsite, reportFooterName, reportFooterSubline } = branding;
   const lineTableColgroup = salesInvoiceLayout ? SALES_INVOICE_COLGROUP : SALES_COMMERCIAL_COLGROUP;
   const lineTableHeaderHtml = salesInvoiceLayout
     ? SALES_INVOICE_LINE_TABLE_HEAD
@@ -1322,6 +1294,9 @@ function renderFlowDocPrintWindow({
         isMarivolt,
       })
     : "";
+  const termsHeaderHtml = salesInvoiceLayout ? taxInvoiceQuotationHeader + taxInvoiceGridHtml : flowDocClassicTop;
+  const brandedFooterHtml = buildQuotationPrintBrandedFooterHtml(branding);
+  const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(termsHeaderHtml, termsText, brandedFooterHtml);
   const html = `
     <html>
       <head>
@@ -1330,7 +1305,7 @@ function renderFlowDocPrintWindow({
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
         </style>
       </head>
-      <body class="report-print ${isMarivolt ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
+      <body class="report-print ${hasTerms ? "has-quote-terms" : ""}"><div class="print-page"><div class="print-body">
         ${salesInvoiceLayout ? taxInvoiceQuotationHeader + taxInvoiceGridHtml : flowDocClassicTop}
         <table class="report-table">
           ${lineTableColgroup}
@@ -1361,11 +1336,6 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
               })
             : ""
         }
-        ${
-          isMarivolt
-            ? `<div class="quote-terms">Only Marivolt terms and condition applicable, check here-<a href="https://marivolt.co/about-us">https://marivolt.co/about-us</a></div>`
-            : ""
-        }
         <div class="footer">
           <div class="doc-note">${
             salesInvoiceLayout
@@ -1394,6 +1364,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
             : ""
         }
       </div>
+      ${termsPagesHtml}
       </body>
     </html>
   `;
@@ -6071,6 +6042,15 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   onChange={(e) => setDetailOADraftForm((f) => ({ ...f, acknowledgementNotes: e.target.value }))}
                 />
               </FormField>
+              <FormField label="Terms &amp; Conditions (printed on OA PDF)">
+                <textarea
+                  className="min-h-[240px] w-full rounded-xl border px-3 py-2 text-sm leading-relaxed"
+                  rows={14}
+                  placeholder="Terms copied from quotation on conversion; edit as needed for print."
+                  value={detailOADraftForm.termsAndConditions || ""}
+                  onChange={(e) => setDetailOADraftForm((f) => ({ ...f, termsAndConditions: e.target.value }))}
+                />
+              </FormField>
               <div className="text-xs text-gray-600">
                 {oaDetail.linkedQuotationId && detailOADraftForm.linkedQuotationNo ? (
                   <button
@@ -6424,7 +6404,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   {" "}Vertical: {oaDetail.vertical || "-"} | Brand: {oaDetail.engine || "-"} | Model: {oaDetail.model || "-"} | Config: {oaDetail.config || "-"} | ESN: {oaDetail.esn || "-"}
                 </div>
               )}
-              {(oaDetail.acknowledgementNotes || oaDetail.deliverySchedule) && (
+              {(oaDetail.acknowledgementNotes || oaDetail.deliverySchedule || oaDetail.termsAndConditions?.trim()) && (
                 <div className="rounded-xl border bg-gray-50 p-3 text-xs">
                   {oaDetail.deliverySchedule ? (
                     <div>
@@ -6436,6 +6416,12 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     <div className={oaDetail.deliverySchedule ? "mt-2 whitespace-pre-wrap" : "whitespace-pre-wrap"}>
                       <span className="font-semibold text-gray-500">Notes: </span>
                       {oaDetail.acknowledgementNotes}
+                    </div>
+                  ) : null}
+                  {oaDetail.termsAndConditions?.trim() ? (
+                    <div className="mt-2">
+                      <span className="font-semibold text-gray-500">Terms &amp; Conditions</span>
+                      <pre className="mt-1 whitespace-pre-wrap font-sans text-sm leading-relaxed text-gray-800">{oaDetail.termsAndConditions}</pre>
                     </div>
                   ) : null}
                 </div>
@@ -6683,6 +6669,15 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   rows={3}
                   value={detailProformaDraftForm.remarks || ""}
                   onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, remarks: e.target.value }))}
+                />
+              </FormField>
+              <FormField label="Terms &amp; Conditions (printed on PI PDF)">
+                <textarea
+                  className="min-h-[240px] w-full rounded-xl border px-3 py-2 text-sm leading-relaxed"
+                  rows={14}
+                  placeholder="Terms copied from quotation or OA on conversion; edit as needed for print."
+                  value={detailProformaDraftForm.termsAndConditions || ""}
+                  onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, termsAndConditions: e.target.value }))}
                 />
               </FormField>
               <div className="text-xs text-gray-600">
@@ -6945,7 +6940,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <div className="text-xs text-gray-600">
                 Linked Quotation: {proformaDetail.linkedQuotationNo || "-"} | Linked OA: {proformaDetail.linkedOANo || "-"}
               </div>
-              {(proformaDetail.bankDetails || proformaDetail.shipmentTerms || proformaDetail.remarks) ? (
+              {(proformaDetail.bankDetails || proformaDetail.shipmentTerms || proformaDetail.remarks || proformaDetail.termsAndConditions?.trim()) ? (
                 <div className="rounded-xl border bg-gray-50 p-3 text-xs space-y-2">
                   {proformaDetail.bankDetails ? (
                     <div className="whitespace-pre-wrap">
@@ -6963,6 +6958,12 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     <div className="whitespace-pre-wrap">
                       <span className="font-semibold text-gray-500">Remarks: </span>
                       {proformaDetail.remarks}
+                    </div>
+                  ) : null}
+                  {proformaDetail.termsAndConditions?.trim() ? (
+                    <div>
+                      <span className="font-semibold text-gray-500">Terms &amp; Conditions</span>
+                      <pre className="mt-1 whitespace-pre-wrap font-sans text-sm leading-relaxed text-gray-800">{proformaDetail.termsAndConditions}</pre>
                     </div>
                   ) : null}
                 </div>
@@ -7160,6 +7161,15 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, remarks: e.target.value }))}
                 />
               </FormField>
+              <FormField label="Terms &amp; Conditions (printed on invoice PDF)" className="max-w-4xl">
+                <textarea
+                  className="min-h-[240px] w-full rounded-xl border px-3 py-2 text-sm leading-relaxed"
+                  rows={14}
+                  placeholder="Terms copied from PI/OA/quotation on conversion; edit while draft."
+                  value={detailSalesInvoiceDraftForm.termsAndConditions || ""}
+                  onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, termsAndConditions: e.target.value }))}
+                />
+              </FormField>
               <div className="overflow-x-auto rounded-xl border">
                 <table className="min-w-[980px] w-full text-xs">
                   <thead className="bg-gray-50">
@@ -7239,6 +7249,12 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 </div>
               </div>
               <div className="text-xs text-gray-600">Linked PI: {salesInvoiceDetail.linkedProformaNo || "-"} | Linked OA: {salesInvoiceDetail.linkedOANo || "-"}</div>
+              {salesInvoiceDetail.termsAndConditions?.trim() ? (
+                <div className="rounded-xl border bg-gray-50 p-3 text-xs">
+                  <span className="font-semibold text-gray-500">Terms &amp; Conditions</span>
+                  <pre className="mt-1 whitespace-pre-wrap font-sans text-sm leading-relaxed text-gray-800">{salesInvoiceDetail.termsAndConditions}</pre>
+                </div>
+              ) : null}
               <SalesCustomsInvoicePanel salesInvoice={salesInvoiceDetail} />
               <div className="overflow-x-auto rounded-xl border">
                 <table className="min-w-full text-sm">
