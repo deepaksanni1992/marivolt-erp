@@ -77,6 +77,41 @@ async function resolveTermsFromQuotation(req, quotationId) {
   return t(q?.termsAndConditions);
 }
 
+async function resolveEffectiveTermsAndConditions(req, doc, docKind) {
+  const stored = t(doc?.termsAndConditions);
+  if (stored) return stored;
+
+  if (docKind === "OA") {
+    return resolveTermsFromQuotation(req, doc?.linkedQuotationId);
+  }
+  if (docKind === "PROFORMA") {
+    if (doc?.linkedOAId && mongoose.Types.ObjectId.isValid(String(doc.linkedOAId))) {
+      const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: doc.linkedOAId }))
+        .select("termsAndConditions linkedQuotationId")
+        .lean();
+      const fromOa = t(oa?.termsAndConditions);
+      if (fromOa) return fromOa;
+      const fromQuoteViaOa = await resolveTermsFromQuotation(req, oa?.linkedQuotationId);
+      if (fromQuoteViaOa) return fromQuoteViaOa;
+    }
+    return resolveTermsFromQuotation(req, doc?.linkedQuotationId);
+  }
+  if (docKind === "SALES_INVOICE") {
+    return resolveTermsForSalesInvoice(req, {
+      proformaId: doc?.linkedProformaId,
+      oaId: doc?.linkedOAId,
+      quotationId: doc?.linkedQuotationId,
+    });
+  }
+  return "";
+}
+
+async function withResolvedTermsForPrint(req, doc, docKind) {
+  if (!doc) return doc;
+  const termsAndConditions = await resolveEffectiveTermsAndConditions(req, doc, docKind);
+  return { ...doc, termsAndConditions };
+}
+
 /**
  * Phase-4 helpers — wrap the per-line stockService calls used by the
  * sales flow controllers. These keep the existing controller code
@@ -1834,7 +1869,9 @@ export async function getOA(req, res) {
     if (!doc) return res.status(404).json({ message: "Not found" });
     const [patched] = await applyLinkedQuotationDiscountFallback(req, [doc], { persistModel: OrderAcknowledgement });
     const [enriched] = await enrichOAsWithCancelEligibility(req, [patched || doc]);
-    res.json(enriched || patched || doc);
+    const base = enriched || patched || doc;
+    const resolvedTermsAndConditions = await resolveEffectiveTermsAndConditions(req, base, "OA");
+    res.json({ ...base, resolvedTermsAndConditions });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -1850,8 +1887,9 @@ export async function getOAPrintData(req, res) {
     ]);
     if (!docRaw) return res.status(404).json({ message: "Not found" });
     const [doc] = await applyLinkedQuotationDiscountFallback(req, [docRaw], { persistModel: OrderAcknowledgement });
+    const orderAcknowledgement = await withResolvedTermsForPrint(req, doc, "OA");
     res.json({
-      orderAcknowledgement: doc,
+      orderAcknowledgement,
       company: {
         companyName: company?.name || "",
         code: company?.code || "",
@@ -1868,6 +1906,35 @@ export async function getOAPrintData(req, res) {
 
 export async function getOAPdfData(req, res) {
   return getOAPrintData(req, res);
+}
+
+export async function getProformaPrintData(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const docRaw = await ProformaInvoice.findOne(withCompany(req, { _id: id })).lean();
+    if (!docRaw) return res.status(404).json({ message: "Not found" });
+    const [withPricing] = await applyLinkedQuotationDiscountFallback(req, [docRaw], { persistModel: ProformaInvoice });
+    const [enriched] = await enrichProformasWithPaymentState(req, [withPricing || docRaw]);
+    const proforma = await withResolvedTermsForPrint(req, enriched || withPricing || docRaw, "PROFORMA");
+    res.json({ proforma });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+export async function getSalesInvoicePrintData(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    const docRaw = await SalesInvoice.findOne(withCompany(req, { _id: id })).lean();
+    if (!docRaw) return res.status(404).json({ message: "Not found" });
+    const [enriched] = await enrichSalesInvoicesWithPaymentState(req, [docRaw]);
+    const salesInvoice = await withResolvedTermsForPrint(req, enriched || docRaw, "SALES_INVOICE");
+    res.json({ salesInvoice });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 }
 
 export async function createOA(req, res) {
@@ -2141,7 +2208,9 @@ export async function getProforma(req, res) {
     if (!docRaw) return res.status(404).json({ message: "Not found" });
     const [withPricing] = await applyLinkedQuotationDiscountFallback(req, [docRaw], { persistModel: ProformaInvoice });
     const [enriched] = await enrichProformasWithPaymentState(req, [withPricing || docRaw]);
-    res.json(enriched || withPricing || docRaw);
+    const base = enriched || withPricing || docRaw;
+    const resolvedTermsAndConditions = await resolveEffectiveTermsAndConditions(req, base, "PROFORMA");
+    res.json({ ...base, resolvedTermsAndConditions });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -2600,7 +2669,9 @@ export async function getSalesInvoice(req, res) {
     const doc = await SalesInvoice.findOne(withCompany(req, { _id: id })).lean();
     if (!doc) return res.status(404).json({ message: "Not found" });
     const [enriched] = await enrichSalesInvoicesWithPaymentState(req, [doc]);
-    res.json(enriched);
+    const base = enriched || doc;
+    const resolvedTermsAndConditions = await resolveEffectiveTermsAndConditions(req, base, "SALES_INVOICE");
+    res.json({ ...base, resolvedTermsAndConditions });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

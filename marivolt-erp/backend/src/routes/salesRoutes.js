@@ -66,6 +66,7 @@ router.post(
   flow.recalcAllProformaPaymentStates
 );
 router.get("/proforma-invoices/:id", salesView, flow.getProforma);
+router.get("/proforma-invoices/:id/print", salesExport, flow.getProformaPrintData);
 router.put("/proforma-invoices/:id", salesEdit, flow.updateProforma);
 router.patch("/proforma-invoices/:id/cancel", salesCancel, flow.cancelProforma);
 
@@ -75,6 +76,7 @@ router.get("/sales-invoices/packings/ready", salesView, flow.listPackingsReadyFo
 router.get("/sales-invoices/from-packing/:id", salesView, flow.getPackingInvoicePreview);
 router.post("/sales-invoices/from-packing/:id", salesCreate, flow.convertPackingToSalesInvoice);
 router.get("/sales-invoices/:id", salesView, flow.getSalesInvoice);
+router.get("/sales-invoices/:id/print", salesExport, flow.getSalesInvoicePrintData);
 router.put("/sales-invoices/:id", salesEdit, flow.updateSalesInvoice);
 router.patch("/sales-invoices/:id/cancel", salesCancel, flow.cancelSalesInvoice);
 router.get("/dispatch-status", salesView, storeOutbound.listDispatchStatus);

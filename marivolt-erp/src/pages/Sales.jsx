@@ -714,6 +714,11 @@ function money(n) {
   return Number(n || 0).toFixed(2);
 }
 
+function documentDisplayTerms(doc) {
+  if (!doc) return "";
+  return String(doc.termsAndConditions || doc.resolvedTermsAndConditions || "").trim();
+}
+
 function statusBadgeClass(status = "") {
   const key = String(status).toUpperCase();
   if (["APPROVED", "PAID", "CLOSED", "CONFIRMED", "CONVERTED", "ISSUED", "SHIPPED"].includes(key)) {
@@ -2013,7 +2018,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
         return;
       }
       if (type === "proforma") {
-        const doc = await apiGet(`/sales/proforma-invoices/${id}`);
+        const payload = await apiGet(`/sales/proforma-invoices/${id}/print`);
+        const doc = payload?.proforma;
         const bankDetail = await fetchBankDetailForCurrency(doc?.currency);
         const amountInWords = formatInvoiceAmountInWords(doc?.grandTotal, doc?.currency);
         renderFlowDocPrintWindow({
@@ -2034,7 +2040,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
         return;
       }
       if (type === "sales-invoice") {
-        const doc = await apiGet(`/sales/sales-invoices/${id}`);
+        const payload = await apiGet(`/sales/sales-invoices/${id}/print`);
+        const doc = payload?.salesInvoice;
         const bankDetail = await fetchBankDetailForCurrency(doc?.currency);
         const amountInWords = formatInvoiceAmountInWords(doc?.grandTotal, doc?.currency);
         renderFlowDocPrintWindow({
@@ -2315,7 +2322,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
       setDetailOADraftForm(null);
       return;
     }
-    setDetailOADraftForm(oaDetailToEditableForm(oaDetail));
+    setDetailOADraftForm({
+      ...oaDetailToEditableForm(oaDetail),
+      termsAndConditions: oaDetail.termsAndConditions || oaDetail.resolvedTermsAndConditions || "",
+    });
   }, [activeTab, detailId, oaDetail]);
 
   const putProformaMutation = useMutation({
@@ -2348,10 +2358,16 @@ ${GLOBAL_REPORT_TABLE_CSS}
         if (cancelled) return;
         setDetailProformaDraftForm({
           ...base,
+          termsAndConditions: proformaDetail.termsAndConditions || proformaDetail.resolvedTermsAndConditions || "",
           ...(bankDetails ? { bankDetails } : {}),
         });
       } catch {
-        if (!cancelled) setDetailProformaDraftForm(base);
+        if (!cancelled) {
+          setDetailProformaDraftForm({
+            ...base,
+            termsAndConditions: proformaDetail.termsAndConditions || proformaDetail.resolvedTermsAndConditions || "",
+          });
+        }
       }
     })();
     return () => {
@@ -2381,7 +2397,11 @@ ${GLOBAL_REPORT_TABLE_CSS}
       setDetailSalesInvoiceDraftForm(null);
       return;
     }
-    setDetailSalesInvoiceDraftForm(salesInvoiceDetailToEditableForm(salesInvoiceDetail));
+    setDetailSalesInvoiceDraftForm({
+      ...salesInvoiceDetailToEditableForm(salesInvoiceDetail),
+      termsAndConditions:
+        salesInvoiceDetail.termsAndConditions || salesInvoiceDetail.resolvedTermsAndConditions || "",
+    });
   }, [activeTab, detailId, salesInvoiceDetail]);
 
   const [customerForm, setCustomerForm] = useState({
@@ -6404,7 +6424,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   {" "}Vertical: {oaDetail.vertical || "-"} | Brand: {oaDetail.engine || "-"} | Model: {oaDetail.model || "-"} | Config: {oaDetail.config || "-"} | ESN: {oaDetail.esn || "-"}
                 </div>
               )}
-              {(oaDetail.acknowledgementNotes || oaDetail.deliverySchedule || oaDetail.termsAndConditions?.trim()) && (
+              {(oaDetail.acknowledgementNotes || oaDetail.deliverySchedule || documentDisplayTerms(oaDetail)) && (
                 <div className="rounded-xl border bg-gray-50 p-3 text-xs">
                   {oaDetail.deliverySchedule ? (
                     <div>
@@ -6418,10 +6438,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
                       {oaDetail.acknowledgementNotes}
                     </div>
                   ) : null}
-                  {oaDetail.termsAndConditions?.trim() ? (
+                  {documentDisplayTerms(oaDetail) ? (
                     <div className="mt-2">
                       <span className="font-semibold text-gray-500">Terms &amp; Conditions</span>
-                      <pre className="mt-1 whitespace-pre-wrap font-sans text-sm leading-relaxed text-gray-800">{oaDetail.termsAndConditions}</pre>
+                      <pre className="mt-1 whitespace-pre-wrap font-sans text-sm leading-relaxed text-gray-800">{documentDisplayTerms(oaDetail)}</pre>
                     </div>
                   ) : null}
                 </div>
@@ -6940,7 +6960,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <div className="text-xs text-gray-600">
                 Linked Quotation: {proformaDetail.linkedQuotationNo || "-"} | Linked OA: {proformaDetail.linkedOANo || "-"}
               </div>
-              {(proformaDetail.bankDetails || proformaDetail.shipmentTerms || proformaDetail.remarks || proformaDetail.termsAndConditions?.trim()) ? (
+              {(proformaDetail.bankDetails || proformaDetail.shipmentTerms || proformaDetail.remarks || documentDisplayTerms(proformaDetail)) ? (
                 <div className="rounded-xl border bg-gray-50 p-3 text-xs space-y-2">
                   {proformaDetail.bankDetails ? (
                     <div className="whitespace-pre-wrap">
@@ -6960,10 +6980,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
                       {proformaDetail.remarks}
                     </div>
                   ) : null}
-                  {proformaDetail.termsAndConditions?.trim() ? (
+                  {documentDisplayTerms(proformaDetail) ? (
                     <div>
                       <span className="font-semibold text-gray-500">Terms &amp; Conditions</span>
-                      <pre className="mt-1 whitespace-pre-wrap font-sans text-sm leading-relaxed text-gray-800">{proformaDetail.termsAndConditions}</pre>
+                      <pre className="mt-1 whitespace-pre-wrap font-sans text-sm leading-relaxed text-gray-800">{documentDisplayTerms(proformaDetail)}</pre>
                     </div>
                   ) : null}
                 </div>
@@ -7249,10 +7269,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 </div>
               </div>
               <div className="text-xs text-gray-600">Linked PI: {salesInvoiceDetail.linkedProformaNo || "-"} | Linked OA: {salesInvoiceDetail.linkedOANo || "-"}</div>
-              {salesInvoiceDetail.termsAndConditions?.trim() ? (
+              {documentDisplayTerms(salesInvoiceDetail) ? (
                 <div className="rounded-xl border bg-gray-50 p-3 text-xs">
                   <span className="font-semibold text-gray-500">Terms &amp; Conditions</span>
-                  <pre className="mt-1 whitespace-pre-wrap font-sans text-sm leading-relaxed text-gray-800">{salesInvoiceDetail.termsAndConditions}</pre>
+                  <pre className="mt-1 whitespace-pre-wrap font-sans text-sm leading-relaxed text-gray-800">{documentDisplayTerms(salesInvoiceDetail)}</pre>
                 </div>
               ) : null}
               <SalesCustomsInvoicePanel salesInvoice={salesInvoiceDetail} />
