@@ -16,7 +16,7 @@ import Customer from "../models/Customer.js";
 import Company from "../models/Company.js";
 import Item from "../models/Item.js";
 import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
-import { nextSalesDocNumber, nextUniqueSalesDocNumber } from "../utils/salesDocNumber.js";
+import { nextSalesDocNumber, nextUniqueSalesDocNumber, assertUniqueSalesDocNumberForUpdate } from "../utils/salesDocNumber.js";
 import { formatDuplicateKeyError } from "../utils/mongoErrors.js";
 import * as stockService from "../services/stockService.js";
 import {
@@ -1969,9 +1969,24 @@ export async function updateOA(req, res) {
       "model",
       "config",
       "esn",
+      "linkedQuotationNo",
+      "sourceDocumentNumber",
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
+    }
+    if (req.body.oaNo !== undefined) {
+      try {
+        doc.oaNo = await assertUniqueSalesDocNumberForUpdate({
+          companyId: req.companyId,
+          model: OrderAcknowledgement,
+          field: "oaNo",
+          value: req.body.oaNo,
+          excludeId: doc._id,
+        });
+      } catch (numErr) {
+        return res.status(numErr.statusCode || 400).json({ message: numErr.message });
+      }
     }
     if (req.body.customerPODate !== undefined) {
       const raw = req.body.customerPODate;
@@ -2161,9 +2176,24 @@ export async function updateProforma(req, res) {
       "model",
       "config",
       "esn",
+      "linkedQuotationNo",
+      "linkedOANo",
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
+    }
+    if (req.body.proformaNo !== undefined) {
+      try {
+        doc.proformaNo = await assertUniqueSalesDocNumberForUpdate({
+          companyId: req.companyId,
+          model: ProformaInvoice,
+          field: "proformaNo",
+          value: req.body.proformaNo,
+          excludeId: doc._id,
+        });
+      } catch (numErr) {
+        return res.status(numErr.statusCode || 400).json({ message: numErr.message });
+      }
     }
     const newCurrency = String(doc.currency || "USD").trim().toUpperCase();
     if (newCurrency !== previousCurrency) {

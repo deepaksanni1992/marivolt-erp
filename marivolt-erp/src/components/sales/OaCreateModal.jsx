@@ -37,6 +37,7 @@ export function defaultOaForm() {
     oaSourceType: "BLANK",
     sourceQuotationId: "",
     sourceQuotationNo: "",
+    oaNo: "",
     oaDate: new Date().toISOString().slice(0, 10),
     customerName: "",
     customerReference: "",
@@ -96,6 +97,7 @@ function buildOaCreatePayload(form, { allowOverOrder = false, allowStaleConsumpt
     consumptionBaseline: form.consumptionBaseline,
     allowOverOrder: allowOverOrder === true,
     allowStaleConsumption: allowStaleConsumption === true,
+    oaNo: String(form.oaNo || "").trim() || undefined,
     oaDate: form.oaDate,
     customerName: form.customerName,
     customerPORef: form.customerReference || form.customerPORef || "",
@@ -522,6 +524,19 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
         ) : null}
 
         <div className="mt-4 grid gap-3 sm:grid-cols-4">
+          <FormField label="OA No">
+            <TextInput
+              value={form.oaNo || ""}
+              onChange={(e) => setForm((f) => ({ ...f, oaNo: e.target.value }))}
+              placeholder="Leave blank for auto number"
+            />
+          </FormField>
+          <FormField label="Linked Quotation No">
+            <TextInput
+              value={form.sourceQuotationNo || ""}
+              onChange={(e) => setForm((f) => ({ ...f, sourceQuotationNo: e.target.value }))}
+            />
+          </FormField>
           <FormField label="OA Date">
             <TextInput type="date" value={form.oaDate} onChange={(e) => setForm((f) => ({ ...f, oaDate: e.target.value }))} />
           </FormField>

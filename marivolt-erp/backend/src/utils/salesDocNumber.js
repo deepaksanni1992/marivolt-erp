@@ -66,3 +66,21 @@ export async function nextUniqueSalesDocNumber({
   }
   throw new Error(`Unable to allocate a unique ${docKey} number after ${maxAttempts} attempts`);
 }
+
+/** Validate manual document number change on update (company-scoped uniqueness). */
+export async function assertUniqueSalesDocNumberForUpdate({ companyId, model, field, value, excludeId }) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) {
+    const err = new Error(`${field} is required`);
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!excludeId) return trimmed;
+  const exists = await model.exists({ companyId, [field]: trimmed, _id: { $ne: excludeId } });
+  if (exists) {
+    const err = new Error(`Document number "${trimmed}" is already in use`);
+    err.statusCode = 409;
+    throw err;
+  }
+  return trimmed;
+}

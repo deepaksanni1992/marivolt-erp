@@ -541,6 +541,9 @@ function oaDetailToEditableForm(oa) {
       : "";
   const oad = oa.oaDate ? new Date(oa.oaDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
   return {
+    oaNo: oa.oaNo || "",
+    linkedQuotationNo: oa.linkedQuotationNo || "",
+    sourceDocumentNumber: oa.sourceDocumentNumber || "",
     customerName: oa.customerName || "",
     customerPORef: oa.customerPORef || "",
     customerPODate: pod,
@@ -622,6 +625,9 @@ function proformaDetailToEditableForm(p) {
         ? legacyDiscountTotal
         : 0;
   return {
+    proformaNo: p.proformaNo || "",
+    linkedQuotationNo: p.linkedQuotationNo || "",
+    linkedOANo: p.linkedOANo || "",
     proformaDate: pd,
     customerName: p.customerName || "",
     paymentTerms: p.paymentTerms || "",
@@ -5953,7 +5959,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
               </div>
               <div className="grid gap-3 sm:grid-cols-4">
                 <FormField label="OA No">
-                  <TextInput value={oaDetail.oaNo || ""} disabled className="bg-gray-50" />
+                  <TextInput
+                    value={detailOADraftForm.oaNo || ""}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, oaNo: e.target.value }))}
+                  />
                 </FormField>
                 <FormField label="OA Date">
                   <TextInput
@@ -6041,6 +6050,18 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     onChange={(e) => setDetailOADraftForm((f) => ({ ...f, esn: e.target.value }))}
                   />
                 </FormField>
+                <FormField label="Linked Quotation No">
+                  <TextInput
+                    value={detailOADraftForm.linkedQuotationNo || ""}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, linkedQuotationNo: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Source document ref">
+                  <TextInput
+                    value={detailOADraftForm.sourceDocumentNumber || ""}
+                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, sourceDocumentNumber: e.target.value }))}
+                  />
+                </FormField>
               </div>
               <FormField label="Acknowledgement notes">
                 <textarea
@@ -6051,22 +6072,19 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 />
               </FormField>
               <div className="text-xs text-gray-600">
-                Source Quotation:{" "}
-                {oaDetail.linkedQuotationId && oaDetail.linkedQuotationNo ? (
+                {oaDetail.linkedQuotationId && detailOADraftForm.linkedQuotationNo ? (
                   <button
                     type="button"
                     className="font-mono text-sky-700 underline"
                     onClick={() => openLinkedQuotation(oaDetail.linkedQuotationId)}
                   >
-                    {oaDetail.linkedQuotationNo}
+                    Open linked quotation {detailOADraftForm.linkedQuotationNo}
                   </button>
-                ) : (
-                  oaDetail.linkedQuotationNo || oaDetail.sourceDocumentNumber || "-"
-                )}
+                ) : null}
               </div>
               {(oaDetail.sourceDocumentNumber || oaDetail.copiedBy) && (
                 <div className="text-xs text-gray-500">
-                  Snapshot: {oaDetail.sourceDocumentType || "QUOTATION"} {oaDetail.sourceDocumentNumber || ""}
+                  Snapshot: {oaDetail.sourceDocumentType || "QUOTATION"} {detailOADraftForm.sourceDocumentNumber || oaDetail.sourceDocumentNumber || ""}
                   {oaDetail.copiedBy ? ` · copied by ${oaDetail.copiedBy}` : ""}
                   {oaDetail.copiedAt ? ` · ${new Date(oaDetail.copiedAt).toISOString().slice(0, 10)}` : ""}
                 </div>
@@ -6522,7 +6540,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
               </div>
               <div className="grid gap-3 sm:grid-cols-4">
                 <FormField label="PI No">
-                  <TextInput value={proformaDetail.proformaNo || ""} disabled className="bg-gray-50" />
+                  <TextInput
+                    value={detailProformaDraftForm.proformaNo || ""}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, proformaNo: e.target.value }))}
+                  />
                 </FormField>
                 <FormField label="PI Date">
                   <TextInput
@@ -6592,6 +6613,18 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   <TextInput
                     value={detailProformaDraftForm.esn || ""}
                     onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, esn: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Linked Quotation No">
+                  <TextInput
+                    value={detailProformaDraftForm.linkedQuotationNo || ""}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, linkedQuotationNo: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Linked OA No">
+                  <TextInput
+                    value={detailProformaDraftForm.linkedOANo || ""}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, linkedOANo: e.target.value }))}
                   />
                 </FormField>
                 <FormField label="Packing Cost">
