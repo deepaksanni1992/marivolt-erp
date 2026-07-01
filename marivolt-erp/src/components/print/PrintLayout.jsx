@@ -30,6 +30,6 @@ export function PrintFooter({ children, className = "" }) {
 export function PrintTermsSection({ children, className = "" }) {
   if (!children) return null;
   return (
-    <section className={`print-terms-section print-keep-together ${className}`.trim()}>{children}</section>
+    <section className={`print-terms-section ${className}`.trim()}>{children}</section>
   );
 }

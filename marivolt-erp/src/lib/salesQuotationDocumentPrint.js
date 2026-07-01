@@ -5,7 +5,7 @@ import { getReportBranding } from "./reportBranding.js";
 export { buildPrintTermsSectionHtml, PRINT_DOC_NOTE_HTML };
 
 export function quotationPrintTermsText(quotation) {
-  return String(quotation?.termsAndConditions || "").trim();
+  return String(quotation?.termsAndConditions || quotation?.resolvedTermsAndConditions || "").trim();
 }
 
 export const documentPrintTermsText = quotationPrintTermsText;

@@ -9,6 +9,9 @@ function escHtml(v) {
 /**
  * Reusable print shell: fixed header + flowing content + fixed footer on every printed page.
  * Used by all ERP printable documents (HTML string builders and PrintLayout React components).
+ *
+ * Per-page top/bottom space uses named @page margins so content on page 2+ is not hidden
+ * under the fixed header (padding on the content slot only applies to the first page).
  */
 export const PRINT_DOCUMENT_LAYOUT_CSS = `
   .print-layout {
@@ -39,8 +42,40 @@ export const PRINT_DOCUMENT_LAYOUT_CSS = `
     }
   }
 
+  /* Default paper — preserve existing A4 format */
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+
+  /* Branded documents: reserve header/footer band on every printed page */
+  @page document-branded {
+    size: A4;
+    margin-top: 42mm;
+    margin-right: 12mm;
+    margin-bottom: 26mm;
+    margin-left: 12mm;
+  }
+
+  /* Wide export PDF (420mm) — same header/footer bands, existing export paper size */
+  @page document-branded-wide {
+    size: 420mm 297mm;
+    margin-top: 42mm;
+    margin-right: 8mm;
+    margin-bottom: 26mm;
+    margin-left: 8mm;
+  }
+
   /* Print: header and footer repeat on every page; only content flows */
   @media print {
+    .print-layout.has-print-header {
+      page: document-branded;
+    }
+
+    body.pdf-export-page .print-layout.has-print-header {
+      page: document-branded-wide;
+    }
+
     .print-layout-header-slot {
       position: fixed;
       top: 0;
@@ -49,6 +84,7 @@ export const PRINT_DOCUMENT_LAYOUT_CSS = `
       z-index: 1000;
       background: #fff;
     }
+
     .print-layout.has-print-footer .print-layout-footer-slot {
       position: fixed;
       bottom: 0;
@@ -56,18 +92,41 @@ export const PRINT_DOCUMENT_LAYOUT_CSS = `
       right: 0;
       z-index: 1000;
       background: #fff;
+      break-inside: avoid;
+      page-break-inside: avoid;
     }
-    .print-layout.has-print-header .print-layout-content-slot {
-      padding-top: var(--print-header-height, 132px);
-    }
+
+    /* @page margins reserve space on every page — no single-page padding hack */
+    .print-layout.has-print-header .print-layout-content-slot,
     .print-layout.has-print-footer .print-layout-content-slot {
-      padding-bottom: var(--print-footer-height, 88px);
+      padding-top: 0;
+      padding-bottom: 0;
+    }
+
+    .print-layout-content-slot table thead {
+      display: table-header-group;
+    }
+
+    .print-layout-content-slot table tfoot {
+      display: table-footer-group;
+    }
+
+    .print-layout-content-slot table tr {
+      break-inside: avoid;
+      page-break-inside: avoid;
     }
   }
 
   .print-terms-section {
     break-before: page;
     page-break-before: always;
+    break-inside: auto;
+    page-break-inside: auto;
+  }
+
+  .print-terms-section .quote-terms-full {
+    break-inside: auto;
+    page-break-inside: auto;
   }
 
   .print-keep-together,
@@ -90,7 +149,7 @@ export function buildPrintTermsSectionHtml(termsText, docNoteHtml = "") {
   const terms = String(termsText || "").trim();
   if (!terms) return "";
   return `
-    <section class="print-terms-section print-keep-together">
+    <section class="print-terms-section">
       <div class="quote-terms-heading">Terms &amp; Conditions</div>
       <div class="quote-terms quote-terms-full">${escHtml(terms)}</div>
       ${docNoteHtml || ""}

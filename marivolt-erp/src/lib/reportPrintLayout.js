@@ -68,10 +68,6 @@ ${PRINT_DOCUMENT_LAYOUT_CSS}
   }
 
   @media print {
-    @page {
-      margin: 12mm;
-    }
-
     html,
     body {
       height: auto !important;
