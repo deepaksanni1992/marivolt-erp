@@ -5747,6 +5747,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <thead className="bg-gray-100">
                   <tr>
                     <th className="px-3 py-2 text-left">S/N</th>
+                    <th className="px-3 py-2 text-left">Article</th>
                     <th className="px-3 py-2 text-left">Part no</th>
                     <th className="px-3 py-2 text-left">Description</th>
                     <th className="px-3 py-2 text-left">UOM</th>
@@ -5761,6 +5762,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   {detail.lines?.map((line) => (
                     <tr key={line._id} className="border-t">
                       <td className="px-3 py-2">{line.serialNo}</td>
+                      <td className="px-3 py-2">{line.article || "-"}</td>
                       <td className="px-3 py-2">{line.partNumber}</td>
                       <td className="px-3 py-2">{line.description}</td>
                       <td className="px-3 py-2">{line.uom}</td>
