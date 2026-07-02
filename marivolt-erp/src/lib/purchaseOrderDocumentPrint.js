@@ -1,17 +1,8 @@
 import { getReportBranding } from "./reportBranding.js";
 import { downloadSearchableReportPdf } from "./reportPdfClient.js";
+import { calcPoTotalsFromDoc } from "./poTotals.js";
 import { PDF_OPTS_ITEM_LINES, PO_LINE_COLGROUP, PO_LINE_TABLE_HEAD } from "./reportTableLayout.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
-
-function poHeaderCost(value) {
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 0 ? n : 0;
-}
-
-function calcPoGrandTotal(subTotal, packingCost = 0, handlingCost = 0, miscellaneousCost = 0) {
-  const sub = Number(subTotal) || 0;
-  return sub + poHeaderCost(packingCost) + poHeaderCost(handlingCost) + poHeaderCost(miscellaneousCost);
-}
 
 /** Supplier-facing part reference only (no internal article / SPN). */
 export function supplierPartNumberForPrint(line) {
@@ -54,17 +45,8 @@ function formatPoDateLocale(val) {
  */
 export function buildPurchaseOrderDocumentHtml(doc, company = null) {
   const lines = Array.isArray(doc?.lines) ? doc.lines : [];
-  const subTotal =
-    doc.subTotal != null
-      ? Number(doc.subTotal)
-      : lines.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0), 0);
-  const packingCost = poHeaderCost(doc.packingCost);
-  const handlingCost = poHeaderCost(doc.handlingCost);
-  const miscellaneousCost = poHeaderCost(doc.miscellaneousCost);
-  const grand =
-    doc.grandTotal != null
-      ? Number(doc.grandTotal)
-      : calcPoGrandTotal(subTotal, packingCost, handlingCost, miscellaneousCost);
+  const { subTotal, discountTotal, packingCost, handlingCost, miscellaneousCost, grandTotal: grand } =
+    calcPoTotalsFromDoc(doc);
   const cur = escapeHtml(doc.currency || "USD");
 
   const buyer = {
@@ -315,6 +297,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
       <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Packing cost</span><span style="font-weight:600;color:#111">${cur} ${packingCost.toFixed(2)}</span></div>
       <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Handling cost</span><span style="font-weight:600;color:#111">${cur} ${handlingCost.toFixed(2)}</span></div>
       <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Miscellaneous cost</span><span style="font-weight:600;color:#111">${cur} ${miscellaneousCost.toFixed(2)}</span></div>
+      <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Discount</span><span style="font-weight:600;color:#111">${cur} ${discountTotal.toFixed(2)}</span></div>
       <div style="display:flex;justify-content:space-between;padding-top:8px;border-top:1px solid #e5e7eb;font-size:16px;font-weight:700;color:#1f3a5f"><span>Grand total</span><span>${cur} ${grand.toFixed(2)}</span></div>
     </div>
   </div>

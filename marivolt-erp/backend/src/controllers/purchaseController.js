@@ -15,7 +15,7 @@ import { writeAudit, writeStatusChange } from "../services/auditService.js";
 import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentController.js";
 import { nextGrnNo } from "../services/grnNumberService.js";
 import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js";
-import { calcPoGrandTotal, poHeaderCost } from "../utils/poTotals.js";
+import { calcPoDiscountTotal, calcPoGrandTotal, poHeaderCost } from "../utils/poTotals.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -135,10 +135,21 @@ function recalcPoTotals(doc) {
     sub += line.lineTotal;
   }
   doc.subTotal = sub;
+  const discountType = String(doc.discountType || "NONE").toUpperCase();
+  const discountValue = Math.max(0, Number(doc.discountValue) || 0);
+  doc.discountType = ["PERCENT", "FLAT"].includes(discountType) ? discountType : "NONE";
+  doc.discountValue = discountValue;
+  doc.discountTotal = calcPoDiscountTotal(sub, doc.discountType, doc.discountValue);
   doc.packingCost = poHeaderCost(doc.packingCost);
   doc.handlingCost = poHeaderCost(doc.handlingCost);
   doc.miscellaneousCost = poHeaderCost(doc.miscellaneousCost);
-  doc.grandTotal = calcPoGrandTotal(sub, doc.packingCost, doc.handlingCost, doc.miscellaneousCost);
+  doc.grandTotal = calcPoGrandTotal(
+    sub,
+    doc.packingCost,
+    doc.handlingCost,
+    doc.miscellaneousCost,
+    doc.discountTotal
+  );
 }
 
 async function resolveSupplierSnapshot(req, body = {}) {
@@ -367,6 +378,8 @@ export async function updatePurchaseOrder(req, res) {
       "packingCost",
       "handlingCost",
       "miscellaneousCost",
+      "discountType",
+      "discountValue",
       "showMaterialCodeOnPrint",
       "showMachineDetailsOnPrint",
     ];

@@ -13,7 +13,7 @@ import {
   supplierPartNumberForPrint,
   materialCodeForPrint,
 } from "../lib/purchaseOrderDocumentPrint.js";
-import { calcPoGrandTotal, calcPoTotalsFromDoc, poHeaderCost, supplierPartNumberDisplay } from "../lib/poTotals.js";
+import { calcPoTotalsFromDoc, calcPoTotalsPreview, poHeaderCost, supplierPartNumberDisplay } from "../lib/poTotals.js";
 import {
   COMMERCIAL_DEFAULTS,
   DEFAULT_CLOSING_NOTE,
@@ -89,6 +89,8 @@ function initialPoForm(company) {
     packingCost: 0,
     handlingCost: 0,
     miscellaneousCost: 0,
+    discountType: "NONE",
+    discountValue: 0,
     showMaterialCodeOnPrint: false,
     showMachineDetailsOnPrint: false,
     lines: [defaultLine()],
@@ -178,6 +180,8 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
     packingCost: poHeaderCost(form.packingCost),
     handlingCost: poHeaderCost(form.handlingCost),
     miscellaneousCost: poHeaderCost(form.miscellaneousCost),
+    discountType: form.discountType || "NONE",
+    discountValue: Math.max(0, Number(form.discountValue) || 0),
     showMaterialCodeOnPrint: !!form.showMaterialCodeOnPrint,
     showMachineDetailsOnPrint: !!form.showMachineDetailsOnPrint,
     lines,
@@ -270,6 +274,8 @@ function purchaseOrderApiToForm(po) {
     packingCost: poHeaderCost(po.packingCost),
     handlingCost: poHeaderCost(po.handlingCost),
     miscellaneousCost: poHeaderCost(po.miscellaneousCost),
+    discountType: po.discountType || "NONE",
+    discountValue: Math.max(0, Number(po.discountValue) || 0),
     showMaterialCodeOnPrint: !!po.showMaterialCodeOnPrint,
     showMachineDetailsOnPrint: !!po.showMachineDetailsOnPrint,
     lines,
@@ -469,7 +475,7 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
   const lines = doc.lines || [];
   const showMaterialCode = supplierFacing ? !!doc.showMaterialCodeOnPrint : true;
   const showMachineDetails = supplierFacing ? !!doc.showMachineDetailsOnPrint : true;
-  const { subTotal, packingCost, handlingCost, miscellaneousCost, grandTotal: grand } =
+  const { subTotal, discountTotal, packingCost, handlingCost, miscellaneousCost, grandTotal: grand } =
     calcPoTotalsFromDoc(doc);
   const cur = doc.currency || "USD";
   const buyer = {
@@ -799,6 +805,10 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
               <span>Miscellaneous cost</span>
               <span className="font-semibold text-[#111827]">{cur} {miscellaneousCost.toFixed(2)}</span>
             </div>
+            <div className="flex justify-between text-[#4b5563]">
+              <span>Discount</span>
+              <span className="font-semibold text-[#111827]">{cur} {discountTotal.toFixed(2)}</span>
+            </div>
             <div className="flex justify-between border-t border-[#e5e7eb] pt-1 text-base font-bold text-[#1f3a5f]">
               <span>Grand total</span>
               <span>
@@ -1101,22 +1111,14 @@ export default function Purchase({ procurementEmbed = false } = {}) {
     deletePoMutation.mutate(detail._id);
   }
 
-  const poPreviewTotals = useMemo(() => {
-    const sub = form.lines.reduce(
-      (s, l) => s + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0),
-      0
-    );
-    const packingCost = poHeaderCost(form.packingCost);
-    const handlingCost = poHeaderCost(form.handlingCost);
-    const miscellaneousCost = poHeaderCost(form.miscellaneousCost);
-    return {
-      subTotal: sub,
-      packingCost,
-      handlingCost,
-      miscellaneousCost,
-      grandTotal: calcPoGrandTotal(sub, packingCost, handlingCost, miscellaneousCost),
-    };
-  }, [form.lines, form.packingCost, form.handlingCost, form.miscellaneousCost]);
+  const poPreviewTotals = useMemo(() => calcPoTotalsPreview(form), [
+    form.lines,
+    form.packingCost,
+    form.handlingCost,
+    form.miscellaneousCost,
+    form.discountType,
+    form.discountValue,
+  ]);
 
   function applySupplierMasterDefaults(name) {
     const n = name.trim().toLowerCase();
@@ -1334,6 +1336,9 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       orderDate: form.orderDate,
       lines: form.lines,
       subTotal: poPreviewTotals.subTotal,
+      discountType: form.discountType || "NONE",
+      discountValue: form.discountValue ?? 0,
+      discountTotal: poPreviewTotals.discountTotal,
       packingCost: poPreviewTotals.packingCost,
       handlingCost: poPreviewTotals.handlingCost,
       miscellaneousCost: poPreviewTotals.miscellaneousCost,
@@ -2422,6 +2427,10 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                       <span>Miscellaneous cost</span>
                       <span>{detail.currency} {t.miscellaneousCost.toFixed(2)}</span>
                     </div>
+                    <div className="flex w-full max-w-xs justify-between tabular-nums text-gray-600">
+                      <span>Discount</span>
+                      <span>{detail.currency} {t.discountTotal.toFixed(2)}</span>
+                    </div>
                     <div className="flex w-full max-w-xs justify-between border-t border-gray-200 pt-1 text-base font-bold tabular-nums">
                       <span>Grand total</span>
                       <span>{detail.currency} {t.grandTotal.toFixed(2)}</span>
@@ -3078,7 +3087,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                 {form.currency} {poPreviewTotals.subTotal.toFixed(2)}
               </span>
             </div>
-            <div className="grid w-full max-w-md gap-2 sm:grid-cols-3">
+            <div className="grid w-full max-w-2xl gap-2 sm:grid-cols-2 lg:grid-cols-5">
               <FormField label="Packing cost">
                 <TextInput type="number" min={0} step="0.01" value={form.packingCost ?? 0} onChange={(e) => setForm((f) => ({ ...f, packingCost: Number(e.target.value) || 0 }))} />
               </FormField>
@@ -3088,6 +3097,30 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               <FormField label="Miscellaneous cost">
                 <TextInput type="number" min={0} step="0.01" value={form.miscellaneousCost ?? 0} onChange={(e) => setForm((f) => ({ ...f, miscellaneousCost: Number(e.target.value) || 0 }))} />
               </FormField>
+              <FormField label="Discount Type">
+                <select
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                  value={form.discountType || "NONE"}
+                  onChange={(e) => setForm((f) => ({ ...f, discountType: e.target.value }))}
+                >
+                  <option value="NONE">None</option>
+                  <option value="PERCENT">Percentage (%)</option>
+                  <option value="FLAT">Flat amount</option>
+                </select>
+              </FormField>
+              <FormField label={form.discountType === "PERCENT" ? "Discount %" : "Discount Amount"}>
+                <TextInput
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={form.discountValue ?? 0}
+                  onChange={(e) => setForm((f) => ({ ...f, discountValue: Number(e.target.value) || 0 }))}
+                />
+              </FormField>
+            </div>
+            <div className="flex w-full max-w-xs justify-between tabular-nums text-gray-600">
+              <span>Discount</span>
+              <span>{form.currency} {poPreviewTotals.discountTotal.toFixed(2)}</span>
             </div>
             <div className="flex w-full max-w-xs justify-between border-t border-gray-200 pt-1 text-base font-bold tabular-nums">
               <span>Grand total</span>
