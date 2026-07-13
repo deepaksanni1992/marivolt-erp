@@ -17,3 +17,6 @@ build
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Generated audit / test report outputs (e.g. customsPhase2cAudit.report.json)
+*.report.json
