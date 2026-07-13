@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Papa from "papaparse";
 import PageHeader from "../components/erp/PageHeader.jsx";
@@ -25,7 +25,10 @@ import { getReportBranding } from "../lib/reportBranding.js";
 import { renderRtsPackingListPrintWindow } from "../lib/rtsPackingListPrint.js";
 import SalesCustomsInvoicePanel from "../components/customs/SalesCustomsInvoicePanel.jsx";
 import CreateInvoiceFromPackingModal from "../components/sales/CreateInvoiceFromPackingModal.jsx";
+import OrderAllocationDetailModal from "../components/sales/OrderAllocationDetailModal.jsx";
+import ConvertAllocationToPoModal from "../components/sales/ConvertAllocationToPoModal.jsx";
 import OaCreateModal from "../components/sales/OaCreateModal.jsx";
+import { savePoFromAllocationSession } from "../lib/allocationPoSession.js";
 import { deliverReportHtml, downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 import {
   buildOAPrintHeaderHtml,
@@ -1416,6 +1419,7 @@ function formatFileBytes(n) {
 }
 
 export default function Sales() {
+  const navigate = useNavigate();
   const qc = useQueryClient();
   const { auth } = useAuth();
   const activeCompany = auth?.company;
@@ -1528,6 +1532,8 @@ export default function Sales() {
   const [err, setErr] = useState("");
   /** { open, kind: "SI"|"ALC"|"RTS"|"OA"|"PI", id, reason, preview, step: "form"|"confirm" } */
   const [salesCancelModal, setSalesCancelModal] = useState(null);
+  const [allocationDetailId, setAllocationDetailId] = useState(null);
+  const [convertAllocationPo, setConvertAllocationPo] = useState({ open: false, allocationId: null, eligibility: null, loading: false });
   const [detailQuotationDraftForm, setDetailQuotationDraftForm] = useState(null);
   const [detailOADraftForm, setDetailOADraftForm] = useState(null);
   const [detailProformaDraftForm, setDetailProformaDraftForm] = useState(null);
@@ -4693,6 +4699,13 @@ ${GLOBAL_REPORT_TABLE_CSS}
                         </td>
                         <td className="px-3 py-2">
                           <div className="flex flex-wrap gap-1">
+                            <button
+                              type="button"
+                              className="rounded-lg border px-2 py-1 text-xs"
+                              onClick={() => setAllocationDetailId(r._id)}
+                            >
+                              Open
+                            </button>
                             <button
                               type="button"
                               className={`rounded-lg border px-2 py-1 text-xs ${
@@ -9028,6 +9041,65 @@ ${GLOBAL_REPORT_TABLE_CSS}
             setDetailId(doc._id);
             setActiveTab("Sales Invoice");
           }
+        }}
+      />
+
+      <OrderAllocationDetailModal
+        open={!!allocationDetailId}
+        allocationId={allocationDetailId}
+        authUser={auth?.user}
+        onClose={() => setAllocationDetailId(null)}
+        onConvertToPo={(id, eligibility) => {
+          setConvertAllocationPo({ open: true, allocationId: id, eligibility, loading: false });
+        }}
+      />
+
+      <ConvertAllocationToPoModal
+        open={convertAllocationPo.open}
+        eligibility={convertAllocationPo.eligibility}
+        loading={convertAllocationPo.loading}
+        onClose={() => setConvertAllocationPo({ open: false, allocationId: null, eligibility: null, loading: false })}
+        onContinue={(selectedLines) => {
+          const alloc = convertAllocationPo.eligibility?.allocation;
+          if (!alloc) return;
+          savePoFromAllocationSession({
+            allocationId: alloc._id,
+            allocationNo: alloc.allocationNo,
+            sourceType: "ORDER_ALLOCATION",
+            sourceOrderAllocationId: alloc._id,
+            sourceOrderAllocationNumber: alloc.allocationNo,
+            sourceQuotationId: alloc.linkedQuotationId,
+            sourceQuotationNumber: alloc.linkedQuotationNo,
+            sourceOAId: alloc.linkedOAId,
+            sourceOANumber: alloc.linkedOANo,
+            sourceCustomerName: alloc.customerName,
+            vertical: alloc.vertical,
+            engine: alloc.engine,
+            model: alloc.model,
+            config: alloc.config,
+            esn: alloc.esn,
+            currency: alloc.currency,
+            intRef: alloc.allocationNo,
+            lines: selectedLines.map((row) => ({
+              sourceOrderAllocationLineId: row.allocationLineId,
+              article: row.article,
+              partNumber: row.partNumber,
+              materialCode: row.materialCode,
+              description: row.description,
+              uom: row.uom,
+              qty: row.requestedQty,
+              sourceRequestedQty: row.requestedQty,
+              remarks: row.remarks,
+              unitPrice: row.unitPrice,
+              leadTime: row.leadTime,
+              supplierPartNumber: row.supplierPartNumber,
+              suggestedSupplier: row.suggestedSupplier,
+            })),
+            suggestedSupplier: selectedLines[0]?.suggestedSupplier || "",
+          });
+          setConvertAllocationPo({ open: false, allocationId: null, eligibility: null, loading: false });
+          setAllocationDetailId(null);
+          navigate("/purchase?tab=orders&fromAllocation=1");
         }}
       />
     </div>

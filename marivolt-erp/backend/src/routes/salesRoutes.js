@@ -6,6 +6,7 @@ import * as c from "../controllers/salesController.js";
 import * as flow from "../controllers/salesFlowController.js";
 import * as storeOutbound from "../controllers/storeOutboundController.js";
 import * as salesReturn from "../controllers/salesReturnController.js";
+import * as allocationPo from "../controllers/orderAllocationPoController.js";
 
 /** Customer master edits (PUT/DELETE) — super_admin, company_admin, or admin only. */
 const customerMasterAdminRoles = ["super_admin", "company_admin", "admin"];
@@ -20,6 +21,7 @@ const salesApprove = requirePermission("SALES", "approve");
 const salesCancel = requirePermission("SALES", "cancel");
 const salesExport = requirePermission("SALES", "export");
 const salesDelete = requirePermission("SALES", "delete");
+const purchaseCreateFromAllocation = requirePermission("PURCHASE", "createFromAllocation");
 const reportsView = requirePermission("REPORTS", "view");
 
 router.get("/orders", salesView, c.listSalesOrders);
@@ -94,6 +96,8 @@ router.patch("/sales-returns/:id/post", salesApprove, salesReturn.postSalesRetur
 
 router.get("/order-allocations", salesView, flow.listOrderAllocations);
 router.get("/order-allocations/:id", salesView, flow.getOrderAllocation);
+router.get("/order-allocations/:id/po-eligibility", salesView, allocationPo.getOrderAllocationPoEligibility);
+router.get("/order-allocations/:id/linked-purchase-orders", salesView, allocationPo.getOrderAllocationLinkedPurchaseOrders);
 router.post("/order-allocations/:id/rts", salesCreate, flow.createRtsFromOrderAllocation);
 router.post("/order-allocations/:id/to-sales-invoice", salesCreate, flow.convertOrderAllocationToSalesInvoice);
 

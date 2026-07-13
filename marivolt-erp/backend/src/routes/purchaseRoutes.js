@@ -4,6 +4,7 @@ import { requirePermission } from "../middleware/permissions.js";
 import * as c from "../controllers/purchaseController.js";
 import * as pr from "../controllers/purchaseRequisitionController.js";
 import * as pod from "../controllers/purchasePoDocumentController.js";
+import * as allocationPo from "../controllers/orderAllocationPoController.js";
 
 const router = express.Router();
 
@@ -15,6 +16,7 @@ const purchaseApprove = requirePermission("PURCHASE", "approve");
 const purchaseCancel = requirePermission("PURCHASE", "cancel");
 const purchaseDelete = requirePermission("PURCHASE", "delete");
 const purchaseExport = requirePermission("PURCHASE", "export");
+const purchaseCreateFromAllocation = requirePermission("PURCHASE", "createFromAllocation");
 const reportsView = requirePermission("REPORTS", "view");
 
 router.get("/reports/summary", reportsView, c.purchaseSummaryReport);
@@ -34,6 +36,7 @@ router.post("/requisitions/:id/cancel", purchaseCancel, pr.cancelPurchaseRequisi
 router.post("/requisitions/:id/close", purchaseApprove, pr.closePurchaseRequisition);
 
 router.post("/import", purchaseCreate, c.importPurchaseOrders);
+router.post("/from-order-allocation/validate", purchaseCreateFromAllocation, allocationPo.validatePurchaseOrderFromOrderAllocation);
 router.get("/", purchaseView, c.listPurchaseOrders);
 router.get("/:id/documents", purchaseView, pod.listPoDocuments);
 router.post("/:id/documents", purchaseCreate, pod.createPoDocument);

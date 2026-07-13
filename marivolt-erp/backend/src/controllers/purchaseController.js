@@ -16,6 +16,12 @@ import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentControll
 import { nextGrnNo } from "../services/grnNumberService.js";
 import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js";
 import { calcPoDiscountTotal, calcPoGrandTotal, poHeaderCost } from "../utils/poTotals.js";
+import OrderAllocation from "../models/OrderAllocation.js";
+import {
+  applyAllocationSourceHeader,
+  stampAllocationSourceOnPoLines,
+  validatePurchaseOrderAllocationLinks,
+} from "../services/orderAllocationPoConversionService.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -67,6 +73,12 @@ function normalizePoLines(lines = []) {
         remarks: l.remarks ?? "",
         leadTime: l.leadTime != null ? String(l.leadTime).trim() : "",
         supplierPartNumber: String(l.supplierPartNumber || "").trim(),
+        sourceOrderAllocationLineId: mongoose.Types.ObjectId.isValid(String(l.sourceOrderAllocationLineId || ""))
+          ? new mongoose.Types.ObjectId(String(l.sourceOrderAllocationLineId))
+          : null,
+        sourceArticle: String(l.sourceArticle || "").trim().toUpperCase(),
+        sourceRequestedQty: Math.max(0, Number(l.sourceRequestedQty) || 0),
+        sourceConvertedQty: Math.max(0, Number(l.sourceConvertedQty ?? l.qty) || 0),
       };
     })
     .filter((l) => l.itemCode && l.qty > 0);
@@ -280,6 +292,29 @@ export async function createPurchaseOrder(req, res) {
     body.createdBy = req.user?.email || "";
     body.companyId = req.companyId;
 
+    const allocationId = body.sourceOrderAllocationId;
+    if (allocationId) {
+      const allocation = await OrderAllocation.findOne(withCompany(req, { _id: allocationId })).lean();
+      if (!allocation) {
+        return res.status(400).json({ message: "Source order allocation not found for this company." });
+      }
+      applyAllocationSourceHeader(body, allocation);
+      await validatePurchaseOrderAllocationLinks({
+        companyId: req.companyId,
+        allocationId: allocation._id,
+        lines: body.lines,
+      });
+      body.lines = stampAllocationSourceOnPoLines(body.lines, allocation, body.lines);
+    } else {
+      body.lines = (body.lines || []).map((line) => ({
+        ...line,
+        sourceOrderAllocationLineId: null,
+        sourceArticle: "",
+        sourceRequestedQty: 0,
+        sourceConvertedQty: 0,
+      }));
+    }
+
     let lastErr = null;
     for (let attempt = 0; attempt < MAX_PO_NUMBER_SAVE_RETRIES; attempt += 1) {
       try {
@@ -302,7 +337,20 @@ export async function createPurchaseOrder(req, res) {
           entityId: doc._id,
           documentNo: doc.poNo,
           description: `PO ${doc.poNo} created`,
-          metadata: { supplierName: doc.supplierName, lineCount: doc.lines.length },
+          metadata: {
+            supplierName: doc.supplierName,
+            lineCount: doc.lines.length,
+            sourceType: doc.sourceType || null,
+            sourceOrderAllocationId: doc.sourceOrderAllocationId || null,
+            sourceOrderAllocationNumber: doc.sourceOrderAllocationNumber || null,
+            linkedAllocationLines: (doc.lines || [])
+              .filter((l) => l.sourceOrderAllocationLineId)
+              .map((l) => ({
+                sourceOrderAllocationLineId: l.sourceOrderAllocationLineId,
+                article: l.sourceArticle || l.article,
+                qty: l.sourceConvertedQty ?? l.qty,
+              })),
+          },
         });
         return res.status(201).json(doc);
       } catch (err) {
@@ -397,6 +445,20 @@ export async function updatePurchaseOrder(req, res) {
       if (!doc.lines.length) {
         return res.status(400).json({ message: "Purchase order must retain at least one valid line." });
       }
+    }
+    doc.lines = normalizePoLines(doc.lines);
+    if (doc.sourceOrderAllocationId) {
+      const allocation = await OrderAllocation.findOne(withCompany(req, { _id: doc.sourceOrderAllocationId })).lean();
+      if (!allocation) {
+        return res.status(400).json({ message: "Source order allocation not found for this company." });
+      }
+      await validatePurchaseOrderAllocationLinks({
+        companyId: req.companyId,
+        allocationId: allocation._id,
+        lines: doc.lines,
+        excludePoId: doc._id,
+      });
+      doc.lines = stampAllocationSourceOnPoLines(doc.lines, allocation, doc.lines);
     }
     const supplierChanged =
       (patch.supplierId !== undefined && String(patch.supplierId || "") !== previousSupplierId) ||
@@ -638,6 +700,10 @@ export async function deletePurchaseOrder(req, res) {
       entityId: row._id,
       documentNo: row.poNo || row.poNumber,
       description: `PO ${row.poNo || row.poNumber} deleted`,
+      metadata: {
+        sourceOrderAllocationId: row.sourceOrderAllocationId || null,
+        sourceOrderAllocationNumber: row.sourceOrderAllocationNumber || null,
+      },
     });
     res.json({ success: true });
   } catch (err) {
@@ -722,6 +788,17 @@ export async function cancelPurchaseOrder(req, res) {
       fromStatus: prev,
       toStatus: "CANCELLED",
       description: `PO ${doc.poNo || doc.poNumber} cancelled`,
+      metadata: {
+        sourceOrderAllocationId: doc.sourceOrderAllocationId || null,
+        sourceOrderAllocationNumber: doc.sourceOrderAllocationNumber || null,
+        releasedAllocationLines: (doc.lines || [])
+          .filter((l) => l.sourceOrderAllocationLineId)
+          .map((l) => ({
+            sourceOrderAllocationLineId: l.sourceOrderAllocationLineId,
+            article: l.sourceArticle || l.article,
+            qty: l.sourceConvertedQty ?? l.qty,
+          })),
+      },
     });
     res.json(doc);
   } catch (err) {

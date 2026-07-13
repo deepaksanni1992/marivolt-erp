@@ -46,6 +46,7 @@ export const PERMISSION_ACTIONS = [
   "reconciliation_export",
   "article_view",
   "article_export",
+  "createFromAllocation",
 ];
 
 export const SYSTEM_ROLE_CODES = [

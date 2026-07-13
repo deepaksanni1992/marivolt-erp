@@ -15,6 +15,10 @@ import {
 } from "../lib/purchaseOrderDocumentPrint.js";
 import { calcPoTotalsFromDoc, calcPoTotalsPreview, poHeaderCost, supplierPartNumberDisplay } from "../lib/poTotals.js";
 import {
+  clearPoFromAllocationSession,
+  readPoFromAllocationSession,
+} from "../lib/allocationPoSession.js";
+import {
   COMMERCIAL_DEFAULTS,
   DEFAULT_CLOSING_NOTE,
   DEFAULT_PURCHASE_TERMS,
@@ -93,7 +97,68 @@ function initialPoForm(company) {
     discountValue: 0,
     showMaterialCodeOnPrint: false,
     showMachineDetailsOnPrint: false,
+    sourceType: "",
+    sourceOrderAllocationId: "",
+    sourceOrderAllocationNumber: "",
+    sourceQuotationNumber: "",
+    sourceOANumber: "",
+    sourceCustomerName: "",
     lines: [defaultLine()],
+  };
+}
+
+function buildPoFormFromAllocationPrefill(company, payload) {
+  const base = initialPoForm(company);
+  if (!payload) return base;
+  const lines =
+    Array.isArray(payload.lines) && payload.lines.length
+      ? payload.lines.map((l) => ({
+          ...defaultLine(),
+          article: l.article || "",
+          articleNo: l.article || "",
+          itemCode: l.article || "",
+          partNo: l.partNumber || "",
+          partNumber: l.partNumber || "",
+          spn: l.partNumber || "",
+          materialCode: l.materialCode || l.article || "",
+          description: l.description || "",
+          qty: Number(l.qty) || 0,
+          orderedQty: Number(l.qty) || 0,
+          uom: l.uom || "PCS",
+          unitPrice: Number(l.unitPrice) || 0,
+          leadTime: l.leadTime || "",
+          supplierPartNumber: l.supplierPartNumber || "",
+          remarks: l.remarks || "",
+          suggestedSupplier: l.suggestedSupplier || "",
+          sourceOrderAllocationLineId: l.sourceOrderAllocationLineId || "",
+          sourceArticle: l.article || "",
+          sourceRequestedQty: Number(l.sourceRequestedQty ?? l.qty) || 0,
+        }))
+      : [defaultLine()];
+
+  const suggestedSupplier =
+    payload.suggestedSupplier ||
+    lines.map((l) => l.suggestedSupplier).find(Boolean) ||
+    "";
+
+  return {
+    ...base,
+    sourceType: payload.sourceType || "ORDER_ALLOCATION",
+    sourceOrderAllocationId: payload.sourceOrderAllocationId || payload.allocationId || "",
+    sourceOrderAllocationNumber: payload.sourceOrderAllocationNumber || payload.allocationNo || "",
+    sourceQuotationNumber: payload.sourceQuotationNumber || "",
+    sourceOANumber: payload.sourceOANumber || "",
+    sourceCustomerName: payload.sourceCustomerName || "",
+    vertical: payload.vertical || base.vertical,
+    engine: payload.engine || base.engine,
+    brand: payload.engine || base.brand,
+    model: payload.model || base.model,
+    config: payload.config || base.config,
+    esn: payload.esn || base.esn,
+    currency: payload.currency || base.currency,
+    intRef: payload.intRef || payload.allocationNo || base.intRef,
+    supplierName: suggestedSupplier || base.supplierName,
+    lines,
   };
 }
 
@@ -134,6 +199,10 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
         remarks: String(l.remarks || "").trim(),
         leadTime: String(l.leadTime || "").trim(),
         currency: cur,
+        sourceOrderAllocationLineId: l.sourceOrderAllocationLineId || null,
+        sourceArticle: String(l.sourceArticle || "").trim().toUpperCase(),
+        sourceRequestedQty: Math.max(0, Number(l.sourceRequestedQty) || 0),
+        sourceConvertedQty: Math.max(0, Number(l.sourceConvertedQty ?? l.qty) || 0),
       };
     })
     .filter((l) => includeIncompleteLines || (l.itemCode && l.qty > 0));
@@ -184,6 +253,14 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
     discountValue: Math.max(0, Number(form.discountValue) || 0),
     showMaterialCodeOnPrint: !!form.showMaterialCodeOnPrint,
     showMachineDetailsOnPrint: !!form.showMachineDetailsOnPrint,
+    sourceType: form.sourceOrderAllocationId ? form.sourceType || "ORDER_ALLOCATION" : "",
+    sourceOrderAllocationId: form.sourceOrderAllocationId || null,
+    sourceOrderAllocationNumber: form.sourceOrderAllocationNumber || "",
+    sourceQuotationId: form.sourceQuotationId || null,
+    sourceQuotationNumber: form.sourceQuotationNumber || "",
+    sourceOAId: form.sourceOAId || null,
+    sourceOANumber: form.sourceOANumber || "",
+    sourceCustomerName: form.sourceCustomerName || "",
     lines,
   };
 }
@@ -228,6 +305,10 @@ function purchaseOrderApiToForm(po) {
           unitPrice: Number(l.unitPrice) || 0,
           remarks: l.remarks || "",
           leadTime: l.leadTime || "",
+          sourceOrderAllocationLineId: l.sourceOrderAllocationLineId || "",
+          sourceArticle: l.sourceArticle || "",
+          sourceRequestedQty: Number(l.sourceRequestedQty) || 0,
+          sourceConvertedQty: Number(l.sourceConvertedQty ?? l.qty) || 0,
         }))
       : [defaultLine()];
   return {
@@ -278,6 +359,14 @@ function purchaseOrderApiToForm(po) {
     discountValue: Math.max(0, Number(po.discountValue) || 0),
     showMaterialCodeOnPrint: !!po.showMaterialCodeOnPrint,
     showMachineDetailsOnPrint: !!po.showMachineDetailsOnPrint,
+    sourceType: po.sourceType || "",
+    sourceOrderAllocationId: po.sourceOrderAllocationId || "",
+    sourceOrderAllocationNumber: po.sourceOrderAllocationNumber || "",
+    sourceQuotationId: po.sourceQuotationId || "",
+    sourceQuotationNumber: po.sourceQuotationNumber || "",
+    sourceOAId: po.sourceOAId || "",
+    sourceOANumber: po.sourceOANumber || "",
+    sourceCustomerName: po.sourceCustomerName || "",
     lines,
   };
 }
@@ -907,6 +996,16 @@ export default function Purchase({ procurementEmbed = false } = {}) {
     if (id) setDetailId(id);
   }, [searchParams]);
 
+  useEffect(() => {
+    if (searchParams.get("fromAllocation") !== "1") return;
+    const payload = readPoFromAllocationSession();
+    if (!payload) return;
+    setForm(buildPoFormFromAllocationPrefill(auth?.company, payload));
+    setEditPoId(null);
+    setCreateOpen(true);
+    clearPoFromAllocationSession();
+  }, [searchParams, auth?.company]);
+
   const [receiveOpen, setReceiveOpen] = useState(false);
   const [form, setForm] = useState(() => initialPoForm(null));
   const [receiveWarehouse, setReceiveWarehouse] = useState("MAIN");
@@ -1029,6 +1128,9 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
       qc.invalidateQueries({ queryKey: ["purchaseSummary"] });
       qc.invalidateQueries({ queryKey: ["pendingPoReport"] });
+      qc.invalidateQueries({ queryKey: ["order-allocation-po-eligibility"] });
+      qc.invalidateQueries({ queryKey: ["order-allocation-linked-pos"] });
+      qc.invalidateQueries({ queryKey: ["sales-order-allocations"] });
       setErr("");
       setNotice("Purchase order created successfully.");
       setCreateOpen(false);
@@ -1045,6 +1147,9 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       qc.invalidateQueries({ queryKey: ["purchaseSummary"] });
       qc.invalidateQueries({ queryKey: ["pendingPoReport"] });
       qc.invalidateQueries({ queryKey: ["purchaseOrder", id] });
+      qc.invalidateQueries({ queryKey: ["order-allocation-po-eligibility"] });
+      qc.invalidateQueries({ queryKey: ["order-allocation-linked-pos"] });
+      qc.invalidateQueries({ queryKey: ["sales-order-allocations"] });
       setErr("");
       setNotice("Purchase order updated successfully.");
       setCreateOpen(false);
@@ -2271,6 +2376,15 @@ export default function Purchase({ procurementEmbed = false } = {}) {
           <p className="text-sm text-gray-500">Loading…</p>
         ) : (
           <div className="space-y-5 text-sm text-gray-800">
+            {detail.sourceOrderAllocationId ? (
+              <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-950">
+                <div className="font-semibold">
+                  Source: Order Allocation {detail.sourceOrderAllocationNumber || "—"}
+                </div>
+                <div>Customer: {detail.sourceCustomerName || "—"}</div>
+                <div>OA: {detail.sourceOANumber || "—"} · Quotation: {detail.sourceQuotationNumber || "—"}</div>
+              </div>
+            ) : null}
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
               <div className="flex flex-wrap items-start justify-between gap-4 border-b border-gray-100 pb-4">
                 <div>
@@ -2628,6 +2742,17 @@ export default function Purchase({ procurementEmbed = false } = {}) {
         document
       >
         {err ? <div className="mb-3 text-sm text-red-600">{err}</div> : null}
+        {form.sourceOrderAllocationId ? (
+          <div className="mb-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-950">
+            <div className="font-semibold">Source: Order Allocation {form.sourceOrderAllocationNumber || "—"}</div>
+            <div>Customer: {form.sourceCustomerName || "—"}</div>
+            <div>OA: {form.sourceOANumber || "—"} · Quotation: {form.sourceQuotationNumber || "—"}</div>
+            <div className="mt-1 text-sky-800">
+              Preloaded lines are suggestions only. Remove or edit before saving. Only saved linked quantities count
+              toward the allocation balance.
+            </div>
+          </div>
+        ) : null}
         <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm sm:p-5">
           <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
             {editPoId

@@ -32,6 +32,11 @@ const poLineSchema = new mongoose.Schema(
     leadTime: { type: String, default: "", trim: true },
     /** Supplier-facing part reference on PO print; internal mapping uses partNumber/spn. */
     supplierPartNumber: { type: String, default: "", trim: true },
+    /** Traceability when PO line originated from Order Allocation conversion. */
+    sourceOrderAllocationLineId: { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
+    sourceArticle: { type: String, default: "", trim: true, uppercase: true },
+    sourceRequestedQty: { type: Number, default: 0, min: 0 },
+    sourceConvertedQty: { type: Number, default: 0, min: 0 },
   },
   { _id: true }
 );
@@ -49,6 +54,15 @@ const purchaseOrderSchema = new mongoose.Schema(
     paymentTerms: { type: String, default: "" },
     expectedDeliveryDate: { type: Date, default: null },
     linkedPRs: { type: [mongoose.Schema.Types.ObjectId], ref: "PurchaseRequisition", default: [] },
+    /** When PO was created from Order Allocation conversion. */
+    sourceType: { type: String, default: "", trim: true },
+    sourceOrderAllocationId: { type: mongoose.Schema.Types.ObjectId, ref: "OrderAllocation", default: null, index: true },
+    sourceOrderAllocationNumber: { type: String, default: "", trim: true },
+    sourceQuotationId: { type: mongoose.Schema.Types.ObjectId, ref: "Quotation", default: null },
+    sourceQuotationNumber: { type: String, default: "", trim: true },
+    sourceOAId: { type: mongoose.Schema.Types.ObjectId, ref: "OrderAcknowledgement", default: null },
+    sourceOANumber: { type: String, default: "", trim: true },
+    sourceCustomerName: { type: String, default: "", trim: true },
     approvalStatus: {
       type: String,
       enum: ["NOT_REQUIRED", "PENDING", "APPROVED", "REJECTED"],
