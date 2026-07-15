@@ -10,6 +10,11 @@ function upper(value) {
   return text(value).toUpperCase();
 }
 
+/** Collapse internal whitespace so "433598  AA" matches "433598 AA". */
+function normalizeIdentityKey(value) {
+  return upper(value).replace(/\s+/g, " ");
+}
+
 function isBlank(value) {
   return value == null || (typeof value === "string" && value.trim() === "");
 }
@@ -23,6 +28,13 @@ function exactTextRegex(value) {
   return new RegExp(`^${text(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
 }
 
+function whitespaceInsensitiveRegex(value) {
+  const escaped = text(value)
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/\s+/g, "\\s+");
+  return new RegExp(`^${escaped}$`, "i");
+}
+
 function firstText(...values) {
   for (const value of values) {
     const out = text(value);
@@ -33,7 +45,7 @@ function firstText(...values) {
 
 function firstUpper(...values) {
   for (const value of values) {
-    const out = upper(value);
+    const out = normalizeIdentityKey(value);
     if (out) return out;
   }
   return "";
@@ -69,16 +81,66 @@ function buildSyncPayload({ line = {}, header = {}, supplierName = "" }) {
   };
 }
 
-async function findExistingItem({ companyId, identity, session = null }) {
-  const clauses = [];
-  if (identity.article) clauses.push({ article: identity.article });
-  if (identity.partNumber) clauses.push({ partNumber: exactTextRegex(identity.partNumber) });
-  if (identity.materialCode) clauses.push({ materialCode: exactTextRegex(identity.materialCode) });
-  if (!clauses.length) return null;
-
-  const query = ItemMaster.findOne({ companyId, $or: clauses });
+function withSession(query, session) {
   if (session) query.session(session);
   return query;
+}
+
+/**
+ * Prefer unique keys: partNumber → article → materialCode.
+ * Avoid $or so we never attach a part number onto the wrong article row.
+ */
+async function findExistingItem({ companyId, identity, session = null }) {
+  const article = normalizeIdentityKey(identity.article);
+  const partNumber = normalizeIdentityKey(identity.partNumber);
+  const materialCode = normalizeIdentityKey(identity.materialCode);
+
+  if (partNumber) {
+    let hit = await withSession(
+      ItemMaster.findOne({ companyId, partNumber }),
+      session
+    );
+    if (hit) return hit;
+    hit = await withSession(
+      ItemMaster.findOne({ companyId, partNumber: whitespaceInsensitiveRegex(partNumber) }),
+      session
+    );
+    if (hit) return hit;
+  }
+
+  if (article) {
+    const hit = await withSession(ItemMaster.findOne({ companyId, article }), session);
+    if (hit) return hit;
+  }
+
+  if (materialCode) {
+    const hit = await withSession(
+      ItemMaster.findOne({ companyId, materialCode: exactTextRegex(materialCode) }),
+      session
+    );
+    if (hit) return hit;
+  }
+
+  return null;
+}
+
+async function findByDuplicateKey(companyId, err, session = null) {
+  const key = err?.keyValue || {};
+  if (key.partNumber != null && String(key.partNumber).trim()) {
+    const pn = normalizeIdentityKey(key.partNumber);
+    let hit = await withSession(ItemMaster.findOne({ companyId, partNumber: pn }), session);
+    if (hit) return hit;
+    hit = await withSession(
+      ItemMaster.findOne({ companyId, partNumber: whitespaceInsensitiveRegex(pn) }),
+      session
+    );
+    if (hit) return hit;
+  }
+  if (key.article != null && String(key.article).trim()) {
+    const art = normalizeIdentityKey(key.article);
+    return withSession(ItemMaster.findOne({ companyId, article: art }), session);
+  }
+  return null;
 }
 
 function fillMissingFields(item, payload) {
@@ -105,6 +167,8 @@ function fillMissingFields(item, payload) {
   for (const field of fillFields) {
     const value = payload[field];
     if (!isBlank(item[field]) || isBlank(value)) continue;
+    // Never overwrite identity fields when blank on the target — handled with uniqueness checks below.
+    if (field === "partNumber" || field === "article") continue;
     item[field] = value;
     changed = true;
   }
@@ -115,6 +179,75 @@ function fillMissingFields(item, payload) {
   }
 
   return changed;
+}
+
+/**
+ * Apply partNumber/article only when safe for unique indexes.
+ * Returns true if either field was changed on `item`.
+ */
+async function applySafeIdentityFields(item, payload, { companyId, session = null } = {}) {
+  let changed = false;
+  const nextPart = normalizeIdentityKey(payload.partNumber);
+  const nextArticle = normalizeIdentityKey(payload.article);
+
+  if (nextPart && isBlank(item.partNumber)) {
+    const owner = await withSession(
+      ItemMaster.findOne({
+        companyId,
+        partNumber: nextPart,
+        _id: { $ne: item._id },
+      }),
+      session
+    );
+    if (!owner) {
+      item.partNumber = nextPart;
+      changed = true;
+    }
+  }
+
+  if (nextArticle && isBlank(item.article)) {
+    const owner = await withSession(
+      ItemMaster.findOne({
+        companyId,
+        article: nextArticle,
+        _id: { $ne: item._id },
+      }),
+      session
+    );
+    if (!owner) {
+      item.article = nextArticle;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+async function persistSyncedItem(existing, { payload, article, poNo, now, session }) {
+  let businessChanged = fillMissingFields(existing, { ...payload, article });
+  const identityChanged = await applySafeIdentityFields(existing, { ...payload, article }, {
+    companyId: existing.companyId,
+    session,
+  });
+  if (identityChanged) businessChanged = true;
+  if (isBlank(existing.source)) existing.source = "PO_AUTO_SYNC";
+  if (isBlank(existing.sourcePoNo)) existing.sourcePoNo = text(poNo);
+  existing.lastSyncedFromPO = text(poNo);
+  existing.lastSyncedAt = now;
+  try {
+    await existing.save(session ? { session } : {});
+  } catch (err) {
+    if (err?.code !== 11000) throw err;
+    // Another unique collision while filling gaps — keep prior row as-is for sync metadata only.
+    existing.lastSyncedFromPO = text(poNo);
+    existing.lastSyncedAt = now;
+    try {
+      await existing.save(session ? { session } : {});
+    } catch {
+      /* best-effort metadata */
+    }
+  }
+  return businessChanged;
 }
 
 export async function syncPoLinesToItemMaster({
@@ -149,7 +282,7 @@ export async function syncPoLinesToItemMaster({
               companyId,
               companyCode: upper(companyCode),
               article,
-              partNumber: payload.partNumber,
+              partNumber: payload.partNumber || "",
               itemName: payload.itemName || article,
               description: payload.description,
               materialCode: payload.materialCode,
@@ -179,19 +312,24 @@ export async function syncPoLinesToItemMaster({
         continue;
       } catch (err) {
         if (err?.code !== 11000) throw err;
-        existing = await findExistingItem({ companyId, identity, session });
+        existing =
+          (await findByDuplicateKey(companyId, err, session)) ||
+          (await findExistingItem({ companyId, identity, session }));
         if (!existing) {
-          throw new Error(`Item ${article} could not be auto-created for this company.`);
+          throw new Error(
+            `Item Master already has part/article for this company (${article || payload.partNumber}). Re-link the PO line to the existing item.`
+          );
         }
       }
     }
 
-    const businessChanged = fillMissingFields(existing, { ...payload, article });
-    if (isBlank(existing.source)) existing.source = "PO_AUTO_SYNC";
-    if (isBlank(existing.sourcePoNo)) existing.sourcePoNo = text(poNo);
-    existing.lastSyncedFromPO = text(poNo);
-    existing.lastSyncedAt = now;
-    await existing.save(session ? { session } : {});
+    const businessChanged = await persistSyncedItem(existing, {
+      payload,
+      article,
+      poNo,
+      now,
+      session,
+    });
     if (businessChanged) summary.updated += 1;
     else summary.unchanged += 1;
   }
