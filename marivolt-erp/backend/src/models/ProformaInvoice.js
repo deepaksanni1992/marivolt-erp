@@ -27,6 +27,12 @@ const proformaInvoiceSchema = new mongoose.Schema(
     linkedOAId: { type: mongoose.Schema.Types.ObjectId, ref: "OrderAcknowledgement", index: true, default: null },
     linkedOANo: { type: String, default: "", trim: true },
     customerName: { type: String, required: true, trim: true, index: true },
+    contactPerson: { type: String, default: "", trim: true },
+    attention: { type: String, default: "", trim: true },
+    billingAddress: { type: String, default: "", trim: true },
+    shippingAddress: { type: String, default: "", trim: true },
+    customerReference: { type: String, default: "", trim: true },
+    /** Commercial payment terms (document snapshot). Not Credit Terms ADVANCE/CREDIT. */
     paymentTerms: { type: String, default: "" },
     bankDetails: { type: String, default: "" },
     validity: { type: String, default: "" },

@@ -39,8 +39,50 @@ import {
 } from "../services/documentSnapshot/documentSnapshotService.js";
 import { validateOaLineFields } from "../services/documentSnapshot/oaCreateValidation.js";
 import { resolveBankDetailsTextForCurrency } from "../services/bankDetailResolveService.js";
+import {
+  copyCustomerTransactionFields,
+  CUSTOMER_FIELD_LIMITS,
+  customerDetailSearchOr,
+  customerTransactionAuditFieldSlice,
+  diffCustomerTransactionFields,
+  firstNonEmpty,
+  pickCustomerTransactionFieldsFromBody,
+  resolveDocumentCustomerFields,
+  clampText,
+} from "../utils/customerTransactionFields.js";
 
 const { withTransaction } = stockService;
+
+/** Resolve Packing → OA → PI → Quotation only (never Customer Master during conversion). */
+async function resolveCustomerFieldsForPackingInvoice(req, allocation, body = {}, packing = null) {
+  const fromBody = pickCustomerTransactionFieldsFromBody(body);
+  const [oa, pi, quotation] = await Promise.all([
+    allocation?.linkedOAId
+      ? OrderAcknowledgement.findOne(withCompany(req, { _id: allocation.linkedOAId })).lean()
+      : null,
+    allocation?.linkedProformaId
+      ? ProformaInvoice.findOne(withCompany(req, { _id: allocation.linkedProformaId })).lean()
+      : null,
+    allocation?.linkedQuotationId
+      ? Quotation.findOne(withCompany(req, { _id: allocation.linkedQuotationId })).lean()
+      : null,
+  ]);
+  const fromPacking = packing ? resolveDocumentCustomerFields(packing) : {};
+  const fromOa = oa ? resolveDocumentCustomerFields(oa) : {};
+  const fromPi = pi ? resolveDocumentCustomerFields(pi) : {};
+  const fromQtn = quotation ? resolveDocumentCustomerFields(quotation) : {};
+  const pick = (key) =>
+    fromBody[key] !== undefined
+      ? fromBody[key]
+      : firstNonEmpty(fromPacking[key], fromOa[key], fromPi[key], fromQtn[key]);
+  return {
+    contactPerson: pick("contactPerson"),
+    attention: pick("attention"),
+    billingAddress: pick("billingAddress"),
+    shippingAddress: pick("shippingAddress"),
+    paymentTerms: pick("paymentTerms"),
+  };
+}
 
 function t(v) {
   return String(v ?? "").trim();
@@ -1061,8 +1103,7 @@ export async function reportQuotationSummary(req, res) {
     if (q) {
       filter.$or = [
         { quotationNo: new RegExp(q, "i") },
-        { customerName: new RegExp(q, "i") },
-        { customerReference: new RegExp(q, "i") },
+        ...customerDetailSearchOr(q),
         { engine: new RegExp(q, "i") },
         { model: new RegExp(q, "i") },
         { esn: new RegExp(q, "i") },
@@ -1096,6 +1137,9 @@ export async function reportQuotationSummary(req, res) {
       quotationDate: doc.quotationDate,
       customerName: doc.customerName,
       customerReference: doc.customerReference || "",
+      contactPerson: doc.contactPerson || "",
+      attention: doc.attention || "",
+      paymentTerms: doc.paymentTerms || "",
       vertical: doc.vertical || "",
       engine: doc.engine || "",
       model: doc.model || "",
@@ -1206,7 +1250,11 @@ export async function reportOrderAcknowledgement(req, res) {
     if (req.query.status) filter.status = String(req.query.status).toUpperCase();
     const q = String(req.query.search || "").trim();
     if (q) {
-      filter.$or = [{ oaNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }, { linkedQuotationNo: new RegExp(q, "i") }];
+      filter.$or = [
+        { oaNo: new RegExp(q, "i") },
+        { linkedQuotationNo: new RegExp(q, "i") },
+        ...customerDetailSearchOr(q),
+      ];
     }
 
     const [rowsRaw, total, summaryAgg] = await Promise.all([
@@ -1232,6 +1280,9 @@ export async function reportOrderAcknowledgement(req, res) {
       linkedQuotationNo: doc.linkedQuotationNo || "",
       customerName: doc.customerName,
       customerPORef: doc.customerPORef || "",
+      contactPerson: doc.contactPerson || "",
+      attention: doc.attention || "",
+      paymentTerms: doc.paymentTerms || "",
       deliveryTerms: doc.deliverySchedule || "",
       vertical: doc.vertical || "",
       engine: doc.engine || "",
@@ -1483,7 +1534,11 @@ export async function reportSalesInvoiceSummary(req, res) {
     if (req.query.status) filter.status = String(req.query.status).toUpperCase();
     const q = String(req.query.search || "").trim();
     if (q) {
-      filter.$or = [{ invoiceNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }, { linkedProformaNo: new RegExp(q, "i") }];
+      filter.$or = [
+        { invoiceNo: new RegExp(q, "i") },
+        { linkedProformaNo: new RegExp(q, "i") },
+        ...customerDetailSearchOr(q),
+      ];
     }
 
     const [rowsRaw, total, summaryAgg] = await Promise.all([
@@ -1511,6 +1566,10 @@ export async function reportSalesInvoiceSummary(req, res) {
         invoiceNo: doc.invoiceNo,
         invoiceDate: doc.invoiceDate,
         customerName: doc.customerName,
+        customerReference: doc.customerReference || "",
+        contactPerson: doc.contactPerson || "",
+        attention: doc.attention || "",
+        paymentTerms: doc.paymentTerms || "",
         linkedProformaNo: doc.linkedProformaNo || "",
         linkedOANo: doc.linkedOANo || "",
         vertical: doc.vertical || "",
@@ -1796,6 +1855,21 @@ export async function createCustomer(req, res) {
     if (!String(body.name || "").trim()) {
       return res.status(400).json({ message: "Customer name is required" });
     }
+    if (body.contactName !== undefined) {
+      body.contactName = clampText(body.contactName, CUSTOMER_FIELD_LIMITS.contactPerson);
+    }
+    if (body.attention !== undefined) {
+      body.attention = clampText(body.attention, CUSTOMER_FIELD_LIMITS.attention);
+    }
+    if (body.billingAddress !== undefined) {
+      body.billingAddress = clampText(body.billingAddress, CUSTOMER_FIELD_LIMITS.billingAddress);
+    }
+    if (body.shippingAddress !== undefined) {
+      body.shippingAddress = clampText(body.shippingAddress, CUSTOMER_FIELD_LIMITS.shippingAddress);
+    }
+    if (body.documentPaymentTerms !== undefined) {
+      body.documentPaymentTerms = clampText(body.documentPaymentTerms, CUSTOMER_FIELD_LIMITS.paymentTerms);
+    }
     const doc = await Customer.create(body);
     res.status(201).json(doc);
   } catch (err) {
@@ -1809,10 +1883,40 @@ export async function updateCustomer(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const allowed = ["name", "contactName", "phone", "email", "address", "paymentTerms", "notes"];
+    const allowed = [
+      "name",
+      "contactName",
+      "attention",
+      "phone",
+      "email",
+      "address",
+      "billingAddress",
+      "shippingAddress",
+      "paymentTerms",
+      "documentPaymentTerms",
+      "notes",
+    ];
     const payload = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) payload[key] = req.body[key];
+    }
+    if (payload.contactName !== undefined) {
+      payload.contactName = clampText(payload.contactName, CUSTOMER_FIELD_LIMITS.contactPerson);
+    }
+    if (payload.attention !== undefined) {
+      payload.attention = clampText(payload.attention, CUSTOMER_FIELD_LIMITS.attention);
+    }
+    if (payload.billingAddress !== undefined) {
+      payload.billingAddress = clampText(payload.billingAddress, CUSTOMER_FIELD_LIMITS.billingAddress);
+    }
+    if (payload.shippingAddress !== undefined) {
+      payload.shippingAddress = clampText(payload.shippingAddress, CUSTOMER_FIELD_LIMITS.shippingAddress);
+    }
+    if (payload.documentPaymentTerms !== undefined) {
+      payload.documentPaymentTerms = clampText(
+        payload.documentPaymentTerms,
+        CUSTOMER_FIELD_LIMITS.paymentTerms
+      );
     }
     const doc = await Customer.findOneAndUpdate(withCompany(req, { _id: id }), payload, {
       new: true,
@@ -1847,7 +1951,7 @@ export async function listOAs(req, res) {
     const filter = withCompany(req);
     if (req.query.search) {
       const q = String(req.query.search).trim();
-      filter.$or = [{ oaNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }];
+      filter.$or = [{ oaNo: new RegExp(q, "i") }, ...customerDetailSearchOr(q)];
     }
     const [itemsRaw, total] = await Promise.all([
       OrderAcknowledgement.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
@@ -2010,11 +2114,16 @@ export async function createOA(req, res) {
       ...sourceMeta,
       customerName: String(body.customerName || "").trim(),
       customerPORef: String(body.customerPORef || body.customerReference || "").trim(),
-      attention: String(body.attention || "").trim(),
+      ...pickCustomerTransactionFieldsFromBody({
+        contactPerson: body.contactPerson || "",
+        attention: body.attention || "",
+        billingAddress: body.billingAddress || "",
+        shippingAddress: body.shippingAddress || "",
+        paymentTerms: body.paymentTerms || "",
+      }),
       acknowledgementNotes: String(body.acknowledgementNotes || "").trim(),
       termsAndConditions,
       deliverySchedule: String(body.deliverySchedule || "").trim(),
-      paymentTerms: String(body.paymentTerms || "").trim(),
       incoterm: String(body.incoterm || "").trim(),
       dispatchTerms: String(body.dispatchTerms || "").trim(),
       currency: String(body.currency || "USD").toUpperCase(),
@@ -2054,10 +2163,16 @@ export async function updateOA(req, res) {
           "This order acknowledgement is locked after conversion to Proforma or Sales Invoice (or finalized status); it cannot be edited.",
       });
     }
+    const beforeSnapshot = doc.toObject();
     const allowed = [
       "oaDate",
       "customerName",
       "customerPORef",
+      "customerPODate",
+      "contactPerson",
+      "attention",
+      "billingAddress",
+      "shippingAddress",
       "acknowledgementNotes",
       "termsAndConditions",
       "deliverySchedule",
@@ -2079,6 +2194,7 @@ export async function updateOA(req, res) {
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
     }
+    Object.assign(doc, pickCustomerTransactionFieldsFromBody(req.body));
     if (req.body.oaNo !== undefined) {
       try {
         doc.oaNo = await assertUniqueSalesDocNumberForUpdate({
@@ -2109,6 +2225,20 @@ export async function updateOA(req, res) {
     Object.assign(doc, computeTotals(doc.lines, doc));
     doc.updatedBy = req.user?.email || "";
     await doc.save();
+    const customerFieldChanges = diffCustomerTransactionFields(beforeSnapshot, doc);
+    await writeAudit(req, {
+      action: "UPDATE",
+      module: "SALES",
+      entityType: "ORDER_ACKNOWLEDGEMENT",
+      entityId: doc._id,
+      documentNo: doc.oaNo || "",
+      description: `Order Acknowledgement ${doc.oaNo || ""} updated`,
+      beforeData: customerTransactionAuditFieldSlice(beforeSnapshot),
+      afterData: {
+        ...customerTransactionAuditFieldSlice(doc),
+        ...(customerFieldChanges ? { customerFieldChanges } : {}),
+      },
+    });
     res.json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -2186,7 +2316,7 @@ export async function listProformas(req, res) {
     const filter = withCompany(req);
     if (req.query.search) {
       const q = String(req.query.search).trim();
-      filter.$or = [{ proformaNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }];
+      filter.$or = [{ proformaNo: new RegExp(q, "i") }, ...customerDetailSearchOr(q)];
     }
     const [itemsRaw, total] = await Promise.all([
       ProformaInvoice.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
@@ -2236,8 +2366,11 @@ export async function createProforma(req, res) {
     if (!bankDetails) {
       bankDetails = (await resolveBankDetailsTextForCurrency(withCompany(req), currency)) || "";
     }
+    const customerFields = pickCustomerTransactionFieldsFromBody(body);
     const doc = await ProformaInvoice.create({
       ...body,
+      ...customerFields,
+      customerReference: String(body.customerReference || "").trim(),
       bankDetails,
       lines,
       ...totals,
@@ -2262,10 +2395,16 @@ export async function updateProforma(req, res) {
         message: "Proforma can only be edited while in DRAFT (after SI/CIPL conversion it is approved and locked).",
       });
     }
+    const beforeSnapshot = doc.toObject();
     const previousCurrency = String(doc.currency || "USD").trim().toUpperCase();
     const allowed = [
       "proformaDate",
       "customerName",
+      "contactPerson",
+      "attention",
+      "billingAddress",
+      "shippingAddress",
+      "customerReference",
       "paymentTerms",
       "bankDetails",
       "validity",
@@ -2289,6 +2428,7 @@ export async function updateProforma(req, res) {
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
     }
+    Object.assign(doc, pickCustomerTransactionFieldsFromBody(req.body));
     if (req.body.proformaNo !== undefined) {
       try {
         doc.proformaNo = await assertUniqueSalesDocNumberForUpdate({
@@ -2320,6 +2460,20 @@ export async function updateProforma(req, res) {
     Object.assign(doc, computeTotals(doc.lines, doc));
     doc.updatedBy = req.user?.email || "";
     await doc.save();
+    const customerFieldChanges = diffCustomerTransactionFields(beforeSnapshot, doc);
+    await writeAudit(req, {
+      action: "UPDATE",
+      module: "SALES",
+      entityType: "PROFORMA_INVOICE",
+      entityId: doc._id,
+      documentNo: doc.proformaNo || "",
+      description: `Proforma Invoice ${doc.proformaNo || ""} updated`,
+      beforeData: customerTransactionAuditFieldSlice(beforeSnapshot),
+      afterData: {
+        ...customerTransactionAuditFieldSlice(doc),
+        ...(customerFieldChanges ? { customerFieldChanges } : {}),
+      },
+    });
     res.json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -2396,6 +2550,7 @@ export async function convertQuotationToOA(req, res) {
     });
     const lines = normalizeLines(quotation.lines.map((line) => line.toObject?.() || line));
     const totals = computeTotals(lines, quotation);
+    const customerFields = copyCustomerTransactionFields(quotation);
     const doc = await OrderAcknowledgement.create({
       companyId: req.companyId,
       oaNo,
@@ -2403,7 +2558,8 @@ export async function convertQuotationToOA(req, res) {
       linkedQuotationId: quotation._id,
       linkedQuotationNo: quotation.quotationNo,
       customerName: quotation.customerName,
-      paymentTerms: quotation.paymentTerms || "",
+      customerPORef: quotation.customerReference || "",
+      ...customerFields,
       incoterm: quotation.incoterm || "",
       currency: quotation.currency || "USD",
       acknowledgementNotes: quotation.remarks || "",
@@ -2455,6 +2611,7 @@ export async function convertQuotationToProforma(req, res) {
     const totals = computeTotals(lines, quotation);
     const currency = quotation.currency || "USD";
     const bankDetails = (await resolveBankDetailsTextForCurrency(withCompany(req), currency)) || "";
+    const customerFields = copyCustomerTransactionFields(quotation);
     const doc = await ProformaInvoice.create({
       companyId: req.companyId,
       proformaNo,
@@ -2462,7 +2619,8 @@ export async function convertQuotationToProforma(req, res) {
       linkedQuotationId: quotation._id,
       linkedQuotationNo: quotation.quotationNo,
       customerName: quotation.customerName,
-      paymentTerms: quotation.paymentTerms || "",
+      customerReference: quotation.customerReference || "",
+      ...customerFields,
       validity: quotation.validityDate ? new Date(quotation.validityDate).toISOString().slice(0, 10) : "",
       shipmentTerms: quotation.deliveryTerms || "",
       currency,
@@ -2530,6 +2688,11 @@ export async function convertOAToProforma(req, res) {
     if (!termsAndConditions && oa.linkedQuotationId) {
       termsAndConditions = await resolveTermsFromQuotation(req, oa.linkedQuotationId);
     }
+    let precedingQuotation = null;
+    if (oa.linkedQuotationId) {
+      precedingQuotation = await Quotation.findOne(withCompany(req, { _id: oa.linkedQuotationId })).lean();
+    }
+    const customerFields = copyCustomerTransactionFields(oa, { preceding: precedingQuotation });
     const doc = await ProformaInvoice.create({
       companyId: req.companyId,
       proformaNo,
@@ -2539,7 +2702,8 @@ export async function convertOAToProforma(req, res) {
       linkedOAId: oa._id,
       linkedOANo: oa.oaNo,
       customerName: oa.customerName,
-      paymentTerms: oa.paymentTerms || "",
+      customerReference: oa.customerPORef || precedingQuotation?.customerReference || "",
+      ...customerFields,
       shipmentTerms: oa.deliverySchedule || "",
       currency,
       bankDetails,
@@ -2597,7 +2761,7 @@ export async function listSalesInvoices(req, res) {
     const filter = withCompany(req);
     if (req.query.search) {
       const q = String(req.query.search).trim();
-      filter.$or = [{ invoiceNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }];
+      filter.$or = [{ invoiceNo: new RegExp(q, "i") }, ...customerDetailSearchOr(q)];
     }
     if (req.query.paymentStatus) {
       filter.paymentStatus = String(req.query.paymentStatus).trim().toUpperCase();
@@ -2829,6 +2993,12 @@ export async function convertPackingToSalesInvoice(req, res) {
       model: SalesInvoice,
       field: "invoiceNo",
     });
+    const customerFields = await resolveCustomerFieldsForPackingInvoice(
+      req,
+      allocationPre,
+      req.body || {},
+      packingPre
+    );
 
     let createdId = null;
     await withTransaction(async (session) => {
@@ -2870,10 +3040,16 @@ export async function convertPackingToSalesInvoice(req, res) {
             linkedStorePackingId: packing._id,
             linkedStorePackingNo: packing.packingNo,
             customerName: packing.customerName,
-            paymentTerms: req.body?.paymentTerms || "",
+            contactPerson: customerFields.contactPerson || "",
+            attention: customerFields.attention || "",
+            paymentTerms: customerFields.paymentTerms || "",
             dispatchDetails: "",
-            shippingAddress: req.body?.shippingAddress || "",
-            billingAddress: req.body?.billingAddress || "",
+            shippingAddress: customerFields.shippingAddress || "",
+            billingAddress: customerFields.billingAddress || "",
+            customerReference:
+              t(req.body?.customerReference) ||
+              t(packing.customerReference) ||
+              "",
             currency: packing.currency || allocation.currency || "USD",
             vertical: allocation.vertical || "",
             engine: packing.engine || allocation.engine || "",
@@ -2946,6 +3122,8 @@ export async function updateSalesInvoice(req, res) {
     const allowed = [
       "invoiceDate",
       "customerName",
+      "contactPerson",
+      "attention",
       "paymentTerms",
       "dispatchDetails",
       "shippingAddress",
@@ -2973,6 +3151,7 @@ export async function updateSalesInvoice(req, res) {
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
     }
+    Object.assign(doc, pickCustomerTransactionFieldsFromBody(req.body));
     doc.lines = normalizeLines(doc.lines || []);
     Object.assign(doc, computeTotals(doc.lines, doc));
     doc.updatedBy = req.user?.email || "";
@@ -2981,6 +3160,7 @@ export async function updateSalesInvoice(req, res) {
     if (beforeCanon === "DRAFT" && ["POSTED", "PARTIAL_PAYMENT", "PAID"].includes(afterCanon)) {
       await postSalesInvoiceReceivable({ req, invoice: doc });
     }
+    const customerFieldChanges = diffCustomerTransactionFields(beforeSnapshot, doc);
     await writeAudit(req, {
       action: "UPDATE",
       module: "SALES",
@@ -2988,8 +3168,17 @@ export async function updateSalesInvoice(req, res) {
       entityId: doc._id,
       documentNo: doc.invoiceNo,
       description: `Sales Invoice ${doc.invoiceNo} updated`,
-      beforeData: { status: beforeSnapshot.status, grandTotal: beforeSnapshot.grandTotal },
-      afterData: { status: doc.status, grandTotal: doc.grandTotal },
+      beforeData: {
+        status: beforeSnapshot.status,
+        grandTotal: beforeSnapshot.grandTotal,
+        ...customerTransactionAuditFieldSlice(beforeSnapshot),
+      },
+      afterData: {
+        status: doc.status,
+        grandTotal: doc.grandTotal,
+        ...customerTransactionAuditFieldSlice(doc),
+        ...(customerFieldChanges ? { customerFieldChanges } : {}),
+      },
     });
     res.json(doc);
   } catch (err) {

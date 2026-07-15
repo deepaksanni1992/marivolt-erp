@@ -59,7 +59,13 @@ export const COPY_ROUTE_REGISTRY = {
         customerName: source.customerName || "",
         customerReference: source.customerReference || "",
         customerPORef: source.customerReference || "",
+        contactPerson:
+          source.contactPerson || source.customer?.contactPerson || "",
         attention: source.attention || "",
+        billingAddress:
+          source.billingAddress || source.customer?.billingAddress || "",
+        shippingAddress:
+          source.shippingAddress || source.customer?.shippingAddress || "",
         paymentTerms: source.paymentTerms || "",
         deliverySchedule: source.deliveryTerms || "",
         incoterm: source.incoterm || "",

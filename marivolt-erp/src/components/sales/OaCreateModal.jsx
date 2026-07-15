@@ -8,6 +8,7 @@ import {
   exportOaWorkingLinesCsv,
   parseOaWorkingCsvFile,
 } from "../../lib/oaWorkingCopyCsv.js";
+import CustomerTransactionDetailsFields from "./CustomerTransactionDetailsFields.jsx";
 
 export function emptyOaWorkingLine() {
   return {
@@ -42,7 +43,10 @@ export function defaultOaForm() {
     customerName: "",
     customerReference: "",
     customerPORef: "",
+    contactPerson: "",
     attention: "",
+    billingAddress: "",
+    shippingAddress: "",
     paymentTerms: "",
     deliverySchedule: "",
     acknowledgementNotes: "",
@@ -102,7 +106,10 @@ function buildOaCreatePayload(form, { allowOverOrder = false, allowStaleConsumpt
     oaDate: form.oaDate,
     customerName: form.customerName,
     customerPORef: form.customerReference || form.customerPORef || "",
+    contactPerson: form.contactPerson || "",
     attention: form.attention || "",
+    billingAddress: form.billingAddress || "",
+    shippingAddress: form.shippingAddress || "",
     paymentTerms: form.paymentTerms || "",
     deliverySchedule: form.deliverySchedule || "",
     acknowledgementNotes: form.acknowledgementNotes || "",
@@ -307,6 +314,11 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
         ...defaultOaForm(),
         ...working,
         oaSourceType: "FROM_QUOTATION",
+        billingAddress: working.billingAddress || working.customer?.billingAddress || "",
+        shippingAddress: working.shippingAddress || working.customer?.shippingAddress || "",
+        contactPerson: working.contactPerson || working.customer?.contactPerson || working.customer?.contactName || "",
+        attention: working.attention || working.customer?.attention || "",
+        paymentTerms: working.paymentTerms || "",
         lines: working.lines?.length ? working.lines : [emptyOaWorkingLine()],
       });
     } catch (e) {
@@ -551,12 +563,6 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
               onChange={(e) => setForm((f) => ({ ...f, customerReference: e.target.value, customerPORef: e.target.value }))}
             />
           </FormField>
-          <FormField label="Attention">
-            <TextInput value={form.attention || ""} onChange={(e) => setForm((f) => ({ ...f, attention: e.target.value }))} />
-          </FormField>
-          <FormField label="Payment Terms">
-            <TextInput value={form.paymentTerms} onChange={(e) => setForm((f) => ({ ...f, paymentTerms: e.target.value }))} />
-          </FormField>
           <FormField label="Currency">
             <TextInput value={form.currency} onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))} />
           </FormField>
@@ -578,6 +584,20 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
               onChange={(e) => setForm((f) => ({ ...f, clearanceCost: Number(e.target.value) || 0 }))}
             />
           </FormField>
+        </div>
+
+        <div className="mt-3">
+          <CustomerTransactionDetailsFields
+            compact
+            values={{
+              contactPerson: form.contactPerson || "",
+              attention: form.attention || "",
+              paymentTerms: form.paymentTerms || "",
+              billingAddress: form.billingAddress || "",
+              shippingAddress: form.shippingAddress || "",
+            }}
+            onChange={(key, value) => setForm((f) => ({ ...f, [key]: value }))}
+          />
         </div>
 
         <div className="mt-3 grid gap-3 sm:grid-cols-3 md:grid-cols-5">

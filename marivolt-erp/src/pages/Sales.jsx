@@ -28,6 +28,12 @@ import CreateInvoiceFromPackingModal from "../components/sales/CreateInvoiceFrom
 import OrderAllocationDetailModal from "../components/sales/OrderAllocationDetailModal.jsx";
 import ConvertAllocationToPoModal from "../components/sales/ConvertAllocationToPoModal.jsx";
 import OaCreateModal from "../components/sales/OaCreateModal.jsx";
+import CustomerTransactionDetailsFields from "../components/sales/CustomerTransactionDetailsFields.jsx";
+import {
+  buildCustomerAddressInfoBoxHtml,
+  mapCustomerMasterToTransactionDefaults,
+  resolveDocumentCustomerFields,
+} from "../lib/customerTransactionFields.js";
 import { savePoFromAllocationSession } from "../lib/allocationPoSession.js";
 import { deliverReportHtml, downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 import {
@@ -407,7 +413,10 @@ function quotationDetailToEditableForm(q) {
     customerId: String(q.customerId || ""),
     customerName: q.customerName || "",
     customerReference: q.customerReference || "",
+    contactPerson: q.contactPerson || q.customer?.contactPerson || "",
     attention: q.attention || "",
+    billingAddress: q.billingAddress || q.customer?.billingAddress || "",
+    shippingAddress: q.shippingAddress || q.customer?.shippingAddress || "",
     vertical: q.vertical || "",
     engine: q.engine || "",
     model: q.model || "",
@@ -428,13 +437,15 @@ function quotationDetailToEditableForm(q) {
     remarks: q.remarks || "",
     termsAndConditions: q.termsAndConditions || "",
     internalNotes: q.internalNotes || "",
-    customer: q.customer || {
-      billingAddress: "",
-      shippingAddress: "",
-      contactPerson: "",
-      email: "",
-      phone: "",
-      country: "",
+    customer: {
+      ...(q.customer || {
+        billingAddress: q.billingAddress || "",
+        shippingAddress: q.shippingAddress || "",
+        email: "",
+        phone: "",
+        country: "",
+      }),
+      contactPerson: q.contactPerson || q.customer?.contactPerson || "",
     },
     lines,
   };
@@ -556,6 +567,10 @@ function oaDetailToEditableForm(oa) {
     acknowledgementNotes: oa.acknowledgementNotes || "",
     termsAndConditions: oa.termsAndConditions || "",
     deliverySchedule: oa.deliverySchedule || "",
+    contactPerson: oa.contactPerson || "",
+    attention: oa.attention || "",
+    billingAddress: oa.billingAddress || "",
+    shippingAddress: oa.shippingAddress || "",
     paymentTerms: oa.paymentTerms || "",
     incoterm: oa.incoterm || "",
     dispatchTerms: oa.dispatchTerms || "",
@@ -637,6 +652,11 @@ function proformaDetailToEditableForm(p) {
     linkedOANo: p.linkedOANo || "",
     proformaDate: pd,
     customerName: p.customerName || "",
+    customerReference: p.customerReference || "",
+    contactPerson: p.contactPerson || "",
+    attention: p.attention || "",
+    billingAddress: p.billingAddress || "",
+    shippingAddress: p.shippingAddress || "",
     paymentTerms: p.paymentTerms || "",
     bankDetails: p.bankDetails || "",
     validity: validityStr,
@@ -691,6 +711,8 @@ function salesInvoiceDetailToEditableForm(inv) {
   return {
     invoiceDate,
     customerName: inv.customerName || "",
+    contactPerson: inv.contactPerson || "",
+    attention: inv.attention || "",
     paymentTerms: inv.paymentTerms || "",
     dispatchDetails: inv.dispatchDetails || "",
     shippingAddress: inv.shippingAddress || "",
@@ -760,6 +782,9 @@ const reportColumnsById = {
     ["Date", (r) => (r.quotationDate ? new Date(r.quotationDate).toLocaleDateString() : "")],
     ["Customer", (r) => r.customerName || ""],
     ["Customer Ref", (r) => r.customerReference || ""],
+    ["Contact Person", (r) => r.contactPerson || ""],
+    ["Attention", (r) => r.attention || ""],
+    ["Payment Terms", (r) => r.paymentTerms || ""],
     ...machineDetailColumns,
     ["Line Items", (r) => r.lineItems || 0],
     ["Total", (r) => money(r.totalAmount)],
@@ -782,6 +807,9 @@ const reportColumnsById = {
     ["Linked Quotation", (r) => r.linkedQuotationNo || ""],
     ["Customer", (r) => r.customerName || ""],
     ["Customer PO Ref", (r) => r.customerPORef || ""],
+    ["Contact Person", (r) => r.contactPerson || ""],
+    ["Attention", (r) => r.attention || ""],
+    ["Payment Terms", (r) => r.paymentTerms || ""],
     ["Delivery Terms", (r) => r.deliveryTerms || ""],
     ...machineDetailColumns,
     ["Total", (r) => money(r.totalAmount)],
@@ -844,6 +872,10 @@ const reportColumnsById = {
     ["Invoice No", (r) => r.invoiceNo || ""],
     ["Date", (r) => (r.invoiceDate ? new Date(r.invoiceDate).toLocaleDateString() : "")],
     ["Customer", (r) => r.customerName || ""],
+    ["Customer Ref", (r) => r.customerReference || ""],
+    ["Contact Person", (r) => r.contactPerson || ""],
+    ["Attention", (r) => r.attention || ""],
+    ["Payment Terms", (r) => r.paymentTerms || ""],
     ["Linked Proforma", (r) => r.linkedProformaNo || ""],
     ["Linked OA", (r) => r.linkedOANo || ""],
     ...machineDetailColumns,
@@ -908,7 +940,6 @@ function downloadBlobFile(filename, blob, type) {
 function renderPrintWindow(data, autoPrint = false) {
   const q = data?.quotation || {};
   const company = q.companySnapshot || {};
-  const customer = q.customer || {};
   const rows = q.lines || [];
   const termsText = quotationPrintTermsText(q);
   const hasTerms = quotationHasPrintTerms(q);
@@ -920,14 +951,7 @@ function renderPrintWindow(data, autoPrint = false) {
   const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, branding);
   const mainBodyHtml = `
         <div class="info-grid">
-          <div class="info-box muted">
-            <div class="info-box-title">Customer &amp; Address Info</div>
-            <div><b>Customer:</b> ${q.customerName || "-"}</div>
-            <div><b>Customer Ref:</b> ${q.customerReference || "-"}</div>
-            <div><b>Attention:</b> ${q.attention || "-"}</div>
-            <div><b>Billing:</b> ${customer.billingAddress || "-"}</div>
-            <div><b>Shipping:</b> ${customer.shippingAddress || "-"}</div>
-          </div>
+          ${buildCustomerAddressInfoBoxHtml(q)}
           <div class="info-box muted">
             <div class="info-box-title">Machine Details</div>
             <div><b>Vertical:</b> ${q.vertical || "-"}</div>
@@ -1011,16 +1035,14 @@ function renderOrderAcknowledgementPrintWindow(payload, autoPrint = false) {
   const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(headerHtml, termsText, branding);
   const mainBodyHtml = `
         <div class="info-grid">
-          <div class="info-box muted">
-            <div class="info-box-title">Customer &amp; Address Info</div>
-            <div><b>Customer:</b> ${oa.customerName || "-"}</div>
-            <div><b>Customer Ref:</b> ${oa.customerPORef || "-"}</div>
-            <div><b>Payment Terms:</b> ${oa.paymentTerms || "-"}</div>
-            <div><b>Incoterm:</b> ${oa.incoterm || "-"}</div>
-            <div><b>Attention:</b> -</div>
-            <div><b>Billing:</b> -</div>
-            <div><b>Shipping:</b> -</div>
-          </div>
+          ${buildCustomerAddressInfoBoxHtml(oa, {
+            customerRef: oa.customerPORef,
+            insertAfterPaymentTerms: [
+              { label: "Incoterm", value: oa.incoterm || "-" },
+              { label: "Delivery / Schedule", value: oa.deliverySchedule || "-" },
+              { label: "Dispatch Terms", value: oa.dispatchTerms || "-" },
+            ],
+          })}
           <div class="info-box muted">
             <div class="info-box-title">Machine Details</div>
             <div><b>Vertical:</b> ${oa.vertical || "-"}</div>
@@ -1192,18 +1214,12 @@ function renderFlowDocPrintWindow({
         </div>`;
   const flowDocBodyTop = `
         <div class="info-grid">
+          ${buildCustomerAddressInfoBoxHtml(doc || {}, {
+            customerRef: linkedValue || doc?.customerReference || doc?.customerPORef,
+          })}
           <div class="info-box muted">
-            <div class="info-box-title">Customer &amp; Address Info</div>
-            <div><b>Customer:</b> ${doc?.customerName || "-"}</div>
-            <div><b>Reference:</b> ${linkedValue || "-"}</div>
-            <div><b>Attention:</b> -</div>
-            <div><b>Billing:</b> ${doc?.billingAddress || "-"}</div>
-            <div><b>Shipping:</b> ${doc?.shippingAddress || "-"}</div>
-          </div>
-          <div class="info-box muted">
-            <div class="info-box-title">Dispatch &amp; Terms</div>
+            <div class="info-box-title">Dispatch &amp; Status</div>
             <div><b>Dispatch:</b> ${doc?.dispatchDetails || "-"}</div>
-            <div><b>Payment Terms:</b> ${doc?.paymentTerms || "-"}</div>
             <div><b>Status:</b> ${doc?.status || "-"}</div>
             <div><b>Currency:</b> ${doc?.currency || "-"}</div>
             <div><b>Remarks:</b> ${doc?.remarks || "-"}</div>
@@ -1462,7 +1478,11 @@ export default function Sales() {
     phone: "",
     email: "",
     address: "",
+    attention: "",
+    billingAddress: "",
+    shippingAddress: "",
     paymentTerms: "CREDIT",
+    documentPaymentTerms: "",
     notes: "",
   });
   const canEditCustomers = canEditSalesCustomerMaster(auth?.user?.role);
@@ -1556,7 +1576,10 @@ export default function Sales() {
     customerId: "",
     customerName: "",
     customerReference: "",
+    contactPerson: "",
     attention: "",
+    billingAddress: "",
+    shippingAddress: "",
     vertical: "",
     engine: "",
     model: "",
@@ -1658,7 +1681,7 @@ export default function Sales() {
         page: 1,
         limit: 500,
       }),
-    enabled: activeTab === "Quotation" || createOpen,
+    enabled: activeTab === "Quotation" || createOpen || proformaCreateOpen || oaCreateOpen,
   });
 
   const { data: oaData, isLoading: oaLoading } = useQuery({
@@ -2108,7 +2131,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
         customerId: "",
         customerName: "",
         customerReference: "",
+        contactPerson: "",
         attention: "",
+        billingAddress: "",
+        shippingAddress: "",
         vertical: "",
         engine: "",
         model: "",
@@ -2363,7 +2389,11 @@ ${GLOBAL_REPORT_TABLE_CSS}
     phone: "",
     email: "",
     address: "",
+    attention: "",
+    billingAddress: "",
+    shippingAddress: "",
     paymentTerms: "CREDIT",
+    documentPaymentTerms: "",
     notes: "",
   });
 
@@ -2379,7 +2409,11 @@ ${GLOBAL_REPORT_TABLE_CSS}
         phone: "",
         email: "",
         address: "",
+        attention: "",
+        billingAddress: "",
+        shippingAddress: "",
         paymentTerms: "CREDIT",
+        documentPaymentTerms: "",
         notes: "",
       });
     },
@@ -2833,6 +2867,11 @@ ${GLOBAL_REPORT_TABLE_CSS}
   const [proformaForm, setProformaForm] = useState({
     proformaDate: new Date().toISOString().slice(0, 10),
     customerName: "",
+    customerReference: "",
+    contactPerson: "",
+    attention: "",
+    billingAddress: "",
+    shippingAddress: "",
     paymentTerms: "",
     shipmentTerms: "",
     bankDetails: "",
@@ -2852,6 +2891,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
   const [salesInvoiceForm, setSalesInvoiceForm] = useState({
     invoiceDate: new Date().toISOString().slice(0, 10),
     customerName: "",
+    contactPerson: "",
+    attention: "",
     paymentTerms: "",
     dispatchDetails: "",
     shippingAddress: "",
@@ -2923,6 +2964,11 @@ ${GLOBAL_REPORT_TABLE_CSS}
       setProformaForm({
         proformaDate: new Date().toISOString().slice(0, 10),
         customerName: "",
+        customerReference: "",
+        contactPerson: "",
+        attention: "",
+        billingAddress: "",
+        shippingAddress: "",
         paymentTerms: "",
         shipmentTerms: "",
         bankDetails: "",
@@ -2950,6 +2996,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
       setSalesInvoiceForm({
         invoiceDate: new Date().toISOString().slice(0, 10),
         customerName: "",
+        contactPerson: "",
+        attention: "",
         paymentTerms: "",
         dispatchDetails: "",
         shippingAddress: "",
@@ -3895,7 +3943,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     <th className="px-3 py-2">Contact</th>
                     <th className="px-3 py-2">Phone</th>
                     <th className="px-3 py-2">Email</th>
-                    <th className="px-3 py-2">Payment Terms</th>
+                    <th className="px-3 py-2">Credit Terms</th>
                     <th className="px-3 py-2">Address</th>
                     {canEditCustomers ? <th className="px-3 py-2 text-right">Actions</th> : null}
                   </tr>
@@ -3936,7 +3984,11 @@ ${GLOBAL_REPORT_TABLE_CSS}
                                   phone: r.phone || "",
                                   email: r.email || "",
                                   address: r.address || "",
+                                  attention: r.attention || "",
+                                  billingAddress: r.billingAddress || "",
+                                  shippingAddress: r.shippingAddress || "",
                                   paymentTerms: r.paymentTerms === "ADVANCE" ? "ADVANCE" : "CREDIT",
+                                  documentPaymentTerms: r.documentPaymentTerms || "",
                                   notes: r.notes || "",
                                 });
                                 setCustomerEditOpen(true);
@@ -5325,7 +5377,27 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   onChange={(e) => {
                     const selectedId = e.target.value;
                     const selected = customerOptions.find((c) => c._id === selectedId);
-                    setDetailQuotationDraftForm((f) => ({ ...f, customerId: selectedId, customerName: selected?.name || "" }));
+                    const defaults = selected ? mapCustomerMasterToTransactionDefaults(selected) : null;
+                    setDetailQuotationDraftForm((f) => ({
+                      ...f,
+                      customerId: selectedId,
+                      customerName: selected?.name || "",
+                      ...(defaults
+                        ? {
+                            contactPerson: defaults.contactPerson,
+                            attention: defaults.attention,
+                            billingAddress: defaults.billingAddress,
+                            shippingAddress: defaults.shippingAddress,
+                            paymentTerms: defaults.paymentTerms,
+                            customer: {
+                              ...(f.customer || {}),
+                              billingAddress: defaults.billingAddress,
+                              shippingAddress: defaults.shippingAddress,
+                              contactPerson: defaults.contactPerson,
+                            },
+                          }
+                        : {}),
+                    }));
                   }}
                 >
                   <option value="">Select customer</option>
@@ -5338,9 +5410,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
               </FormField>
               <FormField label="Customer Ref">
                 <TextInput value={detailQuotationDraftForm.customerReference} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, customerReference: e.target.value }))} />
-              </FormField>
-              <FormField label="Attention">
-                <TextInput value={detailQuotationDraftForm.attention || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, attention: e.target.value }))} />
               </FormField>
               <FormField label="Validity Date">
                 <TextInput type="date" value={detailQuotationDraftForm.validityDate || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, validityDate: e.target.value }))} />
@@ -5396,6 +5465,25 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 />
               </FormField>
             </div>
+
+            <CustomerTransactionDetailsFields
+              values={{
+                contactPerson: detailQuotationDraftForm.contactPerson || "",
+                attention: detailQuotationDraftForm.attention || "",
+                paymentTerms: detailQuotationDraftForm.paymentTerms || "",
+                billingAddress: detailQuotationDraftForm.billingAddress || "",
+                shippingAddress: detailQuotationDraftForm.shippingAddress || "",
+              }}
+              onChange={(key, value) =>
+                setDetailQuotationDraftForm((f) => ({
+                  ...f,
+                  [key]: value,
+                  ...(key === "contactPerson" || key === "billingAddress" || key === "shippingAddress"
+                    ? { customer: { ...(f.customer || {}), [key]: value } }
+                    : {}),
+                }))
+              }
+            />
 
             <FormField label="Terms &amp; Conditions (printed on quotation PDF)">
               <textarea
@@ -5734,11 +5822,20 @@ ${GLOBAL_REPORT_TABLE_CSS}
             <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded-xl border bg-gray-50 p-3">
                 <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Customer &amp; Address Info</div>
-                <div><span className="font-medium">Customer:</span> {detail.customerName || "-"}</div>
-                <div><span className="font-medium">Customer Ref:</span> {detail.customerReference || "-"}</div>
-                <div><span className="font-medium">Attention:</span> {detail.attention || "-"}</div>
-                <div><span className="font-medium">Billing:</span> {detail.customer?.billingAddress || "-"}</div>
-                <div><span className="font-medium">Shipping:</span> {detail.customer?.shippingAddress || "-"}</div>
+                {(() => {
+                  const custFields = resolveDocumentCustomerFields(detail);
+                  return (
+                    <>
+                      <div><span className="font-medium">Customer:</span> {detail.customerName || "-"}</div>
+                      <div><span className="font-medium">Customer Ref:</span> {detail.customerReference || "-"}</div>
+                      <div><span className="font-medium">Contact Person:</span> {custFields.contactPerson}</div>
+                      <div><span className="font-medium">Attention:</span> {custFields.attention}</div>
+                      <div className="whitespace-pre-wrap break-words"><span className="font-medium">Payment Terms:</span> {custFields.paymentTerms}</div>
+                      <div className="whitespace-pre-wrap break-words"><span className="font-medium">Billing Address:</span> {custFields.billingAddress}</div>
+                      <div className="whitespace-pre-wrap break-words"><span className="font-medium">Shipping Address:</span> {custFields.shippingAddress}</div>
+                    </>
+                  );
+                })()}
               </div>
               <div className="rounded-xl border bg-gray-50 p-3">
                 <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Machine Details</div>
@@ -5952,12 +6049,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     onChange={(e) => setDetailOADraftForm((f) => ({ ...f, customerPODate: e.target.value }))}
                   />
                 </FormField>
-                <FormField label="Payment terms">
-                  <TextInput
-                    value={detailOADraftForm.paymentTerms || ""}
-                    onChange={(e) => setDetailOADraftForm((f) => ({ ...f, paymentTerms: e.target.value }))}
-                  />
-                </FormField>
                 <FormField label="Incoterm">
                   <TextInput value={detailOADraftForm.incoterm || ""} onChange={(e) => setDetailOADraftForm((f) => ({ ...f, incoterm: e.target.value }))} />
                 </FormField>
@@ -6016,6 +6107,17 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   />
                 </FormField>
               </div>
+              <CustomerTransactionDetailsFields
+                compact
+                values={{
+                  contactPerson: detailOADraftForm.contactPerson || "",
+                  attention: detailOADraftForm.attention || "",
+                  paymentTerms: detailOADraftForm.paymentTerms || "",
+                  billingAddress: detailOADraftForm.billingAddress || "",
+                  shippingAddress: detailOADraftForm.shippingAddress || "",
+                }}
+                onChange={(key, value) => setDetailOADraftForm((f) => ({ ...f, [key]: value }))}
+              />
               <FormField label="Acknowledgement notes">
                 <textarea
                   className="w-full rounded-xl border px-3 py-2 text-sm"
@@ -6373,6 +6475,21 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   oaDetail.linkedQuotationNo || oaDetail.sourceDocumentNumber || "-"
                 )}
               </div>
+              {(() => {
+                const custFields = resolveDocumentCustomerFields(oaDetail);
+                return (
+                  <div className="rounded-xl border bg-gray-50 p-3 text-xs">
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Customer &amp; Address Info</div>
+                    <div><span className="font-medium">Customer:</span> {oaDetail.customerName || "-"}</div>
+                    <div><span className="font-medium">Customer Ref:</span> {oaDetail.customerPORef || oaDetail.customerReference || "-"}</div>
+                    <div><span className="font-medium">Contact Person:</span> {custFields.contactPerson}</div>
+                    <div><span className="font-medium">Attention:</span> {custFields.attention}</div>
+                    <div className="whitespace-pre-wrap break-words"><span className="font-medium">Payment Terms:</span> {custFields.paymentTerms}</div>
+                    <div className="whitespace-pre-wrap break-words"><span className="font-medium">Billing Address:</span> {custFields.billingAddress}</div>
+                    <div className="whitespace-pre-wrap break-words"><span className="font-medium">Shipping Address:</span> {custFields.shippingAddress}</div>
+                  </div>
+                );
+              })()}
               {(oaDetail.sourceDocumentNumber || oaDetail.copiedBy) && (
                 <div className="text-xs text-gray-500">
                   Snapshot: {oaDetail.sourceDocumentType || "QUOTATION"} {oaDetail.sourceDocumentNumber || ""}
@@ -6535,10 +6652,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, customerName: e.target.value }))}
                   />
                 </FormField>
-                <FormField label="Payment terms">
+                <FormField label="Customer Ref">
                   <TextInput
-                    value={detailProformaDraftForm.paymentTerms || ""}
-                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, paymentTerms: e.target.value }))}
+                    value={detailProformaDraftForm.customerReference || ""}
+                    onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, customerReference: e.target.value }))}
                   />
                 </FormField>
                 <FormField label="Validity">
@@ -6634,6 +6751,17 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   />
                 </FormField>
               </div>
+              <CustomerTransactionDetailsFields
+                compact
+                values={{
+                  contactPerson: detailProformaDraftForm.contactPerson || "",
+                  attention: detailProformaDraftForm.attention || "",
+                  paymentTerms: detailProformaDraftForm.paymentTerms || "",
+                  billingAddress: detailProformaDraftForm.billingAddress || "",
+                  shippingAddress: detailProformaDraftForm.shippingAddress || "",
+                }}
+                onChange={(key, value) => setDetailProformaDraftForm((f) => ({ ...f, [key]: value }))}
+              />
               <FormField label="Bank details">
                 <p className="mb-1 text-xs text-gray-500">
                   Auto-filled from Accounts → Bank details for the PI currency above (not quotation currency).
@@ -6919,6 +7047,21 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   </div>
                 </div>
               </div>
+              {(() => {
+                const custFields = resolveDocumentCustomerFields(proformaDetail);
+                return (
+                  <div className="rounded-xl border bg-gray-50 p-3 text-xs">
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Customer &amp; Address Info</div>
+                    <div><span className="font-medium">Customer:</span> {proformaDetail.customerName || "-"}</div>
+                    <div><span className="font-medium">Customer Ref:</span> {proformaDetail.customerReference || "-"}</div>
+                    <div><span className="font-medium">Contact Person:</span> {custFields.contactPerson}</div>
+                    <div><span className="font-medium">Attention:</span> {custFields.attention}</div>
+                    <div className="whitespace-pre-wrap break-words"><span className="font-medium">Payment Terms:</span> {custFields.paymentTerms}</div>
+                    <div className="whitespace-pre-wrap break-words"><span className="font-medium">Billing Address:</span> {custFields.billingAddress}</div>
+                    <div className="whitespace-pre-wrap break-words"><span className="font-medium">Shipping Address:</span> {custFields.shippingAddress}</div>
+                  </div>
+                );
+              })()}
               <div className="text-xs text-gray-600">
                 Linked Quotation: {proformaDetail.linkedQuotationNo || "-"} | Linked OA: {proformaDetail.linkedOANo || "-"}
               </div>
@@ -7036,13 +7179,20 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <FormField label="Customer">
                   <TextInput value={detailSalesInvoiceDraftForm.customerName} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, customerName: e.target.value }))} />
                 </FormField>
-                <FormField label="Payment Terms">
-                  <TextInput value={detailSalesInvoiceDraftForm.paymentTerms || ""} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, paymentTerms: e.target.value }))} />
-                </FormField>
                 <FormField label="Currency">
                   <TextInput value={detailSalesInvoiceDraftForm.currency || "USD"} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))} />
                 </FormField>
               </div>
+              <CustomerTransactionDetailsFields
+                values={{
+                  contactPerson: detailSalesInvoiceDraftForm.contactPerson || "",
+                  attention: detailSalesInvoiceDraftForm.attention || "",
+                  paymentTerms: detailSalesInvoiceDraftForm.paymentTerms || "",
+                  billingAddress: detailSalesInvoiceDraftForm.billingAddress || "",
+                  shippingAddress: detailSalesInvoiceDraftForm.shippingAddress || "",
+                }}
+                onChange={(key, value) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, [key]: value }))}
+              />
               <div className="grid gap-3 sm:grid-cols-3">
                 <FormField label="Cust ref (Tax invoice)">
                   <TextInput
@@ -7061,24 +7211,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   <TextInput
                     value={detailSalesInvoiceDraftForm.dischargePort || ""}
                     onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, dischargePort: e.target.value }))}
-                  />
-                </FormField>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <FormField label="Billing address">
-                  <textarea
-                    value={detailSalesInvoiceDraftForm.billingAddress || ""}
-                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, billingAddress: e.target.value }))}
-                    rows={3}
-                    className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
-                  />
-                </FormField>
-                <FormField label="Shipping address">
-                  <textarea
-                    value={detailSalesInvoiceDraftForm.shippingAddress || ""}
-                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, shippingAddress: e.target.value }))}
-                    rows={3}
-                    className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
                   />
                 </FormField>
               </div>
@@ -7365,10 +7497,17 @@ ${GLOBAL_REPORT_TABLE_CSS}
           <FormField label="Customer Name *">
             <TextInput value={customerForm.name} onChange={(e) => setCustomerForm((f) => ({ ...f, name: e.target.value }))} />
           </FormField>
-          <FormField label="Contact Name">
+          <FormField label="Contact Person">
             <TextInput
               value={customerForm.contactName}
               onChange={(e) => setCustomerForm((f) => ({ ...f, contactName: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Attention">
+            <TextInput
+              value={customerForm.attention}
+              onChange={(e) => setCustomerForm((f) => ({ ...f, attention: e.target.value }))}
+              placeholder="Default contact for documents"
             />
           </FormField>
           <FormField label="Phone">
@@ -7377,7 +7516,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
           <FormField label="Email">
             <TextInput value={customerForm.email} onChange={(e) => setCustomerForm((f) => ({ ...f, email: e.target.value }))} />
           </FormField>
-          <FormField label="Payment Terms">
+          <FormField label="Credit Terms">
             <select
               className="w-full rounded-xl border px-3 py-2 text-sm"
               value={customerForm.paymentTerms}
@@ -7386,11 +7525,39 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <option value="CREDIT">CREDIT</option>
               <option value="ADVANCE">ADVANCE</option>
             </select>
+            <p className="mt-1 text-xs text-gray-500">Internal only — ADVANCE/CREDIT. Not printed on documents.</p>
           </FormField>
-          <FormField label="Address">
+          <FormField label="Payment Terms" className="sm:col-span-3">
+            <textarea
+              rows={5}
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+              value={customerForm.documentPaymentTerms}
+              onChange={(e) => setCustomerForm((f) => ({ ...f, documentPaymentTerms: e.target.value }))}
+              placeholder={"e.g.\n100% Advance against PI.\nDispatch after receipt of full payment."}
+            />
+            <p className="mt-1 text-xs text-gray-500">Commercial wording for quotations and invoices.</p>
+          </FormField>
+          <FormField label="Address" className="sm:col-span-3">
             <TextInput
               value={customerForm.address}
               onChange={(e) => setCustomerForm((f) => ({ ...f, address: e.target.value }))}
+            />
+            <p className="mt-1 text-xs text-gray-500">Legacy address. Billing/Shipping below override this on sales documents when set.</p>
+          </FormField>
+          <FormField label="Billing Address" className="sm:col-span-3 md:col-span-1">
+            <textarea
+              rows={3}
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+              value={customerForm.billingAddress}
+              onChange={(e) => setCustomerForm((f) => ({ ...f, billingAddress: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Shipping Address" className="sm:col-span-3 md:col-span-2">
+            <textarea
+              rows={3}
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+              value={customerForm.shippingAddress}
+              onChange={(e) => setCustomerForm((f) => ({ ...f, shippingAddress: e.target.value }))}
             />
           </FormField>
         </div>
@@ -7425,10 +7592,17 @@ ${GLOBAL_REPORT_TABLE_CSS}
               onChange={(e) => setCustomerEditForm((f) => ({ ...f, name: e.target.value }))}
             />
           </FormField>
-          <FormField label="Contact Name">
+          <FormField label="Contact Person">
             <TextInput
               value={customerEditForm.contactName}
               onChange={(e) => setCustomerEditForm((f) => ({ ...f, contactName: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Attention">
+            <TextInput
+              value={customerEditForm.attention}
+              onChange={(e) => setCustomerEditForm((f) => ({ ...f, attention: e.target.value }))}
+              placeholder="Default contact for documents"
             />
           </FormField>
           <FormField label="Phone">
@@ -7443,7 +7617,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               onChange={(e) => setCustomerEditForm((f) => ({ ...f, email: e.target.value }))}
             />
           </FormField>
-          <FormField label="Payment Terms">
+          <FormField label="Credit Terms">
             <select
               className="w-full rounded-xl border px-3 py-2 text-sm"
               value={customerEditForm.paymentTerms}
@@ -7452,11 +7626,39 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <option value="CREDIT">CREDIT</option>
               <option value="ADVANCE">ADVANCE</option>
             </select>
+            <p className="mt-1 text-xs text-gray-500">Internal only — ADVANCE/CREDIT. Not printed on documents.</p>
           </FormField>
-          <FormField label="Address">
+          <FormField label="Payment Terms" className="sm:col-span-3">
+            <textarea
+              rows={5}
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+              value={customerEditForm.documentPaymentTerms}
+              onChange={(e) => setCustomerEditForm((f) => ({ ...f, documentPaymentTerms: e.target.value }))}
+              placeholder={"e.g.\n100% Advance against PI.\nDispatch after receipt of full payment."}
+            />
+            <p className="mt-1 text-xs text-gray-500">Commercial wording for quotations and invoices.</p>
+          </FormField>
+          <FormField label="Address" className="sm:col-span-3">
             <TextInput
               value={customerEditForm.address}
               onChange={(e) => setCustomerEditForm((f) => ({ ...f, address: e.target.value }))}
+            />
+            <p className="mt-1 text-xs text-gray-500">Legacy address. Billing/Shipping below override this on sales documents when set.</p>
+          </FormField>
+          <FormField label="Billing Address" className="sm:col-span-3 md:col-span-1">
+            <textarea
+              rows={3}
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+              value={customerEditForm.billingAddress}
+              onChange={(e) => setCustomerEditForm((f) => ({ ...f, billingAddress: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Shipping Address" className="sm:col-span-3 md:col-span-2">
+            <textarea
+              rows={3}
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+              value={customerEditForm.shippingAddress}
+              onChange={(e) => setCustomerEditForm((f) => ({ ...f, shippingAddress: e.target.value }))}
             />
           </FormField>
           <FormField label="Notes" className="sm:col-span-3">
@@ -8088,10 +8290,26 @@ ${GLOBAL_REPORT_TABLE_CSS}
               onChange={(e) => {
                 const selectedId = e.target.value;
                 const selected = customerOptions.find((c) => c._id === selectedId);
+                const defaults = selected ? mapCustomerMasterToTransactionDefaults(selected) : null;
                 setForm((f) => ({
                   ...f,
                   customerId: selectedId,
                   customerName: selected?.name || "",
+                  ...(defaults
+                    ? {
+                        contactPerson: defaults.contactPerson,
+                        attention: defaults.attention,
+                        billingAddress: defaults.billingAddress,
+                        shippingAddress: defaults.shippingAddress,
+                        paymentTerms: defaults.paymentTerms,
+                        customer: {
+                          ...(f.customer || {}),
+                          billingAddress: defaults.billingAddress,
+                          shippingAddress: defaults.shippingAddress,
+                          contactPerson: defaults.contactPerson,
+                        },
+                      }
+                    : {}),
                 }));
               }}
             >
@@ -8107,12 +8325,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
             <TextInput
               value={form.customerReference}
               onChange={(e) => setForm((f) => ({ ...f, customerReference: e.target.value }))}
-            />
-          </FormField>
-          <FormField label="Attention">
-            <TextInput
-              value={form.attention}
-              onChange={(e) => setForm((f) => ({ ...f, attention: e.target.value }))}
             />
           </FormField>
           <FormField label="Validity Date">
@@ -8172,6 +8384,27 @@ ${GLOBAL_REPORT_TABLE_CSS}
               onChange={(e) => setForm((f) => ({ ...f, clearanceCost: Number(e.target.value) || 0 }))}
             />
           </FormField>
+        </div>
+
+        <div className="mt-3">
+          <CustomerTransactionDetailsFields
+            values={{
+              contactPerson: form.contactPerson || "",
+              attention: form.attention || "",
+              paymentTerms: form.paymentTerms || "",
+              billingAddress: form.billingAddress || "",
+              shippingAddress: form.shippingAddress || "",
+            }}
+            onChange={(key, value) =>
+              setForm((f) => ({
+                ...f,
+                [key]: value,
+                ...(key === "contactPerson" || key === "billingAddress" || key === "shippingAddress"
+                  ? { customer: { ...(f.customer || {}), [key]: value } }
+                  : {}),
+              }))
+            }
+          />
         </div>
 
         <div className="mt-6">
@@ -8539,10 +8772,43 @@ ${GLOBAL_REPORT_TABLE_CSS}
             />
           </FormField>
           <FormField label="Customer *">
-            <TextInput value={proformaForm.customerName} onChange={(e) => setProformaForm((f) => ({ ...f, customerName: e.target.value }))} />
-          </FormField>
-          <FormField label="Payment Terms">
-            <TextInput value={proformaForm.paymentTerms} onChange={(e) => setProformaForm((f) => ({ ...f, paymentTerms: e.target.value }))} />
+            <select
+              className="w-full rounded-xl border px-3 py-2 text-sm"
+              value={
+                customerOptions.find((c) => c.name === proformaForm.customerName)?._id ||
+                (proformaForm.customerName ? "__manual__" : "")
+              }
+              onChange={(e) => {
+                const selectedId = e.target.value;
+                if (!selectedId || selectedId === "__manual__") return;
+                const selected = customerOptions.find((c) => c._id === selectedId);
+                const defaults = selected ? mapCustomerMasterToTransactionDefaults(selected) : null;
+                setProformaForm((f) => ({
+                  ...f,
+                  customerName: selected?.name || "",
+                  ...(defaults
+                    ? {
+                        contactPerson: defaults.contactPerson,
+                        attention: defaults.attention,
+                        billingAddress: defaults.billingAddress,
+                        shippingAddress: defaults.shippingAddress,
+                        paymentTerms: defaults.paymentTerms,
+                      }
+                    : {}),
+                }));
+              }}
+            >
+              <option value="">Select customer from Customer Master</option>
+              {proformaForm.customerName &&
+              !customerOptions.some((c) => c.name === proformaForm.customerName) ? (
+                <option value="__manual__">{proformaForm.customerName}</option>
+              ) : null}
+              {customerOptions.map((c) => (
+                <option key={c._id} value={c._id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
           </FormField>
           <FormField label="Currency">
             <TextInput
@@ -8550,6 +8816,22 @@ ${GLOBAL_REPORT_TABLE_CSS}
               onChange={(e) => applyProformaCurrencyChange(e.target.value, setProformaForm)}
             />
           </FormField>
+        </div>
+        <div className="mt-3">
+          <CustomerTransactionDetailsFields
+            compact
+            customerRefLabel="Customer Ref"
+            customerRefValue={proformaForm.customerReference || ""}
+            onCustomerRefChange={(e) => setProformaForm((f) => ({ ...f, customerReference: e.target.value }))}
+            values={{
+              contactPerson: proformaForm.contactPerson || "",
+              attention: proformaForm.attention || "",
+              paymentTerms: proformaForm.paymentTerms || "",
+              billingAddress: proformaForm.billingAddress || "",
+              shippingAddress: proformaForm.shippingAddress || "",
+            }}
+            onChange={(key, value) => setProformaForm((f) => ({ ...f, [key]: value }))}
+          />
         </div>
         <div className="mt-3 grid gap-3 sm:grid-cols-3 md:grid-cols-5">
           <FormField label="Vertical">
@@ -8744,6 +9026,13 @@ ${GLOBAL_REPORT_TABLE_CSS}
             <TextInput
               value={salesInvoiceForm.customerName}
               onChange={(e) => setSalesInvoiceForm((f) => ({ ...f, customerName: e.target.value }))}
+            />
+          </FormField>
+          <FormField label="Attention">
+            <TextInput
+              value={salesInvoiceForm.attention || ""}
+              onChange={(e) => setSalesInvoiceForm((f) => ({ ...f, attention: e.target.value }))}
+              placeholder="Contact person"
             />
           </FormField>
           <FormField label="Payment Terms">

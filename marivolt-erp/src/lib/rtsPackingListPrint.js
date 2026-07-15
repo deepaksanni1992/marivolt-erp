@@ -9,6 +9,7 @@ import {
   openCommercialReportPrintWindow,
   PACKING_LIST_EXTRA_CSS,
 } from "./commercialReportLayout.js";
+import { buildCustomerAddressInfoRows } from "./customerTransactionFields.js";
 
 function money(n) {
   return Number(n || 0).toFixed(2);
@@ -47,13 +48,7 @@ export function renderRtsPackingListPrintWindow({ rts, company, autoPrint = fals
   const cards = buildReportInfoCardsHtml({
     left: {
       title: "Customer & Address Info",
-      rows: [
-        { label: "Customer", value: rts?.customerName },
-        { label: "Customer Ref", value: rts?.customerReference || "-" },
-        { label: "Address", value: rts?.billingAddress || "-" },
-        { label: "Shipping", value: rts?.shippingAddress || "-" },
-        { label: "Attention", value: rts?.attention || "-" },
-      ],
+      rows: buildCustomerAddressInfoRows(rts || {}),
     },
     right: {
       title: "Machine Details",

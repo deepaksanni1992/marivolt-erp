@@ -74,6 +74,13 @@ const storePackingSchema = new mongoose.Schema(
     linkedOANo: { type: String, default: "", trim: true },
     linkedProformaNo: { type: String, default: "", trim: true },
     customerName: { type: String, default: "", trim: true },
+    /** Snapshot copied from OA/PI at packing create — independent of Customer Master. */
+    customerReference: { type: String, default: "", trim: true },
+    contactPerson: { type: String, default: "", trim: true },
+    attention: { type: String, default: "", trim: true },
+    billingAddress: { type: String, default: "", trim: true },
+    shippingAddress: { type: String, default: "", trim: true },
+    paymentTerms: { type: String, default: "", trim: true },
     engine: { type: String, default: "", trim: true },
     model: { type: String, default: "", trim: true },
     esn: { type: String, default: "", trim: true },

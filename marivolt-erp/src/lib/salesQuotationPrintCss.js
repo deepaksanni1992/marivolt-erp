@@ -1,5 +1,6 @@
 import { GLOBAL_REPORT_PRINT_CSS } from "./reportPrintLayout.js";
 import { GLOBAL_REPORT_TABLE_CSS } from "./reportTableLayout.js";
+import { CUSTOMER_ADDRESS_PRINT_CSS } from "./customerTransactionFields.js";
 
 /** Shared print styles for quotation-style sales documents (quotation, OA, etc.). */
 export const SALES_QUOTATION_STYLE_PRINT_CSS = `
@@ -125,9 +126,11 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
             border-radius: 10px;
             padding: 10px 12px;
             background: #fafafa;
-            min-height: 156px;
+            min-height: 0;
+            height: auto;
             box-sizing: border-box;
           }
+${CUSTOMER_ADDRESS_PRINT_CSS}
           .info-box-title { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #6b7280; margin-bottom: 6px; letter-spacing: 0.3px; }
           table.report-table,
           table.report-lines-table,
@@ -148,6 +151,7 @@ export const SALES_QUOTATION_STYLE_PRINT_CSS = `
           .right { text-align: right; }
           .totals { margin-top: 12px; width: 320px; margin-left: auto; }
           .totals div { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
+          .print-totals { page-break-inside: avoid; break-inside: avoid; }
           .footer { margin-top: 30px; font-size: 12px; color: #444; }
           .quote-terms {
             margin-top: 28px;

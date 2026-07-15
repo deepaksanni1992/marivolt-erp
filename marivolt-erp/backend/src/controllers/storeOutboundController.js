@@ -1,11 +1,18 @@
 import mongoose from "mongoose";
 import OrderAllocation from "../models/OrderAllocation.js";
+import OrderAcknowledgement from "../models/OrderAcknowledgement.js";
+import ProformaInvoice from "../models/ProformaInvoice.js";
+import Quotation from "../models/Quotation.js";
 import StorePacking from "../models/StorePacking.js";
 import StoreDispatch from "../models/StoreDispatch.js";
 import SalesInvoice from "../models/SalesInvoice.js";
 import * as stockService from "../services/stockService.js";
 import { writeAudit } from "../services/auditService.js";
 import { nextUniqueSalesDocNumber } from "../utils/salesDocNumber.js";
+import {
+  firstNonEmpty,
+  resolveDocumentCustomerFields,
+} from "../utils/customerTransactionFields.js";
 import {
   PACKING_CSV_HEADER,
   buildPackingImportPreview,
@@ -17,6 +24,36 @@ function withCompany(req, filter = {}) {
 }
 function t(v) {
   return String(v ?? "").trim();
+}
+
+async function resolveCustomerSnapshotForAllocation(req, allocation) {
+  const [oa, pi, quotation] = await Promise.all([
+    allocation?.linkedOAId
+      ? OrderAcknowledgement.findOne(withCompany(req, { _id: allocation.linkedOAId })).lean()
+      : null,
+    allocation?.linkedProformaId
+      ? ProformaInvoice.findOne(withCompany(req, { _id: allocation.linkedProformaId })).lean()
+      : null,
+    allocation?.linkedQuotationId
+      ? Quotation.findOne(withCompany(req, { _id: allocation.linkedQuotationId })).lean()
+      : null,
+  ]);
+  const fromOa = oa ? resolveDocumentCustomerFields(oa) : {};
+  const fromPi = pi ? resolveDocumentCustomerFields(pi) : {};
+  const fromQtn = quotation ? resolveDocumentCustomerFields(quotation) : {};
+  const pick = (key) => firstNonEmpty(fromOa[key], fromPi[key], fromQtn[key]);
+  return {
+    customerReference: firstNonEmpty(
+      oa?.customerPORef,
+      pi?.customerReference,
+      quotation?.customerReference
+    ),
+    contactPerson: pick("contactPerson"),
+    attention: pick("attention"),
+    billingAddress: pick("billingAddress"),
+    shippingAddress: pick("shippingAddress"),
+    paymentTerms: pick("paymentTerms"),
+  };
 }
 
 const POSTED_PACKING_STATUSES = ["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED"];
@@ -406,6 +443,7 @@ export async function createStorePackingDraft(req, res) {
       }
     }
     const totals = packageTotals(normalizedPackages);
+    const customerSnap = await resolveCustomerSnapshotForAllocation(req, allocation);
     const doc = await StorePacking.create({
       companyId: req.companyId,
       branchId: req.body.branchId || null,
@@ -419,6 +457,12 @@ export async function createStorePackingDraft(req, res) {
       linkedOANo: allocation.linkedOANo || "",
       linkedProformaNo: allocation.linkedProformaNo || "",
       customerName: allocation.customerName,
+      customerReference: customerSnap.customerReference || "",
+      contactPerson: customerSnap.contactPerson || "",
+      attention: customerSnap.attention || "",
+      billingAddress: customerSnap.billingAddress || "",
+      shippingAddress: customerSnap.shippingAddress || "",
+      paymentTerms: customerSnap.paymentTerms || "",
       engine: allocation.engine || "",
       model: allocation.model || "",
       esn: allocation.esn || "",

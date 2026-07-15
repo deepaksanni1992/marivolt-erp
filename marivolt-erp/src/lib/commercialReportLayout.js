@@ -85,7 +85,13 @@ export function buildReportInfoCardsHtml({ left, right }) {
   const renderBox = (box) => {
     if (!box) return "";
     const rows = (box.rows || [])
-      .map((r) => `<div><b>${escHtml(r.label)}:</b> ${escHtml(r.value ?? "-")}</div>`)
+      .map((r) => {
+        const val = escHtml(r.value ?? "-");
+        const valueHtml = r.multiline || r.preWrap
+          ? `<span class="mv-address-block">${val}</span>`
+          : val;
+        return `<div><b>${escHtml(r.label)}:</b> ${valueHtml}</div>`;
+      })
       .join("");
     return `
       <div class="info-box muted">

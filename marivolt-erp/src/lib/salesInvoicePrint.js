@@ -1,5 +1,11 @@
 /** Helpers for Tax invoice print: amount in words and bank footer HTML. */
 
+import {
+  CUSTOMER_ADDRESS_PRINT_CSS,
+  resolveCustomerRef,
+  resolveDocumentCustomerFields,
+} from "./customerTransactionFields.js";
+
 const ONES = [
   "",
   "One",
@@ -262,8 +268,20 @@ export function buildTaxInvoiceHeaderHtml({
   const loading = esc(doc.loadingPort || "").trim() || "—";
   const discharge = esc(doc.dischargePort || "").trim() || "—";
 
-  const custAddr = String(doc.billingAddress || doc.shippingAddress || "").trim();
-  const custAddrHtml = custAddr ? esc(custAddr).replace(/\r?\n/g, "<br/>") : "—";
+  const fields = resolveDocumentCustomerFields(doc);
+  const documentCustomerRef = resolveCustomerRef(doc);
+  const billingHtml =
+    fields.billingAddress && fields.billingAddress !== "-"
+      ? `<span class="mv-address-block">${esc(fields.billingAddress)}</span>`
+      : "—";
+  const shippingHtml =
+    fields.shippingAddress && fields.shippingAddress !== "-"
+      ? `<span class="mv-address-block">${esc(fields.shippingAddress)}</span>`
+      : "—";
+  const paymentTermsHtml =
+    fields.paymentTerms && fields.paymentTerms !== "-"
+      ? `<span class="mv-address-block">${esc(fields.paymentTerms)}</span>`
+      : "—";
   const vatLine = String(doc.customerVatNo || "").trim()
     ? `<div class="si-customer-vat"><b>VAT NO :</b> ${esc(doc.customerVatNo)}</div>`
     : "";
@@ -279,6 +297,7 @@ export function buildTaxInvoiceHeaderHtml({
 
   return `
     <div class="si-tax-print-wrap">
+      <style>${CUSTOMER_ADDRESS_PRINT_CSS}</style>
       <div class="si-header-3col">
         <div class="si-hbox-tax si-hbox-stretch">
           <div class="si-hbox-title">Shipper</div>
@@ -302,7 +321,12 @@ export function buildTaxInvoiceHeaderHtml({
           <div class="si-hbox-tax">
             <div class="si-hbox-title">Customer</div>
             <div class="si-customer-name">${esc(doc.customerName || "—")}</div>
-            <div class="si-customer-addr">${custAddrHtml}</div>
+            <div><b>Customer Ref:</b> ${esc(documentCustomerRef)}</div>
+            <div><b>Contact Person:</b> ${esc(fields.contactPerson)}</div>
+            <div><b>Attention:</b> ${esc(fields.attention)}</div>
+            <div><b>Payment Terms:</b> ${paymentTermsHtml}</div>
+            <div><b>Billing Address:</b> ${billingHtml}</div>
+            <div><b>Shipping Address:</b> ${shippingHtml}</div>
             ${vatLine}
           </div>
         </div>

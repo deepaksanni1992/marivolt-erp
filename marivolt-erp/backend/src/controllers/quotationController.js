@@ -18,6 +18,16 @@ import {
   mapQuotationSearchRowForOA,
 } from "../services/documentSnapshot/documentSnapshotService.js";
 import { getQuotationConsumptionReport } from "../services/documentSnapshot/documentChainService.js";
+import {
+  buildPartySnapshotFromFields,
+  customerDetailSearchOr,
+  customerTransactionAuditFieldSlice,
+  diffCustomerTransactionFields,
+  mapCustomerMasterToTransactionDefaults,
+  pickCustomerTransactionFieldsFromBody,
+  resolveDocumentCustomerFields,
+} from "../utils/customerTransactionFields.js";
+import { writeAudit } from "../services/auditService.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -223,8 +233,7 @@ export async function listQuotations(req, res) {
       const q = String(req.query.search).trim();
       filter.$or = [
         { quotationNo: new RegExp(q, "i") },
-        { customerName: new RegExp(q, "i") },
-        { customerReference: new RegExp(q, "i") },
+        ...customerDetailSearchOr(q),
         { vertical: new RegExp(q, "i") },
         { engine: new RegExp(q, "i") },
         { model: new RegExp(q, "i") },
@@ -322,15 +331,24 @@ export async function createQuotation(req, res) {
       phone: company.phone || "",
       registrationNo: "",
     };
-    body.customer = {
-      name: customer.name || "",
-      billingAddress: customer.address || "",
-      shippingAddress: customer.address || "",
-      contactPerson: customer.contactName || "",
-      email: customer.email || "",
-      phone: customer.phone || "",
-      country: "",
-    };
+    const fromBody = pickCustomerTransactionFieldsFromBody(body);
+    const fromMaster = mapCustomerMasterToTransactionDefaults(customer);
+    const customerFields = resolveDocumentCustomerFields(
+      {
+        contactPerson: fromBody.contactPerson,
+        attention: fromBody.attention,
+        billingAddress: fromBody.billingAddress,
+        shippingAddress: fromBody.shippingAddress,
+        paymentTerms: fromBody.paymentTerms,
+      },
+      fromMaster
+    );
+    body.contactPerson = customerFields.contactPerson;
+    body.attention = customerFields.attention;
+    body.billingAddress = customerFields.billingAddress;
+    body.shippingAddress = customerFields.shippingAddress;
+    body.paymentTerms = customerFields.paymentTerms;
+    body.customer = buildPartySnapshotFromFields(customer.name, customerFields, customer);
     body.validityDate = body.validityDate || body.validUntil || null;
     const doc = new Quotation(body);
     recalcQuotationTotals(doc);
@@ -356,13 +374,17 @@ export async function updateQuotation(req, res) {
     if (doc.status !== "DRAFT") {
       return res.status(400).json({ message: "Only DRAFT quotations can be edited" });
     }
+    const beforeSnapshot = doc.toObject();
 
     const allowed = [
       "quotationNo",
       "customerId",
       "customerName",
       "customerReference",
+      "contactPerson",
       "attention",
+      "billingAddress",
+      "shippingAddress",
       "vertical",
       "engine",
       "model",
@@ -392,6 +414,8 @@ export async function updateQuotation(req, res) {
     for (const k of allowed) {
       if (req.body[k] !== undefined) doc[k] = req.body[k];
     }
+    const fieldPatch = pickCustomerTransactionFieldsFromBody(req.body);
+    Object.assign(doc, fieldPatch);
     if (doc.quotationNo) {
       doc.quotationNumber = doc.quotationNo;
     }
@@ -399,15 +423,34 @@ export async function updateQuotation(req, res) {
       const customer = await resolveCustomerFromMaster(req, doc);
       doc.customerId = customer._id;
       doc.customerName = customer.name;
-      doc.customer = {
-        name: customer.name || "",
-        billingAddress: customer.address || "",
-        shippingAddress: customer.address || "",
-        contactPerson: customer.contactName || "",
-        email: customer.email || "",
-        phone: customer.phone || "",
-        country: "",
-      };
+      // Only refresh contact defaults from master when client did not send explicit snapshots.
+      const masterDefaults = mapCustomerMasterToTransactionDefaults(customer);
+      if (req.body.contactPerson === undefined) doc.contactPerson = masterDefaults.contactPerson;
+      if (req.body.attention === undefined) doc.attention = masterDefaults.attention;
+      if (req.body.billingAddress === undefined) doc.billingAddress = masterDefaults.billingAddress;
+      if (req.body.shippingAddress === undefined) doc.shippingAddress = masterDefaults.shippingAddress;
+      if (req.body.paymentTerms === undefined) doc.paymentTerms = masterDefaults.paymentTerms;
+      doc.customer = buildPartySnapshotFromFields(
+        customer.name,
+        {
+          contactPerson: doc.contactPerson,
+          attention: doc.attention,
+          billingAddress: doc.billingAddress,
+          shippingAddress: doc.shippingAddress,
+        },
+        customer
+      );
+    } else {
+      doc.customer = buildPartySnapshotFromFields(
+        doc.customerName,
+        {
+          contactPerson: doc.contactPerson,
+          attention: doc.attention,
+          billingAddress: doc.billingAddress,
+          shippingAddress: doc.shippingAddress,
+        },
+        doc.customer
+      );
     }
     doc.updatedBy = req.user?.email || "";
     recalcQuotationTotals(doc);
@@ -416,6 +459,20 @@ export async function updateQuotation(req, res) {
     }
     await doc.save();
     await autoCreateItemsFromQuotation({ req, quotation: doc });
+    const customerFieldChanges = diffCustomerTransactionFields(beforeSnapshot, doc);
+    await writeAudit(req, {
+      action: "UPDATE",
+      module: "SALES",
+      entityType: "QUOTATION",
+      entityId: doc._id,
+      documentNo: doc.quotationNo || "",
+      description: `Quotation ${doc.quotationNo || ""} updated`,
+      beforeData: customerTransactionAuditFieldSlice(beforeSnapshot),
+      afterData: {
+        ...customerTransactionAuditFieldSlice(doc),
+        ...(customerFieldChanges ? { customerFieldChanges } : {}),
+      },
+    });
     res.json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });

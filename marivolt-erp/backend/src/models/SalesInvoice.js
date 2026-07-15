@@ -40,6 +40,9 @@ const salesInvoiceSchema = new mongoose.Schema(
     linkedSalesDispatchId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesDispatch", index: true, default: null },
     linkedSalesDispatchNo: { type: String, default: "", trim: true },
     customerName: { type: String, required: true, trim: true },
+    contactPerson: { type: String, default: "", trim: true },
+    attention: { type: String, default: "", trim: true },
+    /** Commercial payment terms (document snapshot). Not Credit Terms ADVANCE/CREDIT. */
     paymentTerms: { type: String, default: "" },
     dispatchDetails: { type: String, default: "" },
     shippingAddress: { type: String, default: "" },

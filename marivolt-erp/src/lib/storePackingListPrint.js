@@ -13,6 +13,7 @@ import {
   buildStorePackingListPrintRows,
   PACKING_LIST_PRINT_COLUMNS,
 } from "./packingListTable.js";
+import { buildCustomerAddressInfoRows } from "./customerTransactionFields.js";
 
 function packageTypeLabel(v) {
   return String(v || "")
@@ -87,13 +88,7 @@ export function renderStorePackingListPrintWindow(packing, company = {}, autoPri
   const cards = buildReportInfoCardsHtml({
     left: {
       title: "Customer & Address Info",
-      rows: [
-        { label: "Customer", value: packing.customerName },
-        { label: "Customer Ref", value: packing.customerReference || packing.customerRef || "-" },
-        { label: "Address", value: packing.customerAddress || packing.billingAddress || "-" },
-        { label: "Shipping", value: packing.shippingAddress || "-" },
-        { label: "Attention", value: packing.attention || "-" },
-      ],
+      rows: buildCustomerAddressInfoRows(packing),
     },
     right: {
       title: "Machine Details",
