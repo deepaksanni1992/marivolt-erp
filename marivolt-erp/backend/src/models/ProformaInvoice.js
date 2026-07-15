@@ -53,8 +53,27 @@ const proformaInvoiceSchema = new mongoose.Schema(
     taxTotal: { type: Number, default: 0 },
     packingCost: { type: Number, default: 0, min: 0 },
     clearanceCost: { type: Number, default: 0, min: 0 },
+    /** Full commercial document total (lines + costs − discount + tax). Preserved for partial-advance PIs. */
     grandTotal: { type: Number, default: 0 },
+    /**
+     * Payment Request — amount payable against this PI (may be partial advance).
+     * Historical docs omit these; treat as FULL with requestedAmount = grandTotal.
+     */
+    piValueType: {
+      type: String,
+      enum: ["FULL", "PERCENTAGE", "FIXED_AMOUNT"],
+      default: "FULL",
+      trim: true,
+    },
+    advancePercentage: { type: Number, default: null },
+    requestedAmount: { type: Number, default: null },
+    /** Snapshot of commercial total at save (same as grandTotal for new docs). */
+    commercialGrandTotal: { type: Number, default: null },
+    /** Commercial remaining after this PI request (commercialGrandTotal − requestedAmount). Not payment balance. */
+    commercialBalanceAmount: { type: Number, default: null },
+    advanceRemarks: { type: String, default: "", trim: true },
     totalReceivedAmount: { type: Number, default: 0, min: 0 },
+    /** Payment remaining vs requestedAmount (payable), not vs commercial total. */
     balanceAmount: { type: Number, default: 0, min: 0 },
     paymentStatus: {
       type: String,

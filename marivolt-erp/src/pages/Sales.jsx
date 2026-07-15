@@ -29,11 +29,14 @@ import OrderAllocationDetailModal from "../components/sales/OrderAllocationDetai
 import ConvertAllocationToPoModal from "../components/sales/ConvertAllocationToPoModal.jsx";
 import OaCreateModal from "../components/sales/OaCreateModal.jsx";
 import CustomerTransactionDetailsFields from "../components/sales/CustomerTransactionDetailsFields.jsx";
+import ProformaPaymentRequestPanel from "../components/sales/ProformaPaymentRequestPanel.jsx";
 import {
   buildCustomerAddressInfoBoxHtml,
   mapCustomerMasterToTransactionDefaults,
   resolveDocumentCustomerFields,
 } from "../lib/customerTransactionFields.js";
+import { defaultPiPaymentRequestFields, resolvePiPaymentRequest } from "../lib/piPaymentRequest.js";
+import { formatOaProgressLabel, resolveOaProgressStatus } from "../lib/oaLifecycle.js";
 import { savePoFromAllocationSession } from "../lib/allocationPoSession.js";
 import { deliverReportHtml, downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 import {
@@ -109,7 +112,7 @@ const reportsCatalog = [
 ];
 
 const statusOptions = ["DRAFT", "SENT", "APPROVED", "REJECTED", "EXPIRED", "CONVERTED", "CANCELLED"];
-const oaStatusOptions = ["DRAFT", "ACTIVE", "CONFIRMED", "CLOSED", "CANCELLED"];
+const oaStatusOptions = ["DRAFT", "ACTIVE", "CONFIRMED", "CANCELLED"];
 const proformaStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "APPROVED", "CONVERTED", "CANCELLED"];
 const salesInvoiceStatusOptions = ["DRAFT", "ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID", "CANCELLED"];
 const orderAllocationStatusOptions = ["OPEN", "APPROVED", "CLOSED", "CANCELLED"];
@@ -484,15 +487,39 @@ function orderAcknowledgementHasActiveProforma(oa) {
   return conv.includes("PROFORMA");
 }
 
+/** Additional partial PIs allowed while OA commercial capacity remains. */
+function orderAcknowledgementCanCreateAdditionalProforma(oa) {
+  if (!oa) return false;
+  if (String(oa.status || "").toUpperCase() === "CANCELLED") return false;
+  if (typeof oa.canCreateAdditionalProforma === "boolean") return oa.canCreateAdditionalProforma;
+  if (!orderAcknowledgementHasActiveProforma(oa)) return true;
+  const rem = Number(oa.piRemainingEligibleAmount);
+  return Number.isFinite(rem) && rem > 0.005;
+}
+
+function orderAcknowledgementPiConvertTitle(oa) {
+  if (!oa) return "";
+  if (String(oa.status || "").toUpperCase() === "CANCELLED") return "Cancelled OA cannot be converted";
+  if (orderAcknowledgementCanCreateAdditionalProforma(oa)) {
+    const rem = Number(oa.piRemainingEligibleAmount);
+    if (Number.isFinite(rem)) {
+      return `Remaining PI-eligible: ${money(rem)} ${oa.currency || ""}`.trim();
+    }
+    return "Create Proforma Invoice";
+  }
+  return "PI-eligible amount fully issued for this OA";
+}
+
 function orderAcknowledgementLocked(oa) {
   if (!oa) return true;
+  if (typeof oa.isEditLocked === "boolean") return oa.isEditLocked;
+  const progress = resolveOaProgressStatus(oa);
+  if (["CANCELLED", "COMPLETED", "PACKING"].includes(progress)) return true;
   const st = String(oa.status || "").toUpperCase();
-  if (["CLOSED", "CANCELLED"].includes(st)) return true;
-  if (st === "ACTIVE" || st === "DRAFT" || st === "CONFIRMED") return false;
+  if (["CLOSED", "CANCELLED", "COMPLETED", "PACKING", "CONVERTED"].includes(st)) return true;
   const conv = Array.isArray(oa.convertedTo) ? oa.convertedTo.map(String) : [];
-  if (conv.includes("SALES_INVOICE")) return true;
-  if (orderAcknowledgementHasActiveProforma(oa)) return true;
-  if (["APPROVED", "CONVERTED"].includes(st)) return true;
+  if (conv.includes("SALES_INVOICE") || conv.includes("ORDER_ALLOCATION")) return true;
+  // Active / partial / full PI issuance must remain editable.
   return false;
 }
 
@@ -501,7 +528,19 @@ function orderAcknowledgementCanCancel(oa) {
   if (typeof oa.canCancelOA === "boolean") return oa.canCancelOA;
   const st = String(oa.status || "").toUpperCase();
   if (st === "CANCELLED") return false;
-  if (!["ACTIVE", "APPROVED", "CONFIRMED", "CONVERTED"].includes(st)) return false;
+  if (
+    ![
+      "ACTIVE",
+      "APPROVED",
+      "CONFIRMED",
+      "CONVERTED",
+      "PARTIALLY_PI_ISSUED",
+      "FULLY_PI_ISSUED",
+      "PACKING",
+    ].includes(st)
+  ) {
+    return false;
+  }
   return !orderAcknowledgementHasActiveProforma(oa);
 }
 
@@ -518,14 +557,198 @@ function orderAcknowledgementCancelBlockReason(oa) {
   return "";
 }
 
-/** Shown badge when OA was converted to PI/SI even if legacy records never updated status to APPROVED. */
+/** User-facing OA lifecycle badge (multi partial PI). */
 function orderAcknowledgementDisplayStatus(oa) {
   if (!oa) return "";
-  const st = String(oa.status || "").toUpperCase();
-  if (st === "CANCELLED" || st === "CLOSED" || st === "CONVERTED" || st === "ACTIVE") return st;
-  const conv = Array.isArray(oa.convertedTo) ? oa.convertedTo.map(String) : [];
-  if (orderAcknowledgementHasActiveProforma(oa) || conv.includes("SALES_INVOICE")) return "APPROVED";
-  return String(oa.status || "");
+  return resolveOaProgressStatus(oa);
+}
+
+function OaPiProgressSummary({ oa, money }) {
+  if (!oa) return null;
+  const progress = resolveOaProgressStatus(oa);
+  const commercial = Number(oa.commercialTotal ?? oa.oaCommercialGrandTotal ?? oa.grandTotal) || 0;
+  const issued = Number(oa.piIssuedRequestedTotal) || 0;
+  const remaining = Number(oa.piRemainingEligibleAmount ?? Math.max(0, commercial - issued)) || 0;
+  const pct =
+    oa.piProgressPercent != null
+      ? Number(oa.piProgressPercent)
+      : commercial > 0
+        ? Math.round((issued / commercial) * 10000) / 100
+        : 0;
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">PI Progress</div>
+        <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(progress)}`}>
+          {formatOaProgressLabel(progress)}
+        </span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <div className="text-xs text-slate-500">Commercial Total</div>
+          <div className="font-medium tabular-nums">
+            {oa.currency || ""} {money(commercial)}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-slate-500">Total PI Amount Issued</div>
+          <div className="font-medium tabular-nums">
+            {oa.currency || ""} {money(issued)}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-slate-500">Remaining PI Capacity</div>
+          <div className="font-medium tabular-nums">
+            {oa.currency || ""} {money(remaining)}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-slate-500">PI Progress</div>
+          <div className="font-medium tabular-nums">{pct}%</div>
+        </div>
+      </div>
+      <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200">
+        <div className="h-full rounded-full bg-slate-700 transition-all" style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function OaProformaHistorySection({ oa, money, onOpenPi }) {
+  const rows = Array.isArray(oa?.proformaHistory) ? oa.proformaHistory : [];
+  return (
+    <div className="space-y-2">
+      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">PI History</div>
+      {rows.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-500">
+          No proforma invoices issued against this OA yet.
+        </p>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border bg-white">
+          <table className="min-w-full text-left text-sm">
+            <thead className="border-b bg-gray-50 text-xs font-semibold uppercase tracking-wide text-gray-600">
+              <tr>
+                <th className="px-3 py-2">PI Number</th>
+                <th className="px-3 py-2">Date</th>
+                <th className="px-3 py-2 text-right">Requested Amount</th>
+                <th className="px-3 py-2 text-right">Percentage</th>
+                <th className="px-3 py-2">Payment Status</th>
+                <th className="px-3 py-2">PI Status</th>
+                <th className="px-3 py-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={String(r._id || r.proformaNo)} className="border-b border-gray-100">
+                  <td className="px-3 py-2 font-mono text-xs">{r.proformaNo || "—"}</td>
+                  <td className="px-3 py-2">{r.proformaDate ? new Date(r.proformaDate).toLocaleDateString() : "—"}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{money(r.requestedAmount)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {r.advancePercentage == null ? "—" : `${r.advancePercentage}%`}
+                  </td>
+                  <td className="px-3 py-2">
+                    <span
+                      className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.paymentStatus || "UNPAID")}`}
+                    >
+                      {String(r.paymentStatus || "UNPAID").replaceAll("_", " ")}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2">
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
+                      {r.status || "—"}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2">
+                    {r._id && typeof onOpenPi === "function" ? (
+                      <button
+                        type="button"
+                        className="rounded-lg border px-2 py-1 text-xs"
+                        onClick={() => onOpenPi(r._id)}
+                      >
+                        Open
+                      </button>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OaCommercialRevisionHistory({ oa, money }) {
+  const rows = Array.isArray(oa?.commercialRevisions) ? [...oa.commercialRevisions].sort((a, b) => (b.revisionNumber || 0) - (a.revisionNumber || 0)) : [];
+  const original =
+    oa?.originalCommercialValue != null
+      ? oa.originalCommercialValue
+      : rows.length
+        ? rows[rows.length - 1]?.originalCommercialValue
+        : null;
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Commercial Revision History</div>
+        {original != null ? (
+          <div className="text-xs text-slate-600">
+            Original Commercial Value:{" "}
+            <span className="font-medium tabular-nums">
+              {oa.currency || ""} {money(original)}
+            </span>
+          </div>
+        ) : null}
+      </div>
+      {rows.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-500">
+          No commercial revisions recorded. Revisions are created when the OA commercial value changes while active PIs exist.
+        </p>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border bg-white">
+          <table className="min-w-full text-left text-sm">
+            <thead className="border-b bg-gray-50 text-xs font-semibold uppercase tracking-wide text-gray-600">
+              <tr>
+                <th className="px-3 py-2">Rev #</th>
+                <th className="px-3 py-2">Date</th>
+                <th className="px-3 py-2 text-right">Original</th>
+                <th className="px-3 py-2 text-right">Revised</th>
+                <th className="px-3 py-2 text-right">Difference</th>
+                <th className="px-3 py-2">User</th>
+                <th className="px-3 py-2">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={`rev-${r.revisionNumber}-${r.revisionDate || ""}`} className="border-b border-gray-100 align-top">
+                  <td className="px-3 py-2 font-mono text-xs">{r.revisionNumber}</td>
+                  <td className="px-3 py-2">{r.revisionDate ? new Date(r.revisionDate).toLocaleString() : "—"}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{money(r.originalCommercialValue)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{money(r.revisedCommercialValue)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{money(r.difference)}</td>
+                  <td className="px-3 py-2 text-xs">{r.revisedBy || "—"}</td>
+                  <td className="px-3 py-2 text-xs whitespace-pre-wrap">{r.reason || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function estimateOaCommercialFromForm(form, oaDetail) {
+  return calcQuotationTotalsView({
+    ...(form || {}),
+    packingCost: form?.packingCost ?? oaDetail?.packingCost,
+    clearanceCost: form?.clearanceCost ?? oaDetail?.clearanceCost,
+    discountType: form?.discountType ?? oaDetail?.discountType,
+    discountValue: form?.discountValue ?? oaDetail?.discountValue,
+    taxTotal: form?.taxTotal ?? oaDetail?.taxTotal,
+  }).grandTotal;
 }
 
 function oaDetailToEditableForm(oa) {
@@ -582,6 +805,11 @@ function oaDetailToEditableForm(oa) {
     esn: oa.esn || "",
     oaDate: oad,
     status: oa.status || "DRAFT",
+    packingCost: Number(oa.packingCost) || 0,
+    clearanceCost: Number(oa.clearanceCost) || 0,
+    discountType: oa.discountType || "NONE",
+    discountValue: Number(oa.discountValue) || 0,
+    taxTotal: Number(oa.taxTotal) || 0,
     lines,
   };
 }
@@ -675,6 +903,10 @@ function proformaDetailToEditableForm(p) {
     packingCost: Number(p.packingCost) || 0,
     clearanceCost: Number(p.clearanceCost) || 0,
     taxTotal: Number(p.taxTotal) || 0,
+    piValueType: p.piValueType || "FULL",
+    advancePercentage: p.advancePercentage ?? "",
+    requestedAmount: p.requestedAmount ?? "",
+    advanceRemarks: p.advanceRemarks || "",
     lines,
   };
 }
@@ -747,11 +979,34 @@ function documentDisplayTerms(doc) {
 }
 
 function statusBadgeClass(status = "") {
-  const key = String(status).toUpperCase();
-  if (["APPROVED", "PAID", "CLOSED", "CONFIRMED", "CONVERTED", "ISSUED", "SHIPPED"].includes(key)) {
+  const key = String(status || "").toUpperCase();
+  if (
+    [
+      "APPROVED",
+      "PAID",
+      "CLOSED",
+      "CONFIRMED",
+      "CONVERTED",
+      "ISSUED",
+      "SHIPPED",
+      "COMPLETED",
+      "FULLY_PI_ISSUED",
+      "ACTIVE",
+    ].includes(key)
+  ) {
     return "bg-emerald-50 text-emerald-700 ring-emerald-200";
   }
-  if (["DRAFT", "SENT", "PARTIALLY_PAID", "PAID_PENDING_SHIPMENT", "PARTIAL"].includes(key)) {
+  if (
+    [
+      "DRAFT",
+      "SENT",
+      "PARTIALLY_PAID",
+      "PAID_PENDING_SHIPMENT",
+      "PARTIAL",
+      "PARTIALLY_PI_ISSUED",
+      "PACKING",
+    ].includes(key)
+  ) {
     return "bg-amber-50 text-amber-700 ring-amber-200";
   }
   if (["UNPAID"].includes(key)) {
@@ -863,6 +1118,11 @@ const reportColumnsById = {
     ["Linked Quotation/OA", (r) => r.linkedOANo || r.linkedQuotationNo || ""],
     ["Customer", (r) => r.customerName || ""],
     ...machineDetailColumns,
+    ["Commercial Total", (r) => money(r.commercialTotal ?? r.amount)],
+    ["Requested PI Amount", (r) => money(r.requestedAmount ?? r.amount)],
+    ["Advance %", (r) => (r.advancePercentage == null || r.advancePercentage === "" ? "" : r.advancePercentage)],
+    ["Commercial Balance", (r) => money(r.commercialBalanceAmount ?? 0)],
+    ["PI Value Type", (r) => r.piValueType || "FULL"],
     ["Amount", (r) => money(r.amount)],
     ["Status", (r) => r.status || ""],
     ["Validity", (r) => r.validity || ""],
@@ -1289,6 +1549,38 @@ function renderFlowDocPrintWindow({
       ? "This is a computer generated document."
       : undefined;
   const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(termsHeaderHtml, termsText, branding, flowDocNote);
+  const isProformaPrint = String(title || "").toLowerCase().includes("proforma");
+  const payReq = isProformaPrint ? resolvePiPaymentRequest(doc || {}) : null;
+  const commercialTotalsHtml = `
+        <div class="print-totals totals summary-section">
+          <div><span>Subtotal</span><span>${money(doc?.subTotal)}</span></div>
+          <div><span>Packing Cost</span><span>${money(doc?.packingCost)}</span></div>
+          <div><span>Clearance Cost</span><span>${money(doc?.clearanceCost)}</span></div>
+          <div><span>Discount</span><span>${money(doc?.discountTotal)}</span></div>
+          <div><span>Tax</span><span>${money(doc?.taxTotal)}</span></div>
+          <div><b>${isProformaPrint ? "Commercial Grand Total" : "Grand Total"}</b><b>${money(isProformaPrint ? payReq.commercialGrandTotal : doc?.grandTotal)} ${doc?.currency || ""}</b></div>
+        </div>`;
+  const paymentRequestSummaryHtml =
+    isProformaPrint && payReq
+      ? `
+        <div class="print-totals totals summary-section" style="margin-top:12px;border:1px solid #333;padding:10px 12px;">
+          <div style="font-weight:700;margin-bottom:8px;letter-spacing:0.02em;">PAYMENT REQUEST SUMMARY</div>
+          <div><span>Total Contract / Order Value</span><span>${money(payReq.commercialGrandTotal)} ${doc?.currency || ""}</span></div>
+          <div><span>Advance Percentage</span><span>${
+            payReq.advancePercentage == null ? "—" : `${payReq.advancePercentage}%`
+          }</span></div>
+          <div style="font-size:1.08em;"><b>Amount Payable Against This PI</b><b>${money(payReq.requestedAmount)} ${doc?.currency || ""}</b></div>
+          <div><span>Remaining Balance</span><span>${money(payReq.commercialBalanceAmount)} ${doc?.currency || ""}</span></div>
+          ${
+            payReq.advanceRemarks
+              ? `<div style="margin-top:8px;"><div><b>Advance Remarks</b></div><div style="white-space:pre-wrap;">${String(payReq.advanceRemarks)
+                  .replace(/&/g, "&amp;")
+                  .replace(/</g, "&lt;")
+                  .replace(/>/g, "&gt;")}</div></div>`
+              : ""
+          }
+        </div>`
+      : "";
   const mainBodyHtml = `
         ${salesInvoiceLayout ? taxInvoiceGridHtml : flowDocBodyTop}
         <table class="report-table">
@@ -1302,14 +1594,8 @@ function renderFlowDocPrintWindow({
             ${lineTableRowsHtml}
           </tbody>
         </table>
-        <div class="print-totals totals summary-section">
-          <div><span>Subtotal</span><span>${money(doc?.subTotal)}</span></div>
-          <div><span>Packing Cost</span><span>${money(doc?.packingCost)}</span></div>
-          <div><span>Clearance Cost</span><span>${money(doc?.clearanceCost)}</span></div>
-          <div><span>Discount</span><span>${money(doc?.discountTotal)}</span></div>
-          <div><span>Tax</span><span>${money(doc?.taxTotal)}</span></div>
-          <div><b>Grand Total</b><b>${money(doc?.grandTotal)} ${doc?.currency || ""}</b></div>
-        </div>
+        ${commercialTotalsHtml}
+        ${paymentRequestSummaryHtml}
         ${
           salesInvoiceLayout || includeBankFooter
             ? renderSiBankFooterHtml({
@@ -1556,6 +1842,13 @@ export default function Sales() {
   const [convertAllocationPo, setConvertAllocationPo] = useState({ open: false, allocationId: null, eligibility: null, loading: false });
   const [detailQuotationDraftForm, setDetailQuotationDraftForm] = useState(null);
   const [detailOADraftForm, setDetailOADraftForm] = useState(null);
+  const [oaCommercialRevisionModal, setOaCommercialRevisionModal] = useState({
+    open: false,
+    reason: "",
+    pendingBody: null,
+    previousCommercial: 0,
+    revisedCommercial: 0,
+  });
   const [detailProformaDraftForm, setDetailProformaDraftForm] = useState(null);
   const [detailSalesInvoiceDraftForm, setDetailSalesInvoiceDraftForm] = useState(null);
   const [selectedReportId, setSelectedReportId] = useState("");
@@ -1997,7 +2290,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
         const payload = await apiGet(`/sales/proforma-invoices/${id}/print`);
         const doc = payload?.proforma;
         const bankDetail = await fetchBankDetailForCurrency(doc?.currency);
-        const amountInWords = formatInvoiceAmountInWords(doc?.grandTotal, doc?.currency);
+        const payReq = resolvePiPaymentRequest(doc || {});
+        const amountInWords = formatInvoiceAmountInWords(payReq.requestedAmount, doc?.currency);
         renderFlowDocPrintWindow({
           title: "Proforma Invoice",
           doc,
@@ -2284,9 +2578,44 @@ ${GLOBAL_REPORT_TABLE_CSS}
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["sales-oa"] });
       if (detailId) qc.invalidateQueries({ queryKey: ["oa-detail", detailId] });
+      qc.invalidateQueries({ queryKey: ["sales-proforma"] });
+      setOaCommercialRevisionModal({
+        open: false,
+        reason: "",
+        pendingBody: null,
+        previousCommercial: 0,
+        revisedCommercial: 0,
+      });
     },
     onError: (e) => setErr(e.message),
   });
+
+  const saveOrderAcknowledgementWithRevisionGate = useCallback(
+    (body) => {
+      if (!oaDetail || !body) return;
+      const previousCommercial = Number(oaDetail.grandTotal) || 0;
+      const revisedCommercial = estimateOaCommercialFromForm(body, oaDetail);
+      const hasActivePi = orderAcknowledgementHasActiveProforma(oaDetail);
+      const commercialChanged = Math.abs(revisedCommercial - previousCommercial) > 0.005;
+      if (hasActivePi && commercialChanged) {
+        const issued = Number(oaDetail.piIssuedRequestedTotal) || 0;
+        if (revisedCommercial + 0.005 < issued) {
+          setErr(`Commercial total cannot be below PI amount already issued (${money(issued)})`);
+          return;
+        }
+        setOaCommercialRevisionModal({
+          open: true,
+          reason: "",
+          pendingBody: body,
+          previousCommercial,
+          revisedCommercial,
+        });
+        return;
+      }
+      putOrderAcknowledgementMutation.mutate({ body });
+    },
+    [oaDetail, putOrderAcknowledgementMutation]
+  );
 
   useEffect(() => {
     if (activeTab !== "Order Acknowledgement" || !detailId) {
@@ -2864,6 +3193,12 @@ ${GLOBAL_REPORT_TABLE_CSS}
     setDetailId(String(quotationId));
   }, []);
 
+  const openLinkedProforma = useCallback((proformaId) => {
+    if (!proformaId) return;
+    setActiveTab("Proforma Invoice");
+    setDetailId(String(proformaId));
+  }, []);
+
   const [proformaForm, setProformaForm] = useState({
     proformaDate: new Date().toISOString().slice(0, 10),
     customerName: "",
@@ -2885,6 +3220,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
     discountValue: 0,
     packingCost: 0,
     clearanceCost: 0,
+    ...defaultPiPaymentRequestFields(),
     lines: [emptyLine()],
   });
 
@@ -2982,6 +3318,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
         discountValue: 0,
         packingCost: 0,
         clearanceCost: 0,
+        ...defaultPiPaymentRequestFields(),
         lines: [emptyLine()],
       });
     },
@@ -3259,6 +3596,100 @@ ${GLOBAL_REPORT_TABLE_CSS}
             </div>
           </div>
         ) : null}
+      </Modal>
+
+      <Modal
+        open={!!oaCommercialRevisionModal.open}
+        onClose={() => {
+          if (!putOrderAcknowledgementMutation.isPending) {
+            setOaCommercialRevisionModal({
+              open: false,
+              reason: "",
+              pendingBody: null,
+              previousCommercial: 0,
+              revisedCommercial: 0,
+            });
+          }
+        }}
+        title="Confirm commercial revision"
+      >
+        <div className="space-y-3 text-sm">
+          <p className="text-gray-700">
+            Active Proforma Invoices exist on this OA. Changing the commercial value creates a revision. Issued PI amounts stay unchanged; PI percentages and remaining capacity update automatically.
+          </p>
+          <div className="rounded-lg border bg-slate-50 p-3 text-xs">
+            <div className="flex justify-between gap-2">
+              <span>Original Commercial Value</span>
+              <span className="tabular-nums font-medium">
+                {oaDetail?.currency || ""} {money(oaCommercialRevisionModal.previousCommercial)}
+              </span>
+            </div>
+            <div className="flex justify-between gap-2">
+              <span>Revised Commercial Value</span>
+              <span className="tabular-nums font-medium">
+                {oaDetail?.currency || ""} {money(oaCommercialRevisionModal.revisedCommercial)}
+              </span>
+            </div>
+            <div className="flex justify-between gap-2">
+              <span>Difference</span>
+              <span className="tabular-nums font-medium">
+                {oaDetail?.currency || ""}{" "}
+                {money(
+                  Number(oaCommercialRevisionModal.revisedCommercial || 0) -
+                    Number(oaCommercialRevisionModal.previousCommercial || 0)
+                )}
+              </span>
+            </div>
+          </div>
+          <FormField label="Revision Reason *">
+            <textarea
+              rows={3}
+              className="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-900"
+              value={oaCommercialRevisionModal.reason}
+              onChange={(e) =>
+                setOaCommercialRevisionModal((m) => ({ ...m, reason: e.target.value }))
+              }
+              placeholder="Mandatory reason for commercial value change"
+            />
+          </FormField>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              className="rounded-xl border px-3 py-1.5 text-xs"
+              disabled={putOrderAcknowledgementMutation.isPending}
+              onClick={() =>
+                setOaCommercialRevisionModal({
+                  open: false,
+                  reason: "",
+                  pendingBody: null,
+                  previousCommercial: 0,
+                  revisedCommercial: 0,
+                })
+              }
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="rounded-xl bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+              disabled={
+                putOrderAcknowledgementMutation.isPending ||
+                !String(oaCommercialRevisionModal.reason || "").trim() ||
+                !oaCommercialRevisionModal.pendingBody
+              }
+              onClick={() =>
+                putOrderAcknowledgementMutation.mutate({
+                  body: {
+                    ...oaCommercialRevisionModal.pendingBody,
+                    commercialRevisionReason: String(oaCommercialRevisionModal.reason || "").trim(),
+                  },
+                })
+              }
+            >
+              {putOrderAcknowledgementMutation.isPending ? "Saving…" : "Save revision"}
+            </button>
+          </div>
+        </div>
       </Modal>
 
       {tabContent === "reports" ? (
@@ -4267,9 +4698,12 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   { label: "OA Date", value: (r) => (r.oaDate ? new Date(r.oaDate).toLocaleDateString() : "") },
                   { label: "Customer", value: (r) => r.customerName },
                   { label: "Linked Quotation", value: (r) => r.linkedQuotationNo || "" },
-                  { label: "Status", value: (r) => orderAcknowledgementDisplayStatus(r) },
+                  { label: "Status", value: (r) => formatOaProgressLabel(orderAcknowledgementDisplayStatus(r)) },
                   { label: "Currency", value: (r) => r.currency || "USD" },
-                  { label: "Total", value: (r) => money(r.grandTotal) },
+                  { label: "Commercial Total", value: (r) => money(r.commercialTotal ?? r.grandTotal) },
+                  { label: "PI Issued", value: (r) => money(r.piIssuedRequestedTotal || 0) },
+                  { label: "PI Remaining", value: (r) => money(r.piRemainingEligibleAmount ?? r.grandTotal) },
+                  { label: "PI Progress %", value: (r) => r.piProgressPercent ?? "" },
                 ])
               }
             >
@@ -4368,7 +4802,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     </tr>
                   ) : (
                     oaRows.map((r) => {
-                      const hasPIFromOA = orderAcknowledgementHasActiveProforma(r);
+                      const canCreatePi = orderAcknowledgementCanCreateAdditionalProforma(r);
                       const isCancelled = String(r.status || "").toUpperCase() === "CANCELLED";
                       const canCancelOa = orderAcknowledgementCanCancel(r);
                       const cancelOaTitle = canCancelOa
@@ -4383,7 +4817,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                           <span
                             className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(orderAcknowledgementDisplayStatus(r))}`}
                           >
-                            {orderAcknowledgementDisplayStatus(r)}
+                            {formatOaProgressLabel(orderAcknowledgementDisplayStatus(r))}
                           </span>
                         </td>
                         <td className="px-3 py-2 text-right">
@@ -4411,9 +4845,9 @@ ${GLOBAL_REPORT_TABLE_CSS}
                             </button>
                             <button
                               type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${hasPIFromOA || isCancelled ? "opacity-40" : ""}`}
-                              disabled={hasPIFromOA || isCancelled}
-                              title={isCancelled ? "Cancelled OA cannot be converted" : hasPIFromOA ? "Proforma already created from this OA" : ""}
+                              className={`rounded-lg border px-2 py-1 text-xs ${!canCreatePi || isCancelled ? "opacity-40" : ""}`}
+                              disabled={!canCreatePi || isCancelled}
+                              title={orderAcknowledgementPiConvertTitle(r)}
                               onClick={() => convertToProformaFromOAMutation.mutate(r._id)}
                             >
                               Convert to PI
@@ -4487,7 +4921,11 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   { label: "Customer", value: (r) => r.customerName },
                   { label: "Status", value: (r) => proformaDisplayStatus(r) },
                   { label: "Currency", value: (r) => r.currency || "USD" },
-                  { label: "Total", value: (r) => money(r.grandTotal) },
+                  { label: "Commercial Total", value: (r) => money(r.commercialGrandTotal ?? r.grandTotal) },
+                  { label: "Requested PI Amount", value: (r) => money(resolvePiPaymentRequest(r).requestedAmount) },
+                  { label: "Advance %", value: (r) => resolvePiPaymentRequest(r).advancePercentage ?? "" },
+                  { label: "Commercial Balance", value: (r) => money(resolvePiPaymentRequest(r).commercialBalanceAmount) },
+                  { label: "PI Value Type", value: (r) => r.piValueType || "FULL" },
                 ])
               }
             >
@@ -4514,21 +4952,23 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     <th className="px-3 py-2">Status</th>
                     <th className="px-3 py-2">Payment</th>
                     <th className="px-3 py-2 text-right">Received</th>
-                    <th className="px-3 py-2 text-right">Balance</th>
-                    <th className="px-3 py-2 text-right">Grand Total</th>
+                    <th className="px-3 py-2 text-right">Pay. Balance</th>
+                    <th className="px-3 py-2 text-right">Commercial</th>
+                    <th className="px-3 py-2 text-right">Requested</th>
+                    <th className="px-3 py-2 text-right">Adv %</th>
                     <th className="px-3 py-2">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {proformaLoading ? (
                     <tr>
-                      <td colSpan={10} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={12} className="px-3 py-8 text-center text-gray-500">
                         Loading...
                       </td>
                     </tr>
                   ) : proformaRows.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={12} className="px-3 py-8 text-center text-gray-500">
                         No Proforma found.
                       </td>
                     </tr>
@@ -4540,7 +4980,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
                       const isCancelled = rowStatus === "CANCELLED";
                       const paymentStatus = String(r.paymentStatus || "UNPAID").toUpperCase();
                       const received = Number(r.totalReceivedAmount || 0);
-                      const balance = Number(r.balanceAmount ?? r.grandTotal ?? 0);
+                      const payReq = resolvePiPaymentRequest(r);
+                      const balance = Number(r.balanceAmount ?? payReq.requestedAmount ?? 0);
                       const canMarkPaid = !["CANCELLED", "CONVERTED"].includes(st) && paymentStatus !== "PAID";
                       const canCancelPi = !["CANCELLED", "CONVERTED"].includes(st);
                       return (
@@ -4563,7 +5004,13 @@ ${GLOBAL_REPORT_TABLE_CSS}
                         <td className="px-3 py-2 text-right">{r.currency} {money(received)}</td>
                         <td className="px-3 py-2 text-right">{r.currency} {money(balance)}</td>
                         <td className="px-3 py-2 text-right">
-                          {r.currency} {money(r.grandTotal)}
+                          {r.currency} {money(payReq.commercialGrandTotal)}
+                        </td>
+                        <td className="px-3 py-2 text-right font-medium">
+                          {r.currency} {money(payReq.requestedAmount)}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          {payReq.advancePercentage == null ? "—" : `${payReq.advancePercentage}%`}
                         </td>
                         <td className="px-3 py-2">
                           <div className="flex flex-wrap gap-1">
@@ -4586,7 +5033,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                                 setReceivePaymentForm((f) => ({
                                   ...f,
                                   receiptDate: new Date().toISOString().slice(0, 10),
-                                  amountReceived: Number(r.balanceAmount ?? r.grandTotal ?? 0),
+                                  amountReceived: Number(r.balanceAmount ?? resolvePiPaymentRequest(r).requestedAmount ?? 0),
                                   currency: r.currency || "USD",
                                   paymentMode: "BANK_TRANSFER",
                                   bankCashAccountName: "",
@@ -6004,9 +6451,12 @@ ${GLOBAL_REPORT_TABLE_CSS}
           ) : !orderAcknowledgementLocked(oaDetail) && detailOADraftForm ? (
             <div className="space-y-4 text-sm">
               <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 ring-1 ring-amber-200">
-                Draft / open OA — edit and save below. Convert to PI or SI is available while not yet converted to those documents. Once converted to a Proforma or Sales Invoice this OA locks and shows{" "}
-                <b>APPROVED</b>.
+                OA stays editable while PI advances are in progress. Multiple partial PIs are allowed until commercial capacity is used. Locking begins after packing / sales invoice (
+                <b>PACKING</b> / <b>COMPLETED</b>).
               </div>
+              <OaPiProgressSummary oa={oaDetail} money={money} />
+              <OaProformaHistorySection oa={oaDetail} money={money} onOpenPi={openLinkedProforma} />
+              <OaCommercialRevisionHistory oa={oaDetail} money={money} />
               <div className="grid gap-3 sm:grid-cols-4">
                 <FormField label="OA No">
                   <TextInput
@@ -6028,7 +6478,11 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   />
                 </FormField>
                 <FormField label="Status">
-                  <TextInput value={detailOADraftForm.status || ""} disabled className="bg-gray-50" />
+                  <TextInput
+                    value={formatOaProgressLabel(resolveOaProgressStatus(oaDetail))}
+                    disabled
+                    className="bg-gray-50"
+                  />
                 </FormField>
                 <FormField label="Customer *">
                   <TextInput
@@ -6339,16 +6793,21 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <div className="flex justify-between py-1">
                   <span>Subtotal</span>
                   <span>
-                    {money(detailOADraftForm.lines.reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0))}
+                    {money(calcQuotationTotalsView(detailOADraftForm).subTotal)}
                   </span>
                 </div>
                 <div className="flex justify-between py-1 text-base font-semibold">
-                  <span>Grand Total</span>
+                  <span>Commercial Grand Total</span>
                   <span>
-                    {money(detailOADraftForm.lines.reduce((acc, l) => acc + Number(l.qty || 0) * Number(l.price || 0), 0))}{" "}
+                    {money(estimateOaCommercialFromForm(detailOADraftForm, oaDetail))}{" "}
                     {detailOADraftForm.currency || ""}
                   </span>
                 </div>
+                {orderAcknowledgementHasActiveProforma(oaDetail) ? (
+                  <p className="mt-2 text-xs text-amber-800">
+                    Changing commercial value with active PIs requires a revision reason. Issued PI amounts stay fixed; % and remaining capacity update.
+                  </p>
+                ) : null}
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -6356,7 +6815,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   type="button"
                   className="rounded-xl bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
                   disabled={putOrderAcknowledgementMutation.isPending || !detailId}
-                  onClick={() => putOrderAcknowledgementMutation.mutate({ body: detailOADraftForm })}
+                  onClick={() => saveOrderAcknowledgementWithRevisionGate(detailOADraftForm)}
                 >
                   {putOrderAcknowledgementMutation.isPending ? "Saving…" : "Save changes"}
                 </button>
@@ -6367,16 +6826,16 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   Export PDF
                 </button>
                 {(() => {
-                  const hasPI = orderAcknowledgementHasActiveProforma(oaDetail);
+                  const canCreatePi = orderAcknowledgementCanCreateAdditionalProforma(oaDetail);
                   const isCancelled = String(oaDetail.status || "").toUpperCase() === "CANCELLED";
                   const canCancelOa = orderAcknowledgementCanCancel(oaDetail);
                   return (
                     <>
                       <button
                         type="button"
-                        className={`rounded-xl border px-2 py-1 text-xs ${hasPI || isCancelled ? "opacity-40" : ""}`}
-                        disabled={hasPI || isCancelled || convertToProformaFromOAMutation.isPending}
-                        title={isCancelled ? "Cancelled OA cannot be converted" : hasPI ? "Active proforma exists for this OA" : ""}
+                        className={`rounded-xl border px-2 py-1 text-xs ${!canCreatePi || isCancelled ? "opacity-40" : ""}`}
+                        disabled={!canCreatePi || isCancelled || convertToProformaFromOAMutation.isPending}
+                        title={orderAcknowledgementPiConvertTitle(oaDetail)}
                         onClick={() => convertToProformaFromOAMutation.mutate(oaDetail._id)}
                       >
                         Convert to PI
@@ -6431,18 +6890,26 @@ ${GLOBAL_REPORT_TABLE_CSS}
             </div>
           ) : (
             (() => {
-              const oc = Array.isArray(oaDetail.convertedTo) ? oaDetail.convertedTo.map(String) : [];
-              const dupPIOpen = orderAcknowledgementHasActiveProforma(oaDetail);
-              const dupSIOpen = oc.includes("SALES_INVOICE");
+              const canCreatePi = orderAcknowledgementCanCreateAdditionalProforma(oaDetail);
               const canCancelOa = orderAcknowledgementCanCancel(oaDetail);
               const displaySt = orderAcknowledgementDisplayStatus(oaDetail);
               return (
             <div className="space-y-3 text-sm">
               <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700 ring-1 ring-slate-200">
-                {dupPIOpen || dupSIOpen || displaySt === "APPROVED"
-                  ? "This OA shows as Approved after conversion to PI and/or Sales Invoice — it cannot be edited. Print or export PDF when you need to share it."
-                  : "This OA cannot be edited in its current state. Print or export PDF when you need to share it."}
+                {displaySt === "PACKING" || displaySt === "COMPLETED"
+                  ? "This OA is locked because packing or sales invoicing has started. Print or export PDF when you need to share it."
+                  : displaySt === "CANCELLED"
+                    ? "This OA is cancelled and cannot be edited."
+                    : "This OA cannot be edited in its current state. Print or export PDF when you need to share it."}
+                {canCreatePi
+                  ? ` Additional partial PIs can still be created (remaining eligible: ${money(oaDetail.piRemainingEligibleAmount)} ${oaDetail.currency || ""}).`
+                  : displaySt !== "CANCELLED" && displaySt !== "COMPLETED"
+                    ? " PI-eligible amount for this OA is fully issued (or unavailable)."
+                    : ""}
               </p>
+              <OaPiProgressSummary oa={oaDetail} money={money} />
+              <OaProformaHistorySection oa={oaDetail} money={money} onOpenPi={openLinkedProforma} />
+              <OaCommercialRevisionHistory oa={oaDetail} money={money} />
               <div className="grid gap-2 sm:grid-cols-3">
                 <div>
                   <div className="text-gray-500">OA No</div>
@@ -6456,7 +6923,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   <div className="text-gray-500">Status</div>
                   <div>
                     <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(displaySt)}`}>
-                      {displaySt}
+                      {formatOaProgressLabel(displaySt)}
                     </span>
                   </div>
                 </div>
@@ -6577,8 +7044,9 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <div className="flex flex-wrap gap-2 opacity-70">
                 <button
                   type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${dupPIOpen || String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
-                  disabled={dupPIOpen || String(oaDetail.status || "").toUpperCase() === "CANCELLED"}
+                  className={`rounded-xl border px-2 py-1 text-xs ${!canCreatePi || String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                  disabled={!canCreatePi || String(oaDetail.status || "").toUpperCase() === "CANCELLED"}
+                  title={orderAcknowledgementPiConvertTitle(oaDetail)}
                   onClick={() => convertToProformaFromOAMutation.mutate(oaDetail._id)}
                 >
                   Convert to PI
@@ -6954,22 +7422,14 @@ ${GLOBAL_REPORT_TABLE_CSS}
               {(() => {
                 const t = calcQuotationTotalsView(detailProformaDraftForm);
                 return (
-                  <div className="ml-auto w-full max-w-sm rounded-xl border bg-white p-3">
-                    <div className="flex justify-between py-1">
-                      <span>Subtotal</span>
-                      <span>{money(t.subTotal)}</span>
-                    </div>
-                    <div className="flex justify-between py-1"><span>Packing Cost</span><span>{money(t.packingCost)}</span></div>
-                    <div className="flex justify-between py-1"><span>Clearance Cost</span><span>{money(t.clearanceCost)}</span></div>
-                    <div className="flex justify-between py-1"><span>Discount</span><span>{money(t.discountTotal)}</span></div>
-                    <div className="flex justify-between py-1"><span>Tax</span><span>{money(t.taxTotal)}</span></div>
-                    <div className="flex justify-between py-1 text-base font-semibold">
-                      <span>Grand Total</span>
-                      <span>
-                        {money(t.grandTotal)} {detailProformaDraftForm.currency || ""}
-                      </span>
-                    </div>
-                  </div>
+                  <ProformaPaymentRequestPanel
+                    values={detailProformaDraftForm}
+                    totals={t}
+                    commercialGrandTotal={t.grandTotal}
+                    currency={detailProformaDraftForm.currency || ""}
+                    money={money}
+                    onChange={(patch) => setDetailProformaDraftForm((f) => ({ ...f, ...patch }))}
+                  />
                 );
               })()}
               <div className="flex flex-wrap gap-2">
@@ -7129,10 +7589,44 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <div className="flex justify-between py-1"><span>Clearance Cost</span><span>{money(proformaDetail.clearanceCost)}</span></div>
                 <div className="flex justify-between py-1"><span>Discount</span><span>{money(proformaDetail.discountTotal)}</span></div>
                 <div className="flex justify-between py-1"><span>Tax</span><span>{money(proformaDetail.taxTotal)}</span></div>
-                <div className="flex justify-between py-1 text-base font-semibold">
-                  <span>Grand Total</span>
-                  <span>{money(proformaDetail.grandTotal)} {proformaDetail.currency || ""}</span>
-                </div>
+                {(() => {
+                  const payReq = resolvePiPaymentRequest(proformaDetail);
+                  return (
+                    <>
+                      <div className="flex justify-between py-1 font-medium">
+                        <span>Commercial Grand Total</span>
+                        <span>
+                          {money(payReq.commercialGrandTotal)} {proformaDetail.currency || ""}
+                        </span>
+                      </div>
+                      <div className="my-2 border-t border-dashed border-slate-200" />
+                      {payReq.piValueType === "PERCENTAGE" && payReq.advancePercentage != null ? (
+                        <div className="flex justify-between py-1 text-sm">
+                          <span>Advance Percentage</span>
+                          <span>{payReq.advancePercentage}%</span>
+                        </div>
+                      ) : null}
+                      <div className="flex justify-between py-1 text-base font-bold">
+                        <span>Amount Payable / Requested PI Amount</span>
+                        <span>
+                          {money(payReq.requestedAmount)} {proformaDetail.currency || ""}
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-1 text-sm">
+                        <span>Balance Amount</span>
+                        <span>
+                          {money(payReq.commercialBalanceAmount)} {proformaDetail.currency || ""}
+                        </span>
+                      </div>
+                      {payReq.advanceRemarks ? (
+                        <div className="mt-2 text-xs text-slate-600">
+                          <div className="font-medium text-slate-700">Advance Remarks</div>
+                          <pre className="mt-1 whitespace-pre-wrap font-sans">{payReq.advanceRemarks}</pre>
+                        </div>
+                      ) : null}
+                    </>
+                  );
+                })()}
               </div>
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("proforma", proformaDetail._id)}>
@@ -8989,13 +9483,14 @@ ${GLOBAL_REPORT_TABLE_CSS}
         {(() => {
           const t = calcQuotationTotalsView(proformaForm);
           return (
-            <div className="mt-4 ml-auto w-full max-w-sm rounded-xl border bg-white p-3 text-sm">
-              <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(t.subTotal)}</span></div>
-              <div className="flex justify-between py-1"><span>Packing Cost</span><span>{money(t.packingCost)}</span></div>
-              <div className="flex justify-between py-1"><span>Clearance Cost</span><span>{money(t.clearanceCost)}</span></div>
-              <div className="flex justify-between py-1"><span>Discount</span><span>{money(t.discountTotal)}</span></div>
-              <div className="flex justify-between py-1 font-semibold"><span>Grand Total</span><span>{money(t.grandTotal)} {proformaForm.currency || ""}</span></div>
-            </div>
+            <ProformaPaymentRequestPanel
+              values={proformaForm}
+              totals={t}
+              commercialGrandTotal={t.grandTotal}
+              currency={proformaForm.currency || ""}
+              money={money}
+              onChange={(patch) => setProformaForm((f) => ({ ...f, ...patch }))}
+            />
           );
         })()}
         <div className="mt-4 flex justify-end gap-2">

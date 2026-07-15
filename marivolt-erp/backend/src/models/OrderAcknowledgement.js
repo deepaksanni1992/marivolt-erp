@@ -67,9 +67,49 @@ const orderAcknowledgementSchema = new mongoose.Schema(
     packingCost: { type: Number, default: 0, min: 0 },
     clearanceCost: { type: Number, default: 0, min: 0 },
     grandTotal: { type: Number, default: 0 },
+    /**
+     * First commercial total when a PI-linked revision history began.
+     * Optional for historical OAs without revisions.
+     */
+    originalCommercialValue: { type: Number, default: null },
+    /**
+     * Commercial value revisions while active PIs exist.
+     * Issued PI requested amounts are never rewritten; capacity/progress use revised grandTotal.
+     */
+    commercialRevisions: {
+      type: [
+        new mongoose.Schema(
+          {
+            revisionNumber: { type: Number, required: true, min: 1 },
+            revisionDate: { type: Date, default: () => new Date() },
+            originalCommercialValue: { type: Number, required: true },
+            revisedCommercialValue: { type: Number, required: true },
+            difference: { type: Number, required: true },
+            reason: { type: String, required: true, trim: true },
+            revisedBy: { type: String, default: "", trim: true },
+          },
+          { _id: true }
+        ),
+      ],
+      default: [],
+    },
     status: {
       type: String,
-      enum: ["DRAFT", "ACTIVE", "CONFIRMED", "APPROVED", "CONVERTED", "CLOSED", "CANCELLED"],
+      enum: [
+        "DRAFT",
+        "ACTIVE",
+        "CONFIRMED",
+        /** @deprecated Prefer PARTIALLY_PI_ISSUED / FULLY_PI_ISSUED — kept for historical rows */
+        "APPROVED",
+        /** @deprecated Prefer PACKING — kept for historical rows after allocation */
+        "CONVERTED",
+        "PARTIALLY_PI_ISSUED",
+        "FULLY_PI_ISSUED",
+        "PACKING",
+        "COMPLETED",
+        "CLOSED",
+        "CANCELLED",
+      ],
       default: "DRAFT",
     },
     convertedTo: [{ type: String, default: "", trim: true }],

@@ -1,5 +1,6 @@
 import Modal from "../erp/Modal.jsx";
 import { FormField, TextInput } from "../erp/FormField.jsx";
+import { resolvePiPaymentRequest } from "../../lib/piPaymentRequest.js";
 
 export default function ReceivePaymentModal({
   open,
@@ -13,26 +14,45 @@ export default function ReceivePaymentModal({
   onSubmit,
   isSubmitting = false,
 }) {
+  const isProforma = sourceType === "PROFORMA_INVOICE";
+  const payReq = isProforma ? resolvePiPaymentRequest(document || {}) : null;
   const alreadyReceived = Number(document?.totalReceivedAmount || 0);
-  const balance = Number(document?.balanceAmount ?? document?.grandTotal ?? 0);
+  const payable = isProforma ? Number(payReq?.requestedAmount || 0) : Number(document?.grandTotal || 0);
+  const balance = Number(
+    document?.balanceAmount ?? Math.max(0, payable - alreadyReceived)
+  );
   const canSubmit = !!document?._id && Number(form?.amountReceived || 0) > 0 && !!form?.receiptDate;
   return (
     <Modal open={open} onClose={onClose} title={title} wide>
       <div className="space-y-3">
         <div className="grid gap-3 sm:grid-cols-3">
-          <FormField label={sourceType === "SALES_INVOICE" ? "Sales Invoice No." : "Proforma Invoice No."}>
+          <FormField label={isProforma ? "Proforma Invoice No." : "Sales Invoice No."}>
             <TextInput value={document?.invoiceNo || document?.proformaNo || ""} disabled />
           </FormField>
           <FormField label="Customer Name">
             <TextInput value={document?.customerName || ""} disabled />
           </FormField>
-          <FormField label="Invoice Grand Total">
-            <TextInput value={`${document?.currency || "USD"} ${Number(document?.grandTotal || 0).toFixed(2)}`} disabled />
-          </FormField>
+          {isProforma ? (
+            <>
+              <FormField label="Commercial Grand Total">
+                <TextInput
+                  value={`${document?.currency || "USD"} ${Number(payReq?.commercialGrandTotal || 0).toFixed(2)}`}
+                  disabled
+                />
+              </FormField>
+              <FormField label="Requested PI Amount (Payable)">
+                <TextInput value={`${document?.currency || "USD"} ${payable.toFixed(2)}`} disabled />
+              </FormField>
+            </>
+          ) : (
+            <FormField label="Invoice Grand Total">
+              <TextInput value={`${document?.currency || "USD"} ${Number(document?.grandTotal || 0).toFixed(2)}`} disabled />
+            </FormField>
+          )}
           <FormField label="Already Received">
             <TextInput value={`${document?.currency || "USD"} ${alreadyReceived.toFixed(2)}`} disabled />
           </FormField>
-          <FormField label="Balance Amount">
+          <FormField label="Balance Amount (vs Requested)">
             <TextInput value={`${document?.currency || "USD"} ${balance.toFixed(2)}`} disabled />
           </FormField>
           <FormField label="Receipt Date *">

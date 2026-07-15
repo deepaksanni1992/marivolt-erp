@@ -50,6 +50,20 @@ import {
   resolveDocumentCustomerFields,
   clampText,
 } from "../utils/customerTransactionFields.js";
+import {
+  buildValidatedPiPaymentRequest,
+  defaultFullPiPaymentRequest,
+  piPayableTotal,
+  resolvePiPaymentRequest,
+  roundMoney,
+} from "../utils/piPaymentRequest.js";
+import {
+  buildOaPiProgressSummary,
+  buildOaCommercialRevision,
+  isOaEditLockedByLifecycle,
+  recalculatePiAdvancePercentage,
+  suggestOaStatusAfterPiIssuance,
+} from "../utils/oaLifecycle.js";
 
 const { withTransaction } = stockService;
 
@@ -577,11 +591,11 @@ async function syncProformaPaymentState(req, proforma) {
     }
   }
   totalReceived = Math.max(0, totalReceived);
-  const grandTotal = Math.max(0, Number(proforma.grandTotal) || 0);
-  const balanceAmount = Math.max(0, grandTotal - totalReceived);
+  const payableTotal = piPayableTotal(proforma);
+  const balanceAmount = Math.max(0, roundMoney(payableTotal - totalReceived));
   let paymentStatus = "UNPAID";
-  if (totalReceived > 0 && totalReceived < grandTotal) paymentStatus = "PARTIALLY_PAID";
-  if (totalReceived >= grandTotal && grandTotal > 0) paymentStatus = "PAID";
+  if (totalReceived > 0 && totalReceived < payableTotal - 0.0001) paymentStatus = "PARTIALLY_PAID";
+  if (totalReceived >= payableTotal - 0.0001 && payableTotal > 0) paymentStatus = "PAID";
 
   const persisted = String(proforma.paymentStatus || "").toUpperCase();
   const persistedTotal = Number(proforma.totalReceivedAmount || 0);
@@ -644,11 +658,24 @@ async function enrichProformasWithPaymentState(req, docs = []) {
   ]);
   const byId = new Map(sums.map((x) => [String(x._id), Math.max(0, Number(x.total) || 0)]));
   return rows.map((doc) => {
-    const grandTotal = Math.max(0, Number(doc.grandTotal) || 0);
+    const paymentReq = resolvePiPaymentRequest(doc);
+    const payableTotal = piPayableTotal({ ...doc, ...paymentReq });
     const totalReceivedAmount = byId.get(String(doc._id)) ?? Math.max(0, Number(doc.totalReceivedAmount) || 0);
-    const balanceAmount = Math.max(0, grandTotal - totalReceivedAmount);
-    const paymentStatus = totalReceivedAmount >= grandTotal && grandTotal > 0 ? "PAID" : totalReceivedAmount > 0 ? "PARTIALLY_PAID" : "UNPAID";
-    return { ...doc, totalReceivedAmount, balanceAmount, paymentStatus };
+    const balanceAmount = Math.max(0, roundMoney(payableTotal - totalReceivedAmount));
+    const paymentStatus =
+      totalReceivedAmount >= payableTotal - 0.0001 && payableTotal > 0
+        ? "PAID"
+        : totalReceivedAmount > 0
+          ? "PARTIALLY_PAID"
+          : "UNPAID";
+    return {
+      ...doc,
+      ...paymentReq,
+      payableTotal,
+      totalReceivedAmount,
+      balanceAmount,
+      paymentStatus,
+    };
   });
 }
 
@@ -666,18 +693,20 @@ function requireApprovedQuotationForConversion(quotation) {
   }
 }
 
-const OA_CANCELABLE_STATUSES = new Set(["ACTIVE", "APPROVED", "CONFIRMED", "CONVERTED"]);
+const OA_CANCELABLE_STATUSES = new Set([
+  "ACTIVE",
+  "APPROVED",
+  "CONFIRMED",
+  "CONVERTED",
+  "PARTIALLY_PI_ISSUED",
+  "FULLY_PI_ISSUED",
+  "PACKING",
+]);
 const OA_DOWNSTREAM_BLOCK_MESSAGE = "Cannot cancel OA because active downstream document exists.";
 
-function isOAEditLocked(doc, { hasActiveProforma = null } = {}) {
-  if (!doc) return true;
-  const st = String(doc.status || "").toUpperCase();
-  if (["APPROVED", "CONVERTED", "CLOSED", "CANCELLED"].includes(st)) return true;
-  const conv = Array.isArray(doc.convertedTo) ? doc.convertedTo.map(String) : [];
-  if (conv.includes("SALES_INVOICE")) return true;
-  if (hasActiveProforma === true) return true;
-  if (hasActiveProforma === false) return false;
-  return conv.includes("PROFORMA");
+/** Edit lock — active PI alone must not lock; packing / SI / completed do. */
+function isOAEditLocked(doc, ctx = {}) {
+  return isOaEditLockedByLifecycle(doc, ctx);
 }
 
 function isOACancelableStatus(status = "") {
@@ -692,6 +721,146 @@ async function activeProformaIdsForOAs(req, oaIds = []) {
     .select("linkedOAId")
     .lean();
   return new Set(rows.map((r) => String(r.linkedOAId || "")).filter(Boolean));
+}
+
+/** Sum requested (payable) amounts of non-cancelled PIs linked to an OA. */
+async function summarizeOaProformaIssuance(req, oaId, { excludePiId = null } = {}) {
+  if (!oaId || !mongoose.Types.ObjectId.isValid(String(oaId))) {
+    return { issuedRequestedTotal: 0, activePiCount: 0, items: [] };
+  }
+  const filter = withCompany(req, { linkedOAId: oaId, status: { $ne: "CANCELLED" } });
+  if (excludePiId && mongoose.Types.ObjectId.isValid(String(excludePiId))) {
+    filter._id = { $ne: excludePiId };
+  }
+  const rows = await ProformaInvoice.find(filter)
+    .select(
+      "proformaNo proformaDate requestedAmount grandTotal commercialGrandTotal piValueType advancePercentage status paymentStatus balanceAmount totalReceivedAmount"
+    )
+    .lean();
+  let issuedRequestedTotal = 0;
+  for (const row of rows) {
+    issuedRequestedTotal += piPayableTotal(resolvePiPaymentRequest(row));
+  }
+  return {
+    issuedRequestedTotal: roundMoney(issuedRequestedTotal),
+    activePiCount: rows.length,
+    items: rows,
+  };
+}
+
+async function resolveOaPiCapacity(req, oaDoc, { excludePiId = null } = {}) {
+  const commercial = roundMoney(Math.max(0, Number(oaDoc?.grandTotal) || 0));
+  const { issuedRequestedTotal, activePiCount } = await summarizeOaProformaIssuance(req, oaDoc?._id, {
+    excludePiId,
+  });
+  const remainingEligible = roundMoney(Math.max(0, commercial - issuedRequestedTotal));
+  return {
+    oaCommercialGrandTotal: commercial,
+    piIssuedRequestedTotal: issuedRequestedTotal,
+    piRemainingEligibleAmount: remainingEligible,
+    activePiCount,
+    canCreateAdditionalProforma: remainingEligible > 0.005,
+  };
+}
+
+/** Full PI history for OA detail (includes cancelled — capacity release is visible). */
+async function loadOaProformaHistory(req, oaId, { oaCommercial = null } = {}) {
+  if (!oaId || !mongoose.Types.ObjectId.isValid(String(oaId))) return [];
+  const rows = await ProformaInvoice.find(withCompany(req, { linkedOAId: oaId }))
+    .select(
+      "proformaNo proformaDate requestedAmount grandTotal commercialGrandTotal piValueType advancePercentage status paymentStatus balanceAmount totalReceivedAmount"
+    )
+    .sort({ proformaDate: 1, createdAt: 1 })
+    .lean();
+  const commercial =
+    oaCommercial != null ? roundMoney(Math.max(0, Number(oaCommercial) || 0)) : null;
+  return rows.map((row) => {
+    const pay = resolvePiPaymentRequest(row);
+    const advancePercentage =
+      commercial != null && commercial > 0.005 && String(row.status || "").toUpperCase() !== "CANCELLED"
+        ? recalculatePiAdvancePercentage(pay.requestedAmount, commercial)
+        : pay.advancePercentage;
+    return {
+      _id: row._id,
+      proformaNo: row.proformaNo || "",
+      proformaDate: row.proformaDate || null,
+      requestedAmount: pay.requestedAmount,
+      advancePercentage,
+      commercialGrandTotal: pay.commercialGrandTotal,
+      piValueType: pay.piValueType,
+      paymentStatus: row.paymentStatus || "UNPAID",
+      status: row.status || "DRAFT",
+      totalReceivedAmount: Math.max(0, Number(row.totalReceivedAmount) || 0),
+      balanceAmount: Math.max(0, Number(row.balanceAmount) || 0),
+    };
+  });
+}
+
+/** Persist advanced % of OA commercial on active PIs without changing requested amounts. */
+async function recalculateActivePiPercentagesForOa(req, oa) {
+  if (!oa?._id) return;
+  const commercial = roundMoney(Math.max(0, Number(oa.grandTotal) || 0));
+  const rows = await ProformaInvoice.find(
+    withCompany(req, { linkedOAId: oa._id, status: { $ne: "CANCELLED" } })
+  );
+  for (const pi of rows) {
+    const pay = resolvePiPaymentRequest(pi.toObject?.() || pi);
+    const pct = recalculatePiAdvancePercentage(pay.requestedAmount, commercial);
+    pi.advancePercentage = pct;
+    pi.updatedBy = req.user?.email || pi.updatedBy || "";
+    await pi.save();
+  }
+}
+
+async function hasActiveOrderAllocationForOA(req, oaId) {
+  if (!oaId) return false;
+  const row = await OrderAllocation.findOne(
+    withCompany(req, { linkedOAId: oaId, status: { $ne: "CANCELLED" } })
+  )
+    .select("_id")
+    .lean();
+  return Boolean(row);
+}
+
+async function hasActiveSalesInvoiceForOA(req, oaId) {
+  if (!oaId) return false;
+  const row = await SalesInvoice.findOne(
+    withCompany(req, { linkedOAId: oaId, status: { $ne: "CANCELLED" } })
+  )
+    .select("_id")
+    .lean();
+  return Boolean(row);
+}
+
+/**
+ * Keep OA.status aligned with PI issuance without forcing packing/SI rows.
+ * Does not lock editing; does not overwrite COMPLETED/PACKING/CANCELLED.
+ */
+async function syncOaStatusFromPiCapacity(req, oa, session = null) {
+  if (!oa || String(oa.status || "").toUpperCase() === "CANCELLED") return false;
+  const st = String(oa.status || "").toUpperCase();
+  if (["CLOSED", "COMPLETED", "PACKING", "CONVERTED"].includes(st)) return false;
+  const conv = Array.isArray(oa.convertedTo) ? oa.convertedTo.map(String) : [];
+  if (conv.includes("ORDER_ALLOCATION") || conv.includes("SALES_INVOICE")) return false;
+
+  const capacity = await resolveOaPiCapacity(req, oa);
+  const next = suggestOaStatusAfterPiIssuance(capacity);
+  const hadProforma = conv.includes("PROFORMA");
+
+  if (capacity.activePiCount === 0) {
+    if (hadProforma) {
+      oa.convertedTo = conv.filter((x) => x.toUpperCase() !== "PROFORMA");
+    }
+  } else if (!hadProforma) {
+    oa.convertedTo = [...conv, "PROFORMA"];
+  }
+
+  if (String(oa.status || "").toUpperCase() !== next) {
+    oa.status = next;
+  }
+  oa.updatedBy = req.user?.email || oa.updatedBy || "";
+  await oa.save({ session });
+  return true;
 }
 
 async function findActiveDownstreamForOA(req, oaId) {
@@ -780,28 +949,10 @@ async function tryReleaseOAAfterProformaCancel(req, proforma, session = null) {
 
 async function releaseOAIfNoActiveProforma(req, oa, session = null) {
   if (!oa || String(oa.status || "").toUpperCase() === "CANCELLED") return false;
-  const activePi = await ProformaInvoice.findOne(
-    withCompany(req, { linkedOAId: oa._id, status: { $ne: "CANCELLED" } })
-  )
-    .session(session || null)
-    .lean();
-  if (activePi) return false;
-
-  const conv = (oa.convertedTo || []).map(String);
-  const hadProforma = conv.includes("PROFORMA");
-  if (!hadProforma && String(oa.status || "").toUpperCase() !== "APPROVED") return false;
-
-  oa.convertedTo = conv.filter((x) => x.toUpperCase() !== "PROFORMA");
-  const nextConv = (oa.convertedTo || []).map(String);
-  if (!nextConv.includes("SALES_INVOICE") && !nextConv.includes("ORDER_ALLOCATION")) {
-    oa.status = "ACTIVE";
-  }
-  oa.updatedBy = req.user?.email || "";
-  await oa.save({ session });
-  return true;
+  return syncOaStatusFromPiCapacity(req, oa, session);
 }
 
-async function enrichOAsWithCancelEligibility(req, oas = []) {
+async function enrichOAsWithCancelEligibility(req, oas = [], { includeProformaHistory = false } = {}) {
   if (!oas.length) return oas;
   const ids = oas.map((o) => o._id).filter(Boolean);
   const activePiOaIds = await activeProformaIdsForOAs(req, ids);
@@ -817,6 +968,16 @@ async function enrichOAsWithCancelEligibility(req, oas = []) {
       }
       const st = String(oa.status || "").toUpperCase();
       const hasActiveProforma = activePiOaIds.has(String(oa._id));
+      const capacity = await resolveOaPiCapacity(req, oa);
+      const [hasOrderAllocation, hasSalesInvoice] = await Promise.all([
+        hasActiveOrderAllocationForOA(req, oa._id),
+        hasActiveSalesInvoiceForOA(req, oa._id),
+      ]);
+      const progress = buildOaPiProgressSummary(oa, {
+        ...capacity,
+        hasOrderAllocation,
+        hasSalesInvoice,
+      });
       let canCancelOA = false;
       let cancelOABlockReason = "";
 
@@ -833,11 +994,27 @@ async function enrichOAsWithCancelEligibility(req, oas = []) {
         }
       }
 
+      const proformaHistory = includeProformaHistory
+        ? await loadOaProformaHistory(req, oa._id, { oaCommercial: oa.grandTotal })
+        : undefined;
+
       return {
         ...oa,
         hasActiveProforma,
         canCancelOA,
         cancelOABlockReason,
+        ...capacity,
+        ...progress,
+        hasOrderAllocation,
+        hasSalesInvoice,
+        commercialRevisions: Array.isArray(oa.commercialRevisions) ? oa.commercialRevisions : [],
+        originalCommercialValue:
+          oa.originalCommercialValue != null
+            ? oa.originalCommercialValue
+            : Array.isArray(oa.commercialRevisions) && oa.commercialRevisions[0]
+              ? oa.commercialRevisions[0].originalCommercialValue
+              : null,
+        ...(proformaHistory ? { proformaHistory } : {}),
       };
     })
   );
@@ -1410,23 +1587,31 @@ export async function reportProforma(req, res) {
       ]),
     ]);
     const summary = summaryAgg?.[0] || {};
-    const rows = rowsRaw.map((doc) => ({
-      _id: doc._id,
-      proformaNo: doc.proformaNo,
-      proformaDate: doc.proformaDate,
-      linkedQuotationNo: doc.linkedQuotationNo || "",
-      linkedOANo: doc.linkedOANo || "",
-      customerName: doc.customerName,
-      vertical: doc.vertical || "",
-      engine: doc.engine || "",
-      model: doc.model || "",
-      config: doc.config || "",
-      esn: doc.esn || "",
-      amount: toNumber(doc.grandTotal),
-      status: doc.status || "DRAFT",
-      validity: doc.validity || "",
-      paymentTerms: doc.paymentTerms || "",
-    }));
+    const rows = rowsRaw.map((doc) => {
+      const pay = resolvePiPaymentRequest(doc);
+      return {
+        _id: doc._id,
+        proformaNo: doc.proformaNo,
+        proformaDate: doc.proformaDate,
+        linkedQuotationNo: doc.linkedQuotationNo || "",
+        linkedOANo: doc.linkedOANo || "",
+        customerName: doc.customerName,
+        vertical: doc.vertical || "",
+        engine: doc.engine || "",
+        model: doc.model || "",
+        config: doc.config || "",
+        esn: doc.esn || "",
+        amount: toNumber(doc.grandTotal),
+        commercialTotal: toNumber(pay.commercialGrandTotal),
+        requestedAmount: toNumber(pay.requestedAmount),
+        advancePercentage: pay.advancePercentage,
+        commercialBalanceAmount: toNumber(pay.commercialBalanceAmount),
+        piValueType: pay.piValueType,
+        status: doc.status || "DRAFT",
+        validity: doc.validity || "",
+        paymentTerms: doc.paymentTerms || "",
+      };
+    });
     res.json({
       rows,
       page,
@@ -1480,7 +1665,11 @@ export async function reportPendingAllocation(req, res) {
   try {
     const q = String(req.query.search || "").trim();
     const [oas, proformas, allocations] = await Promise.all([
-      OrderAcknowledgement.find(withCompany(req, { status: { $nin: ["CANCELLED", "CONVERTED", "CLOSED"] } })).lean(),
+      OrderAcknowledgement.find(
+        withCompany(req, {
+          status: { $nin: ["CANCELLED", "CONVERTED", "CLOSED", "PACKING", "COMPLETED"] },
+        })
+      ).lean(),
       ProformaInvoice.find(withCompany(req, { status: { $in: ["APPROVED", "PAID_PENDING_SHIPMENT"] } })).lean(),
       OrderAllocation.find(withCompany(req, { status: { $ne: "CANCELLED" } }))
         .select("linkedOAId linkedProformaId")
@@ -1972,7 +2161,9 @@ export async function getOA(req, res) {
     const doc = await OrderAcknowledgement.findOne(withCompany(req, { _id: id })).lean();
     if (!doc) return res.status(404).json({ message: "Not found" });
     const [patched] = await applyLinkedQuotationDiscountFallback(req, [doc], { persistModel: OrderAcknowledgement });
-    const [enriched] = await enrichOAsWithCancelEligibility(req, [patched || doc]);
+    const [enriched] = await enrichOAsWithCancelEligibility(req, [patched || doc], {
+      includeProformaHistory: true,
+    });
     const base = enriched || patched || doc;
     const resolvedTermsAndConditions = await resolveEffectiveTermsAndConditions(req, base, "OA");
     res.json({ ...base, resolvedTermsAndConditions });
@@ -2157,10 +2348,22 @@ export async function updateOA(req, res) {
     if (!doc) return res.status(404).json({ message: "Not found" });
     const activePiIds = await activeProformaIdsForOAs(req, [doc._id]);
     const hasActiveProforma = activePiIds.has(String(doc._id));
-    if (isOAEditLocked(doc, { hasActiveProforma })) {
+    const [hasOrderAllocation, hasSalesInvoice, capacity] = await Promise.all([
+      hasActiveOrderAllocationForOA(req, doc._id),
+      hasActiveSalesInvoiceForOA(req, doc._id),
+      resolveOaPiCapacity(req, doc),
+    ]);
+    if (
+      isOAEditLocked(doc, {
+        hasActiveProforma,
+        hasOrderAllocation,
+        hasSalesInvoice,
+        ...capacity,
+      })
+    ) {
       return res.status(400).json({
         message:
-          "This order acknowledgement is locked after conversion to Proforma or Sales Invoice (or finalized status); it cannot be edited.",
+          "This order acknowledgement is locked after packing / sales invoice / completion; it cannot be edited.",
       });
     }
     const beforeSnapshot = doc.toObject();
@@ -2183,6 +2386,9 @@ export async function updateOA(req, res) {
       "lines",
       "packingCost",
       "clearanceCost",
+      "discountType",
+      "discountValue",
+      "taxTotal",
       "vertical",
       "engine",
       "model",
@@ -2214,32 +2420,105 @@ export async function updateOA(req, res) {
     }
     if (req.body.status !== undefined) {
       const st = String(req.body.status || "").toUpperCase();
-      if (["APPROVED", "CONVERTED"].includes(st)) {
+      if (["APPROVED", "CONVERTED", "PACKING", "COMPLETED", "PARTIALLY_PI_ISSUED", "FULLY_PI_ISSUED"].includes(st)) {
         return res.status(400).json({
-          message: "Status APPROVED is set automatically when converting to PI or Sales Invoice.",
+          message: "This OA status is managed automatically from PI issuance, packing, and sales invoice progress.",
         });
       }
       doc.status = req.body.status;
     }
     doc.lines = normalizeLines(doc.lines || []);
     Object.assign(doc, computeTotals(doc.lines, doc));
+    const previousCommercial = roundMoney(Math.max(0, Number(beforeSnapshot.grandTotal) || 0));
+    const revisedCommercial = roundMoney(Math.max(0, Number(doc.grandTotal) || 0));
+    const commercialChanged = Math.abs(revisedCommercial - previousCommercial) > 0.005;
+    let commercialRevision = null;
+
+    if (hasActiveProforma && commercialChanged) {
+      try {
+        commercialRevision = buildOaCommercialRevision({
+          previousCommercial,
+          revisedCommercial,
+          issuedRequestedTotal: capacity.piIssuedRequestedTotal,
+          existingRevisions: doc.commercialRevisions || [],
+          reason:
+            req.body.commercialRevisionReason ??
+            req.body.revisionReason ??
+            req.body.reason ??
+            "",
+          revisedBy: req.user?.email || "",
+          revisionDate: new Date(),
+        });
+      } catch (revErr) {
+        return res.status(400).json({ message: revErr.message });
+      }
+      if (commercialRevision) {
+        if (doc.originalCommercialValue == null) {
+          doc.originalCommercialValue = commercialRevision.originalCommercialValue;
+        }
+        doc.commercialRevisions = [...(doc.commercialRevisions || []), commercialRevision];
+      }
+    } else if (hasActiveProforma) {
+      const issued = Number(capacity.piIssuedRequestedTotal) || 0;
+      if (revisedCommercial + 0.005 < issued) {
+        return res.status(400).json({
+          message: `Commercial total cannot be below PI amount already issued (${issued.toFixed(2)})`,
+        });
+      }
+    }
+
     doc.updatedBy = req.user?.email || "";
     await doc.save();
+    if (commercialRevision) {
+      await recalculateActivePiPercentagesForOa(req, doc);
+    }
+    if (hasActiveProforma || String(doc.status || "").toUpperCase().includes("PI_ISSUED")) {
+      await syncOaStatusFromPiCapacity(req, doc);
+    }
     const customerFieldChanges = diffCustomerTransactionFields(beforeSnapshot, doc);
     await writeAudit(req, {
-      action: "UPDATE",
+      action: commercialRevision ? "UPDATE" : "UPDATE",
       module: "SALES",
       entityType: "ORDER_ACKNOWLEDGEMENT",
       entityId: doc._id,
       documentNo: doc.oaNo || "",
-      description: `Order Acknowledgement ${doc.oaNo || ""} updated`,
-      beforeData: customerTransactionAuditFieldSlice(beforeSnapshot),
+      description: commercialRevision
+        ? `Order Acknowledgement ${doc.oaNo || ""} commercial revision #${commercialRevision.revisionNumber}`
+        : `Order Acknowledgement ${doc.oaNo || ""} updated`,
+      beforeData: {
+        ...customerTransactionAuditFieldSlice(beforeSnapshot),
+        grandTotal: previousCommercial,
+      },
       afterData: {
         ...customerTransactionAuditFieldSlice(doc),
+        grandTotal: revisedCommercial,
         ...(customerFieldChanges ? { customerFieldChanges } : {}),
+        ...(commercialRevision
+          ? {
+              commercialRevision: {
+                revisionNumber: commercialRevision.revisionNumber,
+                originalCommercialValue: commercialRevision.originalCommercialValue,
+                revisedCommercialValue: commercialRevision.revisedCommercialValue,
+                difference: commercialRevision.difference,
+                reason: commercialRevision.reason,
+                revisedBy: commercialRevision.revisedBy,
+                revisionDate: commercialRevision.revisionDate,
+              },
+            }
+          : {}),
       },
+      metadata: commercialRevision
+        ? {
+            commercialRevision: true,
+            revisionNumber: commercialRevision.revisionNumber,
+            reason: commercialRevision.reason,
+          }
+        : null,
     });
-    res.json(doc);
+    const [enriched] = await enrichOAsWithCancelEligibility(req, [doc.toObject()], {
+      includeProformaHistory: true,
+    });
+    res.json(enriched || doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -2367,6 +2646,20 @@ export async function createProforma(req, res) {
       bankDetails = (await resolveBankDetailsTextForCurrency(withCompany(req), currency)) || "";
     }
     const customerFields = pickCustomerTransactionFieldsFromBody(body);
+    let maxRequestedAmount = null;
+    if (body.linkedOAId && mongoose.Types.ObjectId.isValid(String(body.linkedOAId))) {
+      const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: body.linkedOAId })).lean();
+      if (oa) {
+        const capacity = await resolveOaPiCapacity(req, oa);
+        maxRequestedAmount = capacity.piRemainingEligibleAmount;
+        if (maxRequestedAmount <= 0.005) {
+          return res.status(409).json({
+            message: "PI-eligible amount for this Order Acknowledgement is fully issued",
+          });
+        }
+      }
+    }
+    const paymentRequest = buildValidatedPiPaymentRequest(totals.grandTotal, body, { maxRequestedAmount });
     const doc = await ProformaInvoice.create({
       ...body,
       ...customerFields,
@@ -2374,10 +2667,15 @@ export async function createProforma(req, res) {
       bankDetails,
       lines,
       ...totals,
+      ...paymentRequest,
       proformaNo,
       companyId: req.companyId,
       createdBy: req.user?.email || "",
     });
+    if (doc.linkedOAId) {
+      const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: doc.linkedOAId }));
+      if (oa) await syncOaStatusFromPiCapacity(req, oa);
+    }
     res.status(201).json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -2424,6 +2722,10 @@ export async function updateProforma(req, res) {
       "esn",
       "linkedQuotationNo",
       "linkedOANo",
+      "piValueType",
+      "advancePercentage",
+      "requestedAmount",
+      "advanceRemarks",
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
@@ -2457,7 +2759,24 @@ export async function updateProforma(req, res) {
       doc.status = req.body.status;
     }
     doc.lines = normalizeLines(doc.lines || []);
-    Object.assign(doc, computeTotals(doc.lines, doc));
+    const totals = computeTotals(doc.lines, doc);
+    Object.assign(doc, totals);
+    let maxRequestedAmount = null;
+    if (doc.linkedOAId) {
+      const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: doc.linkedOAId })).lean();
+      if (oa) {
+        const capacity = await resolveOaPiCapacity(req, oa, { excludePiId: doc._id });
+        maxRequestedAmount = capacity.piRemainingEligibleAmount;
+      }
+    }
+    const paymentRequest = buildValidatedPiPaymentRequest(totals.grandTotal, {
+      piValueType: req.body.piValueType !== undefined ? req.body.piValueType : doc.piValueType,
+      advancePercentage:
+        req.body.advancePercentage !== undefined ? req.body.advancePercentage : doc.advancePercentage,
+      requestedAmount: req.body.requestedAmount !== undefined ? req.body.requestedAmount : doc.requestedAmount,
+      advanceRemarks: req.body.advanceRemarks !== undefined ? req.body.advanceRemarks : doc.advanceRemarks,
+    }, { maxRequestedAmount });
+    Object.assign(doc, paymentRequest);
     doc.updatedBy = req.user?.email || "";
     await doc.save();
     const customerFieldChanges = diffCustomerTransactionFields(beforeSnapshot, doc);
@@ -2468,12 +2787,24 @@ export async function updateProforma(req, res) {
       entityId: doc._id,
       documentNo: doc.proformaNo || "",
       description: `Proforma Invoice ${doc.proformaNo || ""} updated`,
-      beforeData: customerTransactionAuditFieldSlice(beforeSnapshot),
+      beforeData: {
+        ...customerTransactionAuditFieldSlice(beforeSnapshot),
+        piValueType: beforeSnapshot.piValueType || "FULL",
+        requestedAmount: beforeSnapshot.requestedAmount,
+        advancePercentage: beforeSnapshot.advancePercentage,
+      },
       afterData: {
         ...customerTransactionAuditFieldSlice(doc),
+        piValueType: doc.piValueType,
+        requestedAmount: doc.requestedAmount,
+        advancePercentage: doc.advancePercentage,
         ...(customerFieldChanges ? { customerFieldChanges } : {}),
       },
     });
+    if (doc.linkedOAId) {
+      const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: doc.linkedOAId }));
+      if (oa) await syncOaStatusFromPiCapacity(req, oa);
+    }
     res.json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -2612,6 +2943,7 @@ export async function convertQuotationToProforma(req, res) {
     const currency = quotation.currency || "USD";
     const bankDetails = (await resolveBankDetailsTextForCurrency(withCompany(req), currency)) || "";
     const customerFields = copyCustomerTransactionFields(quotation);
+    const paymentRequest = defaultFullPiPaymentRequest(totals.grandTotal);
     const doc = await ProformaInvoice.create({
       companyId: req.companyId,
       proformaNo,
@@ -2634,6 +2966,7 @@ export async function convertQuotationToProforma(req, res) {
       esn: quotation.esn || "",
       lines,
       ...totals,
+      ...paymentRequest,
       status: "DRAFT",
       createdBy: req.user?.email || "",
     });
@@ -2653,10 +2986,15 @@ export async function convertOAToProforma(req, res) {
     const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: id }));
     validateConversionSource(oa, "order acknowledgement");
     if (!oa.lines?.length) return res.status(400).json({ message: "OA requires at least one line to convert" });
-    const already = await ProformaInvoice.findOne(
-      withCompany(req, { linkedOAId: oa._id, status: { $ne: "CANCELLED" } })
-    );
-    if (already) return res.status(409).json({ message: `Proforma already exists (${already.proformaNo})` });
+    const capacity = await resolveOaPiCapacity(req, oa);
+    if (["CANCELLED", "COMPLETED", "CLOSED"].includes(String(oa.status || "").toUpperCase())) {
+      return res.status(400).json({ message: "Cannot create Proforma from a cancelled or completed OA" });
+    }
+    if (!capacity.canCreateAdditionalProforma) {
+      return res.status(409).json({
+        message: `PI-eligible amount fully issued for this OA (${capacity.piIssuedRequestedTotal.toFixed(2)} of ${capacity.oaCommercialGrandTotal.toFixed(2)})`,
+      });
+    }
 
     const proformaNo = await nextUniqueSalesDocNumber({
       companyId: req.companyId,
@@ -2693,6 +3031,7 @@ export async function convertOAToProforma(req, res) {
       precedingQuotation = await Quotation.findOne(withCompany(req, { _id: oa.linkedQuotationId })).lean();
     }
     const customerFields = copyCustomerTransactionFields(oa, { preceding: precedingQuotation });
+    const paymentRequest = defaultFullPiPaymentRequest(totals.grandTotal);
     const doc = await ProformaInvoice.create({
       companyId: req.companyId,
       proformaNo,
@@ -2716,13 +3055,14 @@ export async function convertOAToProforma(req, res) {
       esn: oa.esn || "",
       lines,
       ...totals,
+      ...paymentRequest,
       status: "DRAFT",
       createdBy: req.user?.email || "",
     });
     if (!oa.convertedTo?.includes("PROFORMA")) oa.convertedTo = [...(oa.convertedTo || []), "PROFORMA"];
-    oa.status = "APPROVED";
     oa.updatedBy = req.user?.email || "";
     await oa.save();
+    await syncOaStatusFromPiCapacity(req, oa);
     res.status(201).json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -3076,6 +3416,18 @@ export async function convertPackingToSalesInvoice(req, res) {
       if (refreshedPacking?.invoiceStatus === "FULLY_INVOICED") allocation.status = "CLOSED";
       allocation.updatedBy = req.user?.email || "";
       await allocation.save({ session });
+      if (allocation.linkedOAId) {
+        const oaDoc = await OrderAcknowledgement.findOne(
+          withCompany(req, { _id: allocation.linkedOAId })
+        ).session(session);
+        if (oaDoc && String(oaDoc.status || "").toUpperCase() !== "CANCELLED") {
+          oaDoc.status = "COMPLETED";
+          const conv = Array.isArray(oaDoc.convertedTo) ? oaDoc.convertedTo.map(String) : [];
+          if (!conv.includes("SALES_INVOICE")) oaDoc.convertedTo = [...conv, "SALES_INVOICE"];
+          oaDoc.updatedBy = req.user?.email || "";
+          await oaDoc.save({ session });
+        }
+      }
     });
     const doc = await SalesInvoice.findOne(withCompany(req, { _id: createdId })).lean();
     await writeAudit(req, {
@@ -4346,7 +4698,7 @@ export async function convertOAToOrderAllocation(req, res) {
       doc.stockReservedAt = new Date();
       doc.updatedBy = req.user?.email || "";
       await doc.save({ session });
-      oa.status = "CONVERTED";
+      oa.status = "PACKING";
       if (!oa.convertedTo?.includes("ORDER_ALLOCATION")) {
         oa.convertedTo = [...(oa.convertedTo || []), "ORDER_ALLOCATION"];
       }
@@ -4416,7 +4768,7 @@ async function backfillProformaReceiptAllocations(req, proforma) {
         String(a.targetId || "") === String(proforma._id)
     );
     if (hasMatch) continue;
-    const grandTotal = Math.max(0, Number(proforma.grandTotal) || 0);
+    const grandTotal = piPayableTotal(proforma);
     const remaining = Math.max(0, grandTotal - allocatedSoFar);
     if (remaining <= 0) continue;
     const amountReceived = Math.max(0, Number(r.amountReceived) || 0);

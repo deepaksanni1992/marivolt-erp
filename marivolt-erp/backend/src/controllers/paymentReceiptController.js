@@ -14,6 +14,7 @@ import {
   reversePaymentReceiptReceivable,
 } from "../services/customerReceivableService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
+import { piPayableTotal, roundMoney } from "../utils/piPaymentRequest.js";
 
 const ALLOWED_MIME = new Set(["application/pdf", "image/jpeg", "image/png"]);
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
@@ -94,12 +95,12 @@ async function recalcProformaPaymentState(req, proformaId) {
     }
   }
   totalReceived = Math.max(0, totalReceived);
-  const grandTotal = Math.max(0, Number(proforma.grandTotal) || 0);
-  const balanceAmount = Math.max(0, grandTotal - totalReceived);
+  const payableTotal = piPayableTotal(proforma);
+  const balanceAmount = Math.max(0, roundMoney(payableTotal - totalReceived));
 
   let paymentStatus = "UNPAID";
-  if (totalReceived > 0 && totalReceived < grandTotal) paymentStatus = "PARTIALLY_PAID";
-  if (totalReceived >= grandTotal && grandTotal > 0) paymentStatus = "PAID";
+  if (totalReceived > 0 && totalReceived < payableTotal - 0.0001) paymentStatus = "PARTIALLY_PAID";
+  if (totalReceived >= payableTotal - 0.0001 && payableTotal > 0) paymentStatus = "PAID";
 
   proforma.totalReceivedAmount = totalReceived;
   proforma.balanceAmount = balanceAmount;
@@ -278,7 +279,7 @@ export async function createPaymentReceipt(req, res) {
         // (default schema value is 0, which would zero-out auto-allocation on first payment).
         const proformaBalanceLive = Math.max(
           0,
-          (Number(linkedProforma.grandTotal) || 0) - (Number(linkedProforma.totalReceivedAmount) || 0)
+          piPayableTotal(linkedProforma) - (Number(linkedProforma.totalReceivedAmount) || 0)
         );
         autoBalance = Math.min(autoBalance, proformaBalanceLive);
       }
@@ -316,7 +317,7 @@ export async function createPaymentReceipt(req, res) {
             targetType: SOURCE_TYPE.PROFORMA,
             targetId: p._id,
             targetNo: p.proformaNo || "",
-            invoiceTotal: Number(p.grandTotal) || 0,
+            invoiceTotal: piPayableTotal(p),
             allocatedAmount: a.allocatedAmount,
             currency: String(req.body?.currency || p.currency || "USD").trim().toUpperCase(),
             allocatedAt: receiptDate,
@@ -340,11 +341,12 @@ export async function createPaymentReceipt(req, res) {
         }
       }
     } else if (linkedProforma) {
+      const payable = piPayableTotal(linkedProforma);
       const proformaBalanceLive = Math.max(
         0,
-        (Number(linkedProforma.grandTotal) || 0) - (Number(linkedProforma.totalReceivedAmount) || 0)
+        payable - (Number(linkedProforma.totalReceivedAmount) || 0)
       );
-      const cap = proformaBalanceLive > 0 ? proformaBalanceLive : Math.max(0, Number(linkedProforma.grandTotal) || 0);
+      const cap = proformaBalanceLive > 0 ? proformaBalanceLive : Math.max(0, payable);
       const alloc = Math.min(amountReceived, cap);
       if (alloc > 0) {
         allocations.push({
@@ -353,7 +355,7 @@ export async function createPaymentReceipt(req, res) {
           targetType: SOURCE_TYPE.PROFORMA,
           targetId: linkedProforma._id,
           targetNo: linkedProforma.proformaNo || "",
-          invoiceTotal: Number(linkedProforma.grandTotal) || 0,
+          invoiceTotal: payable,
           allocatedAmount: alloc,
           currency: String(req.body?.currency || linkedProforma.currency || "USD").trim().toUpperCase(),
           allocatedAt: receiptDate,
