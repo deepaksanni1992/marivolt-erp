@@ -143,7 +143,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
         bodyHtml,
         footerHtml: buildPrintPageFooterHtml(
           branding,
-          "This is a computer generated document and does not require signature or stamp.",
+          "This is digital copy, No Signature/Stamp required",
         ),
       })}
       </body>

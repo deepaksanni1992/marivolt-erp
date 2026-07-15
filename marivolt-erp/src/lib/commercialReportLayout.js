@@ -148,7 +148,7 @@ export function buildReportTotalsHtml(lines = []) {
 }
 
 export function buildReportDocNoteHtml() {
-  return '<div class="footer"><div class="doc-note">This is a computer generated document and does not require signature or stamp.</div></div>';
+  return '<div class="footer"><div class="doc-note">This is digital copy, No Signature/Stamp required</div></div>';
 }
 
 export function buildMarivoltTermsHtml(brandingName = "") {

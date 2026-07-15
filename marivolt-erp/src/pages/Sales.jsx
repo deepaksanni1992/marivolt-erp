@@ -1546,7 +1546,7 @@ function renderFlowDocPrintWindow({
   const termsHeaderHtml = mainHeaderHtml;
   const flowDocNote =
     salesInvoiceLayout
-      ? "This is a computer generated document."
+      ? "This is digital copy, No Signature/Stamp required"
       : undefined;
   const termsPagesHtml = buildQuotationTermsContinuationPagesHtml(termsHeaderHtml, termsText, branding, flowDocNote);
   const isProformaPrint = String(title || "").toLowerCase().includes("proforma");

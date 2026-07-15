@@ -251,13 +251,12 @@ ${CUSTOMER_ADDRESS_PRINT_CSS}
           .si-bank-missing { line-height: 1.45; }
           .si-amount-words { margin-top: 8px; line-height: 1.5; font-weight: 600; color: #111; }
           .si-corr-head { font-weight: 700; margin-bottom: 8px; letter-spacing: 0.02em; }
-          .si-signature-wrap { text-align: left; }
-          .si-signature-box {
-            margin-top: 8px;
-            min-height: 72px;
-            border: 1px dashed #9ca3af;
-            border-radius: 4px;
-            background: #fafafa;
+          .si-signature-wrap { text-align: left; vertical-align: top; }
+          .si-digital-copy-note {
+            margin-top: 4px;
+            line-height: 1.45;
+            font-size: 11px;
+            color: #111;
           }
           .si-corr-block { margin-top: 12px; padding-top: 10px; border-top: 1px dashed #e5e7eb; }
           .si-beneficiary-cell { line-height: 1.45; }

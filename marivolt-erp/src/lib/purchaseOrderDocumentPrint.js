@@ -317,7 +317,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
   </div>
   <div class="print-page-footer">
   <div class="footer po-doc-note document-footer footer-note computer-generated-note">
-    <div class="doc-note">This is a computer generated document and does not require signature or stamp.</div>
+    <div class="doc-note">This is digital copy, No Signature/Stamp required</div>
   </div>
   ${
     !b.useBrandedLayout

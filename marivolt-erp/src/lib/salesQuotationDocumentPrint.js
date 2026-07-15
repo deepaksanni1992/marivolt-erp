@@ -153,7 +153,7 @@ export function buildQuotationPrintBrandedFooterHtml(branding) {
 }
 
 export const DEFAULT_PRINT_DOC_NOTE =
-  "This is a computer generated documents and does not required signature or stamp.";
+  "This is digital copy, No Signature/Stamp required";
 
 export function buildPrintDocNoteHtml(noteText = DEFAULT_PRINT_DOC_NOTE) {
   return `<div class="footer document-footer footer-note computer-generated-note"><div class="doc-note">${escHtml(noteText)}</div></div>`;

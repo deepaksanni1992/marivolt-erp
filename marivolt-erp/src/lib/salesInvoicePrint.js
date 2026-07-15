@@ -222,8 +222,7 @@ export function renderSiBankFooterHtml({ bankDetail, amountInWords, company, doc
           <tr>
             <td class="si-bank-td si-bank-td-left si-beneficiary-cell">${beneficiaryCellHtml}</td>
             <td class="si-bank-td si-bank-td-right si-signature-wrap">
-              <div><b>Signature &amp; Stamp</b></div>
-              <div class="si-signature-box"></div>
+              <div class="si-digital-copy-note"><b>This is digital copy, No Signature/Stamp required</b></div>
             </td>
           </tr>
         </tbody>
