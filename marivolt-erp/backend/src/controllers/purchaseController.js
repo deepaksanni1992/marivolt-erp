@@ -16,6 +16,13 @@ import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentControll
 import { nextGrnNo } from "../services/grnNumberService.js";
 import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js";
 import { calcPoDiscountTotal, calcPoGrandTotal, poHeaderCost } from "../utils/poTotals.js";
+import {
+  mergePoLineBases,
+  poLineToPlain,
+  resolveOrderedQty,
+  validateIncomingPoLineQtys,
+  validateReceivedQtyFloor,
+} from "../utils/poLineQty.js";
 import OrderAllocation from "../models/OrderAllocation.js";
 import {
   applyAllocationSourceHeader,
@@ -39,7 +46,10 @@ function isDuplicateGrnNoError(err) {
 
 function normalizePoLines(lines = []) {
   return lines
-    .map((l) => {
+    .map((raw) => {
+      // Spreading a Mongoose subdocument yields internal keys only, so always work on a plain copy.
+      const l = poLineToPlain(raw);
+      const orderedQty = resolveOrderedQty(l);
       const itemCode = String(l.itemCode || l.article || l.articleNo || l.materialCode || l.partNumber || l.partNo || "")
         .trim()
         .toUpperCase();
@@ -64,8 +74,8 @@ function normalizePoLines(lines = []) {
         config: l.config != null ? String(l.config).trim() : "",
         esn: l.esn != null ? String(l.esn).trim() : "",
         uom: l.uom || "PCS",
-        qty: Number(l.orderedQty ?? l.qty) || 0,
-        orderedQty: Number(l.orderedQty ?? l.qty) || 0,
+        qty: orderedQty,
+        orderedQty,
         receivedQty: Number(l.receivedQty) || 0,
         cancelledQty: Number(l.cancelledQty) || 0,
         unitPrice: Number(l.unitPrice) || 0,
@@ -78,49 +88,14 @@ function normalizePoLines(lines = []) {
           : null,
         sourceArticle: String(l.sourceArticle || "").trim().toUpperCase(),
         sourceRequestedQty: Math.max(0, Number(l.sourceRequestedQty) || 0),
-        sourceConvertedQty: Math.max(0, Number(l.sourceConvertedQty ?? l.qty) || 0),
+        sourceConvertedQty: Math.max(0, Number(l.sourceConvertedQty ?? orderedQty) || 0),
       };
     })
     .filter((l) => l.itemCode && l.qty > 0);
 }
 
-function poLineToPlain(line) {
-  if (!line) return {};
-  if (typeof line.toObject === "function") return line.toObject();
-  return { ...line };
-}
-
-function mergeLinePatch(baseLine, patchLine) {
-  const base = poLineToPlain(baseLine);
-  const patch = poLineToPlain(patchLine);
-  return {
-    ...base,
-    ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)),
-    _id: patch._id || base._id,
-  };
-}
-
 function mergePoLinesForUpdate(existingLines = [], incomingLines = []) {
-  const existing = Array.from(existingLines || []);
-  const byId = new Map(existing.map((line) => [String(line._id || ""), line]).filter(([id]) => id));
-  const usedIds = new Set();
-  const merged = [];
-
-  for (let i = 0; i < incomingLines.length; i += 1) {
-    const incoming = incomingLines[i] || {};
-    const id = String(incoming._id || incoming.id || "");
-    const base = (id && byId.get(id)) || existing[i] || null;
-    if (id) usedIds.add(id);
-    merged.push(mergeLinePatch(base, incoming));
-  }
-
-  for (const line of existing) {
-    const id = String(line._id || "");
-    if (id && usedIds.has(id)) continue;
-    if (!incomingLines.length) merged.push(poLineToPlain(line));
-  }
-
-  return normalizePoLines(merged);
+  return normalizePoLines(mergePoLineBases(existingLines, incomingLines));
 }
 
 function fillBlankBuyerSnapshot(doc, company) {
@@ -137,8 +112,9 @@ function recalcPoTotals(doc) {
   const cur = doc.currency || "USD";
   for (const line of doc.lines) {
     line.currency = line.currency || cur;
-    line.qty = Number(line.orderedQty ?? line.qty) || 0;
-    line.orderedQty = Number(line.orderedQty ?? line.qty) || 0;
+    const orderedQty = resolveOrderedQty(line);
+    line.qty = orderedQty;
+    line.orderedQty = orderedQty;
     line.receivedQty = Number(line.receivedQty) || 0;
     line.cancelledQty = Number(line.cancelledQty) || 0;
     line.pendingQty = Math.max(0, line.orderedQty - line.receivedQty - line.cancelledQty);
@@ -436,9 +412,18 @@ export async function updatePurchaseOrder(req, res) {
       if (patch[k] !== undefined) doc[k] = patch[k];
     }
     if (Array.isArray(patch.lines)) {
-      doc.lines = mergePoLinesForUpdate(doc.lines, patch.lines);
+      const qtyErrors = validateIncomingPoLineQtys(patch.lines);
+      if (qtyErrors.length) {
+        return res.status(400).json({ message: qtyErrors[0], details: qtyErrors });
+      }
+      const storedLines = (doc.lines || []).map(poLineToPlain);
+      doc.lines = mergePoLinesForUpdate(storedLines, patch.lines);
       if (!doc.lines.length) {
         return res.status(400).json({ message: "At least one valid line is required" });
+      }
+      const receiptErrors = validateReceivedQtyFloor(storedLines, doc.lines);
+      if (receiptErrors.length) {
+        return res.status(400).json({ message: receiptErrors[0], details: receiptErrors });
       }
     } else {
       doc.lines = normalizePoLines(doc.lines);
@@ -458,7 +443,8 @@ export async function updatePurchaseOrder(req, res) {
         lines: doc.lines,
         excludePoId: doc._id,
       });
-      doc.lines = stampAllocationSourceOnPoLines(doc.lines, allocation, doc.lines);
+      const plainLines = (doc.lines || []).map((line) => poLineToPlain(line));
+      doc.lines = stampAllocationSourceOnPoLines(plainLines, allocation, plainLines);
     }
     const supplierChanged =
       (patch.supplierId !== undefined && String(patch.supplierId || "") !== previousSupplierId) ||

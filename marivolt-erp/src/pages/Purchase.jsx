@@ -122,8 +122,8 @@ function buildPoFormFromAllocationPrefill(company, payload) {
           spn: l.partNumber || "",
           materialCode: l.materialCode || l.article || "",
           description: l.description || "",
-          qty: Number(l.qty) || 0,
-          orderedQty: Number(l.qty) || 0,
+          qty: poLineQty(l),
+          orderedQty: poLineQty(l),
           uom: l.uom || "PCS",
           unitPrice: Number(l.unitPrice) || 0,
           leadTime: l.leadTime || "",
@@ -162,6 +162,15 @@ function buildPoFormFromAllocationPrefill(company, payload) {
   };
 }
 
+/** Ordered quantity of a PO line: the editable `qty` wins over the stored `orderedQty`. */
+function poLineQty(line = {}) {
+  const qty = Number(line?.qty);
+  if (Number.isFinite(qty) && qty > 0) return qty;
+  const ordered = Number(line?.orderedQty);
+  if (Number.isFinite(ordered) && ordered > 0) return ordered;
+  return 0;
+}
+
 function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
   const cur = form.currency || "USD";
   const lines = form.lines
@@ -172,6 +181,7 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
       const itemCode = String(l.itemCode || article || articleNo || l.materialCode || l.partNumber || partNo)
         .trim()
         .toUpperCase();
+      const qty = poLineQty(l);
       return {
         _id: l._id,
         article,
@@ -190,8 +200,8 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
         config: String(l.config || form.config || "").trim(),
         esn: String(l.esn || form.esn || "").trim(),
         description: String(l.description || "").trim(),
-        qty: Number(l.qty) || 0,
-        orderedQty: Number(l.orderedQty ?? l.qty) || 0,
+        qty,
+        orderedQty: qty,
         receivedQty: Number(l.receivedQty) || 0,
         cancelledQty: Number(l.cancelledQty) || 0,
         uom: String(l.uom || "PCS").trim(),
@@ -202,7 +212,9 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
         sourceOrderAllocationLineId: l.sourceOrderAllocationLineId || null,
         sourceArticle: String(l.sourceArticle || "").trim().toUpperCase(),
         sourceRequestedQty: Math.max(0, Number(l.sourceRequestedQty) || 0),
-        sourceConvertedQty: Math.max(0, Number(l.sourceConvertedQty ?? l.qty) || 0),
+        sourceConvertedQty: l.sourceOrderAllocationLineId
+          ? qty
+          : Math.max(0, Number(l.sourceConvertedQty ?? qty) || 0),
       };
     })
     .filter((l) => includeIncompleteLines || (l.itemCode && l.qty > 0));
@@ -297,8 +309,8 @@ function purchaseOrderApiToForm(po) {
           config: l.config || "",
           esn: l.esn || "",
           description: l.description || "",
-          qty: Number(l.qty ?? l.orderedQty) || 1,
-          orderedQty: Number(l.orderedQty ?? l.qty) || 1,
+          qty: poLineQty(l) || 1,
+          orderedQty: poLineQty(l) || 1,
           receivedQty: Number(l.receivedQty) || 0,
           cancelledQty: Number(l.cancelledQty) || 0,
           uom: l.uom || "PCS",
@@ -3101,7 +3113,11 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                             type="number"
                             min={0}
                             value={line.qty}
-                            onChange={(e) => setLine({ qty: Number(e.target.value) })}
+                            onChange={(e) => {
+                              const next = Number(e.target.value);
+                              const qty = Number.isFinite(next) && next > 0 ? next : 0;
+                              setLine({ qty, orderedQty: qty });
+                            }}
                           />
                         </td>
                         <td className="px-1.5 py-1.5">
