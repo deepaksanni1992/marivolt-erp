@@ -1,4 +1,9 @@
 import mongoose from "mongoose";
+import {
+  ACTIVE_ALLOCATION_OA_INDEX,
+  ACTIVE_ALLOCATION_PI_INDEX,
+  activeAllocationPartialFilter,
+} from "../utils/allocationUniqueness.js";
 
 const orderAllocationLineSchema = new mongoose.Schema(
   {
@@ -89,6 +94,28 @@ const orderAllocationSchema = new mongoose.Schema(
 
 orderAllocationSchema.index({ companyId: 1, allocationNo: 1 }, { unique: true });
 orderAllocationSchema.index({ companyId: 1, allocationDate: -1 });
+
+/**
+ * P0.3 — one active allocation per OA / per PI (cancelled excluded).
+ * Created/verified by scripts/migrate-active-allocation-unique-indexes.mjs.
+ * Do not rely on mongoose autoIndex in production; run the migration.
+ */
+orderAllocationSchema.index(
+  { companyId: 1, linkedOAId: 1 },
+  {
+    name: ACTIVE_ALLOCATION_OA_INDEX,
+    unique: true,
+    partialFilterExpression: activeAllocationPartialFilter("linkedOAId"),
+  }
+);
+orderAllocationSchema.index(
+  { companyId: 1, linkedProformaId: 1 },
+  {
+    name: ACTIVE_ALLOCATION_PI_INDEX,
+    unique: true,
+    partialFilterExpression: activeAllocationPartialFilter("linkedProformaId"),
+  }
+);
 
 export default mongoose.model("OrderAllocation", orderAllocationSchema);
 

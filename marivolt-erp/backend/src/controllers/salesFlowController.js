@@ -63,8 +63,30 @@ import {
   recalculatePiAdvancePercentage,
   suggestOaStatusAfterPiIssuance,
 } from "../utils/oaLifecycle.js";
+import {
+  ACTIVE_ALLOCATION_ALREADY_EXISTS,
+  activeAllocationConflictError,
+  activeAllocationStatusFilter,
+  isActiveAllocationDuplicateKeyError,
+} from "../utils/allocationUniqueness.js";
 
 const { withTransaction } = stockService;
+
+async function findActiveAllocationByOA(req, oaId, session = null) {
+  const q = OrderAllocation.findOne(
+    withCompany(req, { linkedOAId: oaId, ...activeAllocationStatusFilter() })
+  ).select("_id allocationNo status");
+  if (session) q.session(session);
+  return q.lean();
+}
+
+async function findActiveAllocationByProforma(req, proformaId, session = null) {
+  const q = OrderAllocation.findOne(
+    withCompany(req, { linkedProformaId: proformaId, ...activeAllocationStatusFilter() })
+  ).select("_id allocationNo status");
+  if (session) q.session(session);
+  return q.lean();
+}
 
 /** Resolve Packing → OA → PI → Quotation only (never Customer Master during conversion). */
 async function resolveCustomerFieldsForPackingInvoice(req, allocation, body = {}, packing = null) {
@@ -4273,8 +4295,18 @@ export async function convertOAToOrderAllocation(req, res) {
     const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: id }));
     validateConversionSource(oa, "order acknowledgement");
     if (!oa.lines?.length) return res.status(400).json({ message: "OA requires at least one line to convert" });
-    const already = await OrderAllocation.findOne(withCompany(req, { linkedOAId: oa._id, status: { $ne: "CANCELLED" } }));
-    if (already) return res.status(409).json({ message: `Order allocation already exists (${already.allocationNo})` });
+    const already = await findActiveAllocationByOA(req, oa._id);
+    if (already) {
+      return res.status(409).json({
+        message: `An active order allocation already exists (${already.allocationNo})`,
+        code: ACTIVE_ALLOCATION_ALREADY_EXISTS,
+        details: {
+          allocationId: String(already._id),
+          allocationNo: already.allocationNo || "",
+          status: already.status || "",
+        },
+      });
+    }
     const allocationNo = await nextUniqueSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
@@ -4292,37 +4324,55 @@ export async function convertOAToOrderAllocation(req, res) {
 
     let createdId = null;
     await withTransaction(async (session) => {
-      await assertOaReadyForStockAllocation(req, oa, session);
-      const [doc] = await OrderAllocation.create(
-        [
-          {
-            companyId: req.companyId,
-            allocationNo,
-            allocationDate: new Date(),
-            linkedQuotationId: oa.linkedQuotationId || null,
-            linkedQuotationNo: oa.linkedQuotationNo || "",
-            linkedOAId: oa._id,
-            linkedOANo: oa.oaNo,
-            customerName: oa.customerName,
-            currency: oa.currency || "USD",
-            vertical: oa.vertical || "",
-            engine: oa.engine || "",
-            model: oa.model || "",
-            config: oa.config || "",
-            esn: oa.esn || "",
-            warehouse,
-            lines,
-            ...totals,
-            status: "OPEN",
-            packingStatus: "NOT_PACKED",
-            invoiceStatus: "NOT_INVOICED",
-            dispatchStatus: "NOT_DISPATCHED",
-            createdBy: req.user?.email || "",
-          },
-        ],
-        { session }
-      );
+      const oaFresh = await OrderAcknowledgement.findOne(withCompany(req, { _id: oa._id })).session(session);
+      validateConversionSource(oaFresh, "order acknowledgement");
+      if (!oaFresh.lines?.length) throw new Error("OA requires at least one line to convert");
+      await assertOaReadyForStockAllocation(req, oaFresh, session);
+
+      // Create-first under unique partial index so a concurrent loser fails before stock reserve.
+      const existing = await findActiveAllocationByOA(req, oaFresh._id, session);
+      if (existing) throw activeAllocationConflictError(existing);
+
+      let doc;
+      try {
+        [doc] = await OrderAllocation.create(
+          [
+            {
+              companyId: req.companyId,
+              allocationNo,
+              allocationDate: new Date(),
+              linkedQuotationId: oaFresh.linkedQuotationId || null,
+              linkedQuotationNo: oaFresh.linkedQuotationNo || "",
+              linkedOAId: oaFresh._id,
+              linkedOANo: oaFresh.oaNo,
+              customerName: oaFresh.customerName,
+              currency: oaFresh.currency || "USD",
+              vertical: oaFresh.vertical || "",
+              engine: oaFresh.engine || "",
+              model: oaFresh.model || "",
+              config: oaFresh.config || "",
+              esn: oaFresh.esn || "",
+              warehouse,
+              lines,
+              ...totals,
+              status: "OPEN",
+              packingStatus: "NOT_PACKED",
+              invoiceStatus: "NOT_INVOICED",
+              dispatchStatus: "NOT_DISPATCHED",
+              createdBy: req.user?.email || "",
+            },
+          ],
+          { session }
+        );
+      } catch (createErr) {
+        if (isActiveAllocationDuplicateKeyError(createErr)) {
+          const winner = await findActiveAllocationByOA(req, oaFresh._id, session);
+          throw activeAllocationConflictError(winner);
+        }
+        throw createErr;
+      }
       createdId = doc._id;
+
       const { negativeArticles } = await reserveAllocationLines({
         session,
         companyId: req.companyId,
@@ -4330,7 +4380,7 @@ export async function convertOAToOrderAllocation(req, res) {
         lines: reserveLines,
         referenceType: "ORDER_ALLOCATION",
         referenceNo: allocationNo,
-        customerName: oa.customerName || "",
+        customerName: oaFresh.customerName || "",
         remarks: allowNegative ? "Reserve on OA→allocation (allowNegative)" : "Reserve on OA→allocation",
         createdBy: req.user?.email || "",
         allowNegative,
@@ -4347,12 +4397,12 @@ export async function convertOAToOrderAllocation(req, res) {
       doc.stockReservedAt = new Date();
       doc.updatedBy = req.user?.email || "";
       await doc.save({ session });
-      oa.status = "PACKING";
-      if (!oa.convertedTo?.includes("ORDER_ALLOCATION")) {
-        oa.convertedTo = [...(oa.convertedTo || []), "ORDER_ALLOCATION"];
+      oaFresh.status = "PACKING";
+      if (!oaFresh.convertedTo?.includes("ORDER_ALLOCATION")) {
+        oaFresh.convertedTo = [...(oaFresh.convertedTo || []), "ORDER_ALLOCATION"];
       }
-      oa.updatedBy = req.user?.email || "";
-      await oa.save({ session });
+      oaFresh.updatedBy = req.user?.email || "";
+      await oaFresh.save({ session });
     });
     const doc = await OrderAllocation.findOne(withCompany(req, { _id: createdId })).lean();
     await writeAudit(req, {
@@ -4370,6 +4420,22 @@ export async function convertOAToOrderAllocation(req, res) {
     });
     res.status(201).json(doc);
   } catch (err) {
+    if (err?.code === ACTIVE_ALLOCATION_ALREADY_EXISTS) {
+      return res.status(409).json({
+        message: err.message,
+        code: err.code,
+        details: err.details || null,
+      });
+    }
+    if (isActiveAllocationDuplicateKeyError(err)) {
+      const winner = await findActiveAllocationByOA(req, req.params.id).catch(() => null);
+      const conflict = activeAllocationConflictError(winner);
+      return res.status(409).json({
+        message: conflict.message,
+        code: conflict.code,
+        details: conflict.details,
+      });
+    }
     if (err?.code === "STOCK_INSUFFICIENT" || err?.code === "INVALID_TRANSITION") {
       return res.status(err.statusCode || 409).json({
         message: err.message,
@@ -4505,10 +4571,32 @@ export async function convertProformaToOrderAllocation(req, res) {
       });
     }
     if (!proforma.lines?.length) return res.status(400).json({ message: "Proforma requires at least one line to convert" });
-    const already = await OrderAllocation.findOne(
-      withCompany(req, { linkedProformaId: proforma._id, status: { $ne: "CANCELLED" } })
-    );
-    if (already) return res.status(409).json({ message: `Order allocation already exists (${already.allocationNo})` });
+    const alreadyByPi = await findActiveAllocationByProforma(req, proforma._id);
+    if (alreadyByPi) {
+      return res.status(409).json({
+        message: `An active order allocation already exists (${alreadyByPi.allocationNo})`,
+        code: ACTIVE_ALLOCATION_ALREADY_EXISTS,
+        details: {
+          allocationId: String(alreadyByPi._id),
+          allocationNo: alreadyByPi.allocationNo || "",
+          status: alreadyByPi.status || "",
+        },
+      });
+    }
+    if (proforma.linkedOAId) {
+      const alreadyByOa = await findActiveAllocationByOA(req, proforma.linkedOAId);
+      if (alreadyByOa) {
+        return res.status(409).json({
+          message: `An active order allocation already exists for the linked OA (${alreadyByOa.allocationNo})`,
+          code: ACTIVE_ALLOCATION_ALREADY_EXISTS,
+          details: {
+            allocationId: String(alreadyByOa._id),
+            allocationNo: alreadyByOa.allocationNo || "",
+            status: alreadyByOa.status || "",
+          },
+        });
+      }
+    }
     const allocationNo = await nextUniqueSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
@@ -4526,38 +4614,70 @@ export async function convertProformaToOrderAllocation(req, res) {
 
     let createdId = null;
     await withTransaction(async (session) => {
-      const [doc] = await OrderAllocation.create(
-        [
-          {
-            companyId: req.companyId,
-            allocationNo,
-            allocationDate: new Date(),
-            linkedQuotationId: proforma.linkedQuotationId || null,
-            linkedQuotationNo: proforma.linkedQuotationNo || "",
-            linkedOAId: proforma.linkedOAId || null,
-            linkedOANo: proforma.linkedOANo || "",
-            linkedProformaId: proforma._id,
-            linkedProformaNo: proforma.proformaNo,
-            customerName: proforma.customerName,
-            currency: proforma.currency || "USD",
-            vertical: proforma.vertical || "",
-            engine: proforma.engine || "",
-            model: proforma.model || "",
-            config: proforma.config || "",
-            esn: proforma.esn || "",
-            warehouse,
-            lines,
-            ...totals,
-            status: "OPEN",
-            packingStatus: "NOT_PACKED",
-            invoiceStatus: "NOT_INVOICED",
-            dispatchStatus: "NOT_DISPATCHED",
-            createdBy: req.user?.email || "",
-          },
-        ],
-        { session }
-      );
+      const proformaFresh = await ProformaInvoice.findOne(withCompany(req, { _id: proforma._id })).session(session);
+      validateConversionSource(proformaFresh, "proforma");
+      // Revalidate payment eligibility on a session-scoped read (sync already ran before the txn).
+      const freshStatus = String(proformaFresh?.status || "").toUpperCase();
+      if (!["APPROVED", "PAID_PENDING_SHIPMENT"].includes(freshStatus)) {
+        throw new Error(
+          "Proforma must be APPROVED or PAID (PAID_PENDING_SHIPMENT) before converting to Order Allocation"
+        );
+      }
+      if (!proformaFresh.lines?.length) throw new Error("Proforma requires at least one line to convert");
+
+      const existingPi = await findActiveAllocationByProforma(req, proformaFresh._id, session);
+      if (existingPi) throw activeAllocationConflictError(existingPi);
+      if (proformaFresh.linkedOAId) {
+        const existingOa = await findActiveAllocationByOA(req, proformaFresh.linkedOAId, session);
+        if (existingOa) throw activeAllocationConflictError(existingOa);
+      }
+
+      let doc;
+      try {
+        [doc] = await OrderAllocation.create(
+          [
+            {
+              companyId: req.companyId,
+              allocationNo,
+              allocationDate: new Date(),
+              linkedQuotationId: proformaFresh.linkedQuotationId || null,
+              linkedQuotationNo: proformaFresh.linkedQuotationNo || "",
+              linkedOAId: proformaFresh.linkedOAId || null,
+              linkedOANo: proformaFresh.linkedOANo || "",
+              linkedProformaId: proformaFresh._id,
+              linkedProformaNo: proformaFresh.proformaNo,
+              customerName: proformaFresh.customerName,
+              currency: proformaFresh.currency || "USD",
+              vertical: proformaFresh.vertical || "",
+              engine: proformaFresh.engine || "",
+              model: proformaFresh.model || "",
+              config: proformaFresh.config || "",
+              esn: proformaFresh.esn || "",
+              warehouse,
+              lines,
+              ...totals,
+              status: "OPEN",
+              packingStatus: "NOT_PACKED",
+              invoiceStatus: "NOT_INVOICED",
+              dispatchStatus: "NOT_DISPATCHED",
+              createdBy: req.user?.email || "",
+            },
+          ],
+          { session }
+        );
+      } catch (createErr) {
+        if (isActiveAllocationDuplicateKeyError(createErr)) {
+          const winner =
+            (await findActiveAllocationByProforma(req, proformaFresh._id, session)) ||
+            (proformaFresh.linkedOAId
+              ? await findActiveAllocationByOA(req, proformaFresh.linkedOAId, session)
+              : null);
+          throw activeAllocationConflictError(winner);
+        }
+        throw createErr;
+      }
       createdId = doc._id;
+
       const { negativeArticles } = await reserveAllocationLines({
         session,
         companyId: req.companyId,
@@ -4565,7 +4685,7 @@ export async function convertProformaToOrderAllocation(req, res) {
         lines: reserveLines,
         referenceType: "ORDER_ALLOCATION",
         referenceNo: allocationNo,
-        customerName: proforma.customerName || "",
+        customerName: proformaFresh.customerName || "",
         remarks: allowNegative ? "Reserve on proforma→allocation (allowNegative)" : "Reserve on proforma→allocation",
         createdBy: req.user?.email || "",
         allowNegative,
@@ -4599,6 +4719,22 @@ export async function convertProformaToOrderAllocation(req, res) {
     });
     res.status(201).json(doc);
   } catch (err) {
+    if (err?.code === ACTIVE_ALLOCATION_ALREADY_EXISTS) {
+      return res.status(409).json({
+        message: err.message,
+        code: err.code,
+        details: err.details || null,
+      });
+    }
+    if (isActiveAllocationDuplicateKeyError(err)) {
+      const winner = await findActiveAllocationByProforma(req, req.params.id).catch(() => null);
+      const conflict = activeAllocationConflictError(winner);
+      return res.status(409).json({
+        message: conflict.message,
+        code: conflict.code,
+        details: conflict.details,
+      });
+    }
     if (err?.code === "STOCK_INSUFFICIENT" || err?.code === "INVALID_TRANSITION") {
       return res.status(err.statusCode || 409).json({
         message: err.message,
