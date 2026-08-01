@@ -54,7 +54,9 @@ const rtsSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["DRAFT", "APPROVED", "CONVERTED_TO_INVOICE", "CANCELLED"],
+      // APPROVING is an ephemeral in-transaction claim so only one approve request
+      // can run stock movement. Failed/aborted transactions must roll it back to DRAFT.
+      enum: ["DRAFT", "APPROVING", "APPROVED", "CONVERTED_TO_INVOICE", "CANCELLED"],
       default: "DRAFT",
     },
     cancelledAt: { type: Date, default: null },

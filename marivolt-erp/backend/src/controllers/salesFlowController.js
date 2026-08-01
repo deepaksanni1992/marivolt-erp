@@ -9,7 +9,16 @@ import StoreDispatch from "../models/StoreDispatch.js";
 import Cipl from "../models/Cipl.js";
 import OrderAllocation from "../models/OrderAllocation.js";
 import Rts from "../models/Rts.js";
+import StockLedger from "../models/StockLedger.js";
 import StockBalance from "../models/StockBalance.js";
+import {
+  RTS_APPROVED_WITHOUT_STOCK_POST,
+  RTS_APPROVAL_IN_PROGRESS,
+  buildRtsDraftApprovalClaimFilter,
+  buildRtsDraftApprovalClaimUpdate,
+  classifyApprovedRtsForReapproval,
+  getDisallowedRtsUpdateFields,
+} from "../utils/rtsProtection.js";
 import GRN from "../models/GRN.js";
 import PaymentReceipt from "../models/PaymentReceipt.js";
 import Customer from "../models/Customer.js";
@@ -1153,6 +1162,27 @@ function shippedQtyMapForAllocation(approvedRtsDocs = []) {
 function isRtsEditable(doc) {
   if (!doc) return false;
   return !doc.linkedSalesInvoiceId;
+}
+
+/** Design B evidence: RTS approval posts RTS_TRANSFER (legacy transactionType RTS). */
+async function hasRtsTransferStockEvidence(companyId, rtsNo, session = null) {
+  const referenceNo = String(rtsNo || "").trim();
+  if (!companyId || !referenceNo) return false;
+  const q = StockLedger.findOne({
+    companyId,
+    referenceNo,
+    $or: [{ movementType: "RTS_TRANSFER" }, { transactionType: "RTS" }],
+  }).select("_id");
+  if (session) q.session(session);
+  const row = await q.lean();
+  return Boolean(row);
+}
+
+function rtsApprovalConflictError(message, code, statusCode = 409) {
+  const err = new Error(message);
+  err.code = code;
+  err.statusCode = statusCode;
+  return err;
 }
 
 function normalizeRtsPackingDetails(raw = {}) {
@@ -4462,18 +4492,28 @@ export async function updateRts(req, res) {
   try {
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+    const prohibitedFields = getDisallowedRtsUpdateFields(body);
+    if (prohibitedFields.length) {
+      return res.status(400).json({
+        message: "One or more fields cannot be updated through this endpoint. Use the dedicated RTS approval or cancel routes for workflow changes.",
+        prohibitedFields,
+      });
+    }
+
     const doc = await Rts.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
     if (!isRtsEditable(doc)) {
       return res.status(400).json({ message: "RTS is locked after Sales Invoice reference is created." });
     }
 
-    if (req.body.rtsDate !== undefined) doc.rtsDate = req.body.rtsDate;
-    if (req.body.packingDetails !== undefined) {
-      doc.packingDetails = normalizeRtsPackingDetails(req.body?.packingDetails || {});
+    if (body.rtsDate !== undefined) doc.rtsDate = body.rtsDate;
+    if (body.packingDetails !== undefined) {
+      doc.packingDetails = normalizeRtsPackingDetails(body.packingDetails || {});
     }
-    if (req.body.lines !== undefined) {
-      const incoming = Array.isArray(req.body.lines) ? req.body.lines : [];
+    if (body.lines !== undefined) {
+      const incoming = Array.isArray(body.lines) ? body.lines : [];
       if (!incoming.length) return res.status(400).json({ message: "RTS requires at least one line" });
       doc.lines = incoming.map((line, idx) => {
         const qty = Number(line.qty) || 0;
@@ -4495,13 +4535,6 @@ export async function updateRts(req, res) {
         };
       });
     }
-    if (req.body.status !== undefined) {
-      const st = String(req.body.status || "").toUpperCase();
-      if (!["DRAFT", "APPROVED", "CANCELLED"].includes(st)) {
-        return res.status(400).json({ message: "Invalid RTS status" });
-      }
-      doc.status = st;
-    }
     doc.updatedBy = req.user?.email || "";
     await doc.save();
     res.json(doc);
@@ -4517,20 +4550,80 @@ export async function approveRts(req, res) {
     const doc = await Rts.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
     if (!isRtsEditable(doc)) return res.status(400).json({ message: "RTS is locked after Sales Invoice reference is created." });
-    if (String(doc.status || "").toUpperCase() === "CONVERTED_TO_INVOICE") {
+
+    const status = String(doc.status || "").toUpperCase();
+    if (status === "CONVERTED_TO_INVOICE") {
       return res.status(400).json({ message: "RTS is already converted to invoice; cancel the invoice first." });
     }
-    if (String(doc.status || "").toUpperCase() === "CANCELLED") {
+    if (status === "CANCELLED") {
       return res.status(400).json({ message: "Cannot approve a cancelled RTS" });
     }
-    if (doc.status === "APPROVED") return res.json(doc);
+    if (status === "APPROVING") {
+      return res.status(409).json({
+        message: "RTS approval already in progress",
+        code: RTS_APPROVAL_IN_PROGRESS,
+      });
+    }
+    if (status === "APPROVED") {
+      const hasEvidence = await hasRtsTransferStockEvidence(req.companyId, doc.rtsNo);
+      const kind = classifyApprovedRtsForReapproval(hasEvidence);
+      if (kind === "ORPHAN_APPROVED") {
+        return res.status(409).json({
+          message: "RTS is APPROVED but has no RTS stock-posting evidence. Manual repair is required.",
+          code: RTS_APPROVED_WITHOUT_STOCK_POST,
+        });
+      }
+      // Healthy APPROVED: idempotent success, no stock movement.
+      return res.json(doc);
+    }
+    if (status !== "DRAFT") {
+      return res.status(400).json({ message: `Cannot approve RTS in status ${status || "UNKNOWN"}` });
+    }
 
     const rtsLines = (doc.lines || [])
       .map((l) => ({ article: l.article, qty: Number(l.qty) || 0 }))
       .filter((x) => x.article && x.qty > 0);
 
     await withTransaction(async (session) => {
-      const allocation = await OrderAllocation.findOne(withCompany(req, { _id: doc.linkedOrderAllocationId })).session(session);
+      const claimed = await Rts.findOneAndUpdate(
+        buildRtsDraftApprovalClaimFilter({ id, companyId: req.companyId }),
+        buildRtsDraftApprovalClaimUpdate({ updatedBy: req.user?.email || "" }),
+        { new: true, session }
+      );
+      if (!claimed) {
+        const latest = await Rts.findOne(withCompany(req, { _id: id })).session(session);
+        if (!latest) throw rtsApprovalConflictError("Not found", "NOT_FOUND", 404);
+        const latestStatus = String(latest.status || "").toUpperCase();
+        if (latestStatus === "APPROVED") {
+          const hasEvidence = await hasRtsTransferStockEvidence(req.companyId, latest.rtsNo, session);
+          if (classifyApprovedRtsForReapproval(hasEvidence) === "ORPHAN_APPROVED") {
+            throw rtsApprovalConflictError(
+              "RTS is APPROVED but has no RTS stock-posting evidence. Manual repair is required.",
+              RTS_APPROVED_WITHOUT_STOCK_POST,
+              409
+            );
+          }
+          const err = rtsApprovalConflictError("RTS is already approved", "RTS_ALREADY_APPROVED", 409);
+          err.alreadyApprovedDoc = latest;
+          throw err;
+        }
+        if (latestStatus === "APPROVING") {
+          throw rtsApprovalConflictError(
+            "RTS approval already in progress",
+            RTS_APPROVAL_IN_PROGRESS,
+            409
+          );
+        }
+        throw rtsApprovalConflictError(
+          `Cannot approve RTS in status ${latestStatus || "UNKNOWN"}`,
+          "RTS_APPROVAL_CONFLICT",
+          409
+        );
+      }
+
+      const allocation = await OrderAllocation.findOne(
+        withCompany(req, { _id: claimed.linkedOrderAllocationId })
+      ).session(session);
       if (!allocation) throw new Error("Linked order allocation not found");
       if (String(allocation.status || "").toUpperCase() === "CANCELLED") {
         throw new Error("Cannot approve RTS for a cancelled order allocation");
@@ -4569,19 +4662,19 @@ export async function approveRts(req, res) {
           article,
           warehouse,
           qty,
-          customerName: doc.customerName || allocation.customerName || "",
+          customerName: claimed.customerName || allocation.customerName || "",
           referenceType: "RTS_APPROVED",
-          referenceNo: doc.rtsNo,
+          referenceNo: claimed.rtsNo,
           remarks: "RTS approved",
           createdBy: req.user?.email || "",
           sourceModule: "SALES",
         });
       }
-      const prevRtsStatus = String(doc.status || "");
-      assertTransition(DOC_TYPES.RTS, prevRtsStatus, "APPROVED", { documentNo: doc.rtsNo });
-      doc.status = "APPROVED";
-      doc.updatedBy = req.user?.email || "";
-      await doc.save({ session });
+      // Lifecycle asserts DRAFT→APPROVED (APPROVING is an ephemeral claim only).
+      assertTransition(DOC_TYPES.RTS, "DRAFT", "APPROVED", { documentNo: claimed.rtsNo });
+      claimed.status = "APPROVED";
+      claimed.updatedBy = req.user?.email || "";
+      await claimed.save({ session });
       const postedDocs = await postedRtsByAllocation(req, allocation._id, session);
       const shipped = shippedQtyMapForAllocation(postedDocs);
       let complete = true;
@@ -4610,9 +4703,20 @@ export async function approveRts(req, res) {
     const out = await Rts.findOne(withCompany(req, { _id: id })).lean();
     res.json(out);
   } catch (err) {
-    if (err?.code === "INVALID_TRANSITION" || err?.code === "STOCK_INSUFFICIENT") {
+    if (err?.alreadyApprovedDoc) {
+      return res.json(err.alreadyApprovedDoc);
+    }
+    if (
+      err?.code === "INVALID_TRANSITION" ||
+      err?.code === "STOCK_INSUFFICIENT" ||
+      err?.code === RTS_APPROVED_WITHOUT_STOCK_POST ||
+      err?.code === RTS_APPROVAL_IN_PROGRESS ||
+      err?.code === "RTS_ALREADY_APPROVED" ||
+      err?.code === "RTS_APPROVAL_CONFLICT"
+    ) {
       return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
     }
+    if (err?.statusCode === 404) return res.status(404).json({ message: err.message });
     res.status(400).json({ message: err.message });
   }
 }
