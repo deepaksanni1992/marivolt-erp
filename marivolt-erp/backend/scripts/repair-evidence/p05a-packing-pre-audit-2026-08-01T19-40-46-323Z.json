@@ -1,0 +1,304 @@
+{
+  "capturedAt": "2026-08-01T19:40:46.225Z",
+  "packingCollection": "storepackings",
+  "totalPackings": 4,
+  "statuses": {
+    "FULLY_PACKED": 3,
+    "DRAFT": 1
+  },
+  "packingIndexes": [
+    {
+      "name": "_id_",
+      "key": {
+        "_id": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1",
+      "key": {
+        "companyId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "branchId_1",
+      "key": {
+        "branchId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "packingNo_1",
+      "key": {
+        "packingNo": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "packingDate_1",
+      "key": {
+        "packingDate": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "allocationId_1",
+      "key": {
+        "allocationId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "allocationNo_1",
+      "key": {
+        "allocationNo": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "status_1",
+      "key": {
+        "status": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_packingNo_1",
+      "key": {
+        "companyId": 1,
+        "packingNo": 1
+      },
+      "unique": true,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_allocationId_1_status_1",
+      "key": {
+        "companyId": 1,
+        "allocationId": 1,
+        "status": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "sourceDocumentId_1",
+      "key": {
+        "sourceDocumentId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "invoiceStatus_1",
+      "key": {
+        "invoiceStatus": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    }
+  ],
+  "ledgerIndexes": [
+    {
+      "name": "_id_",
+      "key": {
+        "_id": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1",
+      "key": {
+        "companyId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_transactionDate_-1_article_1",
+      "key": {
+        "companyId": 1,
+        "transactionDate": -1,
+        "article": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_referenceNo_1_transactionType_1",
+      "key": {
+        "companyId": 1,
+        "referenceNo": 1,
+        "transactionType": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_movementType_1_createdAt_-1",
+      "key": {
+        "companyId": 1,
+        "movementType": 1,
+        "createdAt": -1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_customerName_1_createdAt_-1",
+      "key": {
+        "companyId": 1,
+        "customerName": 1,
+        "createdAt": -1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_article_1_warehouse_1_location_1_transactionDate_-1",
+      "key": {
+        "companyId": 1,
+        "article": 1,
+        "warehouse": 1,
+        "location": 1,
+        "transactionDate": -1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_warehouse_1_location_1_transactionDate_-1",
+      "key": {
+        "companyId": 1,
+        "warehouse": 1,
+        "location": 1,
+        "transactionDate": -1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_referenceNo_1_createdAt_-1",
+      "key": {
+        "companyId": 1,
+        "referenceNo": 1,
+        "createdAt": -1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "allocationId_1",
+      "key": {
+        "allocationId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    }
+  ],
+  "sampleLedgerFields": [
+    "__v",
+    "_id",
+    "allocatedAfter",
+    "allocationId",
+    "article",
+    "availableAfter",
+    "balanceQty",
+    "batchNo",
+    "companyId",
+    "createdAt",
+    "createdBy",
+    "currency",
+    "customerName",
+    "dispatchedAfter",
+    "isNegativeAllocation",
+    "location",
+    "locationFrom",
+    "locationTo",
+    "movementType",
+    "newCost",
+    "oldCost",
+    "onHandAfter",
+    "packedAfter",
+    "qtyIn",
+    "qtyOut",
+    "referenceNo",
+    "referenceType",
+    "remarks",
+    "rtsAfter",
+    "serialNo",
+    "sourceModule",
+    "supplierName",
+    "transactionDate",
+    "transactionType",
+    "unitCost",
+    "updatedAt",
+    "valuationDelta",
+    "warehouse"
+  ],
+  "samplePackingFields": [
+    "__v",
+    "_id",
+    "allocationId",
+    "allocationNo",
+    "attachments",
+    "branchId",
+    "cancellationReason",
+    "cancelledAt",
+    "companyId",
+    "createdAt",
+    "createdBy",
+    "currency",
+    "customerName",
+    "engine",
+    "esn",
+    "lines",
+    "linkedOANo",
+    "linkedProformaNo",
+    "marksAndNumbers",
+    "model",
+    "packages",
+    "packingDate",
+    "packingNo",
+    "postedAt",
+    "remarks",
+    "sourceDocumentId",
+    "sourceDocumentType",
+    "status",
+    "totalGrossWeightKg",
+    "totalNetWeightKg",
+    "totalPackages",
+    "updatedAt",
+    "updatedBy",
+    "warehouse"
+  ],
+  "exposure": {
+    "postedWithoutPackedLedger": 0,
+    "postedWithoutPackedSamples": [],
+    "packedLedgerWithoutPackingDoc": 0,
+    "packedWithoutPackingSamples": [],
+    "softDuplicatePackedGroups": 0,
+    "softDuplicateSamples": [],
+    "cancelledWithPackedNoUnpack": 0,
+    "cancelledNoUnpackSamples": [],
+    "multiUnpackGroups": 0,
+    "multiUnpackSamples": [],
+    "intermediateStatusCount": 0,
+    "overpackLineCount": 0,
+    "overpackSamples": []
+  },
+  "ledgerCounts": {
+    "PACKED": 8,
+    "UNPACKED": 0
+  }
+}

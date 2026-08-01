@@ -1,0 +1,16 @@
+{
+  "verifiedAt": "2026-08-01T19:44:48.580Z",
+  "index": {
+    "name": "uniq_stockledger_packing_effect_key",
+    "key": {
+      "effectKey": 1
+    },
+    "unique": true,
+    "partialFilterExpression": {
+      "effectKey": {
+        "$type": "string",
+        "$gt": ""
+      }
+    }
+  }
+}
