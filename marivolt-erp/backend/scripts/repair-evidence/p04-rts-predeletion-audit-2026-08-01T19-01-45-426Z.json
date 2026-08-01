@@ -1,0 +1,65 @@
+{
+  "capturedAt": "2026-08-01T19:01:45.425Z",
+  "collectionsPresent": {
+    "rtsCollection": "rts",
+    "allMatchingRts": [
+      "rts"
+    ]
+  },
+  "rtsDocumentsTotal": 1,
+  "rtsByStatus": {
+    "DRAFT": 1
+  },
+  "ledger": {
+    "RTS_TRANSFER_or_transactionType_RTS": 0,
+    "RTS_CANCEL": 0,
+    "anyRtsLikeReference": 0
+  },
+  "allocations": {
+    "PARTIALLY_RTS": 0,
+    "RTS_COMPLETE": 0,
+    "withRtsLinkFields": 0,
+    "samples": []
+  },
+  "links": {
+    "packingLinkedToRts": 0,
+    "salesInvoiceLinkedToRts": 0,
+    "storeDispatchLinkedToRts": 0,
+    "salesDispatchLinkedToRts": 0
+  },
+  "stockBalance": {
+    "rtsQtyGreaterThanZero": 0,
+    "rtsQtyNonZero": 0
+  },
+  "auditLogsLinkedToRts": 1,
+  "maskedRtsDocuments": [
+    {
+      "rtsId": "69f4b9fb47c2dd7dcac1749a",
+      "companyId": "69e9f1791bcc5763ef869447",
+      "rtsNo": "MAR-…001",
+      "status": "DRAFT",
+      "linkedOrderAllocationId": "69f4b9b547c2dd7dcac1748a",
+      "linkedSalesInvoiceId": null,
+      "lineCount": 1,
+      "lines": [
+        {
+          "lineId": "69f4c1075787d7419dec7268",
+          "allocationLineId": "69f4b9b547c2dd7dcac1748b",
+          "article": "51228",
+          "qty": 1
+        }
+      ],
+      "createdAt": "2026-05-01T14:34:35.040Z",
+      "updatedAt": "2026-08-01T18:52:17.844Z"
+    }
+  ],
+  "stopConditions": {
+    "hasRtsTransferLedger": false,
+    "hasRtsCancelLedger": false,
+    "hasAnyRtsLedgerRef": false,
+    "hasRtsQtyOnBalances": false,
+    "hasPackingLink": false,
+    "hasInvoiceLink": false,
+    "hasDispatchLink": false
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "migrationType": "RTS_MODULE_REMOVAL",
+  "mode": "DRY_RUN",
+  "capturedAt": "2026-08-01T19:31:29.210Z",
+  "sourceCommits": [
+    "a01fddf",
+    "20cc999"
+  ],
+  "before": {
+    "rtsCollection": "rts",
+    "rtsDocumentsTotal": 1,
+    "rtsByStatus": {
+      "DRAFT": 1
+    },
+    "maskedRtsDocuments": [
+      {
+        "rtsId": "69f4b9fb47c2dd7dcac1749a",
+        "companyId": "69e9f1791bcc5763ef869447",
+        "rtsNo": "MAR-…001",
+        "status": "DRAFT",
+        "linkedOrderAllocationId": "69f4b9b547c2dd7dcac1748a",
+        "lines": [
+          {
+            "lineId": "69f4c1075787d7419dec7268",
+            "allocationLineId": "69f4b9b547c2dd7dcac1748b",
+            "article": "51228",
+            "qty": 1
+          }
+        ],
+        "createdAt": "2026-05-01T14:34:35.040Z",
+        "updatedAt": "2026-08-01T18:52:17.844Z"
+      }
+    ],
+    "ledger": {
+      "transfer": 0,
+      "cancel": 0,
+      "any": 0
+    },
+    "stockBalance": {
+      "rtsQtyExists": 52,
+      "rtsQtyNonZero": 0
+    },
+    "allocations": {
+      "PARTIALLY_RTS": 0,
+      "RTS_COMPLETE": 0,
+      "legacyDocs": []
+    },
+    "links": {
+      "packingLinked": 0,
+      "invLinked": 0,
+      "storeDispLinked": 0,
+      "salesDispLinked": 0
+    },
+    "auditLogsLinkedToRts": 1
+  },
+  "proposed": {
+    "deleteRtsDocuments": 1,
+    "dropCollection": "rts",
+    "reconcileAllocations": [],
+    "unsetStockBalanceRtsQty": 52,
+    "unsetNullLinkedRtsFields": true,
+    "stockImpact": "NONE",
+    "ledgerImpact": "NONE",
+    "preserveAuditLog": true
+  }
+}

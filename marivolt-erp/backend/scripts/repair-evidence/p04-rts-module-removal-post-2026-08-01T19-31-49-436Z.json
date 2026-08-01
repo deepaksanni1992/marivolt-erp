@@ -1,0 +1,34 @@
+{
+  "migrationType": "RTS_MODULE_REMOVAL",
+  "verifiedAt": "2026-08-01T19:31:50.869Z",
+  "documentsDeleted": 1,
+  "allocationsReconciled": 0,
+  "balancesUnset": 52,
+  "after": {
+    "rtsCollection": null,
+    "rtsDocumentsTotal": 0,
+    "rtsByStatus": {},
+    "maskedRtsDocuments": [],
+    "ledger": {
+      "transfer": 0,
+      "cancel": 0,
+      "any": 0
+    },
+    "stockBalance": {
+      "rtsQtyExists": 0,
+      "rtsQtyNonZero": 0
+    },
+    "allocations": {
+      "PARTIALLY_RTS": 0,
+      "RTS_COMPLETE": 0,
+      "legacyDocs": []
+    },
+    "links": {
+      "packingLinked": 0,
+      "invLinked": 0,
+      "storeDispLinked": 0,
+      "salesDispLinked": 0
+    },
+    "auditLogsLinkedToRts": 2
+  }
+}
