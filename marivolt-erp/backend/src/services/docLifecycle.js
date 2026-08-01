@@ -18,9 +18,8 @@
  *  Reverse-flow rules (Part 2 of the Phase-8 spec):
  *    - Sales Invoice CANCEL is allowed iff `paymentReceivedAmount = 0`
  *      (enforced in the invoice controller, not here).
- *    - RTS CANCEL puts qty back into Allocated (handled in flow code).
- *    - OA CANCEL is rejected if any RTS already exists for that OA
- *      (enforced by `assertNoChildDocs`, used by the controller).
+ *    - OA CANCEL is rejected if any Store Packing already exists for
+ *      that allocation (enforced in the controller).
  *
  *  This file is **pure** — it does not touch the DB. It is safe to
  *  call from middlewares, controllers, or tests.
@@ -77,6 +76,7 @@ const ORDER_ALLOCATION = {
     ALLOCATED: "ALLOCATED",
     PARTIALLY_PACKED: "PARTIALLY_PACKED",
     FULLY_PACKED: "FULLY_PACKED",
+    // Historical RTS allocation statuses (module removed in P0.4) — audit/display only.
     PARTIALLY_RTS: "PARTIALLY_PACKED",
     PARTIAL_RTS: "PARTIALLY_PACKED",
     RTS_COMPLETE: "FULLY_PACKED",
@@ -91,24 +91,6 @@ const ORDER_ALLOCATION = {
     PARTIALLY_PACKED: ["PARTIALLY_PACKED", "FULLY_PACKED", "ALLOCATED", "CANCELLED"],
     FULLY_PACKED: ["INVOICED", "PARTIALLY_PACKED", "CANCELLED"],
     INVOICED: ["CANCELLED"],
-    CANCELLED: [],
-  },
-};
-
-const RTS = {
-  canonical: ["PENDING", "APPROVED", "DISPATCHED", "CANCELLED"],
-  aliases: {
-    DRAFT: "PENDING",
-    PENDING: "PENDING",
-    APPROVED: "APPROVED",
-    DISPATCHED: "DISPATCHED",
-    CONVERTED_TO_INVOICE: "DISPATCHED",
-    CANCELLED: "CANCELLED",
-  },
-  transitions: {
-    PENDING: ["APPROVED", "CANCELLED"],
-    APPROVED: ["DISPATCHED", "CANCELLED"],
-    DISPATCHED: ["CANCELLED"],
     CANCELLED: [],
   },
 };
@@ -138,7 +120,6 @@ export const DOC_TYPES = {
   QUOTATION: "QUOTATION",
   PROFORMA: "PROFORMA",
   ORDER_ALLOCATION: "ORDER_ALLOCATION",
-  RTS: "RTS",
   SALES_INVOICE: "SALES_INVOICE",
 };
 
@@ -146,7 +127,6 @@ const REGISTRY = {
   [DOC_TYPES.QUOTATION]: QUOTATION,
   [DOC_TYPES.PROFORMA]: PROFORMA,
   [DOC_TYPES.ORDER_ALLOCATION]: ORDER_ALLOCATION,
-  [DOC_TYPES.RTS]: RTS,
   [DOC_TYPES.SALES_INVOICE]: SALES_INVOICE,
 };
 

@@ -181,7 +181,7 @@ export default function Inventory() {
                   <th className="px-3 py-2">Warehouse</th>
                   <th className="px-3 py-2 text-right">Physical</th>
                   <th className="px-3 py-2 text-right">Reserved</th>
-                  <th className="px-3 py-2 text-right">RTS</th>
+                  <th className="px-3 py-2 text-right">Packed</th>
                   <th className="px-3 py-2 text-right">Available</th>
                   <th className="px-3 py-2 text-right">Unit cost</th>
                 </tr>
@@ -206,7 +206,7 @@ export default function Inventory() {
                       <td className="px-3 py-2">{r.warehouse}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{r.quantity}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{r.reservedQty}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{Number(r.rtsQty ?? 0)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{Number(r.packedQty ?? 0)}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{Number(r.availableQty ?? 0)}</td>
                       <td className="px-3 py-2 text-right tabular-nums">
                         {Number(r.unitCost || 0).toFixed(2)}

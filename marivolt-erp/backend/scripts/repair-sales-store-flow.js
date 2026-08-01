@@ -85,7 +85,10 @@ async function repairCompany(company) {
       .select("_id invoiceNo invoiceDate")
       .sort({ invoiceDate: -1 })
       .lean();
-    const legacyStatus = ["PARTIALLY_RTS", "RTS_COMPLETE"].includes(String(allocation.status || "").toUpperCase());
+    // Any allocation reporting packing/fulfilment progress but with no
+    // matching Store Packing docs is stale (e.g. from a removed legacy
+    // flow) and needs manual review rather than an automatic status flip.
+    const legacyStatus = !["OPEN"].includes(String(allocation.status || "").toUpperCase());
     if (!allocationPackings.length) {
       if (legacyStatus) summary.legacyAllocationsSkippedNoPacking += 1;
       continue;

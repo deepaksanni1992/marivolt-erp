@@ -43,7 +43,6 @@ router.get("/reports/sales-invoice-article-wise", reportsView, flow.reportSalesI
 router.get("/reports/sales-branch-wise", reportsView, flow.reportSalesBranchWise);
 router.get("/reports/cipl", reportsView, flow.reportCipl);
 router.get("/reports/order-allocation", reportsView, flow.reportOrderAllocation);
-router.get("/reports/rts", reportsView, flow.reportRts);
 router.get("/reports/backorder", reportsView, flow.reportBackorder);
 
 router.get("/customers", salesView, flow.listCustomers);
@@ -98,13 +97,7 @@ router.get("/order-allocations", salesView, flow.listOrderAllocations);
 router.get("/order-allocations/:id", salesView, flow.getOrderAllocation);
 router.get("/order-allocations/:id/po-eligibility", salesView, allocationPo.getOrderAllocationPoEligibility);
 router.get("/order-allocations/:id/linked-purchase-orders", salesView, allocationPo.getOrderAllocationLinkedPurchaseOrders);
-router.post("/order-allocations/:id/rts", salesCreate, flow.createRtsFromOrderAllocation);
 router.post("/order-allocations/:id/to-sales-invoice", salesCreate, flow.convertOrderAllocationToSalesInvoice);
-
-router.get("/rts", salesView, flow.listRts);
-router.get("/rts/:id", salesView, flow.getRts);
-router.put("/rts/:id", salesEdit, flow.updateRts);
-router.patch("/rts/:id/approve", salesApprove, flow.approveRts);
 
 router.get("/cipls", salesView, flow.listCipls);
 router.post("/cipls", salesCreate, flow.createCipl);
@@ -130,10 +123,7 @@ router.post("/quotations/:id/convert-to-oa", salesCreate, flow.convertQuotationT
 router.post("/order-acknowledgements/:id/create-proforma", salesCreate, flow.convertOAToProforma);
 router.post("/order-acknowledgements/:id/allocate", salesCreate, flow.convertOAToOrderAllocation);
 router.post("/proformas/:id/mark-paid", salesEdit, flow.markProformaPaid);
-router.post("/allocations/:id/convert-to-rts", salesCreate, flow.createRtsFromOrderAllocation);
-router.post("/rts/:id/convert-to-invoice", salesCreate, flow.convertRtsToSalesInvoice);
 router.post("/invoices/:id/cancel", salesCancel, flow.cancelSalesInvoice);
-router.post("/rts/:id/cancel", salesCancel, flow.cancelRtsDocument);
 router.post("/allocations/:id/cancel", salesCancel, flow.cancelOrderAllocation);
 router.post("/order-acknowledgements/:id/cancel", salesCancel, flow.cancelOA);
 

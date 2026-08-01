@@ -21,7 +21,6 @@ import SalesInvoice from "../src/models/SalesInvoice.js";
 import StoreDispatch from "../src/models/StoreDispatch.js";
 import SalesDispatch from "../src/models/SalesDispatch.js";
 import SalesReturn from "../src/models/SalesReturn.js";
-import Rts from "../src/models/Rts.js";
 import Cipl from "../src/models/Cipl.js";
 import PaymentReceipt from "../src/models/PaymentReceipt.js";
 import Shipment from "../src/models/Shipment.js";
@@ -122,7 +121,6 @@ async function run() {
     await countModel(PaymentReceipt, byId || byName, "Payment receipts"),
     await countModel(SalesInvoice, byName, "Sales invoices"),
     await countModel(StorePacking, byName, "Store packing"),
-    await countModel(Rts, byName, "RTS"),
     await countModel(OrderAllocation, byName, "Order allocations"),
     await countModel(ProformaInvoice, byName, "Proforma invoices"),
     await countModel(Cipl, byName, "CI/PI (CIPL)"),
@@ -166,7 +164,6 @@ async function run() {
     await deleteModel(PaymentReceipt, byId || byName, "Payment receipts", dryRun),
     await deleteModel(SalesInvoice, byName, "Sales invoices", dryRun),
     await deleteModel(StorePacking, byName, "Store packing", dryRun),
-    await deleteModel(Rts, byName, "RTS", dryRun),
     await deleteModel(OrderAllocation, byName, "Order allocations", dryRun),
     await deleteModel(ProformaInvoice, byName, "Proforma invoices", dryRun),
     await deleteModel(Cipl, byName, "CI/PI (CIPL)", dryRun),

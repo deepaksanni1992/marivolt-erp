@@ -58,8 +58,6 @@ const salesDispatchSchema = new mongoose.Schema(
     dispatchDate: { type: Date, default: () => new Date(), index: true },
     linkedSalesInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesInvoice", required: true, index: true },
     linkedSalesInvoiceNo: { type: String, default: "", trim: true },
-    linkedRtsId: { type: mongoose.Schema.Types.ObjectId, ref: "Rts", default: null, index: true },
-    linkedRtsNo: { type: String, default: "", trim: true },
     customerName: { type: String, required: true, trim: true, index: true },
     currency: { type: String, default: "USD", trim: true, uppercase: true },
     vertical: { type: String, default: "", trim: true },
@@ -118,7 +116,6 @@ const salesDispatchSchema = new mongoose.Schema(
 
 salesDispatchSchema.index({ companyId: 1, dispatchNo: 1 }, { unique: true });
 salesDispatchSchema.index({ companyId: 1, linkedSalesInvoiceId: 1 });
-salesDispatchSchema.index({ companyId: 1, linkedRtsId: 1, status: 1 });
 salesDispatchSchema.index({ companyId: 1, status: 1, dispatchDate: -1 });
 salesDispatchSchema.index({ companyId: 1, eta: 1, status: 1 });
 

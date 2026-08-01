@@ -241,9 +241,8 @@ async function computeErpStockQty(companyId, article) {
   for (const row of rows) {
     const onHand = Number(row.onHandQty ?? row.quantity) || 0;
     const allocated = Math.max(Number(row.allocatedQty) || 0, Number(row.reservedQty) || 0);
-    const rts = Number(row.rtsQty) || 0;
     const packed = Number(row.packedQty) || 0;
-    total += onHand - allocated - rts - packed;
+    total += onHand - allocated - packed;
   }
   return total;
 }

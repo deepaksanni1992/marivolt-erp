@@ -9,10 +9,8 @@ const TX_TYPES = [
   "OPENING",
   "GRN",
   "SALES_ALLOCATION",
-  "RTS",
   "SALES_INVOICE",
   "SALES_INVOICE_CANCEL",
-  "RTS_CANCEL",
   "ORDER_ALLOCATION_CANCEL",
   "STOCK_ADJUSTMENT",
   "TRANSFER_IN",
@@ -36,8 +34,6 @@ const UNIFIED_MOVEMENT_TYPES = [
   "DEKIT_IN",
   "ALLOCATION",
   "ALLOCATION_CANCEL",
-  "RTS_TRANSFER",
-  "RTS_CANCEL",
   "SALES_INVOICE_OUT",
   "SALES_INVOICE_CANCEL",
   "STOCK_TRANSFER_OUT",
@@ -90,7 +86,6 @@ const stockLedgerSchema = new mongoose.Schema(
     supplierName: { type: String, default: "", trim: true },
     onHandAfter: { type: Number, default: null },
     allocatedAfter: { type: Number, default: null },
-    rtsAfter: { type: Number, default: null },
     /** Qty in posted Store Packing (not yet dispatched). */
     packedAfter: { type: Number, default: null },
     /** Cumulative qty dispatched through Store Dispatch. */

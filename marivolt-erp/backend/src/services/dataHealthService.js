@@ -594,7 +594,6 @@ async function runInventoryChecks(companyId) {
                   {
                     $add: [
                       { $max: [{ $ifNull: ["$allocatedQty", 0] }, { $ifNull: ["$reservedQty", 0] }] },
-                      { $ifNull: ["$rtsQty", 0] },
                       { $ifNull: ["$packedQty", 0] },
                     ],
                   },

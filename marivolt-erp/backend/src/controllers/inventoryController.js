@@ -25,9 +25,8 @@ export async function listBalances(req, res) {
     const items = rawItems.map((r) => {
       const phys = Number(r.quantity) || 0;
       const resq = Number(r.reservedQty) || 0;
-      const rts = Number(r.rtsQty) || 0;
-      const availableQty = Math.max(0, phys - resq - rts);
-      return { ...r, rtsQty: rts, availableQty };
+      const availableQty = Math.max(0, phys - resq);
+      return { ...r, availableQty };
     });
     res.json({ items, total, page, limit });
   } catch (err) {
@@ -46,7 +45,6 @@ export async function getBalance(req, res) {
         warehouse,
         quantity: 0,
         reservedQty: 0,
-        rtsQty: 0,
         availableQty: 0,
         unitCost: 0,
         location: "",
@@ -54,11 +52,9 @@ export async function getBalance(req, res) {
     }
     const phys = Number(row.quantity) || 0;
     const resq = Number(row.reservedQty) || 0;
-    const rts = Number(row.rtsQty) || 0;
     res.json({
       ...row,
-      rtsQty: rts,
-      availableQty: Math.max(0, phys - resq - rts),
+      availableQty: Math.max(0, phys - resq),
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -234,7 +230,6 @@ export async function postOpening(req, res) {
               quantity: 0,
               onHandQty: 0,
               allocatedQty: 0,
-              rtsQty: 0,
               unitCost: Number(unitCost) || 0,
             },
           },

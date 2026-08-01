@@ -89,8 +89,6 @@ const shipmentSchema = new mongoose.Schema(
     docNo: { type: String, default: "" },
     linkedDispatchId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesDispatch", default: null, index: true },
     linkedDispatchNo: { type: String, default: "", trim: true },
-    linkedRtsId: { type: mongoose.Schema.Types.ObjectId, ref: "Rts", default: null, index: true },
-    linkedRtsNo: { type: String, default: "", trim: true },
     linkedSalesInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesInvoice", default: null, index: true },
 
     linkedPoNumber: { type: String, default: "" },

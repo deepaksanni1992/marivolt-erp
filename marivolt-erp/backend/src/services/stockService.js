@@ -6,7 +6,7 @@
  *
  * Design notes:
  *   • All movements persist running balances on the ledger row
- *     itself (onHandAfter / allocatedAfter / rtsAfter /
+ *     itself (onHandAfter / allocatedAfter / packedAfter /
  *     availableAfter) so the unified Stock Ledger view never has
  *     to aggregate the entire ledger to render a row.
  *   • Allocation is allowed to push availableAfter < 0. The
@@ -42,8 +42,6 @@ export const MOVEMENT_TYPES = Object.freeze({
   DEKIT_IN: "DEKIT_IN",
   ALLOCATION: "ALLOCATION",
   ALLOCATION_CANCEL: "ALLOCATION_CANCEL",
-  RTS_TRANSFER: "RTS_TRANSFER",
-  RTS_CANCEL: "RTS_CANCEL",
   SALES_INVOICE_OUT: "SALES_INVOICE_OUT",
   SALES_INVOICE_CANCEL: "SALES_INVOICE_CANCEL",
   STOCK_TRANSFER_OUT: "STOCK_TRANSFER_OUT",
@@ -71,8 +69,6 @@ const UNIFIED_TO_LEGACY_TX = Object.freeze({
   DEKIT_IN: "STOCK_ADJUSTMENT",
   ALLOCATION: "SALES_ALLOCATION",
   ALLOCATION_CANCEL: "ORDER_ALLOCATION_CANCEL",
-  RTS_TRANSFER: "RTS",
-  RTS_CANCEL: "RTS_CANCEL",
   SALES_INVOICE_OUT: "SALES_INVOICE",
   SALES_INVOICE_CANCEL: "SALES_INVOICE_CANCEL",
   STOCK_TRANSFER_OUT: "TRANSFER_OUT",
@@ -138,10 +134,9 @@ function deriveBalanceShape(row, fallback = {}) {
     Number(row?.allocatedQty || 0),
     Number(row?.reservedQty || 0)
   );
-  const rts = Number(row?.rtsQty || 0);
   const packed = Number(row?.packedQty || 0) || 0;
   const dispatched = Number(row?.dispatchedQty || 0) || 0;
-  const available = onHand - allocated - rts - packed;
+  const available = onHand - allocated - packed;
   return {
     _id: row?._id || null,
     companyId: row?.companyId || fallback.companyId || null,
@@ -150,7 +145,6 @@ function deriveBalanceShape(row, fallback = {}) {
     onHandQty: onHand,
     allocatedQty: allocated,
     reservedQty: allocated,
-    rtsQty: rts,
     packedQty: packed,
     dispatchedQty: dispatched,
     availableQty: available,
@@ -183,21 +177,18 @@ async function snapshotAfter({ companyId, article, warehouse, session }) {
   const rows = await query.lean();
   let onHand = 0;
   let allocated = 0;
-  let rts = 0;
   let packed = 0;
   let dispatched = 0;
   for (const r of rows) {
     onHand += Number(r?.onHandQty ?? r?.quantity ?? 0) || 0;
     allocated += Math.max(Number(r?.allocatedQty || 0), Number(r?.reservedQty || 0));
-    rts += Number(r?.rtsQty || 0);
     packed += Number(r?.packedQty || 0) || 0;
     dispatched += Number(r?.dispatchedQty || 0) || 0;
   }
-  const available = onHand - allocated - rts - packed;
+  const available = onHand - allocated - packed;
   return {
     onHandAfter: onHand,
     allocatedAfter: allocated,
-    rtsAfter: rts,
     packedAfter: packed,
     dispatchedAfter: dispatched,
     availableAfter: available,
@@ -207,7 +198,7 @@ async function snapshotAfter({ companyId, article, warehouse, session }) {
 
 /**
  * Recomputes `availableQty` on the StockBalance row from the
- * persisted on-hand/allocated/rts buckets and ensures the
+ * persisted on-hand/allocated/packed buckets and ensures the
  * canonical bucket fields stay in sync with their legacy
  * aliases (`quantity`, `reservedQty`).
  *
@@ -225,17 +216,15 @@ export async function recalculateStockBalance({ companyId, article, warehouse, s
   if (!row) return null;
   const onHand = Number(row.onHandQty ?? row.quantity ?? 0) || 0;
   const allocated = Math.max(Number(row.allocatedQty || 0), Number(row.reservedQty || 0));
-  const rts = Number(row.rtsQty || 0);
   const packed = Number(row.packedQty || 0) || 0;
   const dispatched = Math.max(0, Number(row.dispatchedQty || 0));
   row.onHandQty = onHand;
   row.quantity = onHand;
   row.allocatedQty = allocated;
   row.reservedQty = allocated;
-  row.rtsQty = rts;
   row.packedQty = packed;
   row.dispatchedQty = dispatched;
-  row.availableQty = onHand - allocated - rts - packed;
+  row.availableQty = onHand - allocated - packed;
   row.itemCode = code;
   row.article = code;
   row.warehouse = wh;
@@ -275,7 +264,6 @@ function buildLedgerRow({
   isNegativeAllocation = false,
   onHandAfter = null,
   allocatedAfter = null,
-  rtsAfter = null,
   packedAfter = null,
   availableAfter = null,
   batchNo = "",
@@ -307,7 +295,6 @@ function buildLedgerRow({
     balanceQty: onHandAfter == null ? 0 : Number(onHandAfter),
     onHandAfter,
     allocatedAfter,
-    rtsAfter,
     packedAfter,
     availableAfter,
     isNegativeAllocation: Boolean(isNegativeAllocation),
@@ -388,7 +375,6 @@ async function bumpBuckets({
       quantity: 0,
       onHandQty: 0,
       allocatedQty: 0,
-      rtsQty: 0,
       packedQty: 0,
       dispatchedQty: 0,
     };
@@ -503,7 +489,7 @@ export async function cancelGrn({
   const q = Number(qty) || 0;
   if (!(q > 0)) throw new Error("cancelGrn: qty must be > 0");
   // Guard: the canonical row must have at least `q` on-hand AND at
-  // least `q` Available (on-hand − reserved − rts). This matches the
+  // least `q` Available (on-hand − reserved − packed). This matches the
   // legacy `cancelGrn` controller's own pre-check but does it
   // atomically inside the transaction.
   const updated = await bumpBuckets({
@@ -526,7 +512,6 @@ export async function cancelGrn({
                   {
                     $add: [
                       { $ifNull: ["$reservedQty", 0] },
-                      { $ifNull: ["$rtsQty", 0] },
                       { $ifNull: ["$packedQty", 0] },
                     ],
                   },
@@ -662,7 +647,7 @@ export async function allocateStock({
       upsert: true,
     });
   } else {
-    // Guard ensures (quantity − reserved − rts) ≥ qty before incrementing.
+    // Guard ensures (quantity − reserved − packed) ≥ qty before incrementing.
     updated = await bumpBuckets({
       session,
       companyId,
@@ -678,7 +663,6 @@ export async function allocateStock({
                 {
                   $add: [
                     { $ifNull: ["$reservedQty", 0] },
-                    { $ifNull: ["$rtsQty", 0] },
                     { $ifNull: ["$packedQty", 0] },
                   ],
                 },
@@ -781,191 +765,10 @@ export async function cancelAllocation({
 }
 
 /**
- * RTS_TRANSFER — moves qty from `allocatedQty` to `rtsQty`
- * (Ready-To-Ship staging). Available is unchanged. No physical
- * goods move.
- */
-export async function moveAllocationToRTS({
-  session,
-  companyId,
-  article,
-  warehouse,
-  qty,
-  customerName = "",
-  referenceType,
-  referenceNo,
-  remarks = "",
-  createdBy = "",
-  sourceModule = "SALES",
-}) {
-  requireCompanyId(companyId);
-  const q = Number(qty) || 0;
-  if (!(q > 0)) throw new Error("moveAllocationToRTS: qty must be > 0");
-  // See note in `allocateStock`: only mutate the `reservedQty` bucket.
-  const updated = await bumpBuckets({
-    session,
-    companyId,
-    article,
-    warehouse,
-    inc: { reservedQty: -q, rtsQty: q },
-    guard: { $expr: { $gte: [{ $ifNull: ["$reservedQty", 0] }, q] } },
-  });
-  if (!updated) {
-    throw new Error(
-      `moveAllocationToRTS: allocated bucket lower than ${q} for ${normArticle(article)} in ${normWarehouse(warehouse)}.`
-    );
-  }
-  const after = await snapshotAfter({ companyId, article, warehouse, session });
-  return createStockLedgerEntry({
-    session,
-    companyId,
-    movementType: MOVEMENT_TYPES.RTS_TRANSFER,
-    article,
-    warehouse,
-    referenceType,
-    referenceNo,
-    customerName,
-    remarks: `${remarks || ""}${remarks ? " " : ""}[allocated→RTS]`.trim(),
-    createdBy,
-    sourceModule,
-    ...after,
-  });
-}
-
-/** RTS_CANCEL — moves qty back from `rtsQty` to `allocatedQty`. */
-export async function cancelRTS({
-  session,
-  companyId,
-  article,
-  warehouse,
-  qty,
-  customerName = "",
-  referenceType,
-  referenceNo,
-  remarks = "",
-  createdBy = "",
-  sourceModule = "SALES",
-}) {
-  requireCompanyId(companyId);
-  const q = Number(qty) || 0;
-  if (!(q > 0)) throw new Error("cancelRTS: qty must be > 0");
-  // See note in `allocateStock`: only mutate the `reservedQty` bucket.
-  const updated = await bumpBuckets({
-    session,
-    companyId,
-    article,
-    warehouse,
-    inc: { rtsQty: -q, reservedQty: q },
-    guard: { $expr: { $gte: [{ $ifNull: ["$rtsQty", 0] }, q] } },
-  });
-  if (!updated) {
-    throw new Error(
-      `cancelRTS: rts bucket lower than ${q} for ${normArticle(article)} in ${normWarehouse(warehouse)}.`
-    );
-  }
-  const after = await snapshotAfter({ companyId, article, warehouse, session });
-  return createStockLedgerEntry({
-    session,
-    companyId,
-    movementType: MOVEMENT_TYPES.RTS_CANCEL,
-    article,
-    warehouse,
-    referenceType,
-    referenceNo,
-    customerName,
-    remarks: `${remarks || ""}${remarks ? " " : ""}[RTS→allocated]`.trim(),
-    createdBy,
-    sourceModule,
-    ...after,
-  });
-}
-
-/**
- * SALES_INVOICE_OUT — physical goods leave inventory. Consumes
- * `rtsQty` first, then `allocatedQty`/`reservedQty` for any
- * remainder. Decreases `quantity`/`onHandQty` by the full qty.
- */
-export async function invoiceFromRTS({
-  session,
-  companyId,
-  article,
-  warehouse,
-  qty,
-  customerName = "",
-  referenceType,
-  referenceNo,
-  remarks = "",
-  createdBy = "",
-  sourceModule = "SALES",
-}) {
-  requireCompanyId(companyId);
-  const q = Number(qty) || 0;
-  if (!(q > 0)) throw new Error("invoiceFromRTS: qty must be > 0");
-  const code = normArticle(article);
-  const wh = normWarehouse(warehouse);
-  const bal = await StockBalance.findOne({ companyId, itemCode: code, warehouse: wh }).session(session);
-  if (!bal) throw new Error(`No stock balance for ${code} in ${wh}`);
-  const rts = Number(bal.rtsQty) || 0;
-  const allocated = Math.max(Number(bal.allocatedQty || 0), Number(bal.reservedQty || 0));
-  const fromRts = Math.min(q, rts);
-  const fromAllocated = q - fromRts;
-  if (fromAllocated > allocated) {
-    throw new Error(
-      `invoiceFromRTS: invoice qty ${q} exceeds RTS (${rts}) + allocated (${allocated}) for ${code}.`
-    );
-  }
-  const updated = await StockBalance.findOneAndUpdate(
-    {
-      companyId,
-      itemCode: code,
-      warehouse: wh,
-      $expr: {
-        $and: [
-          { $gte: [{ $ifNull: ["$quantity", 0] }, q] },
-          { $gte: [{ $ifNull: ["$rtsQty", 0] }, fromRts] },
-          { $gte: [{ $ifNull: ["$reservedQty", 0] }, fromAllocated] },
-        ],
-      },
-    },
-    {
-      $inc: {
-        quantity: -q,
-        onHandQty: -q,
-        rtsQty: -fromRts,
-        // See note in `allocateStock`: legacy rows track allocation
-        // only on `reservedQty`, so we only decrement that.
-        reservedQty: -fromAllocated,
-      },
-    },
-    { session, new: true }
-  );
-  if (!updated) {
-    throw new Error(
-      `invoiceFromRTS: concurrent stock change or insufficient buckets for ${code}.`
-    );
-  }
-  const after = await snapshotAfter({ companyId, article, warehouse, session });
-  return createStockLedgerEntry({
-    session,
-    companyId,
-    movementType: MOVEMENT_TYPES.SALES_INVOICE_OUT,
-    article,
-    warehouse,
-    qtyOut: q,
-    referenceType,
-    referenceNo,
-    customerName,
-    remarks: `${remarks || ""}${remarks ? " " : ""}[fromRts=${fromRts}, fromAllocated=${fromAllocated}]`.trim(),
-    createdBy,
-    sourceModule,
-    ...after,
-  });
-}
-
-/**
- * SALES_INVOICE_CANCEL — undoes a posted invoice. Restores
- * `onHandQty` and pushes the qty back into `rtsQty` (one step
- * back from where the invoice flow consumed it).
+ * SALES_INVOICE_CANCEL — undoes a posted invoice that had no
+ * Store Packing link (legacy direct-invoice flow). Restores
+ * `onHandQty` and `reservedQty` since the qty is no longer
+ * physically shipped and goes back to the allocated pool.
  */
 export async function cancelInvoice({
   session,
@@ -988,7 +791,7 @@ export async function cancelInvoice({
     companyId,
     article,
     warehouse,
-    inc: { quantity: q, onHandQty: q, rtsQty: q },
+    inc: { quantity: q, onHandQty: q, reservedQty: q },
     upsert: true,
   });
   const after = await snapshotAfter({ companyId, article, warehouse, session });
@@ -1002,7 +805,7 @@ export async function cancelInvoice({
     referenceType,
     referenceNo,
     customerName,
-    remarks: `${remarks || ""}${remarks ? " " : ""}[invoice cancel → RTS]`.trim(),
+    remarks: `${remarks || ""}${remarks ? " " : ""}[invoice cancel → allocated]`.trim(),
     createdBy,
     sourceModule,
     ...after,
@@ -1044,7 +847,7 @@ export async function stockTransfer({
             {
               $subtract: [
                 { $ifNull: ["$quantity", 0] },
-                { $add: [{ $ifNull: ["$reservedQty", 0] }, { $ifNull: ["$rtsQty", 0] }, { $ifNull: ["$packedQty", 0] }] },
+                { $add: [{ $ifNull: ["$reservedQty", 0] }, { $ifNull: ["$packedQty", 0] }] },
               ],
             },
             q,
@@ -1145,7 +948,7 @@ export async function stockAdjustment({
               {
                 $subtract: [
                   { $ifNull: ["$quantity", 0] },
-                  { $add: [{ $ifNull: ["$reservedQty", 0] }, { $ifNull: ["$rtsQty", 0] }, { $ifNull: ["$packedQty", 0] }] },
+                  { $add: [{ $ifNull: ["$reservedQty", 0] }, { $ifNull: ["$packedQty", 0] }] },
                 ],
               },
               q,
@@ -1469,9 +1272,6 @@ export default {
   openingBalance,
   allocateStock,
   cancelAllocation,
-  moveAllocationToRTS,
-  cancelRTS,
-  invoiceFromRTS,
   cancelInvoice,
   stockTransfer,
   stockAdjustment,

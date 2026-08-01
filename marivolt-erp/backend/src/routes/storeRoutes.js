@@ -17,7 +17,7 @@ const storeView = requirePermission("STORE", "view");
 
 // GET /api/store/stock-ledger/unified — multi-source projection of
 // StockLedger (GRN / Adjustment / Transfer / sales) and InventoryLedger
-// (sales reservation / RTS / invoice / cancellation).
+// (sales reservation / packing / invoice / cancellation).
 router.get("/stock-ledger/unified", storeView, stock.listUnifiedStockLedger);
 
 // Convenience aliases so the Store frontend does not have to know about

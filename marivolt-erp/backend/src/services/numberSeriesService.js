@@ -69,7 +69,6 @@ function defaultFormatFor(docKey) {
     case "ORDER_ACK":
     case "PROFORMA":
     case "ORDER_ALLOCATION":
-    case "RTS":
     case "SALES_INVOICE":
     case "SALES_DISPATCH":
     case "SALES_RETURN":

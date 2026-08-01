@@ -9,7 +9,6 @@ const DOC_NUMBER_CONFIG = {
   SALES_INVOICE: { key: "salesInvoice", prefix: "SI" },
   SALES_DISPATCH: { key: "dispatch", prefix: "DSP" },
   DISPATCH: { key: "dispatch", prefix: "DSP" },
-  RTS: { key: "rts", prefix: "RTS" },
   SALES_RETURN: { key: "salesReturn", prefix: "SR" },
   CIPL: { key: "cipl", prefix: "CIPL" },
   PAYMENT_RECEIPT: { key: "paymentReceipt", prefix: "RCPT" },

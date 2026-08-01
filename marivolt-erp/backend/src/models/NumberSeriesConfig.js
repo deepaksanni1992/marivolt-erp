@@ -38,7 +38,7 @@ const numberSeriesConfigSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
-    /** Document key — uppercase. e.g. SALES_INVOICE, PROFORMA, GRN, RTS. */
+    /** Document key — uppercase. e.g. SALES_INVOICE, PROFORMA, GRN. */
     docKey: { type: String, required: true, trim: true, uppercase: true },
     description: { type: String, default: "", trim: true },
     prefix: { type: String, default: "", trim: true },

@@ -126,7 +126,6 @@ async function aggregateErpStock(companyId, filters) {
         _id: { article: "$article", partNumber: { $ifNull: ["$itemCode", ""] } },
         onHandQty: { $sum: { $ifNull: ["$onHandQty", "$quantity"] } },
         allocatedQty: { $sum: { $max: [{ $ifNull: ["$allocatedQty", 0] }, { $ifNull: ["$reservedQty", 0] }] } },
-        rtsQty: { $sum: { $ifNull: ["$rtsQty", 0] } },
         packedQty: { $sum: { $ifNull: ["$packedQty", 0] } },
         lastErpMovementDate: { $max: "$lastTransactionDate" },
         erpValue: {
@@ -138,7 +137,6 @@ async function aggregateErpStock(companyId, filters) {
                   {
                     $add: [
                       { $max: [{ $ifNull: ["$allocatedQty", 0] }, { $ifNull: ["$reservedQty", 0] }] },
-                      { $ifNull: ["$rtsQty", 0] },
                       { $ifNull: ["$packedQty", 0] },
                     ],
                   },
@@ -155,7 +153,7 @@ async function aggregateErpStock(companyId, filters) {
         article: "$_id.article",
         partNumber: "$_id.partNumber",
         erpStock: {
-          $subtract: ["$onHandQty", { $add: ["$allocatedQty", "$rtsQty", "$packedQty"] }],
+          $subtract: ["$onHandQty", { $add: ["$allocatedQty", "$packedQty"] }],
         },
         lastErpMovementDate: 1,
         erpValue: 1,
@@ -513,9 +511,8 @@ export async function getCustomsReconciliationDetail(companyId, article, partNum
   for (const row of erpRows) {
     const onHand = parseNum(row.onHandQty ?? row.quantity);
     const allocated = Math.max(parseNum(row.allocatedQty), parseNum(row.reservedQty));
-    const rts = parseNum(row.rtsQty);
     const packed = parseNum(row.packedQty);
-    const available = onHand - allocated - rts - packed;
+    const available = onHand - allocated - packed;
     erpStock += available;
     erpLocations.push({
       warehouse: row.warehouse || row.location || "",

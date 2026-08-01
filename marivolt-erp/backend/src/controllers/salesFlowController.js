@@ -8,17 +8,7 @@ import StorePacking from "../models/StorePacking.js";
 import StoreDispatch from "../models/StoreDispatch.js";
 import Cipl from "../models/Cipl.js";
 import OrderAllocation from "../models/OrderAllocation.js";
-import Rts from "../models/Rts.js";
-import StockLedger from "../models/StockLedger.js";
 import StockBalance from "../models/StockBalance.js";
-import {
-  RTS_APPROVED_WITHOUT_STOCK_POST,
-  RTS_APPROVAL_IN_PROGRESS,
-  buildRtsDraftApprovalClaimFilter,
-  buildRtsDraftApprovalClaimUpdate,
-  classifyApprovedRtsForReapproval,
-  getDisallowedRtsUpdateFields,
-} from "../utils/rtsProtection.js";
 import GRN from "../models/GRN.js";
 import PaymentReceipt from "../models/PaymentReceipt.js";
 import Customer from "../models/Customer.js";
@@ -1057,63 +1047,6 @@ async function attachUnitWeightFromItems(req, lines = []) {
   });
 }
 
-async function attachRtsDefaultsFromItems(req, lines = []) {
-  if (!lines.length) return lines;
-  const articles = Array.from(new Set(lines.map((l) => String(l.article || "").trim().toUpperCase()).filter(Boolean)));
-  if (!articles.length) {
-    return lines.map((line) => ({
-      ...line,
-      coo: String(line.coo || "").trim() || "Germany",
-    }));
-  }
-  const items = await Item.find(withCompany(req, { itemCode: { $in: articles } }))
-    .select("itemCode weightKg coo")
-    .lean();
-  const byCode = new Map(
-    items.map((it) => [
-      String(it.itemCode || "").toUpperCase(),
-      {
-        weightKg: normalizeWeight(it.weightKg),
-        coo: String(it.coo || "").trim(),
-      },
-    ])
-  );
-  return lines.map((line) => {
-    const fromItem = byCode.get(String(line.article || "").toUpperCase()) || {};
-    const unitWeightKg = normalizeWeight(line.unitWeightKg) ?? fromItem.weightKg ?? null;
-    const coo = String(line.coo || "").trim() || fromItem.coo || "Germany";
-    return {
-      ...line,
-      unitWeightKg,
-      coo,
-      totalWeightKg: unitWeightKg == null ? null : (Number(line.qty) || 0) * unitWeightKg,
-    };
-  });
-}
-
-async function approvedRtsByAllocation(req, allocationId, session = null) {
-  const q = Rts.find(
-    withCompany(req, {
-      linkedOrderAllocationId: allocationId,
-      status: "APPROVED",
-    })
-  );
-  if (session) q.session(session);
-  return q.lean();
-}
-
-/** RTS quantities that count toward allocation line fulfilment (excludes DRAFT / CANCELLED). */
-async function postedRtsByAllocation(req, allocationId, session = null) {
-  const q = Rts.find(
-    withCompany(req, {
-      linkedOrderAllocationId: allocationId,
-      status: { $in: ["APPROVED", "CONVERTED_TO_INVOICE"] },
-    })
-  );
-  if (session) q.session(session);
-  return q.lean();
-}
-
 function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -1145,74 +1078,6 @@ async function assertOaReadyForStockAllocation(req, oa, session) {
       "Advance payment customer: create a proforma from this OA, mark payment received, then allocate stock."
     );
   }
-}
-
-function shippedQtyMapForAllocation(approvedRtsDocs = []) {
-  const shipped = new Map();
-  for (const doc of approvedRtsDocs) {
-    for (const line of doc.lines || []) {
-      const key = String(line.allocationLineId || "");
-      const prev = shipped.get(key) || 0;
-      shipped.set(key, prev + (Number(line.qty) || 0));
-    }
-  }
-  return shipped;
-}
-
-function isRtsEditable(doc) {
-  if (!doc) return false;
-  return !doc.linkedSalesInvoiceId;
-}
-
-/** Design B evidence: RTS approval posts RTS_TRANSFER (legacy transactionType RTS). */
-async function hasRtsTransferStockEvidence(companyId, rtsNo, session = null) {
-  const referenceNo = String(rtsNo || "").trim();
-  if (!companyId || !referenceNo) return false;
-  const q = StockLedger.findOne({
-    companyId,
-    referenceNo,
-    $or: [{ movementType: "RTS_TRANSFER" }, { transactionType: "RTS" }],
-  }).select("_id");
-  if (session) q.session(session);
-  const row = await q.lean();
-  return Boolean(row);
-}
-
-function rtsApprovalConflictError(message, code, statusCode = 409) {
-  const err = new Error(message);
-  err.code = code;
-  err.statusCode = statusCode;
-  return err;
-}
-
-function normalizeRtsPackingDetails(raw = {}) {
-  const boxesRaw = Array.isArray(raw?.boxes) ? raw.boxes : [];
-  const boxes = boxesRaw
-    .map((b, idx) => {
-      const count = Math.max(1, Number(b?.count || 1) || 1);
-      const materialInput = String(b?.material || "").trim().toUpperCase();
-      let material = materialInput;
-      if (material === "PLUBOARD") material = "PLYWOOD";
-      const allowed = ["WOODEN", "CARDBOARD", "PLYWOOD", "PALLET", "OTHER"];
-      if (!allowed.includes(material)) material = material ? "OTHER" : "";
-      return {
-        serialNo: idx + 1,
-        material,
-        count,
-        dimensionsMm: String(b?.dimensionsMm || "").trim(),
-        remarks: String(b?.remarks || "").trim(),
-      };
-    })
-    .filter((b) => b.material || b.dimensionsMm || b.count > 0 || b.remarks);
-
-  const computedBoxCount = boxes.reduce((acc, b) => acc + (Number(b.count) || 0), 0);
-  const fallbackCount = Number(raw?.boxCount || 0);
-  return {
-    totalWeightKg: Number(raw?.totalWeightKg || 0),
-    boxCount: computedBoxCount || fallbackCount,
-    boxDimensionsMm: String(raw?.boxDimensionsMm || boxes[0]?.dimensionsMm || "").trim(),
-    boxes,
-  };
 }
 
 const PENDING_QUOTATION_STATUSES = ["DRAFT", "SENT"];
@@ -3638,7 +3503,7 @@ export async function cancelSalesInvoice(req, res) {
           article: l.article,
           qty: l.qty,
           from: "INVOICED",
-          to: "RTS",
+          to: "AVAILABLE",
         }));
     if (dryRun) {
       return res.json({ dryRun: true, stockImpact });
@@ -3681,18 +3546,6 @@ export async function cancelSalesInvoice(req, res) {
       inv.updatedBy = req.user?.email || "";
       await inv.save({ session });
       await reverseSalesInvoiceReceivable({ req, invoice: inv, reason, session });
-      if (inv.linkedRtsId) {
-        await Rts.findOneAndUpdate(
-          withCompany(req, { _id: inv.linkedRtsId }),
-          {
-            status: "APPROVED",
-            linkedSalesInvoiceId: null,
-            linkedSalesInvoiceNo: "",
-            updatedBy: req.user?.email || "",
-          },
-          { session }
-        );
-      }
       if (inv.linkedStorePackingId) {
         const refreshedPacking = await recalcPackingInvoiceStatus({
           companyId: req.companyId,
@@ -3717,21 +3570,19 @@ export async function cancelSalesInvoice(req, res) {
           await allocation.save({ session });
         }
       }
-      if (allocation && (inv.linkedRtsId || inv.stockPostedAt)) {
+      if (allocation && inv.stockPostedAt && !inv.linkedStorePackingId) {
         allocation.linkedSalesInvoiceId = null;
         allocation.linkedSalesInvoiceNo = "";
-        const postedDocs = await postedRtsByAllocation(req, allocation._id, session);
-        const shipped = shippedQtyMapForAllocation(postedDocs);
-        let complete = true;
-        for (const line of allocation.lines || []) {
-          const qty = Number(line.qty) || 0;
-          const done = shipped.get(String(line._id || "")) || 0;
-          if (done < qty) {
-            complete = false;
-            break;
-          }
-        }
-        allocation.status = complete ? "RTS_COMPLETE" : "PARTIALLY_RTS";
+        const snapshot = await allocationFulfilmentSnapshot(req.companyId, allocation, session);
+        allocation.packingStatus = snapshot.packingStatus;
+        allocation.invoiceStatus = snapshot.invoiceStatus;
+        allocation.dispatchStatus = snapshot.dispatchStatus;
+        allocation.status =
+          snapshot.packingStatus === "FULLY_PACKED"
+            ? "FULLY_PACKED"
+            : snapshot.packingStatus === "PARTIALLY_PACKED"
+            ? "PARTIALLY_PACKED"
+            : "OPEN";
         allocation.updatedBy = req.user?.email || "";
         await allocation.save({ session });
       }
@@ -4026,8 +3877,6 @@ export async function convertSalesInvoiceToSalesDispatch(req, res) {
       dispatchDate: new Date(),
       linkedSalesInvoiceId: invoice._id,
       linkedSalesInvoiceNo: invoice.invoiceNo,
-      linkedRtsId: invoice.linkedRtsId || null,
-      linkedRtsNo: invoice.linkedRtsNo || "",
       customerName: invoice.customerName,
       currency: invoice.currency || "USD",
       vertical: invoice.vertical || "",
@@ -4058,7 +3907,7 @@ export async function convertSalesInvoiceToSalesDispatch(req, res) {
       documentNo: doc.dispatchNo,
       toStatus: doc.status,
       description: `Dispatch ${doc.dispatchNo} created from sales invoice ${invoice.invoiceNo}`,
-      metadata: { invoiceNo: invoice.invoiceNo, rtsNo: doc.linkedRtsNo || "", partial: existingDispatches.length > 0 },
+      metadata: { invoiceNo: invoice.invoiceNo, partial: existingDispatches.length > 0 },
     });
     res.status(201).json(doc);
   } catch (err) {
@@ -4255,43 +4104,6 @@ export async function reportOrderAllocation(req, res) {
   }
 }
 
-export async function reportRts(req, res) {
-  try {
-    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
-    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "20"), 10) || 20));
-    const skip = (page - 1) * limit;
-    const filter = withCompany(req);
-    if (req.query.search) {
-      const q = String(req.query.search).trim();
-      filter.$or = [{ rtsNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }, { linkedOrderAllocationNo: new RegExp(q, "i") }];
-    }
-    if (req.query.status) filter.status = String(req.query.status).toUpperCase();
-    const [rows, total] = await Promise.all([
-      Rts.find(filter).sort({ rtsDate: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
-      Rts.countDocuments(filter),
-    ]);
-    const rowsOut = rows.map((r) => ({
-      _id: r._id,
-      rtsNo: r.rtsNo,
-      rtsDate: r.rtsDate,
-      linkedOrderAllocationNo: r.linkedOrderAllocationNo || "",
-      customerName: r.customerName || "",
-      vertical: r.vertical || "",
-      engine: r.engine || "",
-      model: r.model || "",
-      config: r.config || "",
-      esn: r.esn || "",
-      status: r.status || "DRAFT",
-      boxCount: Number(r.packingDetails?.boxCount || 0),
-      totalWeightKg: Number(r.packingDetails?.totalWeightKg || 0),
-      lineCount: Array.isArray(r.lines) ? r.lines.length : 0,
-    }));
-    res.json({ rows: rowsOut, total, page, limit, totals: { totalRTS: total } });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-}
-
 export async function reportBackorder(req, res) {
   try {
     const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
@@ -4314,10 +4126,12 @@ export async function reportBackorder(req, res) {
       .sort({ allocationDate: -1, createdAt: -1 })
       .lean();
     const allocationIds = allocations.map((a) => a._id);
-    const [rtsRows, invoiceRows] = allocationIds.length
+    const [packingRows, invoiceRows] = allocationIds.length
       ? await Promise.all([
-          Rts.find(withCompany(req, { linkedOrderAllocationId: { $in: allocationIds }, status: { $nin: ["CANCELLED"] } }))
-            .select("linkedOrderAllocationId status lines")
+          StorePacking.find(
+            withCompany(req, { allocationId: { $in: allocationIds }, status: { $in: POSTED_STORE_PACKING_STATUSES } })
+          )
+            .select("allocationId status lines")
             .lean(),
           SalesInvoice.find(withCompany(req, { linkedOrderAllocationId: { $in: allocationIds }, status: { $ne: "CANCELLED" } }))
             .select("linkedOrderAllocationId status lines")
@@ -4325,16 +4139,16 @@ export async function reportBackorder(req, res) {
         ])
       : [[], []];
 
-    const rtsByAllocationArticle = new Map();
-    for (const rts of rtsRows) {
-      if (String(rts.status || "").toUpperCase() !== "APPROVED") continue;
-      const allocationId = String(rts.linkedOrderAllocationId || "");
-      for (const line of rts.lines || []) {
+    /** Packed-but-not-yet-invoiced qty from posted Store Packing. */
+    const packedByAllocationArticle = new Map();
+    for (const packing of packingRows) {
+      const allocationId = String(packing.allocationId || "");
+      for (const line of packing.lines || []) {
         const article = String(line.article || "").trim().toUpperCase();
-        const qty = Number(line.qty) || 0;
+        const qty = Number(line.packQty) || 0;
         if (!article || !(qty > 0)) continue;
         const key = `${allocationId}::${article}`;
-        rtsByAllocationArticle.set(key, (rtsByAllocationArticle.get(key) || 0) + qty);
+        packedByAllocationArticle.set(key, (packedByAllocationArticle.get(key) || 0) + qty);
       }
     }
     const invoiceByAllocationArticle = new Map();
@@ -4359,9 +4173,9 @@ export async function reportBackorder(req, res) {
         if (!article || (articleFilter && article !== articleFilter)) continue;
         const orderedQty = Number(line.qty) || 0;
         const key = `${String(alloc._id)}::${article}`;
-        const rtsQty = Number(rtsByAllocationArticle.get(key) || 0);
+        const packedQty = Number(packedByAllocationArticle.get(key) || 0);
         const invoiceQty = Number(invoiceByAllocationArticle.get(key) || 0);
-        const pendingQty = Math.max(0, orderedQty - rtsQty - invoiceQty);
+        const pendingQty = Math.max(0, orderedQty - packedQty - invoiceQty);
         if (!(pendingQty > 0)) continue;
         rows.push({
           customer: alloc.customerName || "",
@@ -4374,7 +4188,7 @@ export async function reportBackorder(req, res) {
           orderedQty,
           allocatedQty: orderedQty,
           pendingQty,
-          rtsQty,
+          packedQty,
           invoiceQty,
           warehouse,
           location: warehouse,
@@ -4414,8 +4228,8 @@ export async function reportBackorder(req, res) {
       const key = `${article}::${warehouse}`;
       const onHand = Number(bal.onHandQty ?? bal.quantity ?? 0) || 0;
       const allocated = Math.max(Number(bal.allocatedQty || 0), Number(bal.reservedQty || 0));
-      const rts = Number(bal.rtsQty || 0);
-      availableByArticleWarehouse.set(key, (availableByArticleWarehouse.get(key) || 0) + onHand - allocated - rts);
+      const packed = Number(bal.packedQty || 0);
+      availableByArticleWarehouse.set(key, (availableByArticleWarehouse.get(key) || 0) + onHand - allocated - packed);
     }
     const expectedGrnByArticleWarehouse = new Map();
     for (const grn of draftGrns) {
@@ -4449,275 +4263,6 @@ export async function reportBackorder(req, res) {
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
-  }
-}
-
-export async function listRts(req, res) {
-  try {
-    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "20"), 10) || 20));
-    const skip = (page - 1) * limit;
-    const filter = withCompany(req);
-    if (req.query.search) {
-      const q = String(req.query.search).trim();
-      filter.$or = [{ rtsNo: new RegExp(q, "i") }, { customerName: new RegExp(q, "i") }, { linkedOrderAllocationNo: new RegExp(q, "i") }];
-    }
-    if (req.query.allocationId && mongoose.Types.ObjectId.isValid(String(req.query.allocationId))) {
-      filter.linkedOrderAllocationId = new mongoose.Types.ObjectId(String(req.query.allocationId));
-    }
-    if (req.query.status) filter.status = String(req.query.status).toUpperCase();
-    const [items, total] = await Promise.all([
-      Rts.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
-      Rts.countDocuments(filter),
-    ]);
-    res.json({ items, total, page, limit });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-}
-
-export async function getRts(req, res) {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
-    const doc = await Rts.findOne(withCompany(req, { _id: id })).lean();
-    if (!doc) return res.status(404).json({ message: "Not found" });
-    res.json({ ...doc, editable: isRtsEditable(doc) });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-}
-
-export async function updateRts(req, res) {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
-
-    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
-    const prohibitedFields = getDisallowedRtsUpdateFields(body);
-    if (prohibitedFields.length) {
-      return res.status(400).json({
-        message: "One or more fields cannot be updated through this endpoint. Use the dedicated RTS approval or cancel routes for workflow changes.",
-        prohibitedFields,
-      });
-    }
-
-    const doc = await Rts.findOne(withCompany(req, { _id: id }));
-    if (!doc) return res.status(404).json({ message: "Not found" });
-    if (!isRtsEditable(doc)) {
-      return res.status(400).json({ message: "RTS is locked after Sales Invoice reference is created." });
-    }
-
-    if (body.rtsDate !== undefined) doc.rtsDate = body.rtsDate;
-    if (body.packingDetails !== undefined) {
-      doc.packingDetails = normalizeRtsPackingDetails(body.packingDetails || {});
-    }
-    if (body.lines !== undefined) {
-      const incoming = Array.isArray(body.lines) ? body.lines : [];
-      if (!incoming.length) return res.status(400).json({ message: "RTS requires at least one line" });
-      doc.lines = incoming.map((line, idx) => {
-        const qty = Number(line.qty) || 0;
-        const unitWeightKg = normalizeWeight(line.unitWeightKg);
-        return {
-          serialNo: idx + 1,
-          allocationLineId: line.allocationLineId,
-          article: String(line.article || "").trim().toUpperCase(),
-          partNumber: String(line.partNumber || ""),
-          description: String(line.description || ""),
-          qty,
-          uom: String(line.uom || "PCS"),
-          coo: String(line.coo || "").trim() || "Germany",
-          remarks: String(line.remarks || ""),
-          materialCode: String(line.materialCode || ""),
-          availability: String(line.availability || ""),
-          unitWeightKg,
-          totalWeightKg: unitWeightKg == null ? null : qty * unitWeightKg,
-        };
-      });
-    }
-    doc.updatedBy = req.user?.email || "";
-    await doc.save();
-    res.json(doc);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
-}
-
-export async function approveRts(req, res) {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
-    const doc = await Rts.findOne(withCompany(req, { _id: id }));
-    if (!doc) return res.status(404).json({ message: "Not found" });
-    if (!isRtsEditable(doc)) return res.status(400).json({ message: "RTS is locked after Sales Invoice reference is created." });
-
-    const status = String(doc.status || "").toUpperCase();
-    if (status === "CONVERTED_TO_INVOICE") {
-      return res.status(400).json({ message: "RTS is already converted to invoice; cancel the invoice first." });
-    }
-    if (status === "CANCELLED") {
-      return res.status(400).json({ message: "Cannot approve a cancelled RTS" });
-    }
-    if (status === "APPROVING") {
-      return res.status(409).json({
-        message: "RTS approval already in progress",
-        code: RTS_APPROVAL_IN_PROGRESS,
-      });
-    }
-    if (status === "APPROVED") {
-      const hasEvidence = await hasRtsTransferStockEvidence(req.companyId, doc.rtsNo);
-      const kind = classifyApprovedRtsForReapproval(hasEvidence);
-      if (kind === "ORPHAN_APPROVED") {
-        return res.status(409).json({
-          message: "RTS is APPROVED but has no RTS stock-posting evidence. Manual repair is required.",
-          code: RTS_APPROVED_WITHOUT_STOCK_POST,
-        });
-      }
-      // Healthy APPROVED: idempotent success, no stock movement.
-      return res.json(doc);
-    }
-    if (status !== "DRAFT") {
-      return res.status(400).json({ message: `Cannot approve RTS in status ${status || "UNKNOWN"}` });
-    }
-
-    const rtsLines = (doc.lines || [])
-      .map((l) => ({ article: l.article, qty: Number(l.qty) || 0 }))
-      .filter((x) => x.article && x.qty > 0);
-
-    await withTransaction(async (session) => {
-      const claimed = await Rts.findOneAndUpdate(
-        buildRtsDraftApprovalClaimFilter({ id, companyId: req.companyId }),
-        buildRtsDraftApprovalClaimUpdate({ updatedBy: req.user?.email || "" }),
-        { new: true, session }
-      );
-      if (!claimed) {
-        const latest = await Rts.findOne(withCompany(req, { _id: id })).session(session);
-        if (!latest) throw rtsApprovalConflictError("Not found", "NOT_FOUND", 404);
-        const latestStatus = String(latest.status || "").toUpperCase();
-        if (latestStatus === "APPROVED") {
-          const hasEvidence = await hasRtsTransferStockEvidence(req.companyId, latest.rtsNo, session);
-          if (classifyApprovedRtsForReapproval(hasEvidence) === "ORPHAN_APPROVED") {
-            throw rtsApprovalConflictError(
-              "RTS is APPROVED but has no RTS stock-posting evidence. Manual repair is required.",
-              RTS_APPROVED_WITHOUT_STOCK_POST,
-              409
-            );
-          }
-          const err = rtsApprovalConflictError("RTS is already approved", "RTS_ALREADY_APPROVED", 409);
-          err.alreadyApprovedDoc = latest;
-          throw err;
-        }
-        if (latestStatus === "APPROVING") {
-          throw rtsApprovalConflictError(
-            "RTS approval already in progress",
-            RTS_APPROVAL_IN_PROGRESS,
-            409
-          );
-        }
-        throw rtsApprovalConflictError(
-          `Cannot approve RTS in status ${latestStatus || "UNKNOWN"}`,
-          "RTS_APPROVAL_CONFLICT",
-          409
-        );
-      }
-
-      const allocation = await OrderAllocation.findOne(
-        withCompany(req, { _id: claimed.linkedOrderAllocationId })
-      ).session(session);
-      if (!allocation) throw new Error("Linked order allocation not found");
-      if (String(allocation.status || "").toUpperCase() === "CANCELLED") {
-        throw new Error("Cannot approve RTS for a cancelled order allocation");
-      }
-      const warehouse = String(allocation.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
-      /**
-       * Legacy allocations (no stockReservedAt): reserve the full allocation once, then move this RTS slice
-       * from reserved → RTS bucket. New allocations already carry SALES_RESERVE at creation.
-       */
-      if (!allocation.stockReservedAt) {
-        const reserveLines = (allocation.lines || [])
-          .map((l) => ({ article: l.article, qty: Number(l.qty) || 0 }))
-          .filter((x) => x.article && x.qty > 0);
-        // Legacy allocations did not record a SALES_RESERVE on creation —
-        // backfill the reservation now so the RTS approval can move qty
-        // from reserved → RTS. We allow negative since these allocations
-        // were already accepted before the negative-stock policy existed.
-        await reserveAllocationLines({
-          session,
-          companyId: req.companyId,
-          warehouse,
-          lines: reserveLines,
-          referenceType: "ORDER_ALLOCATION_RESERVE_BACKFILL",
-          referenceNo: allocation.allocationNo,
-          customerName: allocation.customerName || "",
-          remarks: "Backfill reservation for legacy allocation",
-          createdBy: req.user?.email || "",
-          allowNegative: true,
-        });
-        allocation.stockReservedAt = new Date();
-      }
-      for (const [article, qty] of dedupeLines(rtsLines)) {
-        await stockService.moveAllocationToRTS({
-          session,
-          companyId: req.companyId,
-          article,
-          warehouse,
-          qty,
-          customerName: claimed.customerName || allocation.customerName || "",
-          referenceType: "RTS_APPROVED",
-          referenceNo: claimed.rtsNo,
-          remarks: "RTS approved",
-          createdBy: req.user?.email || "",
-          sourceModule: "SALES",
-        });
-      }
-      // Lifecycle asserts DRAFT→APPROVED (APPROVING is an ephemeral claim only).
-      assertTransition(DOC_TYPES.RTS, "DRAFT", "APPROVED", { documentNo: claimed.rtsNo });
-      claimed.status = "APPROVED";
-      claimed.updatedBy = req.user?.email || "";
-      await claimed.save({ session });
-      const postedDocs = await postedRtsByAllocation(req, allocation._id, session);
-      const shipped = shippedQtyMapForAllocation(postedDocs);
-      let complete = true;
-      for (const line of allocation.lines || []) {
-        const qty = Number(line.qty) || 0;
-        const done = shipped.get(String(line._id || "")) || 0;
-        if (done < qty) {
-          complete = false;
-          break;
-        }
-      }
-      allocation.status = complete ? "RTS_COMPLETE" : "PARTIALLY_RTS";
-      allocation.updatedBy = req.user?.email || "";
-      await allocation.save({ session });
-    });
-    await writeStatusChange(req, {
-      module: "SALES",
-      entityType: "RTS",
-      entityId: doc._id,
-      documentNo: doc.rtsNo,
-      fromStatus: "PENDING",
-      toStatus: "APPROVED",
-      description: `RTS ${doc.rtsNo} approved, qty moved Allocated → RTS`,
-    });
-
-    const out = await Rts.findOne(withCompany(req, { _id: id })).lean();
-    res.json(out);
-  } catch (err) {
-    if (err?.alreadyApprovedDoc) {
-      return res.json(err.alreadyApprovedDoc);
-    }
-    if (
-      err?.code === "INVALID_TRANSITION" ||
-      err?.code === "STOCK_INSUFFICIENT" ||
-      err?.code === RTS_APPROVED_WITHOUT_STOCK_POST ||
-      err?.code === RTS_APPROVAL_IN_PROGRESS ||
-      err?.code === "RTS_ALREADY_APPROVED" ||
-      err?.code === "RTS_APPROVAL_CONFLICT"
-    ) {
-      return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
-    }
-    if (err?.statusCode === 404) return res.status(404).json({ message: err.message });
-    res.status(400).json({ message: err.message });
   }
 }
 
@@ -5065,75 +4610,6 @@ export async function convertProformaToOrderAllocation(req, res) {
   }
 }
 
-export async function createRtsFromOrderAllocation(req, res) {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid order allocation id" });
-    const allocation = await OrderAllocation.findOne(withCompany(req, { _id: id }));
-    validateConversionSource(allocation, "order allocation");
-    if (!allocation?.lines?.length) return res.status(400).json({ message: "Order allocation has no lines" });
-    const postedDocs = await postedRtsByAllocation(req, allocation._id);
-    const shipped = shippedQtyMapForAllocation(postedDocs);
-
-    const selected = Array.isArray(req.body?.lines) ? req.body.lines : [];
-    if (!selected.length) return res.status(400).json({ message: "Select at least one article/line for RTS" });
-    const byId = new Map((allocation.lines || []).map((line) => [String(line._id), line]));
-    const rtsLines = [];
-    for (const row of selected) {
-      const line = byId.get(String(row.allocationLineId || ""));
-      if (!line) continue;
-      const pending = Math.max(0, (Number(line.qty) || 0) - (shipped.get(String(line._id)) || 0));
-      const qty = Number(row.qty) || 0;
-      if (!(qty > 0) || qty > pending) {
-        return res.status(400).json({ message: `Invalid RTS qty for article ${line.article}. Pending: ${pending}` });
-      }
-      const unitWeightKg = normalizeWeight(row.unitWeightKg) ?? normalizeWeight(line.unitWeightKg);
-      rtsLines.push({
-        serialNo: rtsLines.length + 1,
-        allocationLineId: line._id,
-        article: line.article,
-        partNumber: line.partNumber || "",
-        description: line.description || "",
-        qty,
-        uom: line.uom || "PCS",
-        coo: String(row.coo || "").trim(),
-        remarks: line.remarks || "",
-        materialCode: line.materialCode || "",
-        availability: line.availability || "",
-        unitWeightKg,
-        totalWeightKg: unitWeightKg == null ? null : qty * unitWeightKg,
-      });
-    }
-    if (!rtsLines.length) return res.status(400).json({ message: "No valid RTS lines selected" });
-    const rtsLinesWithDefaults = await attachRtsDefaultsFromItems(req, rtsLines);
-    const rtsNo = await nextSalesDocNumber({
-      companyId: req.companyId,
-      companyCode: req.companyCode,
-      docKey: "RTS",
-    });
-    const doc = await Rts.create({
-      companyId: req.companyId,
-      rtsNo,
-      rtsDate: req.body?.rtsDate || new Date(),
-      linkedOrderAllocationId: allocation._id,
-      linkedOrderAllocationNo: allocation.allocationNo,
-      customerName: allocation.customerName,
-      vertical: allocation.vertical || "",
-      engine: allocation.engine || "",
-      model: allocation.model || "",
-      config: allocation.config || "",
-      esn: allocation.esn || "",
-      lines: rtsLinesWithDefaults,
-      packingDetails: normalizeRtsPackingDetails(req.body?.packingDetails || {}),
-      status: "DRAFT",
-      createdBy: req.user?.email || "",
-    });
-    res.status(201).json(doc);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
-}
-
 export async function convertOrderAllocationToSalesInvoice(req, res) {
   try {
     const { id } = req.params;
@@ -5159,13 +4635,6 @@ export async function convertOrderAllocationToSalesInvoice(req, res) {
   }
 }
 
-/** Legacy RTS no longer gates Sales Invoice. Invoices must be created from posted Store Packing. */
-export async function convertRtsToSalesInvoice(req, res) {
-  return res.status(410).json({
-    message: "RTS conversion is disabled. Complete Store Packing, then create Sales Invoice from the Order Allocation or Packing document.",
-  });
-}
-
 export async function cancelOrderAllocation(req, res) {
   try {
     const { id } = req.params;
@@ -5183,22 +4652,15 @@ export async function cancelOrderAllocation(req, res) {
         message: "Cannot cancel allocation while a sales invoice exists. Cancel the sales invoice first.",
       });
     }
-    const blockRts = await Rts.countDocuments(
-      withCompany(req, { linkedOrderAllocationId: alloc._id, status: { $ne: "CANCELLED" } })
+    const blockPacking = await StorePacking.countDocuments(
+      withCompany(req, { allocationId: alloc._id, status: { $ne: "CANCELLED" } })
     );
-    if (blockRts) {
-      return res.status(400).json({ message: "Cancel all RTS documents for this allocation first." });
+    if (blockPacking) {
+      return res.status(400).json({ message: "Cancel or complete Store Packing for this allocation first." });
     }
     const warehouse = String(alloc.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
-    const postedDocs = await postedRtsByAllocation(req, alloc._id);
-    const shipped = shippedQtyMapForAllocation(postedDocs);
     const releaseLines = (alloc.lines || [])
-      .map((line) => {
-        const lid = String(line._id || "");
-        const sq = shipped.get(lid) || 0;
-        const rem = Math.max(0, (Number(line.qty) || 0) - sq);
-        return { article: line.article, qty: rem };
-      })
+      .map((line) => ({ article: line.article, qty: Number(line.qty) || 0 }))
       .filter((x) => x.article && x.qty > 0);
     const stockImpact = releaseLines.map((l) => ({
       article: l.article,
@@ -5248,118 +4710,6 @@ export async function cancelOrderAllocation(req, res) {
     res.json(fresh);
   } catch (err) {
     if (err?.code === "INVALID_TRANSITION" || err?.code === "STOCK_INSUFFICIENT") {
-      return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
-    }
-    res.status(400).json({ message: err.message });
-  }
-}
-
-export async function cancelRtsDocument(req, res) {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
-    const dryRun = req.query.dryRun === "1" || req.body?.dryRun === true;
-    const reason = String(req.body?.cancellationReason ?? req.body?.reason ?? "").trim();
-    if (!dryRun && !reason) return res.status(400).json({ message: "cancellationReason is required" });
-    const doc = await Rts.findOne(withCompany(req, { _id: id }));
-    if (!doc) return res.status(404).json({ message: "Not found" });
-    const st = String(doc.status || "").toUpperCase();
-    if (st === "CANCELLED") return res.status(400).json({ message: "RTS is already cancelled" });
-    if (st === "CONVERTED_TO_INVOICE") {
-      return res.status(400).json({ message: "Cancel the sales invoice first before cancelling this RTS." });
-    }
-    if (doc.linkedSalesInvoiceId) {
-      return res.status(400).json({ message: "RTS is linked to a sales invoice; cancel the invoice first." });
-    }
-    const rtsLines = (doc.lines || [])
-      .map((l) => ({ article: l.article, qty: Number(l.qty) || 0 }))
-      .filter((x) => x.article && x.qty > 0);
-    const stockImpact = rtsLines.map((l) => ({
-      article: l.article,
-      qty: l.qty,
-      from: st === "APPROVED" ? "RTS" : "DRAFT",
-      to: "RESERVED",
-    }));
-    if (dryRun) return res.json({ dryRun: true, stockImpact });
-    assertTransition(DOC_TYPES.RTS, st, "CANCELLED", { documentNo: doc.rtsNo });
-    if (st === "DRAFT") {
-      doc.status = "CANCELLED";
-      doc.cancelledAt = new Date();
-      doc.cancelledBy = req.user?.email || "";
-      doc.cancellationReason = reason;
-      doc.updatedBy = req.user?.email || "";
-      await doc.save();
-      await writeStatusChange(req, {
-        module: "SALES",
-        entityType: "RTS",
-        entityId: doc._id,
-        documentNo: doc.rtsNo,
-        fromStatus: canonicalStatus(DOC_TYPES.RTS, st),
-        toStatus: "CANCELLED",
-        description: `RTS ${doc.rtsNo} cancelled (no stock impact, was DRAFT)`,
-        metadata: { reason },
-      });
-      return res.json(doc);
-    }
-    if (st !== "APPROVED") {
-      return res.status(400).json({ message: `Cannot cancel RTS in status ${st}` });
-    }
-    await withTransaction(async (session) => {
-      const allocation = await OrderAllocation.findOne(withCompany(req, { _id: doc.linkedOrderAllocationId })).session(session);
-      const warehouse = String(allocation?.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
-      for (const [article, qty] of dedupeLines(rtsLines)) {
-        await stockService.cancelRTS({
-          session,
-          companyId: req.companyId,
-          article,
-          warehouse,
-          qty,
-          customerName: doc.customerName || allocation?.customerName || "",
-          referenceType: "RTS_CANCEL",
-          referenceNo: doc.rtsNo,
-          remarks: reason,
-          createdBy: req.user?.email || "",
-          sourceModule: "SALES",
-        });
-      }
-      doc.status = "CANCELLED";
-      doc.cancelledAt = new Date();
-      doc.cancelledBy = req.user?.email || "";
-      doc.cancellationReason = reason;
-      doc.updatedBy = req.user?.email || "";
-      await doc.save({ session });
-      if (allocation) {
-        const postedDocs = await postedRtsByAllocation(req, allocation._id, session);
-        const shipped = shippedQtyMapForAllocation(postedDocs);
-        let complete = true;
-        for (const line of allocation.lines || []) {
-          const qty = Number(line.qty) || 0;
-          const done = shipped.get(String(line._id || "")) || 0;
-          if (done < qty) {
-            complete = false;
-            break;
-          }
-        }
-        const anyPosted = postedDocs.length > 0;
-        allocation.status = !anyPosted ? "OPEN" : complete ? "RTS_COMPLETE" : "PARTIALLY_RTS";
-        allocation.updatedBy = req.user?.email || "";
-        await allocation.save({ session });
-      }
-    });
-    await writeStatusChange(req, {
-      module: "SALES",
-      entityType: "RTS",
-      entityId: doc._id,
-      documentNo: doc.rtsNo,
-      fromStatus: canonicalStatus(DOC_TYPES.RTS, st),
-      toStatus: "CANCELLED",
-      description: `RTS ${doc.rtsNo} cancelled, qty restored to allocation`,
-      metadata: { reason, restoredLines: stockImpact },
-    });
-    const out = await Rts.findOne(withCompany(req, { _id: id }));
-    res.json(out);
-  } catch (err) {
-    if (err?.code === "INVALID_TRANSITION") {
       return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
     }
     res.status(400).json({ message: err.message });

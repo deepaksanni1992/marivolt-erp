@@ -9,7 +9,7 @@ import StockTransfer from "../models/StockTransfer.js";
 import OrderAllocation from "../models/OrderAllocation.js";
 import GRN from "../models/GRN.js";
 import LandedCostAllocation from "../models/LandedCostAllocation.js";
-import Rts from "../models/Rts.js";
+import StorePacking from "../models/StorePacking.js";
 import SalesInvoice from "../models/SalesInvoice.js";
 import PurchaseInvoice from "../models/PurchaseInvoice.js";
 import Shipment from "../models/Shipment.js";
@@ -20,7 +20,7 @@ import { approvalRequiredPayload, ensureApproval } from "../services/approvalSer
 /**
  * Derives the live stock buckets from a StockBalance row.
  * We treat onHandQty (legacy `quantity`), reservedQty (legacy alias for
- * allocatedQty), rtsQty as the source of truth and compute available
+ * allocatedQty), packedQty as the source of truth and compute available
  * fresh on every read, because not every write path keeps `availableQty`
  * in sync (specifically the sales reserve path increments reservedQty
  * without touching availableQty).
@@ -30,22 +30,22 @@ function deriveStockRow(row) {
   // Some writers used reservedQty, others use allocatedQty — take the larger
   // so a stale 0 in one of them does not under-report.
   const allocated = Math.max(Number(row.allocatedQty || 0), Number(row.reservedQty || 0));
-  const rts = Number(row.rtsQty || 0);
   const packed = Number(row.packedQty || 0) || 0;
   const dispatched = Number(row.dispatchedQty || 0) || 0;
-  const available = onHand - allocated - rts - packed;
+  const available = onHand - allocated - packed;
   return {
     ...row,
     onHandQty: onHand,
     allocatedQty: allocated,
     reservedQty: allocated,
-    rtsQty: rts,
     packedQty: packed,
     dispatchedQty: dispatched,
     availableQty: available,
     isNegativeAvailable: available < 0,
   };
 }
+
+const POSTED_STORE_PACKING_STATUSES = ["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED"];
 
 function stockStatusFromAvailable(available) {
   const n = Number(available) || 0;
@@ -286,7 +286,6 @@ export async function listStockSummary(req, res) {
           onHandQty: { $sum: { $ifNull: ["$onHandQty", "$quantity"] } },
           quantity: { $sum: { $ifNull: ["$quantity", 0] } },
           allocatedQty: { $sum: { $max: ["$allocatedQty", "$reservedQty"] } },
-          rtsQty: { $sum: { $ifNull: ["$rtsQty", 0] } },
           packedQty: { $sum: { $ifNull: ["$packedQty", 0] } },
           dispatchedQty: { $sum: { $ifNull: ["$dispatchedQty", 0] } },
           lastTransactionDate: { $max: "$lastTransactionDate" },
@@ -309,13 +308,12 @@ export async function listStockSummary(req, res) {
           location: "$_id.location",
           onHandQty: "$onHandQty",
           allocatedQty: "$allocatedQty",
-          rtsQty: "$rtsQty",
           packedQty: "$packedQty",
           dispatchedQty: "$dispatchedQty",
           availableQty: {
             $subtract: [
               "$onHandQty",
-              { $add: ["$allocatedQty", "$rtsQty", "$packedQty"] },
+              { $add: ["$allocatedQty", "$packedQty"] },
             ],
           },
           pairKey: {
@@ -406,15 +404,15 @@ export async function listCustomerAllocationsForArticle(req, res) {
       .sort({ allocationDate: -1, createdAt: -1 })
       .lean();
     const allocationIds = allocations.map((a) => a._id);
-    const [rtsRows, invoiceRows] = allocationIds.length
+    const [packingRows, invoiceRows] = allocationIds.length
       ? await Promise.all([
-          Rts.find(
+          StorePacking.find(
             withCompany(req, {
-              linkedOrderAllocationId: { $in: allocationIds },
-              status: { $nin: ["CANCELLED"] },
+              allocationId: { $in: allocationIds },
+              status: { $in: POSTED_STORE_PACKING_STATUSES },
             })
           )
-            .select("linkedOrderAllocationId status lines")
+            .select("allocationId status lines")
             .lean(),
           SalesInvoice.find(
             withCompany(req, {
@@ -426,13 +424,14 @@ export async function listCustomerAllocationsForArticle(req, res) {
             .lean(),
         ])
       : [[], []];
-    const rtsQtyByAllocationArticle = new Map();
-    for (const rts of rtsRows) {
-      if (String(rts.status || "").toUpperCase() !== "APPROVED") continue;
-      const allocationId = String(rts.linkedOrderAllocationId || "");
-      for (const [lineArticle, qty] of lineQtyByArticle(rts.lines || [])) {
+    /** Packed-but-not-yet-invoiced qty from posted Store Packing. */
+    const packedQtyByAllocationArticle = new Map();
+    for (const packing of packingRows) {
+      const allocationId = String(packing.allocationId || "");
+      const packedLines = (packing.lines || []).map((l) => ({ article: l.article, qty: l.packQty }));
+      for (const [lineArticle, qty] of lineQtyByArticle(packedLines)) {
         const key = `${allocationId}::${lineArticle}`;
-        rtsQtyByAllocationArticle.set(key, (rtsQtyByAllocationArticle.get(key) || 0) + qty);
+        packedQtyByAllocationArticle.set(key, (packedQtyByAllocationArticle.get(key) || 0) + qty);
       }
     }
     const invoiceQtyByAllocationArticle = new Map();
@@ -451,7 +450,7 @@ export async function listCustomerAllocationsForArticle(req, res) {
         if (referenceSearch && !new RegExp(referenceSearch, "i").test(ref || "")) continue;
         const allocationArticleKey = `${String(alloc._id)}::${article}`;
         const allocatedQty = Number(line.qty) || 0;
-        const rtsQty = Number(rtsQtyByAllocationArticle.get(allocationArticleKey) || 0);
+        const packedQty = Number(packedQtyByAllocationArticle.get(allocationArticleKey) || 0);
         const invoiceQty = Number(invoiceQtyByAllocationArticle.get(allocationArticleKey) || 0);
         items.push({
           allocationId: alloc._id,
@@ -466,9 +465,9 @@ export async function listCustomerAllocationsForArticle(req, res) {
           description: line.description || "",
           uom: line.uom || "PCS",
           allocatedQty,
-          rtsQty,
+          packedQty,
           invoiceQty,
-          pendingQty: Math.max(0, allocatedQty - rtsQty - invoiceQty),
+          pendingQty: Math.max(0, allocatedQty - packedQty - invoiceQty),
           isNegativeAllocation: Boolean(line.isNegativeAllocation),
           referenceType: referenceTypeForAllocation(alloc),
           referenceNo: ref,
@@ -561,7 +560,6 @@ export async function reportNegativeAllocations(req, res) {
         location: derived.location || "",
         onHandQty: derived.onHandQty,
         allocatedQty: derived.allocatedQty,
-        rtsQty: derived.rtsQty,
         availableQty: derived.availableQty,
         negativeQty: Math.max(0, -derived.availableQty),
         shortageQty: Math.max(0, -derived.availableQty),
@@ -635,8 +633,6 @@ const STOCK_LEDGER_TYPE_TO_UNIFIED = {
   GRN: "GRN_IN",
   SALES_ALLOCATION: "ALLOCATION",
   ORDER_ALLOCATION_CANCEL: "ALLOCATION_CANCEL",
-  RTS: "RTS_TRANSFER",
-  RTS_CANCEL: "RTS_CANCEL",
   SALES_INVOICE: "SALES_INVOICE_OUT",
   SALES_INVOICE_CANCEL: "SALES_INVOICE_CANCEL",
   STOCK_ADJUSTMENT: "STOCK_ADJUSTMENT",
@@ -664,8 +660,6 @@ const INVENTORY_LEDGER_TYPE_TO_UNIFIED = {
   DEKIT_COMPONENT_IN: "DEKIT_COMPONENT_IN",
   SALES_RESERVE: "ALLOCATION",
   SALES_RESERVE_RELEASE: "ALLOCATION_CANCEL",
-  SALES_RESERVED_TO_RTS: "RTS_TRANSFER",
-  SALES_RTS_TO_RESERVED: "RTS_CANCEL",
   SALES_INVOICE_OUT: "SALES_INVOICE_OUT",
   SALES_INVOICE_CANCEL_RESTORE: "SALES_INVOICE_CANCEL",
 };
@@ -683,15 +677,6 @@ for (const [raw, unified] of Object.entries(INVENTORY_LEDGER_TYPE_TO_UNIFIED)) {
 }
 
 /**
- * Returns true when a movement only shifts buckets between Allocated/RTS
- * without moving On Hand. For these we expose `qtyIn` / `qtyOut` as 0 and
- * surface the magnitude on `bucketImpact`/remarks instead.
- */
-function isBucketOnlyInventoryMovement(rawType) {
-  return rawType === "SALES_RESERVED_TO_RTS" || rawType === "SALES_RTS_TO_RESERVED";
-}
-
-/**
  * Returns true when a movement affects the Allocated bucket (positive or
  * negative). Used to decide whether to surface qtyIn/qtyOut at the
  * "available stock" granularity for the unified view.
@@ -702,16 +687,12 @@ function isAllocationBucketMovement(rawType) {
 
 /**
  * Splits `qtyDelta` into qtyIn / qtyOut for the unified view. We treat
- * the Available pool (On Hand - Allocated - RTS) as the canonical
+ * the Available pool (On Hand - Allocated - Packed) as the canonical
  * "in/out" measure for non-physical movements so the user sees a single
  * column that always lines up with the impact on Available.
  */
 function splitDelta(rawType, qtyDelta) {
   const delta = Number(qtyDelta) || 0;
-  // Pure bucket shifts (Allocated <-> RTS) leave Available unchanged.
-  if (isBucketOnlyInventoryMovement(rawType)) {
-    return { qtyIn: 0, qtyOut: 0 };
-  }
   // Allocation reserves / releases: physical On Hand is unchanged but
   // Available drops or recovers. Reflect that as an out/in.
   if (isAllocationBucketMovement(rawType)) {
@@ -726,7 +707,7 @@ function splitDelta(rawType, qtyDelta) {
 
 /**
  * Unified Stock Ledger projection — merges StockLedger (GRN, adjustment,
- * transfer, sales) with InventoryLedger (sales reservation, RTS shifts,
+ * transfer, sales) with InventoryLedger (sales reservation, packing,
  * invoice flow) into one normalized response. Existing write paths are
  * unchanged; this is a read-only projection for the Store > Stock Ledger
  * tab. Pagination is performed in memory after merging the two sources
@@ -821,7 +802,6 @@ export async function listUnifiedStockLedger(req, res) {
     const articleSet = new Set();
     const grnNos = new Set();
     const allocationNos = new Set();
-    const rtsNos = new Set();
     const invoiceNos = new Set();
 
     for (const r of stockLedgerRows) {
@@ -835,10 +815,6 @@ export async function listUnifiedStockLedger(req, res) {
         case "SALES_ALLOCATION":
         case "ORDER_ALLOCATION_CANCEL":
           allocationNos.add(ref);
-          break;
-        case "RTS":
-        case "RTS_CANCEL":
-          rtsNos.add(ref);
           break;
         case "SALES_INVOICE":
         case "SALES_INVOICE_CANCEL":
@@ -865,10 +841,6 @@ export async function listUnifiedStockLedger(req, res) {
         allocationNos.add(ref);
         continue;
       }
-      if (refType === "RTS_APPROVED" || refType === "RTS_CANCEL") {
-        rtsNos.add(ref);
-        continue;
-      }
       if (refType === "SALES_INVOICE" || refType === "SALES_INVOICE_CANCEL") {
         invoiceNos.add(ref);
         continue;
@@ -878,10 +850,6 @@ export async function listUnifiedStockLedger(req, res) {
         case "SALES_RESERVE":
         case "SALES_RESERVE_RELEASE":
           allocationNos.add(ref);
-          break;
-        case "SALES_RESERVED_TO_RTS":
-        case "SALES_RTS_TO_RESERVED":
-          rtsNos.add(ref);
           break;
         case "SALES_INVOICE_OUT":
         case "SALES_INVOICE_CANCEL_RESTORE":
@@ -893,7 +861,7 @@ export async function listUnifiedStockLedger(req, res) {
       }
     }
 
-    const [items, grns, allocations, rtsDocs, invoices] = await Promise.all([
+    const [items, grns, allocations, invoices] = await Promise.all([
       articleSet.size
         ? ItemMaster.find(withCompany(req, { article: { $in: [...articleSet] } }))
             .select("article itemName")
@@ -909,11 +877,6 @@ export async function listUnifiedStockLedger(req, res) {
             .select("allocationNo customerName warehouse")
             .lean()
         : [],
-      rtsNos.size
-        ? Rts.find(withCompany(req, { rtsNo: { $in: [...rtsNos] } }))
-            .select("rtsNo customerName warehouse")
-            .lean()
-        : [],
       invoiceNos.size
         ? SalesInvoice.find(withCompany(req, { invoiceNo: { $in: [...invoiceNos] } }))
             .select("invoiceNo customerName")
@@ -924,7 +887,6 @@ export async function listUnifiedStockLedger(req, res) {
     const itemNameByArticle = new Map(items.map((x) => [String(x.article).toUpperCase(), x.itemName || ""]));
     const supplierByGrn = new Map(grns.map((g) => [g.grnNo, g.supplierName || ""]));
     const allocationByNo = new Map(allocations.map((a) => [a.allocationNo, a]));
-    const rtsByNo = new Map(rtsDocs.map((r) => [r.rtsNo, r]));
     const invoiceByNo = new Map(invoices.map((i) => [i.invoiceNo, i.customerName || ""]));
 
     /* ---------- Normalize each source ------------------------------ */
@@ -942,10 +904,6 @@ export async function listUnifiedStockLedger(req, res) {
         case "SALES_ALLOCATION":
         case "ORDER_ALLOCATION_CANCEL":
           customerName = allocationByNo.get(ref)?.customerName || "";
-          break;
-        case "RTS":
-        case "RTS_CANCEL":
-          customerName = rtsByNo.get(ref)?.customerName || "";
           break;
         case "SALES_INVOICE":
         case "SALES_INVOICE_CANCEL":
@@ -976,7 +934,6 @@ export async function listUnifiedStockLedger(req, res) {
         qtyOut: Number(r.qtyOut || 0),
         onHandAfter: r.onHandAfter != null ? Number(r.onHandAfter) : r.balanceQty != null ? Number(r.balanceQty) : null,
         allocatedAfter: r.allocatedAfter != null ? Number(r.allocatedAfter) : null,
-        rtsAfter: r.rtsAfter != null ? Number(r.rtsAfter) : null,
         packedAfter: r.packedAfter != null ? Number(r.packedAfter) : null,
         availableAfter: r.availableAfter != null ? Number(r.availableAfter) : null,
         sourceModule: r.sourceModule || "",
@@ -1002,13 +959,6 @@ export async function listUnifiedStockLedger(req, res) {
         rawType === "SALES_RESERVE_RELEASE"
       ) {
         customerName = allocationByNo.get(ref)?.customerName || "";
-      } else if (
-        refType === "RTS_APPROVED" ||
-        refType === "RTS_CANCEL" ||
-        rawType === "SALES_RESERVED_TO_RTS" ||
-        rawType === "SALES_RTS_TO_RESERVED"
-      ) {
-        customerName = rtsByNo.get(ref)?.customerName || "";
       } else if (
         refType === "SALES_INVOICE" ||
         refType === "SALES_INVOICE_CANCEL" ||
@@ -1048,7 +998,6 @@ export async function listUnifiedStockLedger(req, res) {
         qtyOut: split.qtyOut,
         onHandAfter: r.onHandAfter != null ? Number(r.onHandAfter) : null,
         allocatedAfter: r.allocatedAfter != null ? Number(r.allocatedAfter) : null,
-        rtsAfter: r.rtsAfter != null ? Number(r.rtsAfter) : null,
         packedAfter: r.packedAfter != null ? Number(r.packedAfter) : null,
         availableAfter: r.availableAfter != null ? Number(r.availableAfter) : null,
         sourceModule: r.sourceModule || "",
@@ -1706,7 +1655,6 @@ export async function applyLandedCostAllocation(req, res) {
           sourceModule: "STORE",
           onHandAfter: balView.onHandQty,
           allocatedAfter: balView.allocatedQty,
-          rtsAfter: balView.rtsQty,
           availableAfter: balView.availableQty,
         });
         ln.oldCost = oldCost;

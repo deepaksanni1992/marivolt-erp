@@ -4,11 +4,13 @@ import ShipmentContainer from "../models/ShipmentContainer.js";
 import SalesDispatch from "../models/SalesDispatch.js";
 import SalesInvoice from "../models/SalesInvoice.js";
 import StoreDispatch from "../models/StoreDispatch.js";
-import Rts from "../models/Rts.js";
+import StorePacking from "../models/StorePacking.js";
 import OrderAllocation from "../models/OrderAllocation.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 import { writeAudit } from "../services/auditService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
+
+const POSTED_STORE_PACKING_STATUSES = ["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED"];
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -23,27 +25,27 @@ async function resolveWarehouseScopedLogisticsIds(req, warehouseRaw) {
     .lean();
   const oaIds = oaRows.map((r) => r._id);
   if (!oaIds.length) {
-    return { hasFilter: true, invoiceIds: [], rtsIds: [], dispatchIds: [] };
+    return { hasFilter: true, invoiceIds: [], packingIds: [], dispatchIds: [] };
   }
 
-  const [invoices, rtsRows] = await Promise.all([
+  const [invoices, packingRows] = await Promise.all([
     SalesInvoice.find(withCompany(req, { linkedOrderAllocationId: { $in: oaIds } }))
       .select("_id")
       .lean(),
-    Rts.find(withCompany(req, { linkedOrderAllocationId: { $in: oaIds } }))
+    StorePacking.find(withCompany(req, { allocationId: { $in: oaIds }, status: { $in: POSTED_STORE_PACKING_STATUSES } }))
       .select("_id")
       .lean(),
   ]);
 
   const invoiceIds = invoices.map((r) => r._id);
-  const rtsIds = rtsRows.map((r) => r._id);
+  const packingIds = packingRows.map((r) => r._id);
   const dispatchRows = invoiceIds.length
     ? await SalesDispatch.find(withCompany(req, { linkedSalesInvoiceId: { $in: invoiceIds } }))
         .select("_id")
         .lean()
     : [];
   const dispatchIds = dispatchRows.map((r) => r._id);
-  return { hasFilter: true, invoiceIds, rtsIds, dispatchIds };
+  return { hasFilter: true, invoiceIds, packingIds, dispatchIds };
 }
 
 function normalizeTrackingStatus(v = "") {
@@ -149,11 +151,10 @@ function normalizePackages(packages = []) {
 
 async function enrichDispatchLinks(dispatch) {
   if (!dispatch) return dispatch;
-  const [invoice, rts] = await Promise.all([
-    dispatch.linkedSalesInvoiceId ? SalesInvoice.findOne({ companyId: dispatch.companyId, _id: dispatch.linkedSalesInvoiceId }).lean() : null,
-    dispatch.linkedRtsId ? Rts.findOne({ companyId: dispatch.companyId, _id: dispatch.linkedRtsId }).lean() : null,
-  ]);
-  return { ...dispatch, linkedInvoice: invoice || null, linkedRts: rts || null };
+  const invoice = dispatch.linkedSalesInvoiceId
+    ? await SalesInvoice.findOne({ companyId: dispatch.companyId, _id: dispatch.linkedSalesInvoiceId }).lean()
+    : null;
+  return { ...dispatch, linkedInvoice: invoice || null };
 }
 
 export async function getLogisticsDashboard(req, res) {
@@ -167,12 +168,13 @@ export async function getLogisticsDashboard(req, res) {
       shipmentBaseFilter.linkedDispatchId = { $in: scoped.dispatchIds };
     }
 
-    const rtsFilter = scoped?.hasFilter
+    const pendingDispatchFilter = scoped?.hasFilter
       ? withCompany(req, {
-          _id: { $in: scoped.rtsIds },
-          status: { $in: ["APPROVED", "CONVERTED_TO_INVOICE"] },
+          _id: { $in: scoped.packingIds },
+          status: { $in: POSTED_STORE_PACKING_STATUSES },
+          invoiceStatus: { $ne: "FULLY_INVOICED" },
         })
-      : withCompany(req, { status: { $in: ["APPROVED", "CONVERTED_TO_INVOICE"] } });
+      : withCompany(req, { status: { $in: POSTED_STORE_PACKING_STATUSES }, invoiceStatus: { $ne: "FULLY_INVOICED" } });
 
     const backordersFilter = scoped?.hasFilter
       ? withCompany(req, {
@@ -183,7 +185,7 @@ export async function getLogisticsDashboard(req, res) {
       : withCompany(req, { paymentStatus: { $ne: "PAID" }, balanceAmount: { $gt: 0 } });
 
     const [pendingDispatch, inTransit, delayedShipments, delivered, backorders, ready, booked, customs] = await Promise.all([
-      Rts.countDocuments(rtsFilter),
+      StorePacking.countDocuments(pendingDispatchFilter),
       Shipment.countDocuments({ ...shipmentBaseFilter, status: { $in: ["IN_TRANSIT"] } }),
       Shipment.countDocuments({ ...shipmentBaseFilter, status: { $nin: ["DELIVERED", "CLOSED", "CANCELLED"] }, plannedEta: { $lt: todayEnd } }),
       Shipment.countDocuments({ ...shipmentBaseFilter, status: { $in: ["DELIVERED", "CLOSED"] } }),
@@ -245,7 +247,6 @@ export async function getPackingList(req, res) {
         packingListNo: dispatch.packingListNo || `${dispatch.dispatchNo}-PL`,
         customerName: dispatch.customerName || "",
         invoiceNo: dispatch.linkedSalesInvoiceNo || "",
-        rtsNo: dispatch.linkedRtsNo || enriched.linkedRts?.rtsNo || "",
         packageCount: packages.length || (dispatch.lines || []).reduce((sum, l) => sum + (Number(l.packageCount) || 0), 0),
         packages,
         lines: (dispatch.lines || []).map((l) => ({

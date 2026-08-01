@@ -33,7 +33,7 @@ const orderAllocationSchema = new mongoose.Schema(
     linkedProformaNo: { type: String, default: "", trim: true },
     linkedSalesInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesInvoice", index: true, default: null },
     linkedSalesInvoiceNo: { type: String, default: "", trim: true },
-    /** Warehouse used for reservation / RTS / invoice stock buckets (default MAIN). */
+    /** Warehouse used for reservation / packing / invoice stock buckets (default MAIN). */
     warehouse: { type: String, default: "MAIN", trim: true, uppercase: true },
     customerName: { type: String, required: true, trim: true, index: true },
     currency: { type: String, default: "USD", trim: true, uppercase: true },
@@ -51,17 +51,7 @@ const orderAllocationSchema = new mongoose.Schema(
     grandTotal: { type: Number, default: 0 },
     status: {
       type: String,
-      enum: [
-        "OPEN",
-        "PARTIALLY_PACKED",
-        "FULLY_PACKED",
-        "APPROVED",
-        "CLOSED",
-        "CANCELLED",
-        // Legacy values are accepted so old data can still be read and repaired safely.
-        "PARTIALLY_RTS",
-        "RTS_COMPLETE",
-      ],
+      enum: ["OPEN", "PARTIALLY_PACKED", "FULLY_PACKED", "APPROVED", "CLOSED", "CANCELLED"],
       default: "OPEN",
     },
     packingStatus: {

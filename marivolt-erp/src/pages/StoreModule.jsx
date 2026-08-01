@@ -906,7 +906,7 @@ export default function StoreModule() {
 
   // Unified Stock Ledger (Phase 3) — multi-source projection that merges
   // StockLedger entries (GRN / Adjustment / Transfer / sales-side stock
-  // movements) with InventoryLedger entries (sales reservation, RTS,
+  // movements) with InventoryLedger entries (sales reservation, packing,
   // invoicing, cancellations). The Store > Stock Ledger tab now uses
   // only this endpoint; the legacy /stock/ledger endpoint stays in place
   // for backward compatibility but is no longer consumed by the UI.
@@ -1076,7 +1076,6 @@ export default function StoreModule() {
       { key: "onHandQty", header: "On Hand" },
       { key: "allocatedQty", header: "Allocated" },
       { key: "packedQty", header: "Packed" },
-      { key: "rtsQty", header: "RTS" },
       { key: "dispatchedQty", header: "Dispatched" },
       { key: "availableQty", header: "Available" },
       { key: "uom", header: "UOM" },
@@ -1116,7 +1115,7 @@ export default function StoreModule() {
       { key: "qtyOut", header: "Qty Out" },
       { key: "onHandAfter", header: "On Hand After" },
       { key: "allocatedAfter", header: "Allocated After" },
-      { key: "rtsAfter", header: "RTS After" },
+      { key: "packedAfter", header: "Packed After" },
       { key: "availableAfter", header: "Available After" },
       { key: "sourceModel", header: "Source" },
       { key: "createdBy", header: "Created By" },
@@ -1132,7 +1131,7 @@ export default function StoreModule() {
         date: r.date ? new Date(r.date).toISOString() : "",
         onHandAfter: r.onHandAfter ?? "",
         allocatedAfter: r.allocatedAfter ?? "",
-        rtsAfter: r.rtsAfter ?? "",
+        packedAfter: r.packedAfter ?? "",
         availableAfter: r.availableAfter ?? "",
       })),
     [ledgerRows]
@@ -1149,7 +1148,6 @@ export default function StoreModule() {
       { key: "location", header: "Location" },
       { key: "onHandQty", header: "On Hand" },
       { key: "allocatedQty", header: "Allocated" },
-      { key: "rtsQty", header: "RTS" },
       { key: "availableQty", header: "Available" },
       { key: "negativeQty", header: "Negative Qty" },
       { key: "lastMovementDate", header: "Last Movement Date" },
@@ -1171,7 +1169,6 @@ export default function StoreModule() {
           location: r.location,
           allocatedQty: "",
           onHandQty: r.onHandQty,
-          rtsQty: r.rtsQty,
           availableQty: r.availableQty,
           negativeQty: r.negativeQty ?? r.shortageQty,
           lastMovementDate: r.lastMovementDate ? new Date(r.lastMovementDate).toISOString() : "",
@@ -1188,7 +1185,6 @@ export default function StoreModule() {
             location: r.location,
             allocatedQty: a.allocatedQty,
             onHandQty: r.onHandQty,
-            rtsQty: r.rtsQty,
             availableQty: r.availableQty,
             negativeQty: r.negativeQty ?? r.shortageQty,
             lastMovementDate: r.lastMovementDate ? new Date(r.lastMovementDate).toISOString() : "",
@@ -2300,7 +2296,6 @@ export default function StoreModule() {
                     "On Hand",
                     "Allocated",
                     "Packed",
-                    "RTS",
                     "Dispatched",
                     "Available",
                     "UOM",
@@ -2317,7 +2312,7 @@ export default function StoreModule() {
               <tbody>
                 {stockRows.length === 0 ? (
                   <tr>
-                    <td colSpan={14} className="px-2 py-6 text-center text-sm text-slate-500">
+                    <td colSpan={13} className="px-2 py-6 text-center text-sm text-slate-500">
                       No stock balance rows match the current filters.
                     </td>
                   </tr>
@@ -2335,7 +2330,6 @@ export default function StoreModule() {
                         <td className="px-2 py-1">{r.onHandQty}</td>
                         <td className="px-2 py-1">{r.allocatedQty}</td>
                         <td className="px-2 py-1">{r.packedQty ?? 0}</td>
-                        <td className="px-2 py-1">{r.rtsQty}</td>
                         <td className="px-2 py-1">{r.dispatchedQty ?? 0}</td>
                         <td className={`px-2 py-1 font-semibold ${negative ? "text-rose-700" : zero ? "text-amber-700" : ""}`}>
                           {r.availableQty}
@@ -2384,7 +2378,7 @@ export default function StoreModule() {
               <span className="font-medium"> StockLedger </span>
               (GRN / Adjustment / Transfer) with
               <span className="font-medium"> InventoryLedger </span>
-              (Sales reserve / RTS / Invoice / Cancellation).
+              (Sales reserve / Packing / Invoice / Cancellation).
             </div>
             <div className="grid gap-3 md:grid-cols-5">
               <input
@@ -2506,7 +2500,7 @@ export default function StoreModule() {
                     "Qty Out",
                     "On Hand After",
                     "Allocated After",
-                    "RTS After",
+                    "Packed After",
                     "Available After",
                     "Source",
                     "Created By",
@@ -2532,19 +2526,19 @@ export default function StoreModule() {
                         ? "indigo"
                         : r.movementType === "ALLOCATION_CANCEL"
                           ? "amber"
-                          : r.movementType === "RTS_TRANSFER"
-                            ? "emerald"
-                            : r.movementType === "RTS_CANCEL"
+                          : r.movementType === "SALES_INVOICE_OUT"
+                            ? "rose"
+                            : r.movementType === "SALES_INVOICE_CANCEL"
                               ? "amber"
-                              : r.movementType === "SALES_INVOICE_OUT"
-                                ? "rose"
-                                : r.movementType === "SALES_INVOICE_CANCEL"
-                                  ? "amber"
-                                  : r.movementType === "GRN_IN"
+                              : r.movementType === "GRN_IN"
+                                ? "emerald"
+                                : r.movementType === "LANDED_COST_ADJUSTMENT"
+                                  ? "indigo"
+                                  : r.movementType === "PACKED"
                                     ? "emerald"
-                                    : r.movementType === "LANDED_COST_ADJUSTMENT"
-                                      ? "indigo"
-                                    : "slate";
+                                    : r.movementType === "UNPACKED"
+                                      ? "amber"
+                                      : "slate";
                     const fromTo =
                       r.locationFrom || r.locationTo
                         ? `${r.locationFrom || "—"} → ${r.locationTo || "—"}`
@@ -2591,7 +2585,7 @@ export default function StoreModule() {
                           {r.allocatedAfter == null ? <span className="text-slate-400">—</span> : r.allocatedAfter}
                         </td>
                         <td className="px-2 py-1 text-right tabular-nums">
-                          {r.rtsAfter == null ? <span className="text-slate-400">—</span> : r.rtsAfter}
+                          {r.packedAfter == null ? <span className="text-slate-400">—</span> : r.packedAfter}
                         </td>
                         <td className="px-2 py-1 text-right tabular-nums">
                           {r.availableAfter == null ? <span className="text-slate-400">—</span> : r.availableAfter}
@@ -3872,7 +3866,6 @@ export default function StoreModule() {
                     "Location",
                     "On Hand",
                     "Allocated",
-                    "RTS",
                     "Available",
                     "Negative Qty",
                     "Last Movement",
@@ -3886,7 +3879,7 @@ export default function StoreModule() {
               <tbody>
                 {negativeReportFlatRows.length === 0 ? (
                   <tr>
-                    <td colSpan={13} className="px-2 py-6 text-center text-sm text-slate-500">
+                    <td colSpan={12} className="px-2 py-6 text-center text-sm text-slate-500">
                       No negative allocations found.
                     </td>
                   </tr>
@@ -3902,7 +3895,6 @@ export default function StoreModule() {
                       <td className="px-2 py-1">{r.location}</td>
                       <td className="px-2 py-1">{r.onHandQty}</td>
                       <td className="px-2 py-1">{r.allocatedQty}</td>
-                      <td className="px-2 py-1">{r.rtsQty}</td>
                       <td className="px-2 py-1 font-semibold text-rose-700">{r.availableQty}</td>
                       <td className="px-2 py-1">{r.negativeQty}</td>
                       <td className="px-2 py-1 text-xs text-slate-600">{fmtDate(r.lastMovementDate)}</td>
@@ -3939,7 +3931,6 @@ export default function StoreModule() {
                     { key: "referenceNo", header: "Reference No" },
                     { key: "referenceType", header: "Reference Type" },
                     { key: "allocatedQty", header: "Allocated Qty" },
-                    { key: "rtsQty", header: "RTS Qty" },
                     { key: "invoiceQty", header: "Invoice Qty" },
                     { key: "warehouse", header: "Warehouse" },
                     { key: "location", header: "Location" },
@@ -3968,7 +3959,6 @@ export default function StoreModule() {
                     { key: "referenceNo", header: "Reference No" },
                     { key: "referenceType", header: "Reference Type" },
                     { key: "allocatedQty", header: "Allocated Qty" },
-                    { key: "rtsQty", header: "RTS Qty" },
                     { key: "invoiceQty", header: "Invoice Qty" },
                     { key: "warehouse", header: "Warehouse" },
                     { key: "location", header: "Location" },
@@ -3996,7 +3986,6 @@ export default function StoreModule() {
                     "Reference",
                     "Type",
                     "Allocated Qty",
-                    "RTS Qty",
                     "Invoice Qty",
                     "Warehouse",
                     "Location",
@@ -4014,7 +4003,7 @@ export default function StoreModule() {
               <tbody>
                 {(customerAllocations?.items || []).length === 0 ? (
                   <tr>
-                    <td colSpan={12} className="px-2 py-6 text-center text-sm text-slate-500">
+                    <td colSpan={11} className="px-2 py-6 text-center text-sm text-slate-500">
                       No active allocations against this article.
                     </td>
                   </tr>
@@ -4025,7 +4014,6 @@ export default function StoreModule() {
                       <td className="px-2 py-1 font-mono text-xs">{it.referenceNo}</td>
                       <td className="px-2 py-1">{it.referenceType}</td>
                       <td className="px-2 py-1">{it.allocatedQty}</td>
-                      <td className="px-2 py-1">{it.rtsQty || 0}</td>
                       <td className="px-2 py-1">{it.invoiceQty || 0}</td>
                       <td className="px-2 py-1">{it.warehouse}</td>
                       <td className="px-2 py-1">{it.location || it.warehouse}</td>

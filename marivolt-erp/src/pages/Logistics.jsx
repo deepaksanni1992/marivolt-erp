@@ -23,7 +23,6 @@ const emptyShipment = {
   linkedPurchaseInvoiceNumber: "",
   linkedDispatchId: "",
   linkedDispatchNo: "",
-  linkedRtsNo: "",
   incoterm: "",
   vesselOrFlight: "",
   voyageOrFlightNo: "",
@@ -173,7 +172,7 @@ export default function Logistics() {
           (l) => `<tr><td class="col-part">${l.article || ""}</td><td class="col-desc">${l.description || ""}</td><td class="col-qty">${l.qty || 0}</td><td class="col-uom">${l.uom || ""}</td><td class="col-weight">${l.weight || ""}</td><td class="col-dim">${l.dimensions || ""}</td><td class="col-qty">${l.packageCount || ""}</td><td class="col-flex">${l.marksAndNumbers || ""}</td><td class="col-availability">${l.countryOfOrigin || ""}</td></tr>`
         )
         .join("");
-      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>${p.packingListNo || "Packing List"}</title><style>body{font-family:Arial;margin:24px;color:#111} th,td{border:1px solid #ddd}${GLOBAL_REPORT_PRINT_CSS}${GLOBAL_REPORT_TABLE_CSS}</style></head><body class="report-print"><div class="print-page"><div class="print-body"><h2 class="print-header">Packing List</h2><div><b>No:</b> ${p.packingListNo || ""}</div><div><b>Customer:</b> ${p.customerName || ""}</div><div><b>Invoice:</b> ${p.invoiceNo || ""}</div><div><b>RTS:</b> ${p.rtsNo || ""}</div><table class="report-table" border="1" cellspacing="0" cellpadding="6" width="100%" style="margin-top:16px;border-collapse:collapse;font-size:12px">${LOGISTICS_PACKING_COLGROUP}<thead><tr><th class="col-part">Article</th><th class="col-desc">Description</th><th class="col-qty">Qty</th><th class="col-uom">UOM</th><th class="col-weight">Weight</th><th class="col-dim">Dimensions</th><th class="col-qty">Packages</th><th class="col-flex">Marks</th><th class="col-availability">COO</th></tr></thead><tbody>${lineRows}</tbody></table></div></div></body></html>`;
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/><title>${p.packingListNo || "Packing List"}</title><style>body{font-family:Arial;margin:24px;color:#111} th,td{border:1px solid #ddd}${GLOBAL_REPORT_PRINT_CSS}${GLOBAL_REPORT_TABLE_CSS}</style></head><body class="report-print"><div class="print-page"><div class="print-body"><h2 class="print-header">Packing List</h2><div><b>No:</b> ${p.packingListNo || ""}</div><div><b>Customer:</b> ${p.customerName || ""}</div><div><b>Invoice:</b> ${p.invoiceNo || ""}</div><table class="report-table" border="1" cellspacing="0" cellpadding="6" width="100%" style="margin-top:16px;border-collapse:collapse;font-size:12px">${LOGISTICS_PACKING_COLGROUP}<thead><tr><th class="col-part">Article</th><th class="col-desc">Description</th><th class="col-qty">Qty</th><th class="col-uom">UOM</th><th class="col-weight">Weight</th><th class="col-dim">Dimensions</th><th class="col-qty">Packages</th><th class="col-flex">Marks</th><th class="col-availability">COO</th></tr></thead><tbody>${lineRows}</tbody></table></div></div></body></html>`;
       await downloadSearchableReportPdf({
         html,
         filename: p.packingListNo || "packing-list",
@@ -209,8 +208,8 @@ export default function Logistics() {
       const s = v == null ? "" : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const header = ["Dispatch", "Customer", "Invoice", "RTS", "Status", "Dispatched Qty", "Pending Qty", "AWB", "BL"];
-    const body = dispatchRows.map((d) => [d.dispatchNo, d.customerName, d.linkedSalesInvoiceNo, d.linkedRtsNo, d.status, d.dispatchedQty || 0, d.pendingQty || 0, d.awbNo, d.blNo].map(safe).join(","));
+    const header = ["Dispatch", "Customer", "Invoice", "Status", "Dispatched Qty", "Pending Qty", "AWB", "BL"];
+    const body = dispatchRows.map((d) => [d.dispatchNo, d.customerName, d.linkedSalesInvoiceNo, d.status, d.dispatchedQty || 0, d.pendingQty || 0, d.awbNo, d.blNo].map(safe).join(","));
     const blob = new Blob([[header.map(safe).join(","), ...body].join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -305,7 +304,7 @@ export default function Logistics() {
       <div className="mb-4 overflow-hidden rounded-2xl border bg-white">
         <div className="border-b px-4 py-3">
           <div className="font-semibold">Dispatch Summary</div>
-          <div className="text-xs text-gray-500">Sales dispatches linked to invoice/RTS with packing-list access.</div>
+          <div className="text-xs text-gray-500">Sales dispatches linked to invoice with packing-list access.</div>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full text-left text-sm">
@@ -314,7 +313,6 @@ export default function Logistics() {
                 <th className="px-3 py-2">Dispatch</th>
                 <th className="px-3 py-2">Customer</th>
                 <th className="px-3 py-2">Invoice</th>
-                <th className="px-3 py-2">RTS</th>
                 <th className="px-3 py-2">Status</th>
                 <th className="px-3 py-2 text-right">Dispatched</th>
                 <th className="px-3 py-2 text-right">Pending</th>
@@ -324,13 +322,12 @@ export default function Logistics() {
             </thead>
             <tbody>
               {dispatchRows.length === 0 ? (
-                <tr><td colSpan={9} className="px-3 py-6 text-center text-gray-500">No dispatches.</td></tr>
+                <tr><td colSpan={8} className="px-3 py-6 text-center text-gray-500">No dispatches.</td></tr>
               ) : dispatchRows.map((d) => (
                 <tr key={d._id} className="border-b border-gray-100">
                   <td className="px-3 py-2 font-mono text-xs">{d.dispatchNo}</td>
                   <td className="px-3 py-2">{d.customerName}</td>
                   <td className="px-3 py-2 font-mono text-xs">{d.linkedSalesInvoiceNo || "—"}</td>
-                  <td className="px-3 py-2 font-mono text-xs">{d.linkedRtsNo || "—"}</td>
                   <td className="px-3 py-2">
                     <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(d.status)}`}>
                       {d.status}
@@ -356,7 +353,6 @@ export default function Logistics() {
                             linkedDispatchId: d._id,
                             linkedDispatchNo: d.dispatchNo || "",
                             linkedSalesInvoiceNumber: d.linkedSalesInvoiceNo || "",
-                            linkedRtsNo: d.linkedRtsNo || "",
                           }));
                           setModalOpen(true);
                         }}
@@ -580,12 +576,6 @@ export default function Logistics() {
             <TextInput
               value={form.linkedDispatchNo || ""}
               onChange={(e) => setForm((f) => ({ ...f, linkedDispatchNo: e.target.value }))}
-            />
-          </FormField>
-          <FormField label="Linked RTS #">
-            <TextInput
-              value={form.linkedRtsNo || ""}
-              onChange={(e) => setForm((f) => ({ ...f, linkedRtsNo: e.target.value }))}
             />
           </FormField>
           <FormField label="Linked PO #">

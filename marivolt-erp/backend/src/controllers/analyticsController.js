@@ -13,8 +13,6 @@ import KittingOrder from "../models/KittingOrder.js";
 import DeKittingOrder from "../models/DeKittingOrder.js";
 import LandedCostAllocation from "../models/LandedCostAllocation.js";
 import OrderAllocation from "../models/OrderAllocation.js";
-import Rts from "../models/Rts.js";
-import SalesDispatch from "../models/SalesDispatch.js";
 
 const cache = new Map();
 const CACHE_MS = 60 * 1000;
@@ -82,21 +80,7 @@ async function resolveWarehouseScopedSalesIds(f) {
     .map((x) => x.linkedSalesInvoiceId)
     .filter(Boolean)
     .map((x) => String(x));
-  const rtsRows = await Rts.find({ ...base, linkedOrderAllocationId: { $in: allocRows.map((x) => x._id) } })
-    .select("linkedSalesInvoiceId")
-    .lean();
-  const rtsInvoiceIds = rtsRows
-    .map((x) => x.linkedSalesInvoiceId)
-    .filter(Boolean)
-    .map((x) => String(x));
-  const dispatchRows = await SalesDispatch.find({ ...base, linkedRtsId: { $in: rtsRows.map((x) => x._id) } })
-    .select("linkedSalesInvoiceId")
-    .lean();
-  const dispatchInvoiceIds = dispatchRows
-    .map((x) => x.linkedSalesInvoiceId)
-    .filter(Boolean)
-    .map((x) => String(x));
-  const ids = [...new Set([...allocInvoiceIds, ...rtsInvoiceIds, ...dispatchInvoiceIds])];
+  const ids = [...new Set(allocInvoiceIds)];
   return ids.map((x) => new mongoose.Types.ObjectId(x));
 }
 

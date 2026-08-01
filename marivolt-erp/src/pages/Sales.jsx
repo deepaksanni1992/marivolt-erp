@@ -22,7 +22,6 @@ import {
 } from "../lib/orderAllocationPrint.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import { getReportBranding } from "../lib/reportBranding.js";
-import { renderRtsPackingListPrintWindow } from "../lib/rtsPackingListPrint.js";
 import SalesCustomsInvoicePanel from "../components/customs/SalesCustomsInvoicePanel.jsx";
 import CreateInvoiceFromPackingModal from "../components/sales/CreateInvoiceFromPackingModal.jsx";
 import OrderAllocationDetailModal from "../components/sales/OrderAllocationDetailModal.jsx";
@@ -116,7 +115,6 @@ const oaStatusOptions = ["DRAFT", "ACTIVE", "CONFIRMED", "CANCELLED"];
 const proformaStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "APPROVED", "CONVERTED", "CANCELLED"];
 const salesInvoiceStatusOptions = ["DRAFT", "ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID", "CANCELLED"];
 const orderAllocationStatusOptions = ["OPEN", "APPROVED", "CLOSED", "CANCELLED"];
-const rtsStatusOptions = ["DRAFT", "APPROVED", "CONVERTED_TO_INVOICE", "CANCELLED"];
 
 const reportStatusOptionsById = {
   "quotation-summary": statusOptions,
@@ -124,7 +122,6 @@ const reportStatusOptionsById = {
   "order-acknowledgement": oaStatusOptions,
   "pending-order-acknowledgement": oaStatusOptions,
   "order-allocation": orderAllocationStatusOptions,
-  rts: rtsStatusOptions,
   backorder: orderAllocationStatusOptions,
   proforma: proformaStatusOptions,
   "sales-invoice-summary": salesInvoiceStatusOptions,
@@ -1089,17 +1086,6 @@ const reportColumnsById = {
     ["Line Count", (r) => r.lineCount || 0],
     ["Status", (r) => r.status || ""],
   ],
-  rts: [
-    ["RTS No", (r) => r.rtsNo || ""],
-    ["Date", (r) => (r.rtsDate ? new Date(r.rtsDate).toLocaleDateString() : "")],
-    ["Allocation No", (r) => r.linkedOrderAllocationNo || ""],
-    ["Customer", (r) => r.customerName || ""],
-    ...machineDetailColumns,
-    ["Line Count", (r) => r.lineCount || 0],
-    ["Box Count", (r) => r.boxCount || 0],
-    ["Total Weight Kg", (r) => money(r.totalWeightKg || 0)],
-    ["Status", (r) => r.status || ""],
-  ],
   backorder: [
     ["Customer", (r) => r.customer || r.customerName || ""],
     ["Article", (r) => r.article || ""],
@@ -1107,7 +1093,6 @@ const reportColumnsById = {
     ["Ordered Qty", (r) => r.orderedQty || 0],
     ["Allocated Qty", (r) => r.allocatedQty || 0],
     ["Pending Qty", (r) => r.pendingQty || 0],
-    ["RTS Qty", (r) => r.rtsQty || 0],
     ["Invoice Qty", (r) => r.invoiceQty || 0],
     ["Available", (r) => r.available ?? ""],
     ["Expected GRN", (r) => r.expectedGrn || ""],
@@ -1634,57 +1619,6 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
   });
 }
 
-function renderPackingListPrintWindow({ rts, company, autoPrint = false }) {
-  renderRtsPackingListPrintWindow({ rts, company, autoPrint });
-}
-
-function rtsCsvRowsForSales(doc) {
-  const boxes = Array.isArray(doc?.packingDetails?.boxes) ? doc.packingDetails.boxes : [];
-  const lines = Array.isArray(doc?.lines) ? doc.lines : [];
-  const base = {
-    rtsNo: doc?.rtsNo || "",
-    rtsDate: doc?.rtsDate ? new Date(doc.rtsDate).toISOString().slice(0, 10) : "",
-    allocationNo: doc?.linkedOrderAllocationNo || "",
-    customer: doc?.customerName || "",
-    totalWeightKg: doc?.packingDetails?.totalWeightKg ?? "",
-  };
-  return [
-    ...boxes.map((b) => ({
-      recordType: "BOX",
-      ...base,
-      boxMaterial: b?.material || "",
-      boxCount: b?.count ?? "",
-      boxDimensionsMm: b?.dimensionsMm || "",
-      boxRemarks: b?.remarks || "",
-      serialNo: "",
-      article: "",
-      partNo: "",
-      description: "",
-      uom: "",
-      qty: "",
-      unitWeightKg: "",
-      totalLineWeightKg: "",
-    })),
-    ...lines.map((line) => ({
-      recordType: "ITEM",
-      ...base,
-      boxMaterial: "",
-      boxCount: "",
-      boxDimensionsMm: "",
-      boxRemarks: "",
-      serialNo: line?.serialNo ?? "",
-      article: line?.article || "",
-      partNo: line?.partNumber || "",
-      description: line?.description || "",
-      uom: line?.uom || "",
-      qty: line?.qty ?? 0,
-      coo: line?.coo || "Germany",
-      unitWeightKg: line?.unitWeightKg ?? "",
-      totalLineWeightKg: line?.totalWeightKg ?? "",
-    })),
-  ];
-}
-
 /** Aligns with backend customer PUT/DELETE: super_admin, company_admin, admin only. */
 function canEditSalesCustomerMaster(role) {
   const r = String(role || "").toLowerCase().trim();
@@ -1836,7 +1770,7 @@ export default function Sales() {
   const [packingInvoicePresetId, setPackingInvoicePresetId] = useState("");
   const [ciplCreateOpen, setCiplCreateOpen] = useState(false);
   const [err, setErr] = useState("");
-  /** { open, kind: "SI"|"ALC"|"RTS"|"OA"|"PI", id, reason, preview, step: "form"|"confirm" } */
+  /** { open, kind: "SI"|"ALC"|"OA"|"PI", id, reason, preview, step: "form"|"confirm" } */
   const [salesCancelModal, setSalesCancelModal] = useState(null);
   const [allocationDetailId, setAllocationDetailId] = useState(null);
   const [convertAllocationPo, setConvertAllocationPo] = useState({ open: false, allocationId: null, eligibility: null, loading: false });
@@ -2100,7 +2034,6 @@ export default function Sales() {
     "order-acknowledgement": "/sales/reports/order-acknowledgement",
     "pending-order-acknowledgement": "/sales/reports/pending-order-acknowledgement",
     "order-allocation": "/sales/reports/order-allocation",
-    rts: "/sales/reports/rts",
     proforma: "/sales/reports/proforma",
     "sales-invoice-summary": "/sales/reports/sales-invoice-summary",
     "sales-invoice-article-wise": "/sales/reports/sales-invoice-article-wise",
@@ -2368,14 +2301,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
           autoPrint,
         });
         return;
-      }
-      if (type === "rts") {
-        const rts = await apiGet(`/sales/rts/${id}`);
-        renderPackingListPrintWindow({
-          rts,
-          company,
-          autoPrint,
-        });
       }
     } catch (e) {
       setErr(e.message);
@@ -2978,7 +2903,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
       const paths = {
         SI: `/sales/invoices/${id}/cancel`,
         ALC: `/sales/allocations/${id}/cancel`,
-        RTS: `/sales/rts/${id}/cancel`,
       };
       return apiPost(`${paths[kind]}${dry}`, { cancellationReason: reason, reason });
     },
@@ -2987,7 +2911,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
       setSalesCancelModal(null);
       qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
       qc.invalidateQueries({ queryKey: ["sales-order-allocation"] });
-      qc.invalidateQueries({ queryKey: ["store-rts"] });
       qc.invalidateQueries({ queryKey: ["store-order-allocations"] });
       qc.invalidateQueries({ queryKey: ["sales-oa"] });
       qc.invalidateQueries({ queryKey: ["sales-proforma"] });
@@ -3528,8 +3451,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                       ? "this sales invoice"
                       : salesCancelModal.kind === "ALC"
                       ? "this order allocation"
-                      : salesCancelModal.kind === "RTS"
-                      ? "this RTS"
                       : salesCancelModal.kind === "OA"
                       ? "this order acknowledgement"
                       : "this proforma"}{" "}
@@ -3908,23 +3829,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                               <th className="px-3 py-2">Status</th>
                             </>
                           )}
-                          {activeReportId === "rts" && (
-                            <>
-                              <th className="px-3 py-2">RTS No</th>
-                              <th className="px-3 py-2">Date</th>
-                              <th className="px-3 py-2">Allocation No</th>
-                              <th className="px-3 py-2">Customer</th>
-                              <th className="px-3 py-2">Vertical</th>
-                              <th className="px-3 py-2">Brand</th>
-                              <th className="px-3 py-2">Model</th>
-                              <th className="px-3 py-2">Config</th>
-                              <th className="px-3 py-2">ESN</th>
-                              <th className="px-3 py-2 text-right">Line Count</th>
-                              <th className="px-3 py-2 text-right">Box Count</th>
-                              <th className="px-3 py-2 text-right">Total Weight Kg</th>
-                              <th className="px-3 py-2">Status</th>
-                            </>
-                          )}
                           {activeReportId === "backorder" && (
                             <>
                               <th className="px-3 py-2">Customer</th>
@@ -3933,7 +3837,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                               <th className="px-3 py-2 text-right">Ordered Qty</th>
                               <th className="px-3 py-2 text-right">Allocated Qty</th>
                               <th className="px-3 py-2 text-right">Pending Qty</th>
-                              <th className="px-3 py-2 text-right">RTS Qty</th>
                               <th className="px-3 py-2 text-right">Invoice Qty</th>
                               <th className="px-3 py-2 text-right">Available</th>
                               <th className="px-3 py-2">Expected GRN</th>
@@ -4143,27 +4046,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                                   </td>
                                 </>
                               )}
-                              {activeReportId === "rts" && (
-                                <>
-                                  <td className="px-3 py-2 font-mono text-xs">{row.rtsNo}</td>
-                                  <td className="px-3 py-2">{row.rtsDate ? new Date(row.rtsDate).toLocaleDateString() : "-"}</td>
-                                  <td className="px-3 py-2">{row.linkedOrderAllocationNo || "-"}</td>
-                                  <td className="px-3 py-2">{row.customerName || "-"}</td>
-                                  <td className="px-3 py-2">{row.vertical || "-"}</td>
-                                  <td className="px-3 py-2">{row.engine || "-"}</td>
-                                  <td className="px-3 py-2">{row.model || "-"}</td>
-                                  <td className="px-3 py-2">{row.config || "-"}</td>
-                                  <td className="px-3 py-2">{row.esn || "-"}</td>
-                                  <td className="px-3 py-2 text-right">{row.lineCount || 0}</td>
-                                  <td className="px-3 py-2 text-right">{row.boxCount || 0}</td>
-                                  <td className="px-3 py-2 text-right">{money(row.totalWeightKg || 0)}</td>
-                                  <td className="px-3 py-2">
-                                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(row.status)}`}>
-                                      {row.status}
-                                    </span>
-                                  </td>
-                                </>
-                              )}
                               {activeReportId === "backorder" && (
                                 <>
                                   <td className="px-3 py-2">{row.customer || row.customerName || "-"}</td>
@@ -4172,7 +4054,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                                   <td className="px-3 py-2 text-right">{row.orderedQty || 0}</td>
                                   <td className="px-3 py-2 text-right">{row.allocatedQty || 0}</td>
                                   <td className="px-3 py-2 text-right font-semibold text-amber-700">{row.pendingQty || 0}</td>
-                                  <td className="px-3 py-2 text-right">{row.rtsQty || 0}</td>
                                   <td className="px-3 py-2 text-right">{row.invoiceQty || 0}</td>
                                   <td className={`px-3 py-2 text-right font-semibold ${Number(row.available || 0) < 0 ? "text-rose-700" : ""}`}>
                                     {row.available ?? ""}
