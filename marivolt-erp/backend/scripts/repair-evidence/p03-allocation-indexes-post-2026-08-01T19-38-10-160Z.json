@@ -1,0 +1,63 @@
+{
+  "verifiedAt": "2026-08-01T19:38:10.457Z",
+  "results": [
+    {
+      "name": "uniq_active_allocation_per_oa",
+      "action": "exists"
+    },
+    {
+      "name": "uniq_active_allocation_per_proforma",
+      "action": "exists"
+    }
+  ],
+  "afterDuplicates": {
+    "linkedOAIdGroups": 0,
+    "linkedProformaIdGroups": 0
+  },
+  "indexes": [
+    {
+      "name": "uniq_active_allocation_per_oa",
+      "key": {
+        "companyId": 1,
+        "linkedOAId": 1
+      },
+      "unique": true,
+      "partialFilterExpression": {
+        "linkedOAId": {
+          "$type": "objectId"
+        },
+        "status": {
+          "$in": [
+            "OPEN",
+            "PARTIALLY_PACKED",
+            "FULLY_PACKED",
+            "APPROVED",
+            "CLOSED"
+          ]
+        }
+      }
+    },
+    {
+      "name": "uniq_active_allocation_per_proforma",
+      "key": {
+        "companyId": 1,
+        "linkedProformaId": 1
+      },
+      "unique": true,
+      "partialFilterExpression": {
+        "linkedProformaId": {
+          "$type": "objectId"
+        },
+        "status": {
+          "$in": [
+            "OPEN",
+            "PARTIALLY_PACKED",
+            "FULLY_PACKED",
+            "APPROVED",
+            "CLOSED"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,194 @@
+{
+  "capturedAt": "2026-08-01T19:35:10.342Z",
+  "total": 9,
+  "statuses": {
+    "OPEN": 6,
+    "CANCELLED": 1,
+    "FULLY_PACKED": 1,
+    "CLOSED": 1
+  },
+  "indexes": [
+    {
+      "name": "_id_",
+      "key": {
+        "_id": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1",
+      "key": {
+        "companyId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "allocationDate_1",
+      "key": {
+        "allocationDate": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "linkedQuotationId_1",
+      "key": {
+        "linkedQuotationId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "linkedOAId_1",
+      "key": {
+        "linkedOAId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "linkedProformaId_1",
+      "key": {
+        "linkedProformaId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "linkedSalesInvoiceId_1",
+      "key": {
+        "linkedSalesInvoiceId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "customerName_1",
+      "key": {
+        "customerName": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_allocationNo_1",
+      "key": {
+        "companyId": 1,
+        "allocationNo": 1
+      },
+      "unique": true,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_allocationDate_-1",
+      "key": {
+        "companyId": 1,
+        "allocationDate": -1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "hasNegativeAllocation_1",
+      "key": {
+        "hasNegativeAllocation": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "packingStatus_1",
+      "key": {
+        "packingStatus": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "invoiceStatus_1",
+      "key": {
+        "invoiceStatus": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "dispatchStatus_1",
+      "key": {
+        "dispatchStatus": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    }
+  ],
+  "activeDuplicates": {
+    "linkedOAId": 0,
+    "linkedProformaId": 0,
+    "oaGroups": [],
+    "piGroups": []
+  },
+  "cancelledDuplicateGroups": {
+    "linkedOAId": 0,
+    "linkedProformaId": 0
+  },
+  "linkShapes": {
+    "bothLinks": 3,
+    "bothActive": 3,
+    "oaOnlyActive": 3,
+    "piOnlyActive": 2,
+    "nullOA": 2,
+    "nullPI": 4,
+    "malformedOA": 0,
+    "malformedPI": 0
+  },
+  "softDeleteFields": {
+    "deletedAt": 0,
+    "isDeleted": 0,
+    "allocationActive": 0
+  },
+  "sampleFieldPresence": [
+    {
+      "id": "69f4b9b547c2dd7dcac1748a",
+      "status": "OPEN",
+      "hasOA": true,
+      "hasPI": true,
+      "keys": [
+        "_id",
+        "companyId",
+        "linkedOAId",
+        "linkedProformaId",
+        "status"
+      ]
+    },
+    {
+      "id": "69f8ac605f8f048fd1f019f2",
+      "status": "OPEN",
+      "hasOA": true,
+      "hasPI": false,
+      "keys": [
+        "_id",
+        "companyId",
+        "linkedOAId",
+        "linkedProformaId",
+        "status"
+      ]
+    },
+    {
+      "id": "69fe2e475c63177f9334a6b4",
+      "status": "OPEN",
+      "hasOA": true,
+      "hasPI": true,
+      "keys": [
+        "_id",
+        "companyId",
+        "linkedOAId",
+        "linkedProformaId",
+        "status",
+        "cancelledAt"
+      ]
+    }
+  ],
+  "abortIndexCreation": false
+}

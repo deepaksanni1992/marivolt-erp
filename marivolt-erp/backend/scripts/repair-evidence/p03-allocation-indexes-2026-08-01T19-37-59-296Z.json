@@ -1,0 +1,180 @@
+{
+  "capturedAt": "2026-08-01T19:37:59.297Z",
+  "mode": "EXECUTE",
+  "serverVersion": "8.0.28",
+  "activeStatuses": [
+    "OPEN",
+    "PARTIALLY_PACKED",
+    "FULLY_PACKED",
+    "APPROVED",
+    "CLOSED"
+  ],
+  "indexSpecs": [
+    {
+      "name": "uniq_active_allocation_per_oa",
+      "key": {
+        "companyId": 1,
+        "linkedOAId": 1
+      },
+      "unique": true,
+      "partialFilterExpression": {
+        "linkedOAId": {
+          "$type": "objectId"
+        },
+        "status": {
+          "$in": [
+            "OPEN",
+            "PARTIALLY_PACKED",
+            "FULLY_PACKED",
+            "APPROVED",
+            "CLOSED"
+          ]
+        }
+      }
+    },
+    {
+      "name": "uniq_active_allocation_per_proforma",
+      "key": {
+        "companyId": 1,
+        "linkedProformaId": 1
+      },
+      "unique": true,
+      "partialFilterExpression": {
+        "linkedProformaId": {
+          "$type": "objectId"
+        },
+        "status": {
+          "$in": [
+            "OPEN",
+            "PARTIALLY_PACKED",
+            "FULLY_PACKED",
+            "APPROVED",
+            "CLOSED"
+          ]
+        }
+      }
+    }
+  ],
+  "preIndexDuplicates": {
+    "linkedOAIdGroups": 0,
+    "linkedProformaIdGroups": 0,
+    "oaSamples": [],
+    "piSamples": []
+  },
+  "existingIndexes": [
+    {
+      "name": "_id_",
+      "key": {
+        "_id": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1",
+      "key": {
+        "companyId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "allocationDate_1",
+      "key": {
+        "allocationDate": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "linkedQuotationId_1",
+      "key": {
+        "linkedQuotationId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "linkedOAId_1",
+      "key": {
+        "linkedOAId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "linkedProformaId_1",
+      "key": {
+        "linkedProformaId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "linkedSalesInvoiceId_1",
+      "key": {
+        "linkedSalesInvoiceId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "customerName_1",
+      "key": {
+        "customerName": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_allocationNo_1",
+      "key": {
+        "companyId": 1,
+        "allocationNo": 1
+      },
+      "unique": true,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_allocationDate_-1",
+      "key": {
+        "companyId": 1,
+        "allocationDate": -1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "hasNegativeAllocation_1",
+      "key": {
+        "hasNegativeAllocation": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "packingStatus_1",
+      "key": {
+        "packingStatus": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "invoiceStatus_1",
+      "key": {
+        "invoiceStatus": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "dispatchStatus_1",
+      "key": {
+        "dispatchStatus": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    }
+  ]
+}
