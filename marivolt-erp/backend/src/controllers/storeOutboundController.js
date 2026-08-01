@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import crypto from "crypto";
 import OrderAllocation from "../models/OrderAllocation.js";
 import OrderAcknowledgement from "../models/OrderAcknowledgement.js";
 import ProformaInvoice from "../models/ProformaInvoice.js";
@@ -6,6 +7,7 @@ import Quotation from "../models/Quotation.js";
 import StorePacking from "../models/StorePacking.js";
 import StoreDispatch from "../models/StoreDispatch.js";
 import SalesInvoice from "../models/SalesInvoice.js";
+import StockLedger from "../models/StockLedger.js";
 import * as stockService from "../services/stockService.js";
 import { writeAudit } from "../services/auditService.js";
 import { nextUniqueSalesDocNumber } from "../utils/salesDocNumber.js";
@@ -18,6 +20,22 @@ import {
   buildPackingImportPreview,
   validatePackingPackagesForSave,
 } from "../services/packingCsvService.js";
+import {
+  CLAIMABLE_CANCEL_STATUSES,
+  PACKING_ALREADY_CANCELLED,
+  PACKING_ALREADY_POSTED,
+  PACKING_CANCEL_CONFLICT,
+  PACKING_CANCEL_IN_PROGRESS,
+  PACKING_LEDGER_INCONSISTENT,
+  PACKING_POST_IN_PROGRESS,
+  PACKING_POSTING_CONFLICT,
+  PACKING_SOURCE_DOCUMENT_TYPE,
+  POSTED_PACKING_STATUSES,
+  buildPackingEffectKey,
+  buildPackingReversalEffectKey,
+  isPackingEffectDuplicateKeyError,
+  packingConflictError,
+} from "../utils/packingIdempotency.js";
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -56,7 +74,6 @@ async function resolveCustomerSnapshotForAllocation(req, allocation) {
   };
 }
 
-const POSTED_PACKING_STATUSES = ["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED"];
 const POSTED_DISPATCH_STATUSES = ["POSTED", "PARTIALLY_DISPATCHED", "FULLY_DISPATCHED"];
 const DISPATCH_READY_INVOICE_STATUSES = ["ISSUED", "PARTIALLY_PAID", "PAID"];
 const PACKAGE_TYPES = new Set(["CARTON", "PALLET", "WOODEN_BOX", "CRATE", "BUNDLE"]);
@@ -74,14 +91,14 @@ async function nextDispatchNo(companyId, companyCode) {
   return nextUniqueSalesDocNumber({ companyId, companyCode, docKey: "DISPATCH", model: StoreDispatch, field: "dispatchNo" });
 }
 
-async function sumPostedPackQtyByLine(companyId, allocationId) {
-  const packs = await StorePacking.find({
+async function sumPostedPackQtyByLine(companyId, allocationId, session = null) {
+  const q = StorePacking.find({
     companyId,
     allocationId,
     status: { $in: POSTED_PACKING_STATUSES },
-  })
-    .select("lines")
-    .lean();
+  }).select("lines");
+  if (session) q.session(session);
+  const packs = await q.lean();
   const map = new Map();
   for (const p of packs) {
     for (const ln of p.lines || []) {
@@ -91,6 +108,82 @@ async function sumPostedPackQtyByLine(companyId, allocationId) {
     }
   }
   return map;
+}
+
+async function findPackingPackedLedgers(companyId, packingId, session = null) {
+  const q = StockLedger.find({
+    companyId,
+    sourceDocumentType: PACKING_SOURCE_DOCUMENT_TYPE,
+    sourceDocumentId: packingId,
+    movementType: "PACKED",
+  });
+  if (session) q.session(session);
+  return q.lean();
+}
+
+async function findPackingUnpackedLedgers(companyId, packingId, session = null) {
+  const q = StockLedger.find({
+    companyId,
+    sourceDocumentType: PACKING_SOURCE_DOCUMENT_TYPE,
+    sourceDocumentId: packingId,
+    movementType: "UNPACKED",
+  });
+  if (session) q.session(session);
+  return q.lean();
+}
+
+async function findLegacyPackedLedgersByPackingNo(companyId, packingNo, session = null) {
+  const q = StockLedger.find({
+    companyId,
+    referenceNo: String(packingNo || ""),
+    $or: [{ movementType: "PACKED" }, { transactionType: "PACKED" }],
+  });
+  if (session) q.session(session);
+  return q.lean();
+}
+
+function packingLinesNeedingStock(doc) {
+  return (doc.lines || []).filter((ln) => (Number(ln.packQty) || 0) > 0 && ln._id);
+}
+
+async function assertPackingPostConsistency(companyId, doc, session = null) {
+  const need = packingLinesNeedingStock(doc);
+  const ledgers = await findPackingPackedLedgers(companyId, doc._id, session);
+  if (ledgers.length === need.length && need.every((ln) => ledgers.some((r) => String(r.sourceLineId) === String(ln._id)))) {
+    return { ok: true, mode: "source" };
+  }
+  // Legacy posted packings: evidence by packingNo only (no source identity).
+  const legacy = await findLegacyPackedLedgersByPackingNo(companyId, doc.packingNo, session);
+  if (legacy.length > 0 && ledgers.length === 0) {
+    return { ok: true, mode: "legacy" };
+  }
+  return { ok: false, mode: "missing", expected: need.length, found: ledgers.length, legacy: legacy.length };
+}
+
+async function recalculateAllocationPackingProgress(req, allocation, session) {
+  if (!allocation) return;
+  const packedByLine = await sumPostedPackQtyByLine(req.companyId, allocation._id, session);
+  let totalAlloc = 0;
+  let totalPacked = 0;
+  for (const ln of allocation.lines || []) {
+    const qty = Number(ln.qty) || 0;
+    totalAlloc += qty;
+    totalPacked += Number(packedByLine.get(String(ln._id)) || 0);
+  }
+  if (!(totalAlloc > 0) || totalPacked <= 0) {
+    if (String(allocation.status || "").toUpperCase() !== "CANCELLED") {
+      allocation.status = "OPEN";
+      allocation.packingStatus = "NOT_PACKED";
+    }
+  } else if (totalPacked >= totalAlloc - 1e-6) {
+    allocation.status = "FULLY_PACKED";
+    allocation.packingStatus = "FULLY_PACKED";
+  } else {
+    allocation.status = "PARTIALLY_PACKED";
+    allocation.packingStatus = "PARTIALLY_PACKED";
+  }
+  allocation.updatedBy = req.user?.email || "";
+  await allocation.save({ session });
 }
 
 async function sumPostedDispatchQtyByPackingLine(companyId, packingId) {
@@ -494,30 +587,68 @@ export async function createStorePackingDraft(req, res) {
 export async function postStorePacking(req, res) {
   const session = await mongoose.startSession();
   try {
+    let idempotent = false;
     await session.withTransaction(async () => {
       const id = req.params.id;
-      const doc = await StorePacking.findOne(withCompany(req, { _id: id })).session(session);
-      if (!doc) throw new Error("Packing not found");
-      if (doc.status !== "DRAFT") throw new Error("Only DRAFT packing can be posted");
-      const allocation = await OrderAllocation.findOne(withCompany(req, { _id: doc.allocationId })).session(session);
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw packingConflictError(PACKING_POSTING_CONFLICT, "Invalid packing id", null, 400);
+      }
+
+      const claimed = await StorePacking.findOneAndUpdate(
+        withCompany(req, { _id: id, status: "DRAFT" }),
+        { $set: { status: "POSTING", updatedBy: req.user?.email || "" } },
+        { new: true, session }
+      );
+
+      if (!claimed) {
+        const existing = await StorePacking.findOne(withCompany(req, { _id: id })).session(session);
+        if (!existing) throw packingConflictError(PACKING_POSTING_CONFLICT, "Packing not found", null, 404);
+        const st = String(existing.status || "").toUpperCase();
+        if (st === "POSTING") {
+          throw packingConflictError(PACKING_POST_IN_PROGRESS, "Packing post already in progress");
+        }
+        if (st === "CANCELLING") {
+          throw packingConflictError(PACKING_POSTING_CONFLICT, "Packing cancellation in progress");
+        }
+        if (POSTED_PACKING_STATUSES.includes(st)) {
+          const consistency = await assertPackingPostConsistency(req.companyId, existing, session);
+          if (!consistency.ok) {
+            throw packingConflictError(
+              PACKING_LEDGER_INCONSISTENT,
+              "Packing is posted but expected PACKED ledger evidence is missing or incomplete",
+              { packingId: String(existing._id), ...consistency }
+            );
+          }
+          idempotent = true;
+          return;
+        }
+        if (st === "CANCELLED") {
+          throw packingConflictError(PACKING_POSTING_CONFLICT, "Cannot post a cancelled packing");
+        }
+        throw packingConflictError(PACKING_POSTING_CONFLICT, `Only DRAFT packing can be posted (status ${st})`);
+      }
+
+      const allocation = await OrderAllocation.findOne(withCompany(req, { _id: claimed.allocationId })).session(session);
       if (!allocation) throw new Error("Allocation not found");
       if (String(allocation.status || "").toUpperCase() === "CANCELLED") throw new Error("Allocation cancelled");
 
-      const packedByLine = await sumPostedPackQtyByLine(req.companyId, allocation._id);
-      const postPkgErrors = validatePackingPackagesForSave(doc.packages || [], allocation, packedByLine);
+      const packedByLine = await sumPostedPackQtyByLine(req.companyId, allocation._id, session);
+      const postPkgErrors = validatePackingPackagesForSave(claimed.packages || [], allocation, packedByLine);
       if (postPkgErrors.length) throw new Error(postPkgErrors[0]);
-      const wh = String(doc.warehouse || allocation.warehouse || "MAIN").toUpperCase();
-      if (doc.packages?.length) {
-        const totals = packageTotals(doc.packages);
-        doc.totalPackages = totals.totalPackages;
-        doc.totalGrossWeightKg = totals.totalGrossWeightKg;
-        doc.totalNetWeightKg = totals.totalNetWeightKg;
+      const wh = String(claimed.warehouse || allocation.warehouse || "MAIN").toUpperCase();
+      if (claimed.packages?.length) {
+        const totals = packageTotals(claimed.packages);
+        claimed.totalPackages = totals.totalPackages;
+        claimed.totalGrossWeightKg = totals.totalGrossWeightKg;
+        claimed.totalNetWeightKg = totals.totalNetWeightKg;
       }
 
-      for (const ln of doc.lines || []) {
+      const postingOperationId = crypto.randomUUID();
+      for (const ln of claimed.lines || []) {
         const lineId = String(ln.allocationLineId || "");
         const allocLine = (allocation.lines || []).find((x) => String(x._id) === lineId);
         if (!allocLine) throw new Error(`Allocation line missing for ${ln.article}`);
+        if (!ln._id) throw new Error(`Packing line id missing for ${ln.article}`);
         const maxQty = Number(allocLine.qty) || 0;
         const already = packedByLine.get(lineId) || 0;
         const packQty = Number(ln.packQty) || 0;
@@ -525,45 +656,93 @@ export async function postStorePacking(req, res) {
         if (already + packQty > maxQty) {
           throw new Error(`Pack qty exceeds pending for ${ln.article} (max ${maxQty - already})`);
         }
-        await stockService.packFromAllocation({
-          session,
+        const effectKey = buildPackingEffectKey({
           companyId: req.companyId,
-          article: ln.article,
+          packingId: claimed._id,
+          packingLineId: ln._id,
+          movementType: "PACKED",
           warehouse: wh,
-          qty: packQty,
-          customerName: allocation.customerName || "",
-          referenceType: "STORE_PACKING",
-          referenceNo: doc.packingNo,
-          remarks: `Packing ${doc.packingNo}`,
-          createdBy: req.user?.email || "",
-          sourceModule: "STORE",
-          allocationId: allocation._id,
-          transactionDate: doc.packingDate || new Date(),
+          location: wh,
         });
+        try {
+          await stockService.packFromAllocation({
+            session,
+            companyId: req.companyId,
+            article: ln.article,
+            warehouse: wh,
+            qty: packQty,
+            customerName: allocation.customerName || "",
+            referenceType: "STORE_PACKING",
+            referenceNo: claimed.packingNo,
+            remarks: `Packing ${claimed.packingNo}`,
+            createdBy: req.user?.email || "",
+            sourceModule: "STORE",
+            allocationId: allocation._id,
+            transactionDate: claimed.packingDate || new Date(),
+            sourceDocumentType: PACKING_SOURCE_DOCUMENT_TYPE,
+            sourceDocumentId: claimed._id,
+            sourceLineId: ln._id,
+            sourceAllocationId: allocation._id,
+            sourceAllocationLineId: allocLine._id,
+            postingOperationId,
+            effectKey,
+          });
+        } catch (stockErr) {
+          if (isPackingEffectDuplicateKeyError(stockErr)) {
+            throw packingConflictError(
+              PACKING_POSTING_CONFLICT,
+              "Packing stock effect already exists for this line",
+              { packingId: String(claimed._id), packingLineId: String(ln._id) }
+            );
+          }
+          throw stockErr;
+        }
       }
 
       const totalAlloc = (allocation.lines || []).reduce((sum, ln) => sum + (Number(ln.qty) || 0), 0);
       const totalPackedBefore = Array.from(packedByLine.values()).reduce((sum, qty) => sum + (Number(qty) || 0), 0);
-      const totalPackedNow = (doc.lines || []).reduce((sum, ln) => sum + (Number(ln.packQty) || 0), 0);
-      doc.status = totalPackedBefore + totalPackedNow >= totalAlloc - 1e-6 ? "FULLY_PACKED" : "PARTIALLY_PACKED";
-      allocation.status = doc.status;
-      allocation.packingStatus = doc.status === "FULLY_PACKED" ? "FULLY_PACKED" : "PARTIALLY_PACKED";
+      const totalPackedNow = (claimed.lines || []).reduce((sum, ln) => sum + (Number(ln.packQty) || 0), 0);
+      claimed.status = totalPackedBefore + totalPackedNow >= totalAlloc - 1e-6 ? "FULLY_PACKED" : "PARTIALLY_PACKED";
+      allocation.status = claimed.status;
+      allocation.packingStatus = claimed.status === "FULLY_PACKED" ? "FULLY_PACKED" : "PARTIALLY_PACKED";
       allocation.updatedBy = req.user?.email || "";
-      doc.postedAt = new Date();
-      doc.updatedBy = req.user?.email || "";
+      claimed.postedAt = new Date();
+      claimed.updatedBy = req.user?.email || "";
       await allocation.save({ session });
-      await doc.save({ session });
+      await claimed.save({ session });
       await writeAudit(req, {
         action: "POST",
         module: "STORE",
         entityType: "STORE_PACKING",
-        entityId: doc._id,
-        documentNo: doc.packingNo,
-        description: `Packing ${doc.packingNo} posted`,
+        entityId: claimed._id,
+        documentNo: claimed.packingNo,
+        description: `Packing ${claimed.packingNo} posted`,
+        metadata: { postingOperationId },
       });
     });
+    if (idempotent) {
+      return res.status(200).json({ success: true, code: PACKING_ALREADY_POSTED, alreadyPosted: true });
+    }
     res.json({ success: true });
   } catch (err) {
+    if (
+      err?.code === PACKING_ALREADY_POSTED ||
+      err?.code === PACKING_POST_IN_PROGRESS ||
+      err?.code === PACKING_POSTING_CONFLICT ||
+      err?.code === PACKING_LEDGER_INCONSISTENT
+    ) {
+      return res.status(err.statusCode || 409).json({
+        message: err.message,
+        code: err.code,
+        details: err.details || null,
+      });
+    }
+    if (isPackingEffectDuplicateKeyError(err)) {
+      return res.status(409).json({
+        message: "Packing stock effect already exists",
+        code: PACKING_POSTING_CONFLICT,
+      });
+    }
     res.status(400).json({ message: err.message });
   } finally {
     session.endSession();
@@ -573,23 +752,63 @@ export async function postStorePacking(req, res) {
 export async function cancelStorePacking(req, res) {
   const session = await mongoose.startSession();
   try {
+    let idempotent = false;
     await session.withTransaction(async () => {
       const id = req.params.id;
-      const doc = await StorePacking.findOne(withCompany(req, { _id: id })).session(session);
-      if (!doc) throw new Error("Packing not found");
-      if (doc.status === "CANCELLED") throw new Error("Already cancelled");
-      if (doc.status === "DRAFT") {
-        doc.status = "CANCELLED";
-        doc.cancelledAt = new Date();
-        doc.cancellationReason = t(req.body?.reason);
-        doc.updatedBy = req.user?.email || "";
-        await doc.save({ session });
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw packingConflictError(PACKING_CANCEL_CONFLICT, "Invalid packing id", null, 400);
+      }
+
+      const draftClaim = await StorePacking.findOneAndUpdate(
+        withCompany(req, { _id: id, status: "DRAFT" }),
+        {
+          $set: {
+            status: "CANCELLED",
+            cancelledAt: new Date(),
+            cancellationReason: t(req.body?.reason),
+            updatedBy: req.user?.email || "",
+          },
+        },
+        { new: true, session }
+      );
+      if (draftClaim) {
+        await writeAudit(req, {
+          action: "CANCEL",
+          module: "STORE",
+          entityType: "STORE_PACKING",
+          entityId: draftClaim._id,
+          documentNo: draftClaim.packingNo,
+          description: `Packing ${draftClaim.packingNo} cancelled (DRAFT, no stock impact)`,
+        });
         return;
       }
-      if (!POSTED_PACKING_STATUSES.includes(doc.status)) throw new Error("Cannot cancel this packing");
+
+      const claimed = await StorePacking.findOneAndUpdate(
+        withCompany(req, { _id: id, status: { $in: [...CLAIMABLE_CANCEL_STATUSES] } }),
+        { $set: { status: "CANCELLING", updatedBy: req.user?.email || "" } },
+        { new: true, session }
+      );
+
+      if (!claimed) {
+        const existing = await StorePacking.findOne(withCompany(req, { _id: id })).session(session);
+        if (!existing) throw packingConflictError(PACKING_CANCEL_CONFLICT, "Packing not found", null, 404);
+        const st = String(existing.status || "").toUpperCase();
+        if (st === "CANCELLED") {
+          idempotent = true;
+          return;
+        }
+        if (st === "CANCELLING") {
+          throw packingConflictError(PACKING_CANCEL_IN_PROGRESS, "Packing cancellation already in progress");
+        }
+        if (st === "POSTING") {
+          throw packingConflictError(PACKING_CANCEL_CONFLICT, "Packing post in progress");
+        }
+        throw packingConflictError(PACKING_CANCEL_CONFLICT, `Cannot cancel packing in status ${st}`);
+      }
+
       const invoiced = await SalesInvoice.findOne({
         companyId: req.companyId,
-        linkedStorePackingId: doc._id,
+        linkedStorePackingId: claimed._id,
         status: { $ne: "CANCELLED" },
       })
         .session(session)
@@ -599,7 +818,7 @@ export async function cancelStorePacking(req, res) {
 
       const dispatched = await StoreDispatch.findOne({
         companyId: req.companyId,
-        packingId: doc._id,
+        packingId: claimed._id,
         status: { $in: POSTED_DISPATCH_STATUSES },
       })
         .session(session)
@@ -607,61 +826,135 @@ export async function cancelStorePacking(req, res) {
         .lean();
       if (dispatched) throw new Error("Cannot cancel packing: dispatch already posted");
 
-      const allocation = await OrderAllocation.findOne(withCompany(req, { _id: doc.allocationId })).session(session);
-      const wh = String(doc.warehouse || allocation?.warehouse || "MAIN").toUpperCase();
+      const allocation = await OrderAllocation.findOne(withCompany(req, { _id: claimed.allocationId })).session(session);
+      const cancellationOperationId = crypto.randomUUID();
 
-      for (const ln of doc.lines || []) {
-        const q = Number(ln.packQty) || 0;
-        if (!(q > 0)) continue;
-        await stockService.unpackFromPacked({
-          session,
-          companyId: req.companyId,
-          article: ln.article,
-          warehouse: wh,
-          qty: q,
-          customerName: allocation?.customerName || "",
-          referenceType: "STORE_PACKING",
-          referenceNo: doc.packingNo,
-          remarks: `Cancel packing ${doc.packingNo}`,
-          createdBy: req.user?.email || "",
-          sourceModule: "STORE",
-          allocationId: doc.allocationId,
-        });
+      const sourced = await findPackingPackedLedgers(req.companyId, claimed._id, session);
+      let effects = sourced;
+      if (!effects.length) {
+        const legacy = await findLegacyPackedLedgersByPackingNo(req.companyId, claimed.packingNo, session);
+        if (!legacy.length) {
+          throw packingConflictError(
+            PACKING_LEDGER_INCONSISTENT,
+            "Cannot cancel: original PACKED ledger evidence is missing",
+            { packingId: String(claimed._id) }
+          );
+        }
+        // Legacy: reverse using ledger warehouse/batch/serial dimensions (do not guess from defaults).
+        effects = legacy;
       }
-      doc.status = "CANCELLED";
-      doc.cancelledAt = new Date();
-      doc.cancellationReason = t(req.body?.reason);
-      doc.updatedBy = req.user?.email || "";
-      await doc.save({ session });
-      if (doc.salesInvoiceId) {
-        const remainingDispatch = await StoreDispatch.findOne({
-          companyId: req.companyId,
-          salesInvoiceId: doc.salesInvoiceId,
-          _id: { $ne: doc._id },
-          status: { $in: POSTED_DISPATCH_STATUSES },
-        }).session(session);
-        await SalesInvoice.findOneAndUpdate(
-          withCompany(req, { _id: doc.salesInvoiceId }),
-          {
-            status: "ISSUED",
-            linkedSalesDispatchId: remainingDispatch?._id || null,
-            linkedSalesDispatchNo: remainingDispatch?.dispatchNo || "",
-            updatedBy: req.user?.email || "",
-          },
-          { session }
+
+      const existingUnpack = await findPackingUnpackedLedgers(req.companyId, claimed._id, session);
+      if (existingUnpack.length > 0) {
+        throw packingConflictError(
+          PACKING_CANCEL_CONFLICT,
+          "Packing reversal effects already exist",
+          { packingId: String(claimed._id), unpackCount: existingUnpack.length }
         );
       }
+
+      for (const packedRow of effects) {
+        const q = Number(packedRow.qtyOut) || 0;
+        if (!(q > 0)) continue;
+        const warehouse = String(packedRow.warehouse || packedRow.location || "").toUpperCase();
+        if (!warehouse) {
+          throw packingConflictError(
+            PACKING_LEDGER_INCONSISTENT,
+            "Cannot cancel: PACKED ledger row has no warehouse/location",
+            { ledgerId: String(packedRow._id) }
+          );
+        }
+        const packingLineId = packedRow.sourceLineId || null;
+        const originalEffectKey =
+          packedRow.effectKey ||
+          buildPackingEffectKey({
+            companyId: req.companyId,
+            packingId: claimed._id,
+            packingLineId: packingLineId || packedRow._id,
+            movementType: "PACKED",
+            warehouse,
+            location: warehouse,
+            batchNo: packedRow.batchNo || "",
+            serialNo: packedRow.serialNo || "",
+          });
+        const effectKey = buildPackingReversalEffectKey(originalEffectKey);
+        try {
+          await stockService.unpackFromPacked({
+            session,
+            companyId: req.companyId,
+            article: packedRow.article,
+            warehouse,
+            qty: q,
+            batchNo: packedRow.batchNo || "",
+            serialNo: packedRow.serialNo || "",
+            customerName: allocation?.customerName || packedRow.customerName || "",
+            referenceType: "STORE_PACKING",
+            referenceNo: claimed.packingNo,
+            remarks: `Cancel packing ${claimed.packingNo}`,
+            createdBy: req.user?.email || "",
+            sourceModule: "STORE",
+            allocationId: claimed.allocationId,
+            sourceDocumentType: PACKING_SOURCE_DOCUMENT_TYPE,
+            sourceDocumentId: claimed._id,
+            sourceLineId: packingLineId,
+            sourceAllocationId: packedRow.sourceAllocationId || claimed.allocationId,
+            sourceAllocationLineId: packedRow.sourceAllocationLineId || null,
+            cancellationOperationId,
+            effectKey,
+            originalEffectKey,
+            reversedFromLedgerId: packedRow._id,
+          });
+        } catch (stockErr) {
+          if (isPackingEffectDuplicateKeyError(stockErr)) {
+            throw packingConflictError(
+              PACKING_CANCEL_CONFLICT,
+              "Packing reversal effect already exists",
+              { packingId: String(claimed._id), reversedFromLedgerId: String(packedRow._id) }
+            );
+          }
+          throw stockErr;
+        }
+      }
+
+      claimed.status = "CANCELLED";
+      claimed.cancelledAt = new Date();
+      claimed.cancellationReason = t(req.body?.reason);
+      claimed.updatedBy = req.user?.email || "";
+      await claimed.save({ session });
+      await recalculateAllocationPackingProgress(req, allocation, session);
       await writeAudit(req, {
         action: "CANCEL",
         module: "STORE",
         entityType: "STORE_PACKING",
-        entityId: doc._id,
-        documentNo: doc.packingNo,
-        description: `Packing ${doc.packingNo} cancelled`,
+        entityId: claimed._id,
+        documentNo: claimed.packingNo,
+        description: `Packing ${claimed.packingNo} cancelled`,
+        metadata: { cancellationOperationId, reversedEffects: effects.length },
       });
     });
+    if (idempotent) {
+      return res.status(200).json({ success: true, code: PACKING_ALREADY_CANCELLED, alreadyCancelled: true });
+    }
     res.json({ success: true });
   } catch (err) {
+    if (
+      err?.code === PACKING_ALREADY_CANCELLED ||
+      err?.code === PACKING_CANCEL_IN_PROGRESS ||
+      err?.code === PACKING_CANCEL_CONFLICT ||
+      err?.code === PACKING_LEDGER_INCONSISTENT
+    ) {
+      return res.status(err.statusCode || 409).json({
+        message: err.message,
+        code: err.code,
+        details: err.details || null,
+      });
+    }
+    if (isPackingEffectDuplicateKeyError(err)) {
+      return res.status(409).json({
+        message: "Packing reversal effect already exists",
+        code: PACKING_CANCEL_CONFLICT,
+      });
+    }
     res.status(400).json({ message: err.message });
   } finally {
     session.endSession();

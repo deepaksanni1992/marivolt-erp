@@ -95,7 +95,8 @@ const storePackingSchema = new mongoose.Schema(
     remarks: { type: String, default: "", trim: true },
     status: {
       type: String,
-      enum: ["DRAFT", "POSTED", "PARTIALLY_PACKED", "FULLY_PACKED", "CANCELLED"],
+      // POSTING / CANCELLING are ephemeral in-transaction claims (P0.5A).
+      enum: ["DRAFT", "POSTING", "POSTED", "PARTIALLY_PACKED", "FULLY_PACKED", "CANCELLING", "CANCELLED"],
       default: "DRAFT",
       index: true,
     },

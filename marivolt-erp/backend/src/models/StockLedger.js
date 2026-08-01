@@ -92,6 +92,21 @@ const stockLedgerSchema = new mongoose.Schema(
     dispatchedAfter: { type: Number, default: null },
     availableAfter: { type: Number, default: null },
     isNegativeAllocation: { type: Boolean, default: false },
+
+    /* ---------- P0.5A Packing source-effect identity (additive) ----------
+     * Legacy rows leave these null/empty so they do not collide with the
+     * partial unique index on effectKey.
+     */
+    sourceDocumentType: { type: String, default: "", trim: true },
+    sourceDocumentId: { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
+    sourceLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    sourceAllocationId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    sourceAllocationLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    postingOperationId: { type: String, default: "", trim: true },
+    cancellationOperationId: { type: String, default: "", trim: true },
+    effectKey: { type: String, default: "", trim: true },
+    originalEffectKey: { type: String, default: "", trim: true },
+    reversedFromLedgerId: { type: mongoose.Schema.Types.ObjectId, default: null },
   },
   { timestamps: true }
 );
@@ -103,6 +118,18 @@ stockLedgerSchema.index({ companyId: 1, customerName: 1, createdAt: -1 });
 stockLedgerSchema.index({ companyId: 1, article: 1, warehouse: 1, location: 1, transactionDate: -1 });
 stockLedgerSchema.index({ companyId: 1, warehouse: 1, location: 1, transactionDate: -1 });
 stockLedgerSchema.index({ companyId: 1, referenceNo: 1, createdAt: -1 });
+/**
+ * P0.5A — one Packing stock effect per deterministic effectKey.
+ * Created by scripts/migrate-packing-ledger-effect-unique-index.mjs.
+ */
+stockLedgerSchema.index(
+  { effectKey: 1 },
+  {
+    name: "uniq_stockledger_packing_effect_key",
+    unique: true,
+    partialFilterExpression: { effectKey: { $type: "string", $gt: "" } },
+  }
+);
 
 export { TX_TYPES, UNIFIED_MOVEMENT_TYPES };
 export default mongoose.model("StockLedger", stockLedgerSchema);

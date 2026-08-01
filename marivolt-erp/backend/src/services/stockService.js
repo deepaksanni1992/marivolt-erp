@@ -268,6 +268,16 @@ function buildLedgerRow({
   availableAfter = null,
   batchNo = "",
   serialNo = "",
+  sourceDocumentType = "",
+  sourceDocumentId = null,
+  sourceLineId = null,
+  sourceAllocationId = null,
+  sourceAllocationLineId = null,
+  postingOperationId = "",
+  cancellationOperationId = "",
+  effectKey = "",
+  originalEffectKey = "",
+  reversedFromLedgerId = null,
 }) {
   const code = normArticle(article);
   const wh = normWarehouse(warehouse);
@@ -306,6 +316,16 @@ function buildLedgerRow({
     currency: up(currency) || "USD",
     remarks: s(remarks),
     createdBy: s(createdBy),
+    sourceDocumentType: s(sourceDocumentType),
+    sourceDocumentId: sourceDocumentId || null,
+    sourceLineId: sourceLineId || null,
+    sourceAllocationId: sourceAllocationId || null,
+    sourceAllocationLineId: sourceAllocationLineId || null,
+    postingOperationId: s(postingOperationId),
+    cancellationOperationId: s(cancellationOperationId),
+    effectKey: s(effectKey),
+    originalEffectKey: s(originalEffectKey),
+    reversedFromLedgerId: reversedFromLedgerId || null,
   };
 }
 
@@ -1006,6 +1026,15 @@ export async function packFromAllocation({
   sourceModule = "STORE",
   allocationId = null,
   transactionDate = null,
+  sourceDocumentType = "",
+  sourceDocumentId = null,
+  sourceLineId = null,
+  sourceAllocationId = null,
+  sourceAllocationLineId = null,
+  postingOperationId = "",
+  effectKey = "",
+  batchNo = "",
+  serialNo = "",
 }) {
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
@@ -1015,6 +1044,8 @@ export async function packFromAllocation({
     companyId,
     article,
     warehouse,
+    batchNo,
+    serialNo,
     inc: { reservedQty: -q, packedQty: q },
     guard: { $expr: { $gte: [{ $ifNull: ["$reservedQty", 0] }, q] } },
   });
@@ -1031,6 +1062,8 @@ export async function packFromAllocation({
     movementType: MOVEMENT_TYPES.PACKED,
     article,
     warehouse,
+    batchNo,
+    serialNo,
     qtyOut: q,
     referenceType,
     referenceNo,
@@ -1039,6 +1072,13 @@ export async function packFromAllocation({
     createdBy,
     sourceModule,
     allocationId,
+    sourceDocumentType,
+    sourceDocumentId,
+    sourceLineId,
+    sourceAllocationId: sourceAllocationId || allocationId || null,
+    sourceAllocationLineId,
+    postingOperationId,
+    effectKey,
     ...after,
   });
 }
@@ -1060,6 +1100,17 @@ export async function unpackFromPacked({
   sourceModule = "STORE",
   allocationId = null,
   transactionDate = null,
+  sourceDocumentType = "",
+  sourceDocumentId = null,
+  sourceLineId = null,
+  sourceAllocationId = null,
+  sourceAllocationLineId = null,
+  cancellationOperationId = "",
+  effectKey = "",
+  originalEffectKey = "",
+  reversedFromLedgerId = null,
+  batchNo = "",
+  serialNo = "",
 }) {
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
@@ -1069,6 +1120,8 @@ export async function unpackFromPacked({
     companyId,
     article,
     warehouse,
+    batchNo,
+    serialNo,
     inc: { packedQty: -q, reservedQty: q },
     guard: { $expr: { $gte: [{ $ifNull: ["$packedQty", 0] }, q] } },
   });
@@ -1085,6 +1138,8 @@ export async function unpackFromPacked({
     movementType: MOVEMENT_TYPES.UNPACKED,
     article,
     warehouse,
+    batchNo,
+    serialNo,
     qtyIn: q,
     referenceType,
     referenceNo,
@@ -1093,6 +1148,15 @@ export async function unpackFromPacked({
     createdBy,
     sourceModule,
     allocationId,
+    sourceDocumentType,
+    sourceDocumentId,
+    sourceLineId,
+    sourceAllocationId: sourceAllocationId || allocationId || null,
+    sourceAllocationLineId,
+    cancellationOperationId,
+    effectKey,
+    originalEffectKey,
+    reversedFromLedgerId,
     ...after,
   });
 }
