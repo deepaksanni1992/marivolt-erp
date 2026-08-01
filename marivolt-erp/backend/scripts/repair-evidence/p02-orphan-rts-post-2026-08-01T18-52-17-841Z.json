@@ -1,0 +1,71 @@
+{
+  "repairType": "ORPHAN_RTS_STATUS_RECONCILIATION",
+  "verifiedAt": "2026-08-01T18:52:19.326Z",
+  "pre": {
+    "rtsId": "69f4b9fb47c2dd7dcac1749a",
+    "rtsStatus": "APPROVED",
+    "rtsUpdatedAt": "2026-05-01T15:04:39.021Z",
+    "rtsLinkedAllocationId": "69f4b9b547c2dd7dcac1748a",
+    "rtsLineFingerprint": [
+      {
+        "allocationLineId": "69f4b9b547c2dd7dcac1748b",
+        "article": "51228",
+        "qty": 1
+      }
+    ],
+    "allocationId": "69f4b9b547c2dd7dcac1748a",
+    "allocationStatus": "RTS_COMPLETE",
+    "allocationUpdatedAt": "2026-05-01T14:35:05.883Z",
+    "allocationLineFingerprint": [
+      {
+        "allocationLineId": "",
+        "article": "51228",
+        "qty": 1
+      }
+    ],
+    "articleCount": 1,
+    "ledgerCounts": {
+      "rtsTransferForRtsNo": 0,
+      "stockLedgerForArticles": 0
+    },
+    "stockBalanceCountForArticles": 0,
+    "packingCount": 0,
+    "invoiceCount": 0,
+    "storeDispatchCount": 0,
+    "salesDispatchCount": 0
+  },
+  "post": {
+    "rtsId": "69f4b9fb47c2dd7dcac1749a",
+    "rtsStatus": "DRAFT",
+    "rtsUpdatedAt": "2026-08-01T18:52:17.844Z",
+    "rtsLinkedAllocationId": "69f4b9b547c2dd7dcac1748a",
+    "rtsLineFingerprint": [
+      {
+        "allocationLineId": "69f4b9b547c2dd7dcac1748b",
+        "article": "51228",
+        "qty": 1
+      }
+    ],
+    "allocationId": "69f4b9b547c2dd7dcac1748a",
+    "allocationStatus": "OPEN",
+    "allocationUpdatedAt": "2026-08-01T18:52:18.593Z",
+    "allocationLineFingerprint": [
+      {
+        "allocationLineId": "",
+        "article": "51228",
+        "qty": 1
+      }
+    ],
+    "articleCount": 1,
+    "ledgerCounts": {
+      "rtsTransferForRtsNo": 0,
+      "stockLedgerForArticles": 0
+    },
+    "stockBalanceCountForArticles": 0,
+    "packingCount": 0,
+    "invoiceCount": 0,
+    "storeDispatchCount": 0,
+    "salesDispatchCount": 0
+  },
+  "postFailures": []
+}

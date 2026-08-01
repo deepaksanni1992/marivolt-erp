@@ -1,0 +1,69 @@
+{
+  "repairType": "ORPHAN_RTS_STATUS_RECONCILIATION",
+  "mode": "DRY_RUN",
+  "capturedAt": "2026-08-01T18:52:08.065Z",
+  "commitReference": "a01fddf",
+  "target": {
+    "rtsId": "69f4b9fb47c2dd7dcac1749a",
+    "allocationId": "69f4b9b547c2dd7dcac1748a",
+    "companyId": "69e9f1791bcc5763ef869447"
+  },
+  "evidence": {
+    "rtsId": "69f4b9fb47c2dd7dcac1749a",
+    "rtsStatus": "APPROVED",
+    "rtsUpdatedAt": "2026-05-01T15:04:39.021Z",
+    "rtsLinkedAllocationId": "69f4b9b547c2dd7dcac1748a",
+    "rtsLineFingerprint": [
+      {
+        "allocationLineId": "69f4b9b547c2dd7dcac1748b",
+        "article": "51228",
+        "qty": 1
+      }
+    ],
+    "allocationId": "69f4b9b547c2dd7dcac1748a",
+    "allocationStatus": "RTS_COMPLETE",
+    "allocationUpdatedAt": "2026-05-01T14:35:05.883Z",
+    "allocationLineFingerprint": [
+      {
+        "allocationLineId": "",
+        "article": "51228",
+        "qty": 1
+      }
+    ],
+    "articleCount": 1,
+    "ledgerCounts": {
+      "rtsTransferForRtsNo": 0,
+      "stockLedgerForArticles": 0
+    },
+    "stockBalanceCountForArticles": 0,
+    "packingCount": 0,
+    "invoiceCount": 0,
+    "storeDispatchCount": 0,
+    "salesDispatchCount": 0
+  },
+  "proposed": {
+    "rts": {
+      "filter": {
+        "_id": "69f4b9fb47c2dd7dcac1749a",
+        "companyId": "69e9f1791bcc5763ef869447",
+        "status": "APPROVED",
+        "linkedOrderAllocationId": "69f4b9b547c2dd7dcac1748a"
+      },
+      "$set": {
+        "status": "DRAFT",
+        "updatedBy": "p0.2-orphan-rts-status-reconciliation"
+      }
+    },
+    "allocation": {
+      "filter": {
+        "_id": "69f4b9b547c2dd7dcac1748a",
+        "companyId": "69e9f1791bcc5763ef869447",
+        "status": "RTS_COMPLETE"
+      },
+      "$set": {
+        "status": "OPEN",
+        "updatedBy": "p0.2-orphan-rts-status-reconciliation"
+      }
+    }
+  }
+}
