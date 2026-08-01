@@ -102,6 +102,11 @@ const stockLedgerSchema = new mongoose.Schema(
     sourceLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
     sourceAllocationId: { type: mongoose.Schema.Types.ObjectId, default: null },
     sourceAllocationLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    /** P0.5B — Dispatch source lineage (additive; packing leaves these null). */
+    sourcePackingId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    sourcePackingLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    sourceSalesInvoiceId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    sourceSalesInvoiceLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
     postingOperationId: { type: String, default: "", trim: true },
     cancellationOperationId: { type: String, default: "", trim: true },
     effectKey: { type: String, default: "", trim: true },
@@ -119,8 +124,10 @@ stockLedgerSchema.index({ companyId: 1, article: 1, warehouse: 1, location: 1, t
 stockLedgerSchema.index({ companyId: 1, warehouse: 1, location: 1, transactionDate: -1 });
 stockLedgerSchema.index({ companyId: 1, referenceNo: 1, createdAt: -1 });
 /**
- * P0.5A — one Packing stock effect per deterministic effectKey.
- * Created by scripts/migrate-packing-ledger-effect-unique-index.mjs.
+ * P0.5A/P0.5B — one stock effect per deterministic effectKey (Packing + Dispatch).
+ * Name retains packing prefix; filter is generic for every non-empty effectKey.
+ * Created by scripts/migrate-packing-ledger-effect-unique-index.mjs;
+ * verified for Dispatch by scripts/migrate-dispatch-ledger-effect-unique-index.mjs.
  */
 stockLedgerSchema.index(
   { effectKey: 1 },

@@ -36,6 +36,24 @@ import {
   isPackingEffectDuplicateKeyError,
   packingConflictError,
 } from "../utils/packingIdempotency.js";
+import {
+  CLAIMABLE_DISPATCH_CANCEL_STATUSES,
+  DISPATCH_ALREADY_CANCELLED,
+  DISPATCH_ALREADY_POSTED,
+  DISPATCH_CANCEL_CONFLICT,
+  DISPATCH_CANCEL_IN_PROGRESS,
+  DISPATCH_EXCEEDS_PACKED_QTY,
+  DISPATCH_LEDGER_INCONSISTENT,
+  DISPATCH_POST_IN_PROGRESS,
+  DISPATCH_POSTING_CONFLICT,
+  DISPATCH_SOURCE_DOCUMENT_TYPE,
+  DISPATCH_SOURCE_PACKING_INVALID,
+  POSTED_DISPATCH_STATUSES,
+  buildDispatchEffectKey,
+  buildDispatchReversalEffectKey,
+  dispatchConflictError,
+  isDispatchEffectDuplicateKeyError,
+} from "../utils/dispatchIdempotency.js";
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -74,7 +92,6 @@ async function resolveCustomerSnapshotForAllocation(req, allocation) {
   };
 }
 
-const POSTED_DISPATCH_STATUSES = ["POSTED", "PARTIALLY_DISPATCHED", "FULLY_DISPATCHED"];
 const DISPATCH_READY_INVOICE_STATUSES = ["ISSUED", "PARTIALLY_PAID", "PAID"];
 const PACKAGE_TYPES = new Set(["CARTON", "PALLET", "WOODEN_BOX", "CRATE", "BUNDLE"]);
 
@@ -186,14 +203,14 @@ async function recalculateAllocationPackingProgress(req, allocation, session) {
   await allocation.save({ session });
 }
 
-async function sumPostedDispatchQtyByPackingLine(companyId, packingId) {
-  const rows = await StoreDispatch.find({
+async function sumPostedDispatchQtyByPackingLine(companyId, packingId, session = null) {
+  const q = StoreDispatch.find({
     companyId,
     packingId,
-    status: { $in: POSTED_DISPATCH_STATUSES },
-  })
-    .select("lines")
-    .lean();
+    status: { $in: [...POSTED_DISPATCH_STATUSES] },
+  }).select("lines");
+  if (session) q.session(session);
+  const rows = await q.lean();
   const map = new Map();
   for (const d of rows) {
     for (const ln of d.lines || []) {
@@ -205,14 +222,14 @@ async function sumPostedDispatchQtyByPackingLine(companyId, packingId) {
   return map;
 }
 
-async function sumPostedDispatchQtyByInvoiceLine(companyId, salesInvoiceId) {
-  const rows = await StoreDispatch.find({
+async function sumPostedDispatchQtyByInvoiceLine(companyId, salesInvoiceId, session = null) {
+  const q = StoreDispatch.find({
     companyId,
     salesInvoiceId,
-    status: { $in: POSTED_DISPATCH_STATUSES },
-  })
-    .select("lines")
-    .lean();
+    status: { $in: [...POSTED_DISPATCH_STATUSES] },
+  }).select("lines");
+  if (session) q.session(session);
+  const rows = await q.lean();
   const map = new Map();
   for (const d of rows) {
     for (const ln of d.lines || []) {
@@ -222,6 +239,122 @@ async function sumPostedDispatchQtyByInvoiceLine(companyId, salesInvoiceId) {
     }
   }
   return map;
+}
+
+async function findDispatchOutLedgers(companyId, dispatchId, session = null) {
+  const q = StockLedger.find({
+    companyId,
+    sourceDocumentType: DISPATCH_SOURCE_DOCUMENT_TYPE,
+    sourceDocumentId: dispatchId,
+    movementType: "DISPATCH_OUT",
+  });
+  if (session) q.session(session);
+  return q.lean();
+}
+
+async function findDispatchCancelLedgers(companyId, dispatchId, session = null) {
+  const q = StockLedger.find({
+    companyId,
+    sourceDocumentType: DISPATCH_SOURCE_DOCUMENT_TYPE,
+    sourceDocumentId: dispatchId,
+    movementType: "DISPATCH_CANCEL",
+  });
+  if (session) q.session(session);
+  return q.lean();
+}
+
+async function findLegacyDispatchOutLedgersByDispatchNo(companyId, dispatchNo, session = null) {
+  const q = StockLedger.find({
+    companyId,
+    referenceNo: String(dispatchNo || ""),
+    $or: [{ movementType: "DISPATCH_OUT" }, { transactionType: "DISPATCH_OUT" }],
+  });
+  if (session) q.session(session);
+  return q.lean();
+}
+
+function dispatchLinesNeedingStock(doc) {
+  return (doc.lines || []).filter((ln) => (Number(ln.dispatchQty) || 0) > 0 && ln._id);
+}
+
+async function assertDispatchPostConsistency(companyId, doc, session = null) {
+  const need = dispatchLinesNeedingStock(doc);
+  const ledgers = await findDispatchOutLedgers(companyId, doc._id, session);
+  if (
+    ledgers.length === need.length &&
+    need.every((ln) => ledgers.some((r) => String(r.sourceLineId) === String(ln._id)))
+  ) {
+    return { ok: true, mode: "source" };
+  }
+  const legacy = await findLegacyDispatchOutLedgersByDispatchNo(companyId, doc.dispatchNo, session);
+  if (legacy.length > 0 && ledgers.length === 0) {
+    return { ok: true, mode: "legacy" };
+  }
+  return { ok: false, mode: "missing", expected: need.length, found: ledgers.length, legacy: legacy.length };
+}
+
+async function recalculateInvoiceDispatchProgress(req, invoice, session) {
+  if (!invoice) return;
+  const remaining = await StoreDispatch.find({
+    companyId: req.companyId,
+    salesInvoiceId: invoice._id,
+    status: { $in: [...POSTED_DISPATCH_STATUSES] },
+  })
+    .session(session)
+    .sort({ postedAt: -1, createdAt: -1 })
+    .lean();
+
+  const dispatchedByLine = await sumPostedDispatchQtyByInvoiceLine(req.companyId, invoice._id, session);
+  const totalInvoiceQty = (invoice.lines || []).reduce((sum, ln) => sum + (Number(ln.qty) || 0), 0);
+  const totalDispatched = Array.from(dispatchedByLine.values()).reduce(
+    (sum, qty) => sum + (Number(qty) || 0),
+    0
+  );
+
+  if (!remaining.length) {
+    invoice.linkedSalesDispatchId = null;
+    invoice.linkedSalesDispatchNo = "";
+    if (String(invoice.status || "").toUpperCase() === "DISPATCHED") {
+      // Store-dispatch completion flag only; revert to ISSUED (not payment redesign).
+      invoice.status = "ISSUED";
+    }
+  } else {
+    const latest = remaining[0];
+    invoice.linkedSalesDispatchId = latest._id;
+    invoice.linkedSalesDispatchNo = latest.dispatchNo || "";
+    if (totalInvoiceQty > 0 && totalDispatched >= totalInvoiceQty - 1e-6) {
+      invoice.status = "DISPATCHED";
+    } else if (String(invoice.status || "").toUpperCase() === "DISPATCHED") {
+      invoice.status = "ISSUED";
+    }
+  }
+  invoice.updatedBy = req.user?.email || "";
+  await invoice.save({ session });
+}
+
+async function recalculateAllocationDispatchProgress(req, allocationId, session) {
+  if (!allocationId) return;
+  const allocation = await OrderAllocation.findOne(withCompany(req, { _id: allocationId })).session(session);
+  if (!allocation) return;
+  const remaining = await StoreDispatch.find({
+    companyId: req.companyId,
+    allocationId,
+    status: { $in: [...POSTED_DISPATCH_STATUSES] },
+  })
+    .session(session)
+    .select("status")
+    .lean();
+  if (!remaining.length) {
+    allocation.dispatchStatus = "NOT_DISPATCHED";
+  } else if (remaining.some((d) => d.status === "PARTIALLY_DISPATCHED")) {
+    allocation.dispatchStatus = "PARTIALLY_DISPATCHED";
+  } else if (remaining.every((d) => d.status === "FULLY_DISPATCHED" || d.status === "POSTED")) {
+    allocation.dispatchStatus = "DISPATCHED";
+  } else {
+    allocation.dispatchStatus = "PARTIALLY_DISPATCHED";
+  }
+  allocation.updatedBy = req.user?.email || "";
+  await allocation.save({ session });
 }
 
 async function sumInvoicedQtyByPackingLine(companyId, packingId) {
@@ -1215,80 +1348,235 @@ export async function createStoreDispatchDraft(req, res) {
 export async function postStoreDispatch(req, res) {
   const session = await mongoose.startSession();
   try {
+    let idempotent = false;
     await session.withTransaction(async () => {
       const id = req.params.id;
-      const doc = await StoreDispatch.findOne(withCompany(req, { _id: id })).session(session);
-      if (!doc) throw new Error("Dispatch not found");
-      if (doc.status !== "DRAFT") throw new Error("Only DRAFT dispatch can be posted");
-      const packing = await StorePacking.findOne(withCompany(req, { _id: doc.packingId })).session(session);
-      if (!packing || !POSTED_PACKING_STATUSES.includes(packing.status)) throw new Error("Packing invalid");
-      const invoice = await SalesInvoice.findOne(withCompany(req, { _id: doc.salesInvoiceId })).session(session);
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw dispatchConflictError(DISPATCH_POSTING_CONFLICT, "Invalid dispatch id", null, 400);
+      }
+
+      const claimed = await StoreDispatch.findOneAndUpdate(
+        withCompany(req, { _id: id, status: "DRAFT" }),
+        { $set: { status: "POSTING", updatedBy: req.user?.email || "" } },
+        { new: true, session }
+      );
+
+      if (!claimed) {
+        const existing = await StoreDispatch.findOne(withCompany(req, { _id: id })).session(session);
+        if (!existing) {
+          throw dispatchConflictError(DISPATCH_POSTING_CONFLICT, "Dispatch not found", null, 404);
+        }
+        const st = String(existing.status || "").toUpperCase();
+        if (st === "POSTING") {
+          throw dispatchConflictError(DISPATCH_POST_IN_PROGRESS, "Dispatch post already in progress");
+        }
+        if (st === "CANCELLING") {
+          throw dispatchConflictError(DISPATCH_POSTING_CONFLICT, "Dispatch cancellation in progress");
+        }
+        if (POSTED_DISPATCH_STATUSES.includes(st)) {
+          const consistency = await assertDispatchPostConsistency(req.companyId, existing, session);
+          if (!consistency.ok) {
+            throw dispatchConflictError(
+              DISPATCH_LEDGER_INCONSISTENT,
+              "Dispatch is posted but expected DISPATCH_OUT ledger evidence is missing or incomplete",
+              { dispatchId: String(existing._id), ...consistency }
+            );
+          }
+          idempotent = true;
+          return;
+        }
+        if (st === "CANCELLED") {
+          throw dispatchConflictError(DISPATCH_POSTING_CONFLICT, "Cannot post a cancelled dispatch");
+        }
+        throw dispatchConflictError(
+          DISPATCH_POSTING_CONFLICT,
+          `Only DRAFT dispatch can be posted (status ${st})`
+        );
+      }
+
+      const packing = await StorePacking.findOne(withCompany(req, { _id: claimed.packingId })).session(session);
+      if (!packing || !POSTED_PACKING_STATUSES.includes(packing.status)) {
+        throw dispatchConflictError(
+          DISPATCH_SOURCE_PACKING_INVALID,
+          "Linked packing is missing or not posted"
+        );
+      }
+      const invoice = await SalesInvoice.findOne(withCompany(req, { _id: claimed.salesInvoiceId })).session(
+        session
+      );
       if (!invoice) throw new Error("Sales Invoice required before dispatch");
-      if (String(invoice.status || "").toUpperCase() === "CANCELLED") throw new Error("Cannot dispatch cancelled invoice");
+      if (String(invoice.status || "").toUpperCase() === "CANCELLED") {
+        throw new Error("Cannot dispatch cancelled invoice");
+      }
       if (!DISPATCH_READY_INVOICE_STATUSES.includes(String(invoice.status || "").toUpperCase())) {
         throw new Error("Dispatch requires a posted Sales Invoice");
       }
 
-      const dispatchedByLine = await sumPostedDispatchQtyByInvoiceLine(req.companyId, invoice._id);
-      const wh = String(doc.warehouse || packing.warehouse || "MAIN").toUpperCase();
+      const dispatchedByLine = await sumPostedDispatchQtyByInvoiceLine(
+        req.companyId,
+        invoice._id,
+        session
+      );
+      const dispatchedByPackingLine = await sumPostedDispatchQtyByPackingLine(
+        req.companyId,
+        packing._id,
+        session
+      );
+      const wh = String(claimed.warehouse || packing.warehouse || "MAIN").toUpperCase();
+      const postingOperationId = crypto.randomUUID();
 
-      for (const ln of doc.lines || []) {
+      for (const ln of claimed.lines || []) {
+        const dq = Number(ln.dispatchQty) || 0;
+        if (!(dq > 0)) continue;
+        if (!ln._id) throw new Error(`Dispatch line id missing for ${ln.article}`);
+
         const match = (invoice.lines || []).find((x) => String(x._id) === String(ln.invoiceLineId));
+        if (!match) {
+          throw dispatchConflictError(
+            DISPATCH_POSTING_CONFLICT,
+            `Invoice line missing for ${ln.article}`
+          );
+        }
         const invoiceQty = Number(match?.qty) || 0;
         const out = dispatchedByLine.get(String(ln.invoiceLineId)) || 0;
-        const dq = Number(ln.dispatchQty) || 0;
-        if (out + dq > invoiceQty) throw new Error(`Dispatch qty exceeds invoice pending dispatch qty for ${ln.article}`);
-        if (!(dq > 0)) continue;
-        await stockService.dispatchFromPacked({
-          session,
+        if (out + dq > invoiceQty + 1e-6) {
+          throw dispatchConflictError(
+            DISPATCH_EXCEEDS_PACKED_QTY,
+            `Dispatch qty exceeds invoice pending dispatch qty for ${ln.article}`,
+            { article: ln.article, pending: Math.max(0, invoiceQty - out), requested: dq }
+          );
+        }
+
+        const packingLineId = ln.packingLineId || match.packingLineId || null;
+        if (packingLineId) {
+          const packLine = (packing.lines || []).find((x) => String(x._id) === String(packingLineId));
+          const packedQty = Number(packLine?.packQty) || Number(ln.packedQty) || invoiceQty;
+          const packOut = dispatchedByPackingLine.get(String(packingLineId)) || 0;
+          if (packOut + dq > packedQty + 1e-6) {
+            throw dispatchConflictError(
+              DISPATCH_EXCEEDS_PACKED_QTY,
+              `Dispatch qty exceeds packed quantity for ${ln.article}`,
+              { article: ln.article, packedQty, alreadyDispatched: packOut, requested: dq }
+            );
+          }
+        }
+
+        const effectKey = buildDispatchEffectKey({
           companyId: req.companyId,
-          article: ln.article,
+          dispatchId: claimed._id,
+          dispatchLineId: ln._id,
+          movementType: "DISPATCH_OUT",
           warehouse: wh,
-          qty: dq,
-          customerName: doc.customerName || "",
-          referenceType: "STORE_DISPATCH",
-          referenceNo: doc.dispatchNo,
-          remarks: `Dispatch ${doc.dispatchNo}`,
-          createdBy: req.user?.email || "",
-          sourceModule: "STORE",
-          transactionDate: doc.dispatchDate || new Date(),
+          location: wh,
         });
+        try {
+          await stockService.dispatchFromPacked({
+            session,
+            companyId: req.companyId,
+            article: ln.article,
+            warehouse: wh,
+            qty: dq,
+            customerName: claimed.customerName || "",
+            referenceType: "STORE_DISPATCH",
+            referenceNo: claimed.dispatchNo,
+            remarks: `Dispatch ${claimed.dispatchNo}`,
+            createdBy: req.user?.email || "",
+            sourceModule: "STORE",
+            transactionDate: claimed.dispatchDate || new Date(),
+            sourceDocumentType: DISPATCH_SOURCE_DOCUMENT_TYPE,
+            sourceDocumentId: claimed._id,
+            sourceLineId: ln._id,
+            sourceAllocationId: claimed.allocationId || packing.allocationId || null,
+            sourcePackingId: packing._id,
+            sourcePackingLineId: packingLineId,
+            sourceSalesInvoiceId: invoice._id,
+            sourceSalesInvoiceLineId: ln.invoiceLineId || match._id,
+            postingOperationId,
+            effectKey,
+          });
+        } catch (stockErr) {
+          if (isDispatchEffectDuplicateKeyError(stockErr)) {
+            throw dispatchConflictError(
+              DISPATCH_POSTING_CONFLICT,
+              "Dispatch stock effect already exists for this line",
+              { dispatchId: String(claimed._id), dispatchLineId: String(ln._id) }
+            );
+          }
+          throw stockErr;
+        }
       }
 
       const totalInvoiceQty = (invoice.lines || []).reduce((sum, ln) => sum + (Number(ln.qty) || 0), 0);
-      const totalDispatchedBefore = Array.from(dispatchedByLine.values()).reduce((sum, qty) => sum + (Number(qty) || 0), 0);
-      const totalDispatchedNow = (doc.lines || []).reduce((sum, ln) => sum + (Number(ln.dispatchQty) || 0), 0);
-      doc.status =
+      const totalDispatchedBefore = Array.from(dispatchedByLine.values()).reduce(
+        (sum, qty) => sum + (Number(qty) || 0),
+        0
+      );
+      const totalDispatchedNow = (claimed.lines || []).reduce(
+        (sum, ln) => sum + (Number(ln.dispatchQty) || 0),
+        0
+      );
+      claimed.status =
         totalDispatchedBefore + totalDispatchedNow >= totalInvoiceQty - 1e-6
           ? "FULLY_DISPATCHED"
           : "PARTIALLY_DISPATCHED";
-      invoice.status = doc.status === "FULLY_DISPATCHED" ? "DISPATCHED" : invoice.status;
-      invoice.linkedSalesDispatchId = doc._id;
-      invoice.linkedSalesDispatchNo = doc.dispatchNo;
+      invoice.status = claimed.status === "FULLY_DISPATCHED" ? "DISPATCHED" : invoice.status;
+      invoice.linkedSalesDispatchId = claimed._id;
+      invoice.linkedSalesDispatchNo = claimed.dispatchNo;
       invoice.updatedBy = req.user?.email || "";
       await invoice.save({ session });
-      if (doc.allocationId) {
-        const allocation = await OrderAllocation.findOne(withCompany(req, { _id: doc.allocationId })).session(session);
+      if (claimed.allocationId) {
+        const allocation = await OrderAllocation.findOne(
+          withCompany(req, { _id: claimed.allocationId })
+        ).session(session);
         if (allocation) {
-          allocation.dispatchStatus = doc.status === "FULLY_DISPATCHED" ? "DISPATCHED" : "PARTIALLY_DISPATCHED";
+          allocation.dispatchStatus =
+            claimed.status === "FULLY_DISPATCHED" ? "DISPATCHED" : "PARTIALLY_DISPATCHED";
           allocation.updatedBy = req.user?.email || "";
           await allocation.save({ session });
         }
       }
-      doc.postedAt = new Date();
-      doc.updatedBy = req.user?.email || "";
-      await doc.save({ session });
+      claimed.postedAt = new Date();
+      claimed.updatedBy = req.user?.email || "";
+      await claimed.save({ session });
       await writeAudit(req, {
         action: "POST",
         module: "STORE",
         entityType: "STORE_DISPATCH",
-        entityId: doc._id,
-        documentNo: doc.dispatchNo,
-        description: `Dispatch ${doc.dispatchNo} posted`,
+        entityId: claimed._id,
+        documentNo: claimed.dispatchNo,
+        description: `Dispatch ${claimed.dispatchNo} posted`,
+        metadata: { postingOperationId },
       });
     });
+    if (idempotent) {
+      return res.status(200).json({
+        success: true,
+        code: DISPATCH_ALREADY_POSTED,
+        alreadyPosted: true,
+      });
+    }
     res.json({ success: true });
   } catch (err) {
+    if (
+      err?.code === DISPATCH_ALREADY_POSTED ||
+      err?.code === DISPATCH_POST_IN_PROGRESS ||
+      err?.code === DISPATCH_POSTING_CONFLICT ||
+      err?.code === DISPATCH_LEDGER_INCONSISTENT ||
+      err?.code === DISPATCH_EXCEEDS_PACKED_QTY ||
+      err?.code === DISPATCH_SOURCE_PACKING_INVALID
+    ) {
+      return res.status(err.statusCode || 409).json({
+        message: err.message,
+        code: err.code,
+        details: err.details || null,
+      });
+    }
+    if (isDispatchEffectDuplicateKeyError(err)) {
+      return res.status(409).json({
+        message: "Dispatch stock effect already exists",
+        code: DISPATCH_POSTING_CONFLICT,
+      });
+    }
     res.status(400).json({ message: err.message });
   } finally {
     session.endSession();
@@ -1298,57 +1586,213 @@ export async function postStoreDispatch(req, res) {
 export async function cancelStoreDispatch(req, res) {
   const session = await mongoose.startSession();
   try {
+    let idempotent = false;
     await session.withTransaction(async () => {
       const id = req.params.id;
-      const doc = await StoreDispatch.findOne(withCompany(req, { _id: id })).session(session);
-      if (!doc) throw new Error("Dispatch not found");
-      if (doc.status === "CANCELLED") throw new Error("Already cancelled");
-      if (doc.status === "DRAFT") {
-        doc.status = "CANCELLED";
-        doc.cancelledAt = new Date();
-        doc.cancellationReason = t(req.body?.reason);
-        doc.updatedBy = req.user?.email || "";
-        await doc.save({ session });
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw dispatchConflictError(DISPATCH_CANCEL_CONFLICT, "Invalid dispatch id", null, 400);
+      }
+
+      const draftClaim = await StoreDispatch.findOneAndUpdate(
+        withCompany(req, { _id: id, status: "DRAFT" }),
+        {
+          $set: {
+            status: "CANCELLED",
+            cancelledAt: new Date(),
+            cancellationReason: t(req.body?.reason),
+            updatedBy: req.user?.email || "",
+          },
+        },
+        { new: true, session }
+      );
+      if (draftClaim) {
+        await writeAudit(req, {
+          action: "CANCEL",
+          module: "STORE",
+          entityType: "STORE_DISPATCH",
+          entityId: draftClaim._id,
+          documentNo: draftClaim.dispatchNo,
+          description: `Dispatch ${draftClaim.dispatchNo} cancelled (DRAFT, no stock impact)`,
+        });
         return;
       }
-      if (!POSTED_DISPATCH_STATUSES.includes(doc.status)) throw new Error("Cannot cancel");
 
-      const packing = await StorePacking.findOne(withCompany(req, { _id: doc.packingId })).session(session);
-      const wh = String(doc.warehouse || packing?.warehouse || "MAIN").toUpperCase();
+      const claimed = await StoreDispatch.findOneAndUpdate(
+        withCompany(req, { _id: id, status: { $in: [...CLAIMABLE_DISPATCH_CANCEL_STATUSES] } }),
+        { $set: { status: "CANCELLING", updatedBy: req.user?.email || "" } },
+        { new: true, session }
+      );
 
-      for (const ln of doc.lines || []) {
-        const q = Number(ln.dispatchQty) || 0;
-        if (!(q > 0)) continue;
-        await stockService.cancelDispatchFromPacked({
-          session,
-          companyId: req.companyId,
-          article: ln.article,
-          warehouse: wh,
-          qty: q,
-          customerName: doc.customerName || "",
-          referenceType: "STORE_DISPATCH",
-          referenceNo: doc.dispatchNo,
-          remarks: `Cancel dispatch ${doc.dispatchNo}`,
-          createdBy: req.user?.email || "",
-          sourceModule: "STORE",
-        });
+      if (!claimed) {
+        const existing = await StoreDispatch.findOne(withCompany(req, { _id: id })).session(session);
+        if (!existing) {
+          throw dispatchConflictError(DISPATCH_CANCEL_CONFLICT, "Dispatch not found", null, 404);
+        }
+        const st = String(existing.status || "").toUpperCase();
+        if (st === "CANCELLED") {
+          idempotent = true;
+          return;
+        }
+        if (st === "CANCELLING") {
+          throw dispatchConflictError(
+            DISPATCH_CANCEL_IN_PROGRESS,
+            "Dispatch cancellation already in progress"
+          );
+        }
+        if (st === "POSTING") {
+          throw dispatchConflictError(DISPATCH_CANCEL_CONFLICT, "Dispatch post in progress");
+        }
+        throw dispatchConflictError(
+          DISPATCH_CANCEL_CONFLICT,
+          `Cannot cancel dispatch in status ${st}`
+        );
       }
-      doc.status = "CANCELLED";
-      doc.cancelledAt = new Date();
-      doc.cancellationReason = t(req.body?.reason);
-      doc.updatedBy = req.user?.email || "";
-      await doc.save({ session });
+
+      const cancellationOperationId = crypto.randomUUID();
+      const sourced = await findDispatchOutLedgers(req.companyId, claimed._id, session);
+      let effects = sourced;
+      if (!effects.length) {
+        const legacy = await findLegacyDispatchOutLedgersByDispatchNo(
+          req.companyId,
+          claimed.dispatchNo,
+          session
+        );
+        if (!legacy.length) {
+          throw dispatchConflictError(
+            DISPATCH_LEDGER_INCONSISTENT,
+            "Cannot cancel: original DISPATCH_OUT ledger evidence is missing",
+            { dispatchId: String(claimed._id) }
+          );
+        }
+        effects = legacy;
+      }
+
+      const existingCancel = await findDispatchCancelLedgers(req.companyId, claimed._id, session);
+      if (existingCancel.length > 0) {
+        throw dispatchConflictError(
+          DISPATCH_CANCEL_CONFLICT,
+          "Dispatch reversal effects already exist",
+          { dispatchId: String(claimed._id), cancelCount: existingCancel.length }
+        );
+      }
+
+      for (const outRow of effects) {
+        const q = Number(outRow.qtyOut) || 0;
+        if (!(q > 0)) continue;
+        const warehouse = String(outRow.warehouse || outRow.location || "").toUpperCase();
+        if (!warehouse) {
+          throw dispatchConflictError(
+            DISPATCH_LEDGER_INCONSISTENT,
+            "Cannot cancel: DISPATCH_OUT ledger row has no warehouse/location",
+            { ledgerId: String(outRow._id) }
+          );
+        }
+        const dispatchLineId = outRow.sourceLineId || null;
+        const originalEffectKey =
+          outRow.effectKey ||
+          buildDispatchEffectKey({
+            companyId: req.companyId,
+            dispatchId: claimed._id,
+            dispatchLineId: dispatchLineId || outRow._id,
+            movementType: "DISPATCH_OUT",
+            warehouse,
+            location: warehouse,
+            batchNo: outRow.batchNo || "",
+            serialNo: outRow.serialNo || "",
+          });
+        const effectKey = buildDispatchReversalEffectKey(originalEffectKey);
+        try {
+          await stockService.cancelDispatchFromPacked({
+            session,
+            companyId: req.companyId,
+            article: outRow.article,
+            warehouse,
+            qty: q,
+            batchNo: outRow.batchNo || "",
+            serialNo: outRow.serialNo || "",
+            customerName: claimed.customerName || outRow.customerName || "",
+            referenceType: "STORE_DISPATCH",
+            referenceNo: claimed.dispatchNo,
+            remarks: `Cancel dispatch ${claimed.dispatchNo}`,
+            createdBy: req.user?.email || "",
+            sourceModule: "STORE",
+            sourceDocumentType: DISPATCH_SOURCE_DOCUMENT_TYPE,
+            sourceDocumentId: claimed._id,
+            sourceLineId: dispatchLineId,
+            sourceAllocationId: outRow.sourceAllocationId || claimed.allocationId || null,
+            sourceAllocationLineId: outRow.sourceAllocationLineId || null,
+            sourcePackingId: outRow.sourcePackingId || claimed.packingId || null,
+            sourcePackingLineId: outRow.sourcePackingLineId || null,
+            sourceSalesInvoiceId: outRow.sourceSalesInvoiceId || claimed.salesInvoiceId || null,
+            sourceSalesInvoiceLineId: outRow.sourceSalesInvoiceLineId || null,
+            cancellationOperationId,
+            effectKey,
+            originalEffectKey,
+            reversedFromLedgerId: outRow._id,
+          });
+        } catch (stockErr) {
+          if (isDispatchEffectDuplicateKeyError(stockErr)) {
+            throw dispatchConflictError(
+              DISPATCH_CANCEL_CONFLICT,
+              "Dispatch reversal effect already exists",
+              { dispatchId: String(claimed._id), reversedFromLedgerId: String(outRow._id) }
+            );
+          }
+          throw stockErr;
+        }
+      }
+
+      claimed.status = "CANCELLED";
+      claimed.cancelledAt = new Date();
+      claimed.cancellationReason = t(req.body?.reason);
+      claimed.updatedBy = req.user?.email || "";
+      await claimed.save({ session });
+
+      if (claimed.salesInvoiceId) {
+        const invoice = await SalesInvoice.findOne(
+          withCompany(req, { _id: claimed.salesInvoiceId })
+        ).session(session);
+        await recalculateInvoiceDispatchProgress(req, invoice, session);
+      }
+      await recalculateAllocationDispatchProgress(req, claimed.allocationId, session);
+
       await writeAudit(req, {
         action: "CANCEL",
         module: "STORE",
         entityType: "STORE_DISPATCH",
-        entityId: doc._id,
-        documentNo: doc.dispatchNo,
-        description: `Dispatch ${doc.dispatchNo} cancelled`,
+        entityId: claimed._id,
+        documentNo: claimed.dispatchNo,
+        description: `Dispatch ${claimed.dispatchNo} cancelled`,
+        metadata: { cancellationOperationId, reversedEffects: effects.length },
       });
     });
+    if (idempotent) {
+      return res.status(200).json({
+        success: true,
+        code: DISPATCH_ALREADY_CANCELLED,
+        alreadyCancelled: true,
+      });
+    }
     res.json({ success: true });
   } catch (err) {
+    if (
+      err?.code === DISPATCH_ALREADY_CANCELLED ||
+      err?.code === DISPATCH_CANCEL_IN_PROGRESS ||
+      err?.code === DISPATCH_CANCEL_CONFLICT ||
+      err?.code === DISPATCH_LEDGER_INCONSISTENT
+    ) {
+      return res.status(err.statusCode || 409).json({
+        message: err.message,
+        code: err.code,
+        details: err.details || null,
+      });
+    }
+    if (isDispatchEffectDuplicateKeyError(err)) {
+      return res.status(409).json({
+        message: "Dispatch reversal effect already exists",
+        code: DISPATCH_CANCEL_CONFLICT,
+      });
+    }
     res.status(400).json({ message: err.message });
   } finally {
     session.endSession();

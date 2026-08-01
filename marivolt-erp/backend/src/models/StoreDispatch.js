@@ -67,7 +67,16 @@ const storeDispatchSchema = new mongoose.Schema(
     remarks: { type: String, default: "", trim: true },
     status: {
       type: String,
-      enum: ["DRAFT", "POSTED", "PARTIALLY_DISPATCHED", "FULLY_DISPATCHED", "CANCELLED"],
+      // POSTING / CANCELLING are ephemeral in-transaction claims (P0.5B).
+      enum: [
+        "DRAFT",
+        "POSTING",
+        "POSTED",
+        "PARTIALLY_DISPATCHED",
+        "FULLY_DISPATCHED",
+        "CANCELLING",
+        "CANCELLED",
+      ],
       default: "DRAFT",
       index: true,
     },
