@@ -1,0 +1,141 @@
+{
+  "capturedAt": "2026-08-01T19:50:58.742Z",
+  "mode": "DRY_RUN",
+  "serverVersion": "8.0.28",
+  "decision": "REUSE_EXISTING_EFFECTKEY_INDEX",
+  "indexSpec": {
+    "name": "uniq_stockledger_packing_effect_key",
+    "key": {
+      "effectKey": 1
+    },
+    "unique": true,
+    "partialFilterExpression": {
+      "effectKey": {
+        "$type": "string",
+        "$gt": ""
+      }
+    },
+    "reusedFrom": "P0.5A",
+    "note": "Index name retains packing prefix; filter already covers Dispatch effectKeys."
+  },
+  "counts": {
+    "withEffectKey": 0,
+    "dispatchOut": 0,
+    "dispatchOutWithSource": 0,
+    "duplicateEffectKeyGroups": 0,
+    "indexPresent": true
+  },
+  "duplicateSamples": [],
+  "existingIndexes": [
+    {
+      "name": "_id_",
+      "key": {
+        "_id": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1",
+      "key": {
+        "companyId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_transactionDate_-1_article_1",
+      "key": {
+        "companyId": 1,
+        "transactionDate": -1,
+        "article": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_referenceNo_1_transactionType_1",
+      "key": {
+        "companyId": 1,
+        "referenceNo": 1,
+        "transactionType": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_movementType_1_createdAt_-1",
+      "key": {
+        "companyId": 1,
+        "movementType": 1,
+        "createdAt": -1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_customerName_1_createdAt_-1",
+      "key": {
+        "companyId": 1,
+        "customerName": 1,
+        "createdAt": -1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_article_1_warehouse_1_location_1_transactionDate_-1",
+      "key": {
+        "companyId": 1,
+        "article": 1,
+        "warehouse": 1,
+        "location": 1,
+        "transactionDate": -1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_warehouse_1_location_1_transactionDate_-1",
+      "key": {
+        "companyId": 1,
+        "warehouse": 1,
+        "location": 1,
+        "transactionDate": -1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "companyId_1_referenceNo_1_createdAt_-1",
+      "key": {
+        "companyId": 1,
+        "referenceNo": 1,
+        "createdAt": -1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "allocationId_1",
+      "key": {
+        "allocationId": 1
+      },
+      "unique": false,
+      "partialFilterExpression": null
+    },
+    {
+      "name": "uniq_stockledger_packing_effect_key",
+      "key": {
+        "effectKey": 1
+      },
+      "unique": true,
+      "partialFilterExpression": {
+        "effectKey": {
+          "$type": "string",
+          "$gt": ""
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,253 @@
+{
+  "capturedAt": "2026-08-01T19:47:51.611Z",
+  "phase": "P0.5B-pre-audit",
+  "statusCounts": [],
+  "totalDispatch": 0,
+  "dispatchIndexes": [
+    {
+      "name": "_id_",
+      "key": {
+        "_id": 1
+      },
+      "unique": false
+    },
+    {
+      "name": "companyId_1",
+      "key": {
+        "companyId": 1
+      },
+      "unique": false
+    },
+    {
+      "name": "branchId_1",
+      "key": {
+        "branchId": 1
+      },
+      "unique": false
+    },
+    {
+      "name": "dispatchNo_1",
+      "key": {
+        "dispatchNo": 1
+      },
+      "unique": false
+    },
+    {
+      "name": "dispatchDate_1",
+      "key": {
+        "dispatchDate": 1
+      },
+      "unique": false
+    },
+    {
+      "name": "packingId_1",
+      "key": {
+        "packingId": 1
+      },
+      "unique": false
+    },
+    {
+      "name": "packingNo_1",
+      "key": {
+        "packingNo": 1
+      },
+      "unique": false
+    },
+    {
+      "name": "allocationId_1",
+      "key": {
+        "allocationId": 1
+      },
+      "unique": false
+    },
+    {
+      "name": "status_1",
+      "key": {
+        "status": 1
+      },
+      "unique": false
+    },
+    {
+      "name": "companyId_1_dispatchNo_1",
+      "key": {
+        "companyId": 1,
+        "dispatchNo": 1
+      },
+      "unique": true
+    },
+    {
+      "name": "companyId_1_packingId_1_status_1",
+      "key": {
+        "companyId": 1,
+        "packingId": 1,
+        "status": 1
+      },
+      "unique": false
+    },
+    {
+      "name": "sourceDocumentId_1",
+      "key": {
+        "sourceDocumentId": 1
+      },
+      "unique": false
+    },
+    {
+      "name": "salesInvoiceId_1",
+      "key": {
+        "salesInvoiceId": 1
+      },
+      "unique": false
+    },
+    {
+      "name": "salesInvoiceNo_1",
+      "key": {
+        "salesInvoiceNo": 1
+      },
+      "unique": false
+    }
+  ],
+  "ledgerIndexes": [
+    {
+      "name": "_id_",
+      "key": {
+        "_id": 1
+      },
+      "unique": false,
+      "partial": null
+    },
+    {
+      "name": "companyId_1",
+      "key": {
+        "companyId": 1
+      },
+      "unique": false,
+      "partial": null
+    },
+    {
+      "name": "companyId_1_transactionDate_-1_article_1",
+      "key": {
+        "companyId": 1,
+        "transactionDate": -1,
+        "article": 1
+      },
+      "unique": false,
+      "partial": null
+    },
+    {
+      "name": "companyId_1_referenceNo_1_transactionType_1",
+      "key": {
+        "companyId": 1,
+        "referenceNo": 1,
+        "transactionType": 1
+      },
+      "unique": false,
+      "partial": null
+    },
+    {
+      "name": "companyId_1_movementType_1_createdAt_-1",
+      "key": {
+        "companyId": 1,
+        "movementType": 1,
+        "createdAt": -1
+      },
+      "unique": false,
+      "partial": null
+    },
+    {
+      "name": "companyId_1_customerName_1_createdAt_-1",
+      "key": {
+        "companyId": 1,
+        "customerName": 1,
+        "createdAt": -1
+      },
+      "unique": false,
+      "partial": null
+    },
+    {
+      "name": "companyId_1_article_1_warehouse_1_location_1_transactionDate_-1",
+      "key": {
+        "companyId": 1,
+        "article": 1,
+        "warehouse": 1,
+        "location": 1,
+        "transactionDate": -1
+      },
+      "unique": false,
+      "partial": null
+    },
+    {
+      "name": "companyId_1_warehouse_1_location_1_transactionDate_-1",
+      "key": {
+        "companyId": 1,
+        "warehouse": 1,
+        "location": 1,
+        "transactionDate": -1
+      },
+      "unique": false,
+      "partial": null
+    },
+    {
+      "name": "companyId_1_referenceNo_1_createdAt_-1",
+      "key": {
+        "companyId": 1,
+        "referenceNo": 1,
+        "createdAt": -1
+      },
+      "unique": false,
+      "partial": null
+    },
+    {
+      "name": "allocationId_1",
+      "key": {
+        "allocationId": 1
+      },
+      "unique": false,
+      "partial": null
+    },
+    {
+      "name": "uniq_stockledger_packing_effect_key",
+      "key": {
+        "effectKey": 1
+      },
+      "unique": true,
+      "partial": {
+        "effectKey": {
+          "$type": "string",
+          "$gt": ""
+        }
+      }
+    }
+  ],
+  "ledgerCounts": {
+    "dispatchOut": 0,
+    "dispatchCancel": 0,
+    "dispatchOutWithSource": 0,
+    "withEffectKey": 0
+  },
+  "exposure": {
+    "postedWithoutLedger": 0,
+    "ledgerWithoutDispatch": 0,
+    "softDuplicateGroups": 0,
+    "effectKeyDuplicateGroups": 0,
+    "cancelledNoReversal": 0,
+    "multiReversalPerOriginal": 0,
+    "intermediateStatuses": 0,
+    "siDispatchedWithoutDispatch": 1,
+    "missingPackingOrInvoice": 0,
+    "overDispatchLinesVsLinePacked": 0
+  },
+  "samples": {
+    "postedWithoutLedger": [],
+    "ledgerWithoutDispatch": [],
+    "softDups": [],
+    "cancelledNoReversal": [],
+    "siWithoutDispatch": [
+      {
+        "id": "69f481ebd66d3947f7adf90b",
+        "no": "MAR-SINV-0001"
+      }
+    ],
+    "missingRefs": [],
+    "overDispatch": []
+  }
+}
