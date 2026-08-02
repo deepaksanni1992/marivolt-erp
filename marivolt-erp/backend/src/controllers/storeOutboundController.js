@@ -66,6 +66,17 @@ import {
   releaseAllocationLinePackQty,
   releasePackingLineDispatchQty,
 } from "../utils/quantitySerialization.js";
+import {
+  CANDIDATE_CAP,
+  buildEligibleAllocationMongoFilter,
+  escapeRegex,
+  paginateArray,
+  parseListPaging,
+  safeSearchTerm,
+  sortEligibleAllocations,
+  summarizeAllocationPendingPack,
+  toEligibleAllocationItem,
+} from "../utils/eligibleDocumentSearch.js";
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -524,15 +535,38 @@ export async function listStorePacking(req, res) {
     const skip = (page - 1) * limit;
     const filter = withCompany(req);
     if (req.query.status) filter.status = String(req.query.status).toUpperCase();
-    if (req.query.search) {
-      const re = new RegExp(t(req.query.search), "i");
-      filter.$or = [{ packingNo: re }, { customerName: re }, { allocationNo: re }];
+    if (req.query.customerId) filter.customerId = req.query.customerId;
+    if (req.query.warehouse) filter.warehouse = String(req.query.warehouse).toUpperCase();
+    if (req.query.dateFrom || req.query.dateTo) {
+      filter.packingDate = {};
+      if (req.query.dateFrom) filter.packingDate.$gte = new Date(req.query.dateFrom);
+      if (req.query.dateTo) {
+        const end = new Date(req.query.dateTo);
+        end.setHours(23, 59, 59, 999);
+        filter.packingDate.$lte = end;
+      }
+    }
+    const search = safeSearchTerm(req.query.search || req.query.q);
+    if (search) {
+      const re = new RegExp(escapeRegex(search), "i");
+      filter.$or = [
+        { packingNo: re },
+        { customerName: re },
+        { customerReference: re },
+        { allocationNo: re },
+        { linkedOANo: re },
+        { linkedProformaNo: re },
+        { linkedSalesInvoiceNos: re },
+        { "lines.article": re },
+        { "lines.partNumber": re },
+        { "lines.materialCode": re },
+      ];
     }
     const [items, total] = await Promise.all([
       StorePacking.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       StorePacking.countDocuments(filter),
     ]);
-    res.json({ items, total, page, limit });
+    res.json({ items, total, page, limit, hasMore: skip + items.length < total });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -550,43 +584,80 @@ export async function getStorePacking(req, res) {
   }
 }
 
+async function sumPostedPackQtyByAllocationIds(companyId, allocationIds = []) {
+  const byAlloc = new Map();
+  if (!allocationIds.length) return byAlloc;
+  const packs = await StorePacking.find({
+    companyId,
+    allocationId: { $in: allocationIds },
+    status: { $in: POSTED_PACKING_STATUSES },
+  })
+    .select("allocationId lines")
+    .lean();
+  for (const p of packs) {
+    const aKey = String(p.allocationId);
+    if (!byAlloc.has(aKey)) byAlloc.set(aKey, new Map());
+    const map = byAlloc.get(aKey);
+    for (const ln of p.lines || []) {
+      if (!ln.allocationLineId) continue;
+      const k = String(ln.allocationLineId);
+      map.set(k, (map.get(k) || 0) + (Number(ln.packQty) || 0));
+    }
+  }
+  return byAlloc;
+}
+
+/**
+ * Shared eligible allocation lookup for packing selectors.
+ * Preserves pending-pack formula; batches posted packing qty (no N+1).
+ */
+async function listEligibleAllocationsForPackingCore(req) {
+  const { q, page, limit } = parseListPaging(req.query);
+  const mongoFilter = buildEligibleAllocationMongoFilter({
+    companyFilter: withCompany(req),
+    q,
+    customerId: t(req.query.customerId),
+    status: t(req.query.status),
+    dateFrom: t(req.query.dateFrom),
+    dateTo: t(req.query.dateTo),
+  });
+  const candidates = await OrderAllocation.find(mongoFilter)
+    .select(
+      "_id allocationNo allocationDate status customerName warehouse linkedOANo linkedProformaNo linkedSalesInvoiceNo linkedQuotationNo lines._id lines.qty lines.article lines.partNumber lines.materialCode"
+    )
+    .sort({ allocationDate: -1 })
+    .limit(CANDIDATE_CAP)
+    .lean();
+
+  const packedByAlloc = await sumPostedPackQtyByAllocationIds(
+    req.companyId,
+    candidates.map((a) => a._id)
+  );
+
+  const eligible = [];
+  for (const allocation of candidates) {
+    const packedByLine = packedByAlloc.get(String(allocation._id)) || new Map();
+    const pending = summarizeAllocationPendingPack(allocation, packedByLine);
+    if (pending.pendingPackQty <= 0) continue;
+    eligible.push(toEligibleAllocationItem(allocation, pending));
+  }
+
+  const ranked = sortEligibleAllocations(eligible, q);
+  return paginateArray(ranked, page, limit);
+}
+
 export async function listPendingPackingAllocations(req, res) {
   try {
-    const q = t(req.query.search);
-    const filter = withCompany(req, { status: { $nin: ["CANCELLED", "CLOSED"] } });
-    if (q) {
-      const re = new RegExp(q, "i");
-      filter.$or = [{ allocationNo: re }, { customerName: re }, { linkedOANo: re }, { linkedProformaNo: re }];
-    }
-    const allocations = await OrderAllocation.find(filter).sort({ allocationDate: -1 }).limit(200).lean();
-    const items = [];
-    for (const allocation of allocations) {
-      const packedByLine = await sumPostedPackQtyByLine(req.companyId, allocation._id);
-      let allocatedQty = 0;
-      let packedQty = 0;
-      for (const ln of allocation.lines || []) {
-        allocatedQty += Number(ln.qty) || 0;
-        packedQty += packedByLine.get(String(ln._id)) || 0;
-      }
-      const pendingPackQty = Math.max(0, allocatedQty - packedQty);
-      if (pendingPackQty <= 0) continue;
-      items.push({
-        _id: allocation._id,
-        allocationNo: allocation.allocationNo,
-        linkedOANo: allocation.linkedOANo || "",
-        linkedProformaNo: allocation.linkedProformaNo || "",
-        customerName: allocation.customerName,
-        status: allocation.status,
-        warehouse: allocation.warehouse || "MAIN",
-        allocatedQty,
-        alreadyPackedQty: packedQty,
-        pendingPackQty,
-      });
-    }
-    res.json({ items, total: items.length });
+    const result = await listEligibleAllocationsForPackingCore(req);
+    res.json(result);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ message: "Failed to search allocations" });
   }
+}
+
+/** Alias with explicit naming for searchable packing source selector. */
+export async function listEligibleAllocationsForPacking(req, res) {
+  return listPendingPackingAllocations(req, res);
 }
 
 /** GET /packing/csv-template — column headers for packing CSV import. */
