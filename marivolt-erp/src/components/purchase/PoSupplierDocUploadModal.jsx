@@ -31,6 +31,7 @@ export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber
     remarks: "",
   });
   const [autoCreateDraftPi, setAutoCreateDraftPi] = useState(true);
+  const isProforma = docPick.internal === "SUPPLIER_PROFORMA";
 
   const docsQ = useQuery({
     queryKey: ["po-documents", poId],
@@ -80,7 +81,7 @@ export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber
         fileUrl: uploaded.fileUrl,
       });
     },
-    onSuccess: async () => {
+    onSuccess: async (saved) => {
       queryClient.invalidateQueries({ queryKey: ["po-documents", poId] });
       queryClient.invalidateQueries({ queryKey: ["po-ap-summary", poId] });
       queryClient.invalidateQueries({ queryKey: ["purchaseOrder", poId] });
@@ -88,6 +89,15 @@ export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber
       queryClient.invalidateQueries({ queryKey: ["purchaseSummary"] });
       queryClient.invalidateQueries({ queryKey: ["apDashboard"] });
       queryClient.invalidateQueries({ queryKey: ["ap-po-supplier-documents"] });
+      queryClient.invalidateQueries({ queryKey: ["supplier-proformas"] });
+      if (docPick.internal === "SUPPLIER_PROFORMA") {
+        setErr(
+          saved?.message ||
+            saved?.notice ||
+            "Supplier Proforma recorded. No Purchase Invoice or AP liability has been created."
+        );
+        return;
+      }
       setErr("");
       const sinv = (meta.documentNo || "").trim() || (invDraft.supplierInvoiceNo || "").trim();
       if (autoCreateDraftPi && sinv) {
@@ -157,8 +167,20 @@ export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber
         Files are stored on <b>AWS S3</b> and linked to PO{" "}
         <span className="font-mono font-semibold">{poNumber || "—"}</span> ({supplierName || "—"}). Use{" "}
         <b>View</b> for a secure download link. <b>Delete</b> voids the link on this PO (does not delete the S3 object
-        automatically). When <b>Create purchase invoice draft after upload</b> is on and you enter a supplier document
-        number, a draft is created in Accounts so it appears under Purchase Invoices.
+        automatically).
+        {isProforma ? (
+          <>
+            {" "}
+            <b>Supplier Proforma</b> does not create a Purchase Invoice or AP liability — it only records advance
+            authorization.
+          </>
+        ) : (
+          <>
+            {" "}
+            When <b>Create purchase invoice draft after upload</b> is on and you enter a supplier document number, a
+            draft is created in Accounts for tax/commercial invoices.
+          </>
+        )}
       </p>
 
       <div className="mb-4 rounded border border-slate-200 bg-slate-50/80 p-3">
@@ -257,14 +279,20 @@ export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber
           value={meta.remarks}
           onChange={(e) => setMeta((m) => ({ ...m, remarks: e.target.value }))}
         />
-        <label className="flex cursor-pointer items-center gap-2 text-xs text-gray-800">
-          <input
-            type="checkbox"
-            checked={autoCreateDraftPi}
-            onChange={(e) => setAutoCreateDraftPi(e.target.checked)}
-          />
-          After upload, create purchase invoice draft in Accounts (needs supplier document / invoice no. above)
-        </label>
+        {isProforma ? (
+          <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-950">
+            Supplier Proforma recorded path: no Purchase Invoice draft will be created.
+          </div>
+        ) : (
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-gray-800">
+            <input
+              type="checkbox"
+              checked={autoCreateDraftPi}
+              onChange={(e) => setAutoCreateDraftPi(e.target.checked)}
+            />
+            After upload, create purchase invoice draft in Accounts (needs supplier document / invoice no. above)
+          </label>
+        )}
         <button
           type="button"
           className="rounded bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
@@ -274,6 +302,7 @@ export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber
           {uploadMut.isPending ? "Uploading…" : "Upload & link to PO"}
         </button>
 
+        {!isProforma ? (
         <div className="border-t pt-3">
           <p className="mb-2 text-xs font-semibold text-gray-700">Create / refresh purchase invoice draft (Accounts)</p>
           <input
@@ -312,6 +341,7 @@ export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber
             {createInvMut.isPending ? "Creating…" : "Create draft purchase invoice"}
           </button>
         </div>
+        ) : null}
       </div>
       <div className="mt-4 flex justify-end">
         <button type="button" className="rounded-xl border px-4 py-2 text-sm" onClick={onClose}>

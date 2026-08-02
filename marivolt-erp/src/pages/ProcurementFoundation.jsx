@@ -7,10 +7,12 @@ import { FormField, SelectInput, TextInput } from "../components/erp/FormField.j
 import { apiGet, apiGetWithQuery, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import PurchaseOrdersModule from "./Purchase.jsx";
+import SupplierProformaPanel from "../components/purchase/SupplierProformaPanel.jsx";
 
 const TABS = [
   { id: "suppliers", label: "Supplier Master" },
   { id: "orders", label: "Purchase Orders" },
+  { id: "supplierProformas", label: "Supplier Proformas" },
   { id: "grn", label: "GRN Receiving" },
   { id: "reports", label: "PO Reports" },
   { id: "dashboard", label: "Dashboard" },
@@ -428,6 +430,16 @@ function DashboardTab() {
   );
 }
 
+function SupplierProformasTab() {
+  const [err, setErr] = useState("");
+  return (
+    <div className="space-y-2 rounded-2xl border bg-white p-4">
+      {err ? <div className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">{err}</div> : null}
+      <SupplierProformaPanel setErr={setErr} />
+    </div>
+  );
+}
+
 export default function ProcurementFoundation() {
   const [tab, setTab] = useState("suppliers");
   const [searchParams] = useSearchParams();
@@ -449,6 +461,7 @@ export default function ProcurementFoundation() {
       </div>
       {tab === "suppliers" && <SupplierMasterTab />}
       {tab === "orders" && <PurchaseOrdersModule procurementEmbed />}
+      {tab === "supplierProformas" && <SupplierProformasTab />}
       {tab === "grn" && <GrnTab />}
       {tab === "reports" && <ReportsTab />}
       {tab === "dashboard" && <DashboardTab />}

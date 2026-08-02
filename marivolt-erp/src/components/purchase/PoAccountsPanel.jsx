@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import Modal from "../erp/Modal.jsx";
 import { apiGet, apiGetWithQuery, apiPost, apiPostFormData } from "../../lib/api.js";
+import SupplierProformaPanel from "./SupplierProformaPanel.jsx";
 
 const DOC_OPTIONS = [
   { internal: "SUPPLIER_PROFORMA", uploadLabel: "Supplier Proforma Invoice" },
@@ -248,6 +249,13 @@ export default function PoAccountsPanel({ detail, detailId, qc, setErr }) {
           <button
             type="button"
             className="rounded border border-indigo-200 bg-white px-3 py-1.5 font-medium text-indigo-900 hover:bg-indigo-50"
+            onClick={() => setSubModal("supplierProforma")}
+          >
+            Supplier Proformas
+          </button>
+          <button
+            type="button"
+            className="rounded border border-indigo-200 bg-white px-3 py-1.5 font-medium text-indigo-900 hover:bg-indigo-50"
             onClick={() => setSubModal("docs")}
           >
             View supplier documents
@@ -310,6 +318,15 @@ export default function PoAccountsPanel({ detail, detailId, qc, setErr }) {
           </button>
         </div>
       </details>
+
+      <Modal
+        open={subModal === "supplierProforma"}
+        onClose={() => setSubModal(null)}
+        title="Supplier Proformas (no AP liability)"
+        wide
+      >
+        <SupplierProformaPanel embeddedPoId={detailId} setErr={setErr} />
+      </Modal>
 
       <Modal open={subModal === "docs"} onClose={() => setSubModal(null)} title="Supplier documents on PO" wide>
         <div className="max-h-80 space-y-2 overflow-y-auto text-sm">
@@ -436,7 +453,7 @@ export default function PoAccountsPanel({ detail, detailId, qc, setErr }) {
 
       <Modal open={subModal === "payStatus"} onClose={() => setSubModal(null)} title="Payment status" wide>
         <div className="space-y-2 text-sm">
-          <div className="text-xs text-gray-600">Supplier PI uploaded: {flags.hasSupplierPi ? "Yes" : "No"}</div>
+        <div className="text-xs text-gray-600">Supplier PI uploaded: {flags.hasSupplierPi ? "Yes" : "No"}</div>
           <div className="text-xs text-gray-600">Supplier invoice document: {flags.hasSupplierInvoiceDocument ? "Yes" : "No"}</div>
           <div className="text-xs text-gray-600">
             Booked invoice has balance (optional GRN reminder): {flags.paymentPending ? "Yes" : "No"}
