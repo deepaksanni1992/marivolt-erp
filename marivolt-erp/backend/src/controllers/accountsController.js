@@ -2428,6 +2428,14 @@ export async function createPurchaseInvoiceFromPurchaseDocument(req, res) {
     }
     const pd = await PurchaseDocument.findOne(withCompany(req, { _id: documentId, status: "ACTIVE" })).lean();
     if (!pd) return res.status(404).json({ message: "Purchase document not found" });
+    if (String(pd.documentType || "").toUpperCase() === "SUPPLIER_PROFORMA") {
+      return res.status(400).json({
+        message:
+          "Supplier Proforma does not create a Purchase Invoice or AP liability. Use Supplier Proforma workflow; create the final Purchase Invoice separately after GRN/PO evidence.",
+        code: "SUPPLIER_PROFORMA_NOT_INVOICE",
+        purchaseInvoiceId: null,
+      });
+    }
     const r = await createDraftPurchaseInvoiceFromPurchaseDocument({
       companyId: req.companyId,
       companyCode: req.companyCode || "CMP",

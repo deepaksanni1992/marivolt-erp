@@ -9,6 +9,7 @@ import {
   AUTO_DRAFT_PI_PURCHASE_DOC_TYPES,
   createDraftPurchaseInvoiceFromPurchaseDocument,
 } from "../services/purchaseInvoiceDraftFromDocumentService.js";
+import { ensureSupplierProformaFromPurchaseDocument } from "./supplierProformaController.js";
 
 const PO_LINE_ARRAY_KEYS = ["lines", "orderLines", "poItems", "items", "products"];
 
@@ -201,6 +202,41 @@ export async function createPoDocument(req, res) {
       documentNo: po.poNo,
       description: `PO document ${documentType} for ${po.poNo}`,
     });
+
+    let supplierProforma = null;
+    let notice = null;
+
+    if (documentType === "SUPPLIER_PROFORMA") {
+      try {
+        const linked = await ensureSupplierProformaFromPurchaseDocument({
+          req,
+          po,
+          purchaseDocument: doc,
+        });
+        supplierProforma = linked?.supplierProforma || null;
+        notice =
+          "Supplier Proforma recorded. No Purchase Invoice or AP liability has been created.";
+      } catch (spfErr) {
+        console.error("[PO document] supplier proforma link:", spfErr?.message || spfErr);
+        notice =
+          "Purchase document saved. Supplier Proforma commercial record could not be linked: " +
+          (spfErr?.message || "unknown error");
+      }
+      return res.status(201).json({
+        ...doc.toObject(),
+        supplierProformaId: supplierProforma?._id || null,
+        supplierProforma: supplierProforma
+          ? {
+              _id: supplierProforma._id,
+              internalProformaRef: supplierProforma.internalProformaRef,
+              documentStatus: supplierProforma.documentStatus,
+            }
+          : null,
+        purchaseInvoiceId: null,
+        message: notice,
+        notice,
+      });
+    }
 
     try {
       const dno = String(doc.documentNo || "").trim();

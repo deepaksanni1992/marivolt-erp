@@ -3,12 +3,20 @@ import PurchaseOrder from "../models/PurchaseOrder.js";
 import PurchaseInvoice from "../models/PurchaseInvoice.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 
-/** PO document types that should auto-create a draft purchase invoice when a document number is present. */
+/** PO document types that should auto-create a draft purchase invoice when a document number is present.
+ *
+ * A0: SUPPLIER_PROFORMA removed — it authorizes advance payment only and must never create AP.
+ *
+ * COMMERCIAL_INVOICE: kept for now (shipping/customs vs final invoice meaning unclear).
+ * Flagged for business review — do not change silently without confirmation.
+ */
 export const AUTO_DRAFT_PI_PURCHASE_DOC_TYPES = new Set([
   "SUPPLIER_TAX_INVOICE",
   "COMMERCIAL_INVOICE",
-  "SUPPLIER_PROFORMA",
 ]);
+
+/** Document types that must never create a Purchase Invoice (manual or auto). */
+export const NEVER_DRAFT_PI_PURCHASE_DOC_TYPES = new Set(["SUPPLIER_PROFORMA"]);
 
 function companyFilter(companyId) {
   const s = String(companyId ?? "").trim();
@@ -72,6 +80,14 @@ export async function createDraftPurchaseInvoiceFromPurchaseDocument(opts) {
   }
 
   const docType = String(purchaseDocument.documentType || "").toUpperCase();
+  if (NEVER_DRAFT_PI_PURCHASE_DOC_TYPES.has(docType)) {
+    return {
+      created: false,
+      skippedReason: "SUPPLIER_PROFORMA_NOT_INVOICE",
+      message:
+        "Supplier Proforma does not create a Purchase Invoice or AP liability. Record a Supplier Proforma and pay advance separately; create the final Purchase Invoice after GRN/PO evidence.",
+    };
+  }
   if (restrictAutoTypes && !AUTO_DRAFT_PI_PURCHASE_DOC_TYPES.has(docType)) {
     return { created: false, skippedReason: "TYPE", message: "Document type is not auto-mapped to a purchase invoice" };
   }
