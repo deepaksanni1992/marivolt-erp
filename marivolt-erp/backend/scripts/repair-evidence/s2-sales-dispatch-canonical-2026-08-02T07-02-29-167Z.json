@@ -1,0 +1,11 @@
+{
+  "capturedAt": "2026-08-02T07:02:29.168Z",
+  "mode": "DRY_RUN",
+  "totals": {
+    "salesDispatches": 1,
+    "wouldUpdate": 0,
+    "unchanged": 1
+  },
+  "samples": [],
+  "note": "Does not create StoreDispatch or DISPATCH_OUT. Legacy logistics-only docs remain NOT_DISPATCHED physically."
+}

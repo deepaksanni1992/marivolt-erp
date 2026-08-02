@@ -1,0 +1,28 @@
+{
+  "capturedAt": "2026-08-02T07:02:13.339Z",
+  "mode": "DRY_RUN",
+  "totals": {
+    "salesDispatches": 1,
+    "wouldUpdate": 1,
+    "unchanged": 0
+  },
+  "samples": [
+    {
+      "id": "69f85f11e66b53c4f6921a63",
+      "no": "MAR***01",
+      "before": {
+        "status": "DISPATCHED",
+        "postingStatus": null,
+        "isLegacyLogisticsOnly": null
+      },
+      "after": {
+        "postingStatus": "NOT_POSTED",
+        "isLegacyLogisticsOnly": true,
+        "linkedStorePackingId": null,
+        "linkedStorePackingNo": ""
+      },
+      "hasPhysical": false
+    }
+  ],
+  "note": "Does not create StoreDispatch or DISPATCH_OUT. Legacy logistics-only docs remain NOT_DISPATCHED physically."
+}
