@@ -12,6 +12,11 @@ const orderAllocationLineSchema = new mongoose.Schema(
     partNumber: { type: String, default: "", trim: true },
     description: { type: String, default: "" },
     qty: { type: Number, required: true, min: 0.0001 },
+    /**
+     * S3 — Sum of successfully posted pack qty claimed against this allocation line.
+     * Updated atomically inside packing post/cancel transactions only.
+     */
+    packedQty: { type: Number, default: 0, min: 0 },
     uom: { type: String, default: "PCS", trim: true },
     price: { type: Number, default: 0, min: 0 },
     totalPrice: { type: Number, default: 0, min: 0 },

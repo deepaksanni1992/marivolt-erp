@@ -59,6 +59,11 @@ import {
   computeDispatchStatus,
   isInvoiceDispatchEligible,
 } from "../utils/salesInvoiceState.js";
+import {
+  QUANTITY_CLAIM_EXHAUSTED,
+  claimAllocationLinePackQty,
+  releaseAllocationLinePackQty,
+} from "../utils/quantitySerialization.js";
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -802,6 +807,7 @@ export async function postStorePacking(req, res) {
       }
 
       const postingOperationId = crypto.randomUUID();
+      // S3 — claim allocation-line remaining qty BEFORE stock movement (txn-only).
       for (const ln of claimed.lines || []) {
         const lineId = String(ln.allocationLineId || "");
         const allocLine = (allocation.lines || []).find((x) => String(x._id) === lineId);
@@ -814,6 +820,21 @@ export async function postStorePacking(req, res) {
         if (already + packQty > maxQty) {
           throw new Error(`Pack qty exceeds pending for ${ln.article} (max ${maxQty - already})`);
         }
+        await claimAllocationLinePackQty(OrderAllocation, session, {
+          companyId: req.companyId,
+          allocationId: allocation._id,
+          allocationLineId: allocLine._id,
+          packQty,
+          allocatedQty: maxQty,
+          postedFloor: already,
+        });
+        allocLine.packedQty = already + packQty;
+      }
+
+      for (const ln of claimed.lines || []) {
+        const lineId = String(ln.allocationLineId || "");
+        const allocLine = (allocation.lines || []).find((x) => String(x._id) === lineId);
+        const packQty = Number(ln.packQty) || 0;
         const effectKey = buildPackingEffectKey({
           companyId: req.companyId,
           packingId: claimed._id,
@@ -857,16 +878,21 @@ export async function postStorePacking(req, res) {
         }
       }
 
-      const totalAlloc = (allocation.lines || []).reduce((sum, ln) => sum + (Number(ln.qty) || 0), 0);
+      // Reload allocation so status save does not overwrite S3 packedQty claims.
+      const allocationFresh = await OrderAllocation.findOne(
+        withCompany(req, { _id: claimed.allocationId })
+      ).session(session);
+      if (!allocationFresh) throw new Error("Allocation not found");
+      const totalAlloc = (allocationFresh.lines || []).reduce((sum, ln) => sum + (Number(ln.qty) || 0), 0);
       const totalPackedBefore = Array.from(packedByLine.values()).reduce((sum, qty) => sum + (Number(qty) || 0), 0);
       const totalPackedNow = (claimed.lines || []).reduce((sum, ln) => sum + (Number(ln.packQty) || 0), 0);
       claimed.status = totalPackedBefore + totalPackedNow >= totalAlloc - 1e-6 ? "FULLY_PACKED" : "PARTIALLY_PACKED";
-      allocation.status = claimed.status;
-      allocation.packingStatus = claimed.status === "FULLY_PACKED" ? "FULLY_PACKED" : "PARTIALLY_PACKED";
-      allocation.updatedBy = req.user?.email || "";
+      allocationFresh.status = claimed.status;
+      allocationFresh.packingStatus = claimed.status === "FULLY_PACKED" ? "FULLY_PACKED" : "PARTIALLY_PACKED";
+      allocationFresh.updatedBy = req.user?.email || "";
       claimed.postedAt = new Date();
       claimed.updatedBy = req.user?.email || "";
-      await allocation.save({ session });
+      await allocationFresh.save({ session });
       await claimed.save({ session });
       await writeAudit(req, {
         action: "POST",
@@ -887,7 +913,8 @@ export async function postStorePacking(req, res) {
       err?.code === PACKING_ALREADY_POSTED ||
       err?.code === PACKING_POST_IN_PROGRESS ||
       err?.code === PACKING_POSTING_CONFLICT ||
-      err?.code === PACKING_LEDGER_INCONSISTENT
+      err?.code === PACKING_LEDGER_INCONSISTENT ||
+      err?.code === QUANTITY_CLAIM_EXHAUSTED
     ) {
       return res.status(err.statusCode || 409).json({
         message: err.message,
@@ -1074,12 +1101,30 @@ export async function cancelStorePacking(req, res) {
         }
       }
 
+      // S3 — return allocation-line pack claims (status is CANCELLING so soft sums exclude this doc).
+      const otherPackedByLine = await sumPostedPackQtyByLine(req.companyId, claimed.allocationId, session);
+      for (const ln of claimed.lines || []) {
+        const packQty = Number(ln.packQty) || 0;
+        if (!(packQty > 0) || !ln.allocationLineId) continue;
+        const lineId = String(ln.allocationLineId);
+        await releaseAllocationLinePackQty(OrderAllocation, session, {
+          companyId: req.companyId,
+          allocationId: claimed.allocationId,
+          allocationLineId: ln.allocationLineId,
+          packQty,
+          postedFloor: (otherPackedByLine.get(lineId) || 0) + packQty,
+        });
+      }
+
       claimed.status = "CANCELLED";
       claimed.cancelledAt = new Date();
       claimed.cancellationReason = t(req.body?.reason);
       claimed.updatedBy = req.user?.email || "";
       await claimed.save({ session });
-      await recalculateAllocationPackingProgress(req, allocation, session);
+      const allocationFresh = allocation
+        ? await OrderAllocation.findOne(withCompany(req, { _id: claimed.allocationId })).session(session)
+        : null;
+      await recalculateAllocationPackingProgress(req, allocationFresh, session);
       await writeAudit(req, {
         action: "CANCEL",
         module: "STORE",
@@ -1099,7 +1144,8 @@ export async function cancelStorePacking(req, res) {
       err?.code === PACKING_ALREADY_CANCELLED ||
       err?.code === PACKING_CANCEL_IN_PROGRESS ||
       err?.code === PACKING_CANCEL_CONFLICT ||
-      err?.code === PACKING_LEDGER_INCONSISTENT
+      err?.code === PACKING_LEDGER_INCONSISTENT ||
+      err?.code === QUANTITY_CLAIM_EXHAUSTED
     ) {
       return res.status(err.statusCode || 409).json({
         message: err.message,
