@@ -4,6 +4,7 @@ import { nextNumber } from "../services/numberSeriesService.js";
 function inferDocKey(prefix = "") {
   const value = String(prefix || "").trim().toUpperCase();
   if (value.endsWith("-PO")) return "PURCHASE_ORDER";
+  if (value.endsWith("-SPF")) return "SUPPLIER_PROFORMA";
   if (value.endsWith("-PI")) return "PURCHASE_INVOICE";
   if (value.endsWith("-PR")) return "PURCHASE_RETURN";
   if (value.endsWith("-SI")) return "SALES_INVOICE";

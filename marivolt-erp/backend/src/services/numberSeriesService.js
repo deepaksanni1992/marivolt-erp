@@ -85,6 +85,8 @@ function defaultFormatFor(docKey) {
       return "PO-{YYYYMMDD}-{SEQ}";
     case "PURCHASE_INVOICE":
       return "PI-{YYYYMMDD}-{SEQ}";
+    case "SUPPLIER_PROFORMA":
+      return "{COMPANY}-SPF-{SEQ}";
     case "PURCHASE_RETURN":
       return "PR-{YYYYMMDD}-{SEQ}";
     case "SHIPMENT":

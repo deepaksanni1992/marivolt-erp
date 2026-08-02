@@ -5,6 +5,7 @@ import * as c from "../controllers/purchaseController.js";
 import * as pr from "../controllers/purchaseRequisitionController.js";
 import * as pod from "../controllers/purchasePoDocumentController.js";
 import * as allocationPo from "../controllers/orderAllocationPoController.js";
+import * as spf from "../controllers/supplierProformaController.js";
 
 const router = express.Router();
 
@@ -42,6 +43,7 @@ router.get("/:id/documents", purchaseView, pod.listPoDocuments);
 router.post("/:id/documents", purchaseCreate, pod.createPoDocument);
 router.delete("/:id/documents/:documentId", purchaseEdit, pod.deletePoDocument);
 router.get("/:id/ap-summary", purchaseView, pod.getPoApSummary);
+router.get("/:id/supplier-proformas", purchaseView, spf.listSupplierProformasForPo);
 router.get("/:id", purchaseView, c.getPurchaseOrder);
 router.post("/", purchaseCreate, c.createPurchaseOrder);
 router.put("/:id", purchaseEdit, c.updatePurchaseOrder);
