@@ -11,6 +11,29 @@ const grnAttachmentSchema = new mongoose.Schema(
   { _id: true }
 );
 
+const grnCustomsCaptureSchema = new mongoose.Schema(
+  {
+    receivedDate: { type: Date, default: null },
+    boeNumber: { type: String, default: "", trim: true },
+    boeDate: { type: Date, default: null },
+    blNumber: { type: String, default: "", trim: true },
+    awbNumber: { type: String, default: "", trim: true },
+    supplierInvoiceNumber: { type: String, default: "", trim: true },
+    supplierInvoiceDate: { type: Date, default: null },
+    countryOfOrigin: { type: String, default: "", trim: true, uppercase: true },
+    hsCode: { type: String, default: "", trim: true, uppercase: true },
+    unitWeightKg: { type: Number, default: 0, min: 0 },
+    totalWeightKg: { type: Number, default: 0, min: 0 },
+    customsUnitPrice: { type: Number, default: 0, min: 0 },
+    customsTotalPrice: { type: Number, default: 0, min: 0 },
+    customsCurrency: { type: String, default: "", trim: true, uppercase: true },
+    exchangeRateToAED: { type: Number, default: 0, min: 0 },
+    customsValueAED: { type: Number, default: 0, min: 0 },
+    customsRemarks: { type: String, default: "", trim: true },
+  },
+  { _id: false }
+);
+
 const grnItemSchema = new mongoose.Schema(
   {
     article: { type: String, required: true, ref: "ItemMaster", trim: true, uppercase: true },
@@ -45,6 +68,8 @@ const grnItemSchema = new mongoose.Schema(
     poNo: String,
     remarks: { type: String, default: "", trim: true },
     recoveryInfo: { type: [String], default: [] },
+    /** Resolved effective customs values at post — immutable snapshot; not header-dependent. */
+    customsCapture: { type: grnCustomsCaptureSchema, default: null },
   },
   { _id: false }
 );
