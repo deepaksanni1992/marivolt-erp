@@ -69,6 +69,7 @@ const salesTabs = [
   "Proforma Invoice",
   "Order Allocation",
   "Sales Invoice",
+  "Sales Dispatch",
   "Dispatch Status",
   "Sales Return",
   "Reports",
@@ -2037,7 +2038,35 @@ export default function Sales() {
         limit,
         search: search || undefined,
       }),
-    enabled: activeTab === "Sales Return" || srCreateOpen,
+    enabled: activeTab === "Sales Dispatch" || activeTab === "Sales Return" || srCreateOpen,
+  });
+
+  const { data: pendingSalesDispatchInvoices } = useQuery({
+    queryKey: ["sales-dispatch-pending-invoices"],
+    queryFn: () => apiGetWithQuery("/sales/sales-dispatches/pending-invoices", { limit: 200 }),
+    enabled: activeTab === "Sales Dispatch",
+  });
+
+  const postSalesDispatchMutation = useMutation({
+    mutationFn: (id) => apiPost(`/sales/sales-dispatches/${id}/post`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-sales-dispatch"] });
+      qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-pending-invoices"] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const cancelSalesDispatchMutation = useMutation({
+    mutationFn: ({ id, reason }) => apiPost(`/sales/sales-dispatches/${id}/cancel`, { reason: reason || "" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-sales-dispatch"] });
+      qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-pending-invoices"] });
+    },
+    onError: (e) => setErr(e.message),
   });
 
   const { data: dispatchStatusData, isLoading: dispatchStatusLoading } = useQuery({
@@ -3082,8 +3111,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
       qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
       qc.invalidateQueries({ queryKey: ["accountsSalesDispatches"] });
       qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
+      qc.invalidateQueries({ queryKey: ["sales-dispatch-pending-invoices"] });
       if (detailId) qc.invalidateQueries({ queryKey: ["sales-invoice-detail", detailId] });
       setErr("");
+      setActiveTab("Sales Dispatch");
       setShippingDocForm({ documentType: "Shipping Document", remarks: "" });
       if (shippingFileRef.current) shippingFileRef.current.value = "";
       setShippingDocsAfterDispatch({
@@ -3386,6 +3417,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
     if (activeTab === "Proforma Invoice") return "proforma";
     if (activeTab === "Order Allocation") return "allocation";
     if (activeTab === "Sales Invoice") return "sales-invoice";
+    if (activeTab === "Sales Dispatch") return "sales-dispatch";
     if (activeTab === "Dispatch Status") return "dispatch-status";
     if (activeTab === "Sales Return") return "sales-return";
     if (activeTab === "Reports") return "reports";
@@ -5566,11 +5598,132 @@ ${GLOBAL_REPORT_TABLE_CSS}
             </div>
           </div>
         </>
+      ) : tabContent === "sales-dispatch" ? (
+        <>
+          <p className="mb-3 text-sm text-gray-600">
+            Canonical Sales Dispatch workflow. Create a draft from an issued Sales Invoice, enter logistics, then Post to
+            execute physical stock exit (internal Store Dispatch). Historical logistics-only documents cannot invent stock.
+          </p>
+          <div className="mb-3 rounded-2xl border bg-white p-3">
+            <h3 className="mb-2 text-sm font-semibold">Create from pending invoice</h3>
+            <div className="flex flex-wrap items-end gap-2">
+              <select
+                className="min-w-[20rem] rounded-lg border px-2 py-1.5 text-sm"
+                id="s2-pending-invoice"
+                defaultValue=""
+              >
+                <option value="">Select invoice pending dispatch…</option>
+                {(pendingSalesDispatchInvoices?.items || []).map((p) => (
+                  <option key={p._id} value={p._id}>
+                    {p.invoiceNo} · {p.customerName} · pending {p.pendingDispatchQty}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="rounded-lg border bg-slate-900 px-3 py-1.5 text-xs font-medium text-white"
+                onClick={() => {
+                  const el = document.getElementById("s2-pending-invoice");
+                  const id = el?.value;
+                  if (!id) return setErr("Select a pending Sales Invoice");
+                  convertToSalesDispatchFromSalesInvoiceMutation.mutate(id);
+                }}
+              >
+                Create Sales Dispatch draft
+              </button>
+            </div>
+          </div>
+          <div className="overflow-hidden rounded-2xl border bg-white">
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left text-sm">
+                <thead className="sticky top-0 z-10 border-b bg-gray-100 text-xs font-semibold uppercase tracking-wide text-gray-700">
+                  <tr>
+                    <th className="px-3 py-2">Dispatch No</th>
+                    <th className="px-3 py-2">Customer</th>
+                    <th className="px-3 py-2">Invoice</th>
+                    <th className="px-3 py-2">Document</th>
+                    <th className="px-3 py-2">Posting</th>
+                    <th className="px-3 py-2">AWB</th>
+                    <th className="px-3 py-2">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {legacySalesDispatchLoading ? (
+                    <tr>
+                      <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                        Loading...
+                      </td>
+                    </tr>
+                  ) : (salesDispatchData?.items || []).length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+                        No Sales Dispatch found.
+                      </td>
+                    </tr>
+                  ) : (
+                    (salesDispatchData?.items || []).map((r) => {
+                      const posting = String(r.postingStatus || "NOT_POSTED").toUpperCase();
+                      const legacyOnly = Boolean(r.isLegacyLogisticsOnly);
+                      const canPost = posting === "NOT_POSTED" && !legacyOnly && String(r.status).toUpperCase() !== "CANCELLED";
+                      const canCancel = String(r.status).toUpperCase() !== "CANCELLED";
+                      return (
+                        <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
+                          <td className="px-3 py-2 font-mono text-xs">{r.dispatchNo}</td>
+                          <td className="px-3 py-2">{r.customerName}</td>
+                          <td className="px-3 py-2 font-mono text-xs">{r.linkedSalesInvoiceNo || "—"}</td>
+                          <td className="px-3 py-2">
+                            <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
+                              {r.status}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2">
+                            <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(posting)}`}>
+                              {formatSiStatusLabel(posting)}
+                              {legacyOnly ? " · legacy" : ""}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 font-mono text-xs">{r.awbNo || "—"}</td>
+                          <td className="px-3 py-2">
+                            <div className="flex flex-wrap gap-1">
+                              <button
+                                type="button"
+                                className={`rounded-lg border px-2 py-1 text-xs ${!canPost ? "opacity-40" : ""}`}
+                                disabled={!canPost || postSalesDispatchMutation.isPending}
+                                title={legacyOnly ? "Legacy logistics-only — stock post blocked" : "Post physical dispatch"}
+                                onClick={() => postSalesDispatchMutation.mutate(r._id)}
+                              >
+                                Post
+                              </button>
+                              <button
+                                type="button"
+                                className={`rounded-lg border px-2 py-1 text-xs ${!canCancel ? "opacity-40" : ""}`}
+                                disabled={!canCancel || cancelSalesDispatchMutation.isPending}
+                                onClick={() => {
+                                  const reason = window.prompt("Cancellation reason", "") || "";
+                                  cancelSalesDispatchMutation.mutate({ id: r._id, reason });
+                                }}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="border-t px-3 py-2 text-sm text-gray-600">
+              {salesDispatchData?.total ?? 0} Sales Dispatch document(s)
+            </div>
+          </div>
+        </>
       ) : tabContent === "dispatch-status" ? (
         <>
           <p className="mb-3 text-sm text-gray-600">
-            Read-only fulfilment pipeline (Store handles packing and physical dispatch). Use Store module to pack and dispatch
-            stock.
+            Read-only fulfilment pipeline. Create and post physical dispatch from the Sales Dispatch tab (Store Dispatch is
+            internal only).
           </p>
           <div className="mb-3 flex flex-wrap items-end gap-2 rounded-2xl border bg-white p-3 shadow-sm">
             <TextInput

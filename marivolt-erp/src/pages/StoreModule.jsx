@@ -31,7 +31,6 @@ const TABS = [
   "Stock Transfer",
   "Locations",
   "Packing",
-  "Dispatch",
   "Store Reports",
   "Negative Allocation Report",
 ];
@@ -520,7 +519,11 @@ export default function StoreModule() {
       setTab("Packing");
       setPackingStatusFilter("FULLY_PACKED");
     }
-    if (dispatchNo) setTab("Dispatch");
+    if (dispatchNo) {
+      // S2 — Store Dispatch UX removed; open Sales module Sales Dispatch workflow.
+      window.location.assign(`/sales?tab=${encodeURIComponent("Sales Dispatch")}&dispatchNo=${encodeURIComponent(dispatchNo)}`);
+      return;
+    }
     if (po) {
       setGrnPoId(po);
       if (!tabq || tabq === "GRN") setTab("GRN");
