@@ -43,6 +43,7 @@ import dataHealthRoutes from "./routes/dataHealthRoutes.js";
 import { isCustomsEnabled } from "./config/customsConfig.js";
 import { ensureSearchIndexes } from "./config/searchIndexes.js";
 import { isS3Configured } from "./config/s3.js";
+import { createCorsOriginDelegate } from "./utils/corsAllowlist.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -74,32 +75,11 @@ async function startServer() {
 
     const app = express();
 
-    const allowedExactOrigins = [
-      "http://localhost:5173",
-      "http://127.0.0.1:5173",
-      "http://localhost:5174",
-      "http://127.0.0.1:5174",
-      ...(process.env.CLIENT_URL ? [process.env.CLIENT_URL] : []),
-    ];
-
-    function isAllowedOrigin(origin) {
-      if (!origin) return true;
-      if (allowedExactOrigins.includes(origin)) return true;
-      if (origin.endsWith(".vercel.app")) return true;
-      if (
-        origin.startsWith("http://localhost:") ||
-        origin.startsWith("http://127.0.0.1:")
-      ) {
-        return true;
-      }
-      return false;
-    }
+    // Render / reverse-proxy: trust X-Forwarded-For for rate limiting.
+    app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS || 1));
 
     const corsOptions = {
-      origin: (origin, callback) => {
-        if (isAllowedOrigin(origin)) return callback(null, true);
-        return callback(new Error("Not allowed by CORS: " + origin));
-      },
+      origin: createCorsOriginDelegate(),
       credentials: true,
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       allowedHeaders: ["Content-Type", "Authorization", "x-company-id"],
