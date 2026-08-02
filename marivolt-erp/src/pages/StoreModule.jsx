@@ -14,6 +14,7 @@ import {
   mapImportPackagesToUi,
 } from "../lib/storePackingCsv.js";
 import Modal from "../components/erp/Modal.jsx";
+import SearchableDocumentSelect from "../components/erp/SearchableDocumentSelect.jsx";
 import CreateInvoiceFromPackingModal, { packingReadyForSalesInvoice } from "../components/sales/CreateInvoiceFromPackingModal.jsx";
 import GrnCustomsSection from "../components/store/GrnCustomsSection.jsx";
 import {
@@ -246,7 +247,7 @@ export default function StoreModule() {
   const { auth } = useAuth();
   const nav = useNavigate();
   const qc = useQueryClient();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTab] = useState("GRN");
   const [article, setArticle] = useState("");
   const [warehouse, setWarehouse] = useState("");
@@ -259,6 +260,7 @@ export default function StoreModule() {
   const [allocatedOnly, setAllocatedOnly] = useState(false);
   const [allocationDrillDown, setAllocationDrillDown] = useState({ open: false, article: "", warehouse: "" });
   const [grnPoId, setGrnPoId] = useState("");
+  const [grnPoSelectedMeta, setGrnPoSelectedMeta] = useState(null);
   const [grnPoSnapshot, setGrnPoSnapshot] = useState(null);
   const [grnLineEdits, setGrnLineEdits] = useState({});
   const [grnUiErr, setGrnUiErr] = useState("");
@@ -266,14 +268,24 @@ export default function StoreModule() {
   const [grnCustoms, setGrnCustoms] = useState(emptyGrnCustomsState);
   const grnUrlPoLoadedRef = useRef("");
   const grnCsvInputRef = useRef(null);
+  const [grnRegSearchInput, setGrnRegSearchInput] = useState(() => searchParams.get("grnQ") || "");
+  const [grnRegSearch, setGrnRegSearch] = useState(() => searchParams.get("grnQ") || "");
+  const [grnRegStatus, setGrnRegStatus] = useState(() => searchParams.get("grnStatus") || "");
+  const [grnRegDateFrom, setGrnRegDateFrom] = useState(() => searchParams.get("grnFrom") || "");
+  const [grnRegDateTo, setGrnRegDateTo] = useState(() => searchParams.get("grnTo") || "");
   const [packAllocInputId, setPackAllocInputId] = useState("");
+  const [packAllocSelectedMeta, setPackAllocSelectedMeta] = useState(null);
   const [packAllocQueryId, setPackAllocQueryId] = useState("");
   const [packPackages, setPackPackages] = useState([]);
   const [packAddArticlePkgId, setPackAddArticlePkgId] = useState("");
   const [packAddArticleSearch, setPackAddArticleSearch] = useState("");
   const [packCsvPreview, setPackCsvPreview] = useState(null);
   const packCsvInputRef = useRef(null);
-  const [packingStatusFilter, setPackingStatusFilter] = useState("");
+  const [packingStatusFilter, setPackingStatusFilter] = useState(() => searchParams.get("packStatus") || "");
+  const [packRegSearchInput, setPackRegSearchInput] = useState(() => searchParams.get("packQ") || "");
+  const [packRegSearch, setPackRegSearch] = useState(() => searchParams.get("packQ") || "");
+  const [packRegDateFrom, setPackRegDateFrom] = useState(() => searchParams.get("packFrom") || "");
+  const [packRegDateTo, setPackRegDateTo] = useState(() => searchParams.get("packTo") || "");
   const [packInvoiceModalOpen, setPackInvoiceModalOpen] = useState(false);
   const [packInvoicePresetId, setPackInvoicePresetId] = useState("");
   const [packInvoiceUiMsg, setPackInvoiceUiMsg] = useState("");
@@ -345,18 +357,29 @@ export default function StoreModule() {
     lines: [],
   });
 
-  const { data: grns } = useQuery({
-    queryKey: ["grn"],
-    queryFn: () => apiGetWithQuery("/grn", { limit: 200 }),
+  const { data: grns, isFetching: grnsFetching } = useQuery({
+    queryKey: ["grn", grnRegSearch, grnRegStatus, grnRegDateFrom, grnRegDateTo],
+    queryFn: () =>
+      apiGetWithQuery("/grn", {
+        limit: 50,
+        page: 1,
+        search: grnRegSearch || undefined,
+        status: grnRegStatus || undefined,
+        dateFrom: grnRegDateFrom || undefined,
+        dateTo: grnRegDateTo || undefined,
+      }),
     enabled: tab === "GRN",
   });
 
-  const { data: poPickList } = useQuery({
-    queryKey: ["store-purchase-orders"],
-    queryFn: () => apiGetWithQuery("/purchase-orders", { limit: 150 }),
-    enabled: tab === "GRN",
-  });
-
+  const searchEligiblePosForGrn = useCallback(
+    async ({ q, page, limit }) =>
+      apiGetWithQuery("/grn/eligible-purchase-orders", {
+        q: q || undefined,
+        page,
+        limit,
+      }),
+    []
+  );
   const loadGrnPoMut = useMutation({
     mutationFn: (poId) => apiGet(`/grn/from-po/${poId}`),
     onSuccess: (data) => {
@@ -406,7 +429,6 @@ export default function StoreModule() {
       qc.invalidateQueries({ queryKey: ["grn"] });
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
-      qc.invalidateQueries({ queryKey: ["store-purchase-orders"] });
       qc.invalidateQueries({ queryKey: ["customs-stock"] });
       const pid = grnPoSnapshot?.header?._id;
       setGrnLineEdits({});
@@ -423,7 +445,6 @@ export default function StoreModule() {
       qc.invalidateQueries({ queryKey: ["grn"] });
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
-      qc.invalidateQueries({ queryKey: ["store-purchase-orders"] });
       const pid = grnPoSnapshot?.header?._id;
       if (pid) loadGrnPoMut.mutate(String(pid));
       setGrnUiErr("");
@@ -438,7 +459,7 @@ export default function StoreModule() {
       qc.invalidateQueries({ queryKey: ["grn"] });
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
-      qc.invalidateQueries({ queryKey: ["store-purchase-orders"] });
+      qc.invalidateQueries({ queryKey: ["customs-stock"] });
       const pid = grnPoSnapshot?.header?._id;
       if (pid) loadGrnPoMut.mutate(String(pid));
       setGrnRegisterDetail(null);
@@ -542,17 +563,61 @@ export default function StoreModule() {
     if (found) setGrnRegisterDetail(found);
   }, [searchParams, grns?.items]);
 
+  const searchEligibleAllocationsForPacking = useCallback(
+    async ({ q, page, limit }) =>
+      apiGetWithQuery("/packing/allocations/eligible", {
+        q: q || undefined,
+        page,
+        limit,
+      }),
+    []
+  );
+
   const { data: packingFromAlloc } = useQuery({
     queryKey: ["packing-from-allocation", packAllocQueryId],
     queryFn: () => apiGet(`/packing/from-allocation/${packAllocQueryId}`),
     enabled: tab === "Packing" && Boolean(packAllocQueryId),
   });
 
-  const { data: pendingPackingAllocations } = useQuery({
-    queryKey: ["packing-allocations-pending"],
-    queryFn: () => apiGetWithQuery("/packing/allocations/pending", { limit: 200 }),
-    enabled: tab === "Packing",
-  });
+  useEffect(() => {
+    const t = setTimeout(() => setGrnRegSearch(grnRegSearchInput.trim()), 350);
+    return () => clearTimeout(t);
+  }, [grnRegSearchInput]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setPackRegSearch(packRegSearchInput.trim()), 350);
+    return () => clearTimeout(t);
+  }, [packRegSearchInput]);
+
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    const setOrDel = (key, val) => {
+      if (val) next.set(key, val);
+      else next.delete(key);
+    };
+    setOrDel("grnQ", grnRegSearch);
+    setOrDel("grnStatus", grnRegStatus);
+    setOrDel("grnFrom", grnRegDateFrom);
+    setOrDel("grnTo", grnRegDateTo);
+    setOrDel("packQ", packRegSearch);
+    setOrDel("packStatus", packingStatusFilter);
+    setOrDel("packFrom", packRegDateFrom);
+    setOrDel("packTo", packRegDateTo);
+    const cur = searchParams.toString();
+    const nxt = next.toString();
+    if (cur !== nxt) setSearchParams(next, { replace: true });
+  }, [
+    grnRegSearch,
+    grnRegStatus,
+    grnRegDateFrom,
+    grnRegDateTo,
+    packRegSearch,
+    packingStatusFilter,
+    packRegDateFrom,
+    packRegDateTo,
+    searchParams,
+    setSearchParams,
+  ]);
 
   useEffect(() => {
     const lines = packingFromAlloc?.lines;
@@ -777,9 +842,17 @@ export default function StoreModule() {
     },
   });
 
-  const { data: packingList } = useQuery({
-    queryKey: ["store-packing", packingStatusFilter],
-    queryFn: () => apiGetWithQuery("/packing", { limit: 200, status: packingStatusFilter || undefined }),
+  const { data: packingList, isFetching: packingListFetching } = useQuery({
+    queryKey: ["store-packing", packingStatusFilter, packRegSearch, packRegDateFrom, packRegDateTo],
+    queryFn: () =>
+      apiGetWithQuery("/packing", {
+        limit: 50,
+        page: 1,
+        status: packingStatusFilter || undefined,
+        search: packRegSearch || undefined,
+        dateFrom: packRegDateFrom || undefined,
+        dateTo: packRegDateTo || undefined,
+      }),
     enabled: tab === "Packing",
   });
 
@@ -1238,24 +1311,32 @@ export default function StoreModule() {
               </button>
             </div>
             <div className="flex flex-wrap items-end gap-2">
-              <select
-                className="min-w-[260px] rounded border px-3 py-2 text-sm"
+              <SearchableDocumentSelect
                 value={grnPoId}
-                onChange={(e) => {
-                  setGrnPoId(e.target.value);
+                selectedLabel={
+                  grnPoSelectedMeta?.poNo ||
+                  grnPoSnapshot?.header?.poNo ||
+                  ""
+                }
+                selectedSecondary={
+                  grnPoSelectedMeta?.secondaryLabel ||
+                  (grnPoSnapshot?.header?.supplierName
+                    ? `${grnPoSnapshot.header.supplierName} · ${fmtPoDateShort(grnPoSnapshot.header.orderDate)}`
+                    : "")
+                }
+                placeholder="Search PO number, supplier or article…"
+                emptyMessage="No eligible POs with pending receivable quantity"
+                aria-label="Search purchase orders for GRN"
+                searchFn={searchEligiblePosForGrn}
+                onChange={(id, item) => {
+                  setGrnPoId(id);
+                  setGrnPoSelectedMeta(item);
                   setGrnPoSnapshot(null);
                   setGrnLineEdits({});
                   setGrnCustoms(emptyGrnCustomsState());
                   setGrnUiErr("");
                 }}
-              >
-                <option value="">Select PO…</option>
-                {(poPickList?.items || []).map((p) => (
-                  <option key={p._id} value={p._id}>
-                    {(p.poNo || p.poNumber || "").trim()} — {p.supplierName || ""}
-                  </option>
-                ))}
-              </select>
+              />
               <button
                 type="button"
                 className="rounded bg-slate-900 px-3 py-2 text-sm text-white disabled:opacity-40"
@@ -1706,7 +1787,78 @@ export default function StoreModule() {
             ) : null}
           </div>
           <div className="rounded-2xl border bg-white p-4">
-            <h3 className="mb-2 text-sm font-semibold text-slate-800">GRN register</h3>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-slate-800">GRN register</h3>
+              <span className="text-xs text-slate-500">
+                {grnsFetching ? "Searching…" : `${grns?.total ?? (grns?.items || []).length} result(s)`}
+              </span>
+            </div>
+            <div className="mb-3 flex flex-wrap items-end gap-2">
+              <div className="relative min-w-[220px] flex-1">
+                <span className="pointer-events-none absolute left-2 top-2 text-slate-400" aria-hidden>
+                  ⌕
+                </span>
+                <input
+                  className="w-full rounded border py-1.5 pl-7 pr-8 text-sm"
+                  placeholder="GRN, PO, supplier, invoice, BL/AWB, article…"
+                  value={grnRegSearchInput}
+                  onChange={(e) => setGrnRegSearchInput(e.target.value)}
+                  aria-label="Search GRN register"
+                />
+                {grnRegSearchInput ? (
+                  <button
+                    type="button"
+                    className="absolute right-1 top-1 rounded px-1.5 text-xs text-slate-500 hover:bg-slate-100"
+                    aria-label="Clear GRN search"
+                    onClick={() => setGrnRegSearchInput("")}
+                  >
+                    ✕
+                  </button>
+                ) : null}
+              </div>
+              <select
+                className="rounded border px-2 py-1.5 text-sm"
+                value={grnRegStatus}
+                onChange={(e) => setGrnRegStatus(e.target.value)}
+                aria-label="GRN status filter"
+              >
+                <option value="">All statuses</option>
+                {["DRAFT", "POSTED", "RECEIVED", "PARTIAL_RECEIVED", "CANCELLED", "CLOSED"].map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="date"
+                className="rounded border px-2 py-1.5 text-sm"
+                value={grnRegDateFrom}
+                onChange={(e) => setGrnRegDateFrom(e.target.value)}
+                aria-label="GRN date from"
+              />
+              <input
+                type="date"
+                className="rounded border px-2 py-1.5 text-sm"
+                value={grnRegDateTo}
+                onChange={(e) => setGrnRegDateTo(e.target.value)}
+                aria-label="GRN date to"
+              />
+              {(grnRegSearch || grnRegStatus || grnRegDateFrom || grnRegDateTo) && (
+                <button
+                  type="button"
+                  className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-900"
+                  onClick={() => {
+                    setGrnRegSearchInput("");
+                    setGrnRegSearch("");
+                    setGrnRegStatus("");
+                    setGrnRegDateFrom("");
+                    setGrnRegDateTo("");
+                  }}
+                >
+                  Clear filters
+                </button>
+              )}
+            </div>
             <div className="overflow-auto">
               <table className="w-full text-sm">
                 <thead className="bg-slate-100 text-xs uppercase text-slate-600">
@@ -1724,7 +1876,9 @@ export default function StoreModule() {
                   {(grns?.items || []).length === 0 ? (
                     <tr>
                       <td colSpan={7} className="px-2 py-4 text-center text-slate-500">
-                        No GRNs
+                        {grnRegSearch || grnRegStatus || grnRegDateFrom || grnRegDateTo
+                          ? "No GRNs match the current filters"
+                          : "No GRNs"}
                       </td>
                     </tr>
                   ) : (
@@ -2873,20 +3027,26 @@ export default function StoreModule() {
               Select an allocation with pending quantity, load warehouse lines, enter packing details, then create a draft and post it.
             </p>
             <div className="mb-3 flex flex-wrap items-end gap-2">
-              <div className="flex flex-col gap-1">
+              <div className="flex min-w-[280px] flex-1 flex-col gap-1">
                 <label className="text-xs font-medium text-slate-600">Allocation</label>
-                <select
-                  className="w-96 rounded border px-2 py-1.5 text-xs"
+                <SearchableDocumentSelect
                   value={packAllocInputId}
-                  onChange={(e) => setPackAllocInputId(e.target.value)}
-                >
-                  <option value="">Select allocation pending packing...</option>
-                  {(pendingPackingAllocations?.items || []).map((a) => (
-                    <option key={a._id} value={a._id}>
-                      {a.allocationNo} | {a.customerName} | OA {a.linkedOANo || "-"} | pending {a.pendingPackQty}
-                    </option>
-                  ))}
-                </select>
+                  selectedLabel={packAllocSelectedMeta?.allocationNo || packingFromAlloc?.allocation?.allocationNo || ""}
+                  selectedSecondary={
+                    packAllocSelectedMeta?.secondaryLabel ||
+                    (packingFromAlloc?.allocation
+                      ? `${packingFromAlloc.allocation.customerName || ""} · OA ${packingFromAlloc.allocation.linkedOANo || "—"}`
+                      : "")
+                  }
+                  placeholder="Search allocation, OA, PI, customer or article…"
+                  emptyMessage="No allocations with remaining packable quantity"
+                  aria-label="Search order allocations for packing"
+                  searchFn={searchEligibleAllocationsForPacking}
+                  onChange={(id, item) => {
+                    setPackAllocInputId(id);
+                    setPackAllocSelectedMeta(item);
+                  }}
+                />
               </div>
               <button
                 type="button"
@@ -3306,18 +3466,78 @@ export default function StoreModule() {
           <div className="rounded-2xl border bg-white p-4">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-sm font-semibold">Packing documents</h3>
-              <div className="flex flex-wrap gap-1">
-                {["", "DRAFT", "PARTIALLY_PACKED", "FULLY_PACKED", "CANCELLED"].map((st) => (
-                  <button
-                    key={st || "ALL"}
-                    type="button"
-                    className={`rounded border px-2 py-1 text-xs ${packingStatusFilter === st ? "bg-slate-900 text-white" : "hover:bg-slate-50"}`}
-                    onClick={() => setPackingStatusFilter(st)}
-                  >
-                    {st || "All"}
-                  </button>
-                ))}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-slate-500">
+                  {packingListFetching
+                    ? "Searching…"
+                    : `${packingList?.total ?? (packingList?.items || []).length} result(s)`}
+                </span>
+                <div className="flex flex-wrap gap-1">
+                  {["", "DRAFT", "PARTIALLY_PACKED", "FULLY_PACKED", "CANCELLED"].map((st) => (
+                    <button
+                      key={st || "ALL"}
+                      type="button"
+                      className={`rounded border px-2 py-1 text-xs ${packingStatusFilter === st ? "bg-slate-900 text-white" : "hover:bg-slate-50"}`}
+                      onClick={() => setPackingStatusFilter(st)}
+                    >
+                      {st || "All"}
+                    </button>
+                  ))}
+                </div>
               </div>
+            </div>
+            <div className="mb-3 flex flex-wrap items-end gap-2">
+              <div className="relative min-w-[220px] flex-1">
+                <span className="pointer-events-none absolute left-2 top-2 text-slate-400" aria-hidden>
+                  ⌕
+                </span>
+                <input
+                  className="w-full rounded border py-1.5 pl-7 pr-8 text-sm"
+                  placeholder="Packing, allocation, OA, PI, SI, customer, article…"
+                  value={packRegSearchInput}
+                  onChange={(e) => setPackRegSearchInput(e.target.value)}
+                  aria-label="Search packing register"
+                />
+                {packRegSearchInput ? (
+                  <button
+                    type="button"
+                    className="absolute right-1 top-1 rounded px-1.5 text-xs text-slate-500 hover:bg-slate-100"
+                    aria-label="Clear packing search"
+                    onClick={() => setPackRegSearchInput("")}
+                  >
+                    ✕
+                  </button>
+                ) : null}
+              </div>
+              <input
+                type="date"
+                className="rounded border px-2 py-1.5 text-sm"
+                value={packRegDateFrom}
+                onChange={(e) => setPackRegDateFrom(e.target.value)}
+                aria-label="Packing date from"
+              />
+              <input
+                type="date"
+                className="rounded border px-2 py-1.5 text-sm"
+                value={packRegDateTo}
+                onChange={(e) => setPackRegDateTo(e.target.value)}
+                aria-label="Packing date to"
+              />
+              {(packRegSearch || packingStatusFilter || packRegDateFrom || packRegDateTo) && (
+                <button
+                  type="button"
+                  className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-900"
+                  onClick={() => {
+                    setPackRegSearchInput("");
+                    setPackRegSearch("");
+                    setPackingStatusFilter("");
+                    setPackRegDateFrom("");
+                    setPackRegDateTo("");
+                  }}
+                >
+                  Clear filters
+                </button>
+              )}
             </div>
             {packInvoiceUiMsg ? (
               <p className={`mb-2 text-xs ${packInvoiceUiMsg.startsWith("Created") ? "text-emerald-700" : "text-rose-700"}`}>
@@ -3342,7 +3562,9 @@ export default function StoreModule() {
                   {(packingList?.items || []).length === 0 ? (
                     <tr>
                       <td colSpan={8} className="px-2 py-4 text-center text-xs text-slate-500">
-                        No packing records.
+                        {packRegSearch || packingStatusFilter || packRegDateFrom || packRegDateTo
+                          ? "No packing records match the current filters."
+                          : "No packing records."}
                       </td>
                     </tr>
                   ) : (

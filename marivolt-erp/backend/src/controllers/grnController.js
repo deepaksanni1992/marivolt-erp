@@ -17,6 +17,17 @@ import {
   hasCustomsPayload,
   isCustomsEnabled,
 } from "../services/customsService.js";
+import {
+  CANDIDATE_CAP,
+  buildEligiblePoMongoFilter,
+  escapeRegex,
+  paginateArray,
+  parseListPaging,
+  safeSearchTerm,
+  sortEligiblePos,
+  summarizePoPendingReceivable,
+  toEligiblePoItem,
+} from "../utils/eligibleDocumentSearch.js";
 
 function withCompany(req, filter = {}) {
   const cid = req.companyId;
@@ -401,18 +412,128 @@ export async function listGrn(req, res) {
     else if (String(req.query.includeDrafts || "").trim() !== "1") {
       filter.status = { $ne: "DRAFT" };
     }
-    if (req.query.search) {
-      const re = new RegExp(t(req.query.search), "i");
-      filter.$or = [{ grnNo: re }, { supplierName: re }, { supplierInvoiceNo: re }, { poNo: re }];
+    if (req.query.supplierId) filter.supplierId = req.query.supplierId;
+    if (req.query.warehouseId) filter.warehouseId = req.query.warehouseId;
+    if (req.query.dateFrom || req.query.dateTo) {
+      filter.grnDate = {};
+      if (req.query.dateFrom) filter.grnDate.$gte = new Date(req.query.dateFrom);
+      if (req.query.dateTo) {
+        const end = new Date(req.query.dateTo);
+        end.setHours(23, 59, 59, 999);
+        filter.grnDate.$lte = end;
+      }
+    }
+    const search = safeSearchTerm(req.query.search || req.query.q);
+    if (search) {
+      const re = new RegExp(escapeRegex(search), "i");
+      filter.$or = [
+        { grnNo: re },
+        { supplierName: re },
+        { supplierInvoiceNo: re },
+        { poNo: re },
+        { blAwbNo: re },
+        { packingListNo: re },
+        { "items.article": re },
+        { "items.partNumber": re },
+        { "items.materialCode": re },
+      ];
     }
     const [items, total] = await Promise.all([
       GRN.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       GRN.countDocuments(filter),
     ]);
-    res.json({ items, total, page, limit });
+    res.json({ items, total, page, limit, hasMore: skip + items.length < total });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
+}
+
+/**
+ * GET /grn/eligible-purchase-orders — searchable POs with pending receivable qty.
+ * STORE-scoped; does not change posting / received-qty logic.
+ */
+export async function listEligiblePurchaseOrdersForGrn(req, res) {
+  try {
+    const { q, page, limit } = parseListPaging(req.query);
+    const mongoFilter = buildEligiblePoMongoFilter({
+      companyFilter: withCompany(req),
+      q,
+      supplierId: t(req.query.supplierId),
+      dateFrom: t(req.query.dateFrom),
+      dateTo: t(req.query.dateTo),
+    });
+    const candidates = await PurchaseOrder.find(mongoFilter)
+      .select(
+        "_id poNo poNumber orderDate status supplierId supplierName supplierReference lines._id lines.orderedQty lines.qty lines.quantity lines.orderedQuantity lines.cancelledQty lines.cancelled lines.article lines.itemCode lines.materialCode lines.partNumber lines.partNo lines.spn"
+      )
+      .sort({ orderDate: -1 })
+      .limit(CANDIDATE_CAP)
+      .lean();
+
+    const poIds = candidates.map((p) => p._id).filter(Boolean);
+    const postedByPoLine = await getPostedAcceptedQtyByPoIds(req, poIds);
+
+    const eligible = [];
+    for (const po of candidates) {
+      const postedByLine = postedByPoLine.get(String(po._id)) || new Map();
+      const pending = summarizePoPendingReceivable(po, postedByLine);
+      if (pending.pendingLineCount <= 0 || pending.pendingQty <= 0) continue;
+      eligible.push(toEligiblePoItem(po, pending));
+    }
+
+    const ranked = sortEligiblePos(
+      eligible.map((it) => ({
+        ...it,
+        poNo: it.poNo,
+        supplierName: it.supplierName,
+        orderDate: it.poDate,
+        lines: candidates.find((c) => String(c._id) === it.id)?.lines || [],
+      })),
+      q
+    ).map(({ lines, orderDate, ...rest }) => rest);
+
+    const pageResult = paginateArray(ranked, page, limit);
+    res.json(pageResult);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to search purchase orders" });
+  }
+}
+
+async function getPostedAcceptedQtyByPoIds(req, poIds = []) {
+  const out = new Map();
+  if (!poIds.length) return out;
+  const rows = await GRN.aggregate([
+    {
+      $match: withCompany(req, {
+        poId: { $in: poIds },
+        status: { $in: GRN_POSTED_FOR_RECEIPT_QTY },
+      }),
+    },
+    { $unwind: "$items" },
+    {
+      $match: {
+        "items.poLineId": { $exists: true, $ne: null },
+      },
+    },
+    {
+      $group: {
+        _id: { poId: "$poId", poLineId: "$items.poLineId" },
+        qty: {
+          $sum: {
+            $toDouble: {
+              $ifNull: ["$items.acceptedQty", { $ifNull: ["$items.receivedQty", 0] }],
+            },
+          },
+        },
+      },
+    },
+  ]);
+  for (const r of rows) {
+    const poKey = String(r._id.poId);
+    if (!out.has(poKey)) out.set(poKey, new Map());
+    out.get(poKey).set(String(r._id.poLineId), Math.max(0, Number(r.qty) || 0));
+  }
+  return out;
 }
 
 export async function getGrn(req, res) {

@@ -21,6 +21,7 @@ router.post("/post", storeApprove, c.postGrnFromPo);
 router.get("/reports/summary", storeView, c.getGrnSummaryReport);
 router.get("/reports/supplier-receiving", storeView, c.getSupplierReceivingReport);
 router.get("/reports/pending-po", storeView, c.getPendingPoGrnReport);
+router.get("/eligible-purchase-orders", storeView, c.listEligiblePurchaseOrdersForGrn);
 router.get("/from-po/:poId", storeView, c.getGrnFromPo);
 router.delete("/id/:id/draft", storeDelete, c.deleteGrnDraft);
 router.get("/id/:id", storeView, c.getGrnByMongoId);
