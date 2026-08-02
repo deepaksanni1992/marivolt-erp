@@ -375,6 +375,11 @@ async function searchSalesInvoices(companyId, companyCode, re, filters) {
   const rows = await SalesInvoice.find(filter).sort({ invoiceDate: -1 }).limit(PER_SOURCE_LIMIT).lean();
   return rows.map((r) => {
     const line = lineInfoFromDoc(r.lines, filters.q);
+    const documentStatus =
+      r.documentStatus ||
+      (["DRAFT", "CANCELLED"].includes(String(r.status || "").toUpperCase()) ? r.status : "ISSUED");
+    const paymentStatus = r.paymentStatus || "UNPAID";
+    const dispatchStatus = r.dispatchStatus || "NOT_DISPATCHED";
     return baseHit({
       type: "Sales Invoice",
       category: CATEGORIES.SALES,
@@ -385,8 +390,10 @@ async function searchSalesInvoices(companyId, companyCode, re, filters) {
       party: r.customerName,
       article: line.article,
       partNumber: line.partNumber,
-      description: line.description,
-      status: r.status,
+      description: line.description
+        ? `${line.description} · Doc ${documentStatus} · Pay ${paymentStatus} · Disp ${dispatchStatus}`
+        : `Doc ${documentStatus} · Pay ${paymentStatus} · Disp ${dispatchStatus}`,
+      status: documentStatus,
       amount: r.grandTotal,
       entityId: r._id,
       openPath: salesOpenPath("Sales Invoice", r._id),

@@ -69,6 +69,14 @@ import {
   activeAllocationStatusFilter,
   isActiveAllocationDuplicateKeyError,
 } from "../utils/allocationUniqueness.js";
+import {
+  computePaymentStatus,
+  isInvoiceDispatchEligible,
+  legacyStatusFromDimensions,
+  normalizeDocumentStatus,
+  normalizePaymentStatus,
+  rejectProtectedSiStateFields,
+} from "../utils/salesInvoiceState.js";
 
 const { withTransaction } = stockService;
 
@@ -255,19 +263,37 @@ async function enrichSalesDispatchesWithInvoiceStatus(companyId, items) {
   if (!items?.length) return items;
   const ids = [...new Set(items.map((d) => d.linkedSalesInvoiceId).filter(Boolean).map(String))];
   if (!ids.length) {
-    return items.map((d) => ({ ...d, linkedInvoiceStatus: null }));
+    return items.map((d) => ({
+      ...d,
+      linkedInvoiceStatus: null,
+      linkedInvoiceDocumentStatus: null,
+      linkedInvoicePaymentStatus: null,
+      linkedInvoiceDispatchStatus: null,
+    }));
   }
   const invoices = await SalesInvoice.find({
     companyId,
     _id: { $in: ids },
   })
-    .select("status paymentTerms")
+    .select("status documentStatus paymentStatus dispatchStatus paymentTerms")
     .lean();
   const map = Object.fromEntries(invoices.map((i) => [String(i._id), i]));
-  return items.map((d) => ({
-    ...d,
-    linkedInvoiceStatus: map[String(d.linkedSalesInvoiceId)]?.status ?? null,
-  }));
+  return items.map((d) => {
+    const inv = map[String(d.linkedSalesInvoiceId)];
+    const documentStatus = inv
+      ? normalizeDocumentStatus(
+          inv.documentStatus ||
+            (["DRAFT", "CANCELLED"].includes(String(inv.status || "").toUpperCase()) ? inv.status : "ISSUED")
+        )
+      : null;
+    return {
+      ...d,
+      linkedInvoiceStatus: documentStatus ?? inv?.status ?? null,
+      linkedInvoiceDocumentStatus: documentStatus,
+      linkedInvoicePaymentStatus: inv ? normalizePaymentStatus(inv.paymentStatus) : null,
+      linkedInvoiceDispatchStatus: inv?.dispatchStatus || null,
+    };
+  });
 }
 
 function normalizeLines(lines = []) {
@@ -1151,7 +1177,12 @@ export async function getSalesSummary(req, res) {
       OrderAcknowledgement.countDocuments(withCompany(req, { status: { $in: ["DRAFT", "CONFIRMED"] } })),
       ProformaInvoice.countDocuments(companyFilter),
       SalesInvoice.countDocuments(companyFilter),
-      SalesInvoice.countDocuments(withCompany(req, { status: { $in: ["DRAFT", "ISSUED", "PARTIALLY_PAID"] } })),
+      SalesInvoice.countDocuments(
+        withCompany(req, {
+          documentStatus: { $ne: "CANCELLED" },
+          paymentStatus: { $in: ["UNPAID", "PARTIAL", "PARTIALLY_PAID"] },
+        })
+      ),
       Cipl.countDocuments(companyFilter),
       SalesInvoice.aggregate([
         { $match: companyFilter },
@@ -1637,7 +1668,20 @@ export async function reportSalesInvoiceSummary(req, res) {
     const dateRange = parseDateRange(req.query);
     if (dateRange) filter.invoiceDate = dateRange;
     if (req.query.customer) filter.customerName = new RegExp(String(req.query.customer).trim(), "i");
-    if (req.query.status) filter.status = String(req.query.status).toUpperCase();
+    if (req.query.paymentStatus) {
+      const ps = normalizePaymentStatus(req.query.paymentStatus);
+      filter.paymentStatus = ps === "PARTIALLY_PAID" ? { $in: ["PARTIALLY_PAID", "PARTIAL"] } : ps;
+    }
+    if (req.query.documentStatus) {
+      filter.documentStatus = normalizeDocumentStatus(req.query.documentStatus);
+    }
+    if (req.query.status) {
+      const st = String(req.query.status).toUpperCase();
+      if (["DRAFT", "CANCELLED", "ISSUED"].includes(st)) filter.documentStatus = st;
+      else if (st === "PAID") filter.paymentStatus = "PAID";
+      else if (st === "PARTIALLY_PAID") filter.paymentStatus = { $in: ["PARTIALLY_PAID", "PARTIAL"] };
+      else if (st === "DISPATCHED") filter.dispatchStatus = "FULLY_DISPATCHED";
+    }
     const q = String(req.query.search || "").trim();
     if (q) {
       filter.$or = [
@@ -1656,8 +1700,16 @@ export async function reportSalesInvoiceSummary(req, res) {
           $group: {
             _id: null,
             totalInvoicedValue: { $sum: { $ifNull: ["$grandTotal", 0] } },
-            paidValue: { $sum: { $cond: [{ $eq: ["$status", "PAID"] }, { $ifNull: ["$grandTotal", 0] }, 0] } },
-            unpaidValue: { $sum: { $cond: [{ $ne: ["$status", "PAID"] }, { $ifNull: ["$grandTotal", 0] }, 0] } },
+            paidValue: {
+              $sum: {
+                $cond: [{ $eq: ["$paymentStatus", "PAID"] }, { $ifNull: ["$grandTotal", 0] }, 0],
+              },
+            },
+            unpaidValue: {
+              $sum: {
+                $cond: [{ $ne: ["$paymentStatus", "PAID"] }, { $ifNull: ["$grandTotal", 0] }, 0],
+              },
+            },
             overdueInvoicesCount: { $sum: 0 },
           },
         },
@@ -1665,8 +1717,8 @@ export async function reportSalesInvoiceSummary(req, res) {
     ]);
     const rows = rowsRaw.map((doc) => {
       const invoiceValue = toNumber(doc.grandTotal);
-      const paidAmount = doc.status === "PAID" ? invoiceValue : 0;
-      const balanceAmount = Math.max(0, invoiceValue - paidAmount);
+      const paidAmount = toNumber(doc.totalReceivedAmount);
+      const balanceAmount = Math.max(0, toNumber(doc.balanceAmount ?? invoiceValue - paidAmount));
       return {
         _id: doc._id,
         invoiceNo: doc.invoiceNo,
@@ -1687,7 +1739,12 @@ export async function reportSalesInvoiceSummary(req, res) {
         invoiceValue,
         paidAmount,
         balanceAmount,
-        paymentStatus: doc.status || "DRAFT",
+        documentStatus: normalizeDocumentStatus(
+          doc.documentStatus || (doc.status === "DRAFT" || doc.status === "CANCELLED" ? doc.status : "ISSUED")
+        ),
+        paymentStatus: normalizePaymentStatus(doc.paymentStatus || "UNPAID"),
+        dispatchStatus: doc.dispatchStatus || "NOT_DISPATCHED",
+        status: doc.status || "DRAFT",
       };
     });
     const summary = summaryAgg?.[0] || {};
@@ -1811,8 +1868,8 @@ export async function reportSalesBranchWise(req, res) {
           customers: { $addToSet: "$customerName" },
           totalQtySold: { $sum: "$qty" },
           totalSalesValue: { $sum: "$grandTotal" },
-          paidAmount: { $sum: { $cond: [{ $eq: ["$status", "PAID"] }, "$grandTotal", 0] } },
-          unpaidAmount: { $sum: { $cond: [{ $ne: ["$status", "PAID"] }, "$grandTotal", 0] } },
+          paidAmount: { $sum: { $cond: [{ $eq: ["$paymentStatus", "PAID"] }, "$grandTotal", 0] } },
+          unpaidAmount: { $sum: { $cond: [{ $ne: ["$paymentStatus", "PAID"] }, "$grandTotal", 0] } },
         },
       },
       { $sort: { totalSalesValue: -1 } },
@@ -3021,7 +3078,24 @@ export async function listSalesInvoices(req, res) {
       filter.$or = [{ invoiceNo: new RegExp(q, "i") }, ...customerDetailSearchOr(q)];
     }
     if (req.query.paymentStatus) {
-      filter.paymentStatus = String(req.query.paymentStatus).trim().toUpperCase();
+      const ps = normalizePaymentStatus(req.query.paymentStatus);
+      filter.paymentStatus = ps === "PARTIALLY_PAID" ? { $in: ["PARTIALLY_PAID", "PARTIAL"] } : ps;
+    }
+    if (req.query.documentStatus) {
+      filter.documentStatus = normalizeDocumentStatus(req.query.documentStatus);
+    }
+    if (req.query.dispatchStatus) {
+      filter.dispatchStatus = String(req.query.dispatchStatus).trim().toUpperCase();
+    }
+    // Legacy status filter: map only document-like values; payment/dispatch filters use dedicated params.
+    if (req.query.status) {
+      const st = String(req.query.status).trim().toUpperCase();
+      if (["DRAFT", "CANCELLED"].includes(st)) filter.documentStatus = st;
+      else if (st === "ISSUED") filter.documentStatus = "ISSUED";
+      else if (st === "PAID") filter.paymentStatus = "PAID";
+      else if (st === "PARTIALLY_PAID") filter.paymentStatus = { $in: ["PARTIALLY_PAID", "PARTIAL"] };
+      else if (st === "DISPATCHED") filter.dispatchStatus = "FULLY_DISPATCHED";
+      else filter.status = st;
     }
     const [itemsRaw, total] = await Promise.all([
       SalesInvoice.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
@@ -3071,14 +3145,14 @@ async function enrichSalesInvoicesWithPaymentState(req, docs = []) {
     const total = Math.max(0, Number(r.grandTotal) || 0);
     const received = Math.max(0, sumByInvoiceId.get(String(r._id)) || 0);
     const balance = Math.max(0, total - received);
-    let paymentStatus = "UNPAID";
-    if (received > 0 && received < total) paymentStatus = "PARTIAL";
-    if (received >= total && total > 0) paymentStatus = "PAID";
+    const paymentStatus = computePaymentStatus({ grandTotal: total, receivedAmount: received });
     return {
       ...r,
       totalReceivedAmount: received,
       balanceAmount: balance,
       paymentStatus,
+      documentStatus: normalizeDocumentStatus(r.documentStatus || (r.status === "DRAFT" || r.status === "CANCELLED" ? r.status : "ISSUED")),
+      dispatchStatus: r.dispatchStatus || "NOT_DISPATCHED",
     };
   });
 }
@@ -3317,7 +3391,10 @@ export async function convertPackingToSalesInvoice(req, res) {
             termsAndConditions,
             lines,
             ...totals,
-            status: "ISSUED",
+            documentStatus: "ISSUED",
+            paymentStatus: "UNPAID",
+            dispatchStatus: "NOT_DISPATCHED",
+            status: "ISSUED", // deprecated compat projection
             stockPostedAt: null,
             createdBy: req.user?.email || "",
           },
@@ -3368,24 +3445,29 @@ export async function updateSalesInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const doc = await SalesInvoice.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
-    // Phase-8: posted invoices are immutable except for status (which
-    // goes through the lifecycle). Block free-form edits the moment
-    // stock has been posted out so accounts and stock stay consistent.
-    const canon = canonicalStatus(DOC_TYPES.SALES_INVOICE, doc.status);
-    if (["POSTED", "PARTIAL_PAYMENT", "PAID", "CANCELLED"].includes(canon)) {
-      const requestedStatus = req.body?.status;
-      const otherEditedKey = Object.keys(req.body || {}).find((k) => k !== "status" && k !== "remarks");
+    const protectedErr = rejectProtectedSiStateFields(req.body || {});
+    if (protectedErr) {
+      return res.status(protectedErr.statusCode).json({
+        message: protectedErr.message,
+        code: protectedErr.code,
+        fields: protectedErr.fields,
+      });
+    }
+    // S1 — issued/cancelled documents are immutable except remarks + dedicated lifecycle actions.
+    const docStatus = normalizeDocumentStatus(
+      doc.documentStatus ||
+        (["DRAFT", "CANCELLED"].includes(String(doc.status || "").toUpperCase()) ? doc.status : "ISSUED")
+    );
+    if (docStatus === "ISSUED" || docStatus === "CANCELLED") {
+      const otherEditedKey = Object.keys(req.body || {}).find((k) => k !== "remarks");
       if (otherEditedKey) {
         blockTransition(
           DOC_TYPES.SALES_INVOICE,
-          doc.status,
-          doc.status,
-          `Cannot edit field "${otherEditedKey}" on a ${canon} sales invoice (${doc.invoiceNo}). Cancel and re-issue if needed.`,
+          docStatus,
+          docStatus,
+          `Cannot edit field "${otherEditedKey}" on a ${docStatus} sales invoice (${doc.invoiceNo}). Cancel and re-issue if needed.`,
           { invoiceNo: doc.invoiceNo, attemptedField: otherEditedKey }
         );
-      }
-      if (requestedStatus && canonicalStatus(DOC_TYPES.SALES_INVOICE, requestedStatus) !== canon) {
-        assertTransition(DOC_TYPES.SALES_INVOICE, doc.status, requestedStatus, { documentNo: doc.invoiceNo });
       }
     }
     const allowed = [
@@ -3403,7 +3485,6 @@ export async function updateSalesInvoice(req, res) {
       "consignee",
       "customerVatNo",
       "currency",
-      "status",
       "remarks",
       "termsAndConditions",
       "lines",
@@ -3561,7 +3642,8 @@ export async function cancelSalesInvoice(req, res) {
           });
         }
       }
-      inv.status = "CANCELLED";
+      inv.documentStatus = "CANCELLED";
+      inv.status = "CANCELLED"; // deprecated compat
       inv.cancelledAt = new Date();
       inv.cancelledBy = req.user?.email || "";
       inv.cancellationReason = reason;
@@ -3764,7 +3846,7 @@ export async function patchSalesDispatch(req, res) {
       if (nextStatus === "CLOSED" && ["DISPATCHED", "IN_TRANSIT", "DELIVERED"].includes(cur)) {
         const inv = await SalesInvoice.findOne(withCompany(req, { _id: dispatch.linkedSalesInvoiceId }));
         if (!inv) return res.status(400).json({ message: "Linked sales invoice not found" });
-        if (String(inv.status || "").toUpperCase() !== "PAID") {
+        if (normalizePaymentStatus(inv.paymentStatus) !== "PAID") {
           return res.status(400).json({
             message: "Sales invoice must be PAID before closing this dispatch (settle payment on the invoice first).",
           });
@@ -3845,8 +3927,13 @@ export async function convertSalesInvoiceToSalesDispatch(req, res) {
     const invoice = await SalesInvoice.findOne(withCompany(req, { _id: id }));
     validateConversionSource(invoice, "sales invoice");
     if (!invoice?.lines?.length) return res.status(400).json({ message: "Sales invoice requires at least one line to convert" });
-    if (String(invoice.status || "").toUpperCase() !== "DISPATCHED") {
-      return res.status(400).json({ message: "Sales invoice must be DISPATCHED before converting to Sales Dispatch" });
+    // S1 — logistics SalesDispatch may be created from an issued invoice.
+    // It must not require or write payment/document status. Physical stock
+    // authority remains Store Dispatch (see S2 dual-dispatch resolution).
+    if (!isInvoiceDispatchEligible(invoice)) {
+      return res.status(400).json({
+        message: "Sales invoice must be issued (non-cancelled) before converting to Sales Dispatch",
+      });
     }
     const existingDispatches = await SalesDispatch.find(
       withCompany(req, { linkedSalesInvoiceId: invoice._id, status: { $ne: "CANCELLED" } })
@@ -3917,6 +4004,7 @@ export async function convertSalesInvoiceToSalesDispatch(req, res) {
       status: "READY",
       createdBy: req.user?.email || "",
     });
+    // Temporary S1 permission: logistics link fields only — never payment/document/dispatchStatus.
     invoice.linkedSalesDispatchId = doc._id;
     invoice.linkedSalesDispatchNo = doc.dispatchNo;
     invoice.updatedBy = req.user?.email || "";
@@ -3929,7 +4017,11 @@ export async function convertSalesInvoiceToSalesDispatch(req, res) {
       documentNo: doc.dispatchNo,
       toStatus: doc.status,
       description: `Dispatch ${doc.dispatchNo} created from sales invoice ${invoice.invoiceNo}`,
-      metadata: { invoiceNo: invoice.invoiceNo, partial: existingDispatches.length > 0 },
+      metadata: {
+        invoiceNo: invoice.invoiceNo,
+        partial: existingDispatches.length > 0,
+        note: "SalesDispatch logistics only; SI dispatchStatus owned by Store Dispatch",
+      },
     });
     res.status(201).json(doc);
   } catch (err) {

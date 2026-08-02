@@ -21,11 +21,16 @@ function upper(v) {
   return t(v).toUpperCase();
 }
 
+/** Issued document (S1) or legacy issued-like statuses before migration. */
 const ELIGIBLE_SALES_INVOICE_STATUSES = new Set(["ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID"]);
+function isEligibleSalesInvoice(inv) {
+  if (String(inv?.documentStatus || "").toUpperCase() === "ISSUED") return true;
+  if (String(inv?.documentStatus || "").toUpperCase() === "CANCELLED") return false;
+  return ELIGIBLE_SALES_INVOICE_STATUSES.has(String(inv?.status || "").toUpperCase());
+}
 
 export function isSalesInvoiceEligibleForCustoms(invoice) {
-  const st = upper(invoice?.status);
-  return ELIGIBLE_SALES_INVOICE_STATUSES.has(st);
+  return isEligibleSalesInvoice(invoice);
 }
 
 async function userCanOverride(req) {

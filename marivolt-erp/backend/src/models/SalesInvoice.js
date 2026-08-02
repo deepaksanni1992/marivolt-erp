@@ -67,11 +67,29 @@ const salesInvoiceSchema = new mongoose.Schema(
     totalReceivedAmount: { type: Number, default: 0, min: 0 },
     /** Always grandTotal − totalReceivedAmount (clamped at 0). Phase-8.2. */
     balanceAmount: { type: Number, default: 0, min: 0 },
-    /** Phase-8.2 canonical UNPAID / PARTIAL / PAID, derived from received vs grandTotal. */
+    /**
+     * S1 — Independent invoice dimensions.
+     * paymentStatus: from receipts only (PARTIAL retained as legacy alias value).
+     * documentStatus: lifecycle only.
+     * dispatchStatus: from Store Dispatch quantities only.
+     * status: deprecated compatibility; do not encode payment/dispatch after S1.
+     */
+    documentStatus: {
+      type: String,
+      enum: ["DRAFT", "ISSUED", "CANCELLED"],
+      default: "DRAFT",
+      index: true,
+    },
     paymentStatus: {
       type: String,
-      enum: ["UNPAID", "PARTIAL", "PAID"],
+      enum: ["UNPAID", "PARTIAL", "PARTIALLY_PAID", "PAID"],
       default: "UNPAID",
+      index: true,
+    },
+    dispatchStatus: {
+      type: String,
+      enum: ["NOT_DISPATCHED", "PARTIALLY_DISPATCHED", "FULLY_DISPATCHED"],
+      default: "NOT_DISPATCHED",
       index: true,
     },
     status: {
@@ -102,5 +120,7 @@ salesInvoiceSchema.index({ companyId: 1, invoiceNo: 1 }, { unique: true });
 salesInvoiceSchema.index({ companyId: 1, invoiceNumber: 1 }, { unique: true });
 salesInvoiceSchema.index({ companyId: 1, invoiceDate: -1 });
 salesInvoiceSchema.index({ companyId: 1, paymentStatus: 1, invoiceDate: -1 });
+salesInvoiceSchema.index({ companyId: 1, documentStatus: 1, invoiceDate: -1 });
+salesInvoiceSchema.index({ companyId: 1, dispatchStatus: 1, invoiceDate: -1 });
 
 export default mongoose.model("SalesInvoice", salesInvoiceSchema);
