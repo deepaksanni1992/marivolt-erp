@@ -62,7 +62,9 @@ import {
 import {
   QUANTITY_CLAIM_EXHAUSTED,
   claimAllocationLinePackQty,
+  claimPackingLineDispatchQty,
   releaseAllocationLinePackQty,
+  releasePackingLineDispatchQty,
 } from "../utils/quantitySerialization.js";
 
 function withCompany(req, filter = {}) {
@@ -1534,6 +1536,7 @@ export async function postStoreDispatch(req, res) {
       const wh = String(claimed.warehouse || packing.warehouse || "MAIN").toUpperCase();
       const postingOperationId = crypto.randomUUID();
 
+      // S3 — claim packing-line remaining qty BEFORE stock movement (txn-only).
       for (const ln of claimed.lines || []) {
         const dq = Number(ln.dispatchQty) || 0;
         if (!(dq > 0)) continue;
@@ -1557,19 +1560,44 @@ export async function postStoreDispatch(req, res) {
         }
 
         const packingLineId = ln.packingLineId || match.packingLineId || null;
-        if (packingLineId) {
-          const packLine = (packing.lines || []).find((x) => String(x._id) === String(packingLineId));
-          const packedQty = Number(packLine?.packQty) || Number(ln.packedQty) || invoiceQty;
-          const packOut = dispatchedByPackingLine.get(String(packingLineId)) || 0;
-          if (packOut + dq > packedQty + 1e-6) {
-            throw dispatchConflictError(
-              DISPATCH_EXCEEDS_PACKED_QTY,
-              `Dispatch qty exceeds packed quantity for ${ln.article}`,
-              { article: ln.article, packedQty, alreadyDispatched: packOut, requested: dq }
-            );
-          }
+        if (!packingLineId) {
+          throw dispatchConflictError(
+            DISPATCH_SOURCE_PACKING_INVALID,
+            `Dispatch line missing packing line link for ${ln.article}`
+          );
         }
+        const packLine = (packing.lines || []).find((x) => String(x._id) === String(packingLineId));
+        if (!packLine) {
+          throw dispatchConflictError(
+            DISPATCH_SOURCE_PACKING_INVALID,
+            `Packing line missing for ${ln.article}`
+          );
+        }
+        const packedQty = Number(packLine.packQty) || Number(ln.packedQty) || invoiceQty;
+        const packOut = dispatchedByPackingLine.get(String(packingLineId)) || 0;
+        if (packOut + dq > packedQty + 1e-6) {
+          throw dispatchConflictError(
+            DISPATCH_EXCEEDS_PACKED_QTY,
+            `Dispatch qty exceeds packed quantity for ${ln.article}`,
+            { article: ln.article, packedQty, alreadyDispatched: packOut, requested: dq }
+          );
+        }
+        await claimPackingLineDispatchQty(StorePacking, session, {
+          companyId: req.companyId,
+          packingId: packing._id,
+          packingLineId,
+          dispatchQty: dq,
+          packQty: packedQty,
+          postedFloor: packOut,
+        });
+        packLine.dispatchedQty = packOut + dq;
+      }
 
+      for (const ln of claimed.lines || []) {
+        const dq = Number(ln.dispatchQty) || 0;
+        if (!(dq > 0)) continue;
+        const match = (invoice.lines || []).find((x) => String(x._id) === String(ln.invoiceLineId));
+        const packingLineId = ln.packingLineId || match?.packingLineId || null;
         const effectKey = buildDispatchEffectKey({
           companyId: req.companyId,
           dispatchId: claimed._id,
@@ -1686,7 +1714,8 @@ export async function postStoreDispatch(req, res) {
       err?.code === DISPATCH_POSTING_CONFLICT ||
       err?.code === DISPATCH_LEDGER_INCONSISTENT ||
       err?.code === DISPATCH_EXCEEDS_PACKED_QTY ||
-      err?.code === DISPATCH_SOURCE_PACKING_INVALID
+      err?.code === DISPATCH_SOURCE_PACKING_INVALID ||
+      err?.code === QUANTITY_CLAIM_EXHAUSTED
     ) {
       return res.status(err.statusCode || 409).json({
         message: err.message,
@@ -1865,6 +1894,27 @@ export async function cancelStoreDispatch(req, res) {
         }
       }
 
+      // S3 — return packing-line dispatch claims (status is CANCELLING so soft sums exclude this doc).
+      if (claimed.packingId) {
+        const otherByPackLine = await sumPostedDispatchQtyByPackingLine(
+          req.companyId,
+          claimed.packingId,
+          session
+        );
+        for (const ln of claimed.lines || []) {
+          const dq = Number(ln.dispatchQty) || 0;
+          const packingLineId = ln.packingLineId || null;
+          if (!(dq > 0) || !packingLineId) continue;
+          await releasePackingLineDispatchQty(StorePacking, session, {
+            companyId: req.companyId,
+            packingId: claimed.packingId,
+            packingLineId,
+            dispatchQty: dq,
+            postedFloor: (otherByPackLine.get(String(packingLineId)) || 0) + dq,
+          });
+        }
+      }
+
       claimed.status = "CANCELLED";
       claimed.cancelledAt = new Date();
       claimed.cancellationReason = t(req.body?.reason);
@@ -1902,7 +1952,8 @@ export async function cancelStoreDispatch(req, res) {
       err?.code === DISPATCH_ALREADY_CANCELLED ||
       err?.code === DISPATCH_CANCEL_IN_PROGRESS ||
       err?.code === DISPATCH_CANCEL_CONFLICT ||
-      err?.code === DISPATCH_LEDGER_INCONSISTENT
+      err?.code === DISPATCH_LEDGER_INCONSISTENT ||
+      err?.code === QUANTITY_CLAIM_EXHAUSTED
     ) {
       return res.status(err.statusCode || 409).json({
         message: err.message,

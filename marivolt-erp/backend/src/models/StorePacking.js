@@ -19,6 +19,11 @@ const storePackingLineSchema = new mongoose.Schema(
     materialCode: { type: String, default: "", trim: true },
     allocatedQty: { type: Number, default: 0, min: 0 },
     packQty: { type: Number, required: true, min: 0 },
+    /**
+     * S3 — Sum of successfully posted dispatch qty claimed against this packing line.
+     * Updated atomically inside dispatch post/cancel transactions only.
+     */
+    dispatchedQty: { type: Number, default: 0, min: 0 },
     uom: { type: String, default: "PCS", trim: true },
     remarks: { type: String, default: "", trim: true },
   },
