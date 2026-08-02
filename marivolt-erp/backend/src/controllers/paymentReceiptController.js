@@ -15,6 +15,7 @@ import {
 } from "../services/customerReceivableService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 import { piPayableTotal, roundMoney } from "../utils/piPaymentRequest.js";
+import { computePaymentStatus } from "../utils/salesInvoiceState.js";
 
 const ALLOWED_MIME = new Set(["application/pdf", "image/jpeg", "image/png"]);
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
@@ -145,20 +146,14 @@ async function recalcSalesInvoicePaymentState(req, salesInvoiceId) {
   const total = Math.max(0, Number(invoice.grandTotal) || 0);
   const balance = Math.max(0, total - paidAmount);
 
-  // Phase-8.2 canonical buckets — written even when the invoice is
-  // cancelled so the audit history shows the final state.
+  // S1 — payment ownership only. Never write documentStatus or dispatchStatus.
+  const paymentStatus = computePaymentStatus({
+    grandTotal: total,
+    receivedAmount: paidAmount,
+  });
   invoice.totalReceivedAmount = paidAmount;
   invoice.balanceAmount = balance;
-  let paymentStatus = "UNPAID";
-  if (paidAmount > 0 && paidAmount < total) paymentStatus = "PARTIAL";
-  if (paidAmount >= total && total > 0) paymentStatus = "PAID";
   invoice.paymentStatus = paymentStatus;
-
-  if (String(invoice.status || "").toUpperCase() !== "CANCELLED") {
-    if (paidAmount <= 0) invoice.status = "ISSUED";
-    else if (paidAmount < total) invoice.status = "PARTIALLY_PAID";
-    else invoice.status = "PAID";
-  }
   invoice.updatedBy = req.user?.email || "";
   await invoice.save();
   return { invoice, paidAmount, balance, paymentStatus };

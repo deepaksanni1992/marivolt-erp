@@ -20,6 +20,7 @@ import { nextSequentialNumber } from "../utils/docNumbers.js";
 import { writeAudit } from "../services/auditService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 import { createDraftPurchaseInvoiceFromPurchaseDocument } from "../services/purchaseInvoiceDraftFromDocumentService.js";
+import { rejectProtectedSiStateFields } from "../utils/salesInvoiceState.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -338,6 +339,20 @@ export async function getSalesInvoice(req, res) {
 export async function createSalesInvoice(req, res) {
   try {
     const body = { ...req.body };
+    // Ignore client-supplied state fields; defaults are authoritative.
+    for (const k of [
+      "documentStatus",
+      "paymentStatus",
+      "dispatchStatus",
+      "status",
+      "totalReceivedAmount",
+      "balanceAmount",
+      "stockPostedAt",
+      "cancelledAt",
+      "cancelledBy",
+    ]) {
+      delete body[k];
+    }
     if (!body.invoiceNumber) {
       body.invoiceNumber = await nextSequentialNumber(
         SalesInvoice,
@@ -348,9 +363,17 @@ export async function createSalesInvoice(req, res) {
     }
     body.createdBy = req.user?.email || "";
     body.companyId = req.companyId;
+    // S1 defaults — payment/dispatch only via receipts / Store Dispatch.
+    body.documentStatus = "DRAFT";
+    body.paymentStatus = "UNPAID";
+    body.dispatchStatus = "NOT_DISPATCHED";
+    body.status = "DRAFT";
+    if (!body.invoiceNo) body.invoiceNo = body.invoiceNumber;
     const doc = new SalesInvoice(body);
     doc.subTotal = sumInvoiceLines(doc.lines, "rate");
     doc.totalAmount = (doc.subTotal || 0) + (Number(doc.taxAmount) || 0);
+    doc.grandTotal = doc.totalAmount;
+    doc.balanceAmount = Math.max(0, Number(doc.grandTotal) || 0);
     await doc.save();
     res.status(201).json(doc);
   } catch (err) {
@@ -366,13 +389,20 @@ export async function updateSalesInvoice(req, res) {
     }
     const doc = await SalesInvoice.findOne(withCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Not found" });
+    const protectedErr = rejectProtectedSiStateFields(req.body || {});
+    if (protectedErr) {
+      return res.status(protectedErr.statusCode).json({
+        message: protectedErr.message,
+        code: protectedErr.code,
+        fields: protectedErr.fields,
+      });
+    }
     const allowed = [
       "customerName",
       "linkedQuotationNumber",
       "currency",
       "lines",
       "taxAmount",
-      "paymentStatus",
       "remarks",
       "invoiceDate",
     ];
