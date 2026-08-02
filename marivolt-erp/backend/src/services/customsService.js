@@ -6,8 +6,19 @@ import StockBalance from "../models/StockBalance.js";
 import { isCustomsEnabled } from "../config/customsConfig.js";
 import { nextCustomsLotRef } from "../services/customsNumberService.js";
 import { writeAudit } from "./auditService.js";
+import {
+  CustomsGrnValidationError,
+  buildLineOverrideMap,
+  normalizeCustomsHeaderDefaults,
+  resolveCustomsAllowances,
+  resolveCustomsLineEffective,
+  toPersistedGrnLineCustoms,
+  validateCustomsCaptureForGrn,
+} from "../utils/customsGrnFieldModel.js";
+import { hasPermission } from "./roleService.js";
 
 export { isCustomsEnabled };
+export { CustomsGrnValidationError };
 
 function t(v) {
   return String(v ?? "").trim();
@@ -35,12 +46,6 @@ function parseDate(value) {
   if (!value) return null;
   const d = value instanceof Date ? value : new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function deriveBlAwbParts(payload = {}, grn = {}) {
-  const blNumber = t(payload.blNumber) || t(grn.blAwbNo);
-  const awbNumber = t(payload.awbNumber);
-  return { blNumber, awbNumber };
 }
 
 function resolveDocumentId(value) {
@@ -80,7 +85,9 @@ function hasCustomsDocuments(customs = {}) {
 export function hasCustomsPayload(body = {}) {
   const customs = body?.customs && typeof body.customs === "object" ? body.customs : body;
   const fields = [
+    customs?.receivedDate,
     customs?.boeNumber,
+    customs?.boeDate,
     customs?.blNumber,
     customs?.awbNumber,
     customs?.blAwbNo,
@@ -91,9 +98,14 @@ export function hasCustomsPayload(body = {}) {
     customs?.countryOfOrigin,
     customs?.hsCode,
     customs?.currency,
+    customs?.customsCurrency,
     customs?.unitPrice,
+    customs?.customsUnitPrice,
     customs?.weightKg,
+    customs?.unitWeightKg,
+    customs?.exchangeRateToAED,
     customs?.remarks,
+    customs?.customsRemarks,
     body?.boeNumber,
     body?.blNumber,
     body?.awbNumber,
@@ -107,9 +119,21 @@ export function hasCustomsPayload(body = {}) {
 
   for (const row of customs?.lineOverrides || []) {
     if (
-      [row?.hsCode, row?.countryOfOrigin, row?.unitPrice, row?.weightKg, row?.currency, row?.remarks].some(
-        (f) => t(f),
-      )
+      [
+        row?.hsCode,
+        row?.countryOfOrigin,
+        row?.unitPrice,
+        row?.customsUnitPrice,
+        row?.weightKg,
+        row?.unitWeightKg,
+        row?.currency,
+        row?.customsCurrency,
+        row?.exchangeRateToAED,
+        row?.boeNumber,
+        row?.receivedDate,
+        row?.remarks,
+        row?.customsRemarks,
+      ].some((f) => t(f))
     ) {
       return true;
     }
@@ -119,14 +143,17 @@ export function hasCustomsPayload(body = {}) {
 
 export function normalizeCustomsPayload(body = {}, grn = {}) {
   const customs = body?.customs && typeof body.customs === "object" ? body.customs : body;
-  const { blNumber, awbNumber } = deriveBlAwbParts(customs, grn);
-  const boeNumber = t(customs.boeNumber) || t(customs.customsDocRef) || t(grn.customsDocRef);
-  const supplierInvoiceNumber =
-    t(customs.supplierInvoiceNumber) || t(customs.supplierInvoiceNo) || t(grn.supplierInvoiceNo);
-  const supplierInvoiceDate =
-    parseDate(customs.supplierInvoiceDate) || parseDate(grn.supplierInvoiceDate) || null;
-
   if (!hasCustomsPayload(body)) return null;
+
+  const header = normalizeCustomsHeaderDefaults({
+    ...customs,
+    blNumber: t(customs.blNumber) || t(grn.blAwbNo),
+    awbNumber: t(customs.awbNumber),
+    boeNumber: t(customs.boeNumber) || t(customs.customsDocRef) || t(grn.customsDocRef),
+    supplierInvoiceNumber:
+      t(customs.supplierInvoiceNumber) || t(customs.supplierInvoiceNo) || t(grn.supplierInvoiceNo),
+    receivedDate: customs.receivedDate || grn.grnDate || "",
+  });
 
   const docSrc = customs.documents && typeof customs.documents === "object" ? customs.documents : {};
   const otherDocumentIds = [
@@ -157,27 +184,88 @@ export function normalizeCustomsPayload(body = {}, grn = {}) {
     otherDocumentIds: [...new Set(otherDocumentIds.map(String))],
   };
 
-  const lineOverrides = new Map();
-  for (const row of customs.lineOverrides || []) {
-    const key = String(row?.poLineId ?? row?.grnLineId ?? "");
-    if (key) lineOverrides.set(key, row);
-  }
+  const requestedAllowances = {
+    allowBoeBeforePoDate: Boolean(
+      customs.allowBoeBeforePoDate || body.allowBoeBeforePoDate || customs.dateOverrides?.allowBoeBeforePoDate
+    ),
+    allowInvoiceAfterReceivedDate: Boolean(
+      customs.allowInvoiceAfterReceivedDate ||
+        body.allowInvoiceAfterReceivedDate ||
+        customs.dateOverrides?.allowInvoiceAfterReceivedDate
+    ),
+    allowFutureReceivedDate: Boolean(
+      customs.allowFutureReceivedDate ||
+        body.allowFutureReceivedDate ||
+        customs.dateOverrides?.allowFutureReceivedDate
+    ),
+    allowTotalWeightOverride: Boolean(
+      customs.allowTotalWeightOverride ||
+        body.allowTotalWeightOverride ||
+        customs.dateOverrides?.allowTotalWeightOverride
+    ),
+  };
 
   return {
-    boeNumber,
-    blNumber,
-    awbNumber,
-    supplierInvoiceNumber,
-    supplierInvoiceDate,
-    countryOfOrigin: upper(customs.countryOfOrigin || ""),
-    hsCode: upper(customs.hsCode || ""),
-    currency: upper(customs.currency || grn.currency || "USD"),
-    unitPrice: Number(customs.unitPrice) || 0,
-    weightKg: Number(customs.weightKg) || 0,
-    remarks: t(customs.remarks || grn.remarks),
+    header,
     documents,
-    lineOverrides,
+    lineOverrides: buildLineOverrideMap(customs),
+    requestedAllowances,
+    // legacy convenience mirrors (first-line/header snapshot for lot header)
+    boeNumber: header.boeNumber,
+    blNumber: header.blNumber,
+    awbNumber: header.awbNumber,
+    supplierInvoiceNumber: header.supplierInvoiceNumber,
+    countryOfOrigin: upper(header.countryOfOrigin),
+    hsCode: upper(header.hsCode),
+    currency: upper(header.customsCurrency || "USD"),
+    remarks: header.customsRemarks,
   };
+}
+
+/**
+ * Validate customs capture and stamp resolved effective values onto GRN lines.
+ * Call inside the GRN post transaction before/while creating the customs lot.
+ * Date/weight overrides require STORE approve permission — client checkboxes alone are ignored.
+ */
+export async function applyResolvedCustomsToGrnLines({ grn, body = {}, poDate = null, req = null }) {
+  const payload = normalizeCustomsPayload(body, grn);
+  if (!payload) return null;
+
+  const permissionGranted = req ? await hasPermission(req, "STORE", "approve") : false;
+  const allowances = resolveCustomsAllowances({
+    requested: payload.requestedAllowances || {},
+    permissionGranted,
+  });
+  payload.allowances = allowances;
+
+  const lines = (grn.items || []).filter((ln) => (Number(ln.acceptedQty ?? ln.receivedQty) || 0) > 0);
+  const result = validateCustomsCaptureForGrn({
+    header: payload.header,
+    lineOverrides: payload.lineOverrides,
+    lines,
+    poDate,
+    allowances,
+  });
+  if (!result.ok) throw new CustomsGrnValidationError(result.errors);
+
+  for (const line of grn.items || []) {
+    const qty = Number(line.acceptedQty ?? line.receivedQty) || 0;
+    if (qty <= 0) {
+      line.customsCapture = undefined;
+      continue;
+    }
+    const key = String(line.poLineId ?? "");
+    const override = payload.lineOverrides.get(key) || {};
+    const effective = resolveCustomsLineEffective({
+      header: payload.header,
+      override,
+      quantity: qty,
+      allowances,
+    });
+    line.customsCapture = toPersistedGrnLineCustoms(effective);
+  }
+
+  return payload;
 }
 
 function deriveItemStatus(qtyAvailable, qtyImported) {
@@ -197,12 +285,13 @@ function deriveLotStatus(items = []) {
 
 /**
  * Create customs lot, items, and inbound movements from a posted GRN.
+ * Expects GRN lines to already carry `customsCapture` effective snapshots when capture is active.
  */
-export async function createCustomsLotFromGrn({ session, req, grn, body = {} }) {
+export async function createCustomsLotFromGrn({ session, req, grn, body = {}, poDate = null }) {
   if (!isCustomsEnabled()) return null;
   if (!grn?._id) throw new Error("GRN is required for customs lot creation");
 
-  const payload = normalizeCustomsPayload(body, grn);
+  const payload = await applyResolvedCustomsToGrnLines({ grn, body, poDate, req });
   if (!payload) return null;
 
   const existing = await CustomsLot.findOne(
@@ -214,6 +303,10 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {} }) 
     companyId: req.companyId,
     companyCode: req.companyCode,
   });
+
+  // Lot header stores first-line effective identity for list/search only.
+  // Line items hold the authoritative resolved values.
+  const firstCapture = (grn.items || []).find((ln) => ln.customsCapture)?.customsCapture || {};
 
   const lotRows = await CustomsLot.create(
     [
@@ -227,15 +320,21 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {} }) 
         poNo: grn.poNo || "",
         supplierId: grn.supplierId || null,
         supplierName: grn.supplierName || "",
-        boeNumber: payload.boeNumber,
-        blNumber: payload.blNumber,
-        awbNumber: payload.awbNumber,
-        supplierInvoiceNumber: payload.supplierInvoiceNumber,
-        supplierInvoiceDate: payload.supplierInvoiceDate,
-        countryOfOrigin: payload.countryOfOrigin,
-        currency: payload.currency,
+        boeNumber: firstCapture.boeNumber || payload.header.boeNumber,
+        boeDate: firstCapture.boeDate || null,
+        blNumber: firstCapture.blNumber || payload.header.blNumber,
+        awbNumber: firstCapture.awbNumber || payload.header.awbNumber,
+        supplierInvoiceNumber: firstCapture.supplierInvoiceNumber || payload.header.supplierInvoiceNumber,
+        supplierInvoiceDate: firstCapture.supplierInvoiceDate || null,
+        receivedDate: firstCapture.receivedDate || null,
+        countryOfOrigin: firstCapture.countryOfOrigin || upper(payload.header.countryOfOrigin),
+        hsCode: firstCapture.hsCode || upper(payload.header.hsCode),
+        unitWeightKg: Number(firstCapture.unitWeightKg) || 0,
+        customsUnitPrice: Number(firstCapture.customsUnitPrice) || 0,
+        currency: firstCapture.customsCurrency || upper(payload.header.customsCurrency || "USD"),
+        exchangeRateToAED: Number(firstCapture.exchangeRateToAED) || 0,
         status: "OPEN",
-        remarks: payload.remarks,
+        remarks: firstCapture.customsRemarks || payload.header.customsRemarks,
         documents: payload.documents,
         createdBy: req.user?.email || "",
         updatedBy: req.user?.email || "",
@@ -250,12 +349,14 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {} }) 
     const qty = Number(line.acceptedQty ?? line.receivedQty) || 0;
     if (qty <= 0) continue;
 
-    const lineKey = String(line.poLineId ?? "");
-    const override = payload.lineOverrides.get(lineKey) || {};
-    const unitPrice =
-      Number(override.unitPrice ?? (payload.unitPrice || undefined) ?? line.unitCost) || 0;
-    const weightKg = Number(override.weightKg ?? payload.weightKg) || 0;
-    const totalValue = qty * unitPrice;
+    const cap = line.customsCapture || toPersistedGrnLineCustoms(
+      resolveCustomsLineEffective({
+        header: payload.header,
+        override: payload.lineOverrides.get(String(line.poLineId ?? "")) || {},
+        quantity: qty,
+        allowances: payload.allowances || {},
+      })
+    );
 
     const itemRows = await CustomsLotItem.create(
       [
@@ -271,25 +372,32 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {} }) 
           partNumber: upper(line.partNumber || line.spn || ""),
           partName: line.description || "",
           description: line.description || "",
-          hsCode: upper(override.hsCode || payload.hsCode || ""),
-          currency: upper(override.currency || line.currency || payload.currency),
-          unitPrice,
+          hsCode: upper(cap.hsCode || ""),
+          currency: upper(cap.customsCurrency || "USD"),
+          unitPrice: Number(cap.customsUnitPrice) || 0,
           qtyImported: qty,
           qtyAvailable: qty,
           qtyConsumed: 0,
-          weightKg,
-          totalValue,
+          weightKg: Number(cap.unitWeightKg) || 0,
+          unitWeightKg: Number(cap.unitWeightKg) || 0,
+          totalWeightKg: Number(cap.totalWeightKg) || 0,
+          totalValue: Number(cap.customsTotalPrice) || 0,
+          exchangeRateToAED: Number(cap.exchangeRateToAED) || 0,
+          customsValueAED: Number(cap.customsValueAED) || 0,
           customStock: qty,
           customStockBalance: qty,
-          supplierInvoiceNumber: payload.supplierInvoiceNumber,
-          supplierInvoiceDate: payload.supplierInvoiceDate,
-          boeNumber: payload.boeNumber,
-          blNumber: payload.blNumber,
-          awbNumber: payload.awbNumber,
-          countryOfOrigin: upper(override.countryOfOrigin || payload.countryOfOrigin || ""),
+          supplierInvoiceNumber: cap.supplierInvoiceNumber || "",
+          supplierInvoiceDate: cap.supplierInvoiceDate || null,
+          receivedDate: cap.receivedDate || null,
+          boeNumber: cap.boeNumber || "",
+          boeDate: cap.boeDate || null,
+          blNumber: cap.blNumber || "",
+          awbNumber: cap.awbNumber || "",
+          countryOfOrigin: upper(cap.countryOfOrigin || ""),
           status: "IN_STOCK",
-          remarks1: t(override.remarks1 || line.remarks),
-          remarks2: t(override.remarks2),
+          remarks1: t(line.remarks),
+          remarks2: "",
+          customsRemarks: cap.customsRemarks || "",
         },
       ],
       { session },
@@ -309,10 +417,14 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {} }) 
       referenceType: "GRN",
       referenceId: grn._id,
       referenceNumber: grn.grnNo,
-      movementDate: grn.grnDate || new Date(),
+      movementDate: cap.receivedDate || grn.grnDate || new Date(),
       remarks: `Inbound from GRN ${grn.grnNo}`,
     });
   }
+
+  // Persist customsCapture snapshots on GRN lines (already stamped in memory).
+  grn.markModified?.("items");
+  await grn.save({ session });
 
   lot.status = deriveLotStatus(createdItems);
   lot.updatedBy = req.user?.email || "";

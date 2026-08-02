@@ -979,7 +979,13 @@ export async function postGrnFromPo(req, res) {
           });
 
           if (isCustomsEnabled() && hasCustomsPayload(req.body)) {
-            await createCustomsLotFromGrn({ session, req, grn, body: req.body });
+            await createCustomsLotFromGrn({
+              session,
+              req,
+              grn,
+              body: req.body,
+              poDate: poLean.orderDate || poLean.poDate || null,
+            });
           }
         });
         completed = true;
