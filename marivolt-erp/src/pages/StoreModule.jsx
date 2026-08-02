@@ -527,9 +527,8 @@ export default function StoreModule() {
         }
         return next;
       });
-      // Fill header defaults from first customs row when import is Customs format
-      // (existing header + line override resolution on post).
-      if (data.format === "customs" && data.headerDefaults && typeof data.headerDefaults === "object") {
+      // Header defaults from first imported row (header + line override resolution on post).
+      if (data.headerDefaults && typeof data.headerDefaults === "object") {
         const hd = data.headerDefaults;
         setGrnCustoms((prev) => {
           const merge = (key, raw) => {
@@ -558,7 +557,15 @@ export default function StoreModule() {
         });
       }
     } catch (err) {
-      setGrnUiErr(err.message || String(err));
+      const details = Array.isArray(err?.details) ? err.details.filter(Boolean) : [];
+      if (err?.code === "INVALID_GRN_TEMPLATE") {
+        const detailText = details.length ? ` ${details.slice(0, 5).join(" ")}` : "";
+        setGrnUiErr(
+          `${err.message || "Expected Customs GRN template. Please download the latest template."}${detailText}`
+        );
+      } else {
+        setGrnUiErr(err.message || String(err));
+      }
     }
   };
 

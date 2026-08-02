@@ -1,12 +1,13 @@
 /**
- * GRN CSV template + import mapping (Customs-aware).
- * Does not post GRN or run customs lot creation — preview/mapping only.
- * Reuses customs field names from customsGrnFieldModel (header + line overrides).
+ * Customs GRN CSV — single supported template / parser (Phase 2).
+ * Preview/mapping only; does not post GRN or create customs lots.
  */
 
-/** Canonical export header order (display labels). */
-export const GRN_CSV_CUSTOMS_HEADERS = Object.freeze([
-  "poLineId",
+export const INVALID_GRN_TEMPLATE = "INVALID_GRN_TEMPLATE";
+
+/** Official export/import header labels — exact order required. */
+export const GRN_CSV_HEADERS = Object.freeze([
+  "PO Line ID",
   "Article",
   "Description",
   "SPN",
@@ -31,22 +32,6 @@ export const GRN_CSV_CUSTOMS_HEADERS = Object.freeze([
   "AED Value",
 ]);
 
-/** Legacy template headers (still accepted on import). */
-export const GRN_CSV_LEGACY_HEADERS = Object.freeze([
-  "poLineId",
-  "article",
-  "materialCode",
-  "spn",
-  "grnQty",
-  "location",
-  "remarks",
-]);
-
-export function grnCsvTemplateHeaderLine() {
-  return `${GRN_CSV_CUSTOMS_HEADERS.join(",")}\n`;
-}
-
-/** Normalize a CSV header cell to an alphanumeric key for lookups. */
 export function normalizeCsvHeaderKey(h) {
   return String(h ?? "")
     .trim()
@@ -54,124 +39,170 @@ export function normalizeCsvHeaderKey(h) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
-/**
- * Detect CSV format from header keys (already normalized).
- * @param {string[]} headerKeys
- * @returns {"customs"|"legacy"}
- */
-export function detectGrnCsvFormat(headerKeys) {
-  const set = new Set((headerKeys || []).map(normalizeCsvHeaderKey).filter(Boolean));
-  const customsMarkers = [
-    "boenumber",
-    "boedate",
-    "awbnoblno",
-    "receiveddate",
-    "supplierinvoiceno",
-    "supplierinvoicenumber",
-    "supplierinvoicedate",
-    "countryoforigin",
-    "hscode",
-    "unitweight",
-    "customsunitprice",
-    "totalprice",
-    "exchangerate",
-    "aedvalue",
-  ];
-  if (customsMarkers.some((m) => set.has(m))) return "customs";
-  // "Weight" / "Currency" alone are weak; require at least one strong marker above.
-  return "legacy";
+/** Normalized keys corresponding 1:1 with GRN_CSV_HEADERS. */
+export const GRN_CSV_HEADER_KEYS = Object.freeze(GRN_CSV_HEADERS.map(normalizeCsvHeaderKey));
+
+export function grnCsvTemplateHeaderLine() {
+  return `${GRN_CSV_HEADERS.join(",")}\n`;
 }
 
-function pickRaw(row, ...keys) {
-  for (const k of keys) {
-    const nk = normalizeCsvHeaderKey(k);
-    if (Object.prototype.hasOwnProperty.call(row, nk) && row[nk] != null && String(row[nk]).trim() !== "") {
-      return String(row[nk]).trim();
+/**
+ * Strict header validation: exact labels, order, no missing/extra/duplicates.
+ * @returns {{ ok: true } | { ok: false, code: string, message: string, details: string[] }}
+ */
+export function validateGrnCsvHeaders(rawHeaders) {
+  const details = [];
+  const headers = (rawHeaders || []).map((h) => String(h ?? "").trim());
+  const expected = [...GRN_CSV_HEADERS];
+
+  if (!headers.length) {
+    return {
+      ok: false,
+      code: INVALID_GRN_TEMPLATE,
+      message: "Expected Customs GRN template. Please download the latest template.",
+      details: ["CSV header row is missing."],
+    };
+  }
+
+  const seen = new Map();
+  headers.forEach((h, i) => {
+    const key = normalizeCsvHeaderKey(h);
+    if (!key) {
+      details.push(`Column ${i + 1} has an empty header.`);
+      return;
+    }
+    if (seen.has(key)) {
+      details.push(`Duplicate column "${h}" (also at column ${seen.get(key)}).`);
+    } else {
+      seen.set(key, i + 1);
+    }
+  });
+
+  if (headers.length !== expected.length) {
+    details.push(`Expected ${expected.length} columns, found ${headers.length}.`);
+  }
+
+  const max = Math.max(headers.length, expected.length);
+  for (let i = 0; i < max; i++) {
+    const got = headers[i] ?? "";
+    const want = expected[i] ?? "";
+    if (!want) {
+      details.push(`Unexpected extra column ${i + 1}: "${got}".`);
+      continue;
+    }
+    if (!got) {
+      details.push(`Missing column ${i + 1}: expected "${want}".`);
+      continue;
+    }
+    if (got !== want) {
+      details.push(`Column ${i + 1}: expected "${want}", found "${got}".`);
     }
   }
-  return "";
+
+  const uniq = [...new Set(details)];
+  if (uniq.length) {
+    return {
+      ok: false,
+      code: INVALID_GRN_TEMPLATE,
+      message: "Expected Customs GRN template. Please download the latest template.",
+      details: uniq,
+    };
+  }
+  return { ok: true };
 }
 
-function pickNum(row, ...keys) {
-  const raw = pickRaw(row, ...keys);
+function cell(row, headerLabel) {
+  const key = normalizeCsvHeaderKey(headerLabel);
+  const v = row?.[key];
+  return v == null ? "" : String(v).trim();
+}
+
+function cellNum(row, headerLabel) {
+  const raw = cell(row, headerLabel);
   if (raw === "") return null;
   const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
+  return Number.isFinite(n) ? n : NaN;
 }
 
 /**
- * Map one parsed CSV row (keys = normalizeCsvHeaderKey) to customs line-override fields
- * plus auto-calculated Weight / Total Price / AED Value when blank.
- *
- * @returns {{ override: object, computed: { weight: number|null, totalPrice: number|null, aedValue: number|null } }}
+ * Map one official-template row to customs line-override fields.
+ * Auto-fills Weight / Total Price / AED Value only when blank.
  */
 export function mapCsvRowToCustomsOverride(row, grnQty) {
   const qty = Math.max(0, Number(grnQty) || 0);
-  const unitWeight = pickNum(row, "Unit Weight", "unitWeight", "unitWeightKg");
-  let weight = pickNum(row, "Weight", "totalWeightKg", "totalWeight");
-  if (weight == null && unitWeight != null && qty > 0) {
+  const unitWeight = cellNum(row, "Unit Weight");
+  let weight = cellNum(row, "Weight");
+  if (weight == null && unitWeight != null && !Number.isNaN(unitWeight) && qty > 0) {
     weight = qty * unitWeight;
   }
 
-  const customsUnitPrice = pickNum(row, "Customs Unit Price", "customsUnitPrice", "unitPrice");
-  let totalPrice = pickNum(row, "Total Price", "customsTotalPrice", "totalPrice");
-  if (totalPrice == null && customsUnitPrice != null && qty > 0) {
+  const customsUnitPrice = cellNum(row, "Customs Unit Price");
+  let totalPrice = cellNum(row, "Total Price");
+  if (totalPrice == null && customsUnitPrice != null && !Number.isNaN(customsUnitPrice) && qty > 0) {
     totalPrice = qty * customsUnitPrice;
   }
 
-  const exchangeRate = pickNum(row, "Exchange Rate", "exchangeRate", "exchangeRateToAED");
-  let aedValue = pickNum(row, "AED Value", "customsValueAED", "aedValue");
-  if (aedValue == null && totalPrice != null && exchangeRate != null) {
+  const exchangeRate = cellNum(row, "Exchange Rate");
+  let aedValue = cellNum(row, "AED Value");
+  if (
+    aedValue == null &&
+    totalPrice != null &&
+    !Number.isNaN(totalPrice) &&
+    exchangeRate != null &&
+    !Number.isNaN(exchangeRate)
+  ) {
     aedValue = totalPrice * exchangeRate;
   }
 
-  const awbBl = pickRaw(row, "AWB No. / BL No.", "awbNoBlNo", "awbNumber", "blNumber", "AWB", "BL");
-  const currency = pickRaw(row, "Currency", "customsCurrency");
+  const awbBl = cell(row, "AWB No. / BL No.");
+  const currency = cell(row, "Currency");
 
-  /** Canonical override keys matching customsGrnFieldModel / normalizeCustomsLineOverride */
   const override = {};
   const setStr = (key, val) => {
     if (val) override[key] = val;
   };
   const setNum = (key, val) => {
-    if (val != null && Number.isFinite(Number(val))) override[key] = Number(val);
+    if (val != null && Number.isFinite(Number(val)) && !Number.isNaN(Number(val))) {
+      override[key] = Number(val);
+    }
   };
 
-  setStr("boeNumber", pickRaw(row, "BOE Number", "boeNumber"));
-  setStr("boeDate", pickRaw(row, "BOE Date", "boeDate"));
-  // Combined AWB/BL column → both optional carriers (resolution keeps both)
+  setStr("boeNumber", cell(row, "BOE Number"));
+  setStr("boeDate", cell(row, "BOE Date"));
   if (awbBl) {
     override.blNumber = awbBl;
     override.awbNumber = awbBl;
   }
-  setStr("receivedDate", pickRaw(row, "Received Date", "receivedDate"));
-  setStr(
-    "supplierInvoiceNumber",
-    pickRaw(row, "Supplier Invoice No.", "Supplier Invoice Number", "supplierInvoiceNo", "supplierInvoiceNumber")
+  setStr("receivedDate", cell(row, "Received Date"));
+  setStr("supplierInvoiceNumber", cell(row, "Supplier Invoice No."));
+  setStr("supplierInvoiceDate", cell(row, "Supplier Invoice Date"));
+  setStr("countryOfOrigin", cell(row, "Country Of Origin"));
+  setStr("hsCode", cell(row, "HS Code"));
+  setNum("unitWeightKg", unitWeight != null && !Number.isNaN(unitWeight) ? unitWeight : null);
+  setNum("totalWeightKg", weight != null && !Number.isNaN(weight) ? weight : null);
+  setNum(
+    "customsUnitPrice",
+    customsUnitPrice != null && !Number.isNaN(customsUnitPrice) ? customsUnitPrice : null
   );
-  setStr("supplierInvoiceDate", pickRaw(row, "Supplier Invoice Date", "supplierInvoiceDate"));
-  setStr("countryOfOrigin", pickRaw(row, "Country Of Origin", "countryOfOrigin"));
-  setStr("hsCode", pickRaw(row, "HS Code", "hsCode"));
-  setNum("unitWeightKg", unitWeight);
-  setNum("totalWeightKg", weight);
-  setNum("customsUnitPrice", customsUnitPrice);
-  setNum("customsTotalPrice", totalPrice);
+  setNum("customsTotalPrice", totalPrice != null && !Number.isNaN(totalPrice) ? totalPrice : null);
   setStr("customsCurrency", currency ? currency.toUpperCase() : "");
-  setNum("exchangeRateToAED", exchangeRate);
-  setNum("customsValueAED", aedValue);
-  setStr("customsRemarks", pickRaw(row, "Customs Remarks", "customsRemarks"));
-  // Do not map commercial Remarks into customsRemarks (legacy remarks stays on GRN line).
+  setNum("exchangeRateToAED", exchangeRate != null && !Number.isNaN(exchangeRate) ? exchangeRate : null);
+  setNum("customsValueAED", aedValue != null && !Number.isNaN(aedValue) ? aedValue : null);
 
   return {
     override,
-    computed: { weight, totalPrice, aedValue, unitWeight, customsUnitPrice, exchangeRate },
+    computed: {
+      weight: weight != null && !Number.isNaN(weight) ? weight : null,
+      totalPrice: totalPrice != null && !Number.isNaN(totalPrice) ? totalPrice : null,
+      aedValue: aedValue != null && !Number.isNaN(aedValue) ? aedValue : null,
+      unitWeight: unitWeight != null && !Number.isNaN(unitWeight) ? unitWeight : null,
+      customsUnitPrice:
+        customsUnitPrice != null && !Number.isNaN(customsUnitPrice) ? customsUnitPrice : null,
+      exchangeRate: exchangeRate != null && !Number.isNaN(exchangeRate) ? exchangeRate : null,
+    },
   };
 }
 
-/**
- * Build UI / API update customs slice from a normalized override object.
- * Keys match frontend grnLineEdits customs* fields + canonical override names for header merge.
- */
 export function customsOverrideToLineEditFields(override = {}) {
   const o = override || {};
   const out = {};
@@ -194,22 +225,16 @@ export function customsOverrideToLineEditFields(override = {}) {
   set("customsWeightKg", o.unitWeightKg);
   set("customsExchangeRateToAED", o.exchangeRateToAED);
   set("customsRemarks", o.customsRemarks);
-  // Totals for optional UI / round-trip (server recalculates on post)
   set("customsTotalWeightKg", o.totalWeightKg);
   set("customsTotalPrice", o.customsTotalPrice);
   set("customsValueAED", o.customsValueAED);
   return out;
 }
 
-/**
- * Suggest header defaults from the first row that has customs data
- * (header defaults + line overrides resolution on post).
- */
 export function suggestHeaderDefaultsFromOverrides(overrides = []) {
   for (const o of overrides) {
     if (!o || typeof o !== "object") continue;
-    const keys = Object.keys(o);
-    if (!keys.length) continue;
+    if (!Object.keys(o).length) continue;
     return {
       receivedDate: o.receivedDate || "",
       boeNumber: o.boeNumber || "",
@@ -230,64 +255,126 @@ export function suggestHeaderDefaultsFromOverrides(overrides = []) {
   return null;
 }
 
+function splitCsvLine(line) {
+  const out = [];
+  let cur = "";
+  let q = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') {
+      q = !q;
+      continue;
+    }
+    if (!q && c === ",") {
+      out.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += c;
+  }
+  out.push(cur);
+  return out.map((x) => String(x).trim());
+}
+
 /**
- * Parse CSV text into rows with normalized header keys.
+ * Parse Customs GRN CSV. Validates header strictly before reading rows.
+ * @returns {{ ok: true, rows, rawHeaders } | { ok: false, code, message, details }}
  */
 export function parseGrnCsvText(text) {
-  const parseErrors = [];
   const lines = String(text || "")
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
-  if (!lines.length) return { rows: [], headerKeys: [], format: "legacy", parseErrors };
+  if (!lines.length) {
+    return {
+      ok: false,
+      code: INVALID_GRN_TEMPLATE,
+      message: "Expected Customs GRN template. Please download the latest template.",
+      details: ["CSV is empty."],
+    };
+  }
 
-  const splitLine = (line) => {
-    const out = [];
-    let cur = "";
-    let q = false;
-    for (let i = 0; i < line.length; i++) {
-      const c = line[i];
-      if (c === '"') {
-        q = !q;
-        continue;
-      }
-      if (!q && c === ",") {
-        out.push(cur);
-        cur = "";
-        continue;
-      }
-      cur += c;
-    }
-    out.push(cur);
-    return out.map((x) => String(x).trim());
-  };
+  const rawHeaders = splitCsvLine(lines[0]);
+  const headerCheck = validateGrnCsvHeaders(rawHeaders);
+  if (!headerCheck.ok) return headerCheck;
 
-  const rawHeaders = splitLine(lines[0]);
-  const headerKeys = rawHeaders.map(normalizeCsvHeaderKey);
-  const format = detectGrnCsvFormat(headerKeys);
   const rows = [];
   for (let li = 1; li < lines.length; li++) {
-    const parts = splitLine(lines[li]);
+    const parts = splitCsvLine(lines[li]);
     const o = {};
-    headerKeys.forEach((h, idx) => {
-      if (!h) return;
+    GRN_CSV_HEADER_KEYS.forEach((h, idx) => {
       o[h] = parts[idx] ?? "";
     });
     rows.push(o);
   }
-  return { rows, headerKeys, format, parseErrors };
+  return { ok: true, rows, rawHeaders };
 }
 
-/** Read GRN qty from legacy or customs column names. */
+export function readPoLineIdFromCsvRow(row) {
+  return cell(row, "PO Line ID");
+}
+
+export function readArticleFromCsvRow(row) {
+  return cell(row, "Article");
+}
+
 export function readGrnQtyFromCsvRow(row) {
-  const n = pickNum(row, "GRN Qty", "grnQty", "qty", "grnqty");
-  return n;
+  return cellNum(row, "GRN Qty");
 }
 
 export function readLocationFromCsvRow(row) {
-  return pickRaw(row, "Location", "location");
+  return cell(row, "Location");
 }
 
 export function readRemarksFromCsvRow(row) {
-  return pickRaw(row, "Remarks", "remarks");
+  return cell(row, "Remarks");
+}
+
+/**
+ * Row-level required field checks for Customs GRN CSV import.
+ * @returns {string[]} error messages (without row prefix)
+ */
+export function validateGrnCsvRowRequiredFields(row) {
+  const messages = [];
+  if (!readPoLineIdFromCsvRow(row)) messages.push("PO Line ID is required.");
+  if (!readArticleFromCsvRow(row)) messages.push("Article is required.");
+
+  const grnQty = readGrnQtyFromCsvRow(row);
+  if (grnQty == null) {
+    messages.push("GRN Qty is required.");
+  } else if (Number.isNaN(grnQty) || !(grnQty > 0)) {
+    messages.push("GRN Qty must be greater than zero.");
+  }
+
+  if (!readLocationFromCsvRow(row)) messages.push("Location is required.");
+  if (!cell(row, "BOE Number")) messages.push("BOE Number is required.");
+  if (!cell(row, "BOE Date")) messages.push("BOE Date is required.");
+  if (!cell(row, "Supplier Invoice No.")) messages.push("Supplier Invoice No. is required.");
+  if (!cell(row, "Supplier Invoice Date")) messages.push("Supplier Invoice Date is required.");
+  if (!cell(row, "Currency")) messages.push("Currency is required.");
+
+  const fx = cellNum(row, "Exchange Rate");
+  if (fx == null) messages.push("Exchange Rate is required.");
+  else if (Number.isNaN(fx) || !(fx > 0)) messages.push("Exchange Rate must be greater than zero.");
+
+  const unitPrice = cellNum(row, "Customs Unit Price");
+  if (unitPrice == null) messages.push("Customs Unit Price is required.");
+  else if (Number.isNaN(unitPrice) || !(unitPrice > 0)) {
+    messages.push("Customs Unit Price must be greater than zero.");
+  }
+
+  if (!cell(row, "Country Of Origin")) messages.push("Country Of Origin is required.");
+  if (!cell(row, "HS Code")) messages.push("HS Code is required.");
+
+  return messages;
+}
+
+/** Build a sample data row aligned to GRN_CSV_HEADERS (tests). */
+export function buildGrnCsvRow(valuesByHeader = {}) {
+  return GRN_CSV_HEADERS.map((h) => {
+    const v = valuesByHeader[h];
+    if (v == null) return "";
+    const s = String(v);
+    return s.includes(",") || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
+  }).join(",");
 }

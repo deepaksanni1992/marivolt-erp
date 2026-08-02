@@ -29,14 +29,18 @@ import {
   toEligiblePoItem,
 } from "../utils/eligibleDocumentSearch.js";
 import {
+  INVALID_GRN_TEMPLATE,
   customsOverrideToLineEditFields,
   grnCsvTemplateHeaderLine,
   mapCsvRowToCustomsOverride,
   parseGrnCsvText,
+  readArticleFromCsvRow,
   readGrnQtyFromCsvRow,
   readLocationFromCsvRow,
+  readPoLineIdFromCsvRow,
   readRemarksFromCsvRow,
   suggestHeaderDefaultsFromOverrides,
+  validateGrnCsvRowRequiredFields,
 } from "../utils/grnCsvImport.js";
 
 function withCompany(req, filter = {}) {
@@ -658,28 +662,17 @@ function normKey(s) {
   return String(s ?? "").trim().toLowerCase();
 }
 
+/** Match CSV row to PO line by PO Line ID only (Customs template). */
 function findPoLineMatchForCsv(rawRows, row) {
-  const pid = String(row.polineid || "").trim();
+  const pid = readPoLineIdFromCsvRow(row);
+  if (!pid) return null;
   if (mongoose.Types.ObjectId.isValid(pid)) {
     const hit = rawRows.find((x) => String(x._id ?? x.id ?? "") === pid);
     if (hit) return { line: hit, by: "poLineId" };
   }
-  const mc = normKey(row.materialcode);
-  if (mc) {
-    const hit = rawRows.find((x) => normKey(x.itemCode || x.materialCode) === mc);
-    if (hit) return { line: hit, by: "materialCode" };
-  }
-  const art = normKey(row.article);
-  if (art) {
-    const hit = rawRows.find((x) => normKey(x.itemCode || x.article || x.materialCode) === art);
-    if (hit) return { line: hit, by: "article" };
-  }
-  const spn = normKey(row.spn);
-  if (spn) {
-    const hit = rawRows.find((x) => normKey(x.partNo || x.spn || x.partNumber) === spn);
-    if (hit) return { line: hit, by: "spn" };
-  }
-  return null;
+  // Also allow exact string id match for non-ObjectId test ids
+  const hit = rawRows.find((x) => String(x._id ?? x.id ?? "") === pid);
+  return hit ? { line: hit, by: "poLineId" } : null;
 }
 
 /** GET /grn/csv-template — Customs GRN column header for CSV import. */
@@ -694,7 +687,7 @@ export async function getGrnCsvTemplate(req, res) {
   }
 }
 
-/** POST /grn/import-preview — validate CSV rows against a PO; does not create GRN. */
+/** POST /grn/import-preview — validate Customs GRN CSV against a PO; does not create GRN. */
 export async function importGrnCsvPreview(req, res) {
   try {
     const poId = req.body?.poId;
@@ -703,6 +696,16 @@ export async function importGrnCsvPreview(req, res) {
       return res.status(400).json({ message: "Valid poId is required" });
     }
     if (!csvText.trim()) return res.status(400).json({ message: "csvText is required" });
+
+    const parsed = parseGrnCsvText(csvText);
+    if (!parsed.ok) {
+      return res.status(400).json({
+        code: parsed.code || INVALID_GRN_TEMPLATE,
+        message: parsed.message,
+        details: parsed.details || [],
+      });
+    }
+
     const po = await PurchaseOrder.findOne(withCompany(req, { _id: poId })).lean();
     if (!po) return res.status(404).json({ message: "Purchase order not found" });
     if (String(po.status || "").toUpperCase() === "CANCELLED") {
@@ -710,45 +713,60 @@ export async function importGrnCsvPreview(req, res) {
     }
     const postedMap = await getPostedAcceptedQtyByPoLineMap(req, poId);
     const rawRows = extractRawPoLinesFromPo(po);
-    const { rows, format } = parseGrnCsvText(csvText);
+    const { rows } = parsed;
     const errors = [];
     const updates = [];
     const seenPoLineIds = new Set();
     const overrideList = [];
+
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const lineNo = i + 2;
+
+      const fieldMsgs = validateGrnCsvRowRequiredFields(row);
+      for (const message of fieldMsgs) {
+        errors.push({ line: lineNo, message });
+      }
+      if (fieldMsgs.length) continue;
+
       const match = findPoLineMatchForCsv(rawRows, row);
       if (!match) {
-        errors.push({ line: lineNo, message: "No matching PO line (poLineId / materialCode / article / spn)." });
+        errors.push({ line: lineNo, message: "No matching PO line for PO Line ID." });
         continue;
       }
       const src = match.line;
       const lid = String(src._id ?? src.id ?? "");
+      const csvArticle = readArticleFromCsvRow(row);
+      const poArticle = String(src.itemCode || src.article || src.materialCode || "").trim();
+      if (poArticle && normKey(csvArticle) !== normKey(poArticle)) {
+        errors.push({
+          line: lineNo,
+          message: `Article "${csvArticle}" does not match PO line article "${poArticle}".`,
+        });
+        continue;
+      }
       if (seenPoLineIds.has(lid)) {
         errors.push({ line: lineNo, message: "Duplicate CSV row for the same PO line." });
         continue;
       }
       seenPoLineIds.add(lid);
+
       const ordered = Number(src?.orderedQty ?? src?.qty ?? src?.quantity ?? src?.orderedQuantity) || 0;
       const cancelled = Number(src?.cancelledQty ?? src?.cancelled) || 0;
       const posted = postedMap.get(lid) || 0;
       const pending = Math.max(0, ordered - posted - cancelled);
       const grnQty = readGrnQtyFromCsvRow(row);
-      if (grnQty == null || !Number.isFinite(grnQty) || grnQty <= 0) {
-        errors.push({ line: lineNo, message: "grnQty must be greater than zero." });
-        continue;
-      }
       if (grnQty > pending + 1e-6) {
-        errors.push({ line: lineNo, message: `grnQty (${grnQty}) exceeds pending (${pending}) for this line.` });
+        errors.push({
+          line: lineNo,
+          message: `GRN Qty (${grnQty}) exceeds pending (${pending}) for this line.`,
+        });
         continue;
       }
+
       const warehouse = resolveGrnWarehouseCode(row.warehouse || "");
       const location = readLocationFromCsvRow(row);
-      if (!location) {
-        errors.push({ line: lineNo, message: "location is required." });
-        continue;
-      }
+      const { override } = mapCsvRowToCustomsOverride(row, grnQty);
 
       const update = {
         poLineId: lid,
@@ -757,24 +775,15 @@ export async function importGrnCsvPreview(req, res) {
         location,
         remarks: readRemarksFromCsvRow(row),
         matchedBy: match.by,
+        customsOverride: override,
+        customsLineEdits: customsOverrideToLineEditFields(override),
       };
-
-      if (format === "customs") {
-        const { override } = mapCsvRowToCustomsOverride(row, grnQty);
-        if (Object.keys(override).length) {
-          update.customsOverride = override;
-          update.customsLineEdits = customsOverrideToLineEditFields(override);
-          overrideList.push(override);
-        }
-      }
-
+      overrideList.push(override);
       updates.push(update);
     }
 
-    const headerDefaults =
-      format === "customs" ? suggestHeaderDefaultsFromOverrides(overrideList) : null;
-
-    res.json({ updates, errors, format, headerDefaults });
+    const headerDefaults = suggestHeaderDefaultsFromOverrides(overrideList);
+    res.json({ updates, errors, headerDefaults });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
