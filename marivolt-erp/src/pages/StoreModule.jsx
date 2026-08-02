@@ -1519,9 +1519,10 @@ export default function StoreModule() {
                         <th className="px-2 py-2">Remarks</th>
                         <th className="px-2 py-2">HS Code</th>
                         <th className="px-2 py-2">COO</th>
-                        <th className="px-2 py-2 text-right">Unit Price</th>
+                        <th className="px-2 py-2 text-right">Customs Unit Price</th>
                         <th className="px-2 py-2">Curr</th>
-                        <th className="px-2 py-2 text-right">Wt KG</th>
+                        <th className="px-2 py-2 text-right">Unit Wt KG</th>
+                        <th className="px-2 py-2 text-right">FX→AED</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1640,7 +1641,7 @@ export default function StoreModule() {
                                 min="0"
                                 step="any"
                                 className="w-20 rounded border px-1 py-0.5 text-right tabular-nums"
-                                placeholder={grnCustoms.unitPrice || ln.unitCost || "—"}
+                                placeholder={grnCustoms.customsUnitPrice || grnCustoms.unitPrice || "—"}
                                 disabled={pend <= 0 || !selectable}
                                 value={ed.customsUnitPrice}
                                 onChange={(e) =>
@@ -1654,7 +1655,12 @@ export default function StoreModule() {
                             <td className="px-2 py-1.5">
                               <input
                                 className="w-14 rounded border px-1 py-0.5 text-[11px]"
-                                placeholder={grnCustoms.currency || grnPoSnapshot?.header?.currency || "USD"}
+                                placeholder={
+                                  grnCustoms.customsCurrency ||
+                                  grnCustoms.currency ||
+                                  grnPoSnapshot?.header?.currency ||
+                                  "USD"
+                                }
                                 disabled={pend <= 0 || !selectable}
                                 value={ed.customsCurrency}
                                 onChange={(e) =>
@@ -1671,13 +1677,34 @@ export default function StoreModule() {
                                 min="0"
                                 step="any"
                                 className="w-16 rounded border px-1 py-0.5 text-right tabular-nums"
-                                placeholder={grnCustoms.weightKg || "—"}
+                                placeholder={grnCustoms.unitWeightKg || grnCustoms.weightKg || "—"}
                                 disabled={pend <= 0 || !selectable}
-                                value={ed.customsWeightKg}
+                                value={ed.customsUnitWeightKg || ed.customsWeightKg}
                                 onChange={(e) =>
                                   setGrnLineEdits((p) => ({
                                     ...p,
-                                    [id]: { ...ed, customsWeightKg: e.target.value },
+                                    [id]: {
+                                      ...ed,
+                                      customsUnitWeightKg: e.target.value,
+                                      customsWeightKg: e.target.value,
+                                    },
+                                  }))
+                                }
+                              />
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                className="w-16 rounded border px-1 py-0.5 text-right tabular-nums"
+                                placeholder={grnCustoms.exchangeRateToAED || "—"}
+                                disabled={pend <= 0 || !selectable}
+                                value={ed.customsExchangeRateToAED}
+                                onChange={(e) =>
+                                  setGrnLineEdits((p) => ({
+                                    ...p,
+                                    [id]: { ...ed, customsExchangeRateToAED: e.target.value },
                                   }))
                                 }
                               />
@@ -1765,7 +1792,9 @@ export default function StoreModule() {
                         supplierName: h.supplierName,
                         currency: h.currency || "USD",
                         branchId: h.branchId || undefined,
-                        grnDate: new Date().toISOString().slice(0, 10),
+                        grnDate:
+                          (customsPayload?.receivedDate && String(customsPayload.receivedDate).slice(0, 10)) ||
+                          new Date().toISOString().slice(0, 10),
                         lines: linesOut,
                       };
                       if (customsPayload) postBody.customs = customsPayload;

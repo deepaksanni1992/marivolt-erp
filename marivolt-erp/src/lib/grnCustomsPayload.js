@@ -1,17 +1,23 @@
-/** Default empty customs capture state for GRN posting. */
+/** Default empty customs capture state for GRN posting (revised field model). */
 export function emptyGrnCustomsState() {
   return {
+    receivedDate: new Date().toISOString().slice(0, 10),
     boeNumber: "",
+    boeDate: "",
     blNumber: "",
     awbNumber: "",
     supplierInvoiceNumber: "",
     supplierInvoiceDate: "",
     countryOfOrigin: "",
     hsCode: "",
-    currency: "",
-    unitPrice: "",
-    weightKg: "",
-    remarks: "",
+    unitWeightKg: "",
+    customsUnitPrice: "",
+    customsCurrency: "",
+    exchangeRateToAED: "",
+    customsRemarks: "",
+    allowBoeBeforePoDate: false,
+    allowInvoiceAfterReceivedDate: false,
+    allowFutureReceivedDate: false,
     documents: {
       blCopy: null,
       supplierInvoiceCopy: null,
@@ -27,28 +33,45 @@ function trim(v) {
 
 function hasLineCustomsFields(ed = {}) {
   return [
+    ed.customsReceivedDate,
+    ed.customsBoeNumber,
+    ed.customsBoeDate,
+    ed.customsBlNumber,
+    ed.customsAwbNumber,
+    ed.customsSupplierInvoiceNumber,
+    ed.customsSupplierInvoiceDate,
     ed.customsHsCode,
     ed.customsCountryOfOrigin,
     ed.customsUnitPrice,
     ed.customsCurrency,
+    ed.customsUnitWeightKg,
     ed.customsWeightKg,
+    ed.customsExchangeRateToAED,
+    ed.customsRemarks,
   ].some((f) => trim(f));
 }
 
-/** True when user entered any optional customs field or uploaded a document. */
+/** True when user entered any customs field or uploaded a document. */
 export function hasGrnCustomsInput(customs) {
   if (!customs || typeof customs !== "object") return false;
   const headerFields = [
+    customs.receivedDate,
     customs.boeNumber,
+    customs.boeDate,
     customs.blNumber,
     customs.awbNumber,
     customs.supplierInvoiceNumber,
     customs.supplierInvoiceDate,
     customs.countryOfOrigin,
     customs.hsCode,
+    customs.customsCurrency,
     customs.currency,
+    customs.customsUnitPrice,
     customs.unitPrice,
+    customs.unitWeightKg,
     customs.weightKg,
+    customs.exchangeRateToAED,
+    customs.customsRemarks,
     customs.remarks,
   ];
   if (headerFields.some((f) => trim(f))) return true;
@@ -60,8 +83,9 @@ export function hasGrnCustomsInput(customs) {
 }
 
 /**
- * Build optional customs payload for POST /grn/post.
- * Returns null when no customs input — GRN behaves exactly as before.
+ * Build customs payload for POST /grn/post.
+ * Returns null when no customs input — GRN behaves without customs lot.
+ * When present, backend enforces mandatory fields + date rules.
  */
 export function buildGrnCustomsPayload(customs, lineEdits, selectedLines, defaultCurrency = "USD") {
   if (!hasGrnCustomsInput(customs)) {
@@ -72,7 +96,8 @@ export function buildGrnCustomsPayload(customs, lineEdits, selectedLines, defaul
     if (!anyLineCustoms) return null;
   }
 
-  const headerCurrency = trim(customs.currency) || trim(defaultCurrency) || "USD";
+  const headerCurrency =
+    trim(customs.customsCurrency) || trim(customs.currency) || trim(defaultCurrency) || "USD";
   const lineOverrides = [];
 
   for (const ln of selectedLines || []) {
@@ -81,33 +106,56 @@ export function buildGrnCustomsPayload(customs, lineEdits, selectedLines, defaul
     if (!hasLineCustomsFields(ed)) continue;
 
     const row = { poLineId: ln.poLineId };
-    const hsCode = trim(ed.customsHsCode);
-    const countryOfOrigin = trim(ed.customsCountryOfOrigin);
-    const unitPrice = trim(ed.customsUnitPrice);
-    const currency = trim(ed.customsCurrency);
-    const weightKg = trim(ed.customsWeightKg);
+    const setIf = (key, val) => {
+      if (trim(val)) row[key] = trim(val);
+    };
+    setIf("receivedDate", ed.customsReceivedDate);
+    setIf("boeNumber", ed.customsBoeNumber);
+    setIf("boeDate", ed.customsBoeDate);
+    setIf("blNumber", ed.customsBlNumber);
+    setIf("awbNumber", ed.customsAwbNumber);
+    setIf("supplierInvoiceNumber", ed.customsSupplierInvoiceNumber);
+    setIf("supplierInvoiceDate", ed.customsSupplierInvoiceDate);
+    setIf("hsCode", ed.customsHsCode);
+    setIf("countryOfOrigin", ed.customsCountryOfOrigin);
+    setIf("customsCurrency", ed.customsCurrency);
+    setIf("customsRemarks", ed.customsRemarks);
 
-    if (hsCode) row.hsCode = hsCode;
-    if (countryOfOrigin) row.countryOfOrigin = countryOfOrigin;
-    if (unitPrice) row.unitPrice = Number(unitPrice) || 0;
-    if (currency) row.currency = currency.toUpperCase();
-    if (weightKg) row.weightKg = Number(weightKg) || 0;
+    const unitPrice = trim(ed.customsUnitPrice);
+    if (unitPrice) row.customsUnitPrice = Number(unitPrice) || 0;
+    const unitWt = trim(ed.customsUnitWeightKg || ed.customsWeightKg);
+    if (unitWt) row.unitWeightKg = Number(unitWt) || 0;
+    const fx = trim(ed.customsExchangeRateToAED);
+    if (fx) row.exchangeRateToAED = Number(fx) || 0;
+
     lineOverrides.push(row);
   }
 
   const docs = customs.documents || {};
   const payload = {
+    receivedDate: trim(customs.receivedDate) || undefined,
     boeNumber: trim(customs.boeNumber),
+    boeDate: trim(customs.boeDate) || undefined,
     blNumber: trim(customs.blNumber),
     awbNumber: trim(customs.awbNumber),
     supplierInvoiceNumber: trim(customs.supplierInvoiceNumber),
     supplierInvoiceDate: trim(customs.supplierInvoiceDate) || undefined,
     countryOfOrigin: trim(customs.countryOfOrigin),
     hsCode: trim(customs.hsCode),
+    customsCurrency: headerCurrency.toUpperCase(),
     currency: headerCurrency.toUpperCase(),
-    unitPrice: trim(customs.unitPrice) ? Number(customs.unitPrice) : undefined,
-    weightKg: trim(customs.weightKg) ? Number(customs.weightKg) : undefined,
-    remarks: trim(customs.remarks),
+    customsUnitPrice: trim(customs.customsUnitPrice || customs.unitPrice)
+      ? Number(customs.customsUnitPrice || customs.unitPrice)
+      : undefined,
+    unitWeightKg: trim(customs.unitWeightKg || customs.weightKg)
+      ? Number(customs.unitWeightKg || customs.weightKg)
+      : undefined,
+    exchangeRateToAED: trim(customs.exchangeRateToAED) ? Number(customs.exchangeRateToAED) : undefined,
+    customsRemarks: trim(customs.customsRemarks || customs.remarks),
+    remarks: trim(customs.customsRemarks || customs.remarks),
+    allowBoeBeforePoDate: Boolean(customs.allowBoeBeforePoDate),
+    allowInvoiceAfterReceivedDate: Boolean(customs.allowInvoiceAfterReceivedDate),
+    allowFutureReceivedDate: Boolean(customs.allowFutureReceivedDate),
     documents: {
       blDocumentId: docs.blCopy?._id || null,
       supplierInvoiceDocumentId: docs.supplierInvoiceCopy?._id || null,
@@ -121,13 +169,23 @@ export function buildGrnCustomsPayload(customs, lineEdits, selectedLines, defaul
   return payload;
 }
 
-/** Default line edit fields for customs tagging. */
+/** Default line edit fields for customs overrides. */
 export function defaultGrnLineCustomsFields() {
   return {
+    customsReceivedDate: "",
+    customsBoeNumber: "",
+    customsBoeDate: "",
+    customsBlNumber: "",
+    customsAwbNumber: "",
+    customsSupplierInvoiceNumber: "",
+    customsSupplierInvoiceDate: "",
     customsHsCode: "",
     customsCountryOfOrigin: "",
     customsUnitPrice: "",
     customsCurrency: "",
+    customsUnitWeightKg: "",
     customsWeightKg: "",
+    customsExchangeRateToAED: "",
+    customsRemarks: "",
   };
 }

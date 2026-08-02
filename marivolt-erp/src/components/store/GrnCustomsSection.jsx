@@ -39,7 +39,7 @@ function DocLink({ doc, onRemove, removing }) {
           try {
             const { url } = await apiGet(`/documents/${doc._id}/download`);
             if (url) window.open(url, "_blank", "noopener,noreferrer");
-          } catch (e) {
+          } catch {
             if (doc.fileUrl) window.open(doc.fileUrl, "_blank", "noopener,noreferrer");
           }
         }}
@@ -60,8 +60,21 @@ function DocLink({ doc, onRemove, removing }) {
   );
 }
 
+function Field({ label, required, children }) {
+  return (
+    <label className="block text-xs">
+      <span className="mb-1 block text-slate-600">
+        {label}
+        {required ? <span className="text-rose-600"> *</span> : null}
+      </span>
+      {children}
+    </label>
+  );
+}
+
 /**
- * Optional customs capture on GRN from PO — all fields optional.
+ * Customs capture on GRN — header defaults apply to all lines unless overridden.
+ * When any field is filled, backend enforces mandatory customs fields + date rules.
  */
 export default function GrnCustomsSection({
   value,
@@ -101,9 +114,7 @@ export default function GrnCustomsSection({
         ...value,
         documents: {
           ...value.documents,
-          [slot.key]: slot.multiple
-            ? [...(value.documents?.[slot.key] || []), entry]
-            : entry,
+          [slot.key]: slot.multiple ? [...(value.documents?.[slot.key] || []), entry] : entry,
         },
       });
     } catch (e) {
@@ -131,93 +142,181 @@ export default function GrnCustomsSection({
         <div>
           <h4 className="text-sm font-semibold text-slate-800">Customs Information</h4>
           <p className="text-[11px] text-slate-500">
-            Optional. Leave blank to post GRN without customs stock. Header values apply to all lines unless overridden per line.
+            Header defaults apply to all selected lines unless overridden per line. Leave blank to post
+            without customs stock. When any customs field is entered, mandatory fields (*) and date rules
+            are enforced. BL and AWB are optional (either, both, or neither).
           </p>
         </div>
       </div>
 
+      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        Shipment information
+      </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <label className="block text-xs">
-          <span className="mb-1 block text-slate-600">BOE Number</span>
-          <input className={inputCls} disabled={disabled} value={value.boeNumber} onChange={(e) => setField("boeNumber", e.target.value)} />
-        </label>
-        <label className="block text-xs">
-          <span className="mb-1 block text-slate-600">BL Number</span>
-          <input className={inputCls} disabled={disabled} value={value.blNumber} onChange={(e) => setField("blNumber", e.target.value)} />
-        </label>
-        <label className="block text-xs">
-          <span className="mb-1 block text-slate-600">AWB Number</span>
-          <input className={inputCls} disabled={disabled} value={value.awbNumber} onChange={(e) => setField("awbNumber", e.target.value)} />
-        </label>
-        <label className="block text-xs">
-          <span className="mb-1 block text-slate-600">Supplier Invoice Number</span>
+        <Field label="Received Date" required>
+          <input
+            type="date"
+            className={inputCls}
+            disabled={disabled}
+            value={value.receivedDate || ""}
+            onChange={(e) => setField("receivedDate", e.target.value)}
+          />
+        </Field>
+        <Field label="BOE Number" required>
+          <input
+            className={inputCls}
+            disabled={disabled}
+            value={value.boeNumber}
+            onChange={(e) => setField("boeNumber", e.target.value)}
+          />
+        </Field>
+        <Field label="BOE Date" required>
+          <input
+            type="date"
+            className={inputCls}
+            disabled={disabled}
+            value={value.boeDate || ""}
+            onChange={(e) => setField("boeDate", e.target.value)}
+          />
+        </Field>
+        <Field label="BL Number">
+          <input
+            className={inputCls}
+            disabled={disabled}
+            value={value.blNumber}
+            onChange={(e) => setField("blNumber", e.target.value)}
+          />
+        </Field>
+        <Field label="AWB Number">
+          <input
+            className={inputCls}
+            disabled={disabled}
+            value={value.awbNumber}
+            onChange={(e) => setField("awbNumber", e.target.value)}
+          />
+        </Field>
+        <Field label="Supplier Invoice Number" required>
           <input
             className={inputCls}
             disabled={disabled}
             value={value.supplierInvoiceNumber}
             onChange={(e) => setField("supplierInvoiceNumber", e.target.value)}
           />
-        </label>
-        <label className="block text-xs">
-          <span className="mb-1 block text-slate-600">Supplier Invoice Date</span>
+        </Field>
+        <Field label="Supplier Invoice Date" required>
           <input
             type="date"
             className={inputCls}
             disabled={disabled}
-            value={value.supplierInvoiceDate}
+            value={value.supplierInvoiceDate || ""}
             onChange={(e) => setField("supplierInvoiceDate", e.target.value)}
           />
-        </label>
-        <label className="block text-xs">
-          <span className="mb-1 block text-slate-600">Country of Origin</span>
+        </Field>
+      </div>
+
+      <div className="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        Customs defaults
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <Field label="Country of Origin" required>
           <input
             className={inputCls}
             disabled={disabled}
             value={value.countryOfOrigin}
             onChange={(e) => setField("countryOfOrigin", e.target.value)}
           />
-        </label>
-        <label className="block text-xs">
-          <span className="mb-1 block text-slate-600">HS Code (default for lines)</span>
-          <input className={inputCls} disabled={disabled} value={value.hsCode} onChange={(e) => setField("hsCode", e.target.value)} />
-        </label>
-        <label className="block text-xs">
-          <span className="mb-1 block text-slate-600">Currency</span>
+        </Field>
+        <Field label="HS Code" required>
+          <input
+            className={inputCls}
+            disabled={disabled}
+            value={value.hsCode}
+            onChange={(e) => setField("hsCode", e.target.value)}
+          />
+        </Field>
+        <Field label="Unit Weight (KG)">
+          <input
+            type="number"
+            min="0"
+            step="any"
+            className={inputCls}
+            disabled={disabled}
+            value={value.unitWeightKg ?? value.weightKg ?? ""}
+            onChange={(e) => setField("unitWeightKg", e.target.value)}
+          />
+        </Field>
+        <Field label="Customs Unit Price" required>
+          <input
+            type="number"
+            min="0"
+            step="any"
+            className={inputCls}
+            disabled={disabled}
+            value={value.customsUnitPrice ?? value.unitPrice ?? ""}
+            onChange={(e) => setField("customsUnitPrice", e.target.value)}
+          />
+        </Field>
+        <Field label="Customs Currency" required>
           <input
             className={inputCls}
             disabled={disabled}
             placeholder={defaultCurrency}
-            value={value.currency}
-            onChange={(e) => setField("currency", e.target.value.toUpperCase())}
+            value={value.customsCurrency || value.currency || ""}
+            onChange={(e) => setField("customsCurrency", e.target.value.toUpperCase())}
           />
-        </label>
-        <label className="block text-xs">
-          <span className="mb-1 block text-slate-600">Unit Price (default for lines)</span>
+        </Field>
+        <Field label="Exchange Rate to AED" required>
           <input
             type="number"
             min="0"
             step="any"
             className={inputCls}
             disabled={disabled}
-            value={value.unitPrice}
-            onChange={(e) => setField("unitPrice", e.target.value)}
+            value={value.exchangeRateToAED || ""}
+            onChange={(e) => setField("exchangeRateToAED", e.target.value)}
           />
-        </label>
-        <label className="block text-xs">
-          <span className="mb-1 block text-slate-600">Weight in KG (default for lines)</span>
+        </Field>
+        <Field label="Customs Remarks">
           <input
-            type="number"
-            min="0"
-            step="any"
             className={inputCls}
             disabled={disabled}
-            value={value.weightKg}
-            onChange={(e) => setField("weightKg", e.target.value)}
+            value={value.customsRemarks ?? value.remarks ?? ""}
+            onChange={(e) => setField("customsRemarks", e.target.value)}
           />
+        </Field>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-4 text-[11px] text-slate-600">
+        <p className="w-full text-[10px] text-slate-500">
+          Date overrides require STORE approve permission on the server. Checking a box alone does not grant
+          authorisation.
+        </p>
+        <label className="inline-flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            disabled={disabled}
+            checked={Boolean(value.allowBoeBeforePoDate)}
+            onChange={(e) => setField("allowBoeBeforePoDate", e.target.checked)}
+          />
+          Request: authorise BOE Date before PO date
         </label>
-        <label className="block text-xs sm:col-span-2 lg:col-span-3">
-          <span className="mb-1 block text-slate-600">Remarks</span>
-          <input className={inputCls} disabled={disabled} value={value.remarks} onChange={(e) => setField("remarks", e.target.value)} />
+        <label className="inline-flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            disabled={disabled}
+            checked={Boolean(value.allowInvoiceAfterReceivedDate)}
+            onChange={(e) => setField("allowInvoiceAfterReceivedDate", e.target.checked)}
+          />
+          Request: authorise Supplier Invoice Date after Received Date
+        </label>
+        <label className="inline-flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            disabled={disabled}
+            checked={Boolean(value.allowFutureReceivedDate)}
+            onChange={(e) => setField("allowFutureReceivedDate", e.target.checked)}
+          />
+          Request: authorise future Received Date
         </label>
       </div>
 
