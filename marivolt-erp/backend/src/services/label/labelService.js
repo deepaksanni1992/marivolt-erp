@@ -1,3 +1,30 @@
+import {
+  getLabelSettings,
+  verifyBootstrapToken,
+  incrementBootstrapUseCount,
+} from "./labelSettingsService.js";
+import {
+  resolvePrinterForJob,
+  touchPrinterLastPrint,
+} from "./printerManager.js";
+import {
+  MARIVOLT_STANDARD_TEMPLATE_CODE,
+  ensureMarivoltStandardTemplate,
+  getStandardTemplate,
+} from "./labelTemplateService.js";
+import { requeueJob } from "./printQueue.js";
+import { auditLabelEvent, auditLabelAdminEvent, recordLabelHistory } from "./labelAudit.js";
+import {
+  clampStr,
+  normalizePrinterNames,
+  sanitizeAppVersion,
+  HEARTBEAT_LIMITS,
+  AGENT_ONLINE_MS,
+  isAgentOnline,
+} from "./labelRoutingHelpers.js";
+import PrinterConfig from "../../models/PrinterConfig.js";
+import Warehouse from "../../models/Warehouse.js";
+import Branch from "../../models/Branch.js";
 import crypto from "crypto";
 import bcrypt from "bcrypt";
 import mongoose from "mongoose";
@@ -5,16 +32,7 @@ import GRN from "../../models/GRN.js";
 import PrintAgent from "../../models/PrintAgent.js";
 import LabelPrintJob from "../../models/LabelPrintJob.js";
 import { encodeBarcodeValue } from "./barcodeGenerator.js";
-import { buildJobTspl } from "./tsplGenerator.js";
-import { getLabelSettings } from "./labelSettingsService.js";
-import { resolvePrinterForJob } from "./printerManager.js";
-import {
-  MARIVOLT_STANDARD_TEMPLATE_CODE,
-  ensureMarivoltStandardTemplate,
-  getStandardTemplate,
-} from "./labelTemplateService.js";
-import { requeueJob } from "./printQueue.js";
-import { auditLabelEvent, recordLabelHistory } from "./labelAudit.js";
+import { buildJobTspl, buildTestLabelTspl } from "./tsplGenerator.js";
 
 function t(v) {
   return String(v ?? "").trim();
@@ -114,7 +132,14 @@ export async function createJobsFromGrn(req, body = {}) {
 
   await ensureMarivoltStandardTemplate();
   const template = await getStandardTemplate();
-  const printer = await resolvePrinterForJob(companyId, body.printerCode);
+  const warehouseHint =
+    upper(body.warehouseCode) ||
+    upper(grn.warehouseCode) ||
+    upper((grn.items || []).find((it) => it.warehouse)?.warehouse) ||
+    "";
+  const printer = await resolvePrinterForJob(companyId, body.printerCode, {
+    warehouseCode: warehouseHint,
+  });
   const copies = Math.max(1, Number(body.copies) || settings.defaultCopies || 1);
 
   const selection = Array.isArray(body.lines) ? body.lines : null;
@@ -252,9 +277,10 @@ export async function createJobsFromGrn(req, body = {}) {
 
 export async function registerPrintAgent(req, body = {}) {
   const companyId = req.companyId;
-  const name = t(body.name) || "Warehouse Print Agent";
+  const name = clampStr(body.name || body.agentName || "Warehouse Print Agent", 120) || "Warehouse Print Agent";
   const warehouseCode = upper(body.warehouseCode);
   const agentId = upper(body.agentId) || `AGT${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+  const installationId = clampStr(body.installationId, 80);
   const secret = crypto.randomBytes(24).toString("base64url");
   const secretHash = await bcrypt.hash(secret, 10);
 
@@ -264,47 +290,542 @@ export async function registerPrintAgent(req, body = {}) {
     err.statusCode = 409;
     throw err;
   }
+  if (installationId) {
+    const byInstall = await PrintAgent.findOne({ companyId, installationId }).lean();
+    if (byInstall) {
+      const err = new Error("An agent is already registered for this installation");
+      err.code = "AGENT_INSTALLATION_EXISTS";
+      err.statusCode = 409;
+      err.existingAgentId = byInstall.agentId;
+      throw err;
+    }
+  }
+
+  let warehouseName = clampStr(body.warehouseName, 120);
+  let warehouseId = body.warehouseId || null;
+  let branchId = body.branchId || null;
+  let branchName = clampStr(body.branchName, 120);
+  if (warehouseCode) {
+    const wh = await Warehouse.findOne({ companyId, warehouseCode, isActive: true }).lean();
+    if (wh) {
+      warehouseId = wh._id;
+      warehouseName = warehouseName || wh.warehouseName || "";
+      if (!branchId && wh.branchId) branchId = wh.branchId;
+    }
+  }
+  if (branchId && !branchName) {
+    const br = await Branch.findOne({ _id: branchId, companyId }).lean();
+    if (br) branchName = br.branchName || "";
+  }
 
   const agent = await PrintAgent.create({
     companyId,
     agentId,
+    installationId,
     name,
-    warehouseId: body.warehouseId || null,
+    computerName: clampStr(body.computerName, HEARTBEAT_LIMITS.computerName),
+    warehouseId,
     warehouseCode,
+    warehouseName,
+    branchId,
+    branchName,
+    department: clampStr(body.department, HEARTBEAT_LIMITS.department),
+    description: clampStr(body.description, HEARTBEAT_LIMITS.description),
+    operatingSystem: clampStr(body.operatingSystem, HEARTBEAT_LIMITS.operatingSystem),
+    windowsVersion: clampStr(body.windowsVersion, HEARTBEAT_LIMITS.windowsVersion),
+    availablePrinters: normalizePrinterNames(body.availablePrinters || []),
     secretHash,
     status: "OFFLINE",
     isActive: true,
-    createdBy: t(req.user?.name || req.user?.email || ""),
+    createdBy: t(req.user?.name || req.user?.email || body.createdBy || ""),
   });
 
-  await auditLabelEvent(req, {
+  await auditLabelAdminEvent(req, {
     action: "CREATE",
-    job: { jobNo: agentId, _id: agent._id, status: "AGENT_REGISTERED", sourceNo: agentId },
-    description: `Print agent ${agentId} registered (secret shown once)`,
+    entityType: "PrintAgent",
+    entityId: agent._id,
+    documentNo: agentId,
+    description: `Agent Registered: ${agentId} (${name})`,
+    metadata: { warehouseCode, computerName: agent.computerName, installationId },
   });
 
   return {
-    agent: {
-      _id: agent._id,
-      agentId: agent.agentId,
-      name: agent.name,
-      warehouseCode: agent.warehouseCode,
-      status: agent.status,
-    },
+    agent: sanitizeAgent(agent.toObject ? agent.toObject() : agent),
     secret,
     message: "Store this secret securely. It will not be shown again.",
   };
 }
 
-export async function listAgents(companyId) {
-  const agents = await PrintAgent.find({ companyId }).sort({ createdAt: -1 }).lean();
-  const now = Date.now();
-  return agents.map((a) => {
-    const hb = a.lastHeartbeatAt ? new Date(a.lastHeartbeatAt).getTime() : 0;
-    const online = a.status === "ONLINE" && hb && now - hb < 90_000;
-    return { ...a, secretHash: undefined, effectiveStatus: online ? "ONLINE" : "OFFLINE" };
-  });
+function sanitizeAgent(a) {
+  if (!a) return a;
+  const { secretHash, ...rest } = a;
+  return rest;
 }
+
+function effectiveAgentStatus(a, now = Date.now()) {
+  if (a.isActive === false) return "DISABLED";
+  return isAgentOnline(a, now) ? "ONLINE" : "OFFLINE";
+}
+
+export async function listAgents(companyId, query = {}) {
+  const filter = { companyId };
+  const q = t(query.q || query.search).toLowerCase();
+  const warehouseCode = upper(query.warehouseCode || query.warehouse);
+  const branch = t(query.branch || query.branchName);
+  const status = upper(query.status);
+  const printer = t(query.printer);
+  const limit = Math.min(200, Math.max(1, Number(query.limit) || 100));
+  const offset = Math.max(0, Number(query.offset) || 0);
+
+  if (warehouseCode) filter.warehouseCode = warehouseCode;
+  if (branch) filter.branchName = new RegExp(branch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+  if (status === "DISABLED") filter.isActive = false;
+  else if (status === "ONLINE" || status === "OFFLINE") filter.isActive = true;
+
+  let agents = await PrintAgent.find(filter).sort({ createdAt: -1 }).lean();
+  const now = Date.now();
+  // UTC day boundary — company local TZ is a known Phase-1 limitation
+  const startOfDay = new Date();
+  startOfDay.setUTCHours(0, 0, 0, 0);
+
+  const agentIds = agents.map((a) => a.agentId);
+  const printers = agentIds.length
+    ? await PrinterConfig.find({ companyId, agentId: { $in: agentIds } }).lean()
+    : [];
+  const printersByAgent = new Map();
+  for (const p of printers) {
+    const list = printersByAgent.get(p.agentId) || [];
+    list.push(p);
+    printersByAgent.set(p.agentId, list);
+  }
+
+  const companyOid = new mongoose.Types.ObjectId(String(companyId));
+  let pendingAgg = [];
+  let completedAgg = [];
+  let failedAgg = [];
+  if (agentIds.length) {
+    [pendingAgg, completedAgg, failedAgg] = await Promise.all([
+      LabelPrintJob.aggregate([
+        { $match: { companyId: companyOid, agentId: { $in: agentIds }, status: "PENDING" } },
+        { $group: { _id: "$agentId", count: { $sum: 1 } } },
+      ]),
+      LabelPrintJob.aggregate([
+        {
+          $match: {
+            companyId: companyOid,
+            agentId: { $in: agentIds },
+            status: "COMPLETED",
+            updatedAt: { $gte: startOfDay },
+          },
+        },
+        { $group: { _id: "$agentId", count: { $sum: 1 } } },
+      ]),
+      LabelPrintJob.aggregate([
+        {
+          $match: {
+            companyId: companyOid,
+            agentId: { $in: agentIds },
+            status: "FAILED",
+            updatedAt: { $gte: startOfDay },
+          },
+        },
+        { $group: { _id: "$agentId", count: { $sum: 1 } } },
+      ]),
+    ]);
+  }
+  const pendingMap = Object.fromEntries(pendingAgg.map((r) => [r._id, r.count]));
+  const completedMap = Object.fromEntries(completedAgg.map((r) => [r._id, r.count]));
+  const failedMap = Object.fromEntries(failedAgg.map((r) => [r._id, r.count]));
+
+  let rows = agents.map((a) => {
+    const effectiveStatus = effectiveAgentStatus(a, now);
+    const agentPrinters = printersByAgent.get(a.agentId) || [];
+    return {
+      ...sanitizeAgent(a),
+      effectiveStatus,
+      printers: agentPrinters.map((p) => ({
+        code: p.code,
+        displayName: p.displayName,
+        windowsPrinterName: p.windowsPrinterName,
+        isDefault: p.isDefault,
+        isWarehouseDefault: p.isWarehouseDefault,
+        isActive: p.isActive,
+      })),
+      pendingJobs: pendingMap[a.agentId] || 0,
+      completedToday: completedMap[a.agentId] || 0,
+      failedToday: failedMap[a.agentId] || 0,
+    };
+  });
+
+  if (status === "ONLINE" || status === "OFFLINE") {
+    rows = rows.filter((a) => a.effectiveStatus === status);
+  }
+  if (printer) {
+    const needle = printer.toLowerCase();
+    rows = rows.filter(
+      (a) =>
+        (a.printers || []).some(
+          (p) =>
+            String(p.code).toLowerCase().includes(needle) ||
+            String(p.windowsPrinterName).toLowerCase().includes(needle) ||
+            String(p.displayName).toLowerCase().includes(needle)
+        ) ||
+        (a.availablePrinters || []).some((n) => String(n).toLowerCase().includes(needle))
+    );
+  }
+  if (q) {
+    rows = rows.filter((a) => {
+      const hay = [
+        a.agentId,
+        a.name,
+        a.computerName,
+        a.warehouseCode,
+        a.warehouseName,
+        a.branchName,
+        a.department,
+        a.description,
+        ...(a.printers || []).map((p) => `${p.code} ${p.windowsPrinterName}`),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }
+  const total = rows.length;
+  return { items: rows.slice(offset, offset + limit), total, limit, offset, onlineThresholdMs: AGENT_ONLINE_MS };
+}
+
+export async function getAgent(companyId, agentId) {
+  const id = upper(agentId);
+  const { items } = await listAgents(companyId, { limit: 500 });
+  const found = items.find((a) => a.agentId === id);
+  if (!found) {
+    const err = new Error("Print agent not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  return found;
+}
+
+export async function updatePrintAgent(req, agentId, body = {}) {
+  const agent = await PrintAgent.findOne({ companyId: req.companyId, agentId: upper(agentId) });
+  if (!agent) {
+    const err = new Error("Print agent not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  const fields = [
+    "name",
+    "computerName",
+    "department",
+    "description",
+    "operatingSystem",
+    "windowsVersion",
+    "warehouseName",
+    "branchName",
+  ];
+  for (const f of fields) {
+    if (body[f] != null) agent[f] = t(body[f]);
+  }
+  if (body.agentName != null) agent.name = t(body.agentName);
+  if (body.warehouseCode != null) {
+    agent.warehouseCode = upper(body.warehouseCode);
+    const wh = await Warehouse.findOne({
+      companyId: req.companyId,
+      warehouseCode: agent.warehouseCode,
+    }).lean();
+    if (wh) {
+      agent.warehouseId = wh._id;
+      agent.warehouseName = wh.warehouseName || agent.warehouseName;
+      if (wh.branchId) agent.branchId = wh.branchId;
+    }
+  }
+  if (body.branchId != null) agent.branchId = body.branchId || null;
+  if (Array.isArray(body.availablePrinters)) {
+    agent.availablePrinters = body.availablePrinters.map((p) => String(p).trim()).filter(Boolean).slice(0, 100);
+  }
+  await agent.save();
+  await auditLabelAdminEvent(req, {
+    action: "UPDATE",
+    entityType: "PrintAgent",
+    entityId: agent._id,
+    documentNo: agent.agentId,
+    description: `Agent updated: ${agent.agentId}`,
+  });
+  return sanitizeAgent(agent.toObject());
+}
+
+export async function setAgentActive(req, agentId, isActive) {
+  const agent = await PrintAgent.findOne({ companyId: req.companyId, agentId: upper(agentId) });
+  if (!agent) {
+    const err = new Error("Print agent not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  agent.isActive = Boolean(isActive);
+  if (!isActive) agent.status = "OFFLINE";
+  await agent.save();
+  await auditLabelAdminEvent(req, {
+    action: "UPDATE",
+    entityType: "PrintAgent",
+    entityId: agent._id,
+    documentNo: agent.agentId,
+    description: isActive ? `Agent Enabled: ${agent.agentId}` : `Agent Disabled: ${agent.agentId}`,
+    metadata: { isActive: Boolean(isActive) },
+  });
+  return sanitizeAgent(agent.toObject());
+}
+
+export async function rotateAgentSecret(req, agentId) {
+  const agent = await PrintAgent.findOne({ companyId: req.companyId, agentId: upper(agentId) });
+  if (!agent) {
+    const err = new Error("Print agent not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  const secret = crypto.randomBytes(24).toString("base64url");
+  agent.secretHash = await bcrypt.hash(secret, 10);
+  await agent.save();
+  await auditLabelAdminEvent(req, {
+    action: "UPDATE",
+    entityType: "PrintAgent",
+    entityId: agent._id,
+    documentNo: agent.agentId,
+    description: `Secret Rotated: ${agent.agentId}`,
+  });
+  return {
+    agentId: agent.agentId,
+    secret,
+    message: "Store this secret securely. It will not be shown again.",
+  };
+}
+
+/**
+ * First-launch self-registration using company-scoped bootstrap token.
+ * Idempotent on companyId + installationId.
+ * Does not auto-create PrinterConfig (admin must map printers).
+ */
+export async function bootstrapRegisterAgent(body = {}, reqMeta = {}) {
+  const companyId = body.companyId;
+  const bootstrapToken = t(body.bootstrapToken || body.token);
+  const installationId = clampStr(body.installationId, 80);
+  if (!companyId || !bootstrapToken) {
+    const err = new Error("companyId and bootstrapToken are required");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!installationId) {
+    const err = new Error("installationId is required for bootstrap");
+    err.code = "AGENT_INSTALLATION_REQUIRED";
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const material = await verifyBootstrapToken(companyId, bootstrapToken);
+
+  // Idempotent: same installation returns existing agent (no new secret)
+  const existing = await PrintAgent.findOne({ companyId, installationId }).lean();
+  if (existing) {
+    await auditLabelAdminEvent(
+      { companyId, user: { name: "agent-bootstrap" }, ip: reqMeta.ip },
+      {
+        action: "OTHER",
+        entityType: "PrintAgent",
+        entityId: existing._id,
+        documentNo: existing.agentId,
+        description: `Bootstrap idempotent hit for installation ${installationId}`,
+        metadata: { installationId },
+      }
+    );
+    return {
+      agent: sanitizeAgent(existing),
+      secret: null,
+      idempotent: true,
+      message: "Agent already registered for this installation. Use existing config secret.",
+    };
+  }
+
+  let warehouseCode = upper(body.warehouseCode);
+  if (material.warehouse) {
+    if (warehouseCode && warehouseCode !== material.warehouse) {
+      const err = new Error(`Bootstrap token is scoped to warehouse ${material.warehouse}`);
+      err.code = "AGENT_BOOTSTRAP_WAREHOUSE_MISMATCH";
+      err.statusCode = 403;
+      throw err;
+    }
+    warehouseCode = material.warehouse;
+  }
+
+  const fakeReq = {
+    companyId,
+    user: { name: "agent-bootstrap" },
+    ip: reqMeta.ip,
+  };
+  const result = await registerPrintAgent(fakeReq, {
+    name: body.name || body.agentName,
+    warehouseCode,
+    warehouseName: body.warehouseName,
+    branchId: body.branchId,
+    branchName: body.branchName,
+    department: body.department,
+    description: body.description,
+    computerName: body.computerName,
+    operatingSystem: body.operatingSystem,
+    windowsVersion: body.windowsVersion,
+    availablePrinters: body.availablePrinters,
+    installationId,
+    createdBy: "agent-bootstrap",
+  });
+
+  await incrementBootstrapUseCount(companyId);
+  await auditLabelAdminEvent(fakeReq, {
+    action: "CREATE",
+    entityType: "PrintAgent",
+    entityId: result.agent?._id,
+    documentNo: result.agent?.agentId,
+    description: `Agent Registered via bootstrap: ${result.agent?.agentId}`,
+    metadata: { installationId, warehouseCode },
+  });
+
+  return { ...result, idempotent: false };
+}
+
+export async function applyAgentHeartbeat(agent, body = {}, req = {}) {
+  // Heartbeat may update telemetry only — never company, branch, warehouse, name, isActive
+  agent.status = "ONLINE";
+  agent.lastHeartbeatAt = new Date();
+  agent.lastIp = clampStr(
+    req.ip || req.headers?.["x-forwarded-for"] || agent.lastIp || "",
+    HEARTBEAT_LIMITS.lastIp
+  );
+  const computerName = clampStr(body.computerName, HEARTBEAT_LIMITS.computerName);
+  const appVersion = sanitizeAppVersion(body.appVersion);
+  const operatingSystem = clampStr(body.operatingSystem, HEARTBEAT_LIMITS.operatingSystem);
+  const windowsVersion = clampStr(body.windowsVersion, HEARTBEAT_LIMITS.windowsVersion);
+  if (computerName) agent.computerName = computerName;
+  if (appVersion) agent.appVersion = appVersion;
+  if (operatingSystem) agent.operatingSystem = operatingSystem;
+  if (windowsVersion) agent.windowsVersion = windowsVersion;
+  if (Array.isArray(body.availablePrinters)) {
+    agent.availablePrinters = normalizePrinterNames(body.availablePrinters);
+  }
+  if (Array.isArray(body.printerStatus)) {
+    agent.printerStatus = body.printerStatus
+      .slice(0, HEARTBEAT_LIMITS.printerStatus)
+      .map((row) => ({
+        name: clampStr(row?.name, HEARTBEAT_LIMITS.printerName),
+        online: Boolean(row?.online),
+      }))
+      .filter((row) => row.name);
+  }
+  if (body.lastError != null) {
+    agent.lastError = clampStr(body.lastError, HEARTBEAT_LIMITS.lastError);
+  }
+  await agent.save();
+  return agent;
+}
+
+export async function createTestPrintJob(req, { agentId, printerCode } = {}) {
+  const settings = await getLabelSettings(req.companyId);
+  if (!settings.enabled) {
+    const err = new Error("Label printing is disabled");
+    err.code = "LABEL_DISABLED";
+    err.statusCode = 400;
+    throw err;
+  }
+  let printer = null;
+  if (printerCode) {
+    const { getPrinter } = await import("./printerManager.js");
+    printer = await getPrinter(req.companyId, printerCode);
+    if (!printer || printer.isActive === false) {
+      const err = new Error("Printer not found or disabled");
+      err.statusCode = 400;
+      throw err;
+    }
+  } else if (agentId) {
+    printer = await PrinterConfig.findOne({
+      companyId: req.companyId,
+      agentId: upper(agentId),
+      isActive: true,
+    }).sort({ isDefault: -1, code: 1 });
+    if (!printer) {
+      const err = new Error("No active printer mapped to this agent");
+      err.statusCode = 400;
+      throw err;
+    }
+  } else {
+    printer = await resolvePrinterForJob(req.companyId, null);
+  }
+  const agent = await PrintAgent.findOne({ companyId: req.companyId, agentId: printer.agentId }).lean();
+  if (!agent || agent.isActive === false) {
+    const err = new Error("Assigned print agent is disabled");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!String(printer.windowsPrinterName || "").trim()) {
+    const err = new Error("Printer has no Windows printer name configured");
+    err.statusCode = 400;
+    throw err;
+  }
+  const tsplPayload = buildTestLabelTspl({
+    agentId: printer.agentId,
+    agentName: agent?.name || printer.agentId,
+    printerName: printer.displayName || printer.code,
+    windowsPrinterName: printer.windowsPrinterName,
+    connectionStatus: effectiveAgentStatus(agent || { isActive: true, status: "OFFLINE" }),
+  });
+  const job = await LabelPrintJob.create({
+    companyId: req.companyId,
+    jobNo: jobNo(),
+    sourceType: "MANUAL",
+    sourceId: null,
+    sourceNo: "TEST",
+    warehouseCode: printer.warehouseCode || "",
+    printerConfigId: printer._id,
+    agentId: upper(printer.agentId),
+    windowsPrinterName: printer.windowsPrinterName,
+    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
+    copies: 1,
+    requestedLabels: 1,
+    printedLabels: 0,
+    remainingLabels: 1,
+    lines: [
+      {
+        article: "TEST",
+        description: "MARIVOLT TEST LABEL",
+        qty: 1,
+        uom: "PCS",
+        labelQty: 1,
+        barcodeValue: "TEST",
+      },
+    ],
+    tsplPayload,
+    status: "PENDING",
+    createdByUserId: req.user?.id || null,
+    createdByName: t(req.user?.name || ""),
+  });
+  await recordLabelHistory({
+    jobId: job._id,
+    companyId: job.companyId,
+    agentId: job.agentId,
+    windowsPrinterName: job.windowsPrinterName,
+    requestedQty: 1,
+    status: "PENDING",
+    templateCode: job.templateCode,
+    userName: job.createdByName,
+    event: "TEST_PRINT",
+  });
+  await auditLabelAdminEvent(req, {
+    action: "CREATE",
+    entityType: "LabelPrintJob",
+    entityId: job._id,
+    documentNo: job.jobNo,
+    description: `Test Print queued for agent ${job.agentId} / ${job.windowsPrinterName}`,
+  });
+  return job;
+}
+
+export { touchPrinterLastPrint };
 
 export async function retryJob(req, jobId) {
   const job = await LabelPrintJob.findOne({ _id: jobId, companyId: req.companyId });
@@ -484,7 +1005,9 @@ export async function reprintJob(req, jobId, body = {}) {
       labelQty: Math.max(1, Number(ln.labelQty) || 1),
     }));
   }
-  const printer = await resolvePrinterForJob(req.companyId, body.printerCode || null);
+  const printer = await resolvePrinterForJob(req.companyId, body.printerCode || null, {
+    warehouseCode: upper(body.warehouseCode) || upper(parent.warehouseCode),
+  });
   const requestedLabels = lines.reduce((s, ln) => s + Math.max(0, Number(ln.labelQty) || 0) * copies, 0);
   const tsplPayload = buildJobTspl(lines, { copies, companyName: "MARIVOLT FZE", barcodeMode: "ARTICLE" });
   const job = await LabelPrintJob.create({
@@ -554,7 +1077,9 @@ export async function createStockReprint(req, body = {}) {
   const labelQty = Math.max(1, Number(body.labelQty) || 1);
   const copies = Math.max(1, Number(body.copies) || settings.defaultCopies);
   const reason = t(body.reason) || "Replacement";
-  const printer = await resolvePrinterForJob(req.companyId, body.printerCode);
+  const printer = await resolvePrinterForJob(req.companyId, body.printerCode, {
+    warehouseCode: upper(body.warehouseCode),
+  });
   const line = {
     article,
     description: t(body.description),

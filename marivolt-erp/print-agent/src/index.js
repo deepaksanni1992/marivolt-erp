@@ -1,8 +1,8 @@
-import os from "os";
-import { loadConfig, logLine } from "./config.js";
+import { ensureConfigured, loadConfig, logLine } from "./config.js";
+import { collectHostProfile } from "./detect.js";
 import { createTransport } from "./adapters/windowsRawSpooler.js";
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 
 async function api(cfg, method, path, body) {
   const url = `${cfg.backendUrl}${path}`;
@@ -79,24 +79,58 @@ async function processOneJob(cfg, transport) {
         printedQty: 0,
       });
     } catch (reportErr) {
-      // Lease may expire → UNCERTAIN on server
       logLine(`Could not report failure (may become UNCERTAIN): ${reportErr.message}`);
     }
   }
   return true;
 }
 
+async function sendHeartbeat(cfg) {
+  let profile = {
+    computerName: "",
+    operatingSystem: "",
+    windowsVersion: "",
+    availablePrinters: [],
+  };
+  try {
+    profile = await collectHostProfile();
+  } catch (e) {
+    logLine(`Host detect warning: ${e.message}`);
+  }
+  await api(cfg, "POST", "/api/labels/agent/heartbeat", {
+    computerName: profile.computerName,
+    appVersion: APP_VERSION,
+    operatingSystem: profile.operatingSystem,
+    windowsVersion: profile.windowsVersion,
+    availablePrinters: profile.availablePrinters,
+    printerStatus: (profile.availablePrinters || []).map((name) => ({
+      name,
+      online: true,
+    })),
+  });
+}
+
 async function loop() {
-  const cfg = loadConfig();
+  let cfg;
+  try {
+    cfg = await ensureConfigured();
+  } catch (e) {
+    // Non-interactive fallback: require existing config
+    try {
+      cfg = loadConfig();
+    } catch {
+      console.error(e.message || e);
+      console.error("First-launch registration failed. Set config.json or run interactively.");
+      process.exit(1);
+    }
+  }
+
   const transport = createTransport(cfg.connectionType);
   logLine(`Marivolt Print Agent ${APP_VERSION} starting. Backend=${cfg.backendUrl} agent=${cfg.agentId}`);
 
   for (;;) {
     try {
-      await api(cfg, "POST", "/api/labels/agent/heartbeat", {
-        computerName: os.hostname(),
-        appVersion: APP_VERSION,
-      });
+      await sendHeartbeat(cfg);
       let worked = true;
       while (worked) {
         worked = await processOneJob(cfg, transport);

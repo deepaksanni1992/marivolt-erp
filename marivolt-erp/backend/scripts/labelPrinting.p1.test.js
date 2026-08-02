@@ -9,6 +9,7 @@ import { encodeBarcodeValue } from "../src/services/label/barcodeGenerator.js";
 import {
   buildJobTspl,
   buildSingleLabelTspl,
+  buildTestLabelTspl,
   getFixedLabelSize,
   wrapDescription,
   labelDotDimensions,
@@ -302,6 +303,60 @@ run("RAW spooler documented and used", () => {
   assert.ok(adapter.includes('pDataType = "RAW"') || adapter.includes("RAW"));
   const readme = fs.readFileSync(path.join(repoRoot, "print-agent/README.md"), "utf8");
   assert.ok(readme.includes("RAW"));
+});
+
+run("Enterprise agent/printer models have additive profile fields", () => {
+  const agent = fs.readFileSync(path.join(backendRoot, "src/models/PrintAgent.js"), "utf8");
+  assert.ok(agent.includes("branchName"));
+  assert.ok(agent.includes("availablePrinters"));
+  assert.ok(agent.includes("windowsVersion"));
+  assert.ok(agent.includes("department"));
+  const printer = fs.readFileSync(path.join(backendRoot, "src/models/PrinterConfig.js"), "utf8");
+  assert.ok(printer.includes("isWarehouseDefault"));
+  assert.ok(printer.includes("connectionKind"));
+  assert.ok(printer.includes("printerModel"));
+});
+
+run("Print routing prefers warehouse then company default", () => {
+  const pm = fs.readFileSync(path.join(backendRoot, "src/services/label/printerManager.js"), "utf8");
+  assert.ok(pm.includes("isWarehouseDefault"));
+  assert.ok(pm.includes("warehouseCode"));
+  assert.ok(pm.includes("isDefault: true"));
+});
+
+run("Agent bootstrap + dashboard APIs mounted", () => {
+  const routes = fs.readFileSync(path.join(backendRoot, "src/routes/labelRoutes.js"), "utf8");
+  assert.ok(routes.includes("/agent/bootstrap"));
+  assert.ok(routes.includes("rotate-secret"));
+  assert.ok(routes.includes("test-print"));
+  assert.ok(routes.includes("test-connection"));
+  assert.ok(routes.includes("/agents/:id/disable"));
+});
+
+run("Test label TSPL generator", () => {
+  const tspl = buildTestLabelTspl({
+    agentId: "AGT1",
+    agentName: "Warehouse Agent 01",
+    printerName: "Receiving Printer",
+    windowsPrinterName: "Rongta RP420",
+    connectionStatus: "ONLINE",
+  });
+  assert.ok(tspl.includes("MARIVOLT TEST LABEL"));
+  assert.ok(tspl.includes("SIZE 100 mm,50 mm"));
+  assert.ok(tspl.includes("Agent:"));
+  assert.ok(tspl.includes("Printer:"));
+});
+
+run("Print agent auto-detect + first-launch present", () => {
+  const detect = fs.readFileSync(path.join(repoRoot, "print-agent/src/detect.js"), "utf8");
+  assert.ok(detect.includes("detectWindowsPrinters"));
+  assert.ok(detect.includes("collectHostProfile"));
+  const cfg = fs.readFileSync(path.join(repoRoot, "print-agent/src/config.js"), "utf8");
+  assert.ok(cfg.includes("ensureConfigured"));
+  assert.ok(cfg.includes("bootstrap"));
+  const ui = fs.readFileSync(path.join(repoRoot, "src/components/store/LabelSettingsPanel.jsx"), "utf8");
+  assert.ok(ui.includes("Print Agent Dashboard"));
+  assert.ok(ui.includes("Printer Dashboard"));
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -19,7 +19,12 @@ function sendErr(res, err) {
 export async function getSettings(req, res) {
   try {
     const settings = await labelSettings.getLabelSettings(req.companyId);
-    res.json({ ...settings, labelSize: getFixedLabelSize(), template: "MARIVOLT STANDARD LABEL" });
+    res.json({
+      ...settings,
+      agentBootstrapToken: "",
+      labelSize: getFixedLabelSize(),
+      template: "MARIVOLT STANDARD LABEL",
+    });
   } catch (err) {
     sendErr(res, err);
   }
@@ -27,12 +32,36 @@ export async function getSettings(req, res) {
 
 export async function putSettings(req, res) {
   try {
+    const body = { ...(req.body || {}) };
+    const bootstrapKeys = [
+      "agentBootstrapToken",
+      "agentBootstrapEnabled",
+      "agentBootstrapExpiresAt",
+      "agentBootstrapWarehouse",
+      "agentBootstrapMaxUses",
+      "clearBootstrapToken",
+    ];
+    const touchesBootstrap = bootstrapKeys.some((k) => Object.prototype.hasOwnProperty.call(body, k));
+    if (touchesBootstrap) {
+      const { hasPermission, normaliseRoleCode } = await import("../services/roleService.js");
+      const role = normaliseRoleCode(req.user?.role || "");
+      const ok = role === "SUPER_ADMIN" || (await hasPermission(req, "LABELS", "admin"));
+      if (!ok) {
+        const err = new Error("LABELS.admin required to manage agent bootstrap settings");
+        err.statusCode = 403;
+        err.code = "PERMISSION_DENIED";
+        throw err;
+      }
+    }
     const settings = await labelSettings.upsertLabelSettings(
       req.companyId,
-      req.body || {},
+      body,
       req.user?.name || req.user?.email || ""
     );
-    res.json(settings);
+    res.json({
+      ...settings,
+      agentBootstrapToken: "",
+    });
   } catch (err) {
     sendErr(res, err);
   }
@@ -40,8 +69,38 @@ export async function putSettings(req, res) {
 
 export async function listPrinters(req, res) {
   try {
-    const rows = await printerManager.listPrinters(req.companyId);
-    res.json({ items: rows });
+    const includeInactive = String(req.query.includeInactive || "") === "1";
+    const rows = await printerManager.listPrinters(req.companyId, { includeInactive });
+    // Enrich with queue depth + agent status
+    const LabelPrintJob = (await import("../models/LabelPrintJob.js")).default;
+    const PrintAgent = (await import("../models/PrintAgent.js")).default;
+    const agentIds = [...new Set(rows.map((r) => r.agentId).filter(Boolean))];
+    const agents = await PrintAgent.find({ companyId: req.companyId, agentId: { $in: agentIds } }).lean();
+    const agentMap = Object.fromEntries(agents.map((a) => [a.agentId, a]));
+    const pending = await LabelPrintJob.aggregate([
+      {
+        $match: {
+          companyId: req.companyId,
+          printerConfigId: { $in: rows.map((r) => r._id) },
+          status: { $in: ["PENDING", "LEASED", "PRINTING"] },
+        },
+      },
+      { $group: { _id: "$printerConfigId", count: { $sum: 1 } } },
+    ]);
+    const pendingMap = Object.fromEntries(pending.map((p) => [String(p._id), p.count]));
+    const items = rows.map((p) => {
+      const ag = agentMap[p.agentId];
+      const hb = ag?.lastHeartbeatAt ? new Date(ag.lastHeartbeatAt).getTime() : 0;
+      const online = ag?.isActive !== false && ag?.status === "ONLINE" && hb && Date.now() - hb < 90_000;
+      return {
+        ...p,
+        currentQueue: pendingMap[String(p._id)] || 0,
+        agentName: ag?.name || "",
+        agentComputerName: ag?.computerName || "",
+        agentStatus: ag?.isActive === false ? "DISABLED" : online ? "ONLINE" : "OFFLINE",
+      };
+    });
+    res.json({ items });
   } catch (err) {
     sendErr(res, err);
   }
@@ -49,12 +108,64 @@ export async function listPrinters(req, res) {
 
 export async function upsertPrinter(req, res) {
   try {
-    const row = await printerManager.upsertPrinter(
+    const { auditLabelAdminEvent } = await import("../services/label/labelAudit.js");
+    const { printer, created } = await printerManager.upsertPrinter(
       req.companyId,
       req.body || {},
       req.user?.name || ""
     );
-    res.status(201).json(row);
+    await auditLabelAdminEvent(req, {
+      action: created ? "CREATE" : "UPDATE",
+      entityType: "PrinterConfig",
+      entityId: printer._id,
+      documentNo: printer.code,
+      description: created ? `Printer Added: ${printer.code}` : `Printer Changed: ${printer.code}`,
+      metadata: { agentId: printer.agentId, windowsPrinterName: printer.windowsPrinterName },
+    });
+    res.status(created ? 201 : 200).json(printer);
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function disablePrinter(req, res) {
+  try {
+    const { auditLabelAdminEvent } = await import("../services/label/labelAudit.js");
+    const row = await printerManager.setPrinterActive(req.companyId, req.params.id, false);
+    await auditLabelAdminEvent(req, {
+      action: "UPDATE",
+      entityType: "PrinterConfig",
+      entityId: row._id,
+      documentNo: row.code,
+      description: `Printer Disabled: ${row.code}`,
+    });
+    res.json(row);
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function enablePrinter(req, res) {
+  try {
+    const row = await printerManager.setPrinterActive(req.companyId, req.params.id, true);
+    res.json(row);
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function deletePrinter(req, res) {
+  try {
+    const { auditLabelAdminEvent } = await import("../services/label/labelAudit.js");
+    const row = await printerManager.deletePrinter(req.companyId, req.params.id);
+    await auditLabelAdminEvent(req, {
+      action: "DELETE",
+      entityType: "PrinterConfig",
+      entityId: row._id,
+      documentNo: row.code,
+      description: `Printer Deleted (soft): ${row.code}`,
+    });
+    res.json(row);
   } catch (err) {
     sendErr(res, err);
   }
@@ -80,8 +191,109 @@ export async function registerAgent(req, res) {
 
 export async function listAgents(req, res) {
   try {
-    const items = await labelService.listAgents(req.companyId);
-    res.json({ items });
+    const result = await labelService.listAgents(req.companyId, req.query || {});
+    res.json(result);
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function getAgent(req, res) {
+  try {
+    const item = await labelService.getAgent(req.companyId, req.params.id);
+    res.json(item);
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function updateAgent(req, res) {
+  try {
+    const item = await labelService.updatePrintAgent(req, req.params.id, req.body || {});
+    res.json(item);
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function disableAgent(req, res) {
+  try {
+    const item = await labelService.setAgentActive(req, req.params.id, false);
+    res.json(item);
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function enableAgent(req, res) {
+  try {
+    const item = await labelService.setAgentActive(req, req.params.id, true);
+    res.json(item);
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function rotateAgentSecret(req, res) {
+  try {
+    const result = await labelService.rotateAgentSecret(req, req.params.id);
+    res.json(result);
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function testPrint(req, res) {
+  try {
+    const job = await labelService.createTestPrintJob(req, {
+      agentId: req.body?.agentId || req.params.agentId,
+      printerCode: req.body?.printerCode || req.params.printerCode,
+    });
+    res.status(201).json({ success: true, job });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function testConnection(req, res) {
+  try {
+    const agent = await labelService.getAgent(req.companyId, req.params.id);
+    const printers = (agent.printers || []).filter((p) => p.isActive !== false);
+    const available = new Set((agent.availablePrinters || []).map((n) => String(n).toLowerCase()));
+    const mappedChecks = printers.map((p) => {
+      const win = String(p.windowsPrinterName || "").trim();
+      return {
+        code: p.code,
+        windowsPrinterName: win,
+        foundOnAgent: win ? available.has(win.toLowerCase()) : false,
+      };
+    });
+    const online = agent.effectiveStatus === "ONLINE";
+    const mappedOk = mappedChecks.length
+      ? mappedChecks.some((m) => m.foundOnAgent)
+      : false;
+    res.json({
+      ok: online,
+      connected: online,
+      agentAuthenticated: true,
+      agentId: agent.agentId,
+      effectiveStatus: agent.effectiveStatus,
+      lastHeartbeatAt: agent.lastHeartbeatAt,
+      lastIp: agent.lastIp,
+      appVersion: agent.appVersion,
+      computerName: agent.computerName,
+      availablePrinters: agent.availablePrinters || [],
+      mappedPrinters: mappedChecks,
+      mappedWindowsPrinterFound: mappedOk,
+      physicalPrintRequired: false,
+      message: online
+        ? mappedOk
+          ? "Agent online; at least one mapped Windows printer was seen in the last heartbeat."
+          : printers.length
+            ? "Agent online, but mapped Windows printer name was not reported in available printers."
+            : "Agent online; no active printer mappings yet."
+        : "Agent is not online (stale or missing heartbeat).",
+    });
   } catch (err) {
     sendErr(res, err);
   }

@@ -146,6 +146,7 @@ export async function applyAgentResult(jobId, agent, body = {}) {
     $set.printedLabels = (Number(job.printedLabels) || 0) + done;
     $set.remainingLabels = Math.max(0, requested - done);
     $set.status = $set.remainingLabels > 0 ? "PARTIAL" : "COMPLETED";
+    if ($set.status === "COMPLETED") $set.lastError = "";
   } else if (status === "FAILED") {
     $set.status = "FAILED";
     $set.lastError = String(body.error || "Print failed");

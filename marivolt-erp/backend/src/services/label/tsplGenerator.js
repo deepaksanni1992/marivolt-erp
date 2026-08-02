@@ -160,3 +160,33 @@ export function buildJobTspl(lines = [], opts = {}) {
 export function getFixedLabelSize() {
   return { widthMm: LABEL_WIDTH_MM, heightMm: LABEL_HEIGHT_MM };
 }
+
+/** One-off test label for agent/printer connectivity checks. */
+export function buildTestLabelTspl(info = {}, opts = {}) {
+  const dpi = Number(opts.dpi) || 203;
+  const dpm = dotsPerMm(dpi);
+  const scale = (dotsAt203) => Math.round(dotsAt203 * (dpm / 8));
+  const now = info.when ? new Date(info.when) : new Date();
+  const dateStr = escapeTspl(now.toISOString().slice(0, 10));
+  const timeStr = escapeTspl(now.toISOString().slice(11, 19) + "Z");
+  const agent = escapeTspl(info.agentName || info.agentId || "—");
+  const printer = escapeTspl(info.printerName || info.windowsPrinterName || "—");
+  const conn = escapeTspl(info.connectionStatus || "OK");
+  const w = LABEL_WIDTH_MM;
+  const h = LABEL_HEIGHT_MM;
+  return [
+    `SIZE ${w} mm,${h} mm`,
+    "GAP 3 mm,0",
+    "DIRECTION 1",
+    "REFERENCE 0,0",
+    "CLS",
+    `TEXT ${scale(20)},${scale(20)},"0",0,2,2,"MARIVOLT TEST LABEL"`,
+    `TEXT ${scale(20)},${scale(70)},"0",0,1,1,"Date: ${dateStr}"`,
+    `TEXT ${scale(20)},${scale(100)},"0",0,1,1,"Time: ${timeStr}"`,
+    `TEXT ${scale(20)},${scale(130)},"0",0,1,1,"Agent: ${agent}"`,
+    `TEXT ${scale(20)},${scale(160)},"0",0,1,1,"Printer: ${printer}"`,
+    `TEXT ${scale(20)},${scale(190)},"0",0,1,1,"Connection: ${conn}"`,
+    "PRINT 1,1",
+    "",
+  ].join("\r\n");
+}

@@ -26,7 +26,22 @@ const agentRateLimit = createRateLimiter({
     `${req.headers["x-print-agent-id"] || req.ip || "unknown"}`.toLowerCase().slice(0, 120),
 });
 
+const bootstrapRateLimit = createRateLimiter({
+  name: "label-agent-bootstrap",
+  windowMs: 60_000,
+  max: Number(process.env.LABEL_AGENT_BOOTSTRAP_RATE_LIMIT_MAX) || 10,
+  keyFn: (req) => `${req.ip || "unknown"}`.toLowerCase().slice(0, 120),
+});
+
+const testPrintRateLimit = createRateLimiter({
+  name: "label-test-print",
+  windowMs: 60_000,
+  max: Number(process.env.LABEL_TEST_PRINT_RATE_LIMIT_MAX) || 10,
+  keyFn: (req) => `${req.user?.id || req.ip || "unknown"}`.toLowerCase().slice(0, 120),
+});
+
 /** Agent routes — no user JWT; rate-limited */
+router.post("/agent/bootstrap", bootstrapRateLimit, agent.bootstrap);
 router.post("/agent/heartbeat", agentRateLimit, requirePrintAgent, agent.heartbeat);
 router.post("/agent/lease", agentRateLimit, requirePrintAgent, agent.lease);
 router.post("/agent/jobs/:id/printing", agentRateLimit, requirePrintAgent, agent.printing);
@@ -37,12 +52,29 @@ router.use(...requireErpAccess);
 
 router.get("/settings", labelsView, c.getSettings);
 router.put("/settings", labelsSettingsWrite, c.putSettings);
-// Allow STORE print users to read settings; also allow SETTINGS.edit holders via admin matrix
 router.get("/printers", labelsView, c.listPrinters);
 router.post("/printers", labelsAdmin, c.upsertPrinter);
+router.post("/printers/:id/disable", labelsAdmin, c.disablePrinter);
+router.post("/printers/:id/enable", labelsAdmin, c.enablePrinter);
+router.post("/printers/:id/delete", labelsAdmin, c.deletePrinter);
+router.post("/printers/:id/test-print", labelsAdmin, testPrintRateLimit, (req, res) => {
+  req.body = { ...(req.body || {}), printerCode: req.params.id };
+  return c.testPrint(req, res);
+});
 router.get("/templates", labelsView, c.listTemplates);
 router.get("/agents", labelsAdmin, c.listAgents);
 router.post("/agents", labelsAdmin, c.registerAgent);
+router.get("/agents/:id", labelsAdmin, c.getAgent);
+router.put("/agents/:id", labelsAdmin, c.updateAgent);
+router.post("/agents/:id/disable", labelsAdmin, c.disableAgent);
+router.post("/agents/:id/enable", labelsAdmin, c.enableAgent);
+router.post("/agents/:id/rotate-secret", labelsAdmin, c.rotateAgentSecret);
+router.post("/agents/:id/test-connection", labelsAdmin, c.testConnection);
+router.post("/agents/:id/test-print", labelsAdmin, testPrintRateLimit, (req, res) => {
+  req.body = { ...(req.body || {}), agentId: req.params.id };
+  return c.testPrint(req, res);
+});
+router.post("/test-print", labelsAdmin, testPrintRateLimit, c.testPrint);
 
 router.post("/jobs/from-grn", labelsPrint, c.createFromGrn);
 router.post("/jobs/stock-reprint", labelsReprint, c.stockReprint);

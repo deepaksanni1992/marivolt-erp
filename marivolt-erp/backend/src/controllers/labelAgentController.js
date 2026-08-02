@@ -6,7 +6,11 @@ import {
   reclaimExpiredLeases,
 } from "../services/label/printQueue.js";
 import { recordLabelHistory } from "../services/label/labelAudit.js";
-import { syncGrnLabelStatus } from "../services/label/labelService.js";
+import {
+  syncGrnLabelStatus,
+  applyAgentHeartbeat,
+  touchPrinterLastPrint,
+} from "../services/label/labelService.js";
 
 function sendErr(res, err) {
   res.status(err.statusCode || 400).json({
@@ -17,21 +21,15 @@ function sendErr(res, err) {
 
 export async function heartbeat(req, res) {
   try {
-    const agent = req.printAgent;
-    const computerName = String(req.body?.computerName || "").trim();
-    const appVersion = String(req.body?.appVersion || "").trim();
-    agent.status = "ONLINE";
-    agent.lastHeartbeatAt = new Date();
-    agent.lastIp = String(req.ip || req.headers["x-forwarded-for"] || "").slice(0, 120);
-    if (computerName) agent.computerName = computerName;
-    if (appVersion) agent.appVersion = appVersion;
-    await agent.save();
+    const agent = await applyAgentHeartbeat(req.printAgent, req.body || {}, req);
     await reclaimExpiredLeases(agent.companyId);
     res.json({
       ok: true,
       agentId: agent.agentId,
       status: "ONLINE",
       serverTime: new Date().toISOString(),
+      warehouseCode: agent.warehouseCode || "",
+      availablePrinters: agent.availablePrinters || [],
     });
   } catch (err) {
     sendErr(res, err);
@@ -115,17 +113,52 @@ export async function result(req, res) {
       retryCount: job.retryCount,
       event: "RESULT",
     });
-    // Mark agent offline-ish only via heartbeat; keep ONLINE after success
-    await PrintAgent.updateOne(
-      { _id: req.printAgent._id },
-      { $set: { lastHeartbeatAt: new Date(), status: "ONLINE" } }
-    );
+    if (job.status === "COMPLETED" || job.status === "PARTIAL") {
+      await touchPrinterLastPrint(job.printerConfigId);
+      await PrintAgent.updateOne(
+        { _id: req.printAgent._id },
+        { $set: { lastHeartbeatAt: new Date(), status: "ONLINE", lastError: "" } }
+      );
+    } else {
+      await PrintAgent.updateOne(
+        { _id: req.printAgent._id },
+        {
+          $set: {
+            lastHeartbeatAt: new Date(),
+            status: "ONLINE",
+            lastError: String(req.body?.error || job.lastError || "").slice(0, 500),
+          },
+        }
+      );
+    }
     res.json({
       ok: true,
       status: job.status,
       printedLabels: job.printedLabels,
       remainingLabels: job.remainingLabels,
     });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function bootstrap(req, res) {
+  try {
+    if (process.env.NODE_ENV === "production") {
+      const xfProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+      const secure = Boolean(req.secure) || xfProto === "https";
+      if (!secure) {
+        return res.status(403).json({
+          message: "HTTPS required for print agent bootstrap in production",
+          code: "AGENT_HTTPS_REQUIRED",
+        });
+      }
+    }
+    const { bootstrapRegisterAgent } = await import("../services/label/labelService.js");
+    const result = await bootstrapRegisterAgent(req.body || {}, {
+      ip: req.ip || req.headers["x-forwarded-for"],
+    });
+    res.status(result.idempotent ? 200 : 201).json(result);
   } catch (err) {
     sendErr(res, err);
   }

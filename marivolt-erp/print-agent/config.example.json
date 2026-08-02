@@ -1,8 +1,12 @@
 {
+  "installationId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "backendUrl": "https://YOUR-RENDER-API.onrender.com",
+  "companyId": "OPTIONAL_AFTER_BOOTSTRAP",
+  "warehouseCode": "MAIN",
+  "agentName": "Warehouse Agent 01",
   "agentId": "AGTXXXXXXXX",
   "secret": "PASTE_ONE_TIME_SECRET_HERE",
-  "windowsPrinterName": "Rongta Printer",
+  "windowsPrinterName": "Rongta RP420",
   "pollIntervalMs": 5000,
   "connectionType": "WINDOWS_SPOOLER"
 }

@@ -47,3 +47,30 @@ export async function auditLabelEvent(req, { action = "OTHER", job, description 
     // ignore
   }
 }
+
+/** Audit for PrintAgent / PrinterConfig lifecycle events. */
+export async function auditLabelAdminEvent(
+  req,
+  {
+    action = "OTHER",
+    entityType = "PrintAgent",
+    entityId = null,
+    documentNo = "",
+    description = "",
+    metadata = {},
+  } = {}
+) {
+  try {
+    await writeAudit(req, {
+      action,
+      module: "LABELS",
+      entityType,
+      entityId,
+      documentNo,
+      description,
+      metadata,
+    });
+  } catch {
+    // ignore
+  }
+}
