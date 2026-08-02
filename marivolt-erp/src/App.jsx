@@ -17,6 +17,7 @@ import CustomsDashboard from "./pages/CustomsDashboard.jsx";
 import CustomsStock from "./pages/CustomsStock.jsx";
 import CustomsStockLedger from "./pages/CustomsStockLedger.jsx";
 import CustomsInvoice from "./pages/CustomsInvoice.jsx";
+import CustomsAllocationReports from "./pages/CustomsAllocationReports.jsx";
 import CustomsReconciliation from "./pages/CustomsReconciliation.jsx";
 import GlobalSearch from "./pages/GlobalSearch.jsx";
 import ArticleTraceability from "./pages/ArticleTraceability.jsx";
@@ -67,6 +68,7 @@ export default function App() {
           <Route path="customs/ledger" element={<CustomsStockLedger />} />
           <Route path="customs/invoices" element={<CustomsInvoice />} />
           <Route path="customs/invoices/:id" element={<CustomsInvoice />} />
+          <Route path="customs/allocation-reports" element={<CustomsAllocationReports />} />
           <Route path="customs/reconciliation" element={<CustomsReconciliation />} />
           <Route path="search" element={<GlobalSearch />} />
           <Route path="traceability/article" element={<ArticleTraceability />} />

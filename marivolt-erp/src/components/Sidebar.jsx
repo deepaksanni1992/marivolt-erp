@@ -30,6 +30,7 @@ const customsGroup = {
     { to: "/customs/stock", label: "Customs Stock" },
     { to: "/customs/ledger", label: "Customs Stock Ledger" },
     { to: "/customs/invoices", label: "Customs Invoice" },
+    { to: "/customs/allocation-reports", label: "Customs Allocation Reports" },
     { to: "/customs/reconciliation", label: "Customs Reconciliation" },
   ],
 };

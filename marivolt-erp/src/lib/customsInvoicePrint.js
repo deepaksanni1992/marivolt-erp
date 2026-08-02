@@ -46,11 +46,13 @@ export function buildCustomsInvoicePrintHtml({ header = {}, rows = [], companyNa
         <td>${esc(r.description)}</td>
         <td class="num">${fmtQty(r.qty)}</td>
         <td>${esc(r.boeNumber)}</td>
-        <td>${esc(r.blNumber)}</td>
-        <td>${esc(r.awbNumber)}</td>
+        <td>${fmtDate(r.boeDate)}</td>
         <td>${esc(r.supplierInvoiceNumber)}</td>
+        <td>${fmtDate(r.supplierInvoiceDate)}</td>
         <td>${esc(r.countryOfOrigin)}</td>
         <td>${esc(r.hsCode)}</td>
+        <td>${esc(r.blNumber)}</td>
+        <td>${esc(r.awbNumber)}</td>
       </tr>`,
     )
     .join("");
@@ -64,9 +66,9 @@ export function buildCustomsInvoicePrintHtml({ header = {}, rows = [], companyNa
 ${SALES_QUOTATION_STYLE_PRINT_CSS}
 ${GLOBAL_REPORT_PRINT_CSS}
 ${GLOBAL_REPORT_TABLE_CSS}
-    table.customs-invoice-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    table.customs-invoice-table { width: 100%; border-collapse: collapse; font-size: 10px; }
     table.customs-invoice-table th, table.customs-invoice-table td {
-      border: 1px solid #d1d5db; padding: 6px 4px; vertical-align: top;
+      border: 1px solid #d1d5db; padding: 5px 3px; vertical-align: top;
     }
     table.customs-invoice-table th { background: #f3f4f6; text-align: left; }
     table.customs-invoice-table td.num { text-align: right; white-space: nowrap; }
@@ -106,20 +108,22 @@ ${GLOBAL_REPORT_TABLE_CSS}
     <thead>
       <tr>
         <th>#</th>
-        <th>Article Number</th>
-        <th>Part Number</th>
+        <th>Article</th>
+        <th>Part</th>
         <th>Description</th>
-        <th>Qty</th>
+        <th>Allocated Qty</th>
         <th>BOE Number</th>
-        <th>BL Number</th>
-        <th>AWB Number</th>
-        <th>Supplier Invoice Number</th>
-        <th>Country Of Origin</th>
+        <th>BOE Date</th>
+        <th>Supplier Invoice No</th>
+        <th>Supplier Invoice Date</th>
+        <th>COO</th>
         <th>HS Code</th>
+        <th>BL</th>
+        <th>AWB</th>
       </tr>
     </thead>
     <tbody>
-      ${lineRows || `<tr><td colspan="11" style="text-align:center;color:#6b7280;">No allocation lines</td></tr>`}
+      ${lineRows || `<tr><td colspan="13" style="text-align:center;color:#6b7280;">No allocation lines</td></tr>`}
     </tbody>
   </table>
 </div></div>

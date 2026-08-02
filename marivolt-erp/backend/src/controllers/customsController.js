@@ -13,6 +13,7 @@ import {
 } from "../services/customsReconciliationService.js";
 import { buildCustomsDashboard } from "../services/customsDashboardService.js";
 import { writeAudit } from "../services/auditService.js";
+import * as allocReports from "../services/customsAllocationReportsService.js";
 
 function disabled(res) {
   return res.status(404).json({
@@ -254,5 +255,58 @@ export async function logCustomsDashboardExport(req, res) {
     res.json({ ok: true, logged: true });
   } catch (err) {
     res.status(400).json({ message: err.message || "Failed to log export" });
+  }
+}
+
+export async function getBoeBalanceReport(req, res) {
+  try {
+    if (!isCustomsEnabled()) return disabled(res);
+    const result = await allocReports.reportBoeBalance(req.companyId, {
+      search: req.query.search,
+      articleNumber: req.query.articleNumber || req.query.article,
+    });
+    res.json({ enabled: true, ...result });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to load BOE balance" });
+  }
+}
+
+export async function getLotBalanceReport(req, res) {
+  try {
+    if (!isCustomsEnabled()) return disabled(res);
+    const result = await allocReports.reportLotBalance(req.companyId, {
+      search: req.query.search,
+      status: req.query.status,
+    });
+    res.json({ enabled: true, ...result });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to load lot balance" });
+  }
+}
+
+export async function getConsumptionReport(req, res) {
+  try {
+    if (!isCustomsEnabled()) return disabled(res);
+    const result = await allocReports.reportCustomsConsumption(req.companyId, {
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      articleNumber: req.query.articleNumber || req.query.article,
+    });
+    res.json({ enabled: true, ...result });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to load consumption report" });
+  }
+}
+
+export async function getTraceabilityReport(req, res) {
+  try {
+    if (!isCustomsEnabled()) return disabled(res);
+    const result = await allocReports.reportCustomsTraceability(req.companyId, {
+      articleNumber: req.query.articleNumber || req.query.article,
+      boeNumber: req.query.boeNumber || req.query.boe,
+    });
+    res.json({ enabled: true, ...result });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to load traceability report" });
   }
 }
