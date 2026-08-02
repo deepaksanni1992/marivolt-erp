@@ -1,10 +1,18 @@
 import express from "express";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
+import mongoose from "mongoose";
 import User from "../models/User.js";
 import Company from "../models/Company.js";
 import { requireAuth, requireCompanyContext, requireRole } from "../middleware/auth.js";
 import { recordActivity } from "../services/userActivityService.js";
+import { authRateLimitersFromEnv } from "../middleware/rateLimit.js";
+import {
+  assertAssignableCompanies,
+  assertAssignableRole,
+  pickUserCreateBody,
+  resolveCreatePassword,
+} from "../utils/authAdminPolicy.js";
 import {
   buildOtpAuthUrl,
   buildTotpQrDataUrl,
@@ -16,6 +24,8 @@ import {
 } from "../services/twoFactorService.js";
 
 const router = express.Router();
+const authLimits = authRateLimitersFromEnv();
+const adminRoles = ["super_admin", "company_admin", "admin"];
 
 function userAuthPayload(user) {
   return {
@@ -195,46 +205,158 @@ function normalizeCompany(company) {
   };
 }
 
-// POST /api/auth/register (optional - for now)
-router.post("/register", async (req, res) => {
-  try {
-    const { name, email, password, role, username } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ message: "email & password required" });
-    }
-
-    const exists = await User.findOne({ email: email.toLowerCase().trim() });
-    if (exists) return res.status(400).json({ message: "Email already exists" });
-
-    const passwordHash = await bcrypt.hash(password, 10);
-
-    const allActiveCompanies = await Company.find({ isActive: true }).select("_id").lean();
-    const allCompanyIds = allActiveCompanies.map((c) => c._id);
-    const user = await User.create({
-      name: name || "",
-      email: email.toLowerCase().trim(),
-      username: username ? String(username).toLowerCase().trim() : undefined,
-      passwordHash,
-      role: ["admin", "purchase_sales", "accounts_logistics"].includes(role) ? role : "staff",
-      allowedCompanies: allCompanyIds,
-      defaultCompany: allCompanyIds[0] || null,
-    });
-
-    const firstCompany = await Company.findOne({ isActive: true }).sort({ createdAt: 1 }).lean();
-    const token = firstCompany ? signToken(user, firstCompany, [firstCompany]) : null;
-
-    res.json({
-      token,
-      user: userAuthPayload(user),
-      company: firstCompany ? normalizeCompany(firstCompany) : null,
-    });
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
+/**
+ * S0 — Public registration permanently closed for private ERP.
+ * Unauthenticated callers cannot create users, assign roles, or grant companies.
+ */
+router.post("/register", (_req, res) => {
+  return res.status(410).json({
+    message: "Registration is disabled. Contact an administrator.",
+    code: "REGISTRATION_DISABLED",
+  });
 });
 
+/**
+ * S0 — Admin-only user creation (whitelist body; server-controlled privileged fields).
+ * POST /api/auth/users
+ */
+router.post(
+  "/users",
+  requireAuth,
+  requireCompanyContext,
+  requireRole(...adminRoles),
+  authLimits.adminUserCreate,
+  async (req, res) => {
+    try {
+      let picked;
+      try {
+        picked = pickUserCreateBody(req.body || {});
+      } catch (policyErr) {
+        return res.status(policyErr.statusCode || 400).json({
+          message: policyErr.message,
+          code: policyErr.code || "USER_CREATE_REJECTED",
+        });
+      }
+
+      const email = String(picked.email || "")
+        .toLowerCase()
+        .trim();
+      if (!email) return res.status(400).json({ message: "email required" });
+
+      let password;
+      let role;
+      let companyIds;
+      try {
+        password = resolveCreatePassword(picked);
+        role = assertAssignableRole({
+          actorRole: req.user?.role,
+          requestedRole: picked.role || "staff",
+        });
+      } catch (policyErr) {
+        return res.status(policyErr.statusCode || 403).json({
+          message: policyErr.message,
+          code: policyErr.code || "USER_CREATE_REJECTED",
+        });
+      }
+
+      const actor = await User.findById(req.user.id).select("role allowedCompanies").lean();
+      if (!actor) return res.status(401).json({ message: "User not found" });
+
+      const requestedCompanyIds = Array.isArray(picked.companyIds)
+        ? picked.companyIds
+        : Array.isArray(picked.allowedCompanies)
+          ? picked.allowedCompanies
+          : [];
+
+      const activeCompanies = await Company.find({ isActive: true }).select("_id").lean();
+      const activeCompanyIds = activeCompanies.map((c) => String(c._id));
+
+      try {
+        companyIds = assertAssignableCompanies({
+          actorRole: actor.role,
+          requestedCompanyIds,
+          actorAllowedCompanyIds: (actor.allowedCompanies || []).map(String),
+          activeCompanyIds,
+        });
+      } catch (policyErr) {
+        return res.status(policyErr.statusCode || 403).json({
+          message: policyErr.message,
+          code: policyErr.code || "USER_CREATE_REJECTED",
+        });
+      }
+
+      const exists = await User.findOne({ email });
+      if (exists) return res.status(400).json({ message: "Email already exists" });
+
+      const username = picked.username
+        ? String(picked.username).toLowerCase().trim()
+        : undefined;
+      if (username) {
+        const usernameTaken = await User.findOne({ username }).select("_id").lean();
+        if (usernameTaken) return res.status(400).json({ message: "Username already exists" });
+      }
+
+      let defaultCompany = null;
+      const defaultCompanyId = String(picked.defaultCompanyId || companyIds[0] || "").trim();
+      if (defaultCompanyId && companyIds.includes(defaultCompanyId)) {
+        defaultCompany = new mongoose.Types.ObjectId(defaultCompanyId);
+      } else if (companyIds[0]) {
+        defaultCompany = new mongoose.Types.ObjectId(companyIds[0]);
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+      const isActive = picked.isActive === undefined ? true : Boolean(picked.isActive);
+
+      const user = await User.create({
+        name: String(picked.name || "").trim(),
+        email,
+        username,
+        passwordHash,
+        role,
+        allowedCompanies: companyIds.map((id) => new mongoose.Types.ObjectId(id)),
+        defaultCompany,
+        isActive,
+        // Server-controlled: never accept TOTP / hashes / overrides from client.
+        twoFactorEnabled: false,
+        permissionOverrides: [],
+        roleIds: [],
+      });
+
+      await recordActivity(req, {
+        action: "USER_CREATE",
+        success: true,
+        userId: user._id,
+        userEmail: user.email,
+        userName: user.name || "",
+        companyId: req.companyId,
+        description: `Admin created user ${user.email}`,
+        metadata: {
+          createdBy: req.user?.email || "",
+          role: user.role,
+          companyIds,
+          isActive: user.isActive,
+        },
+      });
+
+      res.status(201).json({
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        username: user.username || "",
+        role: user.role,
+        allowedCompanies: companyIds,
+        defaultCompany: defaultCompany ? String(defaultCompany) : null,
+        isActive: user.isActive,
+        createdBy: req.user?.email || "",
+      });
+    } catch (err) {
+      res.status(400).json({ message: err.message });
+    }
+  }
+);
+
 // POST /api/auth/login
-router.post("/login", async (req, res) => {
+router.post("/login", authLimits.login, async (req, res) => {
   try {
     const { email, password } = req.body;
     const identifier = String(email || "").trim();
@@ -255,12 +377,13 @@ router.post("/login", async (req, res) => {
     if (!user) {
       user = await User.findOne({ email: identifier.toLowerCase() });
     }
-    if (!user) {
+    // Generic failure — do not reveal whether the account exists or is inactive.
+    if (!user || user.isActive === false) {
       await recordActivity(req, {
         action: "LOGIN_FAILED",
         success: false,
         userEmail: identifier.toLowerCase(),
-        description: `Login failed for ${identifier}: user not found`,
+        description: `Login failed for ${identifier}`,
       });
       return res.status(401).json({ message: "Invalid credentials" });
     }
@@ -273,7 +396,7 @@ router.post("/login", async (req, res) => {
         userId: user._id,
         userEmail: user.email,
         userName: user.name || "",
-        description: `Login failed for ${user.email}: wrong password`,
+        description: `Login failed for ${user.email}`,
       });
       return res.status(401).json({ message: "Invalid credentials" });
     }
@@ -296,7 +419,7 @@ router.post("/login", async (req, res) => {
   }
 });
 
-router.post("/2fa/verify-login", async (req, res) => {
+router.post("/2fa/verify-login", authLimits.totp, async (req, res) => {
   try {
     const twoFactorTicket = String(req.body?.twoFactorTicket || "").trim();
     const code = String(req.body?.code || "").trim();
@@ -469,7 +592,7 @@ router.post("/2fa/disable", requireAuth, async (req, res) => {
   }
 });
 
-router.post("/select-company", async (req, res) => {
+router.post("/select-company", authLimits.selectCompany, async (req, res) => {
   try {
     const loginTicket = String(req.body?.loginTicket || "").trim();
     const companyId = String(req.body?.companyId || "").trim();
@@ -481,7 +604,7 @@ router.post("/select-company", async (req, res) => {
       return res.status(401).json({ message: "Invalid login ticket" });
     }
     const user = await User.findById(decoded.id).lean();
-    if (!user) return res.status(401).json({ message: "User not found" });
+    if (!user || user.isActive === false) return res.status(401).json({ message: "User not found" });
     const allowedIds = Array.isArray(user.allowedCompanies)
       ? user.allowedCompanies.map((x) => String(x))
       : [];
