@@ -114,7 +114,7 @@ export default function CustomsInvoiceManualAllocModal({
   function handleSave() {
     if (overrideMode) {
       if (!allowOverride) {
-        window.alert("Override requires admin customs.override permission.");
+        window.alert("Override requires CUSTOMS.override (Customs BOE Override) permission.");
         return;
       }
       if (!String(overrideFields.overrideReason || "").trim()) {
@@ -193,7 +193,7 @@ export default function CustomsInvoiceManualAllocModal({
                 checked={overrideMode}
                 onChange={(e) => setOverrideMode(e.target.checked)}
               />
-              Override customs source (dummy BL — admin only)
+              Override customs source (dummy BOE — requires BOE Override permission)
             </label>
           </div>
         ) : null}
@@ -240,7 +240,8 @@ export default function CustomsInvoiceManualAllocModal({
                     <th className="px-2 py-2 text-left">AWB</th>
                     <th className="px-2 py-2 text-left">Supplier Invoice</th>
                     <th className="px-2 py-2 text-left">Supplier</th>
-                    <th className="px-2 py-2 text-left">Date</th>
+                    <th className="px-2 py-2 text-left">BOE Date</th>
+                    <th className="px-2 py-2 text-left">SI Date</th>
                     <th className="px-2 py-2 text-right">Qty Imported</th>
                     <th className="px-2 py-2 text-right">Qty Available</th>
                     <th className="px-2 py-2 text-left">COO</th>
@@ -255,6 +256,7 @@ export default function CustomsInvoiceManualAllocModal({
                       <td className="px-2 py-2 font-mono text-xs">{lot.awbNumber || "—"}</td>
                       <td className="px-2 py-2 text-xs">{lot.supplierInvoiceNumber || "—"}</td>
                       <td className="px-2 py-2 text-xs">{lot.supplierName || "—"}</td>
+                      <td className="px-2 py-2 text-xs">{fmtDate(lot.boeDate)}</td>
                       <td className="px-2 py-2 text-xs">{fmtDate(lot.supplierInvoiceDate)}</td>
                       <td className="px-2 py-2 text-right tabular-nums">{fmtNum(lot.qtyImported)}</td>
                       <td className="px-2 py-2 text-right tabular-nums">{fmtNum(lot.qtyAvailable)}</td>

@@ -1,15 +1,10 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../context/AuthContext.jsx";
 import { apiGet, apiPost } from "../../lib/api.js";
 
 const LEGACY_ELIGIBLE = new Set(["ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID"]);
-
-function isAdminRole(role) {
-  const r = String(role || "").toLowerCase();
-  return ["super_admin", "admin", "company_admin"].includes(r);
-}
 
 function statusTone(status) {
   const s = String(status || "").toUpperCase();
@@ -26,13 +21,19 @@ function isSalesInvoiceEligibleForCustomsUi(inv) {
   return LEGACY_ELIGIBLE.has(String(inv?.status || "").toUpperCase());
 }
 
+function fmtNum(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
 export default function SalesCustomsInvoicePanel({ salesInvoice }) {
   const nav = useNavigate();
   const queryClient = useQueryClient();
   const { auth } = useAuth();
   const salesInvoiceId = salesInvoice?._id;
   const eligible = isSalesInvoiceEligibleForCustomsUi(salesInvoice);
-  const allowOverride = isAdminRole(auth?.user?.role);
+  const [preview, setPreview] = useState(null);
 
   const customsStatusQ = useQuery({
     queryKey: ["customs-status", auth?.company?.id],
@@ -58,6 +59,12 @@ export default function SalesCustomsInvoicePanel({ salesInvoice }) {
       if (id) nav(`/customs/invoices/${id}`);
     },
     onError: (err) => window.alert(err.message || "Failed to create customs invoice"),
+  });
+
+  const previewMutation = useMutation({
+    mutationFn: () => apiPost(`/customs/invoices/preview-from-sales-invoice/${salesInvoiceId}`, {}),
+    onSuccess: (data) => setPreview(data),
+    onError: (err) => window.alert(err.message || "Preview failed"),
   });
 
   const summary = useMemo(() => {
@@ -86,7 +93,9 @@ export default function SalesCustomsInvoicePanel({ salesInvoice }) {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-sm font-semibold text-gray-900">Customs Invoice</div>
-          <div className="text-xs text-gray-500">Allocate exported qty from imported customs lots (FIFO).</div>
+          <div className="text-xs text-gray-500">
+            Automatic FIFO BOE allocation from inbound customs lots.
+          </div>
         </div>
         {customsInvoice ? (
           <span
@@ -109,7 +118,7 @@ export default function SalesCustomsInvoicePanel({ salesInvoice }) {
             <div>
               <div className="text-xs text-gray-500">Lines / allocations</div>
               <div className="text-xs">
-                {summary?.lines ?? 0} lines · {summary?.allocs ?? 0} BL splits
+                {summary?.lines ?? 0} lines · {summary?.allocs ?? 0} BOE splits
               </div>
             </div>
             <div>
@@ -131,22 +140,51 @@ export default function SalesCustomsInvoicePanel({ salesInvoice }) {
           </div>
           {customsInvoice.status === "DRAFT" ? (
             <p className="text-xs text-amber-700">
-              Draft — review FIFO allocations, adjust BL splits, then finalize to reduce customs stock.
+              Draft — preview FIFO BOE allocations, adjust manual overrides, then finalize.
             </p>
           ) : null}
         </div>
       ) : (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            className="rounded-xl bg-gray-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
-            disabled={createMutation.isPending}
-            onClick={() => createMutation.mutate()}
-          >
-            {createMutation.isPending ? "Creating…" : "Create Customs Invoice"}
-          </button>
-          {allowOverride ? (
-            <span className="text-xs text-gray-500">Override available on detail page if stock is short.</span>
+        <div className="mt-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="rounded-xl border px-3 py-1.5 text-xs disabled:opacity-50"
+              disabled={previewMutation.isPending}
+              onClick={() => previewMutation.mutate()}
+            >
+              {previewMutation.isPending ? "Previewing…" : "Preview FIFO allocation"}
+            </button>
+            <button
+              type="button"
+              className="rounded-xl bg-gray-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+              disabled={createMutation.isPending}
+              onClick={() => createMutation.mutate()}
+            >
+              {createMutation.isPending ? "Creating…" : "Create Customs Invoice"}
+            </button>
+          </div>
+          {preview ? (
+            <div className="rounded border bg-slate-50 p-2 text-xs">
+              <div className="mb-1 font-semibold">Preview</div>
+              {(preview.warnings || []).map((w, i) => (
+                <div key={i} className="text-amber-800">
+                  {w.articleNumber}: {w.message}
+                </div>
+              ))}
+              {(preview.lines || []).slice(0, 8).map((line, i) => (
+                <div key={i} className="mt-1">
+                  <span className="font-mono">{line.articleNumber}</span> qty {fmtNum(line.requestedQty)} →{" "}
+                  {(line.allocations || []).map((a) => `${a.boeNumber || "?"}×${fmtNum(a.allocatedQty)}`).join(", ")}
+                </div>
+              ))}
+              {(preview.lines || []).length > 8 ? (
+                <div className="text-gray-500">…and {(preview.lines || []).length - 8} more lines</div>
+              ) : null}
+              {preview.canOverride ? (
+                <div className="mt-1 text-gray-500">BOE Override permission available on detail page.</div>
+              ) : null}
+            </div>
           ) : null}
         </div>
       )}

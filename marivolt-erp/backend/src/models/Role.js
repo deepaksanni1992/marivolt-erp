@@ -15,7 +15,7 @@ import mongoose from "mongoose";
  *     module = SALES | STORE | ACCOUNTS | LOGISTICS | REPORTS |
  *              ITEM_MASTER | PURCHASE | SETTINGS | AUDIT | CUSTOMS | TRACEABILITY
  *     action = view | create | edit | approve | cancel | export | delete |
- *              override | reconcile | reconciliation_view | reconciliation_export |
+ *              override (Customs BOE Override) | reconcile | reconciliation_view | reconciliation_export |
  *              article_view | article_export
  */
 export const PERMISSION_MODULES = [

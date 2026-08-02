@@ -35,11 +35,6 @@ function allocModeLabel(mode) {
   return mode || "—";
 }
 
-function isAdminRole(role) {
-  const r = String(role || "").toLowerCase();
-  return ["super_admin", "admin", "company_admin"].includes(r);
-}
-
 async function openDocument(documentId) {
   if (!documentId) return;
   try {
@@ -207,9 +202,10 @@ function CustomsInvoiceList() {
 function CustomsInvoiceDetail({ id }) {
   const queryClient = useQueryClient();
   const { auth } = useAuth();
-  const allowOverride = isAdminRole(auth?.user?.role);
   const [allocModal, setAllocModal] = useState({ open: false, lineIndex: null });
   const [draftItems, setDraftItems] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   const detailQ = useQuery({
     queryKey: ["customs-invoice", id, auth?.company?.id],
@@ -218,14 +214,52 @@ function CustomsInvoiceDetail({ id }) {
   });
 
   const invoice = detailQ.data?.item;
+  const allowOverride = detailQ.data?.canOverride === true;
   const isDraft = String(invoice?.status || "").toUpperCase() === "DRAFT";
   const items = draftItems ?? invoice?.items ?? [];
+
+  const loadPreview = useCallback(async () => {
+    if (!invoice?.salesInvoiceId) return;
+    setPreviewLoading(true);
+    try {
+      const data = await apiPost(
+        `/customs/invoices/preview-from-sales-invoice/${invoice.salesInvoiceId}`,
+        {
+          items: items.map((line) => ({
+            salesInvoiceLineId: line.salesInvoiceLineId,
+            allocations: (line.allocations || []).map((a) => ({
+              customsLotItemId: a.customsLotItemId,
+              qty: a.qty,
+              allocationMode: a.allocationMode,
+              boeNumber: a.boeNumber,
+              blNumber: a.blNumber,
+              awbNumber: a.awbNumber,
+              supplierInvoiceNumber: a.supplierInvoiceNumber,
+              overrideReason: a.overrideReason,
+              countryOfOrigin: a.countryOfOrigin,
+              hsCode: a.hsCode,
+            })),
+          })),
+        },
+      );
+      setPreview(data);
+    } catch (err) {
+      window.alert(err.message || "Preview failed");
+      setPreview(null);
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, [invoice?.salesInvoiceId, items]);
 
   const updateMutation = useMutation({
     mutationFn: (body) => apiPut(`/customs/invoices/${id}`, body),
     onSuccess: (data) => {
-      queryClient.setQueryData(["customs-invoice", id, auth?.company?.id], data);
+      queryClient.setQueryData(["customs-invoice", id, auth?.company?.id], (prev) => ({
+        ...data,
+        canOverride: data?.canOverride ?? prev?.canOverride,
+      }));
       setDraftItems(null);
+      setPreview(null);
       queryClient.invalidateQueries({ queryKey: ["customs-invoices"] });
     },
     onError: (err) => window.alert(err.message || "Update failed"),
@@ -234,11 +268,14 @@ function CustomsInvoiceDetail({ id }) {
   const finalizeMutation = useMutation({
     mutationFn: () => apiPost(`/customs/invoices/${id}/finalize`, {}),
     onSuccess: (data) => {
-      queryClient.setQueryData(["customs-invoice", id, auth?.company?.id], data);
+      queryClient.setQueryData(["customs-invoice", id, auth?.company?.id], (prev) => ({
+        ...data,
+        canOverride: data?.canOverride ?? prev?.canOverride,
+      }));
       queryClient.invalidateQueries({ queryKey: ["customs-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["customs-ledger-page"] });
       queryClient.invalidateQueries({ queryKey: ["customs-stock-page"] });
-      window.alert("Customs invoice finalized — stock reduced.");
+      window.alert("Customs invoice finalized — lot remaining qty reduced.");
     },
     onError: (err) => window.alert(err.message || "Finalize failed"),
   });
@@ -246,7 +283,10 @@ function CustomsInvoiceDetail({ id }) {
   const cancelMutation = useMutation({
     mutationFn: (reason) => apiPost(`/customs/invoices/${id}/cancel`, { reason }),
     onSuccess: (data) => {
-      queryClient.setQueryData(["customs-invoice", id, auth?.company?.id], data);
+      queryClient.setQueryData(["customs-invoice", id, auth?.company?.id], (prev) => ({
+        ...data,
+        canOverride: data?.canOverride ?? prev?.canOverride,
+      }));
       queryClient.invalidateQueries({ queryKey: ["customs-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["customs-ledger-page"] });
       queryClient.invalidateQueries({ queryKey: ["customs-stock-page"] });
@@ -362,8 +402,12 @@ function CustomsInvoiceDetail({ id }) {
                         <span className="font-semibold">{allocModeLabel(alloc.allocationMode)}</span>
                         {" · "}
                         Qty {fmtNum(alloc.qty)}
-                        {alloc.blNumber ? ` · BL ${alloc.blNumber}` : null}
                         {alloc.boeNumber ? ` · BOE ${alloc.boeNumber}` : null}
+                        {alloc.boeDate ? ` · ${fmtDate(alloc.boeDate)}` : null}
+                        {alloc.blNumber ? ` · BL ${alloc.blNumber}` : null}
+                        {alloc.remainingAfter != null ? ` · Rem ${fmtNum(alloc.remainingAfter)}` : null}
+                        {alloc.customsValueAED ? ` · AED ${fmtNum(alloc.customsValueAED)}` : null}
+                        {alloc.totalWeightKg ? ` · ${fmtNum(alloc.totalWeightKg)} kg` : null}
                         {alloc.overrideReason ? (
                           <div className="mt-0.5 text-amber-800">Reason: {alloc.overrideReason}</div>
                         ) : null}
@@ -413,7 +457,7 @@ function CustomsInvoiceDetail({ id }) {
                       className="rounded border px-2 py-1 text-xs"
                       onClick={() => setAllocModal({ open: true, lineIndex })}
                     >
-                      Manual BL
+                      Manual BOE
                     </button>
                   </td>
                 ) : null}
@@ -422,6 +466,62 @@ function CustomsInvoiceDetail({ id }) {
           </tbody>
         </table>
       </div>
+
+      {preview ? (
+        <div className="space-y-2 rounded-xl border border-sky-200 bg-sky-50 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-sky-900">Allocation preview (before post)</h3>
+            <button type="button" className="text-xs text-sky-800 underline" onClick={() => setPreview(null)}>
+              Dismiss
+            </button>
+          </div>
+          {(preview.warnings || []).length ? (
+            <ul className="list-disc pl-5 text-xs text-amber-800">
+              {preview.warnings.map((w, i) => (
+                <li key={i}>
+                  {w.articleNumber ? `${w.articleNumber}: ` : ""}
+                  {w.message}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <div className="overflow-x-auto rounded border bg-white">
+            <table className="min-w-full text-xs">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="px-2 py-1 text-left">Article</th>
+                  <th className="px-2 py-1 text-right">Requested</th>
+                  <th className="px-2 py-1 text-left">Allocated BOEs</th>
+                  <th className="px-2 py-1 text-right">AED</th>
+                  <th className="px-2 py-1 text-right">Weight</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(preview.lines || []).map((line, i) => (
+                  <tr key={i} className="border-t align-top">
+                    <td className="px-2 py-1 font-mono">{line.articleNumber}</td>
+                    <td className="px-2 py-1 text-right">{fmtNum(line.requestedQty)}</td>
+                    <td className="px-2 py-1">
+                      {(line.allocations || []).map((a, ai) => (
+                        <div key={ai}>
+                          {a.boeNumber || "—"} → {fmtNum(a.allocatedQty)}
+                          {a.remainingAfter != null ? ` (rem ${fmtNum(a.remainingAfter)})` : ""}
+                        </div>
+                      ))}
+                    </td>
+                    <td className="px-2 py-1 text-right">{fmtNum(line.customsValueAED)}</td>
+                    <td className="px-2 py-1 text-right">{fmtNum(line.totalWeightKg)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs text-sky-900">
+            Totals: qty {fmtNum(preview.totals?.requestedQty)} · AED {fmtNum(preview.totals?.customsValueAED)} ·{" "}
+            {fmtNum(preview.totals?.totalWeightKg)} kg
+          </p>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap gap-2">
         <button type="button" className="rounded-xl border px-3 py-1.5 text-sm" onClick={() => handlePrint(false)}>
@@ -434,10 +534,19 @@ function CustomsInvoiceDetail({ id }) {
           <>
             <button
               type="button"
+              className="rounded-xl border px-3 py-1.5 text-sm disabled:opacity-50"
+              disabled={previewLoading || !invoice?.salesInvoiceId}
+              onClick={loadPreview}
+            >
+              {previewLoading ? "Previewing…" : "Preview allocation"}
+            </button>
+            <button
+              type="button"
               className="rounded-xl bg-gray-900 px-3 py-1.5 text-sm text-white disabled:opacity-50"
               disabled={finalizeMutation.isPending || updateMutation.isPending}
-              onClick={() => {
-                if (!window.confirm("Finalize customs invoice? This will reduce customs stock.")) return;
+              onClick={async () => {
+                if (!preview) await loadPreview();
+                if (!window.confirm("Finalize customs invoice? This will reduce customs lot remaining qty.")) return;
                 finalizeMutation.mutate();
               }}
             >
