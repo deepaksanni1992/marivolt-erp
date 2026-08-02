@@ -1,0 +1,39 @@
+{
+  "capturedAt": "2026-08-02T07:29:07.467Z",
+  "note": "Masked evidence — names/values/document numbers redacted",
+  "totals": {
+    "purchaseDocumentsSupplierProforma": 2,
+    "supplierProformaLinkedToPo": 2,
+    "draftPurchaseInvoicesFromProformaDocNo": 0,
+    "postedPurchaseInvoicesFromProformaDocNo": 1,
+    "cancelledPurchaseInvoicesFromProformaDocNo": 0,
+    "poMarkedAdvancePaid": 0,
+    "posWithPaymentBeforeFinalPi": 0,
+    "posWithAdvancePaymentAndFinalPi": 1,
+    "grnsOnProformaLinkedPos": 2,
+    "duplicateProformaDocNoGroups": 0,
+    "existingSupplierProformaCollectionCount": 0,
+    "proformaDocsWithoutSupplierProformaRecord": 2
+  },
+  "samples": {
+    "draftFromProforma": [],
+    "postedFromProformaHighRiskManualReview": [
+      {
+        "purchaseDocumentId": "6a034fea20f97b64ef0005f6",
+        "invoiceId": "6a0358ec07021121393b9fa8",
+        "status": "POSTED",
+        "invoiceNumberMasked": "OK…01",
+        "supplierInvoiceNoMasked": "Pr…ce",
+        "poMasked": "PO…01",
+        "amountBand": "~1k"
+      }
+    ],
+    "cancelledFromProforma": [],
+    "duplicateGroupsMasked": []
+  },
+  "recommendations": {
+    "draft": "Review DRAFT PIs matched to SUPPLIER_PROFORMA documentNos — prefer cancel/delete draft or relink; do not auto-delete.",
+    "posted": "POSTED PIs matched to SUPPLIER_PROFORMA are high-risk manual review. Do not auto-cancel. Confirm whether they represent real final invoices.",
+    "commercialInvoice": "COMMERCIAL_INVOICE remains in AUTO_DRAFT_PI set pending business confirmation."
+  }
+}
