@@ -64,6 +64,7 @@ const SYSTEM_DEFAULTS = {
     ITEM_MASTER: ["view", "export"],
     REPORTS: READ_ONLY_ACTIONS,
     PURCHASE: ["view"],
+    LABELS: ["view", "print", "reprint"],
   }),
   LOGISTICS: buildMatrix({
     LOGISTICS: ["view", "create", "edit", "approve", "cancel", "export"],

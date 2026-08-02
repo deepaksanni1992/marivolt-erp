@@ -1,0 +1,8 @@
+{
+  "backendUrl": "https://YOUR-RENDER-API.onrender.com",
+  "agentId": "AGTXXXXXXXX",
+  "secret": "PASTE_ONE_TIME_SECRET_HERE",
+  "windowsPrinterName": "Rongta Printer",
+  "pollIntervalMs": 5000,
+  "connectionType": "WINDOWS_SPOOLER"
+}

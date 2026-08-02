@@ -38,6 +38,7 @@ import packingRoutes from "./routes/packingRoutes.js";
 import dispatchRoutes from "./routes/dispatchRoutes.js";
 import reportPdfRoutes from "./routes/reportPdfRoutes.js";
 import customsRoutes from "./routes/customsRoutes.js";
+import labelRoutes from "./routes/labelRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
 import traceabilityRoutes from "./routes/traceabilityRoutes.js";
 import dataHealthRoutes from "./routes/dataHealthRoutes.js";
@@ -124,6 +125,7 @@ async function startServer() {
     app.use("/api/dispatch", dispatchRoutes);
     app.use("/api/reports", reportPdfRoutes);
     app.use("/api/customs", customsRoutes);
+    app.use("/api/labels", labelRoutes);
     app.use("/api/search", searchRoutes);
     app.use("/api/traceability", traceabilityRoutes);
     app.use("/api/data-health", dataHealthRoutes);

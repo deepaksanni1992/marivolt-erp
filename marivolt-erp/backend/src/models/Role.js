@@ -30,6 +30,7 @@ export const PERMISSION_MODULES = [
   "AUDIT",
   "CUSTOMS",
   "TRACEABILITY",
+  "LABELS",
 ];
 
 export const PERMISSION_ACTIONS = [
@@ -47,6 +48,9 @@ export const PERMISSION_ACTIONS = [
   "article_view",
   "article_export",
   "createFromAllocation",
+  "print",
+  "reprint",
+  "admin",
 ];
 
 export const SYSTEM_ROLE_CODES = [

@@ -117,6 +117,18 @@ const grnSchema = new mongoose.Schema(
     postedAt: Date,
     cancelledAt: Date,
     cancellationReason: { type: String, default: "", trim: true },
+    /** Additive warehouse label summary — updated only by label service, never by GRN post. */
+    labelStatus: {
+      type: String,
+      enum: ["NOT_REQUESTED", "QUEUED", "PRINTING", "COMPLETED", "PARTIAL", "FAILED", "UNCERTAIN"],
+      default: "NOT_REQUESTED",
+      index: true,
+    },
+    labelLastJobId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "LabelPrintJob",
+      default: null,
+    },
   },
   { timestamps: true }
 );

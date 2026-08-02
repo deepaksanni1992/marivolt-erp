@@ -17,14 +17,21 @@ import Modal from "../components/erp/Modal.jsx";
 import SearchableDocumentSelect from "../components/erp/SearchableDocumentSelect.jsx";
 import CreateInvoiceFromPackingModal, { packingReadyForSalesInvoice } from "../components/sales/CreateInvoiceFromPackingModal.jsx";
 import GrnCustomsSection from "../components/store/GrnCustomsSection.jsx";
+import LabelQueuePanel from "../components/store/LabelQueuePanel.jsx";
 import {
   buildGrnCustomsPayload,
   defaultGrnLineCustomsFields,
   emptyGrnCustomsState,
 } from "../lib/grnCustomsPayload.js";
+import {
+  LABEL_TEMPLATE_NAME,
+  buildLabelLinesFromEdits,
+  defaultLabelLineFields,
+} from "../lib/labelPrinting.js";
 
 const TABS = [
   "GRN",
+  "Label Queue",
   "Landed Cost Allocation",
   "Stock View",
   "Stock Ledger",
@@ -266,6 +273,8 @@ export default function StoreModule() {
   const [grnUiErr, setGrnUiErr] = useState("");
   const [grnRegisterDetail, setGrnRegisterDetail] = useState(null);
   const [grnCustoms, setGrnCustoms] = useState(emptyGrnCustomsState);
+  const [labelPrinterCode, setLabelPrinterCode] = useState("");
+  const [labelCopies, setLabelCopies] = useState(1);
   const grnUrlPoLoadedRef = useRef("");
   const grnCsvInputRef = useRef(null);
   const [grnRegSearchInput, setGrnRegSearchInput] = useState(() => searchParams.get("grnQ") || "");
@@ -411,6 +420,7 @@ export default function StoreModule() {
           location: "",
           remarks: "",
           ...defaultGrnLineCustomsFields(),
+          ...defaultLabelLineFields(ln.pendingQty),
         };
       }
       setGrnLineEdits(init);
@@ -437,6 +447,55 @@ export default function StoreModule() {
       setGrnUiErr(data?.grnNo ? `Posted ${data.grnNo}` : "GRN posted.");
     },
     onError: (e) => setGrnUiErr(e.message || String(e)),
+  });
+
+  const postGrnAndPrintMut = useMutation({
+    mutationFn: async ({ postBody, labelBody }) => {
+      const posted = await apiPost("/grn/post", postBody);
+      if (!posted?.grnNo) return { posted, labelJob: null };
+      try {
+        const labelJob = await apiPost("/labels/jobs/from-grn", {
+          ...labelBody,
+          grnNo: posted.grnNo,
+        });
+        return { posted, labelJob };
+      } catch (labelErr) {
+        return { posted, labelError: labelErr };
+      }
+    },
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["grn"] });
+      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+      qc.invalidateQueries({ queryKey: ["stock-summary"] });
+      qc.invalidateQueries({ queryKey: ["customs-stock"] });
+      qc.invalidateQueries({ queryKey: ["label-jobs"] });
+      const pid = grnPoSnapshot?.header?._id;
+      setGrnLineEdits({});
+      setGrnCustoms(emptyGrnCustomsState());
+      if (pid) loadGrnPoMut.mutate(String(pid));
+      const grnNo = result?.posted?.grnNo;
+      if (result?.labelError) {
+        setGrnUiErr(
+          `Posted ${grnNo || "GRN"} but label job failed: ${result.labelError.message || result.labelError}. Inventory is safe — retry from Label Queue.`
+        );
+      } else if (result?.labelJob?.job?.jobNo) {
+        setGrnUiErr(`Posted ${grnNo}. Label job ${result.labelJob.job.jobNo} queued.`);
+      } else {
+        setGrnUiErr(grnNo ? `Posted ${grnNo}` : "GRN posted.");
+      }
+    },
+    onError: (e) => setGrnUiErr(e.message || String(e)),
+  });
+
+  const { data: labelSettingsData } = useQuery({
+    queryKey: ["label-settings"],
+    queryFn: () => apiGet("/labels/settings"),
+    staleTime: 60_000,
+  });
+  const { data: labelPrintersData } = useQuery({
+    queryKey: ["label-printers"],
+    queryFn: () => apiGet("/labels/printers"),
+    staleTime: 60_000,
   });
 
   const postGrnMut = useMutation({
@@ -1176,6 +1235,73 @@ export default function StoreModule() {
     () => grnLinesForUi.reduce((s, ln) => s + Math.max(0, Number(ln.pendingQty) || 0), 0),
     [grnLinesForUi]
   );
+
+  const buildGrnPostPayloadFromUi = () => {
+    const h = grnPoSnapshot?.header;
+    if (!h?._id) {
+      setGrnUiErr("Load PO lines first.");
+      return null;
+    }
+    const linesOut = [];
+    const selectedLines = [];
+    for (const ln of grnLinesForUi) {
+      const id = ln.poLineId != null ? String(ln.poLineId) : "";
+      const ed = grnLineEdits[id];
+      if (!ed?.selected) continue;
+      if (!grnLineRowSelectable(ln)) {
+        setGrnUiErr("Selected line is missing a valid PO line id or has no pending quantity.");
+        return null;
+      }
+      const q = Number(ed.grnQty);
+      const pend = Math.max(0, Number(ln.pendingQty) || 0);
+      if (!(q > 0)) {
+        setGrnUiErr("Each selected line needs GRN qty greater than zero.");
+        return null;
+      }
+      if (q > pend + 1e-6) {
+        setGrnUiErr(`GRN qty cannot exceed pending (${pend}) for ${ln.article}.`);
+        return null;
+      }
+      const loc = String(ed.location || "").trim();
+      if (!loc) {
+        setGrnUiErr("Location is required for each selected GRN line.");
+        return null;
+      }
+      selectedLines.push(ln);
+      linesOut.push({
+        poLineId: ln.poLineId,
+        grnQty: q,
+        warehouse: GRN_DEFAULT_WAREHOUSE_CODE,
+        location: loc,
+        remarks: ed.remarks || "",
+      });
+    }
+    if (!linesOut.length) {
+      setGrnUiErr("Select at least one line with pending quantity and enter GRN qty.");
+      return null;
+    }
+    const customsPayload = buildGrnCustomsPayload(
+      grnCustoms,
+      grnLineEdits,
+      selectedLines,
+      h.currency || "USD"
+    );
+    const postBody = {
+      poId: h._id,
+      poNo: h.poNo || h.poNumber,
+      supplierId: h.supplierId,
+      supplierName: h.supplierName,
+      currency: h.currency || "USD",
+      branchId: h.branchId || undefined,
+      grnDate:
+        (customsPayload?.receivedDate && String(customsPayload.receivedDate).slice(0, 10)) ||
+        new Date().toISOString().slice(0, 10),
+      lines: linesOut,
+    };
+    if (customsPayload) postBody.customs = customsPayload;
+    return { postBody, selectedLines };
+  };
+
   const negativeRows = useMemo(() => negativeReport?.items || [], [negativeReport]);
   const landedCostDetail = useMemo(
     () => (landedCostRows?.items || []).find((x) => String(x._id) === String(selectedLandedCostId)) || null,
@@ -1562,6 +1688,8 @@ export default function StoreModule() {
                         <th className="px-2 py-2">Curr</th>
                         <th className="px-2 py-2 text-right">Unit Wt KG</th>
                         <th className="px-2 py-2 text-right">FX→AED</th>
+                        <th className="px-2 py-2 text-center">Print</th>
+                        <th className="px-2 py-2 text-right">Label Qty</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1613,7 +1741,11 @@ export default function StoreModule() {
                                 onChange={(e) =>
                                   setGrnLineEdits((p) => ({
                                     ...p,
-                                    [id]: { ...ed, grnQty: e.target.value },
+                                    [id]: {
+                                      ...ed,
+                                      grnQty: e.target.value,
+                                      labelQty: e.target.value,
+                                    },
                                   }))
                                 }
                               />
@@ -1748,6 +1880,35 @@ export default function StoreModule() {
                                 }
                               />
                             </td>
+                            <td className="px-2 py-1.5 text-center">
+                              <input
+                                type="checkbox"
+                                disabled={pend <= 0 || !selectable}
+                                checked={ed.printLabel !== false}
+                                onChange={(e) =>
+                                  setGrnLineEdits((p) => ({
+                                    ...p,
+                                    [id]: { ...ed, printLabel: e.target.checked },
+                                  }))
+                                }
+                              />
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                className="w-16 rounded border px-1 py-0.5 text-right tabular-nums"
+                                disabled={pend <= 0 || !selectable || ed.printLabel === false}
+                                value={ed.labelQty ?? ed.grnQty}
+                                onChange={(e) =>
+                                  setGrnLineEdits((p) => ({
+                                    ...p,
+                                    [id]: { ...ed, labelQty: e.target.value },
+                                  }))
+                                }
+                              />
+                            </td>
                           </tr>
                         );
                       })}
@@ -1761,87 +1922,89 @@ export default function StoreModule() {
                   poNo={grnPoSnapshot?.header?.poNo || grnPoSnapshot?.header?.poNumber}
                   supplierName={grnPoSnapshot?.header?.supplierName}
                   defaultCurrency={grnPoSnapshot?.header?.currency || "USD"}
-                  disabled={postGrnFromPoMut.isPending}
+                  disabled={postGrnFromPoMut.isPending || postGrnAndPrintMut.isPending}
                   onError={setGrnUiErr}
                 />
+                <div className="mt-3 flex flex-wrap items-end gap-3 rounded border border-slate-200 bg-slate-50 p-2 text-xs">
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase text-slate-500">Template</div>
+                    <div className="font-medium text-slate-800">{LABEL_TEMPLATE_NAME} (100×50 mm)</div>
+                  </div>
+                  <label>
+                    Printer
+                    <select
+                      className="ml-1 rounded border px-2 py-1"
+                      value={labelPrinterCode}
+                      onChange={(e) => setLabelPrinterCode(e.target.value)}
+                    >
+                      <option value="">Default</option>
+                      {(labelPrintersData?.items || []).map((p) => (
+                        <option key={p._id} value={p.code}>
+                          {p.code} — {p.windowsPrinterName}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Copies
+                    <input
+                      type="number"
+                      min="1"
+                      className="ml-1 w-16 rounded border px-1 py-1"
+                      value={labelCopies}
+                      onChange={(e) => setLabelCopies(Math.max(1, Number(e.target.value) || 1))}
+                    />
+                  </label>
+                  {labelSettingsData && !labelSettingsData.enabled && (
+                    <span className="text-amber-700">Label printing disabled in settings</span>
+                  )}
+                </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     className="rounded bg-slate-900 px-3 py-2 text-sm text-white disabled:opacity-40"
                     disabled={
                       postGrnFromPoMut.isPending ||
+                      postGrnAndPrintMut.isPending ||
                       grnTotalPending <= 0 ||
                       !grnPoSnapshot?.header?._id
                     }
                     onClick={() => {
                       setGrnUiErr("");
-                      const h = grnPoSnapshot?.header;
-                      if (!h?._id) {
-                        setGrnUiErr("Load PO lines first.");
-                        return;
-                      }
-                      const linesOut = [];
-                      const selectedLines = [];
-                      for (const ln of grnLinesForUi) {
-                        const id = ln.poLineId != null ? String(ln.poLineId) : "";
-                        const ed = grnLineEdits[id];
-                        if (!ed?.selected) continue;
-                        if (!grnLineRowSelectable(ln)) {
-                          setGrnUiErr("Selected line is missing a valid PO line id or has no pending quantity.");
-                          return;
-                        }
-                        const q = Number(ed.grnQty);
-                        const pend = Math.max(0, Number(ln.pendingQty) || 0);
-                        if (!(q > 0)) {
-                          setGrnUiErr("Each selected line needs GRN qty greater than zero.");
-                          return;
-                        }
-                        if (q > pend + 1e-6) {
-                          setGrnUiErr(`GRN qty cannot exceed pending (${pend}) for ${ln.article}.`);
-                          return;
-                        }
-                        const loc = String(ed.location || "").trim();
-                        if (!loc) {
-                          setGrnUiErr("Location is required for each selected GRN line.");
-                          return;
-                        }
-                        selectedLines.push(ln);
-                        linesOut.push({
-                          poLineId: ln.poLineId,
-                          grnQty: q,
-                          warehouse: GRN_DEFAULT_WAREHOUSE_CODE,
-                          location: loc,
-                          remarks: ed.remarks || "",
-                        });
-                      }
-                      if (!linesOut.length) {
-                        setGrnUiErr("Select at least one line with pending quantity and enter GRN qty.");
-                        return;
-                      }
-                      const customsPayload = buildGrnCustomsPayload(
-                        grnCustoms,
-                        grnLineEdits,
-                        selectedLines,
-                        h.currency || "USD"
-                      );
-                      const postBody = {
-                        poId: h._id,
-                        poNo: h.poNo || h.poNumber,
-                        supplierId: h.supplierId,
-                        supplierName: h.supplierName,
-                        currency: h.currency || "USD",
-                        branchId: h.branchId || undefined,
-                        grnDate:
-                          (customsPayload?.receivedDate && String(customsPayload.receivedDate).slice(0, 10)) ||
-                          new Date().toISOString().slice(0, 10),
-                        lines: linesOut,
-                      };
-                      if (customsPayload) postBody.customs = customsPayload;
-                      postGrnFromPoMut.mutate(postBody);
+                      const built = buildGrnPostPayloadFromUi();
+                      if (!built) return;
+                      postGrnFromPoMut.mutate(built.postBody);
                     }}
                   >
                     {postGrnFromPoMut.isPending ? "Posting GRN..." : "Post GRN"}
                   </button>
+                  <button
+                    type="button"
+                    className="rounded bg-emerald-800 px-3 py-2 text-sm text-white disabled:opacity-40"
+                    disabled={
+                      postGrnFromPoMut.isPending ||
+                      postGrnAndPrintMut.isPending ||
+                      grnTotalPending <= 0 ||
+                      !grnPoSnapshot?.header?._id ||
+                      labelSettingsData?.enabled === false
+                    }
+                    onClick={() => {
+                      setGrnUiErr("");
+                      const built = buildGrnPostPayloadFromUi();
+                      if (!built) return;
+                      postGrnAndPrintMut.mutate({
+                        postBody: built.postBody,
+                        labelBody: {
+                          printerCode: labelPrinterCode || undefined,
+                          copies: labelCopies,
+                          lines: buildLabelLinesFromEdits(built.selectedLines, grnLineEdits),
+                        },
+                      });
+                    }}
+                  >
+                    {postGrnAndPrintMut.isPending ? "Posting & queuing labels..." : "Post GRN & Print Labels"}
+                  </button>
+                </div>
                   <span className="text-[11px] text-slate-500">
                     Default warehouse MAIN is applied automatically. Enter location manually for each line.
                   </span>
@@ -2062,6 +2225,43 @@ export default function StoreModule() {
                     <span className="text-slate-500">Status</span>{" "}
                     <span className="font-medium">{grnRegisterDetail.status}</span>
                   </div>
+                  <div className="col-span-2 flex flex-wrap items-center gap-2">
+                    <span className="text-slate-500">Labels</span>
+                    <span className="font-medium">{grnRegisterDetail.labelStatus || "NOT_REQUESTED"}</span>
+                    {grnRegisterDetail.labelLastJobId ? (
+                      <button
+                        type="button"
+                        className="rounded border px-1.5 py-0.5 text-[11px] font-semibold"
+                        onClick={async () => {
+                          try {
+                            await apiPost(`/labels/jobs/${grnRegisterDetail.labelLastJobId}/retry`, {});
+                            setGrnUiErr("Label retry queued.");
+                          } catch (e) {
+                            setGrnUiErr(e.message || String(e));
+                          }
+                        }}
+                      >
+                        Retry labels
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="rounded border px-1.5 py-0.5 text-[11px] font-semibold"
+                      onClick={async () => {
+                        try {
+                          await apiPost("/labels/jobs/from-grn", {
+                            grnNo: grnRegisterDetail.grnNo,
+                            copies: 1,
+                          });
+                          setGrnUiErr(`Label job queued for ${grnRegisterDetail.grnNo}`);
+                        } catch (e) {
+                          setGrnUiErr(e.message || String(e));
+                        }
+                      }}
+                    >
+                      Print / Reprint labels
+                    </button>
+                  </div>
                 </div>
                 <table className="w-full text-xs">
                   <thead className="bg-slate-50">
@@ -2088,6 +2288,15 @@ export default function StoreModule() {
               </div>
             ) : null}
           </Modal>
+        </div>
+      ) : null}
+
+      {tab === "Label Queue" ? (
+        <div className="rounded-2xl border bg-white p-4">
+          <LabelQueuePanel onMessage={setGrnUiErr} />
+          {grnUiErr && tab === "Label Queue" ? (
+            <p className="mt-2 text-xs text-slate-700">{grnUiErr}</p>
+          ) : null}
         </div>
       ) : null}
 
@@ -2571,19 +2780,45 @@ export default function StoreModule() {
                         </td>
                         <td className="px-2 py-1 text-xs text-slate-600">{fmtDate(r.lastMovementDate)}</td>
                         <td className="px-2 py-1">
-                          <button
-                            type="button"
-                            className="rounded border px-2 py-1 text-xs hover:bg-slate-50"
-                            onClick={() =>
-                              setAllocationDrillDown({
-                                open: true,
-                                article: r.article,
-                                warehouse: r.location || "",
-                              })
-                            }
-                          >
-                            View Allocation
-                          </button>
+                          <div className="flex flex-wrap gap-1">
+                            <button
+                              type="button"
+                              className="rounded border px-2 py-1 text-xs hover:bg-slate-50"
+                              onClick={() =>
+                                setAllocationDrillDown({
+                                  open: true,
+                                  article: r.article,
+                                  warehouse: r.location || "",
+                                })
+                              }
+                            >
+                              View Allocation
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded border px-2 py-1 text-xs hover:bg-slate-50"
+                              onClick={async () => {
+                                try {
+                                  const reason = window.prompt("Reprint reason", "Replacement");
+                                  if (!reason) return;
+                                  const qty = Number(window.prompt("Label qty", "1")) || 1;
+                                  await apiPost("/labels/jobs/stock-reprint", {
+                                    article: r.article,
+                                    description: r.itemName || r.item?.itemName || "",
+                                    location: r.location || "",
+                                    uom: r.uom || r.item?.uom || "PCS",
+                                    labelQty: qty,
+                                    reason,
+                                  });
+                                  setGrnUiErr(`Stock label reprint queued for ${r.article}`);
+                                } catch (e) {
+                                  setGrnUiErr(e.message || String(e));
+                                }
+                              }}
+                            >
+                              Reprint label
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );

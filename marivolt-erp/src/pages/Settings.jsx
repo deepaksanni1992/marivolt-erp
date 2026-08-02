@@ -12,11 +12,13 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
+import LabelSettingsPanel from "../components/store/LabelSettingsPanel.jsx";
 
 const TABS = [
   { id: "companies", label: "Companies" },
   { id: "branches", label: "Branches" },
   { id: "warehouses", label: "Warehouses" },
+  { id: "labels", label: "Label Printing" },
   { id: "roles", label: "Roles & Permissions" },
   { id: "numbering", label: "Number Series" },
   { id: "approvals", label: "Approval Rules" },
@@ -80,6 +82,7 @@ export default function Settings() {
       {tab === "companies" && <CompaniesTab />}
       {tab === "branches" && <BranchesTab />}
       {tab === "warehouses" && <WarehousesTab />}
+      {tab === "labels" && <LabelSettingsPanel />}
       {tab === "roles" && <RolesTab />}
       {tab === "numbering" && <NumberSeriesTab />}
       {tab === "approvals" && <ApprovalRulesTab />}
