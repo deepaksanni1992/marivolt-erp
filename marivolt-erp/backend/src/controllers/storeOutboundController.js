@@ -54,6 +54,10 @@ import {
   dispatchConflictError,
   isDispatchEffectDuplicateKeyError,
 } from "../utils/dispatchIdempotency.js";
+import {
+  computeDispatchStatus,
+  isInvoiceDispatchEligible,
+} from "../utils/salesInvoiceState.js";
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -92,7 +96,6 @@ async function resolveCustomerSnapshotForAllocation(req, allocation) {
   };
 }
 
-const DISPATCH_READY_INVOICE_STATUSES = ["ISSUED", "PARTIALLY_PAID", "PAID"];
 const PACKAGE_TYPES = new Set(["CARTON", "PALLET", "WOODEN_BOX", "CRATE", "BUNDLE"]);
 
 function normalizePackageType(v) {
@@ -311,22 +314,30 @@ async function recalculateInvoiceDispatchProgress(req, invoice, session) {
     0
   );
 
+  // S1 — dispatch ownership only. Never write paymentStatus or documentStatus.
+  invoice.dispatchStatus = computeDispatchStatus({
+    invoiceQty: totalInvoiceQty,
+    dispatchedQty: totalDispatched,
+  });
+
   if (!remaining.length) {
-    invoice.linkedSalesDispatchId = null;
-    invoice.linkedSalesDispatchNo = "";
-    if (String(invoice.status || "").toUpperCase() === "DISPATCHED") {
-      // Store-dispatch completion flag only; revert to ISSUED (not payment redesign).
-      invoice.status = "ISSUED";
+    // Clear Store-Dispatch link only when it points at a StoreDispatch id.
+    // Do not clear a SalesDispatch logistics link (S2 boundary).
+    const linkedId = invoice.linkedSalesDispatchId;
+    if (linkedId) {
+      const isStore = await StoreDispatch.findOne({ _id: linkedId })
+        .session(session)
+        .select("_id")
+        .lean();
+      if (isStore) {
+        invoice.linkedSalesDispatchId = null;
+        invoice.linkedSalesDispatchNo = "";
+      }
     }
   } else {
     const latest = remaining[0];
     invoice.linkedSalesDispatchId = latest._id;
     invoice.linkedSalesDispatchNo = latest.dispatchNo || "";
-    if (totalInvoiceQty > 0 && totalDispatched >= totalInvoiceQty - 1e-6) {
-      invoice.status = "DISPATCHED";
-    } else if (String(invoice.status || "").toUpperCase() === "DISPATCHED") {
-      invoice.status = "ISSUED";
-    }
   }
   invoice.updatedBy = req.user?.email || "";
   await invoice.save({ session });
@@ -361,7 +372,10 @@ async function sumInvoicedQtyByPackingLine(companyId, packingId) {
   const invoices = await SalesInvoice.find({
     companyId,
     linkedStorePackingId: packingId,
-    status: { $ne: "CANCELLED" },
+    $and: [
+      { status: { $ne: "CANCELLED" } },
+      { documentStatus: { $ne: "CANCELLED" } },
+    ],
   })
     .select("lines")
     .lean();
@@ -1139,7 +1153,14 @@ export async function listPendingDispatchInvoices(req, res) {
   try {
     const q = t(req.query.search);
     const filter = withCompany(req, {
-      status: { $in: DISPATCH_READY_INVOICE_STATUSES },
+      $or: [
+        { documentStatus: "ISSUED" },
+        // Pre-migration rows: issued-like legacy statuses that are not cancelled/draft.
+        {
+          documentStatus: { $in: [null, ""] },
+          status: { $in: ["ISSUED", "PARTIALLY_PAID", "PAID", "DISPATCHED"] },
+        },
+      ],
       linkedStorePackingId: { $ne: null },
     });
     if (q) {
@@ -1196,9 +1217,8 @@ export async function getDispatchFromInvoice(req, res) {
     if (!mongoose.Types.ObjectId.isValid(invoiceId)) return res.status(400).json({ message: "Invalid invoice id" });
     const invoice = await SalesInvoice.findOne(withCompany(req, { _id: invoiceId })).lean();
     if (!invoice) return res.status(404).json({ message: "Sales Invoice not found" });
-    if (String(invoice.status || "").toUpperCase() === "CANCELLED") return res.status(400).json({ message: "Cannot dispatch cancelled invoice" });
-    if (!DISPATCH_READY_INVOICE_STATUSES.includes(String(invoice.status || "").toUpperCase())) {
-      return res.status(400).json({ message: "Dispatch requires a posted Sales Invoice" });
+    if (!isInvoiceDispatchEligible(invoice)) {
+      return res.status(400).json({ message: "Dispatch requires an issued (non-cancelled) Sales Invoice" });
     }
     if (!invoice.linkedStorePackingId) return res.status(400).json({ message: "Cannot dispatch without invoice linked to packing" });
     const packing = await StorePacking.findOne(withCompany(req, { _id: invoice.linkedStorePackingId })).lean();
@@ -1259,9 +1279,10 @@ export async function createStoreDispatchDraft(req, res) {
     }
     const invoice = await SalesInvoice.findOne(withCompany(req, { _id: invoiceId }));
     if (!invoice) return res.status(404).json({ message: "Sales Invoice not found" });
-    if (String(invoice.status || "").toUpperCase() === "CANCELLED") return res.status(400).json({ message: "Cannot dispatch cancelled invoice" });
-    if (!DISPATCH_READY_INVOICE_STATUSES.includes(String(invoice.status || "").toUpperCase())) {
-      return res.status(400).json({ message: "Dispatch requires a posted Sales Invoice" });
+    if (!isInvoiceDispatchEligible(invoice)) {
+      return res.status(400).json({
+        message: "Dispatch requires an issued (non-cancelled) Sales Invoice",
+      });
     }
     if (!invoice.linkedStorePackingId) return res.status(400).json({ message: "Cannot dispatch without invoice linked to packing" });
     const packing = await StorePacking.findOne(withCompany(req, { _id: invoice.linkedStorePackingId }));
@@ -1405,11 +1426,8 @@ export async function postStoreDispatch(req, res) {
         session
       );
       if (!invoice) throw new Error("Sales Invoice required before dispatch");
-      if (String(invoice.status || "").toUpperCase() === "CANCELLED") {
-        throw new Error("Cannot dispatch cancelled invoice");
-      }
-      if (!DISPATCH_READY_INVOICE_STATUSES.includes(String(invoice.status || "").toUpperCase())) {
-        throw new Error("Dispatch requires a posted Sales Invoice");
+      if (!isInvoiceDispatchEligible(invoice)) {
+        throw new Error("Dispatch requires an issued (non-cancelled) Sales Invoice");
       }
 
       const dispatchedByLine = await sumPostedDispatchQtyByInvoiceLine(
@@ -1519,7 +1537,11 @@ export async function postStoreDispatch(req, res) {
         totalDispatchedBefore + totalDispatchedNow >= totalInvoiceQty - 1e-6
           ? "FULLY_DISPATCHED"
           : "PARTIALLY_DISPATCHED";
-      invoice.status = claimed.status === "FULLY_DISPATCHED" ? "DISPATCHED" : invoice.status;
+      // S1 — dispatch writes dispatchStatus + links only (never payment/document status).
+      invoice.dispatchStatus = computeDispatchStatus({
+        invoiceQty: totalInvoiceQty,
+        dispatchedQty: totalDispatchedBefore + totalDispatchedNow,
+      });
       invoice.linkedSalesDispatchId = claimed._id;
       invoice.linkedSalesDispatchNo = claimed.dispatchNo;
       invoice.updatedBy = req.user?.email || "";
