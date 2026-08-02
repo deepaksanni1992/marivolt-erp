@@ -514,8 +514,10 @@ export default function StoreModule() {
         for (const u of data.updates || []) {
           const id = String(u.poLineId);
           const cur = next[id] || {};
+          const customsEdits = u.customsLineEdits && typeof u.customsLineEdits === "object" ? u.customsLineEdits : {};
           next[id] = {
             ...cur,
+            ...customsEdits,
             selected: true,
             grnQty: String(u.grnQty),
             warehouse: u.warehouse || cur.warehouse || GRN_DEFAULT_WAREHOUSE_CODE,
@@ -525,6 +527,36 @@ export default function StoreModule() {
         }
         return next;
       });
+      // Fill header defaults from first customs row when import is Customs format
+      // (existing header + line override resolution on post).
+      if (data.format === "customs" && data.headerDefaults && typeof data.headerDefaults === "object") {
+        const hd = data.headerDefaults;
+        setGrnCustoms((prev) => {
+          const merge = (key, raw) => {
+            const v = raw == null || raw === "" ? "" : String(raw);
+            if (!v) return prev[key];
+            if (String(prev[key] ?? "").trim()) return prev[key];
+            return v;
+          };
+          return {
+            ...prev,
+            receivedDate: merge("receivedDate", hd.receivedDate),
+            boeNumber: merge("boeNumber", hd.boeNumber),
+            boeDate: merge("boeDate", hd.boeDate),
+            blNumber: merge("blNumber", hd.blNumber),
+            awbNumber: merge("awbNumber", hd.awbNumber),
+            supplierInvoiceNumber: merge("supplierInvoiceNumber", hd.supplierInvoiceNumber),
+            supplierInvoiceDate: merge("supplierInvoiceDate", hd.supplierInvoiceDate),
+            countryOfOrigin: merge("countryOfOrigin", hd.countryOfOrigin),
+            hsCode: merge("hsCode", hd.hsCode),
+            unitWeightKg: merge("unitWeightKg", hd.unitWeightKg),
+            customsUnitPrice: merge("customsUnitPrice", hd.customsUnitPrice),
+            customsCurrency: merge("customsCurrency", hd.customsCurrency),
+            exchangeRateToAED: merge("exchangeRateToAED", hd.exchangeRateToAED),
+            customsRemarks: merge("customsRemarks", hd.customsRemarks),
+          };
+        });
+      }
     } catch (err) {
       setGrnUiErr(err.message || String(err));
     }

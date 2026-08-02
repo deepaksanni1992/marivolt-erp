@@ -28,6 +28,16 @@ import {
   summarizePoPendingReceivable,
   toEligiblePoItem,
 } from "../utils/eligibleDocumentSearch.js";
+import {
+  customsOverrideToLineEditFields,
+  grnCsvTemplateHeaderLine,
+  mapCsvRowToCustomsOverride,
+  parseGrnCsvText,
+  readGrnQtyFromCsvRow,
+  readLocationFromCsvRow,
+  readRemarksFromCsvRow,
+  suggestHeaderDefaultsFromOverrides,
+} from "../utils/grnCsvImport.js";
 
 function withCompany(req, filter = {}) {
   const cid = req.companyId;
@@ -644,46 +654,6 @@ async function applyReceiveToPo({ session, req, grn }) {
   await po.save({ session });
 }
 
-function parseSimpleGrnCsv(text) {
-  const parseErrors = [];
-  const lines = String(text || "")
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-  if (!lines.length) return { rows: [], parseErrors };
-  const splitLine = (line) => {
-    const out = [];
-    let cur = "";
-    let q = false;
-    for (let i = 0; i < line.length; i++) {
-      const c = line[i];
-      if (c === '"') {
-        q = !q;
-        continue;
-      }
-      if (!q && c === ",") {
-        out.push(cur);
-        cur = "";
-        continue;
-      }
-      cur += c;
-    }
-    out.push(cur);
-    return out.map((x) => String(x).trim());
-  };
-  const headers = splitLine(lines[0]).map((h) => String(h).trim().toLowerCase());
-  const rows = [];
-  for (let li = 1; li < lines.length; li++) {
-    const parts = splitLine(lines[li]);
-    const o = {};
-    headers.forEach((h, idx) => {
-      o[h] = parts[idx] ?? "";
-    });
-    rows.push(o);
-  }
-  return { rows, parseErrors };
-}
-
 function normKey(s) {
   return String(s ?? "").trim().toLowerCase();
 }
@@ -712,10 +682,10 @@ function findPoLineMatchForCsv(rawRows, row) {
   return null;
 }
 
-/** GET /grn/csv-template — column header for GRN CSV import. */
+/** GET /grn/csv-template — Customs GRN column header for CSV import. */
 export async function getGrnCsvTemplate(req, res) {
   try {
-    const header = "poLineId,article,materialCode,spn,grnQty,location,remarks\n";
+    const header = grnCsvTemplateHeaderLine();
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", "attachment; filename=\"grn-import-template.csv\"");
     res.send(header);
@@ -740,10 +710,11 @@ export async function importGrnCsvPreview(req, res) {
     }
     const postedMap = await getPostedAcceptedQtyByPoLineMap(req, poId);
     const rawRows = extractRawPoLinesFromPo(po);
-    const { rows } = parseSimpleGrnCsv(csvText);
+    const { rows, format } = parseGrnCsvText(csvText);
     const errors = [];
     const updates = [];
     const seenPoLineIds = new Set();
+    const overrideList = [];
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const lineNo = i + 2;
@@ -763,8 +734,8 @@ export async function importGrnCsvPreview(req, res) {
       const cancelled = Number(src?.cancelledQty ?? src?.cancelled) || 0;
       const posted = postedMap.get(lid) || 0;
       const pending = Math.max(0, ordered - posted - cancelled);
-      const grnQty = Number(row.grnqty ?? row.qty);
-      if (!Number.isFinite(grnQty) || grnQty <= 0) {
+      const grnQty = readGrnQtyFromCsvRow(row);
+      if (grnQty == null || !Number.isFinite(grnQty) || grnQty <= 0) {
         errors.push({ line: lineNo, message: "grnQty must be greater than zero." });
         continue;
       }
@@ -773,21 +744,37 @@ export async function importGrnCsvPreview(req, res) {
         continue;
       }
       const warehouse = resolveGrnWarehouseCode(row.warehouse || "");
-      const location = t(row.location);
+      const location = readLocationFromCsvRow(row);
       if (!location) {
         errors.push({ line: lineNo, message: "location is required." });
         continue;
       }
-      updates.push({
+
+      const update = {
         poLineId: lid,
         grnQty,
         warehouse,
         location,
-        remarks: t(row.remarks),
+        remarks: readRemarksFromCsvRow(row),
         matchedBy: match.by,
-      });
+      };
+
+      if (format === "customs") {
+        const { override } = mapCsvRowToCustomsOverride(row, grnQty);
+        if (Object.keys(override).length) {
+          update.customsOverride = override;
+          update.customsLineEdits = customsOverrideToLineEditFields(override);
+          overrideList.push(override);
+        }
+      }
+
+      updates.push(update);
     }
-    res.json({ updates, errors });
+
+    const headerDefaults =
+      format === "customs" ? suggestHeaderDefaultsFromOverrides(overrideList) : null;
+
+    res.json({ updates, errors, format, headerDefaults });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
