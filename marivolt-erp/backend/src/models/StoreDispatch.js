@@ -40,6 +40,14 @@ const storeDispatchSchema = new mongoose.Schema(
     packingNo: { type: String, default: "", trim: true, index: true },
     salesInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesInvoice", default: null, index: true },
     salesInvoiceNo: { type: String, default: "", trim: true, index: true },
+    /** S2 — owning canonical Sales Dispatch (when created via Sales Dispatch post). */
+    canonicalSalesDispatchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "SalesDispatch",
+      default: null,
+      index: true,
+    },
+    canonicalSalesDispatchNo: { type: String, default: "", trim: true },
     linkedQuotationNo: { type: String, default: "", trim: true },
     allocationId: { type: mongoose.Schema.Types.ObjectId, ref: "OrderAllocation", default: null, index: true },
     allocationNo: { type: String, default: "", trim: true },

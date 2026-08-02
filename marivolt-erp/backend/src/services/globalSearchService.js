@@ -450,7 +450,7 @@ async function searchSalesDispatch(companyId, companyCode, re, filters) {
       description: r.linkedSalesInvoiceNo ? `SI ${r.linkedSalesInvoiceNo}` : "",
       status: r.status,
       entityId: r._id,
-      openPath: salesOpenPath("Dispatch Status", r._id),
+      openPath: salesOpenPath("Sales Dispatch", r._id),
     }),
   );
 }
@@ -612,7 +612,7 @@ async function searchStoreDispatch(companyId, companyCode, re, filters) {
       description: r.packingNo ? `Packing ${r.packingNo}` : "",
       status: r.status,
       entityId: r._id,
-      openPath: `/store?tab=Dispatch&dispatchNo=${encodeURIComponent(r.dispatchNo)}`,
+      openPath: `/sales?tab=${encodeURIComponent("Sales Dispatch")}&dispatchNo=${encodeURIComponent(r.dispatchNo || "")}`,
     }),
   );
 }

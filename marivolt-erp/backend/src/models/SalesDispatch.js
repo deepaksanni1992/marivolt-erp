@@ -58,7 +58,13 @@ const salesDispatchSchema = new mongoose.Schema(
     dispatchDate: { type: Date, default: () => new Date(), index: true },
     linkedSalesInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: "SalesInvoice", required: true, index: true },
     linkedSalesInvoiceNo: { type: String, default: "", trim: true },
+    /** S2 — packing / internal StoreDispatch stock document (users never create StoreDispatch). */
+    linkedStorePackingId: { type: mongoose.Schema.Types.ObjectId, ref: "StorePacking", default: null, index: true },
+    linkedStorePackingNo: { type: String, default: "", trim: true },
+    linkedStoreDispatchId: { type: mongoose.Schema.Types.ObjectId, ref: "StoreDispatch", default: null, index: true },
+    linkedStoreDispatchNo: { type: String, default: "", trim: true },
     customerName: { type: String, required: true, trim: true, index: true },
+    transporter: { type: String, default: "", trim: true },
     currency: { type: String, default: "USD", trim: true, uppercase: true },
     vertical: { type: String, default: "", trim: true },
     engine: { type: String, default: "", trim: true },
@@ -72,12 +78,36 @@ const salesDispatchSchema = new mongoose.Schema(
     packingCost: { type: Number, default: 0, min: 0 },
     clearanceCost: { type: Number, default: 0, min: 0 },
     grandTotal: { type: Number, default: 0 },
+    /**
+     * Logistics / document lifecycle (user-facing).
+     * Stock posting is tracked separately in postingStatus + linkedStoreDispatchId.
+     */
     status: {
       type: String,
       enum: ["DRAFT", "READY", "DISPATCHED", "IN_TRANSIT", "DELIVERED", "CLOSED", "CANCELLED"],
       default: "DRAFT",
       index: true,
     },
+    /**
+     * S2 — physical stock posting state (driven by internal StoreDispatch P0.5B).
+     * NOT_POSTED: draft / logistics-only (incl. pre-S2 historical).
+     */
+    postingStatus: {
+      type: String,
+      enum: ["NOT_POSTED", "POSTING", "POSTED", "CANCELLED"],
+      default: "NOT_POSTED",
+      index: true,
+    },
+    postedAt: { type: Date, default: null },
+    postedBy: { type: String, default: "" },
+    cancelledAt: { type: Date, default: null },
+    cancelledBy: { type: String, default: "" },
+    cancellationReason: { type: String, default: "", trim: true },
+    /**
+     * Pre-S2 logistics SalesDispatch with no StoreDispatch / DISPATCH_OUT evidence.
+     * Must never fabricate stock on post.
+     */
+    isLegacyLogisticsOnly: { type: Boolean, default: false, index: true },
     totalQty: { type: Number, default: 0, min: 0 },
     dispatchedQty: { type: Number, default: 0, min: 0 },
     pendingQty: { type: Number, default: 0, min: 0 },

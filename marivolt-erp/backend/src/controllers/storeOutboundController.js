@@ -6,6 +6,7 @@ import ProformaInvoice from "../models/ProformaInvoice.js";
 import Quotation from "../models/Quotation.js";
 import StorePacking from "../models/StorePacking.js";
 import StoreDispatch from "../models/StoreDispatch.js";
+import SalesDispatch from "../models/SalesDispatch.js";
 import SalesInvoice from "../models/SalesInvoice.js";
 import StockLedger from "../models/StockLedger.js";
 import * as stockService from "../services/stockService.js";
@@ -336,8 +337,18 @@ async function recalculateInvoiceDispatchProgress(req, invoice, session) {
     }
   } else {
     const latest = remaining[0];
-    invoice.linkedSalesDispatchId = latest._id;
-    invoice.linkedSalesDispatchNo = latest.dispatchNo || "";
+    // S2 — prefer canonical Sales Dispatch link when the StoreDispatch was posted for one.
+    if (latest.canonicalSalesDispatchId) {
+      const canon = await SalesDispatch.findOne({ _id: latest.canonicalSalesDispatchId })
+        .session(session)
+        .select("dispatchNo")
+        .lean();
+      invoice.linkedSalesDispatchId = latest.canonicalSalesDispatchId;
+      invoice.linkedSalesDispatchNo = canon?.dispatchNo || latest.canonicalSalesDispatchNo || "";
+    } else {
+      invoice.linkedSalesDispatchId = latest._id;
+      invoice.linkedSalesDispatchNo = latest.dispatchNo || "";
+    }
   }
   invoice.updatedBy = req.user?.email || "";
   await invoice.save({ session });
@@ -1271,98 +1282,132 @@ function normalizeDispatchLines(bodyLines = [], invoice) {
     .filter((ln) => ln.article && ln.dispatchQty > 0 && ln.invoiceLineId);
 }
 
+export async function createStoreDispatchDraftCore(req, body = {}) {
+  const invoiceId = body.salesInvoiceId || body.invoiceId;
+  if (!mongoose.Types.ObjectId.isValid(String(invoiceId || ""))) {
+    const err = new Error("salesInvoiceId required. Dispatch must be created from posted Sales Invoice.");
+    err.statusCode = 400;
+    throw err;
+  }
+  const invoice = await SalesInvoice.findOne(withCompany(req, { _id: invoiceId }));
+  if (!invoice) {
+    const err = new Error("Sales Invoice not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!isInvoiceDispatchEligible(invoice)) {
+    const err = new Error("Dispatch requires an issued (non-cancelled) Sales Invoice");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!invoice.linkedStorePackingId) {
+    const err = new Error("Cannot dispatch without invoice linked to packing");
+    err.statusCode = 400;
+    throw err;
+  }
+  const packing = await StorePacking.findOne(withCompany(req, { _id: invoice.linkedStorePackingId }));
+  if (!packing) {
+    const err = new Error("Linked packing not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!POSTED_PACKING_STATUSES.includes(packing.status)) {
+    const err = new Error("Linked packing must be posted");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const dispatchedByLine = await sumPostedDispatchQtyByInvoiceLine(req.companyId, invoice._id);
+  const linesIn = Array.isArray(body.lines) && body.lines.length
+    ? body.lines
+    : (invoice.lines || []).map((ln) => {
+        const invoiceQty = Number(ln.qty) || 0;
+        const out = dispatchedByLine.get(String(ln._id)) || 0;
+        return { invoiceLineId: ln._id, article: ln.article, dispatchQty: Math.max(0, invoiceQty - out) };
+      });
+
+  const dispatchNo = t(body.dispatchNo) || (await nextDispatchNo(req.companyId, req.companyCode));
+  const lines = normalizeDispatchLines(linesIn, invoice);
+  if (!lines.length) {
+    const err = new Error("Nothing to dispatch (all lines complete or empty)");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  for (const ln of lines) {
+    const match = (invoice.lines || []).find((x) => String(x._id) === String(ln.invoiceLineId));
+    const invoiceQty = Number(match?.qty) || 0;
+    const out = dispatchedByLine.get(String(ln.invoiceLineId)) || 0;
+    if (out + ln.dispatchQty > invoiceQty) {
+      const err = new Error(`Dispatch qty exceeds invoice pending dispatch qty for ${ln.article}`);
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
+  const doc = await StoreDispatch.create({
+    companyId: req.companyId,
+    branchId: body.branchId || packing.branchId || null,
+    dispatchNo,
+    dispatchDate: body.dispatchDate || new Date(),
+    warehouse: String(packing.warehouse || "MAIN").toUpperCase(),
+    sourceDocumentType: "SALES_INVOICE",
+    sourceDocumentId: invoice._id,
+    packingId: packing._id,
+    packingNo: packing.packingNo,
+    salesInvoiceId: invoice._id,
+    salesInvoiceNo: invoice.invoiceNo,
+    canonicalSalesDispatchId: body.canonicalSalesDispatchId || null,
+    canonicalSalesDispatchNo: t(body.canonicalSalesDispatchNo),
+    allocationId: packing.allocationId,
+    allocationNo: packing.allocationNo,
+    linkedQuotationNo: invoice.linkedQuotationNo || "",
+    linkedOANo: invoice.linkedOANo || packing.linkedOANo || "",
+    linkedProformaNo: invoice.linkedProformaNo || packing.linkedProformaNo || "",
+    customerName: invoice.customerName || packing.customerName,
+    engine: packing.engine || "",
+    model: packing.model || "",
+    esn: packing.esn || "",
+    transporter: t(body.transporter || body.courier),
+    courier: t(body.courier || body.transporter),
+    awbNo: t(body.awbNo || body.awbBlLrNo),
+    blNo: t(body.blNo),
+    trackingNo: t(body.trackingNo || body.awbNo || body.awbBlLrNo),
+    containerNo: t(body.containerNo),
+    lrNo: t(body.lrNo),
+    vehicleNo: t(body.vehicleNo),
+    driverName: t(body.driverName),
+    driverPhone: t(body.driverPhone),
+    deliveryNote: t(body.deliveryNote),
+    shipmentMode: t(body.shipmentMode),
+    currency: String(packing.currency || "USD").toUpperCase(),
+    lines,
+    attachments: Array.isArray(body.attachments) ? body.attachments : [],
+    remarks: t(body.remarks),
+    status: "DRAFT",
+    createdBy: req.user?.email || "",
+    updatedBy: req.user?.email || "",
+  });
+  await writeAudit(req, {
+    action: "CREATE",
+    module: "STORE",
+    entityType: "STORE_DISPATCH",
+    entityId: doc._id,
+    documentNo: doc.dispatchNo,
+    description: `Dispatch ${doc.dispatchNo} draft`,
+    metadata: body.canonicalSalesDispatchId
+      ? { canonicalSalesDispatchId: String(body.canonicalSalesDispatchId), internal: true }
+      : undefined,
+  });
+  return doc;
+}
+
 export async function createStoreDispatchDraft(req, res) {
   try {
-    const invoiceId = req.body.salesInvoiceId || req.body.invoiceId;
-    if (!mongoose.Types.ObjectId.isValid(String(invoiceId || ""))) {
-      return res.status(400).json({ message: "salesInvoiceId required. Dispatch must be created from posted Sales Invoice." });
-    }
-    const invoice = await SalesInvoice.findOne(withCompany(req, { _id: invoiceId }));
-    if (!invoice) return res.status(404).json({ message: "Sales Invoice not found" });
-    if (!isInvoiceDispatchEligible(invoice)) {
-      return res.status(400).json({
-        message: "Dispatch requires an issued (non-cancelled) Sales Invoice",
-      });
-    }
-    if (!invoice.linkedStorePackingId) return res.status(400).json({ message: "Cannot dispatch without invoice linked to packing" });
-    const packing = await StorePacking.findOne(withCompany(req, { _id: invoice.linkedStorePackingId }));
-    if (!packing) return res.status(404).json({ message: "Linked packing not found" });
-    if (!POSTED_PACKING_STATUSES.includes(packing.status)) return res.status(400).json({ message: "Linked packing must be posted" });
-
-    const dispatchedByLine = await sumPostedDispatchQtyByInvoiceLine(req.companyId, invoice._id);
-    const linesIn = Array.isArray(req.body.lines) && req.body.lines.length
-      ? req.body.lines
-      : (invoice.lines || []).map((ln) => {
-          const invoiceQty = Number(ln.qty) || 0;
-          const out = dispatchedByLine.get(String(ln._id)) || 0;
-          return { invoiceLineId: ln._id, article: ln.article, dispatchQty: Math.max(0, invoiceQty - out) };
-        });
-
-    const dispatchNo = t(req.body.dispatchNo) || (await nextDispatchNo(req.companyId, req.companyCode));
-    const lines = normalizeDispatchLines(linesIn, invoice);
-    if (!lines.length) return res.status(400).json({ message: "Nothing to dispatch (all lines complete or empty)" });
-
-    for (const ln of lines) {
-      const match = (invoice.lines || []).find((x) => String(x._id) === String(ln.invoiceLineId));
-      const invoiceQty = Number(match?.qty) || 0;
-      const out = dispatchedByLine.get(String(ln.invoiceLineId)) || 0;
-      if (out + ln.dispatchQty > invoiceQty) {
-        return res.status(400).json({ message: `Dispatch qty exceeds invoice pending dispatch qty for ${ln.article}` });
-      }
-    }
-
-    const doc = await StoreDispatch.create({
-      companyId: req.companyId,
-      branchId: req.body.branchId || packing.branchId || null,
-      dispatchNo,
-      dispatchDate: req.body.dispatchDate || new Date(),
-      warehouse: String(packing.warehouse || "MAIN").toUpperCase(),
-      sourceDocumentType: "SALES_INVOICE",
-      sourceDocumentId: invoice._id,
-      packingId: packing._id,
-      packingNo: packing.packingNo,
-      salesInvoiceId: invoice._id,
-      salesInvoiceNo: invoice.invoiceNo,
-      allocationId: packing.allocationId,
-      allocationNo: packing.allocationNo,
-      linkedQuotationNo: invoice.linkedQuotationNo || "",
-      linkedOANo: invoice.linkedOANo || packing.linkedOANo || "",
-      linkedProformaNo: invoice.linkedProformaNo || packing.linkedProformaNo || "",
-      customerName: invoice.customerName || packing.customerName,
-      engine: packing.engine || "",
-      model: packing.model || "",
-      esn: packing.esn || "",
-      transporter: t(req.body.transporter || req.body.courier),
-      courier: t(req.body.courier || req.body.transporter),
-      awbNo: t(req.body.awbNo || req.body.awbBlLrNo),
-      blNo: t(req.body.blNo),
-      trackingNo: t(req.body.trackingNo || req.body.awbNo || req.body.awbBlLrNo),
-      containerNo: t(req.body.containerNo),
-      lrNo: t(req.body.lrNo),
-      vehicleNo: t(req.body.vehicleNo),
-      driverName: t(req.body.driverName),
-      driverPhone: t(req.body.driverPhone),
-      deliveryNote: t(req.body.deliveryNote),
-      shipmentMode: t(req.body.shipmentMode),
-      currency: String(packing.currency || "USD").toUpperCase(),
-      lines,
-      attachments: Array.isArray(req.body.attachments) ? req.body.attachments : [],
-      remarks: t(req.body.remarks),
-      status: "DRAFT",
-      createdBy: req.user?.email || "",
-      updatedBy: req.user?.email || "",
-    });
-    await writeAudit(req, {
-      action: "CREATE",
-      module: "STORE",
-      entityType: "STORE_DISPATCH",
-      entityId: doc._id,
-      documentNo: doc.dispatchNo,
-      description: `Dispatch ${doc.dispatchNo} draft`,
-    });
+    const doc = await createStoreDispatchDraftCore(req, req.body || {});
     res.status(201).json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message });
   }
 }
 
@@ -1537,13 +1582,23 @@ export async function postStoreDispatch(req, res) {
         totalDispatchedBefore + totalDispatchedNow >= totalInvoiceQty - 1e-6
           ? "FULLY_DISPATCHED"
           : "PARTIALLY_DISPATCHED";
-      // S1 — dispatch writes dispatchStatus + links only (never payment/document status).
+      // S1 — dispatch writes dispatchStatus only (never payment/document status).
+      // S2 — when an owning Sales Dispatch exists, SI logistics link points at that
+      // canonical document; StoreDispatch id is stored on SalesDispatch.linkedStoreDispatchId.
       invoice.dispatchStatus = computeDispatchStatus({
         invoiceQty: totalInvoiceQty,
         dispatchedQty: totalDispatchedBefore + totalDispatchedNow,
       });
-      invoice.linkedSalesDispatchId = claimed._id;
-      invoice.linkedSalesDispatchNo = claimed.dispatchNo;
+      if (claimed.canonicalSalesDispatchId) {
+        const canon = await SalesDispatch.findOne(
+          withCompany(req, { _id: claimed.canonicalSalesDispatchId })
+        ).session(session);
+        invoice.linkedSalesDispatchId = claimed.canonicalSalesDispatchId;
+        invoice.linkedSalesDispatchNo = canon?.dispatchNo || claimed.canonicalSalesDispatchNo || "";
+      } else {
+        invoice.linkedSalesDispatchId = claimed._id;
+        invoice.linkedSalesDispatchNo = claimed.dispatchNo;
+      }
       invoice.updatedBy = req.user?.email || "";
       await invoice.save({ session });
       if (claimed.allocationId) {

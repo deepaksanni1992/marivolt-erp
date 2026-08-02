@@ -3922,110 +3922,17 @@ export async function patchSalesDispatch(req, res) {
 
 export async function convertSalesInvoiceToSalesDispatch(req, res) {
   try {
+    // S2 — canonical Sales Dispatch draft (stock posts via POST /sales-dispatches/:id/post).
+    const { createCanonicalSalesDispatch } = await import("../services/canonicalSalesDispatchService.js");
     const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid sales invoice id" });
-    const invoice = await SalesInvoice.findOne(withCompany(req, { _id: id }));
-    validateConversionSource(invoice, "sales invoice");
-    if (!invoice?.lines?.length) return res.status(400).json({ message: "Sales invoice requires at least one line to convert" });
-    // S1 — logistics SalesDispatch may be created from an issued invoice.
-    // It must not require or write payment/document status. Physical stock
-    // authority remains Store Dispatch (see S2 dual-dispatch resolution).
-    if (!isInvoiceDispatchEligible(invoice)) {
-      return res.status(400).json({
-        message: "Sales invoice must be issued (non-cancelled) before converting to Sales Dispatch",
-      });
-    }
-    const existingDispatches = await SalesDispatch.find(
-      withCompany(req, { linkedSalesInvoiceId: invoice._id, status: { $ne: "CANCELLED" } })
-    ).lean();
-    const dispatchNo = await nextSalesDocNumber({
-      companyId: req.companyId,
-      companyCode: req.companyCode,
-      docKey: "SALES_DISPATCH",
-    });
-    const invoiceLines = normalizeLines(invoice.lines.map((line) => line.toObject?.() || line));
-    const requestedLines = Array.isArray(req.body?.lines) ? req.body.lines : [];
-    const alreadyDispatched = new Map();
-    for (const dispatch of existingDispatches) {
-      for (const line of dispatch.lines || []) {
-        const key = String(line.sourceLineId || line.article || "");
-        alreadyDispatched.set(key, (alreadyDispatched.get(key) || 0) + (Number(line.qty) || 0));
-      }
-    }
-    const requestedByKey = new Map(
-      requestedLines
-        .map((l) => [String(l.sourceLineId || l._id || l.article || ""), Number(l.qty) || 0])
-        .filter(([, qty]) => qty > 0)
-    );
-    const lines = invoiceLines
-      .map((line) => {
-        const key = String(line._id || line.article || "");
-        const articleKey = String(line.article || "");
-        const requestedQty = requestedByKey.size ? requestedByKey.get(key) ?? requestedByKey.get(articleKey) ?? 0 : Number(line.qty) || 0;
-        const used = alreadyDispatched.get(key) || alreadyDispatched.get(articleKey) || 0;
-        const pending = Math.max(0, (Number(line.qty) || 0) - used);
-        const qty = Math.min(pending, Math.max(0, requestedQty));
-        return {
-          ...line,
-          sourceLineId: line._id || null,
-          qty,
-          dispatchedQty: qty,
-          pendingQty: Math.max(0, pending - qty),
-          countryOfOrigin: line.coo || line.countryOfOrigin || "",
-        };
-      })
-      .filter((line) => Number(line.qty) > 0);
-    if (!lines.length) {
-      return res.status(409).json({ message: "No pending dispatch quantity remains for this sales invoice." });
-    }
-    const totals = computeTotals(lines, invoice);
-    const qtyTotal = lines.reduce((sum, line) => sum + (Number(line.qty) || 0), 0);
-    const doc = await SalesDispatch.create({
-      companyId: req.companyId,
-      dispatchNo,
-      dispatchDate: new Date(),
-      linkedSalesInvoiceId: invoice._id,
-      linkedSalesInvoiceNo: invoice.invoiceNo,
-      customerName: invoice.customerName,
-      currency: invoice.currency || "USD",
-      vertical: invoice.vertical || "",
-      engine: invoice.engine || "",
-      model: invoice.model || "",
-      config: invoice.config || "",
-      esn: invoice.esn || "",
-      remarks: invoice.remarks || "",
-      lines,
-      ...totals,
-      totalQty: qtyTotal,
-      dispatchedQty: qtyTotal,
-      pendingQty: 0,
-      packingListNo: `${dispatchNo}-PL`,
-      packingListGeneratedAt: new Date(),
-      status: "READY",
-      createdBy: req.user?.email || "",
-    });
-    // Temporary S1 permission: logistics link fields only — never payment/document/dispatchStatus.
-    invoice.linkedSalesDispatchId = doc._id;
-    invoice.linkedSalesDispatchNo = doc.dispatchNo;
-    invoice.updatedBy = req.user?.email || "";
-    await invoice.save();
-    await writeAudit(req, {
-      action: "CREATE",
-      module: "LOGISTICS",
-      entityType: "SALES_DISPATCH",
-      entityId: doc._id,
-      documentNo: doc.dispatchNo,
-      toStatus: doc.status,
-      description: `Dispatch ${doc.dispatchNo} created from sales invoice ${invoice.invoiceNo}`,
-      metadata: {
-        invoiceNo: invoice.invoiceNo,
-        partial: existingDispatches.length > 0,
-        note: "SalesDispatch logistics only; SI dispatchStatus owned by Store Dispatch",
-      },
+    const doc = await createCanonicalSalesDispatch(req, {
+      ...(req.body || {}),
+      salesInvoiceId: id,
+      lines: req.body?.lines,
     });
     res.status(201).json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code || undefined });
   }
 }
 

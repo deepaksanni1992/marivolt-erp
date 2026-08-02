@@ -5,6 +5,7 @@ import { requirePermission } from "../middleware/permissions.js";
 import * as c from "../controllers/salesController.js";
 import * as flow from "../controllers/salesFlowController.js";
 import * as storeOutbound from "../controllers/storeOutboundController.js";
+import * as canonicalDispatch from "../controllers/canonicalSalesDispatchController.js";
 import * as salesReturn from "../controllers/salesReturnController.js";
 import * as allocationPo from "../controllers/orderAllocationPoController.js";
 
@@ -81,9 +82,15 @@ router.get("/sales-invoices/:id/print", salesExport, flow.getSalesInvoicePrintDa
 router.put("/sales-invoices/:id", salesEdit, flow.updateSalesInvoice);
 router.patch("/sales-invoices/:id/cancel", salesCancel, flow.cancelSalesInvoice);
 router.get("/dispatch-status", salesView, storeOutbound.listDispatchStatus);
-router.get("/sales-dispatches", salesView, flow.listSalesDispatches);
+router.get("/sales-dispatches/pending-invoices", salesView, canonicalDispatch.listPendingSalesDispatchInvoices);
+router.get("/sales-dispatches/from-invoice/:invoiceId", salesView, canonicalDispatch.getSalesDispatchPreviewFromInvoice);
+router.get("/sales-dispatches", salesView, canonicalDispatch.listCanonicalSalesDispatches);
+router.post("/sales-dispatches", salesCreate, canonicalDispatch.createSalesDispatch);
 router.get("/sales-dispatches/:id", salesView, flow.getSalesDispatch);
+router.put("/sales-dispatches/:id", salesEdit, canonicalDispatch.updateSalesDispatch);
 router.patch("/sales-dispatches/:id", salesEdit, flow.patchSalesDispatch);
+router.post("/sales-dispatches/:id/post", salesEdit, canonicalDispatch.postSalesDispatch);
+router.post("/sales-dispatches/:id/cancel", salesCancel, canonicalDispatch.cancelSalesDispatch);
 
 router.get("/sales-returns/prefill-from-dispatch/:dispatchId", salesView, salesReturn.getSalesReturnPrefillFromDispatch);
 router.get("/sales-returns", salesView, salesReturn.listSalesReturns);

@@ -1,3 +1,8 @@
+/**
+ * INTERNAL StoreDispatch HTTP surface (P0.5B stock posting).
+ * S2 — User workflow must use /api/sales/sales-dispatches only.
+ * These routes remain for internal/tooling compatibility; UI must not expose them.
+ */
 import express from "express";
 import { requireErpAccess } from "../middleware/erpAccess.js";
 import { requirePermission } from "../middleware/permissions.js";
