@@ -1,4 +1,8 @@
-import { generatePdfFromHtml } from "../services/pdfService.js";
+import {
+  generatePdfFromHtml,
+  PdfServiceError,
+  PDF_ERROR_CODES,
+} from "../services/pdfService.js";
 
 function safeFilename(name) {
   const base = String(name || "report")
@@ -21,6 +25,8 @@ export async function postReportPdf(req, res) {
 
     const buffer = await generatePdfFromHtml(html, {
       assetBaseUrl,
+      filename,
+      reportType: filename || "report",
       ...(options && typeof options === "object" ? options : {}),
     });
 
@@ -30,9 +36,17 @@ export async function postReportPdf(req, res) {
     res.setHeader("Content-Length", String(buffer.length));
     return res.send(buffer);
   } catch (err) {
-    console.error("[reportPdf] generation failed:", err);
-    return res.status(500).json({
+    const code = err?.code || PDF_ERROR_CODES.PDF_PAGE_RENDER_FAILED;
+    const status =
+      err instanceof PdfServiceError
+        ? err.statusCode || 500
+        : code === PDF_ERROR_CODES.PDF_QUEUE_TIMEOUT
+          ? 503
+          : 500;
+    console.error("[reportPdf] generation failed:", code, err?.message || err);
+    return res.status(status).json({
       message: err?.message || "PDF generation failed",
+      code,
     });
   }
 }

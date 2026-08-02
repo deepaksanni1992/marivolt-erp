@@ -45,6 +45,7 @@ import { isCustomsEnabled } from "./config/customsConfig.js";
 import { ensureSearchIndexes } from "./config/searchIndexes.js";
 import { isS3Configured } from "./config/s3.js";
 import { createCorsOriginDelegate } from "./utils/corsAllowlist.js";
+import { shutdownBrowser } from "./services/pdfBrowserManager.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -140,6 +141,12 @@ async function startServer() {
     app.listen(PORT, () => {
       console.log(`✅ API listening on port ${PORT}`);
     });
+
+    const gracefulPdfShutdown = () => {
+      shutdownBrowser().catch(() => {});
+    };
+    process.once("SIGTERM", gracefulPdfShutdown);
+    process.once("SIGINT", gracefulPdfShutdown);
   } catch (err) {
     console.error("❌ Failed to start server:", err);
     process.exit(1);
