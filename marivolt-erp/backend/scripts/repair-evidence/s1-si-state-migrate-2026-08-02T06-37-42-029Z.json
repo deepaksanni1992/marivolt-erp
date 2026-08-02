@@ -1,0 +1,356 @@
+{
+  "capturedAt": "2026-08-02T06:37:42.031Z",
+  "mode": "DRY_RUN",
+  "totals": {
+    "invoices": 15,
+    "wouldUpdate": 15,
+    "unchanged": 0,
+    "ambiguous": 1
+  },
+  "ambiguous": [
+    {
+      "id": "69f481ebd66d3947f7adf90b",
+      "no": "MAR***01",
+      "reason": "SALES_DISPATCH_ONLY_WITHOUT_STORE_DISPATCH",
+      "legacyStatus": "DISPATCHED",
+      "applied": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      }
+    }
+  ],
+  "samples": [
+    {
+      "id": "69f481ebd66d3947f7adf90b",
+      "no": "MAR***01",
+      "before": {
+        "status": "DISPATCHED",
+        "documentStatus": null,
+        "paymentStatus": null,
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 1,
+        "invoiceQty": 1
+      }
+    },
+    {
+      "id": "6a257c00bb521cbc4e6c51b6",
+      "no": "AUD***21",
+      "before": {
+        "status": "ISSUED",
+        "documentStatus": null,
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 0,
+        "invoiceQty": 1
+      }
+    },
+    {
+      "id": "6a257c0dbb521cbc4e6c51f7",
+      "no": "AUD***81",
+      "before": {
+        "status": "ISSUED",
+        "documentStatus": null,
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 0,
+        "invoiceQty": 6
+      }
+    },
+    {
+      "id": "6a257c10bb521cbc4e6c5223",
+      "no": "AUD***28",
+      "before": {
+        "status": "ISSUED",
+        "documentStatus": null,
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 0,
+        "invoiceQty": 3
+      }
+    },
+    {
+      "id": "6a257c16bb521cbc4e6c5274",
+      "no": "AUD***28",
+      "before": {
+        "status": "ISSUED",
+        "documentStatus": null,
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 0,
+        "invoiceQty": 99999
+      }
+    },
+    {
+      "id": "6a257c16bb521cbc4e6c527c",
+      "no": "AUD***47",
+      "before": {
+        "status": "ISSUED",
+        "documentStatus": null,
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 0,
+        "invoiceQty": 2
+      }
+    },
+    {
+      "id": "6a257cf6bb521cbc4e6c52ca",
+      "no": "AUD***99",
+      "before": {
+        "status": "ISSUED",
+        "documentStatus": null,
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 0,
+        "invoiceQty": 6
+      }
+    },
+    {
+      "id": "6a257d07bb521cbc4e6c52eb",
+      "no": "AUD***69",
+      "before": {
+        "status": "ISSUED",
+        "documentStatus": null,
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 0,
+        "invoiceQty": 6
+      }
+    },
+    {
+      "id": "6a257d19bb521cbc4e6c530c",
+      "no": "AUD***11",
+      "before": {
+        "status": "ISSUED",
+        "documentStatus": null,
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 0,
+        "invoiceQty": 6
+      }
+    },
+    {
+      "id": "6a257d2eec1a1070b79e70c8",
+      "no": "AUD***03",
+      "before": {
+        "status": "ISSUED",
+        "documentStatus": null,
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 0,
+        "invoiceQty": 6
+      }
+    },
+    {
+      "id": "6a257d42ec1a1070b79e71ac",
+      "no": "AUD***68",
+      "before": {
+        "status": "ISSUED",
+        "documentStatus": null,
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 0,
+        "invoiceQty": 6
+      }
+    },
+    {
+      "id": "6a257d45ec1a1070b79e71d8",
+      "no": "AUD***84",
+      "before": {
+        "status": "ISSUED",
+        "documentStatus": null,
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 0,
+        "invoiceQty": 3
+      }
+    },
+    {
+      "id": "6a257d4cec1a1070b79e7229",
+      "no": "AUD***93",
+      "before": {
+        "status": "ISSUED",
+        "documentStatus": null,
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 0,
+        "invoiceQty": 99999
+      }
+    },
+    {
+      "id": "6a257d4cec1a1070b79e7231",
+      "no": "AUD***09",
+      "before": {
+        "status": "ISSUED",
+        "documentStatus": null,
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 0,
+        "invoiceQty": 2
+      }
+    },
+    {
+      "id": "6a25855064be37849fb1210d",
+      "no": "OKE***02",
+      "before": {
+        "status": "ISSUED",
+        "documentStatus": null,
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": null
+      },
+      "after": {
+        "documentStatus": "ISSUED",
+        "paymentStatus": "UNPAID",
+        "dispatchStatus": "NOT_DISPATCHED",
+        "status": "ISSUED"
+      },
+      "evidence": {
+        "received": 0,
+        "storeQty": 0,
+        "salesCount": 0,
+        "invoiceQty": 2
+      }
+    }
+  ]
+}

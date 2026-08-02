@@ -1,0 +1,58 @@
+{
+  "capturedAt": "2026-08-02T06:32:36.010Z",
+  "phase": "S1-si-state-pre-audit",
+  "totalInvoices": 15,
+  "statusCounts": {
+    "DISPATCHED": 1,
+    "ISSUED": 14
+  },
+  "paymentStatusCounts": {
+    "": 1,
+    "UNPAID": 14
+  },
+  "evidence": {
+    "withReceipts": 0,
+    "fullyPaidEvidence": 0,
+    "partialPaidEvidence": 0,
+    "unpaidEvidence": 15,
+    "storeDispatched": 0,
+    "salesDispatchOnly": 1,
+    "bothDispatch": 0,
+    "statusVsPaymentDisagree": 0,
+    "statusVsStoreDispatchDisagree": 1,
+    "cancelledWithReceipts": 0,
+    "cancelledWithDispatch": 0,
+    "ambiguousCount": 1
+  },
+  "samples": {
+    "statusVsPaymentDisagree": [],
+    "statusVsStoreDispatchDisagree": [
+      {
+        "id": "69f481ebd66d3947f7adf90b",
+        "no": "MAR***01",
+        "legacyStatus": "DISPATCHED",
+        "storeQty": 0,
+        "salesDispatchCount": 1
+      }
+    ],
+    "salesDispatchOnly": [
+      {
+        "id": "69f481ebd66d3947f7adf90b",
+        "no": "MAR***01",
+        "legacyStatus": "DISPATCHED",
+        "salesDispatchNos": [
+          "MAR***01"
+        ]
+      }
+    ],
+    "bothDispatch": []
+  },
+  "ambiguous": [
+    {
+      "id": "69f481ebd66d3947f7adf90b",
+      "no": "MAR***01",
+      "reason": "SALES_DISPATCH_ONLY_LEGACY_DISPATCHED",
+      "legacyStatus": "DISPATCHED"
+    }
+  ]
+}
