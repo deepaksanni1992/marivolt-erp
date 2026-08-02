@@ -9,6 +9,17 @@ import PrintAgent from "../models/PrintAgent.js";
  */
 export async function requirePrintAgent(req, res, next) {
   try {
+    if (process.env.NODE_ENV === "production") {
+      const xfProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+      const secure = Boolean(req.secure) || xfProto === "https";
+      if (!secure) {
+        return res.status(403).json({
+          message: "HTTPS required for print agent in production",
+          code: "AGENT_HTTPS_REQUIRED",
+        });
+      }
+    }
+
     const agentId = String(req.headers["x-print-agent-id"] || req.body?.agentId || "")
       .trim()
       .toUpperCase();

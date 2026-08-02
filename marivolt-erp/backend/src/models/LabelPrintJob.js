@@ -69,6 +69,8 @@ const labelPrintJobSchema = new mongoose.Schema(
     parentJobId: { type: mongoose.Schema.Types.ObjectId, ref: "LabelPrintJob", default: null },
     createdByUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     createdByName: { type: String, default: "" },
+    /** Client-supplied key; unique per company when set — prevents duplicate enqueue on retry. */
+    idempotencyKey: { type: String, default: null, trim: true },
   },
   { timestamps: true }
 );
@@ -76,5 +78,11 @@ const labelPrintJobSchema = new mongoose.Schema(
 labelPrintJobSchema.index({ companyId: 1, jobNo: 1 }, { unique: true });
 labelPrintJobSchema.index({ companyId: 1, status: 1, agentId: 1 });
 labelPrintJobSchema.index({ companyId: 1, sourceNo: 1, createdAt: -1 });
-
+labelPrintJobSchema.index(
+  { companyId: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: "string", $gt: "" } },
+  }
+);
 export default mongoose.model("LabelPrintJob", labelPrintJobSchema);

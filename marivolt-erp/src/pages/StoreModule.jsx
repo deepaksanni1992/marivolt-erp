@@ -457,6 +457,9 @@ export default function StoreModule() {
         const labelJob = await apiPost("/labels/jobs/from-grn", {
           ...labelBody,
           grnNo: posted.grnNo,
+          idempotencyKey:
+            labelBody.idempotencyKey ||
+            `grn:${posted.grnNo}:${crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`}`,
         });
         return { posted, labelJob };
       } catch (labelErr) {
@@ -476,7 +479,7 @@ export default function StoreModule() {
       const grnNo = result?.posted?.grnNo;
       if (result?.labelError) {
         setGrnUiErr(
-          `Posted ${grnNo || "GRN"} but label job failed: ${result.labelError.message || result.labelError}. Inventory is safe — retry from Label Queue.`
+          `GRN posted successfully, but label job could not be created. ${result.labelError.message || ""}. Open GRN ${grnNo || ""} and use Print / Reprint labels to retry.`
         );
       } else if (result?.labelJob?.job?.jobNo) {
         setGrnUiErr(`Posted ${grnNo}. Label job ${result.labelJob.job.jobNo} queued.`);
@@ -1990,14 +1993,32 @@ export default function StoreModule() {
                     }
                     onClick={() => {
                       setGrnUiErr("");
+                      if (postGrnAndPrintMut.isPending || postGrnFromPoMut.isPending) return;
                       const built = buildGrnPostPayloadFromUi();
                       if (!built) return;
+                      const labelLines = buildLabelLinesFromEdits(built.selectedLines, grnLineEdits);
+                      for (const ln of labelLines) {
+                        if (ln.print === false) continue;
+                        const q = Number(ln.labelQty);
+                        if (!Number.isFinite(q) || q < 0) {
+                          setGrnUiErr("Label Qty must be a non-negative number.");
+                          return;
+                        }
+                        if (q > (Number(ln.receivedQty) || 0) + 1e-9) {
+                          setGrnUiErr(
+                            `Label Qty (${q}) cannot exceed received qty (${ln.receivedQty}) for ${ln.article || "line"}.`
+                          );
+                          return;
+                        }
+                      }
+                      const idempotencyKey = `grn-post-print:${built.postBody.poId}:${Date.now()}:${crypto.randomUUID?.() || Math.random()}`;
                       postGrnAndPrintMut.mutate({
                         postBody: built.postBody,
                         labelBody: {
                           printerCode: labelPrinterCode || undefined,
                           copies: labelCopies,
-                          lines: buildLabelLinesFromEdits(built.selectedLines, grnLineEdits),
+                          lines: labelLines,
+                          idempotencyKey,
                         },
                       });
                     }}
@@ -2005,15 +2026,14 @@ export default function StoreModule() {
                     {postGrnAndPrintMut.isPending ? "Posting & queuing labels..." : "Post GRN & Print Labels"}
                   </button>
                 </div>
-                  <span className="text-[11px] text-slate-500">
-                    Default warehouse MAIN is applied automatically. Enter location manually for each line.
+                <span className="text-[11px] text-slate-500">
+                  Default warehouse MAIN is applied automatically. Enter location manually for each line.
+                </span>
+                {grnTotalPending <= 0 ? (
+                  <span className="text-xs text-amber-700">
+                    This PO is fully received. No pending quantity available for GRN.
                   </span>
-                  {grnTotalPending <= 0 ? (
-                    <span className="text-xs text-amber-700">
-                      This PO is fully received. No pending quantity available for GRN.
-                    </span>
-                  ) : null}
-                </div>
+                ) : null}
               </>
             ) : null}
           </div>
@@ -2228,7 +2248,8 @@ export default function StoreModule() {
                   <div className="col-span-2 flex flex-wrap items-center gap-2">
                     <span className="text-slate-500">Labels</span>
                     <span className="font-medium">{grnRegisterDetail.labelStatus || "NOT_REQUESTED"}</span>
-                    {grnRegisterDetail.labelLastJobId ? (
+                    {grnRegisterDetail.labelLastJobId &&
+                    ["FAILED", "PARTIAL", "CANCELLED"].includes(grnRegisterDetail.labelStatus) ? (
                       <button
                         type="button"
                         className="rounded border px-1.5 py-0.5 text-[11px] font-semibold"

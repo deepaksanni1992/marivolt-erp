@@ -11,9 +11,11 @@ import {
   buildSingleLabelTspl,
   getFixedLabelSize,
   wrapDescription,
+  labelDotDimensions,
+  escapeTspl,
 } from "../src/services/label/tsplGenerator.js";
 import { LABEL_SETTING_DEFAULTS, LABEL_SETTING_KEYS } from "../src/services/label/labelSettingsService.js";
-import { newLeaseToken, LEASE_TTL_MS } from "../src/services/label/printQueue.js";
+import { newLeaseToken, LEASE_TTL_MS, timingSafeEqualString } from "../src/services/label/printQueue.js";
 import {
   LABEL_WIDTH_MM,
   LABEL_HEIGHT_MM,
@@ -24,6 +26,7 @@ import { LABEL_JOB_STATUSES } from "../src/models/LabelPrintJob.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
 const backendRoot = path.resolve(__dirname, "..");
+const sampleDir = path.join(backendRoot, "scripts/fixtures/label-tspl-samples");
 
 let passed = 0;
 let failed = 0;
@@ -183,6 +186,122 @@ run("Frontend Post GRN & Print uses separate from-grn call", () => {
   assert.ok(ui.includes("Post GRN & Print Labels"));
   assert.ok(ui.includes("/labels/jobs/from-grn"));
   assert.ok(ui.includes("Label Queue"));
+  assert.ok(ui.includes("idempotencyKey"));
+  assert.ok(ui.includes("GRN posted successfully, but label job could not be created"));
+});
+
+run("Each physical label displays Qty: 1 UOM (unit-label semantics)", () => {
+  const tspl = buildSingleLabelTspl(
+    { article: "A1", qty: 50, uom: "PCS", labelQty: 50, description: "x" },
+    { qtyPerLabel: 1 }
+  );
+  assert.ok(tspl.includes("Qty: 1 PCS"));
+  assert.ok(!tspl.includes("Qty: 50 PCS"));
+  const job = buildJobTspl([{ article: "A1", labelQty: 3, uom: "PCS", qty: 3 }], { copies: 1 });
+  assert.strictEqual((job.match(/PRINT 1,1/g) || []).length, 3);
+  assert.ok(job.includes("Qty: 1 PCS"));
+});
+
+run("203 and 300 DPI dot dimensions for 100×50 mm", () => {
+  const d203 = labelDotDimensions(203);
+  assert.ok(Math.abs(d203.widthDots - 800) <= 2, `203 width ${d203.widthDots}`);
+  assert.ok(Math.abs(d203.heightDots - 400) <= 2, `203 height ${d203.heightDots}`);
+  const d300 = labelDotDimensions(300);
+  assert.ok(Math.abs(d300.widthDots - 1181) <= 2, `300 width ${d300.widthDots}`);
+  assert.ok(Math.abs(d300.heightDots - 591) <= 2, `300 height ${d300.heightDots}`);
+  const t203 = buildSingleLabelTspl({ article: "X" }, { dpi: 203 });
+  const t300 = buildSingleLabelTspl({ article: "X" }, { dpi: 300 });
+  assert.ok(t203.includes("SIZE 100 mm,50 mm"));
+  assert.ok(t300.includes("SIZE 100 mm,50 mm"));
+});
+
+run("escapeTspl strips nullish/object junk and quotes", () => {
+  assert.strictEqual(escapeTspl(null), "");
+  assert.strictEqual(escapeTspl(undefined), "");
+  assert.strictEqual(escapeTspl({ a: 1 }), "");
+  assert.ok(!escapeTspl('AB"C').includes('"'));
+});
+
+run("timingSafeEqualString works", () => {
+  assert.ok(timingSafeEqualString("abc", "abc"));
+  assert.ok(!timingSafeEqualString("abc", "abd"));
+  assert.ok(!timingSafeEqualString("abc", "ab"));
+});
+
+run("Idempotency + qty guard present in labelService", () => {
+  const svc = fs.readFileSync(path.join(backendRoot, "src/services/label/labelService.js"), "utf8");
+  assert.ok(svc.includes("idempotencyKey"));
+  assert.ok(svc.includes("LABEL_QTY_EXCEEDS_RECEIVED"));
+  assert.ok(svc.includes("LABEL_CONFIRM_EXCEEDS_REMAINING"));
+});
+
+run("Agent routes rate-limited and HTTPS gated", () => {
+  const routes = fs.readFileSync(path.join(backendRoot, "src/routes/labelRoutes.js"), "utf8");
+  assert.ok(routes.includes("agentRateLimit") || routes.includes("createRateLimiter"));
+  const auth = fs.readFileSync(path.join(backendRoot, "src/middleware/printAgentAuth.js"), "utf8");
+  assert.ok(auth.includes("AGENT_HTTPS_REQUIRED") || auth.includes("HTTPS required"));
+});
+
+run("LabelPrintJob has idempotency unique index", () => {
+  const model = fs.readFileSync(path.join(backendRoot, "src/models/LabelPrintJob.js"), "utf8");
+  assert.ok(model.includes("idempotencyKey"));
+  assert.ok(model.includes("partialFilterExpression"));
+});
+
+run("Generate and save sample TSPL fixtures", () => {
+  fs.mkdirSync(sampleDir, { recursive: true });
+  const samples = {
+    "01-normal-short.txt": buildSingleLabelTspl({
+      article: "MV-1001",
+      description: "Short widget",
+      spn: "SP1",
+      materialCode: "M1",
+      qty: 1,
+      uom: "PCS",
+      poNo: "PO-9",
+      grnNo: "GRN-1",
+      receivedDate: "2026-08-01",
+      location: "A1",
+    }),
+    "02-long-description.txt": buildSingleLabelTspl({
+      article: "MV-LONG",
+      description:
+        "This is an extremely long product description that must wrap to at most two lines and truncate gracefully without overlapping the barcode or other fields on the label",
+      uom: "PCS",
+      grnNo: "GRN-2",
+    }),
+    "03-numeric-article.txt": buildSingleLabelTspl({ article: "1234567890", description: "Numeric", uom: "PCS", grnNo: "G3" }),
+    "04-alphanumeric-article.txt": buildSingleLabelTspl({ article: "AB-99/X", description: "Alpha", uom: "PCS", grnNo: "G4" }),
+    "05-missing-po.txt": buildSingleLabelTspl({ article: "NO-PO", description: "No PO", uom: "PCS", grnNo: "G5", poNo: "" }),
+    "06-qty-gt-999.txt": buildJobTspl(
+      [{ article: "BULK", description: "Bulk", uom: "PCS", qty: 1500, labelQty: 2, grnNo: "G6", poNo: "PO-B" }],
+      { copies: 1 }
+    ),
+  };
+  for (const [name, body] of Object.entries(samples)) {
+    const p = path.join(sampleDir, name);
+    fs.writeFileSync(p, body);
+    assert.ok(fs.existsSync(p));
+    assert.ok(body.includes("SIZE 100 mm,50 mm"));
+    assert.ok(!body.includes("undefined"));
+    assert.ok(!body.includes("null"));
+    assert.ok(!body.includes("[object Object]"));
+  }
+});
+
+run("No label-size selectors in UI settings/GRN", () => {
+  const settings = fs.readFileSync(path.join(repoRoot, "src/components/store/LabelSettingsPanel.jsx"), "utf8");
+  assert.ok(!/widthMm|heightMm|label size select/i.test(settings) || settings.includes("100"));
+  assert.ok(!settings.includes("setWidth") && !settings.includes("labelWidth"));
+  const store = fs.readFileSync(path.join(repoRoot, "src/pages/StoreModule.jsx"), "utf8");
+  assert.ok(store.includes("100×50") || store.includes("100x50") || store.includes("100×50 mm"));
+});
+
+run("RAW spooler documented and used", () => {
+  const adapter = fs.readFileSync(path.join(repoRoot, "print-agent/src/adapters/windowsRawSpooler.js"), "utf8");
+  assert.ok(adapter.includes('pDataType = "RAW"') || adapter.includes("RAW"));
+  const readme = fs.readFileSync(path.join(repoRoot, "print-agent/README.md"), "utf8");
+  assert.ok(readme.includes("RAW"));
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

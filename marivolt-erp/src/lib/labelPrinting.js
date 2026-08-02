@@ -22,11 +22,13 @@ export function buildLabelLinesFromEdits(selectedLines, lineEdits) {
   return (selectedLines || []).map((ln) => {
     const id = ln.poLineId != null ? String(ln.poLineId) : "";
     const ed = lineEdits[id] || {};
+    const receivedQty = Number(ed.grnQty) || 0;
     return {
       poLineId: ln.poLineId,
       article: ln.article,
       print: ed.printLabel !== false,
       labelQty: Number(ed.labelQty ?? ed.grnQty) || 0,
+      receivedQty,
     };
   });
 }

@@ -184,12 +184,20 @@ export default function LabelQueuePanel({ onMessage }) {
           <p className="font-semibold text-amber-900">
             Confirm how many labels actually printed for {confirmJob.jobNo} ({confirmJob.status})
           </p>
+          {confirmJob.status === "UNCERTAIN" ? (
+            <p className="mt-1 text-amber-800">
+              Warning: some or all physical labels may already have printed. Enter the confirmed
+              physical printed quantity. Remaining labels will be calculated from requested − confirmed.
+              Windows spooler cannot prove exact physical count.
+            </p>
+          ) : null}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <label>
               Printed qty{" "}
               <input
                 type="number"
                 min="0"
+                max={confirmJob.requestedLabels}
                 className="ml-1 w-24 rounded border px-1 py-0.5"
                 value={printedQty}
                 onChange={(e) => setPrintedQty(e.target.value)}

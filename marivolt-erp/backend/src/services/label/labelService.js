@@ -93,6 +93,12 @@ export async function createJobsFromGrn(req, body = {}) {
     throw err;
   }
 
+  const idempotencyKey = t(body.idempotencyKey).slice(0, 120) || null;
+  if (idempotencyKey) {
+    const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
+    if (existing) return existing;
+  }
+
   const grn = await GRN.findOne({ companyId, grnNo }).lean();
   if (!grn) {
     const err = new Error("GRN not found");
@@ -116,7 +122,8 @@ export async function createJobsFromGrn(req, body = {}) {
   for (const item of grn.items || []) {
     const article = upper(item.article);
     const poLineId = item.poLineId != null ? String(item.poLineId) : "";
-    let labelQty = Number(item.acceptedQty ?? item.receivedQty) || 0;
+    const receivedQty = Number(item.acceptedQty ?? item.receivedQty) || 0;
+    let labelQty = receivedQty;
     let include = true;
     if (selection) {
       const sel = selection.find(
@@ -127,10 +134,26 @@ export async function createJobsFromGrn(req, body = {}) {
       if (!sel || sel.print === false) {
         include = false;
       } else if (sel.labelQty != null && sel.labelQty !== "") {
-        labelQty = Number(sel.labelQty) || 0;
+        labelQty = Number(sel.labelQty);
       }
     }
-    if (!include || labelQty <= 0) continue;
+    if (!include) continue;
+    if (!Number.isFinite(labelQty) || labelQty < 0) {
+      const err = new Error(`Label Qty must be a non-negative number for ${article || "line"}`);
+      err.code = "LABEL_QTY_INVALID";
+      err.statusCode = 400;
+      throw err;
+    }
+    labelQty = Math.floor(labelQty);
+    if (labelQty <= 0) continue;
+    if (labelQty > receivedQty + 1e-9) {
+      const err = new Error(
+        `Label Qty (${labelQty}) cannot exceed received qty (${receivedQty}) for ${article}`
+      );
+      err.code = "LABEL_QTY_EXCEEDS_RECEIVED";
+      err.statusCode = 400;
+      throw err;
+    }
     const barcode = encodeBarcodeValue({
       mode: template?.barcodeMode || "ARTICLE",
       article,
@@ -140,7 +163,7 @@ export async function createJobsFromGrn(req, body = {}) {
       description: t(item.description),
       spn: t(item.spn || item.partNumber),
       materialCode: t(item.materialCode),
-      qty: Number(item.acceptedQty ?? item.receivedQty) || 0,
+      qty: receivedQty,
       uom: t(item.uom) || "PCS",
       poNo: t(item.poNo || grn.poNo),
       grnNo,
@@ -173,28 +196,37 @@ export async function createJobsFromGrn(req, body = {}) {
     barcodeMode: template?.barcodeMode || "ARTICLE",
   });
 
-  const job = await LabelPrintJob.create({
-    companyId,
-    jobNo: jobNo(),
-    sourceType: "GRN",
-    sourceId: grn._id,
-    sourceNo: grnNo,
-    warehouseCode: t(printer.warehouseCode),
-    printerConfigId: printer._id,
-    agentId: upper(printer.agentId),
-    windowsPrinterName: t(printer.windowsPrinterName),
-    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
-    copies,
-    requestedLabels,
-    printedLabels: 0,
-    remainingLabels: requestedLabels,
-    lines: jobLines,
-    tsplPayload,
-    status: "PENDING",
-    createdByUserId: req.user?.id || req.user?._id || null,
-    createdByName: t(req.user?.name || req.user?.email || ""),
-  });
-
+  let job;
+  try {
+    job = await LabelPrintJob.create({
+      companyId,
+      jobNo: jobNo(),
+      sourceType: "GRN",
+      sourceId: grn._id,
+      sourceNo: grnNo,
+      warehouseCode: t(printer.warehouseCode),
+      printerConfigId: printer._id,
+      agentId: upper(printer.agentId),
+      windowsPrinterName: t(printer.windowsPrinterName),
+      templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
+      copies,
+      requestedLabels,
+      printedLabels: 0,
+      remainingLabels: requestedLabels,
+      lines: jobLines,
+      tsplPayload,
+      status: "PENDING",
+      createdByUserId: req.user?.id || req.user?._id || null,
+      createdByName: t(req.user?.name || req.user?.email || ""),
+      idempotencyKey,
+    });
+  } catch (e) {
+    if (idempotencyKey && (e?.code === 11000 || String(e?.message || "").includes("duplicate"))) {
+      const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
+      if (existing) return existing;
+    }
+    throw e;
+  }
   await syncGrnLabelStatus(grn._id, job);
   await recordLabelHistory({
     jobId: job._id,
@@ -243,6 +275,12 @@ export async function registerPrintAgent(req, body = {}) {
     status: "OFFLINE",
     isActive: true,
     createdBy: t(req.user?.name || req.user?.email || ""),
+  });
+
+  await auditLabelEvent(req, {
+    action: "CREATE",
+    job: { jobNo: agentId, _id: agent._id, status: "AGENT_REGISTERED", sourceNo: agentId },
+    description: `Print agent ${agentId} registered (secret shown once)`,
   });
 
   return {
@@ -347,6 +385,12 @@ export async function confirmPartial(req, jobId, printedQty) {
   }
   const qty = Math.max(0, Number(printedQty) || 0);
   const wasRemaining = Number(job.remainingLabels) || Number(job.requestedLabels) || 0;
+  if (qty > wasRemaining + 1e-9) {
+    const err = new Error(`Confirmed printed qty (${qty}) cannot exceed remaining (${wasRemaining})`);
+    err.code = "LABEL_CONFIRM_EXCEEDS_REMAINING";
+    err.statusCode = 400;
+    throw err;
+  }
   job.printedLabels = (Number(job.printedLabels) || 0) + qty;
   job.remainingLabels = Math.max(0, wasRemaining - qty);
   job.status = job.remainingLabels > 0 ? "PARTIAL" : "COMPLETED";
@@ -366,6 +410,7 @@ export async function confirmPartial(req, jobId, printedQty) {
     userId: req.user?.id || null,
     userName: t(req.user?.name || ""),
     event: "CONFIRM_PARTIAL",
+    failureReason: `user confirmed printedQty=${qty}; remaining=${job.remainingLabels}`,
   });
   if (job.remainingLabels > 0) {
     return retryJob(req, jobId);

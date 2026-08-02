@@ -7,7 +7,18 @@ export function newLeaseToken() {
   return crypto.randomBytes(16).toString("hex");
 }
 
-/** Reclaim expired leases → UNCERTAIN (never auto-reprint). */
+export function timingSafeEqualString(a, b) {
+  const aa = Buffer.from(String(a || ""), "utf8");
+  const bb = Buffer.from(String(b || ""), "utf8");
+  if (aa.length !== bb.length) {
+    // Compare against self to keep work roughly constant, then fail
+    crypto.timingSafeEqual(aa, aa);
+    return false;
+  }
+  return crypto.timingSafeEqual(aa, bb);
+}
+
+/** Reclaim expired leases → UNCERTAIN (never auto-reprint / never auto PENDING). */
 export async function reclaimExpiredLeases(companyId = null) {
   const now = new Date();
   const filter = {
@@ -28,7 +39,7 @@ export async function reclaimExpiredLeases(companyId = null) {
 }
 
 /**
- * Atomically lease next PENDING job for agent.
+ * Atomically lease next PENDING job for agent (DB-level race safe).
  */
 export async function leaseNextJob(agent) {
   await reclaimExpiredLeases(agent.companyId);
@@ -55,23 +66,42 @@ export async function leaseNextJob(agent) {
 }
 
 export async function markJobPrinting(jobId, agent, leaseToken) {
+  const token = String(leaseToken || "");
   const job = await LabelPrintJob.findOne({
     _id: jobId,
     companyId: agent.companyId,
     agentId: String(agent.agentId).toUpperCase(),
     status: "LEASED",
-    leaseToken: String(leaseToken || ""),
   });
-  if (!job) {
+  if (!job || !timingSafeEqualString(job.leaseToken, token)) {
     const err = new Error("Job not leased to this agent or invalid lease token");
     err.code = "LABEL_LEASE_INVALID";
     err.statusCode = 409;
     throw err;
   }
-  job.status = "PRINTING";
-  job.leaseExpiresAt = new Date(Date.now() + LEASE_TTL_MS);
-  await job.save();
-  return job;
+  const updated = await LabelPrintJob.findOneAndUpdate(
+    {
+      _id: jobId,
+      companyId: agent.companyId,
+      agentId: String(agent.agentId).toUpperCase(),
+      status: "LEASED",
+      leaseToken: job.leaseToken,
+    },
+    {
+      $set: {
+        status: "PRINTING",
+        leaseExpiresAt: new Date(Date.now() + LEASE_TTL_MS),
+      },
+    },
+    { new: true }
+  );
+  if (!updated) {
+    const err = new Error("Invalid transition or lease lost");
+    err.code = "LABEL_TRANSITION_REJECTED";
+    err.statusCode = 409;
+    throw err;
+  }
+  return updated;
 }
 
 export async function applyAgentResult(jobId, agent, body = {}) {
@@ -84,59 +114,85 @@ export async function applyAgentResult(jobId, agent, body = {}) {
     err.statusCode = 400;
     throw err;
   }
+
   const job = await LabelPrintJob.findOne({
     _id: jobId,
     companyId: agent.companyId,
     agentId: String(agent.agentId).toUpperCase(),
     status: { $in: ["LEASED", "PRINTING"] },
-    leaseToken,
   });
-  if (!job) {
+  if (!job || !timingSafeEqualString(job.leaseToken, leaseToken)) {
     const err = new Error("Job not found or lease token mismatch");
     err.code = "LABEL_LEASE_INVALID";
     err.statusCode = 409;
     throw err;
   }
 
-  const printedQty = Math.max(0, Number(body.printedQty));
+  const printedQtyRaw = body.printedQty;
+  const printedQty = Math.max(0, Number(printedQtyRaw));
   const requested = Number(job.remainingLabels) || Number(job.requestedLabels) || 0;
 
-  if (status === "COMPLETED") {
-    const done = Number.isFinite(printedQty) && body.printedQty != null ? printedQty : requested;
-    job.printedLabels = (Number(job.printedLabels) || 0) + done;
-    job.remainingLabels = Math.max(0, requested - done);
-    job.status = job.remainingLabels > 0 ? "PARTIAL" : "COMPLETED";
-  } else if (status === "PARTIAL") {
-    const done = Number.isFinite(printedQty) ? printedQty : 0;
-    job.printedLabels = (Number(job.printedLabels) || 0) + done;
-    job.remainingLabels = Math.max(0, requested - done);
-    job.status = job.remainingLabels > 0 ? "PARTIAL" : "COMPLETED";
+  const $set = {
+    leaseToken: "",
+    leasedToAgentId: "",
+    leaseExpiresAt: null,
+  };
+
+  if (status === "COMPLETED" || status === "PARTIAL") {
+    const done =
+      status === "COMPLETED" && (printedQtyRaw == null || printedQtyRaw === "")
+        ? requested
+        : Math.min(requested, Number.isFinite(printedQty) ? printedQty : 0);
+    $set.printedLabels = (Number(job.printedLabels) || 0) + done;
+    $set.remainingLabels = Math.max(0, requested - done);
+    $set.status = $set.remainingLabels > 0 ? "PARTIAL" : "COMPLETED";
   } else if (status === "FAILED") {
-    job.status = "FAILED";
-    job.lastError = String(body.error || "Print failed");
-    job.retryCount = (Number(job.retryCount) || 0) + 1;
+    $set.status = "FAILED";
+    $set.lastError = String(body.error || "Print failed");
+    $set.retryCount = (Number(job.retryCount) || 0) + 1;
   } else {
-    job.status = "UNCERTAIN";
-    job.lastError = String(body.error || "Print result uncertain");
-    if (Number.isFinite(printedQty) && body.printedQty != null) {
-      // Do not treat as success — store hint only via lastError
-      job.lastError = `${job.lastError} (agent reported printedQty=${printedQty})`;
+    $set.status = "UNCERTAIN";
+    $set.lastError = String(body.error || "Print result uncertain");
+    if (printedQtyRaw != null && Number.isFinite(printedQty)) {
+      $set.lastError = `${$set.lastError} (agent reported printedQty=${printedQty})`;
     }
   }
-
-  job.leaseToken = "";
-  job.leasedToAgentId = "";
-  job.leaseExpiresAt = null;
   if (body.error && status !== "COMPLETED") {
-    job.lastError = String(body.error);
+    $set.lastError = String(body.error);
   }
-  await job.save();
-  return job;
+
+  const updated = await LabelPrintJob.findOneAndUpdate(
+    {
+      _id: jobId,
+      companyId: agent.companyId,
+      agentId: String(agent.agentId).toUpperCase(),
+      status: { $in: ["LEASED", "PRINTING"] },
+      leaseToken: job.leaseToken,
+    },
+    { $set },
+    { new: true }
+  );
+  if (!updated) {
+    const err = new Error("Result already applied or lease invalid");
+    err.code = "LABEL_RESULT_ALREADY_APPLIED";
+    err.statusCode = 409;
+    throw err;
+  }
+  return updated;
 }
 
 export async function requeueJob(job, { clearError = true } = {}) {
-  if (!["FAILED", "PARTIAL", "UNCERTAIN", "CANCELLED"].includes(job.status) && job.status !== "PENDING") {
-    // allow PENDING already
+  if (job.status === "UNCERTAIN") {
+    const err = new Error("UNCERTAIN jobs require manual printed-qty confirmation before retry");
+    err.code = "LABEL_UNCERTAIN_CONFIRM_REQUIRED";
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!["FAILED", "PARTIAL", "CANCELLED"].includes(job.status) && job.status !== "PENDING") {
+    const err = new Error(`Cannot requeue job in status ${job.status}`);
+    err.code = "LABEL_TRANSITION_REJECTED";
+    err.statusCode = 400;
+    throw err;
   }
   const remaining = Math.max(0, Number(job.remainingLabels) || 0);
   if (remaining <= 0 && job.status !== "FAILED") {

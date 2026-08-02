@@ -1,18 +1,40 @@
 /**
  * TSPL generator for fixed 100 × 50 mm Marivolt Standard Label.
- * Uses native TSPL BARCODE (Code128). No PDF.
+ * Physical size is always mm-based (SIZE 100 mm,50 mm).
+ * Coordinate DPI is configurable (default 203) for hardware layout only.
  */
 import { LABEL_HEIGHT_MM, LABEL_WIDTH_MM } from "../../models/LabelTemplate.js";
 import { encodeBarcodeValue } from "./barcodeGenerator.js";
 
-const DOTS_PER_MM = 8; // 203 DPI ≈ 8 dots/mm
-
-function t(v) {
-  return String(v ?? "").trim();
+/** Dots per mm for layout coordinates. 203 DPI ≈ 8; 300 DPI ≈ 11.81 */
+export function dotsPerMm(dpi = 203) {
+  const d = Number(dpi) || 203;
+  return d / 25.4;
 }
 
-function escapeTspl(s) {
-  return t(s).replace(/"/g, "'");
+export function labelDotDimensions(dpi = 203) {
+  const dpm = dotsPerMm(dpi);
+  return {
+    dpi: Number(dpi) || 203,
+    widthDots: Math.round(LABEL_WIDTH_MM * dpm),
+    heightDots: Math.round(LABEL_HEIGHT_MM * dpm),
+    dotsPerMm: dpm,
+  };
+}
+
+function t(v) {
+  if (v == null) return "";
+  if (typeof v === "object") return "";
+  return String(v).trim();
+}
+
+/** Sanitize for TSPL quoted strings — no quotes, CR/LF, or nullish junk. */
+export function escapeTspl(s) {
+  return t(s)
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/"/g, "'")
+    .replace(/\\/g, "/")
+    .slice(0, 200);
 }
 
 /** Wrap description to max 2 lines; truncate gracefully. */
@@ -35,7 +57,6 @@ export function wrapDescription(text, maxCharsPerLine = 42, maxLines = 2) {
   }
   if (lines.length < maxLines && cur) lines.push(cur);
   if (lines.length > maxLines) return lines.slice(0, maxLines);
-  // Truncate last line with ellipsis if original longer
   const joined = lines.join(" ");
   if (raw.length > joined.length && lines.length) {
     const last = lines[lines.length - 1];
@@ -45,36 +66,44 @@ export function wrapDescription(text, maxCharsPerLine = 42, maxLines = 2) {
 }
 
 /**
- * Build TSPL for one physical label (one copy of one line).
- * Coordinates in dots; origin top-left.
+ * Build TSPL for one physical label.
+ * Phase 1 rule: each label represents one received unit → display Qty: 1 UOM.
  */
 export function buildSingleLabelTspl(line = {}, opts = {}) {
+  const dpi = Number(opts.dpi) || 203;
+  const dpm = dotsPerMm(dpi);
+  const scale = (dotsAt203) => Math.round(dotsAt203 * (dpm / 8));
+
   const companyName = escapeTspl(opts.companyName || "MARIVOLT FZE");
-  const article = escapeTspl(line.article || "").toUpperCase();
+  // Article for barcode/human must not be mutated beyond trim+uppercase for Code128 safety
+  const articleRaw = t(line.article).toUpperCase();
+  const article = escapeTspl(articleRaw);
   const descLines = wrapDescription(line.description || "");
-  const spn = escapeTspl(line.spn || "");
-  const materialCode = escapeTspl(line.materialCode || "");
-  const qty = line.qty != null ? String(line.qty) : "";
-  const uom = escapeTspl(line.uom || "PCS");
-  const poNo = escapeTspl(line.poNo || "");
-  const grnNo = escapeTspl(line.grnNo || "");
-  const receivedDate = escapeTspl(line.receivedDate || "");
+  const spn = escapeTspl(line.spn || "") || "—";
+  const materialCode = escapeTspl(line.materialCode || "") || "—";
+  // Phase 1: one physical label = one unit
+  const qtyOnLabel = opts.qtyPerLabel != null ? Number(opts.qtyPerLabel) : 1;
+  const qtyDisplay = Number.isFinite(qtyOnLabel) && qtyOnLabel > 0 ? String(qtyOnLabel) : "1";
+  const uom = escapeTspl(line.uom || "PCS") || "PCS";
+  const poNo = escapeTspl(line.poNo || "") || "—";
+  const grnNo = escapeTspl(line.grnNo || "") || "—";
+  const receivedDate = escapeTspl(line.receivedDate || "") || "—";
   const location = escapeTspl(line.location || "") || "—";
   const encoded = encodeBarcodeValue({
     mode: opts.barcodeMode || "ARTICLE",
-    article,
+    article: articleRaw,
     labelId: line.labelId,
   });
-  const barcode = escapeTspl(encoded.value || article);
-  const human = escapeTspl(encoded.humanReadable || article);
+  const barcode = escapeTspl(encoded.value || articleRaw);
+  const human = escapeTspl(encoded.humanReadable || articleRaw);
 
   const w = LABEL_WIDTH_MM;
   const h = LABEL_HEIGHT_MM;
-  // Barcode ~65% of label width
-  const barWidthDots = Math.round(w * DOTS_PER_MM * 0.65);
-  const barX = Math.round((w * DOTS_PER_MM - barWidthDots) / 2);
-  const barY = 250;
-  const barHeight = 80;
+  const widthDots = Math.round(w * dpm);
+  const barWidthDots = Math.round(widthDots * 0.65);
+  const barX = Math.round((widthDots - barWidthDots) / 2);
+  const barY = scale(250);
+  const barHeight = scale(80);
 
   const cmds = [
     `SIZE ${w} mm,${h} mm`,
@@ -82,33 +111,31 @@ export function buildSingleLabelTspl(line = {}, opts = {}) {
     "DIRECTION 1",
     "REFERENCE 0,0",
     "CLS",
-    `TEXT 20,12,"0",0,1,1,"${companyName}"`,
-    `TEXT 20,40,"0",0,2,2,"${article}"`,
+    `TEXT ${scale(20)},${scale(12)},"0",0,1,1,"${companyName}"`,
+    `TEXT ${scale(20)},${scale(40)},"0",0,2,2,"${article}"`,
   ];
 
-  let y = 90;
+  let y = scale(90);
+  const lineH = scale(22);
   for (const dl of descLines) {
-    cmds.push(`TEXT 20,${y},"0",0,1,1,"${escapeTspl(dl)}"`);
-    y += 22;
+    cmds.push(`TEXT ${scale(20)},${y},"0",0,1,1,"${escapeTspl(dl)}"`);
+    y += lineH;
   }
-  y = Math.max(y, 130);
-  cmds.push(`TEXT 20,${y},"0",0,1,1,"SPN: ${spn}"`);
-  y += 20;
-  cmds.push(`TEXT 20,${y},"0",0,1,1,"Mat: ${materialCode}"`);
-  y += 20;
-  cmds.push(`TEXT 20,${y},"0",0,1,1,"Qty: ${qty} ${uom}"`);
-  y += 20;
-  cmds.push(`TEXT 20,${y},"0",0,1,1,"PO: ${poNo}  GRN: ${grnNo}"`);
-  y += 20;
-  cmds.push(`TEXT 20,${y},"0",0,1,1,"Recv: ${receivedDate}  Bin: ${location}"`);
+  y = Math.max(y, scale(130));
+  const row = scale(20);
+  cmds.push(`TEXT ${scale(20)},${y},"0",0,1,1,"SPN: ${spn}"`);
+  y += row;
+  cmds.push(`TEXT ${scale(20)},${y},"0",0,1,1,"Mat: ${materialCode}"`);
+  y += row;
+  cmds.push(`TEXT ${scale(20)},${y},"0",0,1,1,"Qty: ${qtyDisplay} ${uom}"`);
+  y += row;
+  cmds.push(`TEXT ${scale(20)},${y},"0",0,1,1,"PO: ${poNo}  GRN: ${grnNo}"`);
+  y += row;
+  cmds.push(`TEXT ${scale(20)},${y},"0",0,1,1,"Recv: ${receivedDate}  Bin: ${location}"`);
 
-  // Code128 — TSPL BARCODE: BARCODE x,y,"128",height,human,rotation,narrow,wide,"data"
-  // human=0 (we print human-readable ourselves for control)
   if (barcode) {
-    cmds.push(
-      `BARCODE ${barX},${barY},"128",${barHeight},0,0,2,4,"${barcode}"`
-    );
-    cmds.push(`TEXT ${barX},${barY + barHeight + 8},"0",0,1,1,"${human}"`);
+    cmds.push(`BARCODE ${barX},${barY},"128",${barHeight},0,0,2,4,"${barcode}"`);
+    cmds.push(`TEXT ${barX},${barY + barHeight + scale(8)},"0",0,1,1,"${human}"`);
   }
 
   cmds.push("PRINT 1,1");
@@ -116,9 +143,7 @@ export function buildSingleLabelTspl(line = {}, opts = {}) {
 }
 
 /**
- * Build full TSPL job payload for all label copies across lines.
- * @param {object[]} lines label job lines with labelQty
- * @param {{ copies?: number, companyName?: string, barcodeMode?: string }} opts
+ * Build full TSPL: labelQty × copies physical labels, each showing Qty: 1 UOM.
  */
 export function buildJobTspl(lines = [], opts = {}) {
   const copies = Math.max(1, Number(opts.copies) || 1);
@@ -126,7 +151,7 @@ export function buildJobTspl(lines = [], opts = {}) {
   for (const line of lines) {
     const n = Math.max(0, Math.floor(Number(line.labelQty) || 0)) * copies;
     for (let i = 0; i < n; i++) {
-      parts.push(buildSingleLabelTspl(line, opts));
+      parts.push(buildSingleLabelTspl(line, { ...opts, qtyPerLabel: 1 }));
     }
   }
   return parts.join("");

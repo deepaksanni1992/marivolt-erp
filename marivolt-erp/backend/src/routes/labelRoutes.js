@@ -2,6 +2,7 @@ import express from "express";
 import { requireErpAccess } from "../middleware/erpAccess.js";
 import { requirePermission, requireAnyPermission } from "../middleware/permissions.js";
 import { requirePrintAgent } from "../middleware/printAgentAuth.js";
+import { createRateLimiter } from "../middleware/rateLimit.js";
 import * as c from "../controllers/labelController.js";
 import * as agent from "../controllers/labelAgentController.js";
 
@@ -17,11 +18,19 @@ const labelsSettingsWrite = requireAnyPermission(
   ["SETTINGS", "edit"]
 );
 
-/** Agent routes — no user JWT */
-router.post("/agent/heartbeat", requirePrintAgent, agent.heartbeat);
-router.post("/agent/lease", requirePrintAgent, agent.lease);
-router.post("/agent/jobs/:id/printing", requirePrintAgent, agent.printing);
-router.post("/agent/jobs/:id/result", requirePrintAgent, agent.result);
+const agentRateLimit = createRateLimiter({
+  name: "label-agent",
+  windowMs: 60_000,
+  max: Number(process.env.LABEL_AGENT_RATE_LIMIT_MAX) || 120,
+  keyFn: (req) =>
+    `${req.headers["x-print-agent-id"] || req.ip || "unknown"}`.toLowerCase().slice(0, 120),
+});
+
+/** Agent routes — no user JWT; rate-limited */
+router.post("/agent/heartbeat", agentRateLimit, requirePrintAgent, agent.heartbeat);
+router.post("/agent/lease", agentRateLimit, requirePrintAgent, agent.lease);
+router.post("/agent/jobs/:id/printing", agentRateLimit, requirePrintAgent, agent.printing);
+router.post("/agent/jobs/:id/result", agentRateLimit, requirePrintAgent, agent.result);
 
 /** ERP routes */
 router.use(...requireErpAccess);
