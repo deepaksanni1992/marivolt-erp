@@ -75,6 +75,9 @@ export function logPreExportPrintLayout(html) {
 /**
  * Request a searchable text PDF from the backend (Puppeteer page.pdf).
  * Uses the same HTML as Print preview; server applies print media + matching viewport.
+ *
+ * Layout probe: diagnostic only and non-blocking (PDF-P1). Does not delay download.
+ * Set options.probeLayout=true to force a fire-and-forget probe log.
  */
 export async function downloadSearchableReportPdf({
   html,
@@ -84,7 +87,14 @@ export async function downloadSearchableReportPdf({
   const assetBaseUrl =
     typeof window !== "undefined" ? window.location.origin : "";
 
-  await logPreExportPrintLayout(html);
+  // PDF-P1: do not await — probe must never block PDF generation.
+  const isDev =
+    typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    Boolean(import.meta.env.DEV);
+  if (options.probeLayout === true || isDev) {
+    void logPreExportPrintLayout(html);
+  }
 
   const res = await api.post(
     "/reports/pdf",
