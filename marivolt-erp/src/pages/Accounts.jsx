@@ -2222,14 +2222,9 @@ export default function Accounts() {
             />
           </FormField>
           <FormField label="Payment status">
-            <SelectInput
-              value={siForm.paymentStatus}
-              onChange={(e) => setSiForm((f) => ({ ...f, paymentStatus: e.target.value }))}
-            >
-              <option value="UNPAID">UNPAID</option>
-              <option value="PARTIAL">PARTIAL</option>
-              <option value="PAID">PAID</option>
-            </SelectInput>
+            <div className="rounded-xl border bg-slate-50 px-3 py-2 text-sm text-slate-600">
+              UNPAID (system-derived from receipts; not editable)
+            </div>
           </FormField>
           <FormField label="Remarks" className="sm:col-span-2">
             <TextInput

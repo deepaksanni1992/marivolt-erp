@@ -113,7 +113,15 @@ const reportsCatalog = [
 const statusOptions = ["DRAFT", "SENT", "APPROVED", "REJECTED", "EXPIRED", "CONVERTED", "CANCELLED"];
 const oaStatusOptions = ["DRAFT", "ACTIVE", "CONFIRMED", "CANCELLED"];
 const proformaStatusOptions = ["DRAFT", "ISSUED", "PAID_PENDING_SHIPMENT", "APPROVED", "CONVERTED", "CANCELLED"];
-const salesInvoiceStatusOptions = ["DRAFT", "ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID", "CANCELLED"];
+const salesInvoiceDocumentStatusOptions = ["DRAFT", "ISSUED", "CANCELLED"];
+const salesInvoicePaymentStatusOptions = ["UNPAID", "PARTIALLY_PAID", "PAID"];
+const salesInvoiceDispatchStatusOptions = ["NOT_DISPATCHED", "PARTIALLY_DISPATCHED", "FULLY_DISPATCHED"];
+/** @deprecated Prefer document/payment/dispatch filters. Kept for report query compat. */
+const salesInvoiceStatusOptions = [
+  ...salesInvoiceDocumentStatusOptions,
+  ...salesInvoicePaymentStatusOptions,
+  "DISPATCHED",
+];
 const orderAllocationStatusOptions = ["OPEN", "APPROVED", "CLOSED", "CANCELLED"];
 
 const reportStatusOptionsById = {
@@ -124,9 +132,9 @@ const reportStatusOptionsById = {
   "order-allocation": orderAllocationStatusOptions,
   backorder: orderAllocationStatusOptions,
   proforma: proformaStatusOptions,
-  "sales-invoice-summary": salesInvoiceStatusOptions,
-  "sales-invoice-article-wise": salesInvoiceStatusOptions,
-  "sales-branch-wise": salesInvoiceStatusOptions,
+  "sales-invoice-summary": salesInvoiceDocumentStatusOptions,
+  "sales-invoice-article-wise": salesInvoiceDocumentStatusOptions,
+  "sales-branch-wise": salesInvoiceDocumentStatusOptions,
 };
 
 const emptyLine = () => ({
@@ -908,8 +916,39 @@ function proformaDetailToEditableForm(p) {
   };
 }
 
+function salesInvoiceDocumentStatus(inv) {
+  if (!inv) return "DRAFT";
+  const doc = String(inv.documentStatus || "").trim().toUpperCase();
+  if (doc) return doc;
+  const st = String(inv.status || "").trim().toUpperCase();
+  if (st === "DRAFT" || st === "CANCELLED") return st;
+  return "ISSUED";
+}
+
+function salesInvoicePaymentStatus(inv) {
+  const raw = String(inv?.paymentStatus || "UNPAID").trim().toUpperCase();
+  if (raw === "PARTIAL") return "PARTIALLY_PAID";
+  return raw || "UNPAID";
+}
+
+function salesInvoiceDispatchStatus(inv) {
+  return String(inv?.dispatchStatus || "NOT_DISPATCHED").trim().toUpperCase() || "NOT_DISPATCHED";
+}
+
 function salesInvoiceIsDraft(inv) {
-  return !!inv && String(inv.status || "").trim().toUpperCase() === "DRAFT";
+  return salesInvoiceDocumentStatus(inv) === "DRAFT";
+}
+
+function salesInvoiceCanConvertToSalesDispatch(inv) {
+  return salesInvoiceDocumentStatus(inv) === "ISSUED";
+}
+
+function salesInvoiceCanReceivePayment(inv) {
+  return salesInvoiceDocumentStatus(inv) !== "CANCELLED" && salesInvoicePaymentStatus(inv) !== "PAID";
+}
+
+function formatSiStatusLabel(value) {
+  return String(value || "").replaceAll("_", " ");
 }
 
 function salesInvoiceDetailToEditableForm(inv) {
@@ -1006,8 +1045,11 @@ function statusBadgeClass(status = "") {
   ) {
     return "bg-amber-50 text-amber-700 ring-amber-200";
   }
-  if (["UNPAID"].includes(key)) {
+  if (["UNPAID", "NOT_DISPATCHED"].includes(key)) {
     return "bg-slate-100 text-slate-700 ring-slate-300";
+  }
+  if (["PARTIALLY_DISPATCHED", "FULLY_DISPATCHED", "DISPATCHED"].includes(key)) {
+    return "bg-sky-50 text-sky-700 ring-sky-200";
   }
   if (["CANCELLED", "REJECTED", "EXPIRED"].includes(key)) {
     return "bg-rose-50 text-rose-700 ring-rose-200";
@@ -1672,6 +1714,9 @@ export default function Sales() {
   const [activeTab, setActiveTab] = useState("Quotation");
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
+  const [siDocumentStatusFilter, setSiDocumentStatusFilter] = useState("");
+  const [siPaymentStatusFilter, setSiPaymentStatusFilter] = useState("");
+  const [siDispatchStatusFilter, setSiDispatchStatusFilter] = useState("");
   const [status, setStatus] = useState("");
   const [brandFilter, setBrandFilter] = useState("");
   const [verticalFilter, setVerticalFilter] = useState("");
@@ -1945,12 +1990,22 @@ export default function Sales() {
   });
 
   const { data: salesInvoiceData, isLoading: salesInvoiceLoading } = useQuery({
-    queryKey: ["sales-sales-invoices", page, search],
+    queryKey: [
+      "sales-sales-invoices",
+      page,
+      search,
+      siDocumentStatusFilter,
+      siPaymentStatusFilter,
+      siDispatchStatusFilter,
+    ],
     queryFn: () =>
       apiGetWithQuery("/sales/sales-invoices", {
         page,
         limit,
         search: search || undefined,
+        documentStatus: siDocumentStatusFilter || undefined,
+        paymentStatus: siPaymentStatusFilter || undefined,
+        dispatchStatus: siDispatchStatusFilter || undefined,
       }),
     enabled: activeTab === "Sales Invoice",
   });
@@ -5285,6 +5340,62 @@ ${GLOBAL_REPORT_TABLE_CSS}
               </table>
             </div>
           </div>
+          <div className="mb-3 flex flex-wrap items-end gap-2">
+            <label className="text-xs text-gray-600">
+              Document
+              <select
+                className="mt-1 block rounded-lg border px-2 py-1 text-sm"
+                value={siDocumentStatusFilter}
+                onChange={(e) => {
+                  setPage(1);
+                  setSiDocumentStatusFilter(e.target.value);
+                }}
+              >
+                <option value="">All</option>
+                {salesInvoiceDocumentStatusOptions.map((s) => (
+                  <option key={s} value={s}>
+                    {formatSiStatusLabel(s)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs text-gray-600">
+              Payment
+              <select
+                className="mt-1 block rounded-lg border px-2 py-1 text-sm"
+                value={siPaymentStatusFilter}
+                onChange={(e) => {
+                  setPage(1);
+                  setSiPaymentStatusFilter(e.target.value);
+                }}
+              >
+                <option value="">All</option>
+                {salesInvoicePaymentStatusOptions.map((s) => (
+                  <option key={s} value={s}>
+                    {formatSiStatusLabel(s)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs text-gray-600">
+              Dispatch
+              <select
+                className="mt-1 block rounded-lg border px-2 py-1 text-sm"
+                value={siDispatchStatusFilter}
+                onChange={(e) => {
+                  setPage(1);
+                  setSiDispatchStatusFilter(e.target.value);
+                }}
+              >
+                <option value="">All</option>
+                {salesInvoiceDispatchStatusOptions.map((s) => (
+                  <option key={s} value={s}>
+                    {formatSiStatusLabel(s)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
           <div className="overflow-hidden rounded-2xl border bg-white">
             <div className="overflow-x-auto">
               <table className="min-w-full text-left text-sm">
@@ -5292,9 +5403,11 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   <tr>
                     <th className="px-3 py-2">Invoice No</th>
                     <th className="px-3 py-2">Customer</th>
+                    <th className="px-3 py-2">Packing</th>
                     <th className="px-3 py-2">Date</th>
-                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Document</th>
                     <th className="px-3 py-2">Payment</th>
+                    <th className="px-3 py-2">Dispatch</th>
                     <th className="px-3 py-2 text-right">Grand Total</th>
                     <th className="px-3 py-2 text-right">Received</th>
                     <th className="px-3 py-2 text-right">Balance</th>
@@ -5304,13 +5417,13 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <tbody>
                   {salesInvoiceLoading ? (
                     <tr>
-                      <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={11} className="px-3 py-8 text-center text-gray-500">
                         Loading...
                       </td>
                     </tr>
                   ) : salesInvoiceRows.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
+                      <td colSpan={11} className="px-3 py-8 text-center text-gray-500">
                         No Sales Invoice found.
                       </td>
                     </tr>
@@ -5322,13 +5435,18 @@ ${GLOBAL_REPORT_TABLE_CSS}
                         <td className="px-3 py-2 font-mono text-xs">{r.linkedStorePackingNo || "—"}</td>
                         <td className="px-3 py-2">{r.invoiceDate ? new Date(r.invoiceDate).toLocaleDateString() : "—"}</td>
                         <td className="px-3 py-2">
-                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.status)}`}>
-                            {r.status}
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesInvoiceDocumentStatus(r))}`}>
+                            {formatSiStatusLabel(salesInvoiceDocumentStatus(r))}
                           </span>
                         </td>
                         <td className="px-3 py-2">
-                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(r.paymentStatus || "UNPAID")}`}>
-                            {r.paymentStatus || "UNPAID"}
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesInvoicePaymentStatus(r))}`}>
+                            {formatSiStatusLabel(salesInvoicePaymentStatus(r))}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesInvoiceDispatchStatus(r))}`}>
+                            {formatSiStatusLabel(salesInvoiceDispatchStatus(r))}
                           </span>
                         </td>
                         <td className="px-3 py-2 text-right">
@@ -5353,16 +5471,16 @@ ${GLOBAL_REPORT_TABLE_CSS}
                             </button>
                             <button
                               type="button"
-                              className="rounded-lg border px-2 py-1 text-xs"
-                              disabled={String(r.status || "").toUpperCase() !== "DISPATCHED"}
+                              className={`rounded-lg border px-2 py-1 text-xs ${!salesInvoiceCanConvertToSalesDispatch(r) ? "opacity-40" : ""}`}
+                              disabled={!salesInvoiceCanConvertToSalesDispatch(r)}
                               onClick={() => convertToSalesDispatchFromSalesInvoiceMutation.mutate(r._id)}
                             >
                               Convert to Sales Dispatch
                             </button>
                             <button
                               type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${["PAID", "CANCELLED"].includes(String(r.status || "").toUpperCase()) || String(r.paymentStatus || "").toUpperCase() === "PAID" ? "opacity-40" : ""}`}
-                              disabled={["PAID", "CANCELLED"].includes(String(r.status || "").toUpperCase()) || String(r.paymentStatus || "").toUpperCase() === "PAID"}
+                              className={`rounded-lg border px-2 py-1 text-xs ${!salesInvoiceCanReceivePayment(r) ? "opacity-40" : ""}`}
+                              disabled={!salesInvoiceCanReceivePayment(r)}
                               onClick={() => {
                                 const balance = Number(r.balanceAmount ?? r.grandTotal ?? 0);
                                 setReceiveInvoicePaymentModal({ open: true, invoice: r });
@@ -5388,9 +5506,9 @@ ${GLOBAL_REPORT_TABLE_CSS}
                             <button
                               type="button"
                               className={`rounded-lg border px-2 py-1 text-xs ${
-                                String(r.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""
+                                salesInvoiceDocumentStatus(r) === "CANCELLED" ? "opacity-40" : ""
                               }`}
-                              disabled={String(r.status || "").toUpperCase() === "CANCELLED"}
+                              disabled={salesInvoiceDocumentStatus(r) === "CANCELLED"}
                               title="Cancel invoice before dispatch"
                               onClick={async () => {
                                 setErr("");
@@ -7545,7 +7663,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
           ) : salesInvoiceIsDraft(salesInvoiceDetail) && detailSalesInvoiceDraftForm ? (
             <div className="space-y-4 text-sm">
               <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 ring-1 ring-amber-200">
-                Draft sales invoice - edit details and save. Set status to <b>DISPATCHED</b> to convert into Sales Dispatch.
+                Draft sales invoice — edit details and save. Payment and dispatch statuses are system-derived and not editable. Convert to Sales Dispatch after the document is issued.
               </div>
               <div className="grid gap-3 sm:grid-cols-4">
                 <FormField label="Invoice Date">
@@ -7688,22 +7806,35 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 </table>
               </div>
               <div className="flex flex-wrap gap-2">
-                <button type="button" className="rounded-xl border px-2 py-1 text-xs" disabled={putSalesInvoiceMutation.isPending} onClick={() => putSalesInvoiceMutation.mutate({ body: detailSalesInvoiceDraftForm })}>
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" disabled={putSalesInvoiceMutation.isPending} onClick={() => {
+                  const { status: _legacyStatus, paymentStatus: _ps, documentStatus: _ds, dispatchStatus: _disp, ...body } = detailSalesInvoiceDraftForm;
+                  putSalesInvoiceMutation.mutate({ body });
+                }}>
                   {putSalesInvoiceMutation.isPending ? "Saving..." : "Save changes"}
                 </button>
-                {salesInvoiceStatusOptions.map((s) => (
-                  <button key={s} type="button" className={`rounded-xl border px-2 py-1 text-xs ${s === detailSalesInvoiceDraftForm.status ? "bg-gray-100" : ""}`} onClick={() => putSalesInvoiceMutation.mutate({ body: { ...detailSalesInvoiceDraftForm, status: s } })}>
-                    {s}
-                  </button>
-                ))}
               </div>
             </div>
           ) : (
             <div className="space-y-3 text-sm">
-              <div className="grid gap-2 sm:grid-cols-3">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 <div><div className="text-gray-500">Invoice No</div><div className="font-mono">{salesInvoiceDetail.invoiceNo}</div></div>
                 <div><div className="text-gray-500">Customer</div><div>{salesInvoiceDetail.customerName}</div></div>
-                <div><div className="text-gray-500">Status</div><div><span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesInvoiceDetail.status)}`}>{salesInvoiceDetail.status}</span></div></div>
+                <div>
+                  <div className="text-gray-500">Document</div>
+                  <div>
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesInvoiceDocumentStatus(salesInvoiceDetail))}`}>
+                      {formatSiStatusLabel(salesInvoiceDocumentStatus(salesInvoiceDetail))}
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <div className="text-gray-500">Dispatch</div>
+                  <div>
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesInvoiceDispatchStatus(salesInvoiceDetail))}`}>
+                      {formatSiStatusLabel(salesInvoiceDispatchStatus(salesInvoiceDetail))}
+                    </span>
+                  </div>
+                </div>
               </div>
               <div className="grid gap-2 sm:grid-cols-4">
                 <div className="rounded-xl border bg-white p-3">
@@ -7721,8 +7852,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <div className="rounded-xl border bg-white p-3">
                   <div className="text-xs text-gray-500">Payment / Ageing</div>
                   <div className="flex flex-wrap gap-1">
-                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesInvoiceDetail.paymentStatus || "UNPAID")}`}>
-                      {salesInvoiceDetail.paymentStatus || "UNPAID"}
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(salesInvoicePaymentStatus(salesInvoiceDetail))}`}>
+                      {formatSiStatusLabel(salesInvoicePaymentStatus(salesInvoiceDetail))}
                     </span>
                     <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
                       {(() => {
@@ -7776,8 +7907,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-invoice", salesInvoiceDetail._id, true)}>Export PDF</button>
                 <button
                   type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${String(salesInvoiceDetail.status || "").toUpperCase() !== "DISPATCHED" ? "opacity-40" : ""}`}
-                  disabled={String(salesInvoiceDetail.status || "").toUpperCase() !== "DISPATCHED"}
+                  className={`rounded-xl border px-2 py-1 text-xs ${!salesInvoiceCanConvertToSalesDispatch(salesInvoiceDetail) ? "opacity-40" : ""}`}
+                  disabled={!salesInvoiceCanConvertToSalesDispatch(salesInvoiceDetail)}
                   onClick={() => convertToSalesDispatchFromSalesInvoiceMutation.mutate(salesInvoiceDetail._id)}
                 >
                   Convert to Sales Dispatch

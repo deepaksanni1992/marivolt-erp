@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../context/AuthContext.jsx";
 import { apiGet, apiPost } from "../../lib/api.js";
 
-const ELIGIBLE = new Set(["ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID"]);
+const LEGACY_ELIGIBLE = new Set(["ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID"]);
 
 function isAdminRole(role) {
   const r = String(role || "").toLowerCase();
@@ -19,13 +19,19 @@ function statusTone(status) {
   return "bg-slate-50 text-slate-700 ring-slate-200";
 }
 
+function isSalesInvoiceEligibleForCustomsUi(inv) {
+  const doc = String(inv?.documentStatus || "").toUpperCase();
+  if (doc === "ISSUED") return true;
+  if (doc === "CANCELLED" || doc === "DRAFT") return false;
+  return LEGACY_ELIGIBLE.has(String(inv?.status || "").toUpperCase());
+}
+
 export default function SalesCustomsInvoicePanel({ salesInvoice }) {
   const nav = useNavigate();
   const queryClient = useQueryClient();
   const { auth } = useAuth();
   const salesInvoiceId = salesInvoice?._id;
-  const status = String(salesInvoice?.status || "").toUpperCase();
-  const eligible = ELIGIBLE.has(status);
+  const eligible = isSalesInvoiceEligibleForCustomsUi(salesInvoice);
   const allowOverride = isAdminRole(auth?.user?.role);
 
   const customsStatusQ = useQuery({
