@@ -313,11 +313,12 @@ run("Frontend header includes ReceivedDate / BOEDate / FX", () => {
   assert.match(payload, /customsUnitPrice/);
 });
 
-run("FIFO sort helper unchanged (oldest invoice date first)", () => {
+run("FIFO sort helper uses CG2 customsFifo util", () => {
   const svc = fs.readFileSync(path.join(srcRoot, "services/customsService.js"), "utf8");
   assert.match(svc, /sortCustomsLotsForFifo/);
   assert.match(svc, /allocateCustomsStockFIFO/);
-  assert.match(svc, /FIFO: dated lots first/);
+  assert.match(svc, /customsFifo\.js/);
+  assert.match(svc, /allocateQtyAcrossLotsFifo/);
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

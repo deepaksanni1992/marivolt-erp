@@ -36,7 +36,8 @@ export async function getCustomsInvoice(req, res) {
   try {
     if (!isCustomsEnabled()) return disabled(res);
     const doc = await svc.getCustomsInvoiceById(req.companyId, req.params.id);
-    res.json({ enabled: true, item: doc });
+    const canOverride = await svc.userHasBoeOverridePermission(req);
+    res.json({ enabled: true, item: doc, canOverride });
   } catch (err) {
     res.status(404).json({ message: err.message || "Not found" });
   }
@@ -49,6 +50,20 @@ export async function getCustomsInvoiceBySalesInvoice(req, res) {
     res.json({ enabled: true, item: doc });
   } catch (err) {
     res.status(400).json({ message: err.message || "Failed to load customs invoice" });
+  }
+}
+
+export async function previewFromSalesInvoice(req, res) {
+  try {
+    if (!isCustomsEnabled()) return disabled(res);
+    const preview = await svc.previewCustomsAllocationFromSalesInvoice(
+      req,
+      req.params.salesInvoiceId,
+      req.body || {}
+    );
+    res.json({ enabled: true, ...preview });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to preview customs allocation" });
   }
 }
 

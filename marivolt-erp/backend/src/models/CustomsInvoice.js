@@ -3,19 +3,28 @@ import mongoose from "mongoose";
 const customsInvoiceItemAllocationSchema = new mongoose.Schema(
   {
     customsLotItemId: { type: mongoose.Schema.Types.ObjectId, ref: "CustomsLotItem", default: null },
+    customsLotId: { type: mongoose.Schema.Types.ObjectId, ref: "CustomsLot", default: null },
     qty: { type: Number, default: 0, min: 0 },
+    /** Snapshot of remaining lot qty after this allocation was computed (preview/post). */
+    remainingAfter: { type: Number, default: null },
     boeNumber: { type: String, default: "", trim: true },
+    boeDate: { type: Date, default: null },
     blNumber: { type: String, default: "", trim: true },
     awbNumber: { type: String, default: "", trim: true },
     supplierInvoiceNumber: { type: String, default: "", trim: true },
     supplierInvoiceDate: { type: Date, default: null },
+    receivedDate: { type: Date, default: null },
     supplierName: { type: String, default: "", trim: true },
     countryOfOrigin: { type: String, default: "", trim: true },
     hsCode: { type: String, default: "", trim: true },
     currency: { type: String, default: "USD", trim: true, uppercase: true },
     unitPrice: { type: Number, default: 0, min: 0 },
     weightKg: { type: Number, default: 0, min: 0 },
+    unitWeightKg: { type: Number, default: 0, min: 0 },
+    totalWeightKg: { type: Number, default: 0, min: 0 },
     totalValue: { type: Number, default: 0, min: 0 },
+    exchangeRateToAED: { type: Number, default: 0, min: 0 },
+    customsValueAED: { type: Number, default: 0, min: 0 },
     allocationMode: {
       type: String,
       enum: ["AUTO_FIFO", "MANUAL", "OVERRIDE_DUMMY"],

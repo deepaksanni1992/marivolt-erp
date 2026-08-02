@@ -70,7 +70,11 @@ async function loadLotMaps(lotItemIds) {
   const items = await CustomsLotItem.find({ _id: { $in: ids } }).lean();
   const lotIds = [...new Set(items.map((i) => String(i.customsLotId)))];
   const lots = lotIds.length
-    ? await CustomsLot.find({ _id: { $in: lotIds } }).select("supplierName documents boeNumber blNumber awbNumber supplierInvoiceNumber supplierInvoiceDate countryOfOrigin currency").lean()
+    ? await CustomsLot.find({ _id: { $in: lotIds } })
+        .select(
+          "supplierName documents boeNumber boeDate blNumber awbNumber supplierInvoiceNumber supplierInvoiceDate receivedDate countryOfOrigin currency exchangeRateToAED status companyId"
+        )
+        .lean()
     : [];
 
   return {
@@ -79,17 +83,26 @@ async function loadLotMaps(lotItemIds) {
   };
 }
 
-function buildAllocationRecord({ item, lot, qty, mode, override = {} }) {
-  const unitPrice = Number(override.unitPrice ?? item?.unitPrice) || 0;
-  const weightKg = Number(override.weightKg ?? item?.weightKg) || 0;
+function buildAllocationRecord({ item, lot, qty, mode, override = {}, remainingAfter = null }) {
+  const unitPrice = Number(override.unitPrice ?? item?.unitPrice ?? item?.customsUnitPrice) || 0;
+  const unitWeightKg =
+    Number(override.unitWeightKg ?? override.weightKg ?? item?.unitWeightKg ?? item?.weightKg) || 0;
   const q = Number(qty) || 0;
   const docs = lot?.documents || {};
   const documentLinks = [docs.blDocumentId, docs.supplierInvoiceDocumentId].filter(Boolean);
+  const fx =
+    Number(override.exchangeRateToAED ?? item?.exchangeRateToAED ?? lot?.exchangeRateToAED) || 0;
+  const totalValue = q * unitPrice;
+  const totalWeightKg = q * unitWeightKg;
+  const customsValueAED = fx > 0 ? totalValue * fx : Number(item?.customsValueAED) || 0;
 
   return {
     customsLotItemId: item?._id || null,
+    customsLotId: item?.customsLotId || lot?._id || null,
     qty: q,
+    remainingAfter: remainingAfter == null ? null : Number(remainingAfter),
     boeNumber: t(override.boeNumber || item?.boeNumber || lot?.boeNumber),
+    boeDate: override.boeDate || item?.boeDate || lot?.boeDate || null,
     blNumber: t(override.blNumber || item?.blNumber || lot?.blNumber),
     awbNumber: t(override.awbNumber || item?.awbNumber || lot?.awbNumber),
     supplierInvoiceNumber: t(
@@ -97,17 +110,53 @@ function buildAllocationRecord({ item, lot, qty, mode, override = {} }) {
     ),
     supplierInvoiceDate:
       override.supplierInvoiceDate || item?.supplierInvoiceDate || lot?.supplierInvoiceDate || null,
+    receivedDate: override.receivedDate || item?.receivedDate || lot?.receivedDate || null,
     supplierName: t(override.supplierName || lot?.supplierName),
     countryOfOrigin: upper(override.countryOfOrigin || item?.countryOfOrigin || lot?.countryOfOrigin),
     hsCode: upper(override.hsCode || item?.hsCode),
     currency: upper(override.currency || item?.currency || lot?.currency || "USD"),
     unitPrice,
-    weightKg,
-    totalValue: q * unitPrice,
+    weightKg: unitWeightKg,
+    unitWeightKg,
+    totalWeightKg,
+    totalValue,
+    exchangeRateToAED: fx,
+    customsValueAED,
     allocationMode: mode,
     overrideReason: t(override.overrideReason),
     documentLinks,
   };
+}
+
+function assertManualAllocationAllowed({ item, lot, qty, companyId }) {
+  const take = Number(qty) || 0;
+  if (take < 0) throw new Error("Allocated quantity cannot be negative");
+  if (take <= 0) throw new Error("Allocated quantity must be greater than zero");
+  if (!item) throw new Error("Customs lot item not found for allocation");
+
+  if (String(item.companyId) !== String(companyId)) {
+    throw new Error("Cannot allocate customs stock from another company");
+  }
+  if (lot && String(lot.companyId) !== String(companyId)) {
+    throw new Error("Cannot allocate customs lot from another company");
+  }
+
+  const lotStatus = String(lot?.status || "").toUpperCase();
+  const itemStatus = String(item.status || "").toUpperCase();
+  if (lotStatus === "CANCELLED" || itemStatus === "CANCELLED") {
+    throw new Error("Cannot allocate from a cancelled customs lot");
+  }
+  if (lotStatus === "CLOSED") {
+    throw new Error("Cannot allocate from a closed customs lot");
+  }
+
+  // Manual BOE override may choose which lots, but never exceed remaining qty.
+  const available = Number(item.qtyAvailable) || 0;
+  if (take > available + 1e-6) {
+    throw new Error(
+      `Allocated qty cannot exceed remaining qty for ${item.articleNumber} (need ${take}, remaining ${available})`,
+    );
+  }
 }
 
 async function fifoAllocateLine({ companyId, articleNumber, partNumber, qty, session }) {
@@ -134,7 +183,7 @@ async function fifoAllocateLine({ companyId, articleNumber, partNumber, qty, ses
 }
 
 function mapFifoToAllocations(fifoRows, lotMap, itemMap) {
-  return fifoRows.map(({ qty, item, customsLotItemId }) => {
+  return fifoRows.map(({ qty, item, customsLotItemId, remainingAfter }) => {
     const lot = lotMap.get(String(item?.customsLotId)) || lotMap.get(String(item?.customsLotId?._id));
     const lotItem = itemMap.get(String(customsLotItemId || item?._id)) || item;
     return buildAllocationRecord({
@@ -142,6 +191,7 @@ function mapFifoToAllocations(fifoRows, lotMap, itemMap) {
       lot,
       qty,
       mode: "AUTO_FIFO",
+      remainingAfter,
     });
   });
 }
@@ -154,6 +204,7 @@ async function buildItemsFromSalesInvoice(salesInvoice, { companyId, session, al
   }
 
   const items = [];
+  const warnings = [];
   for (const line of salesInvoice.lines || []) {
     const lineId = line._id;
     const qtyExported = Number(line.qty) || 0;
@@ -165,11 +216,17 @@ async function buildItemsFromSalesInvoice(salesInvoice, { companyId, session, al
 
     let allocations = [];
     if (overrideRow?.allocations?.length) {
+      if (!allowOverride && overrideRow.allocations.some((a) => (a.allocationMode || "") === "OVERRIDE_DUMMY" || a.overrideReason)) {
+        throw new Error("Manual BOE override / dummy allocation requires CUSTOMS.override (BOE Override) permission");
+      }
       const lotItemIds = overrideRow.allocations.map((a) => a.customsLotItemId).filter(Boolean);
       const { lotMap, itemMap } = await loadLotMaps(lotItemIds);
       for (const alloc of overrideRow.allocations) {
         const mode = alloc.allocationMode || (alloc.overrideReason ? "OVERRIDE_DUMMY" : "MANUAL");
         if (mode === "OVERRIDE_DUMMY" || !alloc.customsLotItemId) {
+          if (!allowOverride) {
+            throw new Error("Override allocation requires CUSTOMS.override (BOE Override) permission");
+          }
           allocations.push(
             buildAllocationRecord({
               item: null,
@@ -183,22 +240,17 @@ async function buildItemsFromSalesInvoice(salesInvoice, { companyId, session, al
         }
         const item = itemMap.get(String(alloc.customsLotItemId));
         const lot = lotMap.get(String(item?.customsLotId));
-        if (!item) throw new Error(`Customs lot item not found for allocation`);
         const take = Number(alloc.qty) || 0;
-        if (take > Number(item.qtyAvailable) + 1e-6) {
-          if (!allowOverride) {
-            throw new Error(
-              `Insufficient customs stock for ${articleNumber} on lot item (need ${take}, available ${item.qtyAvailable})`,
-            );
-          }
-        }
+        assertManualAllocationAllowed({ item, lot, qty: take, companyId });
+        const remainingAfter = Math.max(0, (Number(item.qtyAvailable) || 0) - take);
         allocations.push(
           buildAllocationRecord({
             item,
             lot,
             qty: take,
-            mode: mode === "OVERRIDE_DUMMY" ? "OVERRIDE_DUMMY" : "MANUAL",
+            mode: "MANUAL",
             override: alloc,
+            remainingAfter,
           }),
         );
       }
@@ -214,8 +266,18 @@ async function buildItemsFromSalesInvoice(salesInvoice, { companyId, session, al
         const lotItemIds = fifo.map((f) => f.customsLotItemId);
         const { lotMap, itemMap } = await loadLotMaps(lotItemIds);
         allocations = mapFifoToAllocations(fifo, lotMap, itemMap);
+        if (allocations.length > 1) {
+          warnings.push({
+            articleNumber,
+            message: `Split across ${allocations.length} BOE lots (FIFO)`,
+          });
+        }
       } catch (err) {
         if (!allowOverride) throw err;
+        warnings.push({
+          articleNumber,
+          message: err.message || "Insufficient customs stock — using override placeholder",
+        });
         allocations = [
           buildAllocationRecord({
             item: null,
@@ -246,27 +308,26 @@ async function buildItemsFromSalesInvoice(salesInvoice, { companyId, session, al
     });
   }
 
-  return items;
+  return { items, warnings };
 }
 
 export async function listAvailableCustomsLots(companyId, { articleNumber, partNumber = "" } = {}) {
   if (!articleNumber) throw new Error("articleNumber is required");
 
-  const filter = customsWithCompanyId(companyId, {
-    articleNumber: upper(articleNumber),
-    qtyAvailable: { $gt: 0 },
-    status: { $in: ["IN_STOCK", "PARTIAL"] },
+  const { getAvailableCustomsLots } = await import("./customsService.js");
+  const items = await getAvailableCustomsLots({
+    companyId,
+    articleNumber,
+    partNumber,
+    limit: 500,
   });
-  if (partNumber) filter.partNumber = upper(partNumber);
-
-  const items = await CustomsLotItem.find(filter)
-    .sort({ supplierInvoiceDate: 1, createdAt: 1 })
-    .lean();
 
   const lotIds = [...new Set(items.map((i) => String(i.customsLotId)))];
   const lots = lotIds.length
     ? await CustomsLot.find({ _id: { $in: lotIds } })
-        .select("supplierName supplierInvoiceNumber supplierInvoiceDate countryOfOrigin documents boeNumber blNumber awbNumber")
+        .select(
+          "supplierName supplierInvoiceNumber supplierInvoiceDate receivedDate countryOfOrigin documents boeNumber boeDate blNumber awbNumber exchangeRateToAED status"
+        )
         .lean()
     : [];
   const lotMap = new Map(lots.map((l) => [String(l._id), l]));
@@ -277,19 +338,91 @@ export async function listAvailableCustomsLots(companyId, { articleNumber, partN
       customsLotItemId: item._id,
       customsLotId: item.customsLotId,
       boeNumber: item.boeNumber || lot.boeNumber || "",
+      boeDate: item.boeDate || lot.boeDate || null,
       blNumber: item.blNumber || lot.blNumber || "",
       awbNumber: item.awbNumber || lot.awbNumber || "",
       supplierInvoiceNumber: item.supplierInvoiceNumber || lot.supplierInvoiceNumber || "",
       supplierInvoiceDate: item.supplierInvoiceDate || lot.supplierInvoiceDate || null,
+      receivedDate: item.receivedDate || lot.receivedDate || null,
       supplierName: lot.supplierName || "",
       qtyImported: item.qtyImported,
       qtyAvailable: item.qtyAvailable,
       countryOfOrigin: item.countryOfOrigin || lot.countryOfOrigin || "",
+      hsCode: item.hsCode || "",
+      unitPrice: item.unitPrice || 0,
+      unitWeightKg: item.unitWeightKg || item.weightKg || 0,
+      exchangeRateToAED: item.exchangeRateToAED || lot.exchangeRateToAED || 0,
       articleNumber: item.articleNumber,
       partNumber: item.partNumber,
       documents: lot.documents || {},
+      status: item.status,
+      lotStatus: lot.status || "",
     };
   });
+}
+
+/** Preview FIFO/manual allocation without creating a draft (CG2). */
+export async function previewCustomsAllocationFromSalesInvoice(req, salesInvoiceId, body = {}) {
+  if (!isCustomsEnabled()) throw new Error("Customs module is disabled");
+
+  const salesInvoice = await loadSalesInvoice(req.companyId, salesInvoiceId);
+  const existing = await CustomsInvoice.findOne(
+    customsWithCompanyId(req.companyId, { salesInvoiceId, status: { $ne: "CANCELLED" } }),
+  )
+    .select("_id customsInvoiceNumber status")
+    .lean();
+
+  const allowOverride = await userCanOverride(req);
+  const { items, warnings } = await buildItemsFromSalesInvoice(salesInvoice, {
+    companyId: req.companyId,
+    session: null,
+    allowOverride,
+    overrideLines: body.items,
+  });
+
+  const previewLines = items.map((line) => ({
+    articleNumber: line.articleNumber,
+    partNumber: line.partNumber,
+    description: line.description,
+    requestedQty: line.qtyExported,
+    allocatedBoeCount: line.allocations.length,
+    allocations: line.allocations.map((a) => ({
+      boeNumber: a.boeNumber,
+      boeDate: a.boeDate,
+      allocatedQty: a.qty,
+      remainingAfter: a.remainingAfter,
+      supplierInvoiceNumber: a.supplierInvoiceNumber,
+      supplierInvoiceDate: a.supplierInvoiceDate,
+      countryOfOrigin: a.countryOfOrigin,
+      hsCode: a.hsCode,
+      unitPrice: a.unitPrice,
+      totalValue: a.totalValue,
+      customsValueAED: a.customsValueAED,
+      unitWeightKg: a.unitWeightKg,
+      totalWeightKg: a.totalWeightKg,
+      allocationMode: a.allocationMode,
+      customsLotItemId: a.customsLotItemId,
+    })),
+    customsValue: line.allocations.reduce((s, a) => s + (Number(a.totalValue) || 0), 0),
+    customsValueAED: line.allocations.reduce((s, a) => s + (Number(a.customsValueAED) || 0), 0),
+    totalWeightKg: line.allocations.reduce((s, a) => s + (Number(a.totalWeightKg) || 0), 0),
+  }));
+
+  return {
+    salesInvoiceId: salesInvoice._id,
+    salesInvoiceNumber: salesInvoice.invoiceNo || salesInvoice.invoiceNumber,
+    customerName: salesInvoice.customerName || "",
+    existingCustomsInvoice: existing || null,
+    canOverride: allowOverride,
+    warnings,
+    lines: previewLines,
+    totals: {
+      requestedQty: previewLines.reduce((s, l) => s + (Number(l.requestedQty) || 0), 0),
+      customsValue: previewLines.reduce((s, l) => s + (Number(l.customsValue) || 0), 0),
+      customsValueAED: previewLines.reduce((s, l) => s + (Number(l.customsValueAED) || 0), 0),
+      totalWeightKg: previewLines.reduce((s, l) => s + (Number(l.totalWeightKg) || 0), 0),
+    },
+  };
 }
 
 export async function createCustomsInvoiceFromSalesInvoice(req, salesInvoiceId, body = {}) {
@@ -299,7 +432,7 @@ export async function createCustomsInvoiceFromSalesInvoice(req, salesInvoiceId, 
   await assertNoActiveCustomsInvoice(req.companyId, salesInvoiceId);
 
   const allowOverride = await userCanOverride(req);
-  const items = await buildItemsFromSalesInvoice(salesInvoice, {
+  const { items } = await buildItemsFromSalesInvoice(salesInvoice, {
     companyId: req.companyId,
     session: null,
     allowOverride,
@@ -355,12 +488,13 @@ export async function updateCustomsInvoiceDraft(req, customsInvoiceId, body = {}
   const allowOverride = await userCanOverride(req);
 
   if (Array.isArray(body.items) && body.items.length) {
-    doc.items = await buildItemsFromSalesInvoice(salesInvoice, {
+    const built = await buildItemsFromSalesInvoice(salesInvoice, {
       companyId: req.companyId,
       session: null,
       allowOverride,
       overrideLines: body.items,
     });
+    doc.items = built.items;
   }
 
   if (body.remarks != null) doc.remarks = t(body.remarks);
@@ -375,7 +509,7 @@ export async function updateCustomsInvoiceDraft(req, customsInvoiceId, body = {}
     entityId: doc._id,
     documentNo: doc.customsInvoiceNumber,
     description: `Customs invoice ${doc.customsInvoiceNumber} updated (manual/override allocation)`,
-    metadata: { manual: true },
+    metadata: { manual: true, boeOverride: allowOverride },
   });
 
   return doc.toObject();
@@ -385,6 +519,31 @@ function deriveItemStatus(qtyAvailable, qtyImported) {
   if (qtyAvailable <= 0.000001) return "CONSUMED";
   if (qtyAvailable + 0.000001 < qtyImported) return "PARTIAL";
   return "IN_STOCK";
+}
+
+function deriveLotStatusFromItems(items = []) {
+  if (!items.length) return "OPEN";
+  const active = items.filter((i) => String(i.status) !== "CANCELLED");
+  if (!active.length) return "CANCELLED";
+  if (active.every((i) => Number(i.qtyAvailable) <= 0.000001)) return "CONSUMED";
+  if (active.some((i) => Number(i.qtyConsumed) > 0)) return "PARTIAL";
+  return "OPEN";
+}
+
+async function refreshCustomsLotStatus(companyId, customsLotId, session) {
+  if (!customsLotId) return;
+  const lot = await CustomsLot.findOne(customsWithCompanyId(companyId, { _id: customsLotId })).session(
+    session,
+  );
+  if (!lot || String(lot.status).toUpperCase() === "CANCELLED") return;
+  const items = await CustomsLotItem.find(
+    customsWithCompanyId(companyId, { customsLotId, status: { $ne: "CANCELLED" } }),
+  )
+    .select("qtyAvailable qtyConsumed status")
+    .session(session)
+    .lean();
+  lot.status = deriveLotStatusFromItems(items);
+  await lot.save({ session });
 }
 
 export async function finalizeCustomsInvoice(req, customsInvoiceId) {
@@ -398,9 +557,15 @@ export async function finalizeCustomsInvoice(req, customsInvoiceId) {
         customsWithCompanyId(req.companyId, { _id: customsInvoiceId }),
       ).session(session);
       if (!doc) throw new Error("Customs invoice not found");
+      // Idempotent: already posted
+      if (doc.status === "POSTED") {
+        result = doc.toObject();
+        return;
+      }
       if (doc.status !== "DRAFT") throw new Error("Only DRAFT customs invoices can be finalized");
 
       const allowOverride = await userCanOverride(req);
+      const touchedLotIds = new Set();
 
       for (const line of doc.items || []) {
         for (const alloc of line.allocations || []) {
@@ -409,7 +574,7 @@ export async function finalizeCustomsInvoice(req, customsInvoiceId) {
 
           if (alloc.allocationMode === "OVERRIDE_DUMMY" || !alloc.customsLotItemId) {
             if (!allowOverride && alloc.allocationMode === "OVERRIDE_DUMMY") {
-              throw new Error("Override allocation requires CUSTOMS.override permission");
+              throw new Error("Override allocation requires CUSTOMS.override (BOE Override) permission");
             }
             continue;
           }
@@ -430,6 +595,7 @@ export async function finalizeCustomsInvoice(req, customsInvoiceId) {
           item.customStockBalance = item.qtyAvailable;
           item.status = deriveItemStatus(item.qtyAvailable, item.qtyImported);
           await item.save({ session });
+          touchedLotIds.add(String(item.customsLotId));
 
           await createCustomsMovement({
             session,
@@ -447,6 +613,10 @@ export async function finalizeCustomsInvoice(req, customsInvoiceId) {
             remarks: `Outbound for customs invoice ${doc.customsInvoiceNumber} / sales ${doc.salesInvoiceNumber}`,
           });
         }
+      }
+
+      for (const lotId of touchedLotIds) {
+        await refreshCustomsLotStatus(req.companyId, lotId, session);
       }
 
       doc.status = "POSTED";
@@ -485,8 +655,10 @@ export async function cancelCustomsInvoice(req, customsInvoiceId, reason = "") {
       if (doc.status === "CANCELLED") throw new Error("Customs invoice already cancelled");
 
       if (doc.status === "POSTED") {
+        const touchedLotIds = new Set();
         for (const line of doc.items || []) {
           for (const alloc of line.allocations || []) {
+            // Restore exact stored allocation qty/BOE — do not recalculate FIFO
             const qty = Number(alloc.qty) || 0;
             if (qty <= 0 || !alloc.customsLotItemId) continue;
 
@@ -500,6 +672,7 @@ export async function cancelCustomsInvoice(req, customsInvoiceId, reason = "") {
             item.customStockBalance = item.qtyAvailable;
             item.status = deriveItemStatus(item.qtyAvailable, item.qtyImported);
             await item.save({ session });
+            touchedLotIds.add(String(item.customsLotId));
 
             await createCustomsMovement({
               session,
@@ -517,6 +690,9 @@ export async function cancelCustomsInvoice(req, customsInvoiceId, reason = "") {
               remarks: t(reason) || `Customs invoice ${doc.customsInvoiceNumber} cancelled — restore stock`,
             });
           }
+        }
+        for (const lotId of touchedLotIds) {
+          await refreshCustomsLotStatus(req.companyId, lotId, session);
         }
       }
 
@@ -596,13 +772,26 @@ export function buildCustomsInvoicePrintRows(invoice) {
         description: line.description || line.partName,
         qty: alloc.qty,
         boeNumber: alloc.boeNumber,
+        boeDate: alloc.boeDate,
         blNumber: alloc.blNumber,
         awbNumber: alloc.awbNumber,
         supplierInvoiceNumber: alloc.supplierInvoiceNumber,
+        supplierInvoiceDate: alloc.supplierInvoiceDate,
         countryOfOrigin: alloc.countryOfOrigin,
         hsCode: alloc.hsCode,
+        unitWeightKg: alloc.unitWeightKg || alloc.weightKg,
+        totalWeightKg: alloc.totalWeightKg,
+        unitPrice: alloc.unitPrice,
+        totalValue: alloc.totalValue,
+        customsValueAED: alloc.customsValueAED,
+        allocationMode: alloc.allocationMode,
       });
     }
   }
   return rows;
+}
+
+/** Alias: CUSTOMS.override is the BOE Override permission. */
+export async function userHasBoeOverridePermission(req) {
+  return userCanOverride(req);
 }

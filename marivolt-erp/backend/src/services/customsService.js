@@ -15,10 +15,23 @@ import {
   toPersistedGrnLineCustoms,
   validateCustomsCaptureForGrn,
 } from "../utils/customsGrnFieldModel.js";
+import {
+  compareCustomsFifoOrder,
+  sortCustomsLotsForFifo,
+  allocateQtyAcrossLotsFifo,
+  CUSTOMS_FIFO_ORDER_KEYS,
+} from "../utils/customsFifo.js";
 import { hasPermission } from "./roleService.js";
+import GRN from "../models/GRN.js";
 
 export { isCustomsEnabled };
 export { CustomsGrnValidationError };
+export {
+  compareCustomsFifoOrder,
+  sortCustomsLotsForFifo,
+  allocateQtyAcrossLotsFifo,
+  CUSTOMS_FIFO_ORDER_KEYS,
+};
 
 function t(v) {
   return String(v ?? "").trim();
@@ -576,38 +589,9 @@ export async function createCustomsMovement({
   return rows[0];
 }
 
-function hasValidSupplierInvoiceDate(item) {
-  const raw = item?.supplierInvoiceDate;
-  if (raw == null || raw === "") return false;
-  const d = raw instanceof Date ? raw : new Date(raw);
-  return !Number.isNaN(d.getTime());
-}
-
-/** FIFO: dated lots first (oldest invoice date), null dates last, then createdAt, then customsLotRef. */
-export function compareCustomsFifoOrder(a, b) {
-  const aDated = hasValidSupplierInvoiceDate(a);
-  const bDated = hasValidSupplierInvoiceDate(b);
-  if (aDated !== bDated) return aDated ? -1 : 1;
-
-  if (aDated && bDated) {
-    const ad = new Date(a.supplierInvoiceDate).getTime();
-    const bd = new Date(b.supplierInvoiceDate).getTime();
-    if (ad !== bd) return ad - bd;
-  }
-
-  const ac = new Date(a?.createdAt || 0).getTime();
-  const bc = new Date(b?.createdAt || 0).getTime();
-  if (ac !== bc) return ac - bc;
-
-  return String(a?.customsLotRef || "").localeCompare(String(b?.customsLotRef || ""));
-}
-
-export function sortCustomsLotsForFifo(items = []) {
-  return [...items].sort(compareCustomsFifoOrder);
-}
-
 /**
- * List available customs lot items for an article (FIFO order).
+ * List available customs lot items for an article (CG2 FIFO order).
+ * Enriches rows with lot/GRN dates required by customsFifo comparator.
  */
 export async function getAvailableCustomsLots({
   companyId,
@@ -627,11 +611,52 @@ export async function getAvailableCustomsLots({
   const q = CustomsLotItem.find(filter).limit(cap);
   if (session) q.session(session);
   const rows = await q.lean();
-  return sortCustomsLotsForFifo(rows);
+  if (!rows.length) return [];
+
+  const lotIds = [...new Set(rows.map((r) => String(r.customsLotId)).filter(Boolean))];
+  const grnIds = [...new Set(rows.map((r) => String(r.grnId || "")).filter((id) => mongoose.Types.ObjectId.isValid(id)))];
+
+  const [lots, grns] = await Promise.all([
+    lotIds.length
+      ? CustomsLot.find({ _id: { $in: lotIds } })
+          .select("boeNumber boeDate supplierInvoiceDate receivedDate status")
+          .lean()
+      : [],
+    grnIds.length
+      ? GRN.find({ _id: { $in: grnIds } })
+          .select("createdAt")
+          .lean()
+      : [],
+  ]);
+
+  const lotMap = new Map(lots.map((l) => [String(l._id), l]));
+  const grnMap = new Map(grns.map((g) => [String(g._id), g]));
+
+  const enriched = rows.map((item) => {
+    const lot = lotMap.get(String(item.customsLotId)) || {};
+    const grn = grnMap.get(String(item.grnId || "")) || {};
+    return {
+      ...item,
+      boeDate: item.boeDate || lot.boeDate || null,
+      supplierInvoiceDate: item.supplierInvoiceDate || lot.supplierInvoiceDate || null,
+      receivedDate: item.receivedDate || lot.receivedDate || null,
+      grnCreatedAt: grn.createdAt || item.createdAt || null,
+      customsLotItemId: item._id,
+      lotStatus: lot.status || "",
+    };
+  });
+
+  // Exclude closed / cancelled parent lots from outbound FIFO pool
+  const open = enriched.filter((item) => {
+    const st = String(item.lotStatus || "").toUpperCase();
+    return st !== "CLOSED" && st !== "CANCELLED";
+  });
+
+  return sortCustomsLotsForFifo(open);
 }
 
 /**
- * Allocate customs stock using FIFO (oldest supplier invoice / GRN first).
+ * Allocate customs stock using CG2 FIFO (split across BOEs as needed).
  */
 export async function allocateCustomsStockFIFO({
   companyId,
@@ -651,25 +676,10 @@ export async function allocateCustomsStockFIFO({
     session,
   });
 
-  let remaining = need;
-  const allocations = [];
-  for (const item of items) {
-    if (remaining <= 0.000001) break;
-    const available = Number(item.qtyAvailable) || 0;
-    if (available <= 0) continue;
-    const take = Math.min(available, remaining);
-    allocations.push({
-      customsLotItemId: item._id,
-      customsLotId: item.customsLotId,
-      qty: take,
-      item,
-    });
-    remaining -= take;
-  }
-
-  if (remaining > 0.000001) {
+  const { allocations, shortfall } = allocateQtyAcrossLotsFifo(items, need);
+  if (shortfall > 0.000001) {
     throw new Error(
-      `Insufficient customs stock for ${upper(articleNumber)} (short by ${remaining.toFixed(4)})`,
+      `Insufficient customs stock for ${upper(articleNumber)} (short by ${shortfall.toFixed(4)})`,
     );
   }
 
