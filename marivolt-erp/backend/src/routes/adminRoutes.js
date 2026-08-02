@@ -30,9 +30,8 @@ const adminRoles = ["super_admin", "company_admin", "admin"];
 
 const router = express.Router();
 
-// /admin/companies endpoints — listing must be reachable without
-// `requireCompanyContext` because super_admin uses it before/after
-// switching companies. Mutations still require the admin enum.
+// /admin/companies — S0: membership-scoped list/get; admin-only update; super-only create.
+// No requireCompanyContext so company switch / settings still work with token company.
 router.get("/companies", requireAuth, masters.listCompanies);
 router.get("/companies/:id", requireAuth, masters.getCompany);
 router.post(

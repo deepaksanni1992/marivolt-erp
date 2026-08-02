@@ -8,20 +8,50 @@
 import Company from "../models/Company.js";
 import Branch from "../models/Branch.js";
 import Warehouse from "../models/Warehouse.js";
+import User from "../models/User.js";
 import { writeAudit } from "../services/auditService.js";
+import { isAdminRole, isSuperAdminRole } from "../utils/authAdminPolicy.js";
 
 function withCompany(req, extra = {}) {
   return { ...extra, companyId: req.companyId };
+}
+
+async function resolveActorAllowedCompanyIds(req) {
+  const user = await User.findById(req.user?.id).select("role allowedCompanies").lean();
+  if (!user) return { user: null, allowedIds: [] };
+  return {
+    user,
+    allowedIds: (user.allowedCompanies || []).map((x) => String(x)),
+  };
+}
+
+function assertCompanyMembership(allowedIds, companyId, actorRole) {
+  if (isSuperAdminRole(actorRole)) return true;
+  return allowedIds.includes(String(companyId));
 }
 
 /* ----------------------------------------------------------------- */
 /* Company                                                            */
 /* ----------------------------------------------------------------- */
 
+/**
+ * S0 — List companies:
+ * - super_admin: all companies
+ * - company_admin / admin: membership only (not global directory)
+ * - ordinary users: membership only (UI company switch / read)
+ */
 export async function listCompanies(req, res) {
   try {
+    const { user, allowedIds } = await resolveActorAllowedCompanyIds(req);
+    if (!user) return res.status(401).json({ message: "User not found" });
+
     const filter = {};
     if (req.query.activeOnly === "true") filter.isActive = true;
+    if (!isSuperAdminRole(user.role)) {
+      if (!allowedIds.length) return res.json({ items: [] });
+      filter._id = { $in: allowedIds };
+    }
+
     const items = await Company.find(filter).sort({ name: 1 }).lean();
     res.json({ items });
   } catch (err) {
@@ -31,6 +61,11 @@ export async function listCompanies(req, res) {
 
 export async function getCompany(req, res) {
   try {
+    const { user, allowedIds } = await resolveActorAllowedCompanyIds(req);
+    if (!user) return res.status(401).json({ message: "User not found" });
+    if (!assertCompanyMembership(allowedIds, req.params.id, user.role)) {
+      return res.status(403).json({ message: "Forbidden", code: "COMPANY_ACCESS_DENIED" });
+    }
     const doc = await Company.findById(req.params.id).lean();
     if (!doc) return res.status(404).json({ message: "Company not found" });
     res.json(doc);
@@ -41,6 +76,9 @@ export async function getCompany(req, res) {
 
 export async function createCompany(req, res) {
   try {
+    if (!isSuperAdminRole(req.user?.role)) {
+      return res.status(403).json({ message: "Forbidden", code: "SUPER_ADMIN_REQUIRED" });
+    }
     const payload = sanitiseCompanyPayload(req.body || {});
     if (!payload.name || !payload.code) {
       return res.status(400).json({ message: "Company name and code are required" });
@@ -69,11 +107,41 @@ export async function createCompany(req, res) {
 
 export async function updateCompany(req, res) {
   try {
+    if (!isAdminRole(req.user?.role)) {
+      return res.status(403).json({ message: "Forbidden", code: "ADMIN_REQUIRED" });
+    }
+    const { user, allowedIds } = await resolveActorAllowedCompanyIds(req);
+    if (!user) return res.status(401).json({ message: "User not found" });
+    if (!assertCompanyMembership(allowedIds, req.params.id, user.role)) {
+      return res.status(403).json({
+        message: "Cannot update a company outside your permitted companies",
+        code: "COMPANY_UPDATE_FORBIDDEN",
+      });
+    }
+
     const before = await Company.findById(req.params.id).lean();
     if (!before) return res.status(404).json({ message: "Company not found" });
+
+    // Reject protected / system identity fields if present in body.
+    const prohibited = ["_id", "id", "createdAt", "updatedAt", "__v"].filter((k) => k in (req.body || {}));
+    if (prohibited.length) {
+      return res.status(400).json({
+        message: `Protected fields are not allowed: ${prohibited.join(", ")}`,
+        code: "PROTECTED_FIELD_REJECTED",
+      });
+    }
+
     const payload = sanitiseCompanyPayload(req.body || {});
+    // Non-super admins cannot rename company code (identity).
+    if (!isSuperAdminRole(user.role) && payload.code && payload.code.toUpperCase() !== String(before.code || "").toUpperCase()) {
+      return res.status(403).json({
+        message: "Only a super_admin may change company code",
+        code: "COMPANY_CODE_CHANGE_FORBIDDEN",
+      });
+    }
     if (payload.code) payload.code = payload.code.toUpperCase();
-    const doc = await Company.findByIdAndUpdate(req.params.id, payload, { new: true });
+
+    const doc = await Company.findByIdAndUpdate(req.params.id, { $set: payload }, { new: true });
     await writeAudit(req, {
       action: "UPDATE",
       module: "SETTINGS",
@@ -83,6 +151,7 @@ export async function updateCompany(req, res) {
       description: `Company ${doc.code} updated`,
       beforeData: pick(before, ["name", "code", "isActive", "country", "trnNo"]),
       afterData: pick(doc, ["name", "code", "isActive", "country", "trnNo"]),
+      metadata: { updatedBy: req.user?.email || "" },
     });
     res.json(doc);
   } catch (err) {

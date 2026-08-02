@@ -28,8 +28,19 @@ function parseDate(value, fallback = null) {
   return Number.isNaN(d.getTime()) ? fallback : d;
 }
 
-function normalizeFilters(req) {
-  const companyId = String(req.query.company || req.companyId || "");
+/**
+ * S0 — Tenant isolation: always use authenticated company context.
+ * Ignore/reject query/body company overrides on ordinary analytics endpoints.
+ */
+export function normalizeFilters(req) {
+  const companyId = String(req.companyId || "").trim();
+  if (!companyId) {
+    const err = new Error("Company context required");
+    err.statusCode = 403;
+    err.code = "COMPANY_CONTEXT_REQUIRED";
+    throw err;
+  }
+  // Deliberately ignore req.query.company / req.body.companyId overrides.
   const branchId = String(req.query.branch || "").trim();
   const warehouse = String(req.query.warehouse || "").trim().toUpperCase();
   const customer = String(req.query.customer || "").trim();
@@ -455,7 +466,7 @@ export async function getAnalyticsDashboard(req, res) {
     cache.set(cacheKey, { expiresAt: Date.now() + CACHE_MS, payload });
     res.json(payload);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(err.statusCode || 500).json({ message: err.message, code: err.code || undefined });
   }
 }
 
@@ -522,7 +533,7 @@ export async function getAnalyticsDrilldown(req, res) {
     }
     return res.status(400).json({ message: "Unknown drilldown type" });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(err.statusCode || 500).json({ message: err.message, code: err.code || undefined });
   }
 }
 
@@ -558,7 +569,7 @@ export async function exportAnalyticsSection(req, res) {
     res.setHeader("Content-Disposition", `attachment; filename=analytics-${section}.csv`);
     return res.send(csv);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(err.statusCode || 500).json({ message: err.message, code: err.code || undefined });
   }
 }
 
