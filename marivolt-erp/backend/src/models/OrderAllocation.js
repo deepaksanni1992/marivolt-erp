@@ -122,5 +122,34 @@ orderAllocationSchema.index(
   }
 );
 
+/**
+ * Never hard-delete OrderAllocation documents that participated in stock reservation.
+ * Use CANCELLED status (which must release reserved stock). Soft-archive via archivedAt if needed.
+ * Escape hatch for emergency tooling only: { allowHardDelete: true } on the query options.
+ */
+function assertHardDeleteAllowed(query) {
+  const opts = typeof query?.getOptions === "function" ? query.getOptions() : {};
+  if (opts?.allowHardDelete === true) return;
+  const err = new Error(
+    "Hard delete of OrderAllocation is blocked. Cancel the allocation so reserved stock is released, or soft-archive. Pass allowHardDelete:true only for approved emergency tooling."
+  );
+  err.statusCode = 409;
+  err.code = "ALLOCATION_HARD_DELETE_BLOCKED";
+  throw err;
+}
+
+orderAllocationSchema.pre("deleteOne", function () {
+  assertHardDeleteAllowed(this);
+});
+orderAllocationSchema.pre("findOneAndDelete", function () {
+  assertHardDeleteAllowed(this);
+});
+orderAllocationSchema.pre("deleteMany", function () {
+  assertHardDeleteAllowed(this);
+});
+orderAllocationSchema.pre("findOneAndRemove", function () {
+  assertHardDeleteAllowed(this);
+});
+
 export default mongoose.model("OrderAllocation", orderAllocationSchema);
 

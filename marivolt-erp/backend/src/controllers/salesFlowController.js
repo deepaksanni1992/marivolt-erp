@@ -235,6 +235,7 @@ async function reserveAllocationLines({
   const negativeArticles = new Set();
   const ledgerIds = [];
   for (const [article, qty] of dedupeLines(lines)) {
+    const effectKey = `alloc:reserve:${String(companyId)}:${String(referenceNo || "").trim()}:${article}`;
     const ledger = await stockService.allocateStock({
       session,
       companyId,
@@ -248,6 +249,7 @@ async function reserveAllocationLines({
       createdBy,
       sourceModule,
       allowNegative,
+      effectKey,
     });
     ledgerIds.push(ledger._id);
     if (ledger.isNegativeAllocation) negativeArticles.add(article);
@@ -4794,8 +4796,12 @@ export async function cancelOrderAllocation(req, res) {
       return res.status(400).json({ message: "Cancel or complete Store Packing for this allocation first." });
     }
     const warehouse = String(alloc.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
+    // Release remaining reservation only (qty − already packed moved to packed bucket).
     const releaseLines = (alloc.lines || [])
-      .map((line) => ({ article: line.article, qty: Number(line.qty) || 0 }))
+      .map((line) => ({
+        article: line.article,
+        qty: Math.max(0, (Number(line.qty) || 0) - (Number(line.packedQty) || 0)),
+      }))
       .filter((x) => x.article && x.qty > 0);
     const stockImpact = releaseLines.map((l) => ({
       article: l.article,
@@ -4807,8 +4813,11 @@ export async function cancelOrderAllocation(req, res) {
     const prevStatus = String(alloc.status || "");
     assertTransition(DOC_TYPES.ORDER_ALLOCATION, prevStatus, "CANCELLED", { documentNo: alloc.allocationNo });
     await withTransaction(async (session) => {
-      if (alloc.stockReservedAt && releaseLines.length) {
+      // Always release remaining reserved qty when cancelling — do not gate on stockReservedAt
+      // alone (legacy rows / deleted-doc orphans left reserved without that stamp).
+      if (releaseLines.length) {
         for (const [article, qty] of dedupeLines(releaseLines)) {
+          const effectKey = `alloc:release:${String(req.companyId)}:${String(alloc.allocationNo)}:${article}`;
           await stockService.cancelAllocation({
             session,
             companyId: req.companyId,
@@ -4821,6 +4830,7 @@ export async function cancelOrderAllocation(req, res) {
             remarks: reason,
             createdBy: req.user?.email || "",
             sourceModule: "SALES",
+            effectKey,
           });
         }
       }

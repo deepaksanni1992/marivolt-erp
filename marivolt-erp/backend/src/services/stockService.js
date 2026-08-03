@@ -659,10 +659,19 @@ export async function allocateStock({
   createdBy = "",
   sourceModule = "SALES",
   allowNegative = false,
+  effectKey = "",
 }) {
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
   if (!(q > 0)) throw new Error("allocateStock: qty must be > 0");
+
+  const ek = s(effectKey);
+  if (ek) {
+    const existingQuery = StockLedger.findOne({ effectKey: ek });
+    if (session) existingQuery.session(session);
+    const existing = await existingQuery;
+    if (existing) return existing;
+  }
 
   let updated;
   // Note: we deliberately mutate only `reservedQty` and NOT
@@ -742,6 +751,7 @@ export async function allocateStock({
     createdBy,
     sourceModule,
     isNegativeAllocation: after.isNegativeAvailable,
+    effectKey: ek,
     ...after,
   });
 }
@@ -763,10 +773,20 @@ export async function cancelAllocation({
   remarks = "",
   createdBy = "",
   sourceModule = "SALES",
+  effectKey = "",
 }) {
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
   if (!(q > 0)) throw new Error("cancelAllocation: qty must be > 0");
+
+  const ek = s(effectKey);
+  if (ek) {
+    const existingQuery = StockLedger.findOne({ effectKey: ek });
+    if (session) existingQuery.session(session);
+    const existing = await existingQuery;
+    if (existing) return existing;
+  }
+
   // See note in `allocateStock`: only mutate the `reservedQty` bucket
   // so legacy rows do not push `allocatedQty` negative.
   const updated = await bumpBuckets({
@@ -796,6 +816,7 @@ export async function cancelAllocation({
     remarks,
     createdBy,
     sourceModule,
+    effectKey: ek,
     ...after,
   });
 }

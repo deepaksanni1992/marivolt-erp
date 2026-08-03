@@ -64,8 +64,11 @@ function SummaryCard({ summary }) {
     ["Config", summary.config],
     ["Total PO Qty", fmtNum(summary.totalPoQty)],
     ["Total GRN Qty", fmtNum(summary.totalGrnQty)],
-    ["ERP Stock Qty", fmtNum(summary.erpStockQty)],
-    ["Customs Stock Qty", fmtNum(summary.customsStockQty)],
+    ["ERP On Hand", fmtNum(summary.erpOnHandQty ?? summary.erpStockQty)],
+    ["Reserved", fmtNum(summary.erpReservedQty)],
+    ["Packed", fmtNum(summary.erpPackedQty)],
+    ["Free Available", fmtNum(summary.erpFreeAvailableQty)],
+    ["Customs Available", fmtNum(summary.customsAvailableQty ?? summary.customsStockQty)],
     ["Total Sold Qty", fmtNum(summary.totalSoldQty)],
     ["Pending Dispatch Qty", fmtNum(summary.pendingDispatchQty)],
   ];

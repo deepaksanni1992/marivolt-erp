@@ -237,16 +237,34 @@ async function resolveAnchor(companyId, filters) {
   return null;
 }
 
-async function computeErpStockQty(companyId, article) {
+async function computeErpStockBreakdown(companyId, article) {
   const rows = await StockBalance.find(withCompany(companyId, { article })).lean();
-  let total = 0;
+  let onHandQty = 0;
+  let reservedQty = 0;
+  let packedQty = 0;
   for (const row of rows) {
     const onHand = Number(row.onHandQty ?? row.quantity) || 0;
     const allocated = Math.max(Number(row.allocatedQty) || 0, Number(row.reservedQty) || 0);
     const packed = Number(row.packedQty) || 0;
-    total += onHand - allocated - packed;
+    onHandQty += onHand;
+    reservedQty += allocated;
+    packedQty += packed;
   }
-  return total;
+  const freeAvailableQty = Math.max(0, onHandQty - reservedQty - packedQty);
+  return {
+    onHandQty,
+    reservedQty,
+    packedQty,
+    freeAvailableQty,
+    /** @deprecated Prefer onHandQty — historically this was free-available and mislabeled in UI. */
+    erpStockQty: onHandQty,
+  };
+}
+
+/** @deprecated Use computeErpStockBreakdown; kept for callers that only need a single number (on-hand). */
+async function computeErpStockQty(companyId, article) {
+  const b = await computeErpStockBreakdown(companyId, article);
+  return b.onHandQty;
 }
 
 function buildTimeline(events) {
@@ -479,7 +497,7 @@ export async function buildArticleTraceability(req, rawFilters = {}) {
   }
 
   const customsStockQty = customsItems.reduce((s, it) => s + (Number(it.qtyAvailable) || 0), 0);
-  const erpStockQty = await computeErpStockQty(companyId, article);
+  const erp = await computeErpStockBreakdown(companyId, article);
 
   const primaryPo = pos[0];
   const primaryGrn = grns[0];
@@ -749,8 +767,14 @@ export async function buildArticleTraceability(req, rawFilters = {}) {
       config: item?.config || "—",
       totalPoQty,
       totalGrnQty,
-      erpStockQty,
+      erpOnHandQty: erp.onHandQty,
+      erpReservedQty: erp.reservedQty,
+      erpPackedQty: erp.packedQty,
+      erpFreeAvailableQty: erp.freeAvailableQty,
+      /** Corrected: ERP on-hand (was previously free-available and mislabeled). */
+      erpStockQty: erp.onHandQty,
       customsStockQty,
+      customsAvailableQty: customsStockQty,
       totalSoldQty,
       pendingDispatchQty,
     },

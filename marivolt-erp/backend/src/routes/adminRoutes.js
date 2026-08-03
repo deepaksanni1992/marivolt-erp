@@ -25,6 +25,8 @@ import * as roles from "../controllers/rolesController.js";
 import * as settings from "../controllers/settingsController.js";
 import * as approvals from "../controllers/approvalController.js";
 import * as activity from "../controllers/userActivityController.js";
+import * as stockBuckets from "../controllers/stockBucketReconcileController.js";
+import * as stockBucketIntegrity from "../controllers/stockBucketIntegrityController.js";
 
 const adminRoles = ["super_admin", "company_admin", "admin"];
 
@@ -134,5 +136,43 @@ router.patch(
 );
 
 router.get("/activity", auditView, requireRole(...adminRoles), activity.listUserActivity);
+
+/** Read-only orphaned reserved/packed diagnosis (admin). Does not mutate. */
+router.get(
+  "/stock/orphan-buckets",
+  settingsView,
+  requireRole(...adminRoles),
+  stockBuckets.diagnoseOrphanStockBuckets
+);
+/**
+ * Controlled projection repair for orphaned reserved/packed buckets.
+ * Body: { article, warehouse?, reason, dryRun? } — never auto-runs.
+ */
+router.post(
+  "/stock/orphan-buckets/repair",
+  settingsApprove,
+  requireRole(...adminRoles),
+  stockBuckets.repairOrphanStockBuckets
+);
+
+/** Global stock bucket integrity — read-only scan + dry-run repair preview. */
+router.get(
+  "/stock/bucket-integrity",
+  settingsView,
+  requireRole(...adminRoles),
+  stockBucketIntegrity.getBucketIntegrity
+);
+router.post(
+  "/stock/bucket-integrity/repair-preview",
+  settingsView,
+  requireRole(...adminRoles),
+  stockBucketIntegrity.postBucketIntegrityRepairPreview
+);
+router.post(
+  "/stock/bucket-integrity/repair",
+  settingsApprove,
+  requireRole(...adminRoles),
+  stockBucketIntegrity.postBucketIntegrityRepair
+);
 
 export default router;

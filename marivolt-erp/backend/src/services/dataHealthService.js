@@ -743,6 +743,51 @@ async function runInventoryChecks(companyId) {
     );
   }
 
+  // Stock bucket integrity (orphaned reserved/packed vs live docs) — read-only sample.
+  try {
+    const { runStockBucketIntegrityAudit } = await import("./stockBucketIntegrityService.js");
+    const bucket = await runStockBucketIntegrityAudit({
+      companyId,
+      includeHealthy: false,
+      limit: ISSUE_CAP_PER_CHECK,
+      page: 1,
+    });
+    for (const row of (bucket.rows || []).slice(0, ISSUE_CAP_PER_CHECK)) {
+      if (row.healthy) continue;
+      const sev =
+        row.severity === "Critical" ? "Critical" : row.severity === "Major" ? "Major" : "Minor";
+      issues.push(
+        mkIssue({
+          checkId: 26,
+          severity: sev,
+          module: "Inventory",
+          issueType: "STOCK_BUCKET_INTEGRITY",
+          documentNumber: row.article,
+          reference: `${row.warehouseCode || row.location || ""}`,
+          description: `Bucket mismatch [${(row.mismatchTypes || []).join(", ")}]: reserved ${row.storedReservedQty}→${row.expectedReservedQty}, packed ${row.storedPackedQty}→${row.expectedPackedQty}`,
+          suggestedAction: row.safeRepairCandidate
+            ? "Review on Stock Bucket Integrity screen; dry-run repair preview available"
+            : row.repairBlockedReason || "Investigate manually — auto-repair blocked",
+          openPath: `/dashboard/stock-bucket-integrity?article=${encodeURIComponent(row.article)}`,
+          article: row.article,
+        }),
+      );
+    }
+  } catch (err) {
+    issues.push(
+      mkIssue({
+        checkId: 26,
+        severity: "Major",
+        module: "Inventory",
+        issueType: "STOCK_BUCKET_INTEGRITY",
+        documentNumber: "SCAN_ERROR",
+        description: `Stock bucket integrity scan failed: ${err.message}`,
+        suggestedAction: "Check admin logs / run stockBucketIntegrityAudit.readonly.mjs",
+        openPath: `/dashboard/stock-bucket-integrity`,
+      }),
+    );
+  }
+
   return capIssues(issues);
 }
 

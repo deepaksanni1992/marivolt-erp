@@ -331,10 +331,44 @@ export default function ArticleStockConversionPanel({ locations = [], deepLinkCo
               <div className="text-xs text-slate-600">{sourceCtx?.description || "—"}</div>
               <div className="mt-1 grid grid-cols-2 gap-1 text-xs">
                 <span>On hand: {sourceCtx?.onHandQty ?? "—"}</span>
-                <span>Available: {sourceCtx?.availableQty ?? "—"}</span>
+                <span className={(Number(sourceCtx?.availableQty) || 0) <= 0 && (Number(sourceCtx?.onHandQty) || 0) > 0 ? "font-semibold text-rose-700" : ""}>
+                  Available: {sourceCtx?.availableQty ?? "—"}
+                </span>
+                <span>Reserved: {sourceCtx?.reservedQty ?? "—"}</span>
+                <span>Packed: {sourceCtx?.packedQty ?? "—"}</span>
                 <span>UOM: {sourceCtx?.uom || "—"}</span>
                 <span>Unit cost: {sourceCtx?.unitCost ?? "—"}</span>
               </div>
+              <p className="mt-1 text-[11px] text-slate-500">available = onHand − reserved − packed</p>
+              {sourceCtx?.blockReason ? (
+                <div className="mt-2 rounded border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs text-rose-900">
+                  {sourceCtx.blockReason}
+                  {(sourceCtx.openAllocations || []).length ? (
+                    <ul className="mt-1 list-disc pl-4">
+                      {sourceCtx.openAllocations.map((a) => (
+                        <li key={a.allocationNo}>
+                          {a.allocationNo} ({a.status}) — hold {a.holdQty} — {a.customerName || "—"}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {(sourceCtx.openPackings || []).length ? (
+                    <ul className="mt-1 list-disc pl-4">
+                      {sourceCtx.openPackings.map((p) => (
+                        <li key={p.packingNo}>
+                          Packing {p.packingNo} ({p.status}) — qty {p.packQty}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              ) : null}
+              {sourceCtx?.orphanedReservation ? (
+                <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-950">
+                  No open Order Allocation found for this article, but the stock balance still has Reserved/Packed qty.
+                  Check Store → Stock View (Allocated / Packed columns) and Stock Ledger for {sourceCtx.article}.
+                </div>
+              ) : null}
             </div>
             <div>
               <div className="text-xs uppercase text-slate-500">Target</div>
@@ -344,6 +378,9 @@ export default function ArticleStockConversionPanel({ locations = [], deepLinkCo
             </div>
             <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
               If no approved equivalence mapping exists, posting requires Admin approval. Mapping is never created silently.
+            </p>
+            <p className="text-xs text-slate-600">
+              Customs lot availability is separate from ERP free stock. Conversion requires ERP Available qty.
             </p>
           </div>
         </div>

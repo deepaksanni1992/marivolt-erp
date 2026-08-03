@@ -18,6 +18,7 @@ import ProformaInvoice from "../src/models/ProformaInvoice.js";
 import OrderAllocation from "../src/models/OrderAllocation.js";
 import StorePacking from "../src/models/StorePacking.js";
 import SalesInvoice from "../src/models/SalesInvoice.js";
+import stockService from "../src/services/stockService.js";
 import StoreDispatch from "../src/models/StoreDispatch.js";
 import SalesDispatch from "../src/models/SalesDispatch.js";
 import SalesReturn from "../src/models/SalesReturn.js";
@@ -74,6 +75,103 @@ async function deleteModel(Model, filter, label, dryRun) {
   if (dryRun) return { label, model: Model.modelName, deleted: 0, wouldDelete: n };
   const res = await Model.deleteMany(filter);
   return { label, model: Model.modelName, deleted: res.deletedCount || 0 };
+}
+
+/**
+ * Cancel allocations with atomic remaining-reservation release (Option A).
+ * Never hard-deletes; never soft-cancels without releasing stock.
+ */
+async function cancelAllocationsWithStockRelease(filter, dryRun) {
+  const docs = await OrderAllocation.find(filter);
+  if (!docs.length) {
+    return { label: "Order allocations", model: "OrderAllocation", deleted: 0, cancelled: 0 };
+  }
+  const active = docs.filter((d) => String(d.status || "").toUpperCase() !== "CANCELLED");
+  if (dryRun) {
+    return {
+      label: "Order allocations (cancel + release remaining reservation)",
+      model: "OrderAllocation",
+      deleted: 0,
+      wouldCancel: active.length,
+    };
+  }
+
+  let cancelled = 0;
+  for (const alloc of active) {
+    const warehouse = String(alloc.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
+    const releaseLines = (alloc.lines || [])
+      .map((line) => ({
+        article: String(line.article || "").trim().toUpperCase(),
+        qty: Math.max(0, (Number(line.qty) || 0) - (Number(line.packedQty) || 0)),
+      }))
+      .filter((x) => x.article && x.qty > 0);
+
+    // Block if non-cancelled packing still exists for this allocation
+    const openPacking = await StorePacking.countDocuments({
+      companyId: alloc.companyId,
+      allocationId: alloc._id,
+      status: { $ne: "CANCELLED" },
+    });
+    if (openPacking) {
+      throw new Error(
+        `Cannot wipe customer while Store Packing still open for allocation ${alloc.allocationNo}. Cancel packing first.`
+      );
+    }
+
+    await stockService.withTransaction(async (session) => {
+      for (const [article, qty] of dedupeArticles(releaseLines)) {
+        const effectKey = `alloc:release:${String(alloc.companyId)}:${String(alloc.allocationNo)}:${article}`;
+        try {
+          await stockService.cancelAllocation({
+            session,
+            companyId: alloc.companyId,
+            article,
+            warehouse,
+            qty,
+            customerName: alloc.customerName || "",
+            referenceType: "ORDER_ALLOCATION_CANCEL",
+            referenceNo: alloc.allocationNo,
+            remarks: "Customer transaction wipe — atomic cancel with reservation release",
+            createdBy: "deleteCustomerTransactions.mjs",
+            sourceModule: "SALES",
+            effectKey,
+          });
+        } catch (err) {
+          // Already released / never reserved — still allow document cancel (idempotent wipe).
+          const msg = String(err?.message || "");
+          if (!/reserved bucket lower/i.test(msg) && err?.code !== 11000) throw err;
+          console.warn(
+            `Skip release for ${alloc.allocationNo} ${article}: ${msg || "already released"}`
+          );
+        }
+      }
+      alloc.status = "CANCELLED";
+      alloc.cancelledAt = new Date();
+      alloc.cancelledBy = "deleteCustomerTransactions.mjs";
+      alloc.cancellationReason =
+        "Customer transaction wipe — cancelled with remaining reservation released (hard delete blocked)";
+      await alloc.save({ session });
+    });
+    cancelled += 1;
+  }
+
+  return {
+    label: "Order allocations (cancelled + reservation released; not deleted)",
+    model: "OrderAllocation",
+    deleted: 0,
+    cancelled,
+  };
+}
+
+function dedupeArticles(lines) {
+  const byArticle = new Map();
+  for (const ln of lines || []) {
+    const code = String(ln?.article || "").trim().toUpperCase();
+    const q = Number(ln?.qty) || 0;
+    if (!code || !(q > 0)) continue;
+    byArticle.set(code, (byArticle.get(code) || 0) + q);
+  }
+  return byArticle;
 }
 
 async function run() {
@@ -164,7 +262,7 @@ async function run() {
     await deleteModel(PaymentReceipt, byId || byName, "Payment receipts", dryRun),
     await deleteModel(SalesInvoice, byName, "Sales invoices", dryRun),
     await deleteModel(StorePacking, byName, "Store packing", dryRun),
-    await deleteModel(OrderAllocation, byName, "Order allocations", dryRun),
+    await cancelAllocationsWithStockRelease(byName, dryRun),
     await deleteModel(ProformaInvoice, byName, "Proforma invoices", dryRun),
     await deleteModel(Cipl, byName, "CI/PI (CIPL)", dryRun),
     await deleteModel(OrderAcknowledgement, byName, "Order acknowledgements", dryRun),

@@ -7,6 +7,8 @@ import ArticleEquivalenceMapping from "../models/ArticleEquivalenceMapping.js";
 import ItemMaster from "../models/itemMasterModel.js";
 import StockLocation from "../models/StockLocation.js";
 import CustomsLotItem from "../models/CustomsLotItem.js";
+import OrderAllocation from "../models/OrderAllocation.js";
+import StorePacking from "../models/StorePacking.js";
 import * as stockService from "../services/stockService.js";
 import {
   retargetCustomsLotsForConversion,
@@ -155,18 +157,96 @@ export async function getConversionArticleContext(req, res) {
       .sort({ receivedDate: 1, createdAt: 1 })
       .limit(50)
       .lean();
+
+    // Open order allocations still holding this article (not CANCELLED).
+    const openAllocations = await OrderAllocation.find(
+      withCompany(req, {
+        warehouse,
+        status: { $nin: ["CANCELLED"] },
+        "lines.article": article,
+      })
+    )
+      .select("allocationNo status customerName warehouse lines.article lines.qty lines.packedQty")
+      .sort({ allocationDate: -1 })
+      .limit(20)
+      .lean();
+
+    const allocationHoldQty = openAllocations.reduce((sum, alloc) => {
+      for (const ln of alloc.lines || []) {
+        if (up(ln.article) !== article) continue;
+        sum += Math.max(0, (Number(ln.qty) || 0) - (Number(ln.packedQty) || 0));
+      }
+      return sum;
+    }, 0);
+
+    const openPackings = await StorePacking.find(
+      withCompany(req, {
+        warehouse,
+        status: { $in: ["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED", "POSTING"] },
+        "lines.article": article,
+      })
+    )
+      .select("packingNo status lines.article lines.packQty")
+      .sort({ postedAt: -1 })
+      .limit(20)
+      .lean();
+
+    const reservedQty = Number(stock.reservedQty) || 0;
+    const packedQty = Number(stock.packedQty) || 0;
+    const onHandQty = Number(stock.onHandQty) || 0;
+    const availableQty = Number(stock.availableQty) || 0;
+    // Bucket hold that is not explained by open allocation remaining qty.
+    const unexplainedReservedQty = Math.max(0, reservedQty - allocationHoldQty);
+    const orphanedReservation =
+      availableQty + 1e-6 < onHandQty &&
+      reservedQty + packedQty > 1e-6 &&
+      openAllocations.length === 0 &&
+      unexplainedReservedQty > 1e-6;
+
     res.json({
       article,
       description: resolved?.itemName || resolved?.description || "",
       uom: resolved?.uom || resolved?.unit || "PCS",
       isActive: String(resolved?.status || "Active") !== "Inactive",
       warehouse,
-      onHandQty: stock.onHandQty,
-      availableQty: stock.availableQty,
-      reservedQty: stock.reservedQty,
-      packedQty: stock.packedQty,
+      onHandQty,
+      availableQty,
+      reservedQty,
+      packedQty,
+      allocatedQty: Number(stock.allocatedQty) || reservedQty,
       unitCost: Number(resolved?.avgCost ?? stock.raw?.avgCost ?? stock.raw?.unitCost ?? 0) || 0,
       currency: stock.raw?.currency || resolved?.currency || "USD",
+      formula: "available = onHand − reserved − packed",
+      openAllocations: openAllocations.map((a) => ({
+        allocationNo: a.allocationNo,
+        status: a.status,
+        customerName: a.customerName,
+        holdQty: (a.lines || [])
+          .filter((ln) => up(ln.article) === article)
+          .reduce((s, ln) => s + Math.max(0, (Number(ln.qty) || 0) - (Number(ln.packedQty) || 0)), 0),
+      })),
+      openPackings: openPackings.map((p) => ({
+        packingNo: p.packingNo,
+        status: p.status,
+        packQty: (p.lines || [])
+          .filter((ln) => up(ln.article) === article)
+          .reduce((s, ln) => s + (Number(ln.packQty) || 0), 0),
+      })),
+      allocationHoldQty,
+      unexplainedReservedQty,
+      orphanedReservation,
+      blockReason:
+        availableQty <= 1e-9 && onHandQty > 1e-9
+          ? packedQty > 1e-9 && reservedQty <= 1e-9
+            ? `On-hand ${onHandQty} is fully in Packed staging (${packedQty}). Unpack/cancel packing before conversion.`
+            : openAllocations.length
+              ? `On-hand ${onHandQty} is reserved by open allocation(s): ${openAllocations
+                  .map((a) => a.allocationNo)
+                  .join(", ")}. Cancel/reduce allocation first.`
+              : orphanedReservation
+                ? `On-hand ${onHandQty} shows Reserved ${reservedQty} / Packed ${packedQty} on the stock balance, but no open Order Allocation was found. This is likely an orphaned reservation — check Store → Stock View / Stock Ledger for ${article}, or ask Admin to reconcile reservedQty.`
+                : `On-hand ${onHandQty} but Available is 0 (Reserved ${reservedQty}, Packed ${packedQty}).`
+          : null,
       customsLots: customsLots.map((c) => ({
         _id: c._id,
         customsLotRef: c.customsLotRef,

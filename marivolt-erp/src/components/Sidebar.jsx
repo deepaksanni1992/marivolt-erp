@@ -7,6 +7,7 @@ const dashboardGroup = {
     { to: "/dashboard", label: "ERP BI Dashboard" },
     { to: "/customs/dashboard", label: "Customs Dashboard" },
     { to: "/dashboard/data-health", label: "Data Health Dashboard" },
+    { to: "/dashboard/stock-bucket-integrity", label: "Stock Bucket Integrity" },
   ],
 };
 

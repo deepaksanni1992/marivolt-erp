@@ -326,6 +326,16 @@ export default function DataHealthDashboard() {
               <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Health Rating</div>
               <div className={`mt-1 text-xl font-semibold ${ratingTone(data?.healthRating)}`}>{data?.healthRating || "—"}</div>
             </div>
+            <Link
+              to="/dashboard/stock-bucket-integrity"
+              className="rounded-xl border bg-white p-3 shadow-sm hover:border-sky-300 hover:bg-sky-50 sm:col-span-2"
+            >
+              <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Stock Bucket Integrity</div>
+              <div className="mt-1 text-sm font-semibold text-slate-900">Open reserved / packed diagnostic</div>
+              <div className="mt-1 text-xs text-slate-500">
+                Healthy · Warnings · Critical mismatches · Inventory issues include STOCK_BUCKET_INTEGRITY
+              </div>
+            </Link>
           </div>
 
           <div>

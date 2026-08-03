@@ -8,6 +8,7 @@ import TwoFactorVerify from "./pages/TwoFactorVerify.jsx";
 import CompanySelect from "./pages/CompanySelect.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import DataHealthDashboard from "./pages/DataHealthDashboard.jsx";
+import StockBucketIntegrity from "./pages/StockBucketIntegrity.jsx";
 import ItemMaster from "./pages/ItemMaster.jsx";
 import ProcurementFoundation from "./pages/ProcurementFoundation.jsx";
 import Sales from "./pages/Sales.jsx";
@@ -59,6 +60,7 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="dashboard/data-health" element={<DataHealthDashboard />} />
+          <Route path="dashboard/stock-bucket-integrity" element={<StockBucketIntegrity />} />
           <Route path="items" element={<ItemMaster />} />
           <Route path="purchase" element={<ProcurementFoundation />} />
           <Route path="sales" element={<Sales />} />
