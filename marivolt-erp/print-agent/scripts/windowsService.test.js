@@ -238,6 +238,14 @@ run("manual npm start entry remains src/index.js", () => {
   assert.ok(fs.existsSync(path.join(PRINT_AGENT_ROOT, "src", "index.js")));
 });
 
+run("service:verify-printer distinguishes queue vs physical health", () => {
+  const src = fs.readFileSync(path.join(PRINT_AGENT_ROOT, "service", "verify-printer.mjs"), "utf8");
+  assert.ok(src.includes("probeWindowsPrinterHealth"));
+  assert.ok(src.includes("formatVerifyPrinterReport") || src.includes("resolveConfiguredPrinterHealth"));
+  assert.ok(!src.includes("PRINTER DETECTED"));
+  assert.ok(src.includes("usbDevicePresent") || src.includes("looksLikeLocalDevicePort"));
+});
+
 run("config path stays under ProgramData MarivoltPrintAgent", () => {
   const p = getConfigPath();
   assert.ok(/MarivoltPrintAgent[/\\]config\.json$/i.test(p) || p.includes("MarivoltPrintAgent"));

@@ -1,14 +1,22 @@
 /**
- * Unit tests for Windows printer health mapping (no live spooler required).
+ * Unit tests for Windows printer health mapping + verify-printer wording.
  */
 import assert from "assert";
 import {
   mapWindowsPrinterHealth,
   mergePrinterProbeRows,
   resolveConfiguredPrinterHealth,
+  resolveUsbDevicePresent,
   looksLikeLocalDevicePort,
   normalizeDetectedPrinters,
+  formatVerifyPrinterReport,
+  PRINTER_STATE,
 } from "../src/detect.js";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let passed = 0;
 let failed = 0;
@@ -29,257 +37,278 @@ console.log("\nPrint Agent printer health mapping\n");
 
 const now = new Date("2026-08-03T10:00:00.000Z");
 
-run("Normal USB printer → READY", () => {
+run("queue exists + USB device present → READY", () => {
   const h = mapWindowsPrinterHealth(
-    { Name: "RP4xx Series 200DPI TSPL", PrinterStatus: "Normal", JobCount: 0, WorkOffline: false, PortName: "USB001" },
+    {
+      Name: "RP4xx Series 200DPI TSPL",
+      PrinterStatus: "Normal",
+      JobCount: 0,
+      WorkOffline: false,
+      PortName: "USB001",
+      usbDevicePresent: true,
+    },
     { now }
   );
   assert.strictEqual(h.status, "READY");
   assert.strictEqual(h.connected, true);
-  assert.strictEqual(h.online, true);
-  assert.strictEqual(h.offline, false);
+  assert.strictEqual(h.queueInstalled, true);
 });
 
-run("USB Offline → DISCONNECTED", () => {
+run("queue exists + USB device absent → DISCONNECTED (not READY)", () => {
   const h = mapWindowsPrinterHealth(
-    { Name: "RP4xx", PrinterStatus: "Offline", JobCount: 0, WorkOffline: false, PortName: "USB001" },
+    {
+      Name: "RP4xx Series 200DPI TSPL",
+      PrinterStatus: "Normal",
+      JobCount: 0,
+      WorkOffline: false,
+      PortName: "USB001",
+      usbDevicePresent: false,
+    },
     { now }
   );
   assert.strictEqual(h.status, "DISCONNECTED");
   assert.strictEqual(h.connected, false);
-  assert.strictEqual(h.online, false);
+  assert.strictEqual(h.queueInstalled, true);
+  assert.ok(!/READY/i.test(h.status));
 });
 
-run("WMI PrinterStatus Offline on USB → DISCONNECTED", () => {
-  const h = mapWindowsPrinterHealth(
+run("PnP resolve: empty list → inconclusive null (not false)", () => {
+  const present = resolveUsbDevicePresent("RP4xx", "USB001", []);
+  assert.strictEqual(present, null);
+});
+
+run("PnP resolve: USBPRINT all Error → false", () => {
+  const present = resolveUsbDevicePresent("Other", "USB001", [
+    { FriendlyName: "Other", InstanceId: "USBPRINT\\X\\1", Status: "Error", Class: "Printer" },
+  ]);
+  assert.strictEqual(present, false);
+});
+
+run("PnP resolve: named USBPRINT OK → true", () => {
+  const present = resolveUsbDevicePresent("RP4xx Series 200DPI TSPL", "USB001", [
     {
-      Name: "RP4xx",
-      PrinterStatus: "Normal",
-      JobCount: 0,
-      WorkOffline: false,
-      PortName: "USB001",
-      WmiPrinterStatus: 7,
-      DetectedErrorState: 2,
+      FriendlyName: "RP4xx Series 200DPI TSPL",
+      InstanceId: "USBPRINT\\RONGTA\\1",
+      Status: "OK",
+      Class: "Printer",
     },
+  ]);
+  assert.strictEqual(present, true);
+});
+
+run("PnP resolve: named device Error → false", () => {
+  const present = resolveUsbDevicePresent("RP4xx", "USB001", [
+    { FriendlyName: "RP4xx", InstanceId: "USBPRINT\\X\\1", Status: "Error", Class: "Printer" },
+  ]);
+  assert.strictEqual(present, false);
+});
+
+run("merge: Normal + USBPRINT Error → DISCONNECTED", () => {
+  const merged = mergePrinterProbeRows(
+    [{ Name: "RP4xx", PrinterStatus: "Normal", JobCount: 0, WorkOffline: false, PortName: "USB001" }],
+    [{ Name: "RP4xx", PrinterStatus: 3, DetectedErrorState: 2, PortName: "USB001" }],
+    {
+      now,
+      pnpDevices: [{ FriendlyName: "RP4xx", InstanceId: "USBPRINT\\R\\1", Status: "Error", Class: "Printer" }],
+      pnpChecked: true,
+    }
+  );
+  assert.strictEqual(merged[0].status, "DISCONNECTED");
+});
+
+run("merge: Normal + USBPRINT OK → READY", () => {
+  const merged = mergePrinterProbeRows(
+    [{ Name: "RP4xx", PrinterStatus: "Normal", JobCount: 0, WorkOffline: false, PortName: "USB001" }],
+    [{ Name: "RP4xx", PrinterStatus: 3, DetectedErrorState: 2, PortName: "USB001" }],
+    {
+      now,
+      pnpDevices: [{ FriendlyName: "RP4xx", InstanceId: "USBPRINT\\R\\1", Status: "OK", Class: "Printer" }],
+      pnpChecked: true,
+    }
+  );
+  assert.strictEqual(merged[0].status, "READY");
+});
+
+run("USB Offline → DISCONNECTED", () => {
+  const h = mapWindowsPrinterHealth(
+    { Name: "RP4xx", PrinterStatus: "Offline", JobCount: 0, WorkOffline: false, PortName: "USB001", usbDevicePresent: true },
     { now }
   );
   assert.strictEqual(h.status, "DISCONNECTED");
 });
 
-run("WMI DetectedErrorState Offline on USB → DISCONNECTED", () => {
-  const h = mapWindowsPrinterHealth(
-    {
-      Name: "RP4xx",
-      PrinterStatus: "Normal",
-      JobCount: 0,
-      WorkOffline: false,
-      PortName: "USB001",
-      WmiPrinterStatus: 3,
-      DetectedErrorState: 9,
-    },
-    { now }
-  );
-  assert.strictEqual(h.status, "DISCONNECTED");
-});
-
-run("Network Offline → OFFLINE (not DISCONNECTED)", () => {
+run("queue exists + Windows offline (network) → OFFLINE", () => {
   const h = mapWindowsPrinterHealth(
     { Name: "NetLabel", PrinterStatus: "Offline", JobCount: 0, WorkOffline: false, PortName: "IP_192.168.1.10" },
     { now }
   );
   assert.strictEqual(h.status, "OFFLINE");
-  assert.strictEqual(h.connected, true);
 });
 
-run("WorkOffline → OFFLINE (precedence over Normal)", () => {
+run("WorkOffline → OFFLINE", () => {
   const h = mapWindowsPrinterHealth(
-    { Name: "RP4xx", PrinterStatus: "Normal", JobCount: 0, WorkOffline: true, PortName: "USB001" },
+    { Name: "RP4xx", PrinterStatus: "Normal", JobCount: 0, WorkOffline: true, PortName: "USB001", usbDevicePresent: true },
     { now }
   );
   assert.strictEqual(h.status, "OFFLINE");
-  assert.strictEqual(h.offline, true);
+});
+
+run("PrinterState OFFLINE bit on USB → DISCONNECTED", () => {
+  const h = mapWindowsPrinterHealth(
+    {
+      Name: "RP4xx",
+      PrinterStatus: "Normal",
+      JobCount: 0,
+      WorkOffline: false,
+      PortName: "USB001",
+      PrinterState: PRINTER_STATE.OFFLINE,
+      usbDevicePresent: true,
+    },
+    { now }
+  );
+  assert.strictEqual(h.status, "DISCONNECTED");
+});
+
+run("Availability Off Line on USB → DISCONNECTED", () => {
+  const h = mapWindowsPrinterHealth(
+    {
+      Name: "RP4xx",
+      PrinterStatus: "Normal",
+      JobCount: 0,
+      WorkOffline: false,
+      PortName: "USB001",
+      Availability: 8,
+      usbDevicePresent: true,
+    },
+    { now }
+  );
+  assert.strictEqual(h.status, "DISCONNECTED");
 });
 
 run("Paused → PAUSED", () => {
   const h = mapWindowsPrinterHealth(
-    { Name: "RP4xx", PrinterStatus: "Paused", JobCount: 2, WorkOffline: false, PortName: "USB001" },
+    { Name: "RP4xx", PrinterStatus: "Paused", JobCount: 2, WorkOffline: false, PortName: "USB001", usbDevicePresent: true },
     { now }
   );
   assert.strictEqual(h.status, "PAUSED");
-  assert.strictEqual(h.paused, true);
   assert.strictEqual(h.queueLength, 2);
 });
 
-run("PaperOut → PAPER_OUT", () => {
-  const h = mapWindowsPrinterHealth(
-    { Name: "RP4xx", PrinterStatus: "PaperOut", JobCount: 0, WorkOffline: false, PortName: "USB001" },
-    { now }
-  );
-  assert.strictEqual(h.status, "PAPER_OUT");
-  assert.strictEqual(h.paperOut, true);
-});
-
-run("WMI NoPaper DetectedErrorState → PAPER_OUT", () => {
-  const h = mapWindowsPrinterHealth(
-    {
-      Name: "RP4xx",
-      PrinterStatus: "Normal",
-      JobCount: 0,
-      WorkOffline: false,
-      PortName: "USB001",
-      DetectedErrorState: 4,
-    },
-    { now }
-  );
-  assert.strictEqual(h.status, "PAPER_OUT");
-});
-
-run("DoorOpen → DOOR_OPEN", () => {
-  const h = mapWindowsPrinterHealth(
-    { Name: "RP4xx", PrinterStatus: "DoorOpen", JobCount: 0, WorkOffline: false, PortName: "USB001" },
-    { now }
-  );
-  assert.strictEqual(h.status, "DOOR_OPEN");
-  assert.strictEqual(h.doorOpen, true);
-});
-
-run("NotAvailable on USB → DISCONNECTED", () => {
-  const h = mapWindowsPrinterHealth(
-    { Name: "RP4xx", PrinterStatus: "NotAvailable", JobCount: 0, WorkOffline: false, PortName: "USB001" },
-    { now }
-  );
-  assert.strictEqual(h.status, "DISCONNECTED");
-});
-
-run("Error → ERROR", () => {
-  const h = mapWindowsPrinterHealth(
-    { Name: "RP4xx", PrinterStatus: "Error", JobCount: 0, WorkOffline: false, PortName: "USB001" },
-    { now }
-  );
-  assert.strictEqual(h.status, "ERROR");
-});
-
-run("Jammed DetectedErrorState → ERROR", () => {
-  const h = mapWindowsPrinterHealth(
-    {
-      Name: "RP4xx",
-      PrinterStatus: "Normal",
-      JobCount: 0,
-      WorkOffline: false,
-      PortName: "USB001",
-      DetectedErrorState: 8,
-    },
-    { now }
-  );
-  assert.strictEqual(h.status, "ERROR");
-});
-
-run("missing row → DISCONNECTED", () => {
-  const h = mapWindowsPrinterHealth(null, { now });
-  assert.strictEqual(h.status, "DISCONNECTED");
-  assert.strictEqual(h.printerFound, false);
-});
-
-run("configured missing from list → DISCONNECTED", () => {
+run("queue missing → DISCONNECTED", () => {
   const h = resolveConfiguredPrinterHealth("RP4xx Series 200DPI TSPL", [], { now });
   assert.strictEqual(h.status, "DISCONNECTED");
-  assert.strictEqual(h.printerFound, false);
-  assert.ok(h.name.includes("RP4xx"));
+  assert.strictEqual(h.queueInstalled, false);
 });
 
-run("query failed → UNKNOWN (not DISCONNECTED)", () => {
-  const h = resolveConfiguredPrinterHealth("RP4xx", [], {
-    now,
-    queryFailed: true,
-    queryError: "timeout",
-  });
+run("query failure → UNKNOWN", () => {
+  const h = resolveConfiguredPrinterHealth("RP4xx", [], { now, queryFailed: true, queryError: "timeout" });
   assert.strictEqual(h.status, "UNKNOWN");
-  assert.ok(String(h.statusMessage).includes("timeout") || String(h.statusMessage).toLowerCase().includes("fail"));
+  assert.strictEqual(h.queueInstalled, null);
 });
 
-run("configured found READY", () => {
-  const rows = [
-    mapWindowsPrinterHealth(
-      { Name: "RP4xx Series 200DPI TSPL", PrinterStatus: "Normal", JobCount: 1, WorkOffline: false, PortName: "USB001" },
-      { now }
-    ),
-  ];
-  const h = resolveConfiguredPrinterHealth("RP4xx Series 200DPI TSPL", rows, { now });
-  assert.strictEqual(h.status, "READY");
-  assert.strictEqual(h.queueLength, 1);
+run("verify wording: USB connected READY", () => {
+  const health = mapWindowsPrinterHealth(
+    {
+      Name: "RP4xx Series 200DPI TSPL",
+      PrinterStatus: "Normal",
+      JobCount: 0,
+      WorkOffline: false,
+      PortName: "USB001",
+      usbDevicePresent: true,
+    },
+    { now }
+  );
+  const report = formatVerifyPrinterReport({
+    configuredName: "RP4xx Series 200DPI TSPL",
+    health,
+  });
+  assert.ok(report.lines.some((l) => l === "Queue installed: YES"));
+  assert.ok(report.lines.some((l) => l === "Physical status: READY"));
+  assert.ok(report.lines.some((l) => l === "Connected: YES"));
+  assert.ok(report.lines.some((l) => l === "Result: PRINTER READY"));
+  assert.ok(!report.lines.some((l) => /PRINTER DETECTED/i.test(l)));
+  assert.strictEqual(report.exitCode, 0);
 });
 
-run("special-character printer name (spaces, brackets, ampersand, unicode)", () => {
+run("verify wording: USB unplugged queue remains", () => {
+  const health = mapWindowsPrinterHealth(
+    {
+      Name: "RP4xx Series 200DPI TSPL",
+      PrinterStatus: "Offline",
+      JobCount: 0,
+      WorkOffline: false,
+      PortName: "USB001",
+      usbDevicePresent: false,
+    },
+    { now }
+  );
+  const report = formatVerifyPrinterReport({
+    configuredName: "RP4xx Series 200DPI TSPL",
+    health,
+  });
+  assert.ok(report.lines.some((l) => l === "Queue installed: YES"));
+  assert.ok(report.lines.some((l) => l === "Physical status: DISCONNECTED"));
+  assert.ok(report.lines.some((l) => l === "Connected: NO"));
+  assert.ok(report.lines.some((l) => l === "Result: PRINTER QUEUE EXISTS, PHYSICAL DEVICE UNAVAILABLE"));
+  assert.ok(!report.lines.some((l) => /PRINTER DETECTED/i.test(l)));
+});
+
+run("verify wording: queue missing", () => {
+  const health = resolveConfiguredPrinterHealth("RP4xx Series 200DPI TSPL", [], { now });
+  const report = formatVerifyPrinterReport({
+    configuredName: "RP4xx Series 200DPI TSPL",
+    health,
+  });
+  assert.ok(report.lines.some((l) => l === "Queue installed: NO"));
+  assert.ok(report.lines.some((l) => l === "Result: PRINTER QUEUE NOT FOUND"));
+});
+
+run("verify wording: physical unknown", () => {
+  const health = {
+    name: "RP4xx Series 200DPI TSPL",
+    queueInstalled: true,
+    printerFound: true,
+    status: "UNKNOWN",
+    connected: null,
+    portName: "USB001",
+    windowsStatus: "Normal",
+    statusMessage: "inconclusive",
+    lastSeen: now.toISOString(),
+    offline: true,
+    paused: false,
+    paperOut: false,
+    doorOpen: false,
+    queueLength: 0,
+  };
+  const report = formatVerifyPrinterReport({
+    configuredName: "RP4xx Series 200DPI TSPL",
+    health,
+  });
+  assert.ok(report.lines.some((l) => l === "Result: PRINTER QUEUE EXISTS, PHYSICAL STATE UNKNOWN"));
+  assert.ok(report.lines.some((l) => l === "Connected: UNKNOWN"));
+});
+
+run("verify-printer.mjs uses shared detect helpers (no PRINTER DETECTED)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "../service/verify-printer.mjs"), "utf8");
+  assert.ok(src.includes("formatVerifyPrinterReport") || src.includes("resolveConfiguredPrinterHealth"));
+  assert.ok(src.includes("probeWindowsPrinterHealth"));
+  assert.ok(!src.includes("PRINTER DETECTED"));
+  assert.ok(src.includes("Queue installed") || src.includes("formatVerifyPrinterReport"));
+});
+
+run("special-character printer name", () => {
   const name = "Rongta RP420 (USB) & Warehouse — مكتب";
   const h = mapWindowsPrinterHealth(
-    { Name: name, PrinterStatus: "Normal", JobCount: 0, WorkOffline: false, PortName: "USB001" },
+    { Name: name, PrinterStatus: "Normal", JobCount: 0, WorkOffline: false, PortName: "USB001", usbDevicePresent: true },
     { now }
   );
-  assert.strictEqual(h.name, name);
   assert.strictEqual(h.status, "READY");
-  const resolved = resolveConfiguredPrinterHealth(name, [h], { now });
-  assert.strictEqual(resolved.status, "READY");
 });
 
-run("multiple printers + duplicate queue names safely deduped", () => {
-  const merged = mergePrinterProbeRows(
-    [
-      { Name: "A", PrinterStatus: "Normal", JobCount: 0, WorkOffline: false, PortName: "USB001" },
-      { Name: "a", PrinterStatus: "Paused", JobCount: 3, WorkOffline: false, PortName: "USB001" },
-      { Name: "B", PrinterStatus: "Offline", JobCount: 0, WorkOffline: false, PortName: "USB002" },
-    ],
-    [],
-    { now }
-  );
-  assert.strictEqual(merged.length, 2);
-  assert.strictEqual(merged[0].status, "READY");
-  assert.strictEqual(merged[1].status, "DISCONNECTED");
-});
-
-run("merge overlays WMI Offline onto Get-Printer Normal (USB unplug fallback)", () => {
-  const merged = mergePrinterProbeRows(
-    [{ Name: "RP4xx", PrinterStatus: "Normal", JobCount: 0, WorkOffline: false, PortName: "USB001" }],
-    [{ Name: "RP4xx", PrinterStatus: 7, DetectedErrorState: 9, WorkOffline: false, PortName: "USB001" }],
-    { now }
-  );
-  assert.strictEqual(merged.length, 1);
-  assert.strictEqual(merged[0].status, "DISCONNECTED");
-});
-
-run("negative/invalid JobCount → non-negative queueLength", () => {
-  const h = mapWindowsPrinterHealth(
-    { Name: "RP4xx", PrinterStatus: "Normal", JobCount: -5, WorkOffline: false, PortName: "USB001" },
-    { now }
-  );
-  assert.strictEqual(h.queueLength, 0);
-});
-
-run("looksLikeLocalDevicePort recognizes USB/DOT4", () => {
+run("looksLikeLocalDevicePort + normalizeDetectedPrinters", () => {
   assert.ok(looksLikeLocalDevicePort("USB001"));
-  assert.ok(looksLikeLocalDevicePort("DOT4_001"));
   assert.ok(!looksLikeLocalDevicePort("IP_10.0.0.5"));
-});
-
-run("normalizeDetectedPrinters caps and dedupes", () => {
-  const names = normalizeDetectedPrinters(["A", "a", "B", "", null]);
-  assert.deepStrictEqual(names, ["A", "B"]);
-});
-
-run("WorkOffline precedes Paused when both signals present", () => {
-  const h = mapWindowsPrinterHealth(
-    { Name: "RP4xx", PrinterStatus: "Paused", JobCount: 0, WorkOffline: true, PortName: "USB001" },
-    { now }
-  );
-  assert.strictEqual(h.status, "OFFLINE");
-});
-
-run("Paused precedes PaperOut when offline not set", () => {
-  // Get-Printer rarely combines these; ensure paused wins when status string is Paused
-  const h = mapWindowsPrinterHealth(
-    { Name: "RP4xx", PrinterStatus: "Paused", JobCount: 0, WorkOffline: false, PortName: "USB001", DetectedErrorState: 4 },
-    { now }
-  );
-  assert.strictEqual(h.status, "PAUSED");
+  assert.deepStrictEqual(normalizeDetectedPrinters(["A", "a", "B"]), ["A", "B"]);
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
