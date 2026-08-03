@@ -5,6 +5,7 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiGetWithQuery, apiPost } from "../lib/api.js";
 import { downloadCsv, downloadExcelWorkbook, downloadPdfTable } from "../lib/purchaseExport.js";
+import { notify } from "../lib/notifications.js";
 
 const MODULES = ["", "Sales", "Purchase", "Inventory", "Customs", "Master Data", "Accounts"];
 const SEVERITIES = ["", "Critical", "Major", "Minor"];
@@ -138,7 +139,7 @@ export default function DataHealthDashboard() {
       const fresh = await apiGetWithQuery("/data-health", { ...queryParams, refresh: "true" });
       queryClient.setQueryData(["data-health", queryParams, auth?.company?.id], fresh);
     } catch (err) {
-      window.alert(err.message || "Failed to refresh audit");
+      notify.error(err.message || "Failed to refresh audit");
     } finally {
       setRefreshing(false);
     }
@@ -151,7 +152,7 @@ export default function DataHealthDashboard() {
       try {
         await selectCompany(nextId);
       } catch (err) {
-        window.alert(err.message || "Failed to switch company");
+        notify.error(err.message || "Failed to switch company");
       }
     },
     [auth?.company?.id, selectCompany],
@@ -187,7 +188,7 @@ export default function DataHealthDashboard() {
       await logExport("csv");
       downloadCsv(`data-health-${currentCompany}-${Date.now()}.csv`, ISSUE_COLUMNS, issues);
     } catch (e) {
-      window.alert(e.message || "CSV export failed");
+      notify.error(e.message || "CSV export failed");
     } finally {
       setExporting(false);
     }
@@ -202,7 +203,7 @@ export default function DataHealthDashboard() {
         { name: "Issues", columns: ISSUE_COLUMNS, rows: issues },
       ]);
     } catch (e) {
-      window.alert(e.message || "Excel export failed");
+      notify.error(e.message || "Excel export failed");
     } finally {
       setExporting(false);
     }
@@ -218,7 +219,7 @@ export default function DataHealthDashboard() {
         await downloadPdfTable(`${base}-issues`, "Data Health Issues", ISSUE_COLUMNS, issues, `${base}-issues`, auth?.company);
       }
     } catch (e) {
-      window.alert(e.message || "PDF export failed");
+      notify.error(e.message || "PDF export failed");
     } finally {
       setExporting(false);
     }

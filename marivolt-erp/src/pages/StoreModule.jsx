@@ -28,6 +28,7 @@ import {
   buildLabelLinesFromEdits,
   defaultLabelLineFields,
 } from "../lib/labelPrinting.js";
+import { notify, confirmDialog } from "../lib/notifications.js";
 
 const TABS = [
   "GRN",
@@ -444,9 +445,15 @@ export default function StoreModule() {
       setGrnLineEdits({});
       setGrnCustoms(emptyGrnCustomsState());
       if (pid) loadGrnPoMut.mutate(String(pid));
-      setGrnUiErr(data?.grnNo ? `Posted ${data.grnNo}` : "GRN posted.");
+      const msg = data?.grnNo ? `Posted ${data.grnNo}` : "GRN posted.";
+      setGrnUiErr(msg);
+      notify.success(msg);
     },
-    onError: (e) => setGrnUiErr(e.message || String(e)),
+    onError: (e) => {
+      const m = e.message || String(e);
+      setGrnUiErr(m);
+      notify.error(m);
+    },
   });
 
   const postGrnAndPrintMut = useMutation({
@@ -478,16 +485,24 @@ export default function StoreModule() {
       if (pid) loadGrnPoMut.mutate(String(pid));
       const grnNo = result?.posted?.grnNo;
       if (result?.labelError) {
-        setGrnUiErr(
-          `GRN posted successfully, but label job could not be created. ${result.labelError.message || ""}. Open GRN ${grnNo || ""} and use Print / Reprint labels to retry.`
-        );
+        const m = `GRN posted successfully, but label job could not be created. ${result.labelError.message || ""}. Open GRN ${grnNo || ""} and use Print / Reprint labels to retry.`;
+        setGrnUiErr(m);
+        notify.warning(m);
       } else if (result?.labelJob?.job?.jobNo) {
-        setGrnUiErr(`Posted ${grnNo}. Label job ${result.labelJob.job.jobNo} queued.`);
+        const m = `Posted ${grnNo}. Label job ${result.labelJob.job.jobNo} queued successfully.`;
+        setGrnUiErr(m);
+        notify.success(m);
       } else {
-        setGrnUiErr(grnNo ? `Posted ${grnNo}` : "GRN posted.");
+        const m = grnNo ? `Posted ${grnNo}` : "GRN posted.";
+        setGrnUiErr(m);
+        notify.success(m);
       }
     },
-    onError: (e) => setGrnUiErr(e.message || String(e)),
+    onError: (e) => {
+      const m = e.message || String(e);
+      setGrnUiErr(m);
+      notify.error(m);
+    },
   });
 
   const { data: labelSettingsData } = useQuery({
@@ -855,7 +870,9 @@ export default function StoreModule() {
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
       qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
+      notify.success("Packing draft created.");
     },
+    onError: (e) => notify.error(e.message || "Could not create packing draft."),
   });
 
   const postPackingMut = useMutation({
@@ -867,7 +884,9 @@ export default function StoreModule() {
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
       qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
+      notify.success("Packing posted.");
     },
+    onError: (e) => notify.error(e.message || "Could not post packing."),
   });
 
   const cancelPackingMut = useMutation({
@@ -879,7 +898,9 @@ export default function StoreModule() {
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
       qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
+      notify.success("Packing cancelled.");
     },
+    onError: (e) => notify.error(e.message || "Could not cancel packing."),
   });
 
   const { data: dispatchFromPack } = useQuery({
@@ -1581,7 +1602,7 @@ export default function StoreModule() {
                   <button
                     type="button"
                     className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
-                    onClick={() => {
+                    onClick={async () => {
                       setGrnLineEdits((prev) => {
                         const next = { ...prev };
                         for (const ln of grnLinesForUi) {
@@ -1607,7 +1628,7 @@ export default function StoreModule() {
                   <button
                     type="button"
                     className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
-                    onClick={() => {
+                    onClick={async () => {
                       setGrnLineEdits((prev) => {
                         const next = { ...prev };
                         for (const id of Object.keys(next)) {
@@ -1622,7 +1643,7 @@ export default function StoreModule() {
                   <button
                     type="button"
                     className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
-                    onClick={() => {
+                    onClick={async () => {
                       setGrnLineEdits((prev) => {
                         const next = { ...prev };
                         const anySel = Object.entries(next).some(([, v]) => v?.selected);
@@ -1972,7 +1993,7 @@ export default function StoreModule() {
                       grnTotalPending <= 0 ||
                       !grnPoSnapshot?.header?._id
                     }
-                    onClick={() => {
+                    onClick={async () => {
                       setGrnUiErr("");
                       const built = buildGrnPostPayloadFromUi();
                       if (!built) return;
@@ -1991,7 +2012,7 @@ export default function StoreModule() {
                       !grnPoSnapshot?.header?._id ||
                       labelSettingsData?.enabled === false
                     }
-                    onClick={() => {
+                    onClick={async () => {
                       setGrnUiErr("");
                       if (postGrnAndPrintMut.isPending || postGrnFromPoMut.isPending) return;
                       const built = buildGrnPostPayloadFromUi();
@@ -2098,7 +2119,7 @@ export default function StoreModule() {
                 <button
                   type="button"
                   className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-900"
-                  onClick={() => {
+                  onClick={async () => {
                     setGrnRegSearchInput("");
                     setGrnRegSearch("");
                     setGrnRegStatus("");
@@ -2183,7 +2204,7 @@ export default function StoreModule() {
                                   type="button"
                                   className="rounded border border-rose-200 px-2 py-0.5 text-[11px] font-semibold text-rose-800 disabled:opacity-40"
                                   disabled={cancelGrnMut.isPending}
-                                  onClick={() => {
+                                  onClick={async () => {
                                     const reason = window.prompt("Cancellation reason (required):") || "";
                                     if (!reason.trim()) {
                                       setGrnUiErr("Cancellation reason is required.");
@@ -2201,8 +2222,8 @@ export default function StoreModule() {
                                   type="button"
                                   className="rounded border px-2 py-0.5 text-[11px] font-semibold text-slate-600 disabled:opacity-40"
                                   disabled={deleteGrnDraftMut.isPending}
-                                  onClick={() => {
-                                    if (!window.confirm(`Delete draft ${g.grnNo}?`)) return;
+                                  onClick={async () => {
+                                    if (!await confirmDialog(`Delete draft ${g.grnNo}?`)) return;
                                     deleteGrnDraftMut.mutate(String(g._id));
                                   }}
                                 >
@@ -2507,7 +2528,7 @@ export default function StoreModule() {
                           <button
                             type="button"
                             className="rounded border px-2 py-1 text-xs"
-                            onClick={() => {
+                            onClick={async () => {
                               setSelectedLandedCostId(r._id);
                               setLandedCostForm({
                                 grnNo: r.grnNo || "",
@@ -2929,7 +2950,7 @@ export default function StoreModule() {
               <button
                 type="button"
                 className="rounded border px-3 py-2 text-sm hover:bg-slate-50"
-                onClick={() => {
+                onClick={async () => {
                   setLedgerMovementType("");
                   setLedgerCustomer("");
                   setLedgerSourceModel("");
@@ -3312,7 +3333,7 @@ export default function StoreModule() {
                         <button
                           type="button"
                           className="rounded border px-2 py-1 text-xs"
-                          onClick={() => {
+                          onClick={async () => {
                             setEditLoc(r.locationCode);
                             setLoc({
                               locationCode: r.locationCode,
@@ -3539,7 +3560,7 @@ export default function StoreModule() {
                           <button
                             type="button"
                             className="rounded border border-slate-300 bg-white px-2 py-1.5 text-xs font-medium hover:bg-slate-100"
-                            onClick={() => {
+                            onClick={async () => {
                               setPackAddArticlePkgId(pkg.id);
                               setPackAddArticleSearch("");
                             }}
@@ -3634,7 +3655,7 @@ export default function StoreModule() {
                   className="xl:col-span-2 rounded border border-emerald-700 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-900 hover:bg-emerald-100 disabled:opacity-50"
                   disabled={createPackingDraft.isPending || !packingFromAlloc?.allocation || !packingDraftValidation.ok}
                   title={packingDraftValidation.msgs[0] || ""}
-                  onClick={() => {
+                  onClick={async () => {
                     const packages = packPackages
                       .map((pkg) => ({
                         packageNo: pkg.packageNo,
@@ -3706,7 +3727,7 @@ export default function StoreModule() {
                             <button
                               type="button"
                               className="rounded border px-2 py-0.5 text-xs hover:bg-white"
-                              onClick={() => {
+                              onClick={async () => {
                                 const max = Number(ln.balancePack) || 0;
                                 const raw = window.prompt(`Qty for ${ln.article} (max ${max})`, String(max));
                                 if (raw == null) return;
@@ -3851,7 +3872,7 @@ export default function StoreModule() {
                 <button
                   type="button"
                   className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-900"
-                  onClick={() => {
+                  onClick={async () => {
                     setPackRegSearchInput("");
                     setPackRegSearch("");
                     setPackingStatusFilter("");
@@ -3933,7 +3954,7 @@ export default function StoreModule() {
                                 type="button"
                                 className="rounded border px-2 py-0.5 text-xs text-rose-700 hover:bg-rose-50"
                                 disabled={cancelPackingMut.isPending}
-                                onClick={() => {
+                                onClick={async () => {
                                   const reason = window.prompt("Cancel reason?", "") ?? "";
                                   cancelPackingMut.mutate({ id: p._id, reason });
                                 }}
@@ -3946,7 +3967,7 @@ export default function StoreModule() {
                             <button
                               type="button"
                               className="rounded border px-2 py-0.5 text-xs text-sky-800 hover:bg-sky-50"
-                              onClick={() => {
+                              onClick={async () => {
                                 setPackInvoiceUiMsg("");
                                 setPackInvoicePresetId(p._id);
                                 setPackInvoiceModalOpen(true);
@@ -4076,7 +4097,7 @@ export default function StoreModule() {
                   type="button"
                   className="mt-3 rounded border border-emerald-700 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-900 hover:bg-emerald-100 disabled:opacity-50"
                   disabled={createDispatchDraft.isPending || !dispatchFromPack?.invoice}
-                  onClick={() => {
+                  onClick={async () => {
                     const lines = (dispatchFromPack.lines || [])
                       .map((ln) => ({
                         invoiceLineId: ln.invoiceLineId,
@@ -4180,7 +4201,7 @@ export default function StoreModule() {
                                 type="button"
                                 className="rounded border px-2 py-0.5 text-xs text-rose-700 hover:bg-rose-50"
                                 disabled={cancelDispatchMut.isPending}
-                                onClick={() => {
+                                onClick={async () => {
                                   const reason = window.prompt("Cancel reason?", "") ?? "";
                                   cancelDispatchMut.mutate({ id: d._id, reason });
                                 }}

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiGetWithQuery } from "../../lib/api.js";
+import { notify } from "../../lib/notifications.js";
 
 function fmtDate(v) {
   if (!v) return "—";
@@ -114,11 +115,11 @@ export default function CustomsInvoiceManualAllocModal({
   function handleSave() {
     if (overrideMode) {
       if (!allowOverride) {
-        window.alert("Override requires CUSTOMS.override (Customs BOE Override) permission.");
+        notify.warning("Override requires CUSTOMS.override (Customs BOE Override) permission.");
         return;
       }
       if (!String(overrideFields.overrideReason || "").trim()) {
-        window.alert("Override reason is mandatory.");
+        notify.warning("Override reason is mandatory.");
         return;
       }
       onSave([
@@ -132,7 +133,7 @@ export default function CustomsInvoiceManualAllocModal({
     }
 
     if (Math.abs(selectedTotal - qtyRequired) > 1e-6) {
-      window.alert(`Allocations must total ${qtyRequired} (currently ${selectedTotal}).`);
+      notify.warning(`Allocations must total ${qtyRequired} (currently ${selectedTotal}).`);
       return;
     }
 

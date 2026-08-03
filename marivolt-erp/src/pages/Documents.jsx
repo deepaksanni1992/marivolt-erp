@@ -12,6 +12,8 @@ import {
   apiPostFormData,
   isUsingSameOriginApiProxy,
 } from "../lib/api.js";
+import { notify, confirmDialog } from "../lib/notifications.js";
+import LoadingButton from "../components/erp/LoadingButton.jsx";
 
 /** Must match backend `DOCUMENT_TYPES` / S3 folder mapping. */
 const DOCUMENT_TYPE_OPTIONS = [
@@ -41,36 +43,6 @@ function formatBytes(n) {
     i += 1;
   }
   return `${i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
-}
-
-function ToastStack({ toasts, onDismiss }) {
-  if (!toasts.length) return null;
-  return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-[100] flex max-w-sm flex-col gap-2">
-      {toasts.map((t) => (
-        <div
-          key={t.id}
-          className={[
-            "pointer-events-auto rounded-xl border px-4 py-3 text-sm shadow-lg",
-            t.type === "success"
-              ? "border-emerald-200 bg-emerald-50 text-emerald-900"
-              : "border-red-200 bg-red-50 text-red-900",
-          ].join(" ")}
-        >
-          <div className="flex items-start justify-between gap-2">
-            <span>{t.message}</span>
-            <button
-              type="button"
-              className="shrink-0 rounded-lg px-1.5 text-xs text-gray-600 hover:bg-black/5"
-              onClick={() => onDismiss(t.id)}
-            >
-              ×
-            </button>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 export default function Documents() {
@@ -131,19 +103,6 @@ export default function Documents() {
     file: null,
   });
 
-  const [toasts, setToasts] = useState([]);
-  const toast = useCallback((type, message) => {
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    setToasts((prev) => [...prev, { id, type, message }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 5000);
-  }, []);
-
-  const dismissToast = useCallback((id) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
-
   const listQuery = useQuery({
     queryKey: ["documents", page, search],
     queryFn: () =>
@@ -199,20 +158,20 @@ export default function Documents() {
   const createThreadMutation = useMutation({
     mutationFn: () => apiPost("/communication/threads", threadForm),
     onSuccess: () => {
-      toast("success", "Communication thread created.");
+      notify.success("Communication thread created.");
       setThreadForm((s) => ({ ...s, partyName: "", partyEmail: "", subject: "", linkedDocuments: [] }));
       qc.invalidateQueries({ queryKey: ["communication-threads"] });
     },
-    onError: (e) => toast("error", e.message || "Could not create thread."),
+    onError: (e) => notify.error(e.message || "Could not create thread."),
   });
   const updateThreadStatusMutation = useMutation({
     mutationFn: ({ id, status }) => apiPost(`/communication/threads/${id}/status`, { status }),
     onSuccess: () => {
-      toast("success", "Thread status updated.");
+      notify.success("Thread status updated.");
       qc.invalidateQueries({ queryKey: ["communication-thread-detail", selectedThreadId] });
       qc.invalidateQueries({ queryKey: ["communication-threads"] });
     },
-    onError: (e) => toast("error", e.message || "Could not update thread status."),
+    onError: (e) => notify.error(e.message || "Could not update thread status."),
   });
   const addMessageMutation = useMutation({
     mutationFn: () =>
@@ -221,36 +180,36 @@ export default function Documents() {
         portalVisible: messageForm.portalVisible,
       }),
     onSuccess: () => {
-      toast("success", "Message posted.");
+      notify.success("Message posted.");
       setMessageForm((s) => ({ ...s, subject: "", message: "" }));
       qc.invalidateQueries({ queryKey: ["communication-thread-detail", selectedThreadId] });
       qc.invalidateQueries({ queryKey: ["communication-threads"] });
     },
-    onError: (e) => toast("error", e.message || "Could not post message."),
+    onError: (e) => notify.error(e.message || "Could not post message."),
   });
   const createApprovalMutation = useMutation({
     mutationFn: (body) => apiPost("/communication/approvals", body),
     onSuccess: () => {
-      toast("success", "Approval request created.");
+      notify.success("Approval request created.");
       qc.invalidateQueries({ queryKey: ["communication-approvals"] });
     },
-    onError: (e) => toast("error", e.message || "Could not create approval."),
+    onError: (e) => notify.error(e.message || "Could not create approval."),
   });
   const decideApprovalMutation = useMutation({
     mutationFn: ({ id, status }) => apiPost(`/communication/approvals/${id}/decide`, { status }),
     onSuccess: () => {
-      toast("success", "Approval updated.");
+      notify.success("Approval updated.");
       qc.invalidateQueries({ queryKey: ["communication-approvals"] });
     },
-    onError: (e) => toast("error", e.message || "Could not decide approval."),
+    onError: (e) => notify.error(e.message || "Could not decide approval."),
   });
   const createPortalTokenMutation = useMutation({
     mutationFn: () => apiPost("/communication/portal/access-tokens", tokenForm),
     onSuccess: (r) => {
-      toast("success", `Portal token created. Copy now: ${r.token}`);
+      notify.success(`Portal token created. Copy now: ${r.token}`);
       setTokenForm((s) => ({ ...s, partyName: "", partyEmail: "", portalReference: "", expiresAt: "" }));
     },
-    onError: (e) => toast("error", e.message || "Could not create token."),
+    onError: (e) => notify.error(e.message || "Could not create token."),
   });
 
   const total = listQuery.data?.total ?? 0;
@@ -270,7 +229,7 @@ export default function Documents() {
       return apiPostFormData("/documents/upload", fd);
     },
     onSuccess: () => {
-      toast("success", "Document uploaded successfully.");
+      notify.success("Document uploaded successfully.");
       setForm((f) => ({
         ...f,
         refNo: "",
@@ -285,18 +244,18 @@ export default function Documents() {
       setPage(1);
     },
     onError: (e) => {
-      toast("error", e.message || "Upload failed.");
+      notify.error(e.message || "Upload failed.");
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id) => apiDelete(`/documents/${id}`),
     onSuccess: () => {
-      toast("success", "Document deleted.");
+      notify.success("Document deleted.");
       qc.invalidateQueries({ queryKey: ["documents"] });
     },
     onError: (e) => {
-      toast("error", e.message || "Delete failed.");
+      notify.error(e.message || "Delete failed.");
     },
   });
 
@@ -307,7 +266,7 @@ export default function Documents() {
         const path = inline ? `/documents/${id}/download?inline=1` : `/documents/${id}/download`;
         const data = await apiGet(path);
         if (!data?.url) {
-          toast("error", "No download URL returned.");
+          notify.error("No download URL returned.");
           return;
         }
         // After async fetch, avoid `about:blank` + assign (leaves an empty tab if the API errors).
@@ -321,12 +280,12 @@ export default function Documents() {
         a.click();
         document.body.removeChild(a);
       } catch (e) {
-        toast("error", e.message || "Could not open file.");
+        notify.error(e.message || "Could not open file.");
       } finally {
         setDownloadBusyId(null);
       }
     },
-    [toast],
+    [],
   );
 
   const busy = uploadMutation.isPending || deleteMutation.isPending;
@@ -364,8 +323,6 @@ export default function Documents() {
           ) : null}
         </div>
       ) : null}
-
-      <ToastStack toasts={toasts} onDismiss={dismissToast} />
 
       <div className="flex flex-wrap gap-2 rounded-2xl border border-gray-200 bg-white p-2">
         {[
@@ -448,7 +405,7 @@ export default function Documents() {
             <button
               type="button"
               className="rounded border px-2 py-1 text-xs"
-              onClick={() => {
+              onClick={async () => {
                 if (!linkedDocDraft.documentNo.trim() && !linkedDocDraft.documentId.trim()) return;
                 setThreadForm((s) => ({ ...s, linkedDocuments: [...(s.linkedDocuments || []), { ...linkedDocDraft }] }));
                 setLinkedDocDraft((s) => ({ ...s, documentNo: "", documentId: "" }));
@@ -562,14 +519,15 @@ export default function Documents() {
           </div>
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
-          <button
-            type="button"
+          <LoadingButton
+            loading={uploadMutation.isPending}
             disabled={busy}
+            loadingText="Uploading..."
             onClick={() => uploadMutation.mutate()}
-            className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-gray-800 disabled:opacity-50"
+            className="rounded-xl px-4 py-2 shadow-sm"
           >
-            {uploadMutation.isPending ? "Uploading…" : "Upload to S3"}
-          </button>
+            Upload to S3
+          </LoadingButton>
         </div>
       </div>
       ) : null}
@@ -665,8 +623,16 @@ export default function Documents() {
                         type="button"
                         className="rounded-lg border border-red-200 px-2 py-1 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50"
                         disabled={deleteMutation.isPending}
-                        onClick={() => {
-                          if (window.confirm(`Delete “${r.originalFileName}” from S3 and database?`)) {
+                        onClick={async () => {
+                          if (
+                            await confirmDialog({
+                              title: "Delete document",
+                              message: `Delete “${r.originalFileName}” from S3 and database?`,
+                              confirmLabel: "Yes",
+                              cancelLabel: "No",
+                              danger: true,
+                            })
+                          ) {
                             deleteMutation.mutate(r._id);
                           }
                         }}

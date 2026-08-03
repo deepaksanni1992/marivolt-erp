@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import Modal from "../erp/Modal.jsx";
 import { apiGet, apiGetWithQuery, apiPost, apiPostFormData } from "../../lib/api.js";
 import SupplierProformaPanel from "./SupplierProformaPanel.jsx";
+import { notify, confirmDialog } from "../../lib/notifications.js";
 
 const DOC_OPTIONS = [
   { internal: "SUPPLIER_PROFORMA", uploadLabel: "Supplier Proforma Invoice" },
@@ -211,9 +212,9 @@ export default function PoAccountsPanel({ detail, detailId, qc, setErr }) {
     onError: (e) => setErr(e.message || String(e)),
   });
 
-  const openGrn = () => {
+  const openGrn = async () => {
     const warn = apQ.data?.grnPaymentWarning;
-    if (warn && !window.confirm(warn)) return;
+    if (warn && !(await confirmDialog(warn))) return;
     navigate(`/store?tab=GRN&grnPoId=${encodeURIComponent(detailId)}`);
   };
 
@@ -263,7 +264,7 @@ export default function PoAccountsPanel({ detail, detailId, qc, setErr }) {
           <button
             type="button"
             className="rounded border border-indigo-200 bg-white px-3 py-1.5 font-medium text-indigo-900 hover:bg-indigo-50"
-            onClick={() => {
+            onClick={async () => {
               setDocPick(DOC_OPTIONS[0]);
               setSubModal("uploadPi");
             }}
@@ -273,7 +274,7 @@ export default function PoAccountsPanel({ detail, detailId, qc, setErr }) {
           <button
             type="button"
             className="rounded border border-indigo-200 bg-white px-3 py-1.5 font-medium text-indigo-900 hover:bg-indigo-50"
-            onClick={() => {
+            onClick={async () => {
               setDocPick(DOC_OPTIONS[1]);
               setSubModal("uploadInv");
             }}
@@ -297,7 +298,7 @@ export default function PoAccountsPanel({ detail, detailId, qc, setErr }) {
           <button
             type="button"
             className="rounded border border-indigo-200 bg-white px-3 py-1.5 font-medium text-indigo-900 hover:bg-indigo-50"
-            onClick={() => {
+            onClick={async () => {
               setPayForm((f) => ({
                 ...f,
                 currency: detail.currency || "USD",

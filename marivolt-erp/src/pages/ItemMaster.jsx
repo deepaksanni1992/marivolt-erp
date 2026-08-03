@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FileUp, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { apiDelete, apiGet, apiGetWithQuery, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
+import { notify, confirmDialog } from "../lib/notifications.js";
+import LoadingButton from "../components/erp/LoadingButton.jsx";
 
 const emptyItem = {
   article: "",
@@ -252,8 +254,12 @@ export default function ItemMaster() {
       await qc.invalidateQueries({ queryKey: ["item-details", article] });
       setTab("technical");
       setError("");
+      notify.success(selectedArticle ? "Item updated." : "Item created.");
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => {
+      setError(e.message);
+      notify.error(e.message || "Item save failed.");
+    },
   });
 
   const saveTechnical = useMutation({
@@ -261,8 +267,12 @@ export default function ItemMaster() {
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["item-details", selectedArticle] });
       setError("");
+      notify.success("Technical details saved.");
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => {
+      setError(e.message);
+      notify.error(e.message || "Technical save failed.");
+    },
   });
 
   const saveSupplier = useMutation({
@@ -275,18 +285,33 @@ export default function ItemMaster() {
       setSupplierDraft(emptySupplier);
       setEditingSupplierId("");
       setError("");
+      notify.success(editingSupplierId ? "Supplier updated." : "Supplier added.");
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => {
+      setError(e.message);
+      notify.error(e.message || "Supplier save failed.");
+    },
   });
 
   const removeSupplier = useMutation({
     mutationFn: (id) => apiDelete(`/items/${selectedArticle}/suppliers/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["item-details", selectedArticle] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["item-details", selectedArticle] });
+      notify.success("Supplier removed.");
+    },
+    onError: (e) => notify.error(e.message || "Could not remove supplier."),
   });
 
   const removeItem = useMutation({
     mutationFn: (article) => apiDelete(`/items/${article}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["items"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["items"] });
+      notify.success("Item deleted.");
+    },
+    onError: (e) => {
+      setError(e.message);
+      notify.error(e.message || "Delete failed.");
+    },
   });
 
   const bulkLookupImport = useMutation({
@@ -298,8 +323,12 @@ export default function ItemMaster() {
     onSuccess: (data) => {
       setLookupRows(data?.items || []);
       setError("");
+      notify.success("Lookup file imported.");
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => {
+      setError(e.message);
+      notify.error(e.message || "Import failed.");
+    },
   });
 
   const manualOverride = useMutation({
@@ -323,8 +352,12 @@ export default function ItemMaster() {
             : r
         )
       );
+      notify.success("Manual override saved.");
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => {
+      setError(e.message);
+      notify.error(e.message || "Override failed.");
+    },
   });
 
   const importMutation = useMutation({
@@ -333,8 +366,14 @@ export default function ItemMaster() {
       fd.append("file", file);
       return apiPostFormData("/items/import", fd);
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["items"] }),
-    onError: (e) => setError(e.message),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["items"] });
+      notify.success("Items imported.");
+    },
+    onError: (e) => {
+      setError(e.message);
+      notify.error(e.message || "Import failed.");
+    },
   });
 
   const list = listData?.items || [];
@@ -590,7 +629,7 @@ export default function ItemMaster() {
               <button onClick={() => setAdvancedSearchOpen((v) => !v)} className="rounded-xl border px-4 py-2 text-sm">
                 Advanced Filters
               </button>
-              <button onClick={() => { setPage(1); qc.invalidateQueries({ queryKey: ["items"] }); }} className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white">Apply</button>
+              <button onClick={async () => { setPage(1); qc.invalidateQueries({ queryKey: ["items"] }); }} className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white">Apply</button>
             </div>
           </div>
         </div>
@@ -675,7 +714,22 @@ export default function ItemMaster() {
                     <div className="flex justify-end gap-2">
                       <button onClick={() => setCompatibilityArticle(row.article)} className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs">Compatibility</button>
                       <button onClick={() => openEdit(row)} className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs"><Pencil size={14} />View / Edit</button>
-                      <button onClick={() => window.confirm(`Delete ${row.article}?`) && removeItem.mutate(row.article)} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2 py-1 text-xs text-rose-700"><Trash2 size={14} />Delete</button>
+                      <button
+                        onClick={async () => {
+                          const ok = await confirmDialog({
+                            title: "Delete item",
+                            message: `Delete ${row.article}? This cannot be undone.`,
+                            confirmLabel: "Yes, delete",
+                            cancelLabel: "No",
+                            danger: true,
+                          });
+                          if (ok) removeItem.mutate(row.article);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2 py-1 text-xs text-rose-700"
+                      >
+                        <Trash2 size={14} />
+                        Delete
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -764,7 +818,14 @@ export default function ItemMaster() {
                   <Field label="UOM"><select className="rounded-lg border px-3 py-2" value={item.uom} onChange={(e) => setItem((v) => ({ ...v, uom: e.target.value }))}><option>PCS</option><option>SET</option><option>KG</option><option>NOS</option><option>MTR</option></select></Field>
                   <Field label="Status"><select className="rounded-lg border px-3 py-2" value={item.status} onChange={(e) => setItem((v) => ({ ...v, status: e.target.value }))}><option>Active</option><option>Inactive</option></select></Field>
                 </div>
-                <button onClick={() => saveItem.mutate()} className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white">Save Basic Info</button>
+                <LoadingButton
+                  loading={saveItem.isPending}
+                  loadingText="Saving..."
+                  onClick={() => saveItem.mutate()}
+                  className="rounded-xl px-4 py-2"
+                >
+                  Save Basic Info
+                </LoadingButton>
               </div>
             ) : null}
 
@@ -815,7 +876,15 @@ export default function ItemMaster() {
                   </Field>
                   </div>
                 </details>
-                <button disabled={!selectedArticle} onClick={() => saveTechnical.mutate()} className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white disabled:opacity-50">Save Technical</button>
+                <LoadingButton
+                  loading={saveTechnical.isPending}
+                  loadingText="Saving..."
+                  disabled={!selectedArticle}
+                  onClick={() => saveTechnical.mutate()}
+                  className="rounded-xl px-4 py-2"
+                >
+                  Save Technical
+                </LoadingButton>
               </div>
             ) : null}
 
@@ -828,7 +897,7 @@ export default function ItemMaster() {
                       {suppliers.map((s) => (
                         <tr key={s._id} className="border-t">
                           <td className="px-3 py-2">{s.supplierName}</td><td className="px-3 py-2">{s.supplierPartNumber || "-"}</td><td className="px-3 py-2">{s.currency}</td><td className="px-3 py-2 text-right">{Number(s.price || 0).toFixed(2)}</td><td className="px-3 py-2">{s.leadTime || "-"}</td><td className="px-3 py-2">{s.remarks || "-"}</td>
-                          <td className="px-3 py-2"><div className="flex justify-end gap-2"><button onClick={() => { setEditingSupplierId(s._id); setSupplierDraft({ supplierName: s.supplierName, supplierPartNumber: s.supplierPartNumber, currency: s.currency, price: s.price, leadTime: s.leadTime, remarks: s.remarks }); }} className="rounded border px-2 py-1 text-xs">Edit</button><button onClick={() => removeSupplier.mutate(s._id)} className="rounded border border-rose-200 px-2 py-1 text-xs text-rose-700">Delete</button></div></td>
+                          <td className="px-3 py-2"><div className="flex justify-end gap-2"><button onClick={async () => { setEditingSupplierId(s._id); setSupplierDraft({ supplierName: s.supplierName, supplierPartNumber: s.supplierPartNumber, currency: s.currency, price: s.price, leadTime: s.leadTime, remarks: s.remarks }); }} className="rounded border px-2 py-1 text-xs">Edit</button><button onClick={() => removeSupplier.mutate(s._id)} className="rounded border border-rose-200 px-2 py-1 text-xs text-rose-700">Delete</button></div></td>
                         </tr>
                       ))}
                     </tbody>

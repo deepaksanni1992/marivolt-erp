@@ -1,5 +1,45 @@
 @import "tailwindcss";
 
+/* Global toast animations */
+@keyframes erp-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(1.25rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes erp-toast-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(1rem);
+  }
+}
+
+.erp-toast-in {
+  animation: erp-toast-in 0.22s ease-out both;
+}
+
+.erp-toast-out {
+  animation: erp-toast-out 0.2s ease-in both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .erp-toast-in,
+  .erp-toast-out {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
 /* Marivolt ERP — sidebar theme (navigation only) */
 .erp-sidebar {
   --sidebar-bg: #fff8f0;

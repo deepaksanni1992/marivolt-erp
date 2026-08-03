@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import Modal from "../erp/Modal.jsx";
 import { TextInput } from "../erp/FormField.jsx";
 import { poConversionStatusClass } from "../../lib/allocationPoSession.js";
+import { notify } from "../../lib/notifications.js";
 
 export default function ConvertAllocationToPoModal({
   open,
@@ -109,7 +110,7 @@ export default function ConvertAllocationToPoModal({
       .filter((l) => l.requestedQty > 0);
 
     if (!picked.length) {
-      window.alert("Select at least one article with a requested quantity greater than zero.");
+      notify.warning("Select at least one article with a requested quantity greater than zero.");
       return;
     }
 
@@ -118,13 +119,13 @@ export default function ConvertAllocationToPoModal({
       if (!src) continue;
       const remaining = Number(src.remainingConvertibleQty) || 0;
       if (row.requestedQty > remaining + 1e-6) {
-        window.alert(
+        notify.error(
           `Requested quantity for ${row.article} exceeds remaining convertible quantity (${remaining}).`
         );
         return;
       }
       if (row.requestedQty < 1 - 1e-6) {
-        window.alert(`Requested quantity for ${row.article} must be at least 1.`);
+        notify.warning(`Requested quantity for ${row.article} must be at least 1.`);
         return;
       }
     }

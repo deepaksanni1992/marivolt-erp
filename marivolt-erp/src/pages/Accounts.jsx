@@ -17,6 +17,7 @@ import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import { downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 import { GLOBAL_REPORT_PRINT_CSS } from "../lib/reportPrintLayout.js";
 import { GLOBAL_REPORT_TABLE_CSS } from "../lib/reportTableLayout.js";
+import { notify, confirmDialog } from "../lib/notifications.js";
 
 function canManageBankDetails(role) {
   const r = String(role || "").toLowerCase().trim();
@@ -1134,7 +1135,7 @@ export default function Accounts() {
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
                       setTab(item.id);
                       setPage(1);
                     }}
@@ -1189,7 +1190,7 @@ export default function Accounts() {
           <button
             type="button"
             className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white"
-            onClick={() => {
+            onClick={async () => {
               setPage(1);
               if (tab === "cust") qc.invalidateQueries({ queryKey: ["customerLedger"] });
               else if (tab === "supp") qc.invalidateQueries({ queryKey: ["supplierLedger"] });
@@ -1208,7 +1209,7 @@ export default function Accounts() {
           <button
             type="button"
             className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white"
-            onClick={() => {
+            onClick={async () => {
               setErr("");
               if (tab === "bank") {
                 setBankEditId(null);
@@ -1242,7 +1243,7 @@ export default function Accounts() {
             <button
               type="button"
               className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50"
-              onClick={() => {
+              onClick={async () => {
                 setPage(1);
                 setPiPoFilter(piPoFilterInput.trim());
               }}
@@ -1353,9 +1354,9 @@ export default function Accounts() {
                                 type="button"
                                 className="rounded border border-rose-200 bg-rose-50 px-2 py-0.5 font-semibold text-rose-900 hover:bg-rose-100 disabled:opacity-40"
                                 disabled={delMut.isPending}
-                                onClick={() => {
+                                onClick={async () => {
                                   if (!poId) return;
-                                  if (!window.confirm("Remove this supplier file from the PO only? (Purchase invoices are not deleted.)")) return;
+                                  if (!await confirmDialog("Remove this supplier file from the PO only? (Purchase invoices are not deleted.)")) return;
                                   delMut.mutate({ path: `/purchase-orders/${poId}/documents/${row.purchaseDocumentId}` });
                                 }}
                               >
@@ -1374,8 +1375,8 @@ export default function Accounts() {
                                   type="button"
                                   className="rounded border border-gray-900 bg-gray-900 px-2 py-0.5 font-semibold text-white hover:bg-gray-800 disabled:opacity-40"
                                   disabled={postMut.isPending}
-                                  onClick={() => {
-                                    if (!window.confirm(`Book draft ${draft.invoiceNumber} to the supplier ledger?`)) return;
+                                  onClick={async () => {
+                                    if (!await confirmDialog(`Book draft ${draft.invoiceNumber} to the supplier ledger?`)) return;
                                     postMut.mutate({ path: `/purchase-invoices/${draft._id}/book`, body: {} });
                                   }}
                                 >
@@ -1439,8 +1440,8 @@ export default function Accounts() {
                         <button
                           type="button"
                           className="text-xs text-red-600"
-                          onClick={() => {
-                            if (confirm("Delete invoice?"))
+                          onClick={async () => {
+                            if (await confirmDialog("Delete invoice?"))
                               delMut.mutate({ path: `/accounts/sales-invoices/${r._id}` });
                           }}
                         >
@@ -1503,8 +1504,8 @@ export default function Accounts() {
                               type="button"
                               className="rounded border border-gray-300 bg-white px-2 py-0.5 text-xs font-semibold text-gray-900 hover:bg-gray-50 disabled:opacity-40"
                               disabled={postMut.isPending}
-                              onClick={() => {
-                                if (!window.confirm("Book this purchase invoice? It will post to the supplier ledger."))
+                              onClick={async () => {
+                                if (!await confirmDialog("Book this purchase invoice? It will post to the supplier ledger."))
                                   return;
                                 postMut.mutate({ path: `/purchase-invoices/${r._id}/book`, body: {} });
                               }}
@@ -1515,8 +1516,8 @@ export default function Accounts() {
                           <button
                             type="button"
                             className="text-xs text-red-600"
-                            onClick={() => {
-                              if (confirm("Delete invoice?"))
+                            onClick={async () => {
+                              if (await confirmDialog("Delete invoice?"))
                                 delMut.mutate({ path: `/accounts/purchase-invoices/${r._id}` });
                             }}
                           >
@@ -1535,8 +1536,8 @@ export default function Accounts() {
               filterCustomer={filterCustomer}
               loading={loading()}
               rows={activeRows()}
-              onDelete={(r) => {
-                if (confirm("Delete entry?")) delMut.mutate({ path: `/accounts/customer-ledger/${r._id}` });
+              onDelete={async (r) => {
+                if (await confirmDialog("Delete entry?")) delMut.mutate({ path: `/accounts/customer-ledger/${r._id}` });
               }}
             />
           )}
@@ -1679,7 +1680,7 @@ export default function Accounts() {
                                   type="button"
                                   className="text-rose-700 underline"
                                   onClick={async () => {
-                                    if (!window.confirm("Remove this attachment from the draft?")) return;
+                                    if (!await confirmDialog("Remove this attachment from the draft?")) return;
                                     try {
                                       const next = (r.attachments || []).filter(
                                         (x) => String(x.documentId) !== String(a.documentId)
@@ -1706,7 +1707,7 @@ export default function Accounts() {
                               <button
                                 type="button"
                                 className="rounded border border-gray-900 bg-gray-900 px-2 py-0.5 text-[11px] font-semibold text-white"
-                                onClick={() => {
+                                onClick={async () => {
                                   setSupPayDraftId(String(r._id));
                                   setSupplierPaymentForm({
                                     supplierName: r.supplierName || "",
@@ -1732,8 +1733,8 @@ export default function Accounts() {
                                 type="button"
                                 className="rounded border border-rose-200 px-2 py-0.5 text-[11px] text-rose-800"
                                 disabled={deleteSupplierPaymentDraftMut.isPending}
-                                onClick={() => {
-                                  if (!window.confirm("Delete this draft payment?")) return;
+                                onClick={async () => {
+                                  if (!await confirmDialog("Delete this draft payment?")) return;
                                   deleteSupplierPaymentDraftMut.mutate(r._id);
                                 }}
                               >
@@ -1744,7 +1745,7 @@ export default function Accounts() {
                             <button
                               type="button"
                               className="rounded border px-2 py-0.5 text-[11px]"
-                              onClick={() => {
+                              onClick={async () => {
                                 const reason = window.prompt("Cancel reason");
                                 if (!reason) return;
                                 cancelSupplierPaymentMut.mutate({ id: r._id, reason });
@@ -1786,8 +1787,8 @@ export default function Accounts() {
             <CashBankLedgerTab
               loading={loading()}
               rows={activeRows()}
-              onDelete={(r) => {
-                if (confirm("Delete entry?")) delMut.mutate({ path: `/accounts/cash-bank/${r._id}` });
+              onDelete={async (r) => {
+                if (await confirmDialog("Delete entry?")) delMut.mutate({ path: `/accounts/cash-bank/${r._id}` });
               }}
             />
           )}
@@ -2106,7 +2107,7 @@ export default function Accounts() {
                             <button
                               type="button"
                               className="text-xs font-medium text-gray-900 underline decoration-gray-400 underline-offset-2 hover:text-gray-700"
-                              onClick={() => {
+                              onClick={async () => {
                                 setErr("");
                                 setBankEditId(r._id);
                                 setBankForm(bankRowToForm(r));
@@ -2118,8 +2119,8 @@ export default function Accounts() {
                             <button
                               type="button"
                               className="text-xs text-red-600"
-                              onClick={() => {
-                                if (confirm("Delete bank detail?"))
+                              onClick={async () => {
+                                if (await confirmDialog("Delete bank detail?"))
                                   delMut.mutate({ path: `/accounts/bank-details/${r._id}` });
                               }}
                             >
@@ -2862,7 +2863,7 @@ export default function Accounts() {
             type="button"
             className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
             disabled={supplierPaySubmitMut.isPending || supplierPayFinalizeMut.isPending}
-            onClick={() => {
+            onClick={async () => {
               if (supPayDraftId) supplierPayFinalizeMut.mutate();
               else supplierPaySubmitMut.mutate();
             }}
@@ -2993,7 +2994,7 @@ export default function Accounts() {
           <button
             type="button"
             className="rounded-xl border px-4 py-2 text-sm"
-            onClick={() => {
+            onClick={async () => {
               setModal(null);
               setBankEditId(null);
               setBankForm(emptyBankForm());
@@ -3005,7 +3006,7 @@ export default function Accounts() {
             type="button"
             className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
             disabled={postMut.isPending || putMut.isPending}
-            onClick={() => {
+            onClick={async () => {
               if (bankEditId) {
                 putMut.mutate({ path: `/accounts/bank-details/${bankEditId}`, body: bankForm });
               } else {

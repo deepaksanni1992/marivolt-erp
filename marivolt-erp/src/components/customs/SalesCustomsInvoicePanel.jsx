@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../context/AuthContext.jsx";
 import { apiGet, apiPost } from "../../lib/api.js";
+import { notify } from "../../lib/notifications.js";
 
 const LEGACY_ELIGIBLE = new Set(["ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID"]);
 
@@ -58,13 +59,13 @@ export default function SalesCustomsInvoicePanel({ salesInvoice }) {
       const id = data?.item?._id;
       if (id) nav(`/customs/invoices/${id}`);
     },
-    onError: (err) => window.alert(err.message || "Failed to create customs invoice"),
+    onError: (err) => notify.error(err.message || "Failed to create customs invoice"),
   });
 
   const previewMutation = useMutation({
     mutationFn: () => apiPost(`/customs/invoices/preview-from-sales-invoice/${salesInvoiceId}`, {}),
     onSuccess: (data) => setPreview(data),
-    onError: (err) => window.alert(err.message || "Preview failed"),
+    onError: (err) => notify.error(err.message || "Preview failed"),
   });
 
   const summary = useMemo(() => {

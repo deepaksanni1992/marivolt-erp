@@ -3,6 +3,7 @@ import { downloadSearchableReportPdf } from "./reportPdfClient.js";
 import { calcPoTotalsFromDoc } from "./poTotals.js";
 import { PDF_OPTS_ITEM_LINES, PO_LINE_COLGROUP, PO_LINE_TABLE_HEAD } from "./reportTableLayout.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
+import { notify } from "./notifications.js";
 
 /** Supplier-facing part reference only (no internal article / SPN). */
 export function supplierPartNumberForPrint(line) {
@@ -384,7 +385,7 @@ export function openPurchaseOrderDocumentWindow(doc, company, { autoPrint = fals
   }
   const w = window.open("about:blank", "_blank");
   if (!w) {
-    window.alert("Pop-up blocked. Allow pop-ups for this site to view or print the PO.");
+    notify.warning("Pop-up blocked. Allow pop-ups for this site to view or print the PO.");
     return;
   }
   writePurchaseOrderDocumentToWindow(w, doc, company);

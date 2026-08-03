@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Modal from "../erp/Modal.jsx";
 import { apiDelete, apiGet, apiPost, apiPostFormData } from "../../lib/api.js";
+import { notify, confirmDialog } from "../../lib/notifications.js";
 
 /** Matches Document model upload labels and PurchaseDocument internal types. */
 const INVOICE_DOC_TYPES = [
@@ -215,8 +216,8 @@ export default function PoSupplierDocUploadModal({ open, onClose, poId, poNumber
                     type="button"
                     className="rounded border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-900 hover:bg-rose-100 disabled:opacity-40"
                     disabled={deleteDocMut.isPending}
-                    onClick={() => {
-                      if (!window.confirm("Remove this document from the PO?")) return;
+                    onClick={async () => {
+                      if (!await confirmDialog("Remove this document from the PO?")) return;
                       deleteDocMut.mutate(d._id);
                     }}
                   >

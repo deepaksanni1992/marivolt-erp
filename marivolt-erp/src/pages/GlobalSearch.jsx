@@ -5,6 +5,7 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiGetWithQuery } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
+import { notify } from "../lib/notifications.js";
 
 const CATEGORIES = ["All", "Sales", "Purchase", "Inventory", "Accounts", "Customs", "Documents"];
 
@@ -137,7 +138,7 @@ export default function GlobalSearch() {
       await selectCompany(nextId);
       setPage(1);
     } catch (err) {
-      window.alert(err.message || "Failed to switch company");
+      notify.error(err.message || "Failed to switch company");
     }
   };
 
@@ -159,7 +160,7 @@ export default function GlobalSearch() {
         downloadCsv(`${base}.csv`, EXPORT_COLUMNS, exportRows);
       }
     } catch (err) {
-      window.alert(err.message || "Export failed");
+      notify.error(err.message || "Export failed");
     } finally {
       setExporting(false);
     }
@@ -356,7 +357,7 @@ export default function GlobalSearch() {
                 type="button"
                 className="rounded border px-2 py-1 disabled:opacity-40"
                 disabled={page <= 1}
-                onClick={() => {
+                onClick={async () => {
                   const p = Math.max(1, page - 1);
                   setPage(p);
                   syncUrl({ page: p });
@@ -368,7 +369,7 @@ export default function GlobalSearch() {
                 type="button"
                 className="rounded border px-2 py-1 disabled:opacity-40"
                 disabled={page >= totalPages}
-                onClick={() => {
+                onClick={async () => {
                   const p = page + 1;
                   setPage(p);
                   syncUrl({ page: p });

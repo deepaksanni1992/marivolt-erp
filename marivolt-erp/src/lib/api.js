@@ -1,4 +1,5 @@
 import axios from "axios";
+import { resolveApiErrorMessage } from "./apiError.js";
 
 /** True when the ERP UI is opened on this machine (any port). Used at runtime in the browser bundle. */
 export function isRunningUiOnLocalhost() {
@@ -145,11 +146,7 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    const msg =
-      err.response?.data?.message ||
-      (typeof err.response?.data === "string" ? err.response.data : null) ||
-      err.message ||
-      "Request failed";
+    const msg = resolveApiErrorMessage(err, "Request failed") || "Request failed";
     const wrapped = new Error(msg);
     wrapped.status = err.response?.status || 0;
     if (err.response?.data && typeof err.response.data === "object") {
@@ -160,6 +157,7 @@ api.interceptors.response.use(
       if (err.response.data.details) wrapped.details = err.response.data.details;
       wrapped.body = err.response.data;
     }
+    if (err.code) wrapped.code = wrapped.code || err.code;
     return Promise.reject(wrapped);
   }
 );
@@ -192,9 +190,10 @@ export async function apiPostFormData(path, formData) {
   }
   if (!res.ok) {
     const msg =
-      (typeof body.message === "string" && body.message) ||
-      (typeof body.error === "string" && body.error) ||
-      `Request failed (${res.status})`;
+      resolveApiErrorMessage(
+        { message: body?.message, body, status: res.status, response: { status: res.status, data: body } },
+        `Request failed (${res.status})`
+      ) || `Request failed (${res.status})`;
     throw new Error(msg);
   }
   return body;

@@ -5,6 +5,7 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiGet, apiGetWithQuery } from "../lib/api.js";
 import { downloadCsv } from "../lib/purchaseExport.js";
+import { notify } from "../lib/notifications.js";
 
 const STATUS_OPTIONS = ["", "IN_STOCK", "PARTIAL", "CONSUMED", "CANCELLED"];
 
@@ -62,7 +63,7 @@ async function openDocument(documentId) {
     const { url } = await apiGet(`/documents/${documentId}/download?inline=1`);
     if (url) window.open(url, "_blank", "noopener,noreferrer");
   } catch (e) {
-    window.alert(e.message || "Could not open document");
+    notify.error(e.message || "Could not open document");
   }
 }
 
@@ -121,7 +122,7 @@ export default function CustomsStock() {
         await selectCompany(nextId);
         setPage(1);
       } catch (err) {
-        window.alert(err.message || "Failed to switch company");
+        notify.error(err.message || "Failed to switch company");
       }
     },
     [auth?.company?.id, selectCompany],
@@ -148,7 +149,7 @@ export default function CustomsStock() {
       }));
       downloadCsv(`customs-stock-${currentCompany}-${Date.now()}.csv`, CSV_COLUMNS, exportRows);
     } catch (e) {
-      window.alert(e.message || "Export failed");
+      notify.error(e.message || "Export failed");
     } finally {
       setExporting(false);
     }

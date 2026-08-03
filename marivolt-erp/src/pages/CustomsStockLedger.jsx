@@ -4,6 +4,7 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiGetWithQuery } from "../lib/api.js";
 import { downloadCsv } from "../lib/purchaseExport.js";
+import { notify } from "../lib/notifications.js";
 
 const MOVEMENT_TYPES = ["", "INBOUND", "OUTBOUND", "ADJUSTMENT", "REVERSAL"];
 
@@ -101,7 +102,7 @@ export default function CustomsStockLedger() {
         await selectCompany(nextId);
         setPage(1);
       } catch (err) {
-        window.alert(err.message || "Failed to switch company");
+        notify.error(err.message || "Failed to switch company");
       }
     },
     [auth?.company?.id, selectCompany],
@@ -124,7 +125,7 @@ export default function CustomsStockLedger() {
       }));
       downloadCsv(`customs-stock-ledger-${currentCompany}-${Date.now()}.csv`, CSV_COLUMNS, exportRows);
     } catch (e) {
-      window.alert(e.message || "Export failed");
+      notify.error(e.message || "Export failed");
     } finally {
       setExporting(false);
     }

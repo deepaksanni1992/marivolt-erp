@@ -35,6 +35,7 @@ import {
   apiPut,
 } from "../lib/api.js";
 import { useAuth } from "../context/AuthContext.jsx";
+import { notify, confirmDialog } from "../lib/notifications.js";
 
 const TABS = [
   { id: "orders", label: "Purchase order" },
@@ -1145,6 +1146,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       qc.invalidateQueries({ queryKey: ["sales-order-allocations"] });
       setErr("");
       setNotice("Purchase order created successfully.");
+      notify.success("Purchase order created successfully.");
       setCreateOpen(false);
       setEditPoId(null);
       setForm(initialPoForm(auth?.company));
@@ -1164,6 +1166,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       qc.invalidateQueries({ queryKey: ["sales-order-allocations"] });
       setErr("");
       setNotice("Purchase order updated successfully.");
+      notify.success("Purchase order updated successfully.");
       setCreateOpen(false);
       setEditPoId(null);
       setDetailId(id);
@@ -1199,13 +1202,13 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       .catch((e) => setErr(e.message));
   }
 
-  function confirmDeletePoRow(row) {
+  async function confirmDeletePoRow(row) {
     if (!canDeletePurchaseOrderRole(auth?.user?.role)) return;
     if (!canModifyPoStatus(row.status)) {
-      window.alert("Only draft or saved orders can be deleted.");
+      notify.warning("Only draft or saved orders can be deleted.");
       return;
     }
-    if (!window.confirm(`Delete purchase order ${row.poNumber}? This cannot be undone.`)) return;
+    if (!await confirmDialog(`Delete purchase order ${row.poNumber}? This cannot be undone.`)) return;
     deletePoMutation.mutate(row._id);
   }
 
@@ -1218,13 +1221,13 @@ export default function Purchase({ procurementEmbed = false } = {}) {
     setCreateOpen(true);
   }
 
-  function confirmDeleteDetail() {
+  async function confirmDeleteDetail() {
     if (!detail || !canDeletePurchaseOrderRole(auth?.user?.role)) return;
     if (!canModifyPoStatus(detail.status)) {
-      window.alert("Only draft or saved orders can be deleted.");
+      notify.warning("Only draft or saved orders can be deleted.");
       return;
     }
-    if (!window.confirm(`Delete purchase order ${detail.poNumber}? This cannot be undone.`)) return;
+    if (!await confirmDialog(`Delete purchase order ${detail.poNumber}? This cannot be undone.`)) return;
     deletePoMutation.mutate(detail._id);
   }
 
@@ -1654,7 +1657,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
             <button
               key={t.id}
               type="button"
-              onClick={() => {
+              onClick={async () => {
                 setTab(t.id);
                 setErr("");
               }}
@@ -1707,7 +1710,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               <button
                 type="button"
                 className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-gray-800"
-                onClick={() => {
+                onClick={async () => {
                   setErr("");
                   createMutation.reset();
                   updatePoMutation.reset();
@@ -1748,7 +1751,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               <button
                 type="button"
                 className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-medium"
-                onClick={() => {
+                onClick={async () => {
                   setPage(1);
                   qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
                 }}
@@ -1804,7 +1807,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                           <button
                             type="button"
                             className="rounded-md border border-gray-300 bg-white px-2.5 py-1 text-xs font-semibold text-gray-800 hover:bg-gray-50"
-                            onClick={() => {
+                            onClick={async () => {
                               setDetailId(r._id);
                               setErr("");
                             }}
@@ -1833,7 +1836,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                             type="button"
                             title="Upload supplier proforma or tax invoice and link to this PO"
                             className="rounded-md border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-900 hover:bg-indigo-100"
-                            onClick={() => {
+                            onClick={async () => {
                               setErr("");
                               setSupplierDocUploadPo({
                                 _id: r._id,
@@ -1924,7 +1927,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               <button
                 type="button"
                 className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white"
-                onClick={() => {
+                onClick={async () => {
                   setSupEditing(null);
                   setSupForm({
                     supplierCode: "",
@@ -1998,7 +2001,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                         <button
                           type="button"
                           className="mr-1 rounded border px-2 py-0.5 text-xs"
-                          onClick={() => {
+                          onClick={async () => {
                             setSupEditing(s._id);
                             setSupForm({
                               supplierCode: s.supplierCode || "",
@@ -2019,8 +2022,8 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                         <button
                           type="button"
                           className="rounded border border-red-200 px-2 py-0.5 text-xs text-red-700"
-                          onClick={() => {
-                            if (confirm("Delete this supplier?")) delSupMutation.mutate(s._id);
+                          onClick={async () => {
+                            if (await confirmDialog("Delete this supplier?")) delSupMutation.mutate(s._id);
                           }}
                         >
                           Del
@@ -2110,7 +2113,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               <button
                 type="button"
                 className="rounded-lg border px-3 py-1.5 text-xs font-semibold"
-                onClick={() => {
+                onClick={async () => {
                   const cols = [
                     { key: "supplierName", header: "Supplier" },
                     { key: "value", header: "Value" },
@@ -2158,7 +2161,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
             <button
               type="button"
               className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white"
-              onClick={() => {
+              onClick={async () => {
                 setErr("");
                 setRetOpen(true);
               }}
@@ -2209,7 +2212,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                         <button
                           type="button"
                           className="rounded border px-2 py-0.5 text-xs"
-                          onClick={() => {
+                          onClick={async () => {
                             setRetDetailId(r._id);
                             setErr("");
                           }}
@@ -2262,7 +2265,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               <button
                 type="button"
                 className="rounded-lg border px-3 py-1.5 text-xs font-semibold"
-                onClick={() => {
+                onClick={async () => {
                   const items = pendingData?.items ?? [];
                   const cols = [
                     { key: "poNumber", header: "PO #" },
@@ -2337,7 +2340,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                         <button
                           type="button"
                           className="rounded border px-2 py-0.5 text-xs"
-                          onClick={() => {
+                          onClick={async () => {
                             setDetailId(r._id);
                             setTab("orders");
                           }}
@@ -2653,7 +2656,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                   <button
                     type="button"
                     className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold"
-                    onClick={() => {
+                    onClick={async () => {
                       setErr("");
                       apiPatch(`/purchase-orders/${detail._id}/status`, { status: "SAVED" })
                         .then(() => {
@@ -2669,7 +2672,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                   <button
                     type="button"
                     className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold"
-                    onClick={() => {
+                    onClick={async () => {
                       setErr("");
                       apiPatch(`/purchase-orders/${detail._id}/status`, { status: "SENT" })
                         .then(() => {
@@ -2726,7 +2729,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
             type="button"
             className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
             disabled={receiveMutation.isPending}
-            onClick={() => {
+            onClick={async () => {
               setErr("");
               receiveMutation.mutate({
                 warehouse: receiveWarehouse,
@@ -2990,7 +2993,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                 <button
                   type="button"
                   className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
-                  onClick={() => {
+                  onClick={async () => {
                     setPoPreview({ unsaved: !editPoId, doc: draftDocSnapshotForExport() });
                   }}
                 >
@@ -3307,7 +3310,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
             type="button"
             className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
             disabled={createMutation.isPending || updatePoMutation.isPending}
-            onClick={() => {
+            onClick={async () => {
               setErr("");
               setNotice("");
               const body = buildPoPayload(form, { includeIncompleteLines: Boolean(editPoId) });
@@ -3521,7 +3524,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
             type="button"
             className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
             disabled={createRetMutation.isPending}
-            onClick={() => {
+            onClick={async () => {
               setErr("");
               createRetMutation.mutate();
             }}
@@ -3574,8 +3577,8 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                 type="button"
                 className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
                 disabled={postRetMutation.isPending}
-                onClick={() => {
-                  if (confirm("Post return and deduct stock?")) postRetMutation.mutate(retDetail._id);
+                onClick={async () => {
+                  if (await confirmDialog("Post return and deduct stock?")) postRetMutation.mutate(retDetail._id);
                 }}
               >
                 Post to inventory

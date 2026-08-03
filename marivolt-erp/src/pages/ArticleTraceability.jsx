@@ -5,6 +5,7 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiGet, apiGetWithQuery } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
+import { notify } from "../lib/notifications.js";
 
 const DOC_TYPES = ["", "PO", "GRN", "Customs Lot", "Customs Ledger", "Sales Invoice", "Customs Invoice", "Dispatch"];
 
@@ -47,7 +48,7 @@ async function openDocument(documentId) {
     const { url } = await apiGet(`/documents/${documentId}/download?inline=1`);
     if (url) window.open(url, "_blank", "noopener,noreferrer");
   } catch (e) {
-    window.alert(e.message || "Could not open document");
+    notify.error(e.message || "Could not open document");
   }
 }
 
@@ -211,7 +212,7 @@ export default function ArticleTraceability() {
   const runSearch = (e) => {
     e?.preventDefault?.();
     if (!q.trim() && !articleNumber.trim()) {
-      window.alert("Enter article number or a search term");
+      notify.warning("Enter article number or a search term");
       return;
     }
     setSubmitted(true);
@@ -224,7 +225,7 @@ export default function ArticleTraceability() {
     try {
       await selectCompany(nextId);
     } catch (err) {
-      window.alert(err.message || "Failed to switch company");
+      notify.error(err.message || "Failed to switch company");
     }
   };
 
@@ -307,7 +308,7 @@ export default function ArticleTraceability() {
         await downloadPdfTable(`${base}-${sec.title}`, sec.title, sec.cols, sec.rows, `${base}-${sec.title}`, auth?.company);
       }
     } catch (err) {
-      window.alert(err.message || "Export failed");
+      notify.error(err.message || "Export failed");
     } finally {
       setExporting(false);
     }

@@ -2,6 +2,7 @@ import { useNavigate } from "react-router-dom";
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext.jsx";
 import UserMenu from "./UserMenu.jsx";
+import { notify } from "../lib/notifications.js";
 
 export default function Topbar({ onMenuClick }) {
   const nav = useNavigate();
@@ -22,7 +23,7 @@ export default function Topbar({ onMenuClick }) {
       await selectCompany(nextCompanyId);
       nav("/dashboard");
     } catch (err) {
-      window.alert(err.message || "Failed to switch company");
+      notify.error(err.message || "Failed to switch company");
     }
   }
 

@@ -6,6 +6,7 @@ import Modal from "../components/erp/Modal.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiGetWithQuery } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
+import { notify } from "../lib/notifications.js";
 
 const STATUS_OPTIONS = ["", "MATCH", "ERP HIGHER", "CUSTOMS HIGHER", "MISSING CUSTOMS RECORD"];
 
@@ -237,7 +238,7 @@ export default function CustomsReconciliation() {
         await selectCompany(nextId);
         setPage(1);
       } catch (err) {
-        window.alert(err.message || "Failed to switch company");
+        notify.error(err.message || "Failed to switch company");
       }
     },
     [auth?.company?.id, selectCompany],
@@ -279,7 +280,7 @@ export default function CustomsReconciliation() {
       const base = `customs-reconciliation-${currentCompany}-${Date.now()}`;
       downloadCsv(`${base}.${filenameSuffix === "xls" ? "xls" : "csv"}`, CSV_COLUMNS, exportRows);
     } catch (e) {
-      window.alert(e.message || "Export failed");
+      notify.error(e.message || "Export failed");
     } finally {
       setExporting(false);
     }
@@ -297,7 +298,7 @@ export default function CustomsReconciliation() {
         "Customs Reconciliation",
       );
     } catch (e) {
-      window.alert(e.message || "PDF export failed");
+      notify.error(e.message || "PDF export failed");
     } finally {
       setExporting(false);
     }

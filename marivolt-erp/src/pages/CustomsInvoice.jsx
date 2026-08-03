@@ -6,6 +6,7 @@ import CustomsInvoiceManualAllocModal from "../components/customs/CustomsInvoice
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
 import { printCustomsInvoice } from "../lib/customsInvoicePrint.js";
+import { notify, confirmDialog } from "../lib/notifications.js";
 
 function fmtDate(v) {
   if (!v) return "—";
@@ -41,7 +42,7 @@ async function openDocument(documentId) {
     const { url } = await apiGet(`/documents/${documentId}/download?inline=1`);
     if (url) window.open(url, "_blank", "noopener,noreferrer");
   } catch (e) {
-    window.alert(e.message || "Could not open document");
+    notify.error(e.message || "Could not open document");
   }
 }
 
@@ -80,7 +81,7 @@ function CustomsInvoiceList() {
         await selectCompany(nextId);
         setPage(1);
       } catch (err) {
-        window.alert(err.message || "Failed to switch company");
+        notify.error(err.message || "Failed to switch company");
       }
     },
     [auth?.company?.id, selectCompany],
@@ -244,7 +245,7 @@ function CustomsInvoiceDetail({ id }) {
       );
       setPreview(data);
     } catch (err) {
-      window.alert(err.message || "Preview failed");
+      notify.error(err.message || "Preview failed");
       setPreview(null);
     } finally {
       setPreviewLoading(false);
@@ -262,7 +263,7 @@ function CustomsInvoiceDetail({ id }) {
       setPreview(null);
       queryClient.invalidateQueries({ queryKey: ["customs-invoices"] });
     },
-    onError: (err) => window.alert(err.message || "Update failed"),
+    onError: (err) => notify.error(err.message || "Update failed"),
   });
 
   const finalizeMutation = useMutation({
@@ -275,9 +276,9 @@ function CustomsInvoiceDetail({ id }) {
       queryClient.invalidateQueries({ queryKey: ["customs-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["customs-ledger-page"] });
       queryClient.invalidateQueries({ queryKey: ["customs-stock-page"] });
-      window.alert("Customs invoice finalized — lot remaining qty reduced.");
+      notify.success("Customs invoice finalized — lot remaining qty reduced.");
     },
-    onError: (err) => window.alert(err.message || "Finalize failed"),
+    onError: (err) => notify.error(err.message || "Finalize failed"),
   });
 
   const cancelMutation = useMutation({
@@ -291,7 +292,7 @@ function CustomsInvoiceDetail({ id }) {
       queryClient.invalidateQueries({ queryKey: ["customs-ledger-page"] });
       queryClient.invalidateQueries({ queryKey: ["customs-stock-page"] });
     },
-    onError: (err) => window.alert(err.message || "Cancel failed"),
+    onError: (err) => notify.error(err.message || "Cancel failed"),
   });
 
   const handlePrint = async (exportPdf) => {
@@ -302,7 +303,7 @@ function CustomsInvoiceDetail({ id }) {
         companyName: auth?.company?.name || invoice?.companyCode,
       });
     } catch (err) {
-      window.alert(err.message || "Print failed");
+      notify.error(err.message || "Print failed");
     }
   };
 
@@ -546,7 +547,7 @@ function CustomsInvoiceDetail({ id }) {
               disabled={finalizeMutation.isPending || updateMutation.isPending}
               onClick={async () => {
                 if (!preview) await loadPreview();
-                if (!window.confirm("Finalize customs invoice? This will reduce customs lot remaining qty.")) return;
+                if (!await confirmDialog("Finalize customs invoice? This will reduce customs lot remaining qty.")) return;
                 finalizeMutation.mutate();
               }}
             >

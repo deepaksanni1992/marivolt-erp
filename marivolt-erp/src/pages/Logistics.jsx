@@ -7,6 +7,7 @@ import { apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.
 import { GLOBAL_REPORT_PRINT_CSS } from "../lib/reportPrintLayout.js";
 import { GLOBAL_REPORT_TABLE_CSS, LOGISTICS_PACKING_COLGROUP, PDF_OPTS_ITEM_LINES } from "../lib/reportTableLayout.js";
 import { downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
+import { notify, confirmDialog } from "../lib/notifications.js";
 
 const emptyShipment = {
   direction: "EXPORT",
@@ -342,7 +343,7 @@ export default function Logistics() {
                       <button
                         type="button"
                         className="rounded border px-2 py-1 text-xs"
-                        onClick={() => {
+                        onClick={async () => {
                           setEditingId(null);
                           setForm((f) => ({
                             ...emptyShipment,
@@ -448,8 +449,8 @@ export default function Logistics() {
                         <button
                           type="button"
                           className="rounded-lg border border-red-200 px-2 py-1 text-xs text-red-700"
-                          onClick={() => {
-                            if (confirm(`Delete ${r.shipmentRef}?`)) deleteMutation.mutate(r._id);
+                          onClick={async () => {
+                            if (await confirmDialog(`Delete ${r.shipmentRef}?`)) deleteMutation.mutate(r._id);
                           }}
                         >
                           Del
@@ -827,7 +828,7 @@ export default function Logistics() {
             type="button"
             className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
             disabled={saveMutation.isPending}
-            onClick={() => {
+            onClick={async () => {
               setErr("");
               saveMutation.mutate();
             }}

@@ -58,6 +58,7 @@ import {
   SALES_INVOICE_COLGROUP,
   SALES_INVOICE_LINE_TABLE_HEAD,
 } from "../lib/reportTableLayout.js";
+import { notify, confirmDialog } from "../lib/notifications.js";
 
 /** Document types allowed when uploading from Sales Dispatch flow (subset of backend DOCUMENT_TYPES). */
 const SHIPPING_DOC_TYPE_OPTIONS = ["Shipping Document", "Packing List", "Other"];
@@ -2054,8 +2055,12 @@ export default function Sales() {
       qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
       qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
       qc.invalidateQueries({ queryKey: ["sales-dispatch-pending-invoices"] });
+      notify.success("Dispatch posted.");
     },
-    onError: (e) => setErr(e.message),
+    onError: (e) => {
+      setErr(e.message);
+      notify.error(e.message || "Dispatch failed.");
+    },
   });
 
   const cancelSalesDispatchMutation = useMutation({
@@ -2065,8 +2070,12 @@ export default function Sales() {
       qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
       qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
       qc.invalidateQueries({ queryKey: ["sales-dispatch-pending-invoices"] });
+      notify.success("Dispatch cancelled.");
     },
-    onError: (e) => setErr(e.message),
+    onError: (e) => {
+      setErr(e.message);
+      notify.error(e.message || "Cancel failed.");
+    },
   });
 
   const { data: dispatchStatusData, isLoading: dispatchStatusLoading } = useQuery({
@@ -2924,7 +2933,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 .join("\n")
             : "";
           if (typeof window !== "undefined") {
-            const ok = window.confirm(`${message}\n\n${lines}\n\nProceed and record the overpayment?`);
+            const ok = await confirmDialog(`${message}\n\n${lines}\n\nProceed and record the overpayment?`);
             if (!ok) throw err;
           }
           fd.append("allowOverpayment", "true");
@@ -3438,7 +3447,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               activeTab === "Reports" ||
               activeTab === "Dispatch Status"
             }
-            onClick={() => {
+            onClick={async () => {
               setErr("");
               if (activeTab === "Customer Master") setCustomerCreateOpen(true);
               else if (activeTab === "Quotation") {
@@ -4293,7 +4302,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                       <button
                         type="button"
                         className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100"
-                        onClick={() => {
+                        onClick={async () => {
                           setSelectedReportId(report.id);
                           setReportPage(1);
                           window.setTimeout(() => {
@@ -4374,7 +4383,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                             <button
                               type="button"
                               className="rounded-lg border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-800 hover:bg-gray-50"
-                              onClick={() => {
+                              onClick={async () => {
                                 setErr("");
                                 setCustomerEditId(r._id);
                                 setCustomerEditForm({
@@ -4572,9 +4581,9 @@ ${GLOBAL_REPORT_TABLE_CSS}
                                   deleteQuotationMutation.isPending || !quotationListCanDelete(r, canDeleteQuotations)
                                 }
                                 title={quotationListDeleteTitle(r, canDeleteQuotations)}
-                                onClick={() => {
+                                onClick={async () => {
                                   if (!quotationListCanDelete(r, canDeleteQuotations)) return;
-                                  if (!window.confirm("Delete this quotation? This action cannot be undone.")) return;
+                                  if (!await confirmDialog("Delete this quotation? This action cannot be undone.")) return;
                                   deleteQuotationMutation.mutate(r._id);
                                 }}
                               >
@@ -4593,7 +4602,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                             <button
                               type="button"
                               className="rounded-lg border px-2 py-1 text-xs"
-                              onClick={() => {
+                              onClick={async () => {
                                 apiGet(`/quotations/${r._id}/print-data`)
                                   .then((data) => renderPrintWindow(data))
                                   .catch((e) => setErr(e.message));
@@ -4604,7 +4613,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                             <button
                               type="button"
                               className="rounded-lg border px-2 py-1 text-xs"
-                              onClick={() => {
+                              onClick={async () => {
                                 apiGet(`/quotations/${r._id}/print-data`)
                                   .then((data) => renderPrintWindow(data, true))
                                   .catch((e) => setErr(e.message));
@@ -4996,7 +5005,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                               className={`rounded-lg border px-2 py-1 text-xs ${!canMarkPaid ? "opacity-40" : ""}`}
                               disabled={!canMarkPaid}
                               title={!canMarkPaid ? "Proforma already fully paid or unavailable for payment posting" : "Record payment receipt"}
-                              onClick={() => {
+                              onClick={async () => {
                                 setReceivePaymentModal({ open: true, proforma: r });
                                 setReceivePaymentForm((f) => ({
                                   ...f,
@@ -5513,7 +5522,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                               type="button"
                               className={`rounded-lg border px-2 py-1 text-xs ${!salesInvoiceCanReceivePayment(r) ? "opacity-40" : ""}`}
                               disabled={!salesInvoiceCanReceivePayment(r)}
-                              onClick={() => {
+                              onClick={async () => {
                                 const balance = Number(r.balanceAmount ?? r.grandTotal ?? 0);
                                 setReceiveInvoicePaymentModal({ open: true, invoice: r });
                                 setReceivePaymentForm((f) => ({
@@ -5622,7 +5631,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <button
                 type="button"
                 className="rounded-lg border bg-slate-900 px-3 py-1.5 text-xs font-medium text-white"
-                onClick={() => {
+                onClick={async () => {
                   const el = document.getElementById("s2-pending-invoice");
                   const id = el?.value;
                   if (!id) return setErr("Select a pending Sales Invoice");
@@ -5698,7 +5707,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                                 type="button"
                                 className={`rounded-lg border px-2 py-1 text-xs ${!canCancel ? "opacity-40" : ""}`}
                                 disabled={!canCancel || cancelSalesDispatchMutation.isPending}
-                                onClick={() => {
+                                onClick={async () => {
                                   const reason = window.prompt("Cancellation reason", "") || "";
                                   cancelSalesDispatchMutation.mutate({ id: r._id, reason });
                                 }}
@@ -6259,7 +6268,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                             <button
                               type="button"
                               className="rounded-xl border px-2 py-1 text-xs"
-                              onClick={() => {
+                              onClick={async () => {
                                 const lines = detailQuotationDraftForm.lines.filter((_, i) => i !== idx).map((l, i2) => ({ ...l, serialNo: i2 + 1 }));
                                 setDetailQuotationDraftForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
                               }}
@@ -6316,9 +6325,9 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     !quotationListCanDelete(detail, canDeleteQuotations)
                   }
                   title={quotationListDeleteTitle(detail, canDeleteQuotations)}
-                  onClick={() => {
+                  onClick={async () => {
                     if (!detail?._id || !quotationListCanDelete(detail, canDeleteQuotations)) return;
-                    if (!window.confirm("Delete this quotation? This action cannot be undone.")) return;
+                    if (!await confirmDialog("Delete this quotation? This action cannot be undone.")) return;
                     deleteQuotationMutation.mutate(detail._id);
                   }}
                 >
@@ -6360,9 +6369,9 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     !quotationListCanDelete(detail, canDeleteQuotations)
                   }
                   title={quotationListDeleteTitle(detail, canDeleteQuotations)}
-                  onClick={() => {
+                  onClick={async () => {
                     if (!detail?._id || !quotationListCanDelete(detail, canDeleteQuotations)) return;
-                    if (!window.confirm("Delete this quotation? This action cannot be undone.")) return;
+                    if (!await confirmDialog("Delete this quotation? This action cannot be undone.")) return;
                     deleteQuotationMutation.mutate(detail._id);
                   }}
                 >
@@ -6372,7 +6381,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <button
                 type="button"
                 className="rounded-xl border px-2 py-1 text-xs"
-                onClick={() => {
+                onClick={async () => {
                   apiGet(`/quotations/${detail._id}/print-data`)
                     .then((data) => renderPrintWindow(data))
                     .catch((e) => setErr(e.message));
@@ -6383,7 +6392,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <button
                 type="button"
                 className="rounded-xl border px-2 py-1 text-xs"
-                onClick={() => {
+                onClick={async () => {
                   apiGet(`/quotations/${detail._id}/print-data`)
                     .then((data) => renderPrintWindow(data, true))
                     .catch((e) => setErr(e.message));
@@ -6526,7 +6535,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <button
                 type="button"
                 className="rounded-xl border px-2 py-1 text-xs"
-                onClick={() => {
+                onClick={async () => {
                   apiGet(`/quotations/${detail._id}/print-data`)
                     .then((data) => renderPrintWindow(data))
                     .catch((e) => setErr(e.message));
@@ -6537,7 +6546,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <button
                 type="button"
                 className="rounded-xl border px-2 py-1 text-xs"
-                onClick={() => {
+                onClick={async () => {
                   apiGet(`/quotations/${detail._id}/print-data`)
                     .then((data) => renderPrintWindow(data, true))
                     .catch((e) => setErr(e.message));
@@ -6555,9 +6564,9 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     !quotationListCanDelete(detail, canDeleteQuotations)
                   }
                   title={quotationListDeleteTitle(detail, canDeleteQuotations)}
-                  onClick={() => {
+                  onClick={async () => {
                     if (!detail?._id || !quotationListCanDelete(detail, canDeleteQuotations)) return;
-                    if (!window.confirm("Delete this quotation? This action cannot be undone.")) return;
+                    if (!await confirmDialog("Delete this quotation? This action cannot be undone.")) return;
                     deleteQuotationMutation.mutate(detail._id);
                   }}
                 >
@@ -6925,7 +6934,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                               <button
                                 type="button"
                                 className="rounded-xl border px-2 py-1 text-xs"
-                                onClick={() => {
+                                onClick={async () => {
                                   const lines = detailOADraftForm.lines.filter((_, i) => i !== idx).map((l, i2) => ({ ...l, serialNo: i2 + 1 }));
                                   setDetailOADraftForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
                                 }}
@@ -7556,7 +7565,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                               <button
                                 type="button"
                                 className="rounded-xl border px-2 py-1 text-xs"
-                                onClick={() => {
+                                onClick={async () => {
                                   const lines = detailProformaDraftForm.lines.filter((_, i) => i !== idx).map((l, i2) => ({ ...l, serialNo: i2 + 1 }));
                                   setDetailProformaDraftForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
                                 }}
@@ -7959,7 +7968,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 </table>
               </div>
               <div className="flex flex-wrap gap-2">
-                <button type="button" className="rounded-xl border px-2 py-1 text-xs" disabled={putSalesInvoiceMutation.isPending} onClick={() => {
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" disabled={putSalesInvoiceMutation.isPending} onClick={async () => {
                   const { status: _legacyStatus, paymentStatus: _ps, documentStatus: _ds, dispatchStatus: _disp, ...body } = detailSalesInvoiceDraftForm;
                   putSalesInvoiceMutation.mutate({ body });
                 }}>
@@ -8115,9 +8124,9 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   type="button"
                   className="rounded-xl border px-2 py-1 text-xs"
                   disabled={patchSalesDispatchMutation.isPending}
-                  onClick={() => {
-                    if (!window.confirm("Close dispatch?")) return;
-                    const postCredit = window.confirm(
+                  onClick={async () => {
+                    if (!await confirmDialog("Close dispatch?")) return;
+                    const postCredit = await confirmDialog(
                       "Post customer ledger CREDIT for dispatch total? OK = yes, Cancel = no"
                     );
                     patchSalesDispatchMutation.mutate({
@@ -8132,7 +8141,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <button
                 type="button"
                 className="rounded-xl border px-2 py-1 text-xs"
-                onClick={() => {
+                onClick={async () => {
                   setErr("");
                   setShippingDocForm({ documentType: "Shipping Document", remarks: "" });
                   if (shippingFileRef.current) shippingFileRef.current.value = "";
@@ -8331,7 +8340,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
           <button
             type="button"
             className="rounded-xl border px-4 py-2 text-sm"
-            onClick={() => {
+            onClick={async () => {
               setCustomerEditOpen(false);
               setCustomerEditId(null);
             }}
@@ -8473,7 +8482,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
           <button
             type="button"
             className="rounded-xl border px-4 py-2 text-sm font-medium text-gray-800"
-            onClick={() => {
+            onClick={async () => {
               setShippingDocsAfterDispatch(null);
               setShippingDownloadBusyId(null);
             }}
@@ -8780,7 +8789,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
             <button
               type="button"
               className="rounded-lg border px-3 py-1.5 text-sm hover:bg-slate-50"
-              onClick={() => {
+              onClick={async () => {
                 setNegativeAllocConfirm({ open: false, source: "", id: "", error: null });
                 setNegativeAllocReason("");
               }}
@@ -8794,7 +8803,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 convertToOrderAllocationFromOAMutation.isPending ||
                 convertToOrderAllocationFromProformaMutation.isPending
               }
-              onClick={() => {
+              onClick={async () => {
                 const id = negativeAllocConfirm.id;
                 const source = negativeAllocConfirm.source;
                 const reason = negativeAllocReason;
@@ -9226,7 +9235,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                         <button
                           type="button"
                           className="rounded-xl border px-2 py-1 text-xs"
-                          onClick={() => {
+                          onClick={async () => {
                             const lines = form.lines.filter((_, i) => i !== idx).map((l, i2) => ({ ...l, serialNo: i2 + 1 }));
                             setForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
                           }}
@@ -9271,7 +9280,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
           <button
             type="button"
             className="rounded-xl border px-4 py-2 text-sm"
-            onClick={() => {
+            onClick={async () => {
               setIsQuotationNoEdited(false);
               setCreateOpen(false);
             }}
@@ -9282,7 +9291,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
             type="button"
             className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
             disabled={createMutation.isPending}
-            onClick={() => {
+            onClick={async () => {
               setErr("");
               if (!form.customerId) {
                 setErr("Please select customer from Customer Master");
@@ -9366,7 +9375,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <button
                 type="button"
                 className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
-                onClick={() => {
+                onClick={async () => {
                   const { applyMerge } = quotationCsvDupModal;
                   setQuotationCsvDupModal(null);
                   if (applyMerge) {
@@ -9385,7 +9394,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <button
                 type="button"
                 className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
-                onClick={() => {
+                onClick={async () => {
                   const { applyMerge } = quotationCsvDupModal;
                   setQuotationCsvDupModal(null);
                   if (applyMerge) {
@@ -9634,7 +9643,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <button
                   type="button"
                   className="rounded-xl border px-2 py-1 text-xs"
-                  onClick={() => {
+                  onClick={async () => {
                     const lines = proformaForm.lines.filter((_, i) => i !== idx);
                     setProformaForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
                   }}
@@ -9827,7 +9836,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <button
                   type="button"
                   className="rounded-xl border px-2 py-1 text-xs"
-                  onClick={() => {
+                  onClick={async () => {
                     const lines = salesInvoiceForm.lines.filter((_, i) => i !== idx);
                     setSalesInvoiceForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
                   }}
@@ -9951,7 +9960,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <button
                   type="button"
                   className="rounded-xl border px-2 py-1 text-xs"
-                  onClick={() => {
+                  onClick={async () => {
                     const lines = ciplForm.lines.filter((_, i) => i !== idx);
                     setCiplForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
                   }}

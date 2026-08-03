@@ -4,6 +4,7 @@ import {
   logReportTableOverflowCheck,
   PRINT_PREVIEW_VIEWPORT_WIDTH,
 } from "./reportTableLayout.js";
+import { notify } from "./notifications.js";
 
 function sanitizeFilename(name) {
   const base = String(name || "report")
@@ -141,7 +142,7 @@ export async function downloadSearchableReportPdf({
 export function openReportHtmlPreview(html) {
   const win = window.open("", "_blank", `width=${PRINT_PREVIEW_VIEWPORT_WIDTH},height=900`);
   if (!win) {
-    window.alert(
+    notify.error(
       "Your browser blocked the pop-up. Allow pop-ups for this site to print or preview the report.",
     );
     return null;

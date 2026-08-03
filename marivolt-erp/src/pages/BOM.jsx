@@ -4,6 +4,7 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
 import { apiDelete, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
+import { notify, confirmDialog } from "../lib/notifications.js";
 
 const emptyLine = () => ({
   article: "",
@@ -157,7 +158,7 @@ export default function BOM() {
         <button
           type="button"
           className="rounded-xl bg-gray-100 px-3 py-2 text-sm"
-          onClick={() => {
+          onClick={async () => {
             setPage(1);
             qc.invalidateQueries({ queryKey: ["boms"] });
           }}
@@ -212,8 +213,8 @@ export default function BOM() {
                         <button
                           type="button"
                           className="rounded-lg border border-red-200 px-2 py-1 text-xs text-red-700"
-                          onClick={() => {
-                            if (confirm(`Delete BOM for ${row.parentItemCode}?`)) {
+                          onClick={async () => {
+                            if (await confirmDialog(`Delete BOM for ${row.parentItemCode}?`)) {
                               deleteMutation.mutate(row._id);
                             }
                           }}
@@ -397,7 +398,7 @@ export default function BOM() {
                 <button
                   type="button"
                   className="rounded border px-2 py-1 text-xs text-rose-700"
-                  onClick={() => {
+                  onClick={async () => {
                     const lines = form.lines.filter((_, i) => i !== idx);
                     setForm((f) => ({ ...f, lines: lines.length ? lines : [emptyLine()] }));
                   }}
@@ -423,7 +424,7 @@ export default function BOM() {
             type="button"
             className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
             disabled={saveMutation.isPending}
-            onClick={() => {
+            onClick={async () => {
               setErr("");
               saveMutation.mutate();
             }}

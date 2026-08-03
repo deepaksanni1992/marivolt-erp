@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiPut } from "../../lib/api.js";
 import { LABEL_TEMPLATE_NAME } from "../../lib/labelPrinting.js";
+import { notify, confirmDialog } from "../../lib/notifications.js";
+import LoadingButton from "../erp/LoadingButton.jsx";
 
 function statusBadge(status) {
   const s = String(status || "OFFLINE").toUpperCase();
@@ -82,12 +84,21 @@ export default function LabelSettingsPanel() {
   const saveMut = useMutation({
     mutationFn: (body) => apiPut("/labels/settings", body),
     onSuccess: (data) => {
+      const clearedBootstrapField = Boolean(String(bootstrapTokenEdit || "").trim());
       setForm(null);
       setBootstrapTokenEdit("");
       qc.setQueryData(["label-settings"], data);
       setMsg("Label settings saved.");
+      notify.success("Label settings saved successfully.");
+      if (clearedBootstrapField) {
+        notify.info("Bootstrap token field cleared. The token is stored securely and is not shown again.");
+      }
     },
-    onError: (e) => setMsg(e.message || String(e)),
+    onError: (e) => {
+      const m = e.message || String(e);
+      setMsg(m);
+      notify.error(m);
+    },
   });
 
   const regAgentMut = useMutation({
@@ -96,8 +107,13 @@ export default function LabelSettingsPanel() {
       setSecretOnce(data);
       qc.invalidateQueries({ queryKey: ["label-agents"] });
       setMsg("Agent registered — copy the secret now.");
+      notify.success("Agent registered — copy the secret now.");
     },
-    onError: (e) => setMsg(e.message || String(e)),
+    onError: (e) => {
+      const m = e.message || String(e);
+      setMsg(m);
+      notify.error(m);
+    },
   });
 
   const printerMut = useMutation({
@@ -105,8 +121,13 @@ export default function LabelSettingsPanel() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["label-printers"] });
       setMsg("Printer saved.");
+      notify.success("Printer saved.");
     },
-    onError: (e) => setMsg(e.message || String(e)),
+    onError: (e) => {
+      const m = e.message || String(e);
+      setMsg(m);
+      notify.error(m);
+    },
   });
 
   const agentAction = useMutation({
@@ -114,18 +135,33 @@ export default function LabelSettingsPanel() {
     onSuccess: (data, vars) => {
       if (vars.action === "rotate-secret" && data?.secret) setSecretOnce(data);
       qc.invalidateQueries({ queryKey: ["label-agents"] });
-      setMsg(`${vars.action} ok for ${vars.id}`);
+      const m = `${vars.action} ok for ${vars.id}`;
+      setMsg(m);
+      if (vars.action === "test-print") notify.info("Test print queued.");
+      else notify.success(m);
     },
-    onError: (e) => setMsg(e.message || String(e)),
+    onError: (e) => {
+      const m = e.message || String(e);
+      setMsg(m);
+      notify.error(m);
+    },
   });
 
   const printerAction = useMutation({
     mutationFn: ({ id, action }) => apiPost(`/labels/printers/${id}/${action}`, {}),
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({ queryKey: ["label-printers"] });
-      setMsg(`Printer ${vars.action} ok`);
+      const m = `Printer ${vars.action} ok`;
+      setMsg(m);
+      if (vars.action === "test-print") notify.info("Test print queued.");
+      else if (vars.action === "delete") notify.success("Printer deleted.");
+      else notify.success(m);
     },
-    onError: (e) => setMsg(e.message || String(e)),
+    onError: (e) => {
+      const m = e.message || String(e);
+      setMsg(m);
+      notify.error(m);
+    },
   });
 
   return (
@@ -257,9 +293,11 @@ export default function LabelSettingsPanel() {
             onChange={(e) => setForm({ ...s, agentBootstrapMaxUses: Number(e.target.value) })}
           />
         </label>
-        <button
+        <LoadingButton
           type="button"
-          className="rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white"
+          loading={saveMut.isPending}
+          loadingText="Saving..."
+          className="rounded px-3 py-1.5 text-xs"
           onClick={() => {
             const body = { ...(form || s) };
             if (bootstrapTokenEdit.trim()) body.agentBootstrapToken = bootstrapTokenEdit.trim();
@@ -267,7 +305,7 @@ export default function LabelSettingsPanel() {
           }}
         >
           Save settings
-        </button>
+        </LoadingButton>
       </div>
 
       {/* Register agent */}
@@ -427,8 +465,8 @@ export default function LabelSettingsPanel() {
                       <button
                         type="button"
                         className="rounded border px-1.5 py-0.5 text-[10px] font-semibold"
-                        onClick={() => {
-                          if (window.confirm(`Rotate secret for ${a.agentId}?`)) {
+                        onClick={async () => {
+                          if (await confirmDialog(`Rotate secret for ${a.agentId}?`)) {
                             agentAction.mutate({ id: a.agentId, action: "rotate-secret" });
                           }
                         }}
@@ -638,7 +676,7 @@ export default function LabelSettingsPanel() {
                       <button
                         type="button"
                         className="rounded border px-1.5 py-0.5 text-[10px] font-semibold"
-                        onClick={() => {
+                        onClick={async () => {
                           setPrinterForm({
                             code: p.code,
                             displayName: p.displayName || "",
@@ -684,8 +722,8 @@ export default function LabelSettingsPanel() {
                       <button
                         type="button"
                         className="rounded border px-1.5 py-0.5 text-[10px] font-semibold text-rose-700"
-                        onClick={() => {
-                          if (window.confirm(`Soft-delete printer ${p.code}?`)) {
+                        onClick={async () => {
+                          if (await confirmDialog(`Soft-delete printer ${p.code}?`)) {
                             printerAction.mutate({ id: p.code, action: "delete" });
                           }
                         }}

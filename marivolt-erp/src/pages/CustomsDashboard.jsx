@@ -5,6 +5,7 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiGetWithQuery, apiPost } from "../lib/api.js";
 import { downloadExcelWorkbook, downloadPdfTable } from "../lib/purchaseExport.js";
+import { notify } from "../lib/notifications.js";
 
 const STOCK_COLUMNS = [
   { key: "article", header: "Article" },
@@ -267,7 +268,7 @@ export default function CustomsDashboard() {
       try {
         await selectCompany(nextId);
       } catch (err) {
-        window.alert(err.message || "Failed to switch company");
+        notify.error(err.message || "Failed to switch company");
       }
     },
     [auth?.company?.id, selectCompany],
@@ -334,7 +335,7 @@ export default function CustomsDashboard() {
         },
       ]);
     } catch (e) {
-      window.alert(e.message || "Excel export failed");
+      notify.error(e.message || "Excel export failed");
     } finally {
       setExporting(false);
     }
@@ -384,7 +385,7 @@ export default function CustomsDashboard() {
         );
       }
     } catch (e) {
-      window.alert(e.message || "PDF export failed");
+      notify.error(e.message || "PDF export failed");
     } finally {
       setExporting(false);
     }

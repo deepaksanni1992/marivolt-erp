@@ -4,6 +4,7 @@ import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import { apiGet, apiGetWithQuery, apiPost } from "../lib/api.js";
+import { notify, confirmDialog } from "../lib/notifications.js";
 
 export default function DeKitting() {
   const qc = useQueryClient();
@@ -78,7 +79,7 @@ export default function DeKitting() {
       >
         <button
           type="button"
-          onClick={() => {
+          onClick={async () => {
             setErr("");
             setCreateOpen(true);
           }}
@@ -134,7 +135,7 @@ export default function DeKitting() {
                       <button
                         type="button"
                         className="rounded-lg border px-2 py-1 text-xs"
-                        onClick={() => {
+                        onClick={async () => {
                           setDetailId(r._id);
                           setErr("");
                         }}
@@ -231,10 +232,10 @@ export default function DeKitting() {
                   type="button"
                   className="rounded-xl bg-gray-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
                   disabled={executeMutation.isPending}
-                  onClick={() => {
+                  onClick={async () => {
                     setErr("");
                     if (
-                      confirm(
+                      await confirmDialog(
                         "Execute de-kitting? This will remove parent stock and add components."
                       )
                     ) {
@@ -248,9 +249,9 @@ export default function DeKitting() {
                   type="button"
                   className="rounded-xl border px-3 py-2 text-sm disabled:opacity-50"
                   disabled={cancelMutation.isPending}
-                  onClick={() => {
+                  onClick={async () => {
                     setErr("");
-                    if (confirm("Cancel this draft order?")) {
+                    if (await confirmDialog("Cancel this draft order?")) {
                       cancelMutation.mutate(detail._id);
                     }
                   }}
@@ -323,7 +324,7 @@ export default function DeKitting() {
             type="button"
             className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
             disabled={createMutation.isPending}
-            onClick={() => {
+            onClick={async () => {
               setErr("");
               createMutation.mutate();
             }}

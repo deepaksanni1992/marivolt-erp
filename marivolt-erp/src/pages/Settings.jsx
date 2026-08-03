@@ -13,6 +13,7 @@ import Modal from "../components/erp/Modal.jsx";
 import { FormField, SelectInput, TextInput } from "../components/erp/FormField.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import LabelSettingsPanel from "../components/store/LabelSettingsPanel.jsx";
+import { notify, confirmDialog } from "../lib/notifications.js";
 
 const TABS = [
   { id: "companies", label: "Companies" },
@@ -111,10 +112,12 @@ function CompaniesTab() {
       form._id
         ? apiPut(`/admin/companies/${form._id}`, form)
         : apiPost("/admin/companies", form),
-    onSuccess: () => {
+    onSuccess: (_d, form) => {
       qc.invalidateQueries({ queryKey: ["adminCompanies"] });
       setEditing(null);
+      notify.success(form?._id ? "Company updated." : "Company created.");
     },
+    onError: (e) => notify.error(e.message || "Company save failed."),
   });
 
   return (
@@ -314,14 +317,20 @@ function BranchesTab() {
       form._id
         ? apiPut(`/admin/branches/${form._id}`, form)
         : apiPost("/admin/branches", form),
-    onSuccess: () => {
+    onSuccess: (_d, form) => {
       qc.invalidateQueries({ queryKey: ["adminBranches"] });
       setEditing(null);
+      notify.success(form?._id ? "Branch updated." : "Branch created.");
     },
+    onError: (e) => notify.error(e.message || "Branch save failed."),
   });
   const remove = useMutation({
     mutationFn: (id) => apiDelete(`/admin/branches/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["adminBranches"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["adminBranches"] });
+      notify.success("Branch deleted.");
+    },
+    onError: (e) => notify.error(e.message || "Delete failed."),
   });
 
   return (
@@ -381,8 +390,8 @@ function BranchesTab() {
                     <button
                       type="button"
                       className="text-xs font-medium text-rose-600 underline"
-                      onClick={() => {
-                        if (window.confirm(`Delete branch ${b.branchCode}?`)) {
+                      onClick={async () => {
+                        if (await confirmDialog(`Delete branch ${b.branchCode}?`)) {
                           remove.mutate(b._id);
                         }
                       }}
@@ -515,15 +524,21 @@ function WarehousesTab() {
       form._id
         ? apiPut(`/admin/warehouses/${form._id}`, form)
         : apiPost("/admin/warehouses", form),
-    onSuccess: () => {
+    onSuccess: (_d, form) => {
       qc.invalidateQueries({ queryKey: ["adminWarehouses"] });
       qc.invalidateQueries({ queryKey: ["adminBranches"] });
       setEditing(null);
+      notify.success(form?._id ? "Warehouse updated." : "Warehouse created.");
     },
+    onError: (e) => notify.error(e.message || "Warehouse save failed."),
   });
   const remove = useMutation({
     mutationFn: (id) => apiDelete(`/admin/warehouses/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["adminWarehouses"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["adminWarehouses"] });
+      notify.success("Warehouse deleted.");
+    },
+    onError: (e) => notify.error(e.message || "Delete failed."),
   });
 
   return (
@@ -593,8 +608,8 @@ function WarehousesTab() {
                     <button
                       type="button"
                       className="text-xs font-medium text-rose-600 underline"
-                      onClick={() => {
-                        if (window.confirm(`Delete warehouse ${w.warehouseCode}?`)) {
+                      onClick={async () => {
+                        if (await confirmDialog(`Delete warehouse ${w.warehouseCode}?`)) {
                           remove.mutate(w._id);
                         }
                       }}
@@ -737,14 +752,20 @@ function RolesTab() {
       form._id
         ? apiPut(`/admin/roles/${form._id}`, form)
         : apiPost("/admin/roles", form),
-    onSuccess: () => {
+    onSuccess: (_d, form) => {
       qc.invalidateQueries({ queryKey: ["adminRoles"] });
       setEditing(null);
+      notify.success(form?._id ? "Role updated." : "Role created.");
     },
+    onError: (e) => notify.error(e.message || "Role save failed."),
   });
   const remove = useMutation({
     mutationFn: (id) => apiDelete(`/admin/roles/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["adminRoles"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["adminRoles"] });
+      notify.success("Role deleted.");
+    },
+    onError: (e) => notify.error(e.message || "Delete failed."),
   });
 
   return (
@@ -825,8 +846,8 @@ function RolesTab() {
                         <button
                           type="button"
                           className="text-xs font-medium text-rose-600 underline"
-                          onClick={() => {
-                            if (window.confirm(`Delete role ${r.code}?`)) {
+                          onClick={async () => {
+                            if (await confirmDialog(`Delete role ${r.code}?`)) {
                               remove.mutate(r._id);
                             }
                           }}
@@ -1035,11 +1056,17 @@ function NumberSeriesTab() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["adminNumberSeries"] });
       setEditing(null);
+      notify.success("Number series saved.");
     },
+    onError: (e) => notify.error(e.message || "Number series save failed."),
   });
   const remove = useMutation({
     mutationFn: (id) => apiDelete(`/admin/number-series/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["adminNumberSeries"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["adminNumberSeries"] });
+      notify.success("Number series deleted.");
+    },
+    onError: (e) => notify.error(e.message || "Delete failed."),
   });
 
   return (
@@ -1112,8 +1139,8 @@ function NumberSeriesTab() {
                     <button
                       type="button"
                       className="text-xs font-medium text-rose-600 underline"
-                      onClick={() => {
-                        if (window.confirm(`Delete number series for ${s.docKey}?`)) {
+                      onClick={async () => {
+                        if (await confirmDialog(`Delete number series for ${s.docKey}?`)) {
                           remove.mutate(s._id);
                         }
                       }}
@@ -1272,14 +1299,20 @@ function ApprovalRulesTab() {
       form._id
         ? apiPut(`/admin/approval-rules/${form._id}`, form)
         : apiPost("/admin/approval-rules", form),
-    onSuccess: () => {
+    onSuccess: (_d, form) => {
       qc.invalidateQueries({ queryKey: ["adminApprovalRules"] });
       setEditing(null);
+      notify.success(form?._id ? "Approval rule updated." : "Approval rule created.");
     },
+    onError: (e) => notify.error(e.message || "Approval rule save failed."),
   });
   const remove = useMutation({
     mutationFn: (id) => apiDelete(`/admin/approval-rules/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["adminApprovalRules"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["adminApprovalRules"] });
+      notify.success("Approval rule deleted.");
+    },
+    onError: (e) => notify.error(e.message || "Delete failed."),
   });
 
   return (
@@ -1353,8 +1386,8 @@ function ApprovalRulesTab() {
                     <button
                       type="button"
                       className="text-xs font-medium text-rose-600 underline"
-                      onClick={() => {
-                        if (window.confirm("Delete rule?")) {
+                      onClick={async () => {
+                        if (await confirmDialog("Delete rule?")) {
                           remove.mutate(r._id);
                         }
                       }}
@@ -1574,7 +1607,7 @@ function ApprovalQueueTab() {
                         <button
                           type="button"
                           className="text-xs font-medium text-emerald-700 underline"
-                          onClick={() => {
+                          onClick={async () => {
                             const note = window.prompt("Approve note (optional)") || "";
                             decide.mutate({ id: r._id, decision: "APPROVED", note });
                           }}
@@ -1584,7 +1617,7 @@ function ApprovalQueueTab() {
                         <button
                           type="button"
                           className="text-xs font-medium text-rose-700 underline"
-                          onClick={() => {
+                          onClick={async () => {
                             const note = window.prompt("Reject reason") || "";
                             decide.mutate({ id: r._id, decision: "REJECTED", note });
                           }}
@@ -1630,18 +1663,18 @@ function UsersTab() {
     return name || email || u.username || "—";
   }
 
-  function onReset2fa(user) {
+  async function onReset2fa(user) {
     const label = userLabel(user);
     if (
-      !window.confirm(
+      !await confirmDialog(
         `Reset Authenticator for ${label}? This clears only that user's 2FA. Their secret and QR code are not shown.`
       )
     ) {
       return;
     }
     reset2fa.mutate(user._id, {
-      onError: (err) => window.alert(err.message || "Reset failed"),
-      onSuccess: () => window.alert(`2FA reset for ${label}`),
+      onError: (err) => notify.error(err.message || "Reset failed"),
+      onSuccess: () => notify.success(`2FA reset for ${label}`),
     });
   }
 
