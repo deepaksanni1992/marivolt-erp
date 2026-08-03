@@ -28,6 +28,7 @@ import {
   PACKING_CANCEL_CONFLICT,
   PACKING_CANCEL_IN_PROGRESS,
   PACKING_LEDGER_INCONSISTENT,
+  PACKING_PHYSICAL_STOCK_SHORTAGE,
   PACKING_POST_IN_PROGRESS,
   PACKING_POSTING_CONFLICT,
   PACKING_SOURCE_DOCUMENT_TYPE,
@@ -37,6 +38,12 @@ import {
   isPackingEffectDuplicateKeyError,
   packingConflictError,
 } from "../utils/packingIdempotency.js";
+import {
+  PACKING_OVERRIDE_PHYSICAL_SHORTAGE_PERMISSION,
+  collectPackingShortages,
+  derivePackingLineStock,
+  shouldBlockPhysicalShortagePost,
+} from "../utils/packingPhysicalStock.js";
 import {
   CLAIMABLE_DISPATCH_CANCEL_STATUSES,
   DISPATCH_ALREADY_CANCELLED,
@@ -708,6 +715,7 @@ export async function getPackingFromAllocation(req, res) {
     if (!allocation) return res.status(404).json({ message: "Allocation not found" });
     const packedByLine = await sumPostedPackQtyByLine(req.companyId, allocation._id);
     const wh = String(allocation.warehouse || "MAIN").toUpperCase();
+    const stockCheckedAt = new Date().toISOString();
     const lines = [];
     for (const ln of allocation.lines || []) {
       const stock = await stockService.getStockBalance({
@@ -717,6 +725,11 @@ export async function getPackingFromAllocation(req, res) {
       });
       const allocatedQty = Number(ln.qty) || 0;
       const alreadyPacked = packedByLine.get(String(ln._id)) || 0;
+      const derived = derivePackingLineStock(stock, {
+        allocatedQty,
+        alreadyPacked,
+        isNegativeAllocation: Boolean(ln.isNegativeAllocation),
+      });
       lines.push({
         allocationLineId: ln._id,
         article: ln.article,
@@ -728,13 +741,29 @@ export async function getPackingFromAllocation(req, res) {
         allocatedQty,
         alreadyPacked,
         pendingPack: Math.max(0, allocatedQty - alreadyPacked),
-        availableStock: stock.availableQty,
+        // Legacy field retained for compatibility
+        availableStock: derived.availableStock,
+        onHandQty: derived.onHandQty,
+        reservedQty: derived.reservedQty,
+        reservedForThisAllocationQty: derived.reservedForThisAllocationQty,
+        reservedForOtherAllocationsQty: derived.reservedForOtherAllocationsQty,
+        previouslyPackedQty: derived.previouslyPackedQty,
+        allocationBalanceQty: derived.allocationBalanceQty,
+        warehousePackedQty: derived.warehousePackedQty,
+        freeAvailableQty: derived.freeAvailableQty,
+        physicalPackableQty: derived.physicalPackableQty,
+        shortageQty: derived.shortageQty,
+        isNegativeAllocation: derived.isNegativeAllocation,
+        stockStatus: derived.stockStatus,
+        stockCheckedAt,
         uom: ln.uom || "PCS",
       });
     }
     res.json({
       allocation,
       lines,
+      stockCheckedAt,
+      hasNegativeAllocation: Boolean(allocation.hasNegativeAllocation),
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -773,12 +802,51 @@ export async function createStorePackingDraft(req, res) {
     }
     const totals = packageTotals(normalizedPackages);
     const customerSnap = await resolveCustomerSnapshotForAllocation(req, allocation);
+    const wh = String(allocation.warehouse || "MAIN").toUpperCase();
+    let physicalShortageQty = 0;
+    const shortageRows = [];
+    for (const ln of lines) {
+      const allocLine = (allocation.lines || []).find((x) => String(x._id) === String(ln.allocationLineId));
+      const stock = await stockService.getStockBalance({
+        companyId: req.companyId,
+        article: ln.article,
+        warehouse: wh,
+      });
+      const already = packedByLine.get(String(ln.allocationLineId)) || 0;
+      const derived = derivePackingLineStock(stock, {
+        allocatedQty: Number(allocLine?.qty) || 0,
+        alreadyPacked: already,
+        isNegativeAllocation: Boolean(allocLine?.isNegativeAllocation),
+      });
+      const packQty = Number(ln.packQty) || 0;
+      shortageRows.push({
+        article: ln.article,
+        packQty,
+        freeAvailableQty: derived.freeAvailableQty,
+        warehouseCode: wh,
+      });
+    }
+    const shortages = collectPackingShortages(shortageRows, wh);
+    physicalShortageQty = shortages.reduce((sum, s) => sum + (Number(s.shortageQty) || 0), 0);
+    const hasPhysicalShortage = physicalShortageQty > 1e-9;
+    const acknowledged = Boolean(req.body?.acknowledgePhysicalShortage);
+    // Future: gate with PACKING.overridePhysicalShortage — draft still allowed with acknowledgement.
+    void PACKING_OVERRIDE_PHYSICAL_SHORTAGE_PERMISSION;
+    if (hasPhysicalShortage && !acknowledged) {
+      return res.status(409).json({
+        message:
+          "Physical stock shortage requires acknowledgement to save the packing draft.",
+        code: PACKING_PHYSICAL_STOCK_SHORTAGE,
+        shortages,
+      });
+    }
+
     const doc = await StorePacking.create({
       companyId: req.companyId,
       branchId: req.body.branchId || null,
       packingNo,
       packingDate: req.body.packingDate || new Date(),
-      warehouse: String(allocation.warehouse || "MAIN").toUpperCase(),
+      warehouse: wh,
       sourceDocumentType: "ORDER_ALLOCATION",
       sourceDocumentId: allocation._id,
       allocationId: allocation._id,
@@ -803,6 +871,10 @@ export async function createStorePackingDraft(req, res) {
       attachments: Array.isArray(req.body.attachments) ? req.body.attachments : [],
       remarks: t(req.body.remarks),
       status: "DRAFT",
+      hasPhysicalShortage,
+      physicalShortageQty,
+      physicalShortageAcknowledgedAt: hasPhysicalShortage && acknowledged ? new Date() : null,
+      physicalShortageOverrideRequested: false,
       createdBy: req.user?.email || "",
       updatedBy: req.user?.email || "",
     });
@@ -872,6 +944,46 @@ export async function postStorePacking(req, res) {
       const postPkgErrors = validatePackingPackagesForSave(claimed.packages || [], allocation, packedByLine);
       if (postPkgErrors.length) throw new Error(postPkgErrors[0]);
       const wh = String(claimed.warehouse || allocation.warehouse || "MAIN").toUpperCase();
+
+      // Physical stock gate — recalculate live; do not trust browser values.
+      // Future permission: PACKING.overridePhysicalShortage (not enabled yet).
+      const allowPhysicalShortageOverride = false;
+      void PACKING_OVERRIDE_PHYSICAL_SHORTAGE_PERMISSION;
+      const shortageProbe = [];
+      for (const ln of claimed.lines || []) {
+        const lineId = String(ln.allocationLineId || "");
+        const allocLine = (allocation.lines || []).find((x) => String(x._id) === lineId);
+        if (!allocLine) throw new Error(`Allocation line missing for ${ln.article}`);
+        const packQty = Number(ln.packQty) || 0;
+        if (packQty <= 0) continue;
+        const stock = await stockService.getStockBalance({
+          companyId: req.companyId,
+          article: ln.article,
+          warehouse: wh,
+          session,
+        });
+        const already = packedByLine.get(lineId) || 0;
+        const derived = derivePackingLineStock(stock, {
+          allocatedQty: Number(allocLine.qty) || 0,
+          alreadyPacked: already,
+          isNegativeAllocation: Boolean(allocLine.isNegativeAllocation),
+        });
+        shortageProbe.push({
+          article: ln.article,
+          packQty,
+          freeAvailableQty: derived.freeAvailableQty,
+          warehouseCode: wh,
+        });
+      }
+      const shortages = collectPackingShortages(shortageProbe, wh);
+      if (shouldBlockPhysicalShortagePost(shortages, { allowOverride: allowPhysicalShortageOverride })) {
+        throw packingConflictError(
+          PACKING_PHYSICAL_STOCK_SHORTAGE,
+          "Packing cannot be posted because physical stock is insufficient.",
+          { shortages }
+        );
+      }
+
       if (claimed.packages?.length) {
         const totals = packageTotals(claimed.packages);
         claimed.totalPackages = totals.totalPackages;
@@ -965,6 +1077,9 @@ export async function postStorePacking(req, res) {
       allocationFresh.updatedBy = req.user?.email || "";
       claimed.postedAt = new Date();
       claimed.updatedBy = req.user?.email || "";
+      // Snapshot was informational for the draft; posted docs must not keep a shortage badge.
+      claimed.hasPhysicalShortage = false;
+      claimed.physicalShortageQty = 0;
       await allocationFresh.save({ session });
       await claimed.save({ session });
       await writeAudit(req, {
@@ -987,12 +1102,14 @@ export async function postStorePacking(req, res) {
       err?.code === PACKING_POST_IN_PROGRESS ||
       err?.code === PACKING_POSTING_CONFLICT ||
       err?.code === PACKING_LEDGER_INCONSISTENT ||
+      err?.code === PACKING_PHYSICAL_STOCK_SHORTAGE ||
       err?.code === QUANTITY_CLAIM_EXHAUSTED
     ) {
       return res.status(err.statusCode || 409).json({
         message: err.message,
         code: err.code,
         details: err.details || null,
+        shortages: err.details?.shortages || null,
       });
     }
     if (isPackingEffectDuplicateKeyError(err)) {

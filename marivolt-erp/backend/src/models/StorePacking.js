@@ -114,6 +114,12 @@ const storePackingSchema = new mongoose.Schema(
     linkedSalesInvoiceIds: { type: [mongoose.Schema.Types.ObjectId], default: [] },
     linkedSalesInvoiceNos: { type: [String], default: [] },
     lastInvoicedAt: { type: Date, default: null },
+    /** Draft was saved while physical stock was short (additive; no ledger effect). */
+    hasPhysicalShortage: { type: Boolean, default: false },
+    physicalShortageQty: { type: Number, default: 0, min: 0 },
+    physicalShortageAcknowledgedAt: { type: Date, default: null },
+    /** Reserved for future PACKING.overridePhysicalShortage permission gate. */
+    physicalShortageOverrideRequested: { type: Boolean, default: false },
     postedAt: { type: Date, default: null },
     cancelledAt: { type: Date, default: null },
     cancellationReason: { type: String, default: "", trim: true },

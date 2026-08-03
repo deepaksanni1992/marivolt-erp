@@ -209,10 +209,36 @@ function StatusPill({ status, tone = "slate" }) {
     amber: "bg-amber-100 text-amber-800 ring-amber-200",
     emerald: "bg-emerald-100 text-emerald-800 ring-emerald-200",
     indigo: "bg-indigo-100 text-indigo-800 ring-indigo-200",
+    orange: "bg-orange-100 text-orange-800 ring-orange-200",
   };
   return (
     <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${palette[tone] || palette.slate}`}>{status}</span>
   );
+}
+
+/** Physical stock status for packing lines — text + color (never color-only). */
+function packingStockBadge(status) {
+  const s = String(status || "UNKNOWN").toUpperCase().replace(/\s+/g, "_");
+  let tone = "slate";
+  let label = s;
+  if (s === "READY") {
+    tone = "emerald";
+  } else if (s === "PARTIAL") {
+    tone = "amber";
+    label = "PARTIAL";
+  } else if (s === "SHORTAGE") {
+    tone = "rose";
+    label = "SHORTAGE";
+  } else if (s === "NEGATIVE_ALLOCATION") {
+    tone = "orange";
+    label = "NEGATIVE ALLOCATION";
+  } else if (s === "NOT_AVAILABLE") {
+    tone = "rose";
+    label = "NOT AVAILABLE";
+  } else {
+    label = "UNKNOWN";
+  }
+  return <StatusPill status={label} tone={tone} />;
 }
 
 function fmtDate(d) {
@@ -766,10 +792,11 @@ export default function StoreModule() {
     []
   );
 
-  const { data: packingFromAlloc } = useQuery({
+  const { data: packingFromAlloc, dataUpdatedAt: packingStockUpdatedAt, refetch: refetchPackingStock } = useQuery({
     queryKey: ["packing-from-allocation", packAllocQueryId],
     queryFn: () => apiGet(`/packing/from-allocation/${packAllocQueryId}`),
     enabled: tab === "Packing" && Boolean(packAllocQueryId),
+    refetchInterval: tab === "Packing" && packAllocQueryId ? 15_000 : false,
   });
 
   useEffect(() => {
@@ -812,16 +839,18 @@ export default function StoreModule() {
     setSearchParams,
   ]);
 
+  // Reset packages only when the allocation selection changes — not on stock refetch.
   useEffect(() => {
-    const lines = packingFromAlloc?.lines;
-    if (!lines?.length) {
-      if (!packAllocQueryId) setPackPackages([]);
+    if (!packAllocQueryId) {
+      setPackPackages([]);
+      setPackCsvPreview(null);
+      setPackAddArticlePkgId("");
       return;
     }
     setPackPackages([newPackingPackage(1)]);
     setPackCsvPreview(null);
     setPackAddArticlePkgId("");
-  }, [packAllocQueryId, packingFromAlloc]);
+  }, [packAllocQueryId]);
 
   const packingPackageStats = useMemo(() => {
     const byLine = new Map();
@@ -835,16 +864,24 @@ export default function StoreModule() {
       const lineId = String(ln.allocationLineId);
       const inPackages = byLine.get(lineId) || 0;
       const pending = Number(ln.pendingPack) || 0;
+      const freeAvailableQty = Number(ln.freeAvailableQty ?? ln.availableStock) || 0;
+      const physicalPackableQty = Number(ln.physicalPackableQty) || 0;
+      const requestShortageQty = Math.max(0, inPackages - Math.max(0, freeAvailableQty));
       return {
         ...ln,
         inPackages,
         balancePack: Math.max(0, pending - inPackages),
         overPacked: Math.max(0, inPackages - pending),
+        requestShortageQty,
+        hasPhysicalShortage: requestShortageQty > 1e-9 || (Number(ln.shortageQty) || 0) > 1e-9,
       };
     });
+    const totalShortageQty = lines.reduce((sum, ln) => sum + (Number(ln.requestShortageQty) || 0), 0);
     return {
       lines,
       hasOverPacked: lines.some((ln) => ln.overPacked > 0),
+      hasPhysicalShortage: lines.some((ln) => ln.hasPhysicalShortage),
+      totalShortageQty,
       totalPackageQty: lines.reduce((sum, ln) => sum + (Number(ln.inPackages) || 0), 0),
       totalPackages: packPackages.length,
       totalGrossWeightKg: packPackages.reduce((sum, pkg) => sum + (Number(pkg.grossWeightKg) || 0), 0),
@@ -870,6 +907,10 @@ export default function StoreModule() {
     if (packingPackageStats.totalPackageQty <= 0) msgs.push("Pack at least one quantity.");
     return { msgs, ok: msgs.length === 0 };
   }, [packPackages, packingPackageStats]);
+
+  const packingStockCheckedAt =
+    packingFromAlloc?.stockCheckedAt ||
+    (packingStockUpdatedAt ? new Date(packingStockUpdatedAt).toISOString() : null);
 
   const pendingLinesForAddArticle = useMemo(() => {
     const q = packAddArticleSearch.trim().toLowerCase();
@@ -940,16 +981,29 @@ export default function StoreModule() {
 
   const createPackingDraft = useMutation({
     mutationFn: (body) => apiPost("/packing/draft", body),
-    onSuccess: () => {
+    onSuccess: (doc) => {
       qc.invalidateQueries({ queryKey: ["store-packing"] });
       qc.invalidateQueries({ queryKey: ["packing-allocations-pending"] });
       qc.invalidateQueries({ queryKey: ["packing-from-allocation", packAllocQueryId] });
       qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
       qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
-      notify.success("Packing draft created.");
+      if (doc?.hasPhysicalShortage) {
+        notify.warning("Packing draft saved with a physical stock shortage.");
+      } else {
+        notify.success("Packing draft created.");
+      }
     },
-    onError: (e) => notify.error(e.message || "Could not create packing draft."),
+    onError: (e) => {
+      if (e?.code === "PACKING_PHYSICAL_STOCK_SHORTAGE") {
+        notify.error(
+          e.message ||
+            "Physical stock shortage requires acknowledgement to save the packing draft."
+        );
+        return;
+      }
+      notify.error(e.message || "Could not create packing draft.");
+    },
   });
 
   const postPackingMut = useMutation({
@@ -963,7 +1017,21 @@ export default function StoreModule() {
       qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
       notify.success("Packing posted.");
     },
-    onError: (e) => notify.error(e.message || "Could not post packing."),
+    onError: (e) => {
+      if (e?.code === "PACKING_PHYSICAL_STOCK_SHORTAGE") {
+        const shortages = e.shortages || e.body?.shortages || e.details?.shortages || [];
+        const total = shortages.reduce((sum, s) => sum + (Number(s.shortageQty) || 0), 0);
+        const detail = shortages
+          .slice(0, 3)
+          .map((s) => `${s.article}: need ${s.requestedQty}, avail ${s.physicalAvailableQty}`)
+          .join("; ");
+        notify.error(
+          `Packing cannot be posted. Physical stock is short by ${total} PCS.${detail ? ` ${detail}` : ""}`
+        );
+        return;
+      }
+      notify.error(e.message || "Could not post packing.");
+    },
   });
 
   const cancelPackingMut = useMutation({
@@ -3533,10 +3601,25 @@ export default function StoreModule() {
                   OA {packingFromAlloc.allocation.linkedOANo || "—"} · PI {packingFromAlloc.allocation.linkedProformaNo || "—"} · WH{" "}
                   {packingFromAlloc.allocation.warehouse || "MAIN"}
                 </div>
+                <div className="mt-1 text-slate-500">
+                  Stock checked at: {packingStockCheckedAt ? fmtDate(packingStockCheckedAt) : "—"}
+                  <button
+                    type="button"
+                    className="ml-2 text-sky-700 underline hover:no-underline"
+                    onClick={() => refetchPackingStock()}
+                  >
+                    Refresh stock
+                  </button>
+                </div>
+                {packingFromAlloc.hasNegativeAllocation || packingFromAlloc.allocation.hasNegativeAllocation ? (
+                  <div className="mt-2 rounded border border-orange-200 bg-orange-50 px-2 py-1 text-orange-900">
+                    This allocation includes negative-stock reservations. Physical packing may be blocked until stock is available.
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {packingFromAlloc?.lines?.length ? (
-              <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+              <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
                 <div className="rounded-xl border bg-slate-50 p-3">
                   <div className="mb-2 flex items-center justify-between">
                     <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Pending allocation lines</h4>
@@ -3551,25 +3634,58 @@ export default function StoreModule() {
                           <th className="px-2 py-2 text-right">Allocated</th>
                           <th className="px-2 py-2 text-right">Prev Packed</th>
                           <th className="px-2 py-2 text-right">In Packages</th>
-                          <th className="px-2 py-2 text-right">Balance</th>
+                          <th className="px-2 py-2 text-right">Packing Balance</th>
+                          <th className="px-2 py-2 text-right">On Hand</th>
+                          <th className="px-2 py-2 text-right">Reserved</th>
+                          <th className="px-2 py-2 text-right">Free Available</th>
+                          <th className="px-2 py-2 text-right">Shortage</th>
+                          <th className="px-2 py-2 text-left">Stock Status</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {packingPackageStats.lines.map((ln) => (
-                          <tr
-                            key={String(ln.allocationLineId)}
-                            className={`border-t ${ln.overPacked > 0 ? "bg-rose-50" : ln.balancePack === 0 ? "bg-emerald-50" : ""}`}
-                          >
-                            <td className="px-2 py-2 font-mono">{ln.article}</td>
-                            <td className="max-w-[220px] truncate px-2 py-2" title={ln.description}>{ln.description || "—"}</td>
-                            <td className="px-2 py-2 text-right">{ln.allocatedQty ?? ln.qty}</td>
-                            <td className="px-2 py-2 text-right">{ln.alreadyPacked}</td>
-                            <td className="px-2 py-2 text-right font-semibold">{ln.inPackages}</td>
-                            <td className={`px-2 py-2 text-right font-semibold ${ln.overPacked > 0 ? "text-rose-700" : ""}`}>
-                              {ln.overPacked > 0 ? `Over ${ln.overPacked}` : ln.balancePack}
-                            </td>
-                          </tr>
-                        ))}
+                        {packingPackageStats.lines.map((ln) => {
+                          const shortage = Number(ln.shortageQty) || 0;
+                          const status = ln.stockStatus || "UNKNOWN";
+                          return (
+                            <tr
+                              key={String(ln.allocationLineId)}
+                              className={`border-t ${
+                                ln.overPacked > 0 || status === "SHORTAGE" || status === "NEGATIVE_ALLOCATION"
+                                  ? "bg-rose-50"
+                                  : status === "PARTIAL"
+                                    ? "bg-amber-50"
+                                    : ln.balancePack === 0
+                                      ? "bg-emerald-50"
+                                      : ""
+                              }`}
+                            >
+                              <td className="px-2 py-2 font-mono">{ln.article}</td>
+                              <td className="max-w-[160px] truncate px-2 py-2" title={ln.description}>
+                                {ln.description || "—"}
+                              </td>
+                              <td className="px-2 py-2 text-right">{ln.allocatedQty ?? ln.qty}</td>
+                              <td className="px-2 py-2 text-right">{ln.alreadyPacked}</td>
+                              <td className="px-2 py-2 text-right font-semibold">{ln.inPackages}</td>
+                              <td className={`px-2 py-2 text-right font-semibold ${ln.overPacked > 0 ? "text-rose-700" : ""}`}>
+                                {ln.overPacked > 0 ? `Over ${ln.overPacked}` : ln.balancePack}
+                              </td>
+                              <td className="px-2 py-2 text-right">{ln.onHandQty ?? "—"}</td>
+                              <td className="px-2 py-2 text-right">{ln.reservedQty ?? "—"}</td>
+                              <td className="px-2 py-2 text-right">{ln.freeAvailableQty ?? ln.availableStock ?? "—"}</td>
+                              <td className={`px-2 py-2 text-right font-semibold ${shortage > 0 ? "text-rose-700" : ""}`}>
+                                {shortage}
+                              </td>
+                              <td className="px-2 py-2">
+                                {packingStockBadge(status)}
+                                {shortage > 0 ? (
+                                  <div className="mt-1 max-w-[180px] text-[10px] font-normal normal-case text-rose-700">
+                                    Physical stock is unavailable. Allocation exists, but {shortage} {ln.uom || "PCS"} cannot currently be packed.
+                                  </div>
+                                ) : null}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -3684,6 +3800,11 @@ export default function StoreModule() {
                             onClick={async () => {
                               setPackAddArticlePkgId(pkg.id);
                               setPackAddArticleSearch("");
+                              try {
+                                await refetchPackingStock();
+                              } catch {
+                                /* quiet refresh failure */
+                              }
                             }}
                           >
                             + Add Article
@@ -3697,6 +3818,19 @@ export default function StoreModule() {
                             Remove package
                           </button>
                         </div>
+                        {(() => {
+                          const pkgHasShortage = (pkg.items || []).some((item) => {
+                            const ln = packingPackageStats.lines.find(
+                              (x) => String(x.allocationLineId) === String(item.allocationLineId)
+                            );
+                            return (Number(ln?.requestShortageQty) || Number(ln?.shortageQty) || 0) > 0;
+                          });
+                          return pkgHasShortage ? (
+                            <div className="mt-2 rounded border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] text-rose-800">
+                              This package contains articles that are not physically available.
+                            </div>
+                          ) : null;
+                        })()}
                         <div className="mt-3 overflow-auto">
                           {(pkg.items || []).length === 0 ? (
                             <p className="text-xs text-slate-500">No articles in this package yet.</p>
@@ -3710,6 +3844,9 @@ export default function StoreModule() {
                                   <th className="px-2 py-1 text-left">Qty</th>
                                   <th className="px-2 py-1 text-left">UOM</th>
                                   <th className="px-2 py-1 text-right">Balance</th>
+                                  <th className="px-2 py-1 text-right">On Hand</th>
+                                  <th className="px-2 py-1 text-right">Shortage</th>
+                                  <th className="px-2 py-1 text-left">Stock</th>
                                   <th className="px-2 py-1" />
                                 </tr>
                               </thead>
@@ -3718,8 +3855,18 @@ export default function StoreModule() {
                                   const ln = packingPackageStats.lines.find(
                                     (x) => String(x.allocationLineId) === String(item.allocationLineId)
                                   );
+                                  const itemShortage =
+                                    Number(ln?.requestShortageQty) ||
+                                    Math.max(0, (Number(item.qty) || 0) - Math.max(0, Number(ln?.freeAvailableQty) || 0));
+                                  const itemStatus =
+                                    itemShortage > 0
+                                      ? "NOT_AVAILABLE"
+                                      : ln?.stockStatus || "UNKNOWN";
                                   return (
-                                    <tr key={`${pkg.id}-${item.allocationLineId}`} className="border-t">
+                                    <tr
+                                      key={`${pkg.id}-${item.allocationLineId}`}
+                                      className={`border-t ${itemShortage > 0 ? "bg-rose-50" : ""}`}
+                                    >
                                       <td className="px-2 py-1 font-mono">{item.article}</td>
                                       <td className="max-w-[120px] truncate px-2 py-1" title={item.description}>
                                         {item.description || "—"}
@@ -3741,6 +3888,11 @@ export default function StoreModule() {
                                       >
                                         {ln?.overPacked > 0 ? `Over ${ln.overPacked}` : ln?.balancePack ?? "—"}
                                       </td>
+                                      <td className="px-2 py-1 text-right">{ln?.onHandQty ?? "—"}</td>
+                                      <td className={`px-2 py-1 text-right ${itemShortage > 0 ? "font-semibold text-rose-700" : ""}`}>
+                                        {itemShortage}
+                                      </td>
+                                      <td className="px-2 py-1">{packingStockBadge(itemStatus)}</td>
                                       <td className="px-2 py-1">
                                         <button
                                           type="button"
@@ -3766,6 +3918,11 @@ export default function StoreModule() {
                     {packingPackageStats.hasOverPacked ? (
                       <span className="ml-2 font-semibold text-rose-700">Over-packed lines must be corrected.</span>
                     ) : null}
+                    {packingPackageStats.hasPhysicalShortage ? (
+                      <span className="mt-1 block font-semibold text-rose-700">
+                        Physical stock shortage of {packingPackageStats.totalShortageQty} PCS in current packages. Draft may be saved; posting will be blocked.
+                      </span>
+                    ) : null}
                     {!packingDraftValidation.ok && packingDraftValidation.msgs.length ? (
                       <span className="mt-1 block text-rose-700">{packingDraftValidation.msgs[0]}</span>
                     ) : null}
@@ -3777,6 +3934,11 @@ export default function StoreModule() {
                   disabled={createPackingDraft.isPending || !packingFromAlloc?.allocation || !packingDraftValidation.ok}
                   title={packingDraftValidation.msgs[0] || ""}
                   onClick={async () => {
+                    try {
+                      await refetchPackingStock();
+                    } catch {
+                      /* quiet */
+                    }
                     const packages = packPackages
                       .map((pkg) => ({
                         packageNo: pkg.packageNo,
@@ -3789,10 +3951,22 @@ export default function StoreModule() {
                         items: (pkg.items || []).filter((item) => Number(item.qty) > 0),
                       }))
                       .filter((pkg) => pkg.packageNo && pkg.items.length);
+                    const shortageQty = Number(packingPackageStats.totalShortageQty) || 0;
+                    if (shortageQty > 0) {
+                      const ok = await confirmDialog({
+                        title: "Physical stock shortage",
+                        message: `This packing contains ${shortageQty} PCS that are not physically available. You may save the draft, but it cannot be posted until stock is available.`,
+                        confirmLabel: "Save Draft Anyway",
+                        cancelLabel: "Go Back",
+                        danger: true,
+                      });
+                      if (!ok) return;
+                    }
                     createPackingDraft.mutate({
                       allocationId: packingFromAlloc.allocation._id,
                       packages,
                       marksAndNumbers: packages.map((pkg) => pkg.marksAndNumbers).filter(Boolean).join(", "),
+                      acknowledgePhysicalShortage: shortageQty > 0,
                     });
                   }}
                 >
@@ -3824,13 +3998,17 @@ export default function StoreModule() {
                       <th className="px-2 py-2 text-left">Part #</th>
                       <th className="px-2 py-2 text-left">UOM</th>
                       <th className="px-2 py-2 text-right">Balance</th>
+                      <th className="px-2 py-2 text-right">On Hand</th>
+                      <th className="px-2 py-2 text-right">Packable</th>
+                      <th className="px-2 py-2 text-right">Shortage</th>
+                      <th className="px-2 py-2 text-left">Stock</th>
                       <th className="px-2 py-2" />
                     </tr>
                   </thead>
                   <tbody>
                     {pendingLinesForAddArticle.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="px-2 py-4 text-center text-slate-500">
+                        <td colSpan={10} className="px-2 py-4 text-center text-slate-500">
                           No pending lines match your search.
                         </td>
                       </tr>
@@ -3844,16 +4022,41 @@ export default function StoreModule() {
                           <td className="px-2 py-2">{ln.partNumber || "—"}</td>
                           <td className="px-2 py-2">{ln.uom || "PCS"}</td>
                           <td className="px-2 py-2 text-right font-semibold">{ln.balancePack}</td>
+                          <td className="px-2 py-2 text-right">{ln.onHandQty ?? "—"}</td>
+                          <td className="px-2 py-2 text-right">{ln.physicalPackableQty ?? "—"}</td>
+                          <td className={`px-2 py-2 text-right ${(Number(ln.shortageQty) || 0) > 0 ? "font-semibold text-rose-700" : ""}`}>
+                            {ln.shortageQty ?? 0}
+                          </td>
+                          <td className="px-2 py-2">{packingStockBadge(ln.stockStatus)}</td>
                           <td className="px-2 py-2 text-right">
                             <button
                               type="button"
                               className="rounded border px-2 py-0.5 text-xs hover:bg-white"
                               onClick={async () => {
                                 const max = Number(ln.balancePack) || 0;
+                                const packable = Math.max(0, Number(ln.physicalPackableQty) || 0);
                                 const raw = window.prompt(`Qty for ${ln.article} (max ${max})`, String(max));
                                 if (raw == null) return;
                                 const qty = Number(raw);
                                 if (!Number.isFinite(qty) || qty <= 0) return;
+                                if (qty > packable + 1e-9) {
+                                  const shortage = Math.max(0, qty - packable);
+                                  notify.warning(
+                                    `Only ${packable} ${ln.uom || "PCS"} are physically available. Requested quantity creates a shortage of ${shortage} ${ln.uom || "PCS"}.`
+                                  );
+                                  const ok = await confirmDialog({
+                                    title: "Physical stock shortage",
+                                    message: `Only ${packable} ${ln.uom || "PCS"} are physically available. Requested quantity creates a shortage of ${shortage} ${ln.uom || "PCS"}. Add to draft package anyway? Final posting will be blocked until stock is available.`,
+                                    confirmLabel: "Add Anyway",
+                                    cancelLabel: "Go Back",
+                                    danger: true,
+                                  });
+                                  if (!ok) return;
+                                } else if ((Number(ln.onHandQty) || 0) <= 0 || (Number(ln.shortageQty) || 0) > 0) {
+                                  notify.warning(
+                                    `Article ${ln.article} has no physical stock. Allocation balance is ${ln.balancePack} ${ln.uom || "PCS"}.`
+                                  );
+                                }
                                 setPackItemQty(packAddArticlePkgId, ln.allocationLineId, qty);
                                 setPackAddArticlePkgId("");
                               }}
@@ -4044,6 +4247,11 @@ export default function StoreModule() {
                         <td className="px-2 py-2 text-right">{p.totalNetWeightKg || "—"}</td>
                         <td className="px-2 py-2">
                           <StatusPill status={p.status} tone={String(p.status).includes("FULLY") ? "emerald" : String(p.status).includes("PARTIALLY") ? "amber" : "slate"} />
+                          {p.hasPhysicalShortage && String(p.status).toUpperCase() === "DRAFT" ? (
+                            <div className="mt-1">
+                              <StatusPill status="STOCK SHORTAGE" tone="rose" />
+                            </div>
+                          ) : null}
                         </td>
                         <td className="px-2 py-2 text-right">
                           <span className="flex flex-wrap justify-end gap-1">

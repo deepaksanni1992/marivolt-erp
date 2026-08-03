@@ -155,6 +155,7 @@ api.interceptors.response.use(
       if (err.response.data.reasons) wrapped.reasons = err.response.data.reasons;
       if (err.response.data.errors) wrapped.errors = err.response.data.errors;
       if (err.response.data.details) wrapped.details = err.response.data.details;
+      if (err.response.data.shortages) wrapped.shortages = err.response.data.shortages;
       wrapped.body = err.response.data;
     }
     if (err.code) wrapped.code = wrapped.code || err.code;
