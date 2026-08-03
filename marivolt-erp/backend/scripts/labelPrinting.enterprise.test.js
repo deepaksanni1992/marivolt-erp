@@ -9,6 +9,8 @@ import {
   rankPrinterCandidates,
   pickBestPrinter,
   normalizePrinterNames,
+  normalizePrinterStatusList,
+  resolveMappedPrinterHealth,
   clampStr,
   timingSafeEqualUtf8,
   isAgentOnline,
@@ -84,6 +86,84 @@ run("timingSafeEqualUtf8", () => {
   assert.ok(timingSafeEqualUtf8("token", "token"));
   assert.ok(!timingSafeEqualUtf8("token", "other"));
   assert.ok(!timingSafeEqualUtf8("a", "aa"));
+});
+
+run("normalizePrinterStatusList preserves READY/DISCONNECTED and legacy online", () => {
+  const rows = normalizePrinterStatusList([
+    { name: "A", status: "READY", connected: true, queueLength: 2 },
+    { name: "B", online: false },
+    { name: "C", status: "DISCONNECTED", connected: false },
+    { name: "", status: "READY" },
+  ]);
+  assert.strictEqual(rows.length, 3);
+  assert.strictEqual(rows[0].status, "READY");
+  assert.strictEqual(rows[0].online, true);
+  assert.strictEqual(rows[0].queueLength, 2);
+  assert.strictEqual(rows[1].status, "OFFLINE");
+  assert.strictEqual(rows[2].status, "DISCONNECTED");
+});
+
+run("resolveMappedPrinterHealth keeps agent ONLINE independent of DISCONNECTED printer", () => {
+  const agent = {
+    status: "ONLINE",
+    isActive: true,
+    lastHeartbeatAt: new Date(),
+    availablePrinters: ["RP4xx"],
+    printerStatus: [
+      {
+        name: "RP4xx",
+        status: "DISCONNECTED",
+        connected: false,
+        offline: true,
+        queueLength: 0,
+        statusMessage: "USB unplugged",
+        lastSeen: new Date(),
+        online: false,
+      },
+    ],
+  };
+  assert.strictEqual(isAgentOnline(agent), true);
+  const health = resolveMappedPrinterHealth(agent, "RP4xx", { agentOnline: true });
+  assert.strictEqual(health.printerStatus, "DISCONNECTED");
+  assert.strictEqual(health.printerConnected, false);
+});
+
+run("resolveMappedPrinterHealth is UNKNOWN when agent offline", () => {
+  const agent = {
+    status: "OFFLINE",
+    isActive: true,
+    lastHeartbeatAt: new Date(Date.now() - 10 * 60_000),
+    printerStatus: [{ name: "RP4xx", status: "READY", connected: true, online: true }],
+  };
+  const health = resolveMappedPrinterHealth(agent, "RP4xx", { agentOnline: false });
+  assert.strictEqual(health.printerStatus, "UNKNOWN");
+});
+
+run("resolveMappedPrinterHealth is UNKNOWN when printer health is stale", () => {
+  const stale = new Date(Date.now() - AGENT_ONLINE_MS - 5_000);
+  const agent = {
+    status: "ONLINE",
+    isActive: true,
+    lastHeartbeatAt: stale,
+    printerStatus: [
+      {
+        name: "RP4xx",
+        status: "READY",
+        connected: true,
+        online: true,
+        lastSeen: stale,
+      },
+    ],
+  };
+  const health = resolveMappedPrinterHealth(agent, "RP4xx", { agentOnline: true });
+  assert.strictEqual(health.printerStatus, "UNKNOWN");
+  assert.ok(String(health.printerStatusMessage).toLowerCase().includes("stale"));
+});
+
+run("legacy {name, online} payload normalizes", () => {
+  const rows = normalizePrinterStatusList([{ name: "Legacy", online: true }]);
+  assert.strictEqual(rows[0].status, "READY");
+  assert.strictEqual(rows[0].online, true);
 });
 
 run("isAgentOnline respects threshold and disabled", () => {
@@ -175,6 +255,25 @@ run("Heartbeat does not overwrite admin-controlled fields", () => {
   assert.ok(!hb.includes("agent.warehouseCode ="));
   assert.ok(!hb.includes("agent.isActive ="));
   assert.ok(hb.includes("normalizePrinterNames"));
+  assert.ok(hb.includes("normalizePrinterStatusList"));
+});
+
+run("Printer health is independent of agent ONLINE", () => {
+  const helpers = fs.readFileSync(
+    path.join(backendRoot, "src/services/label/labelRoutingHelpers.js"),
+    "utf8"
+  );
+  assert.ok(helpers.includes("resolveMappedPrinterHealth"));
+  assert.ok(helpers.includes("DISCONNECTED"));
+  assert.ok(helpers.includes("normalizePrinterStatusList"));
+  const ctrl = fs.readFileSync(path.join(backendRoot, "src/controllers/labelController.js"), "utf8");
+  assert.ok(ctrl.includes("resolveMappedPrinterHealth"));
+  assert.ok(ctrl.includes("spoolerQueueLength") || ctrl.includes("printerStatusMessage") || ctrl.includes("...health"));
+  const ui = fs.readFileSync(path.join(repoRoot, "src/components/store/LabelSettingsPanel.jsx"), "utf8");
+  assert.ok(ui.includes("printerStatusBadge"));
+  assert.ok(ui.includes("Agent Status"));
+  assert.ok(ui.includes("Printer Status"));
+  assert.ok(ui.includes("refetchInterval"));
 });
 
 run("Lease remains agentId-scoped (isolation)", () => {

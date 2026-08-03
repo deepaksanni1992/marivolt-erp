@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node src/index.js",
     "test-print": "node src/testPrint.js",
-    "test": "node scripts/windowsService.test.js",
+    "test": "node scripts/windowsService.test.js && node scripts/printerHealth.test.js",
     "service:download-winsw": "node service/download-winsw.mjs",
     "service:preflight": "node service/preflight-service.mjs",
     "service:install": "node service/install-service.mjs",

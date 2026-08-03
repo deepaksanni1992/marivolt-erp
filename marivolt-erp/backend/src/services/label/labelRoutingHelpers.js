@@ -3,6 +3,9 @@ import crypto from "crypto";
 /** Online if heartbeat within this window (ms). */
 export const AGENT_ONLINE_MS = 90_000;
 
+/** Printer health is CURRENT only within this window (aligned with agent heartbeat). */
+export const PRINTER_HEALTH_STALE_MS = AGENT_ONLINE_MS;
+
 export const HEARTBEAT_LIMITS = Object.freeze({
   computerName: 120,
   operatingSystem: 80,
@@ -15,7 +18,19 @@ export const HEARTBEAT_LIMITS = Object.freeze({
   printerName: 200,
   availablePrinters: 50,
   printerStatus: 50,
+  statusMessage: 240,
 });
+
+export const PRINTER_HEALTH_STATUSES = Object.freeze([
+  "READY",
+  "OFFLINE",
+  "DISCONNECTED",
+  "PAPER_OUT",
+  "DOOR_OPEN",
+  "PAUSED",
+  "ERROR",
+  "UNKNOWN",
+]);
 
 export function clampStr(v, max) {
   return String(v ?? "")
@@ -36,6 +51,183 @@ export function normalizePrinterNames(list = []) {
     if (out.length >= HEARTBEAT_LIMITS.availablePrinters) break;
   }
   return out;
+}
+
+function normalizePrinterHealthStatus(raw) {
+  const s = String(raw || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+  if (PRINTER_HEALTH_STATUSES.includes(s)) return s;
+  // Legacy boolean-only heartbeats
+  return "";
+}
+
+/**
+ * Normalize one printerStatus heartbeat row (additive; keeps legacy {name,online}).
+ */
+export function normalizePrinterStatusRow(row = {}) {
+  const name = clampStr(row?.name, HEARTBEAT_LIMITS.printerName);
+  if (!name) return null;
+
+  let status = normalizePrinterHealthStatus(row?.status);
+  if (!status) {
+    if (row?.online === true) status = "READY";
+    else if (row?.online === false) status = "OFFLINE";
+    else status = "UNKNOWN";
+  }
+
+  const connected =
+    row?.connected != null ? Boolean(row.connected) : status === "READY" || status === "PAUSED";
+  const offline =
+    row?.offline != null
+      ? Boolean(row.offline)
+      : ["OFFLINE", "DISCONNECTED", "PAPER_OUT", "DOOR_OPEN", "ERROR"].includes(status);
+  const paused = row?.paused != null ? Boolean(row.paused) : status === "PAUSED";
+  const paperOut = row?.paperOut != null ? Boolean(row.paperOut) : status === "PAPER_OUT";
+  const doorOpen = row?.doorOpen != null ? Boolean(row.doorOpen) : status === "DOOR_OPEN";
+  const queueLength = Math.max(0, Math.min(100000, Number(row?.queueLength) || 0));
+  const statusMessage = clampStr(row?.statusMessage || row?.message || "", HEARTBEAT_LIMITS.statusMessage);
+  let lastSeen = null;
+  if (row?.lastSeen) {
+    const d = new Date(row.lastSeen);
+    if (!Number.isNaN(d.getTime())) lastSeen = d;
+  }
+  if (!lastSeen) lastSeen = new Date();
+
+  const online = status === "READY";
+
+  return {
+    name,
+    status,
+    connected,
+    offline,
+    paused,
+    paperOut,
+    doorOpen,
+    queueLength,
+    statusMessage,
+    lastSeen,
+    online,
+    printerFound: row?.printerFound !== false,
+  };
+}
+
+export function normalizePrinterStatusList(list = []) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of Array.isArray(list) ? list : []) {
+    const row = normalizePrinterStatusRow(raw);
+    if (!row) continue;
+    const key = row.name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+    if (out.length >= HEARTBEAT_LIMITS.printerStatus) break;
+  }
+  return out;
+}
+
+/**
+ * Resolve physical printer health for a mapped Windows queue from agent telemetry.
+ * Independent of agent ONLINE/OFFLINE.
+ */
+export function resolveMappedPrinterHealth(agent, windowsPrinterName, { agentOnline = null } = {}) {
+  const want = clampStr(windowsPrinterName, HEARTBEAT_LIMITS.printerName);
+  const online =
+    agentOnline != null ? Boolean(agentOnline) : isAgentOnline(agent);
+
+  if (!online) {
+    return {
+      printerStatus: "UNKNOWN",
+      printerConnected: false,
+      printerOffline: true,
+      printerPaused: false,
+      printerPaperOut: false,
+      printerQueueLength: 0,
+      printerStatusMessage: "Agent offline — printer status unknown",
+      lastPrinterSeen: null,
+      printerFound: false,
+    };
+  }
+
+  if (!want) {
+    return {
+      printerStatus: "UNKNOWN",
+      printerConnected: false,
+      printerOffline: true,
+      printerPaused: false,
+      printerPaperOut: false,
+      printerQueueLength: 0,
+      printerStatusMessage: "No windows printer name mapped",
+      lastPrinterSeen: agent?.lastHeartbeatAt || null,
+      printerFound: false,
+    };
+  }
+
+  const rows = Array.isArray(agent?.printerStatus) ? agent.printerStatus : [];
+  const match = rows.find((r) => String(r?.name || "").toLowerCase() === want.toLowerCase());
+  if (!match) {
+    // Legacy agents: only availablePrinters names, no detailed health
+    const listed = (agent?.availablePrinters || []).some(
+      (n) => String(n).toLowerCase() === want.toLowerCase()
+    );
+    if (listed) {
+      return {
+        printerStatus: "UNKNOWN",
+        printerConnected: true,
+        printerOffline: false,
+        printerPaused: false,
+        printerPaperOut: false,
+        printerQueueLength: 0,
+        printerStatusMessage: "Legacy agent heartbeat (name present; detailed health unavailable)",
+        lastPrinterSeen: agent?.lastHeartbeatAt || null,
+        printerFound: true,
+      };
+    }
+    return {
+      printerStatus: "DISCONNECTED",
+      printerConnected: false,
+      printerOffline: true,
+      printerPaused: false,
+      printerPaperOut: false,
+      printerQueueLength: 0,
+      printerStatusMessage: "Configured printer not reported by agent",
+      lastPrinterSeen: agent?.lastHeartbeatAt || null,
+      printerFound: false,
+    };
+  }
+
+  const normalized = normalizePrinterStatusRow(match) || match;
+  const seenAt = normalized.lastSeen ? new Date(normalized.lastSeen).getTime() : 0;
+  const hbAt = agent?.lastHeartbeatAt ? new Date(agent.lastHeartbeatAt).getTime() : 0;
+  const freshness = Math.max(seenAt || 0, hbAt || 0);
+  const now = Date.now();
+  if (!freshness || now - freshness > PRINTER_HEALTH_STALE_MS) {
+    return {
+      printerStatus: "UNKNOWN",
+      printerConnected: false,
+      printerOffline: true,
+      printerPaused: false,
+      printerPaperOut: false,
+      printerQueueLength: 0,
+      printerStatusMessage: "Stale printer health — waiting for a fresh heartbeat",
+      lastPrinterSeen: normalized.lastSeen || agent?.lastHeartbeatAt || null,
+      printerFound: normalized.printerFound !== false,
+    };
+  }
+
+  return {
+    printerStatus: normalized.status || "UNKNOWN",
+    printerConnected: Boolean(normalized.connected),
+    printerOffline: Boolean(normalized.offline),
+    printerPaused: Boolean(normalized.paused),
+    printerPaperOut: Boolean(normalized.paperOut),
+    printerQueueLength: Number(normalized.queueLength) || 0,
+    printerStatusMessage: normalized.statusMessage || "",
+    lastPrinterSeen: normalized.lastSeen || agent?.lastHeartbeatAt || null,
+    printerFound: normalized.printerFound !== false,
+  };
 }
 
 export function isAgentOnline(agent, now = Date.now()) {

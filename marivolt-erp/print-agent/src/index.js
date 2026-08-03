@@ -1,8 +1,12 @@
 import { ensureConfigured, loadConfig, logLine } from "./config.js";
-import { collectHostProfile, detectWindowsPrinters } from "./detect.js";
+import {
+  collectHostProfile,
+  probeWindowsPrinterHealth,
+  resolveConfiguredPrinterHealth,
+} from "./detect.js";
 import { createTransport } from "./adapters/windowsRawSpooler.js";
 
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.3.0";
 
 /** Set by SIGINT/SIGTERM / Windows service stop — stop leasing new jobs. */
 let shuttingDown = false;
@@ -56,6 +60,23 @@ async function api(cfg, method, path, body) {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function toHeartbeatPrinterRow(h) {
+  return {
+    name: h.name,
+    online: Boolean(h.online),
+    connected: Boolean(h.connected),
+    status: h.status || "UNKNOWN",
+    offline: Boolean(h.offline),
+    paused: Boolean(h.paused),
+    paperOut: Boolean(h.paperOut),
+    doorOpen: Boolean(h.doorOpen),
+    queueLength: Number(h.queueLength) || 0,
+    statusMessage: h.statusMessage || "",
+    lastSeen: h.lastSeen || new Date().toISOString(),
+    printerFound: h.printerFound !== false,
+  };
 }
 
 async function processOneJob(cfg, transport) {
@@ -121,44 +142,104 @@ async function sendHeartbeat(cfg) {
     operatingSystem: "",
     windowsVersion: "",
     availablePrinters: [],
+    printerHealth: [],
+    configuredPrinter: null,
+    printerProbeOk: false,
+    printerProbeError: "",
   };
   try {
-    profile = await collectHostProfile();
+    profile = await collectHostProfile({ windowsPrinterName: cfg.windowsPrinterName });
   } catch (e) {
     logLine(`Host detect warning: ${e.message}`, { level: "error", event: "detect" });
+    profile.printerProbeOk = false;
+    profile.printerProbeError = String(e?.message || e).slice(0, 200);
   }
+
+  const probeFailed = profile.printerProbeOk === false;
+  const printerStatus = (profile.printerHealth || []).map(toHeartbeatPrinterRow);
+  if (cfg.windowsPrinterName) {
+    const configured =
+      profile.configuredPrinter ||
+      resolveConfiguredPrinterHealth(cfg.windowsPrinterName, profile.printerHealth || [], {
+        queryFailed: probeFailed,
+        queryError: profile.printerProbeError,
+      });
+    const key = String(configured.name || "").toLowerCase();
+    if (key && !printerStatus.some((r) => String(r.name).toLowerCase() === key)) {
+      printerStatus.unshift(toHeartbeatPrinterRow(configured));
+    }
+  }
+
+  const primary =
+    profile.configuredPrinter ||
+    (cfg.windowsPrinterName
+      ? resolveConfiguredPrinterHealth(cfg.windowsPrinterName, profile.printerHealth || [], {
+          queryFailed: probeFailed,
+          queryError: profile.printerProbeError,
+        })
+      : null);
+
   await api(cfg, "POST", "/api/labels/agent/heartbeat", {
     computerName: profile.computerName,
     appVersion: APP_VERSION,
     operatingSystem: profile.operatingSystem,
     windowsVersion: profile.windowsVersion,
     availablePrinters: profile.availablePrinters,
-    printerStatus: (profile.availablePrinters || []).map((name) => ({
-      name,
-      online: true,
-    })),
+    printerStatus,
+    printer: primary
+      ? {
+          name: primary.name,
+          connected: Boolean(primary.connected),
+          status: primary.status || "UNKNOWN",
+          offline: Boolean(primary.offline),
+          paused: Boolean(primary.paused),
+          paperOut: Boolean(primary.paperOut),
+          queueLength: Number(primary.queueLength) || 0,
+          statusMessage: primary.statusMessage || "",
+          lastSeen: primary.lastSeen || new Date().toISOString(),
+        }
+      : undefined,
+    agentStatus: "ONLINE",
   });
+
+  const pStatus = primary?.status || "UNKNOWN";
   logLine(
-    `Heartbeat ok agent=${cfg.agentId} version=${APP_VERSION} computer=${profile.computerName}`,
+    `Heartbeat ok agent=${cfg.agentId} version=${APP_VERSION} computer=${profile.computerName} printer=${primary?.name || "(none)"} printerStatus=${pStatus}`,
     { event: "heartbeat" }
   );
+  if (primary && primary.status !== "READY") {
+    logLine(
+      `Printer health: status=${primary.status} connected=${Boolean(primary.connected)} msg=${primary.statusMessage || ""}`,
+      {
+        level: primary.status === "DISCONNECTED" || primary.status === "ERROR" ? "error" : "info",
+        event: "printer_health",
+      }
+    );
+  }
 }
 
 async function checkConfiguredPrinter(cfg) {
   try {
-    const printers = await detectWindowsPrinters();
-    const want = String(cfg.windowsPrinterName || "").trim().toLowerCase();
-    if (!want) {
+    const probe = await probeWindowsPrinterHealth();
+    const primary = resolveConfiguredPrinterHealth(cfg.windowsPrinterName, probe.rows, {
+      queryFailed: !probe.ok,
+      queryError: probe.error,
+    });
+    if (!cfg.windowsPrinterName) {
       logLine("No windowsPrinterName configured", { event: "printer_check" });
       return;
     }
-    const found = printers.some((p) => p.toLowerCase() === want);
-    if (found) {
-      logLine(`Configured printer found: ${cfg.windowsPrinterName}`, { event: "printer_check" });
+    if (primary.printerFound && primary.status === "READY") {
+      logLine(`Configured printer READY: ${cfg.windowsPrinterName}`, { event: "printer_check" });
+    } else if (!primary.printerFound || primary.status === "DISCONNECTED") {
+      logLine(
+        `PRINTER UNAVAILABLE / DISCONNECTED: configured "${cfg.windowsPrinterName}" (agent remains ONLINE; ${primary.statusMessage})`,
+        { level: "error", event: "printer_unavailable" }
+      );
     } else {
       logLine(
-        `PRINTER UNAVAILABLE: configured "${cfg.windowsPrinterName}" not in Windows printer list (agent remains ONLINE; jobs may fail until printer is visible to this account)`,
-        { level: "error", event: "printer_unavailable" }
+        `Configured printer status=${primary.status}: ${cfg.windowsPrinterName} (${primary.statusMessage})`,
+        { level: "error", event: "printer_check" }
       );
     }
   } catch (e) {
@@ -171,7 +252,6 @@ async function loop() {
   try {
     cfg = await ensureConfigured();
   } catch (e) {
-    // Non-interactive fallback: require existing config
     try {
       cfg = loadConfig();
     } catch {
@@ -208,7 +288,6 @@ async function loop() {
     await sleep(cfg.pollIntervalMs);
   }
 
-  // Wait briefly if a job is mid-flight
   const waitUntil = Date.now() + 40_000;
   while (inJob && Date.now() < waitUntil) {
     await sleep(500);

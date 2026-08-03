@@ -32,7 +32,12 @@ const printAgentSchema = new mongoose.Schema(
     appVersion: { type: String, default: "", trim: true },
     /** Detected Windows printer queue names from last heartbeat (capped) */
     availablePrinters: { type: [String], default: [] },
-    /** Per-printer status snapshot from agent, e.g. [{ name, online }] */
+    /**
+     * Per-printer health snapshot from agent.
+     * Legacy: [{ name, online }]
+     * Current: [{ name, status, connected, offline, paused, paperOut, queueLength, statusMessage, lastSeen, online }]
+     * Agent ONLINE is independent of these rows.
+     */
     printerStatus: { type: [mongoose.Schema.Types.Mixed], default: [] },
     status: {
       type: String,

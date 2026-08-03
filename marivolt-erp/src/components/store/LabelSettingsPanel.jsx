@@ -5,15 +5,34 @@ import { LABEL_TEMPLATE_NAME } from "../../lib/labelPrinting.js";
 import { notify, confirmDialog } from "../../lib/notifications.js";
 import LoadingButton from "../erp/LoadingButton.jsx";
 
-function statusBadge(status) {
+function agentStatusBadge(status) {
   const s = String(status || "OFFLINE").toUpperCase();
   const cls =
     s === "ONLINE"
       ? "bg-emerald-100 text-emerald-800"
       : s === "DISABLED"
         ? "bg-slate-200 text-slate-700"
-        : "bg-amber-100 text-amber-900";
+        : s === "ERROR"
+          ? "bg-rose-100 text-rose-800"
+          : "bg-amber-100 text-amber-900";
   return <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${cls}`}>{s}</span>;
+}
+
+/** Physical printer health badge — independent of agent ONLINE. */
+function printerStatusBadge(status) {
+  const s = String(status || "UNKNOWN").toUpperCase().replace(/\s+/g, "_");
+  let cls = "bg-slate-200 text-slate-700"; // UNKNOWN / default gray
+  if (s === "READY") cls = "bg-emerald-100 text-emerald-800";
+  else if (s === "DISCONNECTED" || s === "ERROR") cls = "bg-rose-100 text-rose-800";
+  else if (s === "OFFLINE" || s === "PAPER_OUT" || s === "DOOR_OPEN") cls = "bg-orange-100 text-orange-800";
+  else if (s === "PAUSED") cls = "bg-amber-100 text-amber-900";
+  const label = s === "PAPER_OUT" ? "PAPER OUT" : s === "DOOR_OPEN" ? "DOOR OPEN" : s;
+  return <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${cls}`}>{label}</span>;
+}
+
+/** @deprecated use agentStatusBadge — kept name for minimal churn in agent table */
+function statusBadge(status) {
+  return agentStatusBadge(status);
 }
 
 function fmtTime(v) {
@@ -73,10 +92,12 @@ export default function LabelSettingsPanel() {
   const { data: agents, isFetching: agentsLoading } = useQuery({
     queryKey: ["label-agents", agentQuery],
     queryFn: () => apiGet(`/labels/agents${agentQuery}`),
+    refetchInterval: 15_000,
   });
   const { data: printers } = useQuery({
     queryKey: ["label-printers"],
     queryFn: () => apiGet("/labels/printers?includeInactive=1"),
+    refetchInterval: 15_000,
   });
 
   const s = form || settings || {};
@@ -135,6 +156,12 @@ export default function LabelSettingsPanel() {
     onSuccess: (data, vars) => {
       if (vars.action === "rotate-secret" && data?.secret) setSecretOnce(data);
       qc.invalidateQueries({ queryKey: ["label-agents"] });
+      if (vars.action === "test-connection") {
+        const m = data?.message || `Test Connection: agent ${data?.agentStatus || "?"} / printer ${data?.printerStatus || "?"}`;
+        setMsg(m);
+        notify.success(m);
+        return;
+      }
       const m = `${vars.action} ok for ${vars.id}`;
       setMsg(m);
       if (vars.action === "test-print") notify.info("Test print queued.");
@@ -392,14 +419,15 @@ export default function LabelSettingsPanel() {
           </select>
         </div>
         <div className="overflow-auto">
-          <table className="w-full min-w-[1100px] text-xs">
+          <table className="w-full min-w-[1200px] text-xs">
             <thead className="bg-slate-100 text-left text-[11px] uppercase text-slate-600">
               <tr>
                 <th className="px-2 py-2">Agent</th>
                 <th className="px-2 py-2">Computer</th>
                 <th className="px-2 py-2">Warehouse</th>
                 <th className="px-2 py-2">Printers</th>
-                <th className="px-2 py-2">Status</th>
+                <th className="px-2 py-2">Agent Status</th>
+                <th className="px-2 py-2">Printer Status</th>
                 <th className="px-2 py-2">Version</th>
                 <th className="px-2 py-2">Heartbeat</th>
                 <th className="px-2 py-2 text-right">Pending</th>
@@ -435,7 +463,24 @@ export default function LabelSettingsPanel() {
                           </div>
                         )) || "—"}
                   </td>
-                  <td className="px-2 py-1.5">{statusBadge(a.effectiveStatus)}</td>
+                  <td className="px-2 py-1.5">{agentStatusBadge(a.effectiveStatus)}</td>
+                  <td className="px-2 py-1.5">
+                    {(a.printers || []).length ? (
+                      (a.printers || []).map((p) => (
+                        <div key={`${p.code}-health`} className="mb-0.5">
+                          {printerStatusBadge(
+                            a.effectiveStatus === "ONLINE" ? p.printerStatus || "UNKNOWN" : "UNKNOWN"
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      printerStatusBadge(
+                        a.effectiveStatus === "ONLINE"
+                          ? (a.printerStatus || [])[0]?.status || "UNKNOWN"
+                          : "UNKNOWN"
+                      )
+                    )}
+                  </td>
                   <td className="px-2 py-1.5 font-mono">{a.appVersion || "—"}</td>
                   <td className="px-2 py-1.5 whitespace-nowrap">{fmtTime(a.lastHeartbeatAt)}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums">{a.pendingJobs ?? 0}</td>
@@ -633,22 +678,26 @@ export default function LabelSettingsPanel() {
       <div className="rounded border border-slate-200 bg-white p-4 text-sm">
         <h3 className="mb-2 font-semibold">Printer Dashboard</h3>
         <div className="overflow-auto">
-          <table className="w-full min-w-[900px] text-xs">
+          <table className="w-full min-w-[1200px] text-xs">
             <thead className="bg-slate-100 text-left text-[11px] uppercase text-slate-600">
               <tr>
                 <th className="px-2 py-2">Printer</th>
                 <th className="px-2 py-2">Model</th>
                 <th className="px-2 py-2">Warehouse</th>
                 <th className="px-2 py-2">Assigned agent</th>
-                <th className="px-2 py-2">Status</th>
+                <th className="px-2 py-2">Agent Status</th>
+                <th className="px-2 py-2">Printer Status</th>
+                <th className="px-2 py-2">Last Printer Seen</th>
+                <th className="px-2 py-2 text-right">Queue Length</th>
+                <th className="px-2 py-2">Status Message</th>
                 <th className="px-2 py-2">Last print</th>
-                <th className="px-2 py-2 text-right">Queue</th>
+                <th className="px-2 py-2 text-right">ERP Queue</th>
                 <th className="px-2 py-2">Actions</th>
               </tr>
             </thead>
             <tbody>
               {(printers?.items || []).map((p) => (
-                <tr key={p._id} className="border-t border-slate-100">
+                <tr key={p._id} className="border-t border-slate-100 align-top">
                   <td className="px-2 py-1.5">
                     <div className="font-semibold">{p.displayName || p.code}</div>
                     <div className="font-mono text-[10px] text-slate-500">
@@ -667,7 +716,26 @@ export default function LabelSettingsPanel() {
                     <div className="text-[10px] text-slate-500">{p.agentComputerName || p.agentName || ""}</div>
                   </td>
                   <td className="px-2 py-1.5">
-                    {statusBadge(p.isActive === false ? "DISABLED" : p.agentStatus || "OFFLINE")}
+                    {agentStatusBadge(p.isActive === false ? "DISABLED" : p.agentStatus || "OFFLINE")}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    {printerStatusBadge(
+                      p.isActive === false
+                        ? "UNKNOWN"
+                        : p.agentStatus === "ONLINE"
+                          ? p.printerStatus || "UNKNOWN"
+                          : "UNKNOWN"
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5 whitespace-nowrap">{fmtTime(p.lastPrinterSeen)}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    {p.spoolerQueueLength ?? p.printerQueueLength ?? 0}
+                  </td>
+                  <td
+                    className="max-w-[180px] truncate px-2 py-1.5 text-slate-600"
+                    title={p.printerStatusMessage || ""}
+                  >
+                    {p.printerStatusMessage || "—"}
                   </td>
                   <td className="px-2 py-1.5 whitespace-nowrap">{fmtTime(p.lastPrintAt)}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums">{p.currentQueue ?? 0}</td>

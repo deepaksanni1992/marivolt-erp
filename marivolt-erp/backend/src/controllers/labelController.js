@@ -71,9 +71,10 @@ export async function listPrinters(req, res) {
   try {
     const includeInactive = String(req.query.includeInactive || "") === "1";
     const rows = await printerManager.listPrinters(req.companyId, { includeInactive });
-    // Enrich with queue depth + agent status
+    // Enrich with queue depth + agent status + physical printer health
     const LabelPrintJob = (await import("../models/LabelPrintJob.js")).default;
     const PrintAgent = (await import("../models/PrintAgent.js")).default;
+    const { resolveMappedPrinterHealth } = await import("../services/label/labelRoutingHelpers.js");
     const agentIds = [...new Set(rows.map((r) => r.agentId).filter(Boolean))];
     const agents = await PrintAgent.find({ companyId: req.companyId, agentId: { $in: agentIds } }).lean();
     const agentMap = Object.fromEntries(agents.map((a) => [a.agentId, a]));
@@ -92,12 +93,18 @@ export async function listPrinters(req, res) {
       const ag = agentMap[p.agentId];
       const hb = ag?.lastHeartbeatAt ? new Date(ag.lastHeartbeatAt).getTime() : 0;
       const online = ag?.isActive !== false && ag?.status === "ONLINE" && hb && Date.now() - hb < 90_000;
+      const agentStatus = ag?.isActive === false ? "DISABLED" : online ? "ONLINE" : "OFFLINE";
+      const health = resolveMappedPrinterHealth(ag, p.windowsPrinterName, {
+        agentOnline: agentStatus === "ONLINE",
+      });
       return {
         ...p,
         currentQueue: pendingMap[String(p._id)] || 0,
         agentName: ag?.name || "",
         agentComputerName: ag?.computerName || "",
-        agentStatus: ag?.isActive === false ? "DISABLED" : online ? "ONLINE" : "OFFLINE",
+        agentStatus,
+        ...health,
+        spoolerQueueLength: health.printerQueueLength || 0,
       };
     });
     res.json({ items });
@@ -257,26 +264,48 @@ export async function testPrint(req, res) {
 
 export async function testConnection(req, res) {
   try {
+    const { resolveMappedPrinterHealth } = await import("../services/label/labelRoutingHelpers.js");
     const agent = await labelService.getAgent(req.companyId, req.params.id);
     const printers = (agent.printers || []).filter((p) => p.isActive !== false);
     const available = new Set((agent.availablePrinters || []).map((n) => String(n).toLowerCase()));
+    const agentOnline = agent.effectiveStatus === "ONLINE";
     const mappedChecks = printers.map((p) => {
       const win = String(p.windowsPrinterName || "").trim();
+      const health = resolveMappedPrinterHealth(agent, win, { agentOnline });
       return {
         code: p.code,
         windowsPrinterName: win,
         foundOnAgent: win ? available.has(win.toLowerCase()) : false,
+        agentStatus: agentOnline ? "ONLINE" : agent.effectiveStatus || "OFFLINE",
+        printerStatus: health.printerStatus,
+        printerConnected: health.printerConnected,
+        printerStatusMessage: health.printerStatusMessage,
+        lastPrinterSeen: health.lastPrinterSeen,
+        queueLength: health.printerQueueLength,
       };
     });
-    const online = agent.effectiveStatus === "ONLINE";
-    const mappedOk = mappedChecks.length
-      ? mappedChecks.some((m) => m.foundOnAgent)
-      : false;
+    const anyReady = mappedChecks.some((m) => m.printerStatus === "READY");
+    const anyDisconnected = mappedChecks.some((m) => m.printerStatus === "DISCONNECTED");
+    const primaryStatus = mappedChecks[0]?.printerStatus || (agentOnline ? "UNKNOWN" : "UNKNOWN");
+    let message;
+    if (!agentOnline) {
+      message = "Agent offline, printer unknown";
+    } else if (anyReady) {
+      message = "Agent online, printer ready";
+    } else if (anyDisconnected) {
+      message = "Agent online, printer disconnected";
+    } else if (!printers.length) {
+      message = "Agent online; no active printer mappings yet.";
+    } else {
+      message = `Agent online, printer ${String(primaryStatus).toLowerCase().replace(/_/g, " ")}`;
+    }
     res.json({
-      ok: online,
-      connected: online,
+      ok: agentOnline,
+      connected: agentOnline,
       agentAuthenticated: true,
       agentId: agent.agentId,
+      agentStatus: agentOnline ? "ONLINE" : agent.effectiveStatus || "OFFLINE",
+      printerStatus: primaryStatus,
       effectiveStatus: agent.effectiveStatus,
       lastHeartbeatAt: agent.lastHeartbeatAt,
       lastIp: agent.lastIp,
@@ -284,15 +313,9 @@ export async function testConnection(req, res) {
       computerName: agent.computerName,
       availablePrinters: agent.availablePrinters || [],
       mappedPrinters: mappedChecks,
-      mappedWindowsPrinterFound: mappedOk,
+      mappedWindowsPrinterFound: mappedChecks.some((m) => m.foundOnAgent),
       physicalPrintRequired: false,
-      message: online
-        ? mappedOk
-          ? "Agent online; at least one mapped Windows printer was seen in the last heartbeat."
-          : printers.length
-            ? "Agent online, but mapped Windows printer name was not reported in available printers."
-            : "Agent online; no active printer mappings yet."
-        : "Agent is not online (stale or missing heartbeat).",
+      message,
     });
   } catch (err) {
     sendErr(res, err);

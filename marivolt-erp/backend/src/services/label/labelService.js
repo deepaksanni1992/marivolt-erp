@@ -17,6 +17,8 @@ import { auditLabelEvent, auditLabelAdminEvent, recordLabelHistory } from "./lab
 import {
   clampStr,
   normalizePrinterNames,
+  normalizePrinterStatusList,
+  resolveMappedPrinterHealth,
   sanitizeAppVersion,
   HEARTBEAT_LIMITS,
   AGENT_ONLINE_MS,
@@ -443,14 +445,20 @@ export async function listAgents(companyId, query = {}) {
     return {
       ...sanitizeAgent(a),
       effectiveStatus,
-      printers: agentPrinters.map((p) => ({
-        code: p.code,
-        displayName: p.displayName,
-        windowsPrinterName: p.windowsPrinterName,
-        isDefault: p.isDefault,
-        isWarehouseDefault: p.isWarehouseDefault,
-        isActive: p.isActive,
-      })),
+      printers: agentPrinters.map((p) => {
+        const health = resolveMappedPrinterHealth(a, p.windowsPrinterName, {
+          agentOnline: effectiveStatus === "ONLINE",
+        });
+        return {
+          code: p.code,
+          displayName: p.displayName,
+          windowsPrinterName: p.windowsPrinterName,
+          isDefault: p.isDefault,
+          isWarehouseDefault: p.isWarehouseDefault,
+          isActive: p.isActive,
+          ...health,
+        };
+      }),
       pendingJobs: pendingMap[a.agentId] || 0,
       completedToday: completedMap[a.agentId] || 0,
       failedToday: failedMap[a.agentId] || 0,
@@ -710,14 +718,25 @@ export async function applyAgentHeartbeat(agent, body = {}, req = {}) {
     agent.availablePrinters = normalizePrinterNames(body.availablePrinters);
   }
   if (Array.isArray(body.printerStatus)) {
-    agent.printerStatus = body.printerStatus
-      .slice(0, HEARTBEAT_LIMITS.printerStatus)
-      .map((row) => ({
-        name: clampStr(row?.name, HEARTBEAT_LIMITS.printerName),
-        online: Boolean(row?.online),
-      }))
-      .filter((row) => row.name);
+    agent.printerStatus = normalizePrinterStatusList(body.printerStatus);
+  } else if (body.printer && typeof body.printer === "object") {
+    // Single primary printer object from newer agents
+    agent.printerStatus = normalizePrinterStatusList([
+      {
+        name: body.printer.name,
+        status: body.printer.status,
+        connected: body.printer.connected,
+        offline: body.printer.offline,
+        paused: body.printer.paused,
+        paperOut: body.printer.paperOut,
+        queueLength: body.printer.queueLength,
+        statusMessage: body.printer.statusMessage,
+        lastSeen: body.printer.lastSeen,
+        online: body.printer.status === "READY",
+      },
+    ]);
   }
+  // agentStatus from payload is informational only — stored agent.status remains ONLINE on successful heartbeat
   if (body.lastError != null) {
     agent.lastError = clampStr(body.lastError, HEARTBEAT_LIMITS.lastError);
   }
