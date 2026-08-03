@@ -113,7 +113,7 @@ npm run service:verify-printer
 
 | Command | Purpose |
 |---------|---------|
-| `npm run service:preflight` | Admin/config/Node/WinSW URL/writable dirs checks (no install) |
+| `npm run service:preflight` | Admin/config/Node/WinSW source checks (no install). Missing local WinSW is OK when the official download URL is reachable. |
 | `npm run service:install` | Preflight, download/verify WinSW, install, auto-start, recovery, start |
 | `npm run service:start` | Start |
 | `npm run service:stop` | Stop |

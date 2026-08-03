@@ -27,6 +27,10 @@ import {
   winswDownloadErrorMessage,
   safeUnlink,
 } from "../service/download-winsw.mjs";
+import {
+  evaluateWinswSource,
+  printPreflightReport,
+} from "../service/preflight-service.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -579,13 +583,150 @@ run("install failure path documents no partial service after download failure", 
   assert.ok(src.includes("uninstall"));
 });
 
-run("preflight module exports runPreflight", () => {
+run("preflight module exports runPreflight and evaluateWinswSource", () => {
   const src = fs.readFileSync(path.join(PRINT_AGENT_ROOT, "service", "preflight-service.mjs"), "utf8");
   assert.ok(src.includes("export async function runPreflight"));
+  assert.ok(src.includes("export async function evaluateWinswSource"));
+  assert.ok(src.includes("localBinaryValid || remoteDownloadAvailable"));
   assert.ok(src.includes("administrator"));
   assert.ok(src.includes("config.json"));
-  assert.ok(src.includes("winsw_url"));
+  assert.ok(src.includes("winsw_url") || src.includes("winsw_source"));
   assert.ok(src.includes("printer_config"));
+  assert.ok(src.includes("Preflight PASSED"));
+});
+
+await runAsync("preflight: no local binary + URL 200 → PASS", async () => {
+  const result = await evaluateWinswSource({
+    findValidLocalWinsw: () => null,
+    findLocalWinswCandidates: () => [],
+    probeWinswUrl: async () => ({ ok: true, status: 200 }),
+    quarantineInvalidLocalWinsw: () => [],
+  });
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.localBinaryValid, false);
+  assert.strictEqual(result.remoteDownloadAvailable, true);
+  const warn = result.checks.find(
+    (c) => c.level === "WARN" && /No local WinSW binary found/i.test(c.detail)
+  );
+  assert.ok(warn, "expected WARN about missing local binary");
+  const passSource = result.checks.find(
+    (c) =>
+      c.ok &&
+      c.name === "winsw_source" &&
+      /official WinSW v2\.12\.0 available for verified download/i.test(c.detail)
+  );
+  assert.ok(passSource, "expected PASS winsw_source for official download");
+});
+
+await runAsync("preflight: valid local binary + URL unavailable → PASS", async () => {
+  const result = await evaluateWinswSource({
+    findValidLocalWinsw: () => ({
+      path: "C:\\\\fake\\\\MarivoltPrintAgent.exe",
+      ok: true,
+      sha256: WINSW_RELEASE.sha256,
+      bytes: WINSW_RELEASE.expectedBytes,
+    }),
+    findLocalWinswCandidates: () => ["C:\\\\fake\\\\MarivoltPrintAgent.exe"],
+    probeWinswUrl: async () => ({ ok: false, status: 404 }),
+    quarantineInvalidLocalWinsw: () => [],
+  });
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.localBinaryValid, true);
+  assert.ok(result.checks.every((c) => c.ok));
+});
+
+await runAsync("preflight: invalid local binary + URL 200 → PASS with replacement warning", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mv-pf-invalid-"));
+  const bad = path.join(tmp, "MarivoltPrintAgent.exe");
+  fs.writeFileSync(bad, Buffer.from("corrupt-winsw"));
+  let quarantinedCalls = 0;
+  try {
+    const result = await evaluateWinswSource({
+      findValidLocalWinsw: () => null,
+      findLocalWinswCandidates: () => [bad],
+      probeWinswUrl: async () => ({ ok: true, status: 200 }),
+      quarantineInvalidLocalWinsw: () => {
+        quarantinedCalls += 1;
+        safeUnlink(bad);
+        return [{ from: bad, to: null, reason: "checksum_mismatch" }];
+      },
+    });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.remoteDownloadAvailable, true);
+    assert.ok(quarantinedCalls === 1);
+    const warn = result.checks.find(
+      (c) => c.level === "WARN" && /Invalid local WinSW binary will be replaced/i.test(c.detail)
+    );
+    assert.ok(warn);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+await runAsync("preflight: no local binary + URL unavailable → FAIL", async () => {
+  const result = await evaluateWinswSource({
+    findValidLocalWinsw: () => null,
+    findLocalWinswCandidates: () => [],
+    probeWinswUrl: async () => ({ ok: false, status: 404 }),
+    quarantineInvalidLocalWinsw: () => [],
+  });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.remoteDownloadAvailable, false);
+  assert.ok(result.checks.some((c) => !c.ok && /download URL unavailable/i.test(c.detail)));
+});
+
+await runAsync("preflight: invalid local binary + URL unavailable → FAIL", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mv-pf-bad-offline-"));
+  const bad = path.join(tmp, "MarivoltPrintAgent.exe");
+  fs.writeFileSync(bad, Buffer.from("corrupt"));
+  try {
+    const result = await evaluateWinswSource({
+      findValidLocalWinsw: () => null,
+      findLocalWinswCandidates: () => [bad],
+      probeWinswUrl: async () => ({ ok: false, status: "network-error" }),
+      quarantineInvalidLocalWinsw: () => [],
+    });
+    assert.strictEqual(result.ok, false);
+    assert.ok(result.checks.some((c) => !c.ok && /Invalid local/i.test(c.detail)));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+await runAsync("preflight report wording for download path", async () => {
+  const result = {
+    ok: true,
+    checks: [
+      {
+        name: "winsw_source",
+        ok: true,
+        level: "WARN",
+        detail: "No local WinSW binary found; installer will download and verify v2.12.0.",
+      },
+      {
+        name: "winsw_source",
+        ok: true,
+        detail: "official WinSW v2.12.0 available for verified download",
+      },
+    ],
+    release: {
+      version: WINSW_RELEASE.version,
+      assetFileName: WINSW_RELEASE.assetFileName,
+      downloadUrl: WINSW_RELEASE.downloadUrl,
+    },
+  };
+  const logs = [];
+  const orig = console.log;
+  console.log = (...args) => logs.push(args.join(" "));
+  try {
+    printPreflightReport(result);
+  } finally {
+    console.log = orig;
+  }
+  const text = logs.join("\n");
+  assert.ok(/WARN  winsw_source: No local WinSW binary found/i.test(text));
+  assert.ok(/PASS  winsw_source: official WinSW v2\.12\.0 available for verified download/i.test(text));
+  assert.ok(/Preflight PASSED — ready to install/i.test(text));
 });
 
 // Avoid unused import lint noise in some runners

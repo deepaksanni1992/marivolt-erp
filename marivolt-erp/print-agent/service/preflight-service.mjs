@@ -5,7 +5,7 @@
  *
  * Flags:
  *   --reinstall   allow an already-installed MarivoltPrintAgent service
- *   --skip-network  skip WinSW URL probe when a checksum-valid local binary exists
+ *   --skip-network  skip WinSW URL probe (only PASS if a checksum-valid local binary exists)
  */
 import fs from "fs";
 import path from "path";
@@ -15,7 +15,6 @@ import {
   SERVICE_ID,
   assertWindows,
   getConfigDir,
-  getConfigPath,
   getServiceRuntimeDir,
   isAdministrator,
   queryServiceState,
@@ -24,8 +23,11 @@ import {
 } from "./common.mjs";
 import {
   WINSW_RELEASE,
+  findLocalWinswCandidates,
   findValidLocalWinsw,
   probeWinswUrl,
+  safeUnlink,
+  validateWinswBinary,
 } from "./download-winsw.mjs";
 
 function canWriteDir(dir) {
@@ -37,14 +39,188 @@ function canWriteDir(dir) {
 }
 
 /**
- * @returns {Promise<{ ok: boolean, checks: Array<{ name: string, ok: boolean, detail: string }> }>}
+ * Quarantine invalid local WinSW candidates so they are not reused.
+ * Renames to *.invalid.<timestamp> when possible; deletes if rename fails.
+ */
+export function quarantineInvalidLocalWinsw(release = WINSW_RELEASE) {
+  const quarantined = [];
+  for (const p of findLocalWinswCandidates()) {
+    if (!fs.existsSync(p)) continue;
+    const v = validateWinswBinary(p, release);
+    if (v.ok) continue;
+    const stamp = Date.now();
+    const dest = `${p}.invalid.${stamp}`;
+    try {
+      fs.renameSync(p, dest);
+      quarantined.push({ from: p, to: dest, reason: v.reason });
+    } catch {
+      safeUnlink(p);
+      quarantined.push({ from: p, to: null, reason: v.reason });
+    }
+  }
+  return quarantined;
+}
+
+/**
+ * Evaluate WinSW source readiness.
+ * PASS when localBinaryValid || remoteDownloadAvailable.
+ *
+ * @returns {Promise<{
+ *   ok: boolean,
+ *   localBinaryValid: boolean,
+ *   remoteDownloadAvailable: boolean,
+ *   checks: Array<{ name: string, ok: boolean, level?: string, detail: string }>,
+ *   quarantined: Array<object>
+ * }>}
+ */
+export async function evaluateWinswSource(options = {}) {
+  const release = options.release || WINSW_RELEASE;
+  const skipNetwork = Boolean(options.skipNetwork);
+  const findValid = options.findValidLocalWinsw || findValidLocalWinsw;
+  const probe = options.probeWinswUrl || probeWinswUrl;
+  const quarantine = options.quarantineInvalidLocalWinsw || quarantineInvalidLocalWinsw;
+  const listCandidates = options.findLocalWinswCandidates || findLocalWinswCandidates;
+
+  const checks = [];
+  const add = (name, ok, detail, level) => {
+    const entry = { name, ok: Boolean(ok), detail: String(detail || "") };
+    if (level) entry.level = level;
+    checks.push(entry);
+  };
+
+  const local = findValid(release);
+  const localBinaryValid = Boolean(local);
+
+  let hasInvalidLocal = false;
+  if (!localBinaryValid) {
+    for (const p of listCandidates()) {
+      if (fs.existsSync(p)) {
+        const v = validateWinswBinary(p, release);
+        if (!v.ok) {
+          hasInvalidLocal = true;
+          break;
+        }
+      }
+    }
+  }
+
+  let remoteDownloadAvailable = false;
+  let probeStatus = null;
+  let quarantined = [];
+
+  if (localBinaryValid) {
+    add(
+      "winsw_source",
+      true,
+      `local checksum OK (${local.path}); download not required`
+    );
+    if (skipNetwork) {
+      add("winsw_url", true, `skipped (valid local ${release.version})`);
+      remoteDownloadAvailable = false;
+    } else {
+      try {
+        const probeResult = await probe(release.downloadUrl);
+        probeStatus = probeResult.status;
+        remoteDownloadAvailable = Boolean(probeResult.ok);
+        add(
+          "winsw_url",
+          true,
+          probeResult.ok
+            ? `${release.downloadUrl} → HTTP ${probeResult.status} (not required; local binary present)`
+            : `URL probe ${probeResult.status} (ignored; valid local binary present)`
+        );
+      } catch {
+        add(
+          "winsw_url",
+          true,
+          "URL probe skipped/failed (ignored; valid local binary present)"
+        );
+      }
+    }
+  } else if (skipNetwork) {
+    add(
+      "winsw_source",
+      false,
+      "No valid local WinSW binary and --skip-network set; cannot download."
+    );
+    add("winsw_url", false, "skipped");
+  } else {
+    try {
+      const probeResult = await probe(release.downloadUrl);
+      probeStatus = probeResult.status;
+      remoteDownloadAvailable = Boolean(probeResult.ok);
+    } catch (e) {
+      probeStatus = String(e?.message || e);
+      remoteDownloadAvailable = false;
+    }
+
+    if (remoteDownloadAvailable) {
+      if (hasInvalidLocal) {
+        quarantined = quarantine(release);
+        add(
+          "winsw_source",
+          true,
+          "Invalid local WinSW binary will be replaced.",
+          "WARN"
+        );
+      } else {
+        add(
+          "winsw_source",
+          true,
+          `No local WinSW binary found; installer will download and verify ${release.version}.`,
+          "WARN"
+        );
+      }
+      add(
+        "winsw_source",
+        true,
+        `official WinSW ${release.version} available for verified download`
+      );
+      add("winsw_url", true, `${release.downloadUrl} → HTTP ${probeStatus}`);
+    } else {
+      if (hasInvalidLocal) {
+        add(
+          "winsw_source",
+          false,
+          `Invalid local WinSW binary and download URL unavailable (HTTP ${probeStatus}).`
+        );
+      } else {
+        add(
+          "winsw_source",
+          false,
+          `No local WinSW binary and download URL unavailable (HTTP ${probeStatus}).`
+        );
+      }
+      add(
+        "winsw_url",
+        false,
+        `URL probe failed (HTTP ${probeStatus}). ${release.downloadUrl}`
+      );
+    }
+  }
+
+  const ok = localBinaryValid || remoteDownloadAvailable;
+  return {
+    ok,
+    localBinaryValid,
+    remoteDownloadAvailable,
+    probeStatus,
+    checks,
+    quarantined,
+  };
+}
+
+/**
+ * @returns {Promise<{ ok: boolean, checks: Array, release: object, meta: object|null, winsw: object }>}
  */
 export async function runPreflight(options = {}) {
   const reinstall = Boolean(options.reinstall);
   const skipNetwork = Boolean(options.skipNetwork);
   const checks = [];
-  const add = (name, ok, detail) => {
-    checks.push({ name, ok: Boolean(ok), detail: String(detail || "") });
+  const add = (name, ok, detail, level) => {
+    const entry = { name, ok: Boolean(ok), detail: String(detail || "") };
+    if (level) entry.level = level;
+    checks.push(entry);
   };
 
   try {
@@ -114,45 +290,36 @@ export async function runPreflight(options = {}) {
     add("service_conflict", true, "not installed");
   }
 
-  const local = findValidLocalWinsw(WINSW_RELEASE);
-  if (local) {
-    add(
-      "winsw_binary",
-      true,
-      `local checksum OK (${local.path}); download not required`
-    );
-    add("winsw_url", true, `skipped (valid local ${WINSW_RELEASE.version})`);
-  } else if (skipNetwork) {
-    add("winsw_binary", false, "no valid local WinSW binary and --skip-network set");
-    add("winsw_url", false, "skipped");
-  } else {
-    add("winsw_binary", false, "no valid local binary; download required");
-    try {
-      const probe = await probeWinswUrl(WINSW_RELEASE.downloadUrl);
-      add(
-        "winsw_url",
-        probe.ok,
-        probe.ok
-          ? `${WINSW_RELEASE.downloadUrl} → HTTP ${probe.status}`
-          : `URL probe failed (HTTP ${probe.status}). ${WINSW_RELEASE.downloadUrl}`
-      );
-    } catch (e) {
-      add("winsw_url", false, e.message);
-    }
-  }
+  const winsw = await evaluateWinswSource({
+    skipNetwork,
+    release: options.release || WINSW_RELEASE,
+    findValidLocalWinsw: options.findValidLocalWinsw,
+    probeWinswUrl: options.probeWinswUrl,
+    quarantineInvalidLocalWinsw: options.quarantineInvalidLocalWinsw,
+    findLocalWinswCandidates: options.findLocalWinswCandidates,
+  });
+  for (const c of winsw.checks) checks.push(c);
 
   const agentEntry = path.join(PRINT_AGENT_ROOT, "src", "index.js");
   add("agent_entry", fs.existsSync(agentEntry), agentEntry);
 
+  // Hard checks still must all pass; WinSW soft WARN entries have ok:true
   const ok = checks.every((c) => c.ok);
   return {
     ok,
     checks,
+    winsw: {
+      localBinaryValid: winsw.localBinaryValid,
+      remoteDownloadAvailable: winsw.remoteDownloadAvailable,
+      sourceOk: winsw.ok,
+      quarantined: winsw.quarantined,
+    },
     release: {
       version: WINSW_RELEASE.version,
       assetFileName: WINSW_RELEASE.assetFileName,
       downloadUrl: WINSW_RELEASE.downloadUrl,
       sha256: WINSW_RELEASE.sha256,
+      expectedBytes: WINSW_RELEASE.expectedBytes,
     },
     meta: meta
       ? {
@@ -165,17 +332,23 @@ export async function runPreflight(options = {}) {
   };
 }
 
+function formatCheckLine(c) {
+  if (!c.ok) return `FAIL  ${c.name}: ${c.detail}`;
+  if (c.level === "WARN") return `WARN  ${c.name}: ${c.detail}`;
+  return `PASS  ${c.name}: ${c.detail}`;
+}
+
 export function printPreflightReport(result) {
   console.log("Marivolt Print Agent — service preflight");
   console.log(`WinSW pin: ${result.release.version} / ${result.release.assetFileName}`);
   console.log(`URL: ${result.release.downloadUrl}`);
   console.log("");
   for (const c of result.checks) {
-    console.log(`${c.ok ? "PASS" : "FAIL"}  ${c.name}: ${c.detail}`);
+    console.log(formatCheckLine(c));
   }
   console.log("");
   if (result.ok) {
-    console.log("Preflight OK — safe to run npm run service:install");
+    console.log("Preflight PASSED — ready to install.");
   } else {
     console.log("Preflight FAILED — fix the items above before installing.");
     console.log("No service was installed.");
