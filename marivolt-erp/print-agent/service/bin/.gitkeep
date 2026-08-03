@@ -1,0 +1,2 @@
+# WinSW binary is downloaded by `npm run service:install` / `service:download-winsw`.
+# Do not commit MarivoltPrintAgent.exe.

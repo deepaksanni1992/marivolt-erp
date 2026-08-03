@@ -7,8 +7,11 @@ import { collectHostProfile } from "./detect.js";
 
 const DEFAULT_DIR =
   process.platform === "win32"
-    ? path.join(process.env.PROGRAMDATA || "C:\\\\ProgramData", "MarivoltPrintAgent")
+    ? path.join(process.env.PROGRAMDATA || "C:\\ProgramData", "MarivoltPrintAgent")
     : path.join(os.homedir(), ".marivolt-print-agent");
+
+const MAX_LOG_BYTES = 10 * 1024 * 1024; // 10 MB
+const LOG_RETAIN_DAYS = 14;
 
 export function getConfigDir() {
   return process.env.MARIVOLT_AGENT_DIR || DEFAULT_DIR;
@@ -24,13 +27,68 @@ export function ensureLogDir() {
   return dir;
 }
 
-export function logLine(msg) {
-  const line = `[${new Date().toISOString()}] ${msg}`;
-  console.log(line);
+function redactSecrets(msg) {
+  let s = String(msg ?? "");
+  s = s.replace(/Bearer\s+[A-Za-z0-9._\-]+/gi, "Bearer ***");
+  s = s.replace(/("secret"\s*:\s*")[^"]*(")/gi, "$1***$2");
+  s = s.replace(/(bootstrapToken["']?\s*[:=]\s*["']?)[^"',\s]+/gi, "$1***");
+  return s;
+}
+
+function rotateIfNeeded(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    const st = fs.statSync(filePath);
+    if (st.size < MAX_LOG_BYTES) return;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const rotated = `${filePath}.${stamp}.bak`;
+    fs.renameSync(filePath, rotated);
+  } catch {
+    /* ignore */
+  }
+}
+
+function pruneOldLogs(dir) {
+  try {
+    const cutoff = Date.now() - LOG_RETAIN_DAYS * 24 * 60 * 60 * 1000;
+    for (const name of fs.readdirSync(dir)) {
+      if (!/\.(log|bak)$/i.test(name) && !/^agent-/i.test(name)) continue;
+      const full = path.join(dir, name);
+      try {
+        const st = fs.statSync(full);
+        if (st.mtimeMs < cutoff) fs.unlinkSync(full);
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Structured agent logging.
+ * Writes console + agent.log (+ agent-error.log for errors) under ProgramData logs.
+ * Also appends a dated agent-YYYY-MM-DD.log for backward compatibility.
+ */
+export function logLine(msg, { level = "info", event = "" } = {}) {
+  const safe = redactSecrets(msg);
+  const ts = new Date().toISOString();
+  const prefix = event ? `[${ts}] [${level}] [${event}]` : `[${ts}] [${level}]`;
+  const line = `${prefix} ${safe}`;
+  if (level === "error") console.error(line);
+  else console.log(line);
   try {
     const dir = ensureLogDir();
-    const file = path.join(dir, `agent-${new Date().toISOString().slice(0, 10)}.log`);
-    fs.appendFileSync(file, line + "\n");
+    pruneOldLogs(dir);
+    const mainLog = path.join(dir, "agent.log");
+    const errLog = path.join(dir, "agent-error.log");
+    const daily = path.join(dir, `agent-${ts.slice(0, 10)}.log`);
+    rotateIfNeeded(mainLog);
+    rotateIfNeeded(errLog);
+    fs.appendFileSync(mainLog, line + "\n");
+    fs.appendFileSync(daily, line + "\n");
+    if (level === "error") fs.appendFileSync(errLog, line + "\n");
   } catch {
     /* ignore */
   }
@@ -96,6 +154,7 @@ export function loadConfig() {
 /**
  * Interactive first-launch: detect host, ask Company/Warehouse/Name, bootstrap register.
  * Existing config.json skips wizard entirely (backward compatible).
+ * When stdin is not a TTY (Windows Service), never enter the interactive wizard.
  */
 export async function ensureConfigured() {
   const p = getConfigPath();
@@ -103,8 +162,14 @@ export async function ensureConfigured() {
     try {
       return loadConfig();
     } catch (e) {
-      logLine(`Existing config invalid: ${e.message}`);
+      logLine(`Existing config invalid: ${e.message}`, { level: "error", event: "config" });
     }
+  }
+
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      `Config not found at ${p}. Complete first-launch with interactive npm start before installing the Windows Service.`
+    );
   }
 
   const profile = await collectHostProfile();

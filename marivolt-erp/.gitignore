@@ -9,9 +9,16 @@ lerna-debug.log*
 
 node_modules
 dist
+!print-agent/dist/
+!print-agent/dist/**
 dist-ssr
 build
 *.local
+
+# Print Agent WinSW binary (downloaded at install time)
+print-agent/service/bin/*
+!print-agent/service/bin/.gitkeep
+print-agent/dist/windows-service/print-agent/
 
 # Secrets (Vite root or other tooling)
 .env
