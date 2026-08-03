@@ -622,13 +622,24 @@ export default function StoreModule() {
 
   const downloadGrnCsvTemplate = async () => {
     try {
-      const res = await api.get("/grn/csv-template", { responseType: "blob" });
+      const poId = grnPoSnapshot?.header?._id;
+      const path = poId
+        ? `/grn/csv-template?poId=${encodeURIComponent(String(poId))}`
+        : "/grn/csv-template";
+      const res = await api.get(path, { responseType: "blob" });
       const url = URL.createObjectURL(res.data);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "grn-import-template.csv";
+      const poNo = String(grnPoSnapshot?.header?.poNo || grnPoSnapshot?.header?.poNumber || "template")
+        .replace(/[^\w.-]+/g, "_");
+      a.download = poId ? `grn-import-${poNo}.csv` : "grn-import-template.csv";
       a.click();
       URL.revokeObjectURL(url);
+      if (!poId) {
+        setGrnUiErr("Downloaded header-only template. Load a PO first to export PO Line IDs for each line.");
+      } else {
+        setGrnUiErr("");
+      }
     } catch (e) {
       setGrnUiErr(e.message || String(e));
     }

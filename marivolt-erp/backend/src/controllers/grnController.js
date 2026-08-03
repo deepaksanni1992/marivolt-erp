@@ -30,14 +30,18 @@ import {
 } from "../utils/eligibleDocumentSearch.js";
 import {
   INVALID_GRN_TEMPLATE,
+  buildGrnCsvTemplateCsv,
   customsOverrideToLineEditFields,
+  findPoLineMatchForCsvRow,
+  formatPoLineMatchError,
   grnCsvTemplateHeaderLine,
   mapCsvRowToCustomsOverride,
+  normalizeArticleKey,
   parseGrnCsvText,
+  poLineArticleFromRaw,
   readArticleFromCsvRow,
   readGrnQtyFromCsvRow,
   readLocationFromCsvRow,
-  readPoLineIdFromCsvRow,
   readRemarksFromCsvRow,
   suggestHeaderDefaultsFromOverrides,
   validateGrnCsvRowRequiredFields,
@@ -658,26 +662,23 @@ async function applyReceiveToPo({ session, req, grn }) {
   await po.save({ session });
 }
 
-function normKey(s) {
-  return String(s ?? "").trim().toLowerCase();
-}
-
-/** Match CSV row to PO line by PO Line ID only (Customs template). */
-function findPoLineMatchForCsv(rawRows, row) {
-  const pid = readPoLineIdFromCsvRow(row);
-  if (!pid) return null;
-  if (mongoose.Types.ObjectId.isValid(pid)) {
-    const hit = rawRows.find((x) => String(x._id ?? x.id ?? "") === pid);
-    if (hit) return { line: hit, by: "poLineId" };
-  }
-  // Also allow exact string id match for non-ObjectId test ids
-  const hit = rawRows.find((x) => String(x._id ?? x.id ?? "") === pid);
-  return hit ? { line: hit, by: "poLineId" } : null;
-}
-
-/** GET /grn/csv-template — Customs GRN column header for CSV import. */
+/** GET /grn/csv-template — Customs GRN header, optionally pre-filled for a PO. */
 export async function getGrnCsvTemplate(req, res) {
   try {
+    const poId = req.query?.poId;
+    if (poId && mongoose.Types.ObjectId.isValid(String(poId))) {
+      const po = await PurchaseOrder.findOne(withCompany(req, { _id: poId })).lean();
+      if (!po) return res.status(404).json({ message: "Purchase order not found" });
+      const rawRows = extractRawPoLinesFromPo(po);
+      const csv = buildGrnCsvTemplateCsv(rawRows);
+      const poNo = String(po.poNo || po.poNumber || "po").replace(/[^\w.-]+/g, "_");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="grn-import-${poNo}.csv"`
+      );
+      return res.send(csv);
+    }
     const header = grnCsvTemplateHeaderLine();
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", "attachment; filename=\"grn-import-template.csv\"");
@@ -711,6 +712,7 @@ export async function importGrnCsvPreview(req, res) {
     if (String(po.status || "").toUpperCase() === "CANCELLED") {
       return res.status(400).json({ message: "PO is cancelled" });
     }
+    const poNo = String(po.poNo || po.poNumber || poId);
     const postedMap = await getPostedAcceptedQtyByPoLineMap(req, poId);
     const rawRows = extractRawPoLinesFromPo(po);
     const { rows } = parsed;
@@ -718,6 +720,14 @@ export async function importGrnCsvPreview(req, res) {
     const updates = [];
     const seenPoLineIds = new Set();
     const overrideList = [];
+
+    const matchLog = (payload) => {
+      try {
+        console.info("[grn-csv-match]", JSON.stringify(payload));
+      } catch {
+        /* ignore */
+      }
+    };
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
@@ -729,21 +739,34 @@ export async function importGrnCsvPreview(req, res) {
       }
       if (fieldMsgs.length) continue;
 
-      const match = findPoLineMatchForCsv(rawRows, row);
-      if (!match) {
-        errors.push({ line: lineNo, message: "No matching PO line for PO Line ID." });
+      const match = findPoLineMatchForCsvRow(rawRows, row, { log: matchLog });
+      if (!match.ok) {
+        const msg = formatPoLineMatchError(match, { rowLineNo: lineNo, poNo });
+        // formatPoLineMatchError already includes "Row N: " — strip for {line,message} shape
+        errors.push({
+          line: lineNo,
+          message: msg.replace(new RegExp(`^Row ${lineNo}:\\s*`), ""),
+        });
         continue;
       }
       const src = match.line;
       const lid = String(src._id ?? src.id ?? "");
-      const csvArticle = readArticleFromCsvRow(row);
-      const poArticle = String(src.itemCode || src.article || src.materialCode || "").trim();
-      if (poArticle && normKey(csvArticle) !== normKey(poArticle)) {
-        errors.push({
-          line: lineNo,
-          message: `Article "${csvArticle}" does not match PO line article "${poArticle}".`,
-        });
-        continue;
+      // Article is identity for article-matched rows; for id-matched rows, description/article
+      // discrepancies must not block import (description is display-only).
+      if (match.by === "article") {
+        const csvArticle = readArticleFromCsvRow(row);
+        const poArticle = poLineArticleFromRaw(src);
+        if (
+          poArticle &&
+          csvArticle &&
+          normalizeArticleKey(csvArticle) !== normalizeArticleKey(poArticle)
+        ) {
+          errors.push({
+            line: lineNo,
+            message: `Article "${csvArticle}" does not match PO line article "${poArticle}".`,
+          });
+          continue;
+        }
       }
       if (seenPoLineIds.has(lid)) {
         errors.push({ line: lineNo, message: "Duplicate CSV row for the same PO line." });

@@ -331,13 +331,235 @@ export function readRemarksFromCsvRow(row) {
 }
 
 /**
+ * Normalize article for matching: trim, uppercase, collapse whitespace.
+ * Description is never used for matching.
+ */
+export function normalizeArticleKey(value) {
+  return String(value ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
+}
+
+/** Normalize PO Line ID cell values (trim; Excel "1.0" → "1" for numeric-only ids). */
+export function normalizePoLineIdKey(value) {
+  let s = String(value ?? "").trim();
+  if (!s) return "";
+  if (/^\d+\.0+$/.test(s)) s = s.replace(/\.0+$/, "");
+  return s;
+}
+
+export function poLineArticleFromRaw(line) {
+  return String(
+    line?.itemCode || line?.article || line?.materialCode || line?.articleNo || line?.sku || ""
+  ).trim();
+}
+
+/**
+ * Collect all identifiers that may be exported in "PO Line ID".
+ * Does NOT invent a row-index id (never assume CSV row number = PO Line ID).
+ */
+export function collectPoLineIdentifiers(line) {
+  if (!line || typeof line !== "object") return [];
+  const out = [];
+  const seen = new Set();
+  const push = (raw, field) => {
+    const key = normalizePoLineIdKey(raw);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push({ key, field });
+  };
+  push(line._id, "_id");
+  push(line.id, "id");
+  push(line.lineId, "lineId");
+  push(line.poLineId, "poLineId");
+  push(line.lineNumber, "lineNumber");
+  push(line.lineNo, "lineNo");
+  return out;
+}
+
+/**
+ * Build lookup maps from loaded PO lines.
+ * @returns {{ byId: Map<string,{line:object,field:string}>, byArticle: Map<string,object[]>, availableIds: string[] }}
+ */
+export function buildPoLineLookup(rawRows = []) {
+  const byId = new Map();
+  const byArticle = new Map();
+  const availableIds = [];
+
+  for (const line of Array.isArray(rawRows) ? rawRows : []) {
+    const ids = collectPoLineIdentifiers(line);
+    for (const { key, field } of ids) {
+      if (!byId.has(key)) {
+        byId.set(key, { line, field });
+        availableIds.push(key);
+      }
+    }
+    const art = normalizeArticleKey(poLineArticleFromRaw(line));
+    if (!art) continue;
+    if (!byArticle.has(art)) byArticle.set(art, []);
+    byArticle.get(art).push(line);
+  }
+
+  return { byId, byArticle, availableIds };
+}
+
+/**
+ * Match a CSV row to a PO line.
+ * Prefer exported PO Line ID (_id / lineId / poLineId / lineNumber / …),
+ * then unique Article (description is display-only).
+ *
+ * @returns {{ ok: true, line, by: string, matchedId?: string }
+ *   | { ok: false, reason: string, importedId: string, availableIds: string[], article?: string }}
+ */
+export function findPoLineMatchForCsvRow(rawRows, row, opts = {}) {
+  const importedId = normalizePoLineIdKey(readPoLineIdFromCsvRow(row));
+  const articleRaw = readArticleFromCsvRow(row);
+  const articleKey = normalizeArticleKey(articleRaw);
+  const { byId, byArticle, availableIds } = buildPoLineLookup(rawRows);
+  const log = typeof opts.log === "function" ? opts.log : null;
+
+  if (importedId && byId.has(importedId)) {
+    const hit = byId.get(importedId);
+    if (log) {
+      log({
+        event: "grn_csv_po_line_match",
+        importedPoLineId: importedId,
+        availablePoLineIds: availableIds,
+        matchingField: hit.field,
+        matchedBy: "id",
+      });
+    }
+    return { ok: true, line: hit.line, by: hit.field, matchedId: importedId };
+  }
+
+  if (articleKey) {
+    const hits = byArticle.get(articleKey) || [];
+    if (hits.length === 1) {
+      if (log) {
+        log({
+          event: "grn_csv_po_line_match",
+          importedPoLineId: importedId || "(empty)",
+          availablePoLineIds: availableIds,
+          matchingField: "article",
+          matchedBy: "article",
+          article: articleRaw,
+        });
+      }
+      return { ok: true, line: hits[0], by: "article", matchedId: importedId || "" };
+    }
+    if (hits.length > 1) {
+      return {
+        ok: false,
+        reason: "ambiguous_article",
+        importedId,
+        availableIds,
+        article: articleRaw,
+      };
+    }
+  }
+
+  if (log) {
+    log({
+      event: "grn_csv_po_line_match_miss",
+      importedPoLineId: importedId || "(empty)",
+      availablePoLineIds: availableIds,
+      matchingField: null,
+      article: articleRaw || "",
+    });
+  }
+
+  return {
+    ok: false,
+    reason: importedId ? "id_not_found" : "no_id_or_article",
+    importedId,
+    availableIds,
+    article: articleRaw,
+  };
+}
+
+/** Human-readable match failure for import preview. */
+export function formatPoLineMatchError(matchFail, { rowLineNo, poNo } = {}) {
+  const poLabel = poNo ? String(poNo) : "the purchase order";
+  const rowPrefix = rowLineNo != null ? `Row ${rowLineNo}: ` : "";
+  if (!matchFail || matchFail.ok) return "";
+  if (matchFail.reason === "ambiguous_article") {
+    return `${rowPrefix}Article "${matchFail.article}" matches multiple PO lines in ${poLabel}. Use the exported PO Line ID.`;
+  }
+  if (matchFail.importedId) {
+    return `${rowPrefix}PO Line ID '${matchFail.importedId}' was not found in Purchase Order ${poLabel}.`;
+  }
+  return `${rowPrefix}No matching PO line (provide a valid PO Line ID from the template, or a unique Article).`;
+}
+
+/**
+ * Build template CSV text. When lines are provided, pre-fill exported identifiers
+ * so import can always accept the same PO Line ID values.
+ */
+export function buildGrnCsvTemplateCsv(lines = []) {
+  const header = GRN_CSV_HEADERS.join(",");
+  if (!Array.isArray(lines) || !lines.length) return `${header}\n`;
+
+  const body = lines.map((line) => {
+    const ids = collectPoLineIdentifiers(line);
+    const poLineId = ids[0]?.key || "";
+    const article = poLineArticleFromRaw(line);
+    const description = String(line?.description || "").trim();
+    const spn = String(line?.spn || line?.partNumber || line?.partNo || "").trim();
+    const uom = String(line?.uom || "PCS").trim();
+    const { pending } = (() => {
+      const ordered = Number(line?.orderedQty ?? line?.qty ?? line?.quantity) || 0;
+      const received = Number(line?.receivedQty ?? line?.received) || 0;
+      const cancelled = Number(line?.cancelledQty ?? line?.cancelled) || 0;
+      const pendingQty = Math.max(
+        0,
+        Number(line?.pendingQty ?? Math.max(0, ordered - received - cancelled)) || 0
+      );
+      return { pending: pendingQty };
+    })();
+    const values = {
+      "PO Line ID": poLineId,
+      Article: article,
+      Description: description,
+      SPN: spn,
+      UOM: uom,
+      "GRN Qty": pending > 0 ? String(pending) : "",
+      Location: "",
+      Remarks: "",
+      "BOE Number": "",
+      "BOE Date": "",
+      "AWB No. / BL No.": "",
+      "Received Date": "",
+      "Supplier Invoice No.": "",
+      "Supplier Invoice Date": "",
+      "Country Of Origin": "",
+      "HS Code": "",
+      "Unit Weight": "",
+      Weight: "",
+      "Customs Unit Price": "",
+      "Total Price": "",
+      Currency: "",
+      "Exchange Rate": "",
+      "AED Value": "",
+    };
+    return buildGrnCsvRow(values);
+  });
+
+  return `${header}\n${body.join("\n")}\n`;
+}
+
+/**
  * Row-level required field checks for Customs GRN CSV import.
  * @returns {string[]} error messages (without row prefix)
  */
 export function validateGrnCsvRowRequiredFields(row) {
   const messages = [];
-  if (!readPoLineIdFromCsvRow(row)) messages.push("PO Line ID is required.");
-  if (!readArticleFromCsvRow(row)) messages.push("Article is required.");
+  const hasId = Boolean(readPoLineIdFromCsvRow(row));
+  const hasArticle = Boolean(readArticleFromCsvRow(row));
+  if (!hasId && !hasArticle) {
+    messages.push("PO Line ID or Article is required.");
+  }
+  if (!hasArticle) messages.push("Article is required.");
 
   const grnQty = readGrnQtyFromCsvRow(row);
   if (grnQty == null) {

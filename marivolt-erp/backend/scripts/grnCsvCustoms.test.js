@@ -6,7 +6,10 @@ import {
   GRN_CSV_HEADERS,
   INVALID_GRN_TEMPLATE,
   buildGrnCsvRow,
+  buildGrnCsvTemplateCsv,
   customsOverrideToLineEditFields,
+  findPoLineMatchForCsvRow,
+  formatPoLineMatchError,
   grnCsvTemplateHeaderLine,
   mapCsvRowToCustomsOverride,
   parseGrnCsvText,
@@ -247,12 +250,146 @@ run("legacy template constants and detectGrnCsvFormat are gone", () => {
   const ctrl = fs.readFileSync(path.join(repoRoot, "backend/src/controllers/grnController.js"), "utf8");
   assert.ok(!ctrl.includes("materialCode / article / spn"));
   assert.ok(ctrl.includes("INVALID_GRN_TEMPLATE"));
+  assert.ok(ctrl.includes("findPoLineMatchForCsvRow"));
 });
 
 run("legacy CSV filename references removed from import util", () => {
   const src = fs.readFileSync(path.join(repoRoot, "backend/src/utils/grnCsvImport.js"), "utf8");
   assert.ok(!/still accepted/i.test(src));
   assert.ok(!/legacy template/i.test(src));
+});
+
+run("successful import match using exported Mongo _id", () => {
+  const lines = [
+    { _id: SAMPLE_LINE_ID, itemCode: "8X0098", description: "SET OF GASKETS", orderedQty: 9, receivedQty: 0 },
+  ];
+  const parsed = parseGrnCsvText(sampleCsv({ "PO Line ID": SAMPLE_LINE_ID, Article: "8X0098" }));
+  const match = findPoLineMatchForCsvRow(lines, parsed.rows[0]);
+  assert.strictEqual(match.ok, true);
+  assert.strictEqual(match.by, "_id");
+  assert.strictEqual(String(match.line._id), SAMPLE_LINE_ID);
+});
+
+run("successful import match using lineId / poLineId aliases", () => {
+  const lines = [{ lineId: "LINE-A", itemCode: "ART-9", orderedQty: 2 }];
+  const parsed = parseGrnCsvText(sampleCsv({ "PO Line ID": "LINE-A", Article: "ART-9" }));
+  const match = findPoLineMatchForCsvRow(lines, parsed.rows[0]);
+  assert.strictEqual(match.ok, true);
+  assert.strictEqual(match.by, "lineId");
+});
+
+run("successful import match using lineNumber when exported", () => {
+  const lines = [{ _id: SAMPLE_LINE_ID, lineNumber: 1, itemCode: "8X0098", orderedQty: 9 }];
+  const parsed = parseGrnCsvText(sampleCsv({ "PO Line ID": "1", Article: "8X0098" }));
+  const match = findPoLineMatchForCsvRow(lines, parsed.rows[0]);
+  assert.strictEqual(match.ok, true);
+  assert.strictEqual(match.by, "lineNumber");
+});
+
+run("does not assume CSV row index equals PO Line ID", () => {
+  const lines = [{ _id: SAMPLE_LINE_ID, itemCode: "8X0098", orderedQty: 9 }];
+  const parsed = parseGrnCsvText(sampleCsv({ "PO Line ID": "1", Article: "WRONG" }));
+  const match = findPoLineMatchForCsvRow(lines, parsed.rows[0]);
+  assert.strictEqual(match.ok, false);
+  assert.strictEqual(match.reason, "id_not_found");
+});
+
+run("failure for invalid PO Line ID includes clear message", () => {
+  const lines = [{ _id: SAMPLE_LINE_ID, itemCode: "8X0098", orderedQty: 9 }];
+  const parsed = parseGrnCsvText(sampleCsv({ "PO Line ID": "1", Article: "NOPE" }));
+  const match = findPoLineMatchForCsvRow(lines, parsed.rows[0]);
+  assert.strictEqual(match.ok, false);
+  const msg = formatPoLineMatchError(match, { rowLineNo: 2, poNo: "MAR-PO-0040" });
+  assert.match(msg, /PO Line ID '1' was not found in Purchase Order MAR-PO-0040/);
+});
+
+run("article fallback matches when PO Line ID is wrong but article is unique", () => {
+  const lines = [{ _id: SAMPLE_LINE_ID, itemCode: "8X0098", description: "Gaskets", orderedQty: 9 }];
+  const parsed = parseGrnCsvText(
+    sampleCsv({ "PO Line ID": "1", Article: " 8x 0098 ", Description: "different CASE text" })
+  );
+  const match = findPoLineMatchForCsvRow(lines, parsed.rows[0]);
+  assert.strictEqual(match.ok, true);
+  assert.strictEqual(match.by, "article");
+});
+
+run("description is not used for matching", () => {
+  const lines = [
+    { _id: SAMPLE_LINE_ID, itemCode: "8X0098", description: "SET OF GASKETS FOR CYLINDER", orderedQty: 9 },
+  ];
+  const parsed = parseGrnCsvText(
+    sampleCsv({
+      "PO Line ID": "",
+      Article: "OTHER",
+      Description: "SET OF GASKETS FOR CYLINDER",
+    })
+  );
+  // Article OTHER won't match; description must not rescue the row.
+  // Empty PO Line ID still needs article — validation would catch empty article separately.
+  const match = findPoLineMatchForCsvRow(lines, parsed.rows[0]);
+  assert.strictEqual(match.ok, false);
+});
+
+run("duplicate CSV ids surface via lookup of same PO line", () => {
+  const lines = [{ _id: SAMPLE_LINE_ID, itemCode: "ART-1", orderedQty: 10 }];
+  const a = parseGrnCsvText(sampleCsv({ "PO Line ID": SAMPLE_LINE_ID, Article: "ART-1" }));
+  const b = parseGrnCsvText(sampleCsv({ "PO Line ID": SAMPLE_LINE_ID, Article: "ART-1" }));
+  const m1 = findPoLineMatchForCsvRow(lines, a.rows[0]);
+  const m2 = findPoLineMatchForCsvRow(lines, b.rows[0]);
+  assert.strictEqual(m1.ok && m2.ok, true);
+  assert.strictEqual(String(m1.line._id), String(m2.line._id));
+});
+
+run("missing PO Line ID and Article fails validation", () => {
+  const msgs = validateGrnCsvRowRequiredFields(
+    parseGrnCsvText(sampleCsv({ "PO Line ID": "", Article: "" })).rows[0]
+  );
+  assert.ok(msgs.some((m) => /PO Line ID or Article|Article is required/i.test(m)));
+});
+
+run("filled template exports Mongo _id as PO Line ID", () => {
+  const csv = buildGrnCsvTemplateCsv([
+    { _id: SAMPLE_LINE_ID, itemCode: "8X0098", description: "Gasket set", orderedQty: 9, receivedQty: 0 },
+  ]);
+  assert.ok(csv.includes(SAMPLE_LINE_ID));
+  assert.ok(csv.includes("8X0098"));
+  const parsed = parseGrnCsvText(csv.replace(/\n$/, "\n") + ""); // ensure parse
+  // Re-parse: template has header + one data row but missing required customs — parse still ok
+  const onlyHeaderAndId = parseGrnCsvText(
+    `${grnCsvTemplateHeaderLine().trim()}\n${buildGrnCsvRow({
+      "PO Line ID": SAMPLE_LINE_ID,
+      Article: "8X0098",
+      Description: "Gasket set",
+      "GRN Qty": "9",
+      Location: "A1",
+      "BOE Number": "1",
+      "BOE Date": "2026-01-01",
+      "Supplier Invoice No.": "1",
+      "Supplier Invoice Date": "2026-01-01",
+      "Country Of Origin": "DE",
+      "HS Code": "1",
+      "Customs Unit Price": "1",
+      Currency: "EUR",
+      "Exchange Rate": "1",
+    })}\n`
+  );
+  const match = findPoLineMatchForCsvRow(
+    [{ _id: SAMPLE_LINE_ID, itemCode: "8X0098", orderedQty: 9 }],
+    onlyHeaderAndId.rows[0]
+  );
+  assert.strictEqual(match.ok, true);
+  assert.strictEqual(match.by, "_id");
+});
+
+run("match logging reports imported id, available ids, and field", () => {
+  const logs = [];
+  const lines = [{ _id: SAMPLE_LINE_ID, itemCode: "ART-1", orderedQty: 1 }];
+  const parsed = parseGrnCsvText(sampleCsv({ "PO Line ID": SAMPLE_LINE_ID, Article: "ART-1" }));
+  findPoLineMatchForCsvRow(lines, parsed.rows[0], { log: (p) => logs.push(p) });
+  assert.strictEqual(logs.length, 1);
+  assert.strictEqual(logs[0].importedPoLineId, SAMPLE_LINE_ID);
+  assert.ok(logs[0].availablePoLineIds.includes(SAMPLE_LINE_ID));
+  assert.strictEqual(logs[0].matchingField, "_id");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
