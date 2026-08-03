@@ -6,6 +6,9 @@
  * Optional env:
  *   MARIVOLT_SERVICE_ACCOUNT=DOMAIN\\User or .\\LocalUser
  *   MARIVOLT_SERVICE_PASSWORD=...
+ *
+ * Flags:
+ *   --reinstall   allow replacing an already-installed service
  */
 import fs from "fs";
 import path from "path";
@@ -13,50 +16,58 @@ import {
   PRINT_AGENT_ROOT,
   SERVICE_ID,
   SERVICE_DISPLAY_NAME,
-  assertAdministrator,
-  assertWindows,
   ensureServiceRuntimeLayout,
-  getBundledWinswPath,
   getConfigDir,
   getConfigPath,
   getServiceRuntimeDir,
   getWinswExePath,
   getWinswXmlPath,
+  queryServiceState,
   resolveNodeExecutable,
   runWinsw,
-  validateConfigForService,
   writeWinswXml,
 } from "./common.mjs";
-import { ensureWinswBinary } from "./download-winsw.mjs";
-
-function copyWinswToRuntime() {
-  const bundled = getBundledWinswPath();
-  const runtimeExe = getWinswExePath();
-  fs.mkdirSync(path.dirname(runtimeExe), { recursive: true });
-  fs.copyFileSync(bundled, runtimeExe);
-  return runtimeExe;
-}
+import {
+  WINSW_RELEASE,
+  copyVerifiedWinswToRuntime,
+  ensureWinswBinary,
+} from "./download-winsw.mjs";
+import { printPreflightReport, runPreflight } from "./preflight-service.mjs";
 
 async function main() {
-  assertWindows();
-  assertAdministrator();
+  const reinstall = process.argv.includes("--reinstall");
 
-  const meta = validateConfigForService();
+  const preflight = await runPreflight({ reinstall });
+  printPreflightReport(preflight);
+  if (!preflight.ok) {
+    throw new Error("Preflight failed. No service was installed.");
+  }
+
+  const meta = preflight.meta;
+  console.log("");
   console.log(`Config OK: ${meta.configPath}`);
   console.log(`Agent ID:  ${meta.agentId}`);
   console.log(`Backend:   ${meta.backendUrl}`);
   console.log(`Printer:   ${meta.windowsPrinterName || "(not set)"}`);
+  console.log(`WinSW:     ${WINSW_RELEASE.version} (${WINSW_RELEASE.assetFileName})`);
 
-  await ensureWinswBinary();
-  if (!fs.existsSync(getBundledWinswPath())) {
-    throw new Error("WinSW binary missing after download.");
+  // Download / validate binary BEFORE writing service registration
+  let bundled;
+  try {
+    bundled = await ensureWinswBinary();
+  } catch (e) {
+    // Guaranteed: no WinSW install/start was attempted yet
+    throw e;
+  }
+  if (!fs.existsSync(bundled)) {
+    throw new Error("WinSW binary missing after ensure. No service was installed.");
   }
 
   const { logs } = ensureServiceRuntimeLayout();
   const nodeExe = resolveNodeExecutable();
   const agentEntry = path.join(PRINT_AGENT_ROOT, "src", "index.js");
   if (!fs.existsSync(agentEntry)) {
-    throw new Error(`Agent entry not found: ${agentEntry}`);
+    throw new Error(`Agent entry not found: ${agentEntry}. No service was installed.`);
   }
 
   const accountUser = process.env.MARIVOLT_SERVICE_ACCOUNT || "";
@@ -73,16 +84,19 @@ async function main() {
     serviceAccount,
   });
 
-  copyWinswToRuntime();
+  copyVerifiedWinswToRuntime(bundled);
   console.log(`WinSW: ${getWinswExePath()}`);
   console.log(`XML:   ${getWinswXmlPath()}`);
   if (serviceAccount) {
     console.log(`Service account: ${serviceAccount.username}`);
   } else {
-    console.log("Service account: (default LocalSystem — map printer machine-wide or reinstall with MARIVOLT_SERVICE_ACCOUNT)");
+    console.log(
+      "Service account: (default LocalSystem — map printer machine-wide or reinstall with MARIVOLT_SERVICE_ACCOUNT)"
+    );
   }
 
-  // Install (idempotent-ish: stop/uninstall first if present)
+  // Install (idempotent when --reinstall): stop/uninstall first if present
+  const before = queryServiceState();
   const stop = runWinsw(["stop"], { inherit: false });
   if (stop.status !== 0) {
     /* may not be installed yet */
@@ -94,13 +108,28 @@ async function main() {
 
   const install = runWinsw(["install"], { inherit: true });
   if (install.status !== 0) {
-    throw new Error(`WinSW install failed with exit code ${install.status}`);
+    // Roll back any partial registration
+    try {
+      runWinsw(["uninstall"], { inherit: false });
+    } catch {
+      /* ignore */
+    }
+    throw new Error(
+      `WinSW install failed with exit code ${install.status}. No lasting service registration was left when possible.`
+    );
   }
 
   const start = runWinsw(["start"], { inherit: true });
   if (start.status !== 0) {
+    try {
+      runWinsw(["stop"], { inherit: false });
+      runWinsw(["uninstall"], { inherit: false });
+    } catch {
+      /* ignore */
+    }
+    const after = queryServiceState();
     throw new Error(
-      `Service installed but failed to start (exit ${start.status}). Check logs under ${logs} and printer/service account access.`
+      `Service installed but failed to start (exit ${start.status}). Attempted rollback (installed=${after.installed}). Check logs under ${logs} and printer/service account access.`
     );
   }
 
@@ -109,10 +138,14 @@ async function main() {
   console.log(`${SERVICE_DISPLAY_NAME} installed successfully.`);
   console.log(`Service ID:     ${SERVICE_ID}`);
   console.log(`Startup:        Automatic (delayed)`);
+  console.log(`WinSW version:  ${WINSW_RELEASE.version}`);
   console.log(`Config:         ${getConfigPath()}`);
   console.log(`Config dir:     ${getConfigDir()}`);
   console.log(`Logs:           ${path.join(getConfigDir(), "logs")}`);
   console.log(`Runtime:        ${getServiceRuntimeDir()}`);
+  if (before.installed) {
+    console.log(`Note: replaced previous service registration (was ${before.state}).`);
+  }
   console.log("");
   console.log("Next steps:");
   console.log("  1. npm run service:status");

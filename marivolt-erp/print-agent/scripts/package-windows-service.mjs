@@ -29,6 +29,8 @@ const COPY_FILES = [
   "service/verify-printer.mjs",
   "scripts/windowsService.test.js",
   "scripts/package-windows-service.mjs",
+  "service/winsw-release.mjs",
+  "service/preflight-service.mjs",
 ];
 
 function copyFile(rel) {

@@ -81,12 +81,21 @@ icacls "C:\ProgramData\MarivoltPrintAgent\config.json" /grant:r "Administrators:
 3. Register/bootstrap the agent (`npm start` once) so `config.json` exists.
 4. Confirm `C:\ProgramData\MarivoltPrintAgent\config.json` is valid.
 5. **Open PowerShell as Administrator.**
-6. Install and start the service:
+6. Preflight, then install and start the service:
 
 ```powershell
 cd "<print-agent-folder>"
+npm run service:preflight
 npm run service:install
 ```
+
+If the service is already installed and you intend to replace it:
+
+```powershell
+npm run service:install -- --reinstall
+```
+
+WinSW pin: stable **v2.12.0** asset `WinSW-x64.exe` (SHA-256 verified). Offline/manual fallback: place the official `WinSW-x64.exe` renamed to `MarivoltPrintAgent.exe` in `print-agent\service\bin\` (must match the pinned checksum) or under `%ProgramData%\MarivoltPrintAgent\service\`.
 
 7. Confirm status:
 
@@ -104,7 +113,8 @@ npm run service:verify-printer
 
 | Command | Purpose |
 |---------|---------|
-| `npm run service:install` | Download WinSW (if needed), install, auto-start, recovery, start |
+| `npm run service:preflight` | Admin/config/Node/WinSW URL/writable dirs checks (no install) |
+| `npm run service:install` | Preflight, download/verify WinSW, install, auto-start, recovery, start |
 | `npm run service:start` | Start |
 | `npm run service:stop` | Stop |
 | `npm run service:restart` | Restart |
@@ -240,6 +250,7 @@ Primary production path remains the **Windows Service**.
 | Symptom | What to check |
 |---------|----------------|
 | Service not starting | `npm run service:status`; logs under `...\logs\`; Node path still valid |
+| WinSW download HTTP 404 / fail | Confirm pin in `service/winsw-release.mjs`; run `npm run service:preflight`; or place verified `MarivoltPrintAgent.exe` in `service\bin\` |
 | Config missing | Complete interactive `npm start` once; confirm `config.json` |
 | Wrong service account | Reinstall with `MARIVOLT_SERVICE_ACCOUNT` or change Log On in Services |
 | Printer visible to user but not service | Machine-wide install or Option A/B; `service:verify-printer` |

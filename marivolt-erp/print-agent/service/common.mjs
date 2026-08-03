@@ -141,7 +141,7 @@ export function buildWinswXml(opts) {
   <env name="MARIVOLT_AGENT_DIR" value="${xmlEscape(getConfigDir())}" />
   <env name="NODE_ENV" value="production" />
   <startmode>Automatic</startmode>
-  <delayedAutoStart>true</delayedAutoStart>
+  <delayedAutoStart/>
   <stoptimeout>45 sec</stoptimeout>
   <onfailure action="restart" delay="10 sec" />
   <onfailure action="restart" delay="30 sec" />

@@ -10,6 +10,7 @@
     "test-print": "node src/testPrint.js",
     "test": "node scripts/windowsService.test.js",
     "service:download-winsw": "node service/download-winsw.mjs",
+    "service:preflight": "node service/preflight-service.mjs",
     "service:install": "node service/install-service.mjs",
     "service:start": "node service/control-service.mjs start",
     "service:stop": "node service/control-service.mjs stop",

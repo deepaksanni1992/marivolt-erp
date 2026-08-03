@@ -3,9 +3,12 @@
  * Does not require an installed Windows service.
  */
 import assert from "assert";
+import crypto from "crypto";
 import fs from "fs";
+import http from "http";
 import os from "os";
 import path from "path";
+import { EventEmitter } from "events";
 import { fileURLToPath } from "url";
 import {
   SERVICE_ID,
@@ -15,6 +18,15 @@ import {
   PRINT_AGENT_ROOT,
 } from "../service/common.mjs";
 import { getConfigPath, getConfigDir, logLine, ensureLogDir } from "../src/config.js";
+import {
+  WINSW_RELEASE,
+  downloadToFile,
+  ensureWinswBinary,
+  sha256File,
+  validateWinswBinary,
+  winswDownloadErrorMessage,
+  safeUnlink,
+} from "../service/download-winsw.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -31,7 +43,73 @@ function run(name, fn) {
   }
 }
 
+async function runAsync(name, fn) {
+  try {
+    await fn();
+    passed += 1;
+    console.log(`  ✓ ${name}`);
+  } catch (e) {
+    failed += 1;
+    console.error(`  ✗ ${name}`);
+    console.error(`    ${e.message}`);
+  }
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+function fakeRelease(bytes, content) {
+  const buf = Buffer.isBuffer(content) ? content : Buffer.from(content);
+  return {
+    version: "v-test",
+    assetFileName: "WinSW-x64.exe",
+    runtimeFileName: "MarivoltPrintAgent.exe",
+    downloadUrl: "https://example.test/WinSW-x64.exe",
+    sha256: crypto.createHash("sha256").update(buf).digest("hex"),
+    expectedBytes: bytes ?? buf.length,
+    releasePageUrl: "https://example.test/",
+    checksumSource: "test",
+  };
+}
+
+/** Minimal https.get-compatible mock. */
+function mockTransport(handler) {
+  return (url, opts, cb) => {
+    const req = new EventEmitter();
+    req.destroy = (err) => {
+      if (err) req.emit("error", err);
+    };
+    process.nextTick(() => {
+      try {
+        handler(url, opts, cb, req);
+      } catch (e) {
+        req.emit("error", e);
+      }
+    });
+    return req;
+  };
+}
+
+function mockResponse({ statusCode = 200, body = Buffer.from("ok"), headers = {} } = {}) {
+  const res = new EventEmitter();
+  res.statusCode = statusCode;
+  res.headers = headers;
+  res.resume = () => {};
+  process.nextTick(() => {
+    if (body) {
+      res.emit("data", body);
+    }
+    res.emit("end");
+  });
+  // Make pipe work with WriteStream
+  res.pipe = (dest) => {
+    process.nextTick(() => {
+      if (body) dest.write(body);
+      dest.end();
+    });
+    return dest;
+  };
+  return res;
+}
 
 console.log("\nPrint Agent Windows Service (static)\n");
 
@@ -39,6 +117,29 @@ run("service identity constants", () => {
   assert.strictEqual(SERVICE_ID, "MarivoltPrintAgent");
   assert.strictEqual(SERVICE_DISPLAY_NAME, "Marivolt Print Agent");
   assert.ok(SERVICE_DESCRIPTION.includes("Background service"));
+});
+
+run("pinned WinSW release is stable v2.12.0 with official asset", () => {
+  assert.strictEqual(WINSW_RELEASE.version, "v2.12.0");
+  assert.strictEqual(WINSW_RELEASE.assetFileName, "WinSW-x64.exe");
+  assert.strictEqual(
+    WINSW_RELEASE.downloadUrl,
+    "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe"
+  );
+  assert.strictEqual(
+    WINSW_RELEASE.sha256,
+    "05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da"
+  );
+  assert.strictEqual(WINSW_RELEASE.expectedBytes, 18243033);
+  assert.ok(!/v3\.0\.0/.test(WINSW_RELEASE.downloadUrl));
+  assert.ok(WINSW_RELEASE.checksumSource.length > 20);
+});
+
+run("download error message includes HTTP status and no install claim", () => {
+  const msg = winswDownloadErrorMessage(404);
+  assert.ok(msg.includes("HTTP 404"));
+  assert.ok(msg.includes("No service was installed"));
+  assert.ok(msg.includes("pinned WinSW release"));
 });
 
 run("WinSW XML has Automatic start and recovery delays", () => {
@@ -50,6 +151,7 @@ run("WinSW XML has Automatic start and recovery delays", () => {
   });
   assert.ok(xml.includes("<id>MarivoltPrintAgent</id>"));
   assert.ok(xml.includes("<startmode>Automatic</startmode>"));
+  assert.ok(xml.includes("<delayedAutoStart/>") || xml.includes("delayedAutoStart"));
   assert.ok(xml.includes('delay="10 sec"'));
   assert.ok(xml.includes('delay="30 sec"'));
   assert.ok(xml.includes('delay="60 sec"'));
@@ -80,7 +182,7 @@ run("WinSW XML can include service account username without agent secret", () =>
     serviceAccount: { username: ".\\\\WarehousePrint", password: "NotTheAgentSecret" },
   });
   assert.ok(xml.includes("<serviceaccount>"));
-  assert.ok(xml.includes(".\\WarehousePrint") || xml.includes(".&apos;\\\\WarehousePrint") || xml.includes("WarehousePrint"));
+  assert.ok(xml.includes("WarehousePrint"));
   assert.ok(!xml.includes("PASTE_ONE_TIME_SECRET"));
 });
 
@@ -91,27 +193,30 @@ run("admin privilege error message is exact", () => {
   assert.ok(src.includes(expected));
 });
 
-run("install script validates config before WinSW install", () => {
+run("install runs preflight and ensureWinswBinary before service registration", () => {
   const src = fs.readFileSync(path.join(PRINT_AGENT_ROOT, "service", "install-service.mjs"), "utf8");
-  assert.ok(src.includes("validateConfigForService"));
-  assert.ok(src.includes("assertAdministrator"));
-  assert.ok(src.includes("assertWindows"));
+  assert.ok(src.includes("runPreflight"));
   assert.ok(src.includes("ensureWinswBinary"));
+  assert.ok(src.includes("Preflight failed"));
+  assert.ok(src.includes("No service was installed"));
+  const ensureIdx = src.indexOf("ensureWinswBinary");
+  const installIdx = src.indexOf('runWinsw(["install"]');
+  assert.ok(ensureIdx > 0 && installIdx > ensureIdx);
 });
 
 run("uninstall preserves config unless purge", () => {
   const src = fs.readFileSync(path.join(PRINT_AGENT_ROOT, "service", "uninstall-service.mjs"), "utf8");
   assert.ok(src.includes("--purge"));
   assert.ok(src.includes("Preserved"));
-  assert.ok(src.includes("Config and logs were preserved") || src.includes("Preserved:"));
 });
 
-run("package.json exposes service npm scripts", () => {
+run("package.json exposes service npm scripts including preflight", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(PRINT_AGENT_ROOT, "package.json"), "utf8"));
   for (const s of [
     "start",
     "test-print",
     "service:install",
+    "service:preflight",
     "service:start",
     "service:stop",
     "service:restart",
@@ -167,21 +272,22 @@ run("agent index handles SIGINT/SIGTERM and printer check", () => {
   assert.ok(src.includes("service_stopped"));
 });
 
-run("service scripts are valid JS (syntax via presence)", () => {
+run("service scripts exist including preflight and winsw-release", () => {
   for (const rel of [
     "service/common.mjs",
     "service/install-service.mjs",
     "service/uninstall-service.mjs",
     "service/control-service.mjs",
     "service/download-winsw.mjs",
+    "service/preflight-service.mjs",
+    "service/winsw-release.mjs",
     "service/verify-printer.mjs",
     "src/index.js",
     "src/config.js",
   ]) {
     const full = path.join(PRINT_AGENT_ROOT, rel);
     assert.ok(fs.existsSync(full), rel);
-    const text = fs.readFileSync(full, "utf8");
-    assert.ok(text.length > 50);
+    assert.ok(fs.readFileSync(full, "utf8").length > 50);
   }
 });
 
@@ -199,6 +305,291 @@ run("config.example.json has no live secret", () => {
   );
   assert.ok(String(ex.secret).includes("PASTE") || String(ex.secret).includes("SECRET"));
 });
+
+run("validateWinswBinary rejects missing and empty files", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mv-winsw-"));
+  try {
+    const missing = validateWinswBinary(path.join(tmp, "nope.exe"), fakeRelease(4, "abcd"));
+    assert.strictEqual(missing.ok, false);
+    const emptyPath = path.join(tmp, "empty.exe");
+    fs.writeFileSync(emptyPath, "");
+    const empty = validateWinswBinary(emptyPath, fakeRelease(0, ""));
+    assert.strictEqual(empty.ok, false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+run("validateWinswBinary rejects checksum mismatch", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mv-winsw-"));
+  try {
+    const p = path.join(tmp, "bad.exe");
+    fs.writeFileSync(p, Buffer.from("hello-winsw"));
+    const release = fakeRelease(11, "hello-winsw");
+    release.sha256 = "0".repeat(64);
+    const v = validateWinswBinary(p, release);
+    assert.strictEqual(v.ok, false);
+    assert.strictEqual(v.reason, "checksum_mismatch");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+run("validateWinswBinary accepts matching checksum and size", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mv-winsw-"));
+  try {
+    const body = Buffer.from("valid-winsw-binary-bytes");
+    const p = path.join(tmp, "ok.exe");
+    fs.writeFileSync(p, body);
+    const release = fakeRelease(body.length, body);
+    const v = validateWinswBinary(p, release);
+    assert.strictEqual(v.ok, true);
+    assert.strictEqual(v.sha256, release.sha256);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+await runAsync("downloadToFile fails on HTTP 404 and deletes partial file", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mv-dl-"));
+  const dest = path.join(tmp, "out.exe");
+  const transport = mockTransport((_url, _opts, cb) => {
+    cb(mockResponse({ statusCode: 404, body: Buffer.from("not found") }));
+  });
+  await assert.rejects(
+    () => downloadToFile("https://example.test/missing.exe", dest, { transport }),
+    (err) => {
+      assert.ok(/HTTP 404/.test(err.message));
+      assert.ok(/No service was installed/.test(err.message));
+      return true;
+    }
+  );
+  assert.ok(!fs.existsSync(dest));
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+await runAsync("downloadToFile fails on invalid release URL", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mv-dl-"));
+  const dest = path.join(tmp, "out.exe");
+  await assert.rejects(
+    () => downloadToFile("not-a-url", dest, {}),
+    (err) => /HTTP invalid-url|Unable to download/.test(err.message)
+  );
+  assert.ok(!fs.existsSync(dest));
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+await runAsync("downloadToFile fails on timeout and cleans up", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mv-dl-"));
+  const dest = path.join(tmp, "out.exe");
+  const transport = mockTransport((_url, _opts, _cb, req) => {
+    process.nextTick(() => req.emit("timeout"));
+  });
+  await assert.rejects(
+    () => downloadToFile("https://example.test/slow.exe", dest, { transport, timeoutMs: 50 }),
+    (err) => /timed out/i.test(err.message) && /No service was installed/.test(err.message)
+  );
+  assert.ok(!fs.existsSync(dest));
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+await runAsync("downloadToFile rejects empty/partial body", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mv-dl-"));
+  const dest = path.join(tmp, "out.exe");
+  const transport = mockTransport((_url, _opts, cb) => {
+    cb(mockResponse({ statusCode: 200, body: Buffer.alloc(0) }));
+  });
+  await assert.rejects(
+    () => downloadToFile("https://example.test/empty.exe", dest, { transport }),
+    (err) => /empty/i.test(err.message)
+  );
+  assert.ok(!fs.existsSync(dest));
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+await runAsync("downloadToFile succeeds on HTTP 200", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mv-dl-"));
+  const dest = path.join(tmp, "out.exe");
+  const body = Buffer.from("downloaded-ok");
+  const transport = mockTransport((_url, _opts, cb) => {
+    cb(mockResponse({ statusCode: 200, body }));
+  });
+  const result = await downloadToFile("https://example.test/ok.exe", dest, { transport });
+  assert.strictEqual(result.status, 200);
+  assert.ok(fs.existsSync(dest));
+  assert.strictEqual(fs.readFileSync(dest).toString(), "downloaded-ok");
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+await runAsync("ensureWinswBinary reuses existing valid local binary", async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mv-ensure-"));
+  const prev = process.env.MARIVOLT_AGENT_DIR;
+  process.env.MARIVOLT_AGENT_DIR = tmpRoot;
+  const binDir = path.join(PRINT_AGENT_ROOT, "service", "bin");
+  const dest = path.join(binDir, "MarivoltPrintAgent.exe");
+  const backup = dest + ".bak-test";
+  const had = fs.existsSync(dest);
+  if (had) fs.copyFileSync(dest, backup);
+  try {
+    const body = Buffer.from("local-valid-winsw-bytes-123456");
+    const release = fakeRelease(body.length, body);
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(dest, body);
+    let downloaded = false;
+    const pathOut = await ensureWinswBinary({
+      release,
+      downloadFn: async () => {
+        downloaded = true;
+        throw new Error("should not download");
+      },
+    });
+    assert.strictEqual(downloaded, false);
+    assert.ok(fs.existsSync(pathOut));
+    assert.strictEqual(sha256File(pathOut), release.sha256);
+  } finally {
+    safeUnlink(dest);
+    if (had && fs.existsSync(backup)) {
+      fs.renameSync(backup, dest);
+    } else {
+      safeUnlink(backup);
+    }
+    if (prev == null) delete process.env.MARIVOLT_AGENT_DIR;
+    else process.env.MARIVOLT_AGENT_DIR = prev;
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+await runAsync("ensureWinswBinary rejects invalid local binary then fails download 404", async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mv-ensure-bad-"));
+  const prev = process.env.MARIVOLT_AGENT_DIR;
+  process.env.MARIVOLT_AGENT_DIR = tmpRoot;
+  const binDir = path.join(PRINT_AGENT_ROOT, "service", "bin");
+  const dest = path.join(binDir, "MarivoltPrintAgent.exe");
+  const backup = dest + ".bak-test2";
+  const had = fs.existsSync(dest);
+  if (had) fs.copyFileSync(dest, backup);
+  try {
+    const good = Buffer.from("expected-good-content-xxxx");
+    const release = fakeRelease(good.length, good);
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(dest, Buffer.from("corrupt-local-binary!!!!"));
+    await assert.rejects(
+      () =>
+        ensureWinswBinary({
+          release,
+          downloadFn: async (url, tmp) => {
+            // Simulate HTTP 404 path used by real downloader messaging
+            safeUnlink(tmp);
+            throw new Error(winswDownloadErrorMessage(404));
+          },
+        }),
+      (err) => /HTTP 404/.test(err.message) && /No service was installed/.test(err.message)
+    );
+    // Invalid local should have been removed; no successful dest left with wrong hash
+    if (fs.existsSync(dest)) {
+      assert.notStrictEqual(sha256File(dest), crypto.createHash("sha256").update("corrupt-local-binary!!!!").digest("hex"));
+    }
+  } finally {
+    safeUnlink(dest);
+    if (had && fs.existsSync(backup)) fs.renameSync(backup, dest);
+    else safeUnlink(backup);
+    if (prev == null) delete process.env.MARIVOLT_AGENT_DIR;
+    else process.env.MARIVOLT_AGENT_DIR = prev;
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+await runAsync("ensureWinswBinary successful download verifies checksum", async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mv-ensure-ok-"));
+  const prev = process.env.MARIVOLT_AGENT_DIR;
+  process.env.MARIVOLT_AGENT_DIR = tmpRoot;
+  const binDir = path.join(PRINT_AGENT_ROOT, "service", "bin");
+  const dest = path.join(binDir, "MarivoltPrintAgent.exe");
+  const backup = dest + ".bak-test3";
+  const had = fs.existsSync(dest);
+  if (had) fs.copyFileSync(dest, backup);
+  safeUnlink(dest);
+  try {
+    const body = Buffer.from("fresh-download-winsw-bytes");
+    const release = fakeRelease(body.length, body);
+    const out = await ensureWinswBinary({
+      force: true,
+      release,
+      downloadFn: async (_url, tmp) => {
+        fs.mkdirSync(path.dirname(tmp), { recursive: true });
+        fs.writeFileSync(tmp, body);
+        return { path: tmp, bytes: body.length, status: 200 };
+      },
+    });
+    assert.ok(fs.existsSync(out));
+    assert.strictEqual(sha256File(out), release.sha256);
+  } finally {
+    safeUnlink(dest);
+    if (had && fs.existsSync(backup)) fs.renameSync(backup, dest);
+    else safeUnlink(backup);
+    if (prev == null) delete process.env.MARIVOLT_AGENT_DIR;
+    else process.env.MARIVOLT_AGENT_DIR = prev;
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+await runAsync("ensureWinswBinary checksum mismatch deletes temp and does not install", async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mv-ensure-mismatch-"));
+  const prev = process.env.MARIVOLT_AGENT_DIR;
+  process.env.MARIVOLT_AGENT_DIR = tmpRoot;
+  const binDir = path.join(PRINT_AGENT_ROOT, "service", "bin");
+  const dest = path.join(binDir, "MarivoltPrintAgent.exe");
+  const backup = dest + ".bak-test4";
+  const had = fs.existsSync(dest);
+  if (had) fs.copyFileSync(dest, backup);
+  safeUnlink(dest);
+  try {
+    const release = fakeRelease(10, "abcdefghij");
+    await assert.rejects(
+      () =>
+        ensureWinswBinary({
+          force: true,
+          release,
+          downloadFn: async (_url, tmp) => {
+            fs.mkdirSync(path.dirname(tmp), { recursive: true });
+            fs.writeFileSync(tmp, Buffer.from("TAMPERED!!"));
+            return { path: tmp, bytes: 10, status: 200 };
+          },
+        }),
+      (err) => /checksum mismatch/i.test(err.message) && /No service was installed/.test(err.message)
+    );
+    assert.ok(!fs.existsSync(dest));
+    assert.ok(!fs.existsSync(dest + ".download"));
+  } finally {
+    safeUnlink(dest);
+    if (had && fs.existsSync(backup)) fs.renameSync(backup, dest);
+    else safeUnlink(backup);
+    if (prev == null) delete process.env.MARIVOLT_AGENT_DIR;
+    else process.env.MARIVOLT_AGENT_DIR = prev;
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+run("install failure path documents no partial service after download failure", () => {
+  const src = fs.readFileSync(path.join(PRINT_AGENT_ROOT, "service", "install-service.mjs"), "utf8");
+  // Download happens before runWinsw(["install"])
+  const dl = src.indexOf("ensureWinswBinary");
+  const inst = src.indexOf('runWinsw(["install"]');
+  assert.ok(dl < inst);
+  assert.ok(src.includes("uninstall"));
+});
+
+run("preflight module exports runPreflight", () => {
+  const src = fs.readFileSync(path.join(PRINT_AGENT_ROOT, "service", "preflight-service.mjs"), "utf8");
+  assert.ok(src.includes("export async function runPreflight"));
+  assert.ok(src.includes("administrator"));
+  assert.ok(src.includes("config.json"));
+  assert.ok(src.includes("winsw_url"));
+  assert.ok(src.includes("printer_config"));
+});
+
+// Avoid unused import lint noise in some runners
+void http;
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed ? 1 : 0);

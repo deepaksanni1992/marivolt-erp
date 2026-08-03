@@ -36,10 +36,13 @@ npm start
 
 ```powershell
 cd C:\Marivolt\print-agent
+npm run service:preflight
 npm run service:install
 npm run service:status
 npm run service:verify-printer
 ```
+
+WinSW is pinned to stable **v2.12.0** (`WinSW-x64.exe`). Manual fallback: copy the official asset as `service\bin\MarivoltPrintAgent.exe` after verifying SHA-256 against `service/winsw-release.mjs`.
 
 6. Confirm ERP agent ONLINE; Test Connection; Test Print.
 7. Restart Windows and confirm ONLINE without opening PowerShell.
