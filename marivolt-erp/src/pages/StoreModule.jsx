@@ -18,6 +18,7 @@ import SearchableDocumentSelect from "../components/erp/SearchableDocumentSelect
 import CreateInvoiceFromPackingModal, { packingReadyForSalesInvoice } from "../components/sales/CreateInvoiceFromPackingModal.jsx";
 import GrnCustomsSection from "../components/store/GrnCustomsSection.jsx";
 import LabelQueuePanel from "../components/store/LabelQueuePanel.jsx";
+import PostGrnLabelDecisionDialog from "../components/store/PostGrnLabelDecisionDialog.jsx";
 import {
   buildGrnCustomsPayload,
   defaultGrnLineCustomsFields,
@@ -26,9 +27,15 @@ import {
 import {
   LABEL_TEMPLATE_NAME,
   buildLabelLinesFromEdits,
+  buildInitialGrnLabelIdempotencyKey,
   defaultLabelLineFields,
+  formatLabelsQueuedMessage,
+  resolvePostGrnLabelMode,
+  sumPhysicalLabelQty,
+  validateInitialLabelLines,
 } from "../lib/labelPrinting.js";
 import { notify, confirmDialog } from "../lib/notifications.js";
+import LoadingButton from "../components/erp/LoadingButton.jsx";
 
 const TABS = [
   "GRN",
@@ -276,6 +283,8 @@ export default function StoreModule() {
   const [grnCustoms, setGrnCustoms] = useState(emptyGrnCustomsState);
   const [labelPrinterCode, setLabelPrinterCode] = useState("");
   const [labelCopies, setLabelCopies] = useState(1);
+  /** Post-GRN optional label decision (posted GRN + label payload snapshot). */
+  const [postGrnLabelDecision, setPostGrnLabelDecision] = useState(null);
   const grnUrlPoLoadedRef = useRef("");
   const grnCsvInputRef = useRef(null);
   const [grnRegSearchInput, setGrnRegSearchInput] = useState(() => searchParams.get("grnQ") || "");
@@ -434,20 +443,81 @@ export default function StoreModule() {
     },
   });
 
-  const postGrnFromPoMut = useMutation({
-    mutationFn: (body) => apiPost("/grn/post", body),
-    onSuccess: (data) => {
+  const refreshAfterGrnPost = (posted) => {
+    qc.invalidateQueries({ queryKey: ["grn"] });
+    qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
+    qc.invalidateQueries({ queryKey: ["stock-summary"] });
+    qc.invalidateQueries({ queryKey: ["customs-stock"] });
+    const pid = grnPoSnapshot?.header?._id;
+    setGrnLineEdits({});
+    setGrnCustoms(emptyGrnCustomsState());
+    if (pid) loadGrnPoMut.mutate(String(pid));
+    const grnNo = posted?.grnNo;
+    const msg = grnNo ? `GRN posted successfully. (${grnNo})` : "GRN posted successfully.";
+    setGrnUiErr(msg);
+  };
+
+  const queueLabelsAfterGrnMut = useMutation({
+    mutationFn: ({ labelBody }) => apiPost("/labels/jobs/from-grn", labelBody),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["label-jobs"] });
       qc.invalidateQueries({ queryKey: ["grn"] });
-      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
-      qc.invalidateQueries({ queryKey: ["stock-summary"] });
-      qc.invalidateQueries({ queryKey: ["customs-stock"] });
-      const pid = grnPoSnapshot?.header?._id;
-      setGrnLineEdits({});
-      setGrnCustoms(emptyGrnCustomsState());
-      if (pid) loadGrnPoMut.mutate(String(pid));
-      const msg = data?.grnNo ? `Posted ${data.grnNo}` : "GRN posted.";
-      setGrnUiErr(msg);
-      notify.success(msg);
+      const count = Number(vars?.totalLabelQty) || sumPhysicalLabelQty(vars?.labelBody?.lines);
+      notify.success(formatLabelsQueuedMessage(count));
+      setPostGrnLabelDecision(null);
+      setGrnUiErr((prev) => `${prev || "GRN posted successfully."} Labels queued.`.trim());
+    },
+    onError: (e) => {
+      notify.error(
+        "GRN was posted successfully, but labels could not be queued. You can print them later from the GRN or Label Queue."
+      );
+      setPostGrnLabelDecision(null);
+      setGrnUiErr(
+        `GRN posted successfully, but labels could not be queued. ${e.message || ""}`.trim()
+      );
+    },
+  });
+
+  const postGrnFromPoMut = useMutation({
+    mutationFn: ({ postBody }) => apiPost("/grn/post", postBody),
+    onSuccess: (data, vars) => {
+      const mode = vars?.mode || "none";
+      const labelContext = vars?.labelContext || null;
+      refreshAfterGrnPost(data);
+      notify.success("GRN posted successfully.");
+
+      if (mode === "none" || !data?.grnNo) return;
+
+      const idempotencyKey = buildInitialGrnLabelIdempotencyKey(data.grnNo);
+      const labelBody = {
+        ...(labelContext?.labelBody || {}),
+        grnNo: data.grnNo,
+        idempotencyKey,
+      };
+
+      if (mode === "ask") {
+        setPostGrnLabelDecision((prev) => {
+          if (prev?.grnNo === data.grnNo) return prev;
+          return {
+            grnNo: data.grnNo,
+            grnId: data._id || data.id || null,
+            warehouseCode: labelContext?.warehouseCode || GRN_DEFAULT_WAREHOUSE_CODE,
+            selectedLineCount: labelContext?.selectedLineCount || 0,
+            totalLabelQty: labelContext?.totalLabelQty || 0,
+            labelBody,
+          };
+        });
+        return;
+      }
+
+      if (mode === "auto") {
+        if ((labelContext?.totalLabelQty || 0) <= 0) return;
+        queueLabelsAfterGrnMut.mutate({
+          labelBody,
+          totalLabelQty: labelContext?.totalLabelQty || 0,
+          source: "auto",
+        });
+      }
     },
     onError: (e) => {
       const m = e.message || String(e);
@@ -465,37 +535,33 @@ export default function StoreModule() {
           ...labelBody,
           grnNo: posted.grnNo,
           idempotencyKey:
-            labelBody.idempotencyKey ||
-            `grn:${posted.grnNo}:${crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`}`,
+            labelBody.idempotencyKey || buildInitialGrnLabelIdempotencyKey(posted.grnNo),
         });
-        return { posted, labelJob };
+        return { posted, labelJob, labelBody };
       } catch (labelErr) {
-        return { posted, labelError: labelErr };
+        return { posted, labelError: labelErr, labelBody };
       }
     },
     onSuccess: (result) => {
-      qc.invalidateQueries({ queryKey: ["grn"] });
-      qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
-      qc.invalidateQueries({ queryKey: ["stock-summary"] });
-      qc.invalidateQueries({ queryKey: ["customs-stock"] });
+      refreshAfterGrnPost(result?.posted);
+      notify.success("GRN posted successfully.");
       qc.invalidateQueries({ queryKey: ["label-jobs"] });
-      const pid = grnPoSnapshot?.header?._id;
-      setGrnLineEdits({});
-      setGrnCustoms(emptyGrnCustomsState());
-      if (pid) loadGrnPoMut.mutate(String(pid));
       const grnNo = result?.posted?.grnNo;
       if (result?.labelError) {
-        const m = `GRN posted successfully, but label job could not be created. ${result.labelError.message || ""}. Open GRN ${grnNo || ""} and use Print / Reprint labels to retry.`;
-        setGrnUiErr(m);
-        notify.warning(m);
-      } else if (result?.labelJob?.job?.jobNo) {
-        const m = `Posted ${grnNo}. Label job ${result.labelJob.job.jobNo} queued successfully.`;
-        setGrnUiErr(m);
-        notify.success(m);
-      } else {
-        const m = grnNo ? `Posted ${grnNo}` : "GRN posted.";
-        setGrnUiErr(m);
-        notify.success(m);
+        notify.error(
+          "GRN was posted successfully, but labels could not be queued. You can print them later from the GRN or Label Queue."
+        );
+        setGrnUiErr(
+          `GRN posted successfully, but labels could not be queued. ${result.labelError.message || ""}`.trim()
+        );
+      } else if (result?.labelJob) {
+        const count = sumPhysicalLabelQty(result?.labelBody?.lines);
+        notify.success(formatLabelsQueuedMessage(count));
+        setGrnUiErr(
+          grnNo
+            ? `GRN posted successfully. (${grnNo}) ${formatLabelsQueuedMessage(count)}`
+            : formatLabelsQueuedMessage(count)
+        );
       }
     },
     onError: (e) => {
@@ -1946,7 +2012,11 @@ export default function StoreModule() {
                   poNo={grnPoSnapshot?.header?.poNo || grnPoSnapshot?.header?.poNumber}
                   supplierName={grnPoSnapshot?.header?.supplierName}
                   defaultCurrency={grnPoSnapshot?.header?.currency || "USD"}
-                  disabled={postGrnFromPoMut.isPending || postGrnAndPrintMut.isPending}
+                  disabled={
+                    postGrnFromPoMut.isPending ||
+                    postGrnAndPrintMut.isPending ||
+                    queueLabelsAfterGrnMut.isPending
+                  }
                   onError={setGrnUiErr}
                 />
                 <div className="mt-3 flex flex-wrap items-end gap-3 rounded border border-slate-200 bg-slate-50 p-2 text-xs">
@@ -1984,68 +2054,108 @@ export default function StoreModule() {
                   )}
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <button
+                  <LoadingButton
                     type="button"
-                    className="rounded bg-slate-900 px-3 py-2 text-sm text-white disabled:opacity-40"
+                    className="rounded px-3 py-2"
+                    loading={postGrnFromPoMut.isPending}
+                    loadingText="Posting GRN..."
                     disabled={
                       postGrnFromPoMut.isPending ||
                       postGrnAndPrintMut.isPending ||
+                      queueLabelsAfterGrnMut.isPending ||
+                      Boolean(postGrnLabelDecision) ||
                       grnTotalPending <= 0 ||
                       !grnPoSnapshot?.header?._id
                     }
-                    onClick={async () => {
+                    onClick={() => {
                       setGrnUiErr("");
+                      if (
+                        postGrnFromPoMut.isPending ||
+                        postGrnAndPrintMut.isPending ||
+                        queueLabelsAfterGrnMut.isPending ||
+                        postGrnLabelDecision
+                      ) {
+                        return;
+                      }
                       const built = buildGrnPostPayloadFromUi();
                       if (!built) return;
-                      postGrnFromPoMut.mutate(built.postBody);
+                      const mode = resolvePostGrnLabelMode(labelSettingsData);
+                      let labelContext = null;
+                      if (mode !== "none") {
+                        const labelLines = buildLabelLinesFromEdits(built.selectedLines, grnLineEdits);
+                        const validated = validateInitialLabelLines(labelLines);
+                        if (!validated.ok) {
+                          setGrnUiErr(validated.message);
+                          notify.warning(validated.message);
+                          return;
+                        }
+                        labelContext = {
+                          warehouseCode: GRN_DEFAULT_WAREHOUSE_CODE,
+                          selectedLineCount: built.selectedLines.length,
+                          totalLabelQty: sumPhysicalLabelQty(labelLines),
+                          labelBody: {
+                            printerCode: labelPrinterCode || undefined,
+                            copies: labelCopies,
+                            lines: labelLines,
+                          },
+                        };
+                      }
+                      postGrnFromPoMut.mutate({
+                        postBody: built.postBody,
+                        mode,
+                        labelContext,
+                      });
                     }}
                   >
-                    {postGrnFromPoMut.isPending ? "Posting GRN..." : "Post GRN"}
-                  </button>
-                  <button
+                    Post GRN
+                  </LoadingButton>
+                  <LoadingButton
                     type="button"
-                    className="rounded bg-emerald-800 px-3 py-2 text-sm text-white disabled:opacity-40"
+                    variant="success"
+                    className="rounded px-3 py-2"
+                    loading={postGrnAndPrintMut.isPending}
+                    loadingText="Posting & queuing labels..."
                     disabled={
                       postGrnFromPoMut.isPending ||
                       postGrnAndPrintMut.isPending ||
+                      queueLabelsAfterGrnMut.isPending ||
+                      Boolean(postGrnLabelDecision) ||
                       grnTotalPending <= 0 ||
                       !grnPoSnapshot?.header?._id ||
                       labelSettingsData?.enabled === false
                     }
-                    onClick={async () => {
+                    onClick={() => {
                       setGrnUiErr("");
-                      if (postGrnAndPrintMut.isPending || postGrnFromPoMut.isPending) return;
+                      if (
+                        postGrnAndPrintMut.isPending ||
+                        postGrnFromPoMut.isPending ||
+                        queueLabelsAfterGrnMut.isPending ||
+                        postGrnLabelDecision
+                      ) {
+                        return;
+                      }
                       const built = buildGrnPostPayloadFromUi();
                       if (!built) return;
                       const labelLines = buildLabelLinesFromEdits(built.selectedLines, grnLineEdits);
-                      for (const ln of labelLines) {
-                        if (ln.print === false) continue;
-                        const q = Number(ln.labelQty);
-                        if (!Number.isFinite(q) || q < 0) {
-                          setGrnUiErr("Label Qty must be a non-negative number.");
-                          return;
-                        }
-                        if (q > (Number(ln.receivedQty) || 0) + 1e-9) {
-                          setGrnUiErr(
-                            `Label Qty (${q}) cannot exceed received qty (${ln.receivedQty}) for ${ln.article || "line"}.`
-                          );
-                          return;
-                        }
+                      const validated = validateInitialLabelLines(labelLines);
+                      if (!validated.ok) {
+                        setGrnUiErr(validated.message);
+                        notify.warning(validated.message);
+                        return;
                       }
-                      const idempotencyKey = `grn-post-print:${built.postBody.poId}:${Date.now()}:${crypto.randomUUID?.() || Math.random()}`;
                       postGrnAndPrintMut.mutate({
                         postBody: built.postBody,
                         labelBody: {
                           printerCode: labelPrinterCode || undefined,
                           copies: labelCopies,
                           lines: labelLines,
-                          idempotencyKey,
+                          // Key finalized after GRN number is known (mutationFn).
                         },
                       });
                     }}
                   >
-                    {postGrnAndPrintMut.isPending ? "Posting & queuing labels..." : "Post GRN & Print Labels"}
-                  </button>
+                    Post GRN & Print Labels
+                  </LoadingButton>
                 </div>
                 <span className="text-[11px] text-slate-500">
                   Default warehouse MAIN is applied automatically. Enter location manually for each line.
@@ -4615,6 +4725,30 @@ export default function StoreModule() {
           if (doc?.invoiceNo) {
             setPackInvoiceUiMsg(`Created sales invoice ${doc.invoiceNo}. View it under Sales → Sales Invoice.`);
           }
+        }}
+      />
+
+      <PostGrnLabelDecisionDialog
+        open={Boolean(postGrnLabelDecision)}
+        grnNo={postGrnLabelDecision?.grnNo || ""}
+        warehouseCode={postGrnLabelDecision?.warehouseCode || GRN_DEFAULT_WAREHOUSE_CODE}
+        selectedLineCount={postGrnLabelDecision?.selectedLineCount || 0}
+        totalLabelQty={postGrnLabelDecision?.totalLabelQty || 0}
+        isQueueing={queueLabelsAfterGrnMut.isPending}
+        onPrint={() => {
+          if (!postGrnLabelDecision?.labelBody || queueLabelsAfterGrnMut.isPending) return;
+          queueLabelsAfterGrnMut.mutate({
+            labelBody: postGrnLabelDecision.labelBody,
+            totalLabelQty: postGrnLabelDecision.totalLabelQty || 0,
+            source: "modal",
+          });
+        }}
+        onSkip={() => {
+          if (queueLabelsAfterGrnMut.isPending) return;
+          setPostGrnLabelDecision(null);
+          notify.info(
+            "Label printing skipped. Labels can be printed later from the GRN or Label Queue."
+          );
         }}
       />
     </div>

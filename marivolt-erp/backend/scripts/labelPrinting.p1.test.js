@@ -188,7 +188,20 @@ run("Frontend Post GRN & Print uses separate from-grn call", () => {
   assert.ok(ui.includes("/labels/jobs/from-grn"));
   assert.ok(ui.includes("Label Queue"));
   assert.ok(ui.includes("idempotencyKey"));
-  assert.ok(ui.includes("GRN posted successfully, but label job could not be created"));
+  assert.ok(
+    ui.includes(
+      "GRN was posted successfully, but labels could not be queued. You can print them later from the GRN or Label Queue."
+    )
+  );
+  assert.ok(ui.includes("PostGrnLabelDecisionDialog"));
+  assert.ok(ui.includes("resolvePostGrnLabelMode"));
+  const dlg = fs.readFileSync(
+    path.join(repoRoot, "src/components/store/PostGrnLabelDecisionDialog.jsx"),
+    "utf8"
+  );
+  assert.ok(dlg.includes("Print Labels"));
+  assert.ok(dlg.includes("Skip"));
+  assert.ok(dlg.includes("Would you like to print labels now?"));
 });
 
 run("Each physical label displays Qty: 1 UOM (unit-label semantics)", () => {
