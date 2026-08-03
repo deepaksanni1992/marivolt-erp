@@ -31,6 +31,7 @@ export const PERMISSION_MODULES = [
   "CUSTOMS",
   "TRACEABILITY",
   "LABELS",
+  "ARTICLE_CONVERSION",
 ];
 
 export const PERMISSION_ACTIONS = [
@@ -51,6 +52,8 @@ export const PERMISSION_ACTIONS = [
   "print",
   "reprint",
   "admin",
+  "post",
+  "reverse",
 ];
 
 export const SYSTEM_ROLE_CODES = [

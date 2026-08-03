@@ -21,6 +21,7 @@ import CustomsMovement from "../models/CustomsMovement.js";
 import ItemMaster from "../models/itemMasterModel.js";
 import PurchaseInvoice from "../models/PurchaseInvoice.js";
 import Document from "../models/Document.js";
+import ArticleStockConversion from "../models/ArticleStockConversion.js";
 import { isCustomsEnabled } from "../config/customsConfig.js";
 import { hasPermission } from "./roleService.js";
 
@@ -36,6 +37,7 @@ export const SEARCH_GROUPS = {
   CUSTOMS_INVOICES: "Customs Invoices",
   SALES_INVOICES: "Sales Invoices",
   DISPATCHES: "Dispatches",
+  ARTICLE_CONVERSIONS: "Article Conversions",
   OTHER: "Other",
 };
 
@@ -48,6 +50,7 @@ const GROUP_DISPLAY_ORDER = [
   SEARCH_GROUPS.CUSTOMS_LEDGER,
   SEARCH_GROUPS.ITEM_MASTER,
   SEARCH_GROUPS.DISPATCHES,
+  SEARCH_GROUPS.ARTICLE_CONVERSIONS,
   SEARCH_GROUPS.OTHER,
 ];
 
@@ -61,6 +64,7 @@ export function groupForType(type) {
   if (key === "Customs Invoice") return SEARCH_GROUPS.CUSTOMS_INVOICES;
   if (key === "Sales Invoice") return SEARCH_GROUPS.SALES_INVOICES;
   if (key === "Dispatch" || key === "Sales Dispatch") return SEARCH_GROUPS.DISPATCHES;
+  if (key === "Article Conversion") return SEARCH_GROUPS.ARTICLE_CONVERSIONS;
   return SEARCH_GROUPS.OTHER;
 }
 
@@ -617,6 +621,43 @@ async function searchStoreDispatch(companyId, companyCode, re, filters) {
   );
 }
 
+async function searchArticleConversions(companyId, companyCode, re, filters) {
+  const filter = applyDateStatus(
+    withCompany(companyId, {
+      $or: [
+        { conversionNo: re },
+        { sourceArticle: re },
+        { targetArticle: re },
+        { remarks: re },
+        { reasonCode: re },
+        { "lotLayers.grnNo": re },
+        { "lotLayers.poNo": re },
+        { "lotLayers.boeNumber": re },
+        { "lotLayers.blNumber": re },
+        { "lotLayers.supplierInvoiceNumber": re },
+      ],
+    }),
+    { dateField: "conversionDate", statusField: "status", filters },
+  );
+  const rows = await ArticleStockConversion.find(filter).sort({ conversionDate: -1 }).limit(PER_SOURCE_LIMIT).lean();
+  return rows.map((r) =>
+    baseHit({
+      type: "Article Conversion",
+      category: CATEGORIES.INVENTORY,
+      module: "STORE",
+      documentNumber: r.conversionNo,
+      companyCode,
+      date: r.conversionDate,
+      party: "",
+      article: r.sourceArticle,
+      description: `${r.sourceArticle} → ${r.targetArticle}`,
+      status: r.status,
+      entityId: r._id,
+      openPath: `/store?tab=${encodeURIComponent("Article Stock Conversion")}&conversionNo=${encodeURIComponent(r.conversionNo || "")}`,
+    }),
+  );
+}
+
 async function searchItems(companyId, companyCode, re) {
   const rows = await ItemMaster.find(
     withCompany(companyId, {
@@ -872,7 +913,7 @@ export async function globalSearch(req, rawPaging = {}) {
     tasks.push(searchPurchaseOrders, searchSuppliers);
   }
   if (storeOk && categoryEnabled(CATEGORIES.INVENTORY, filters)) {
-    tasks.push(searchGrn, searchPacking, searchStoreDispatch);
+    tasks.push(searchGrn, searchPacking, searchStoreDispatch, searchArticleConversions);
   }
   if (itemsOk && categoryEnabled(CATEGORIES.INVENTORY, filters)) {
     tasks.push(searchItems);

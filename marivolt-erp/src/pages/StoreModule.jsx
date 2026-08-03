@@ -35,6 +35,7 @@ import {
   validateInitialLabelLines,
 } from "../lib/labelPrinting.js";
 import { notify, confirmDialog } from "../lib/notifications.js";
+import ArticleStockConversionPanel from "../components/store/ArticleStockConversionPanel.jsx";
 import LoadingButton from "../components/erp/LoadingButton.jsx";
 
 const TABS = [
@@ -45,6 +46,7 @@ const TABS = [
   "Stock Ledger",
   "Stock Adjustment",
   "Stock Transfer",
+  "Article Stock Conversion",
   "Locations",
   "Packing",
   "Store Reports",
@@ -1291,7 +1293,7 @@ export default function StoreModule() {
   const { data: locations } = useQuery({
     queryKey: ["stock-locations"],
     queryFn: () => apiGet("/stock/locations"),
-    enabled: tab === "GRN" || tab === "Locations",
+    enabled: tab === "GRN" || tab === "Locations" || tab === "Article Stock Conversion",
   });
 
   const { data: negativeReport } = useQuery({
@@ -3436,6 +3438,15 @@ export default function StoreModule() {
               Post
             </button>
           </div>
+        </div>
+      ) : null}
+
+      {tab === "Article Stock Conversion" ? (
+        <div className="rounded-2xl border bg-white p-4">
+          <ArticleStockConversionPanel
+            locations={locations?.items || locations || []}
+            deepLinkConversionNo={String(searchParams.get("conversionNo") || "").trim().toUpperCase()}
+          />
         </div>
       ) : null}
 

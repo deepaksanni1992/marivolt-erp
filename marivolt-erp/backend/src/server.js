@@ -35,6 +35,7 @@ import adminRoutes from "./routes/adminRoutes.js";
 import analyticsRoutes from "./routes/analyticsRoutes.js";
 import communicationRoutes from "./routes/communicationRoutes.js";
 import packingRoutes from "./routes/packingRoutes.js";
+import articleConversionRoutes from "./routes/articleConversionRoutes.js";
 import dispatchRoutes from "./routes/dispatchRoutes.js";
 import reportPdfRoutes from "./routes/reportPdfRoutes.js";
 import customsRoutes from "./routes/customsRoutes.js";
@@ -122,6 +123,7 @@ async function startServer() {
     app.use("/api/analytics", analyticsRoutes);
     app.use("/api/communication", communicationRoutes);
     app.use("/api/packing", packingRoutes);
+    app.use("/api/article-conversions", articleConversionRoutes);
     app.use("/api/dispatch", dispatchRoutes);
     app.use("/api/reports", reportPdfRoutes);
     app.use("/api/customs", customsRoutes);

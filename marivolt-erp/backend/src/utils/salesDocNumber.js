@@ -12,6 +12,7 @@ const DOC_NUMBER_CONFIG = {
   SALES_RETURN: { key: "salesReturn", prefix: "SR" },
   CIPL: { key: "cipl", prefix: "CIPL" },
   PAYMENT_RECEIPT: { key: "paymentReceipt", prefix: "RCPT" },
+  ARTICLE_STOCK_CONVERSION: { key: "articleStockConversion", prefix: "STC" },
 };
 
 export function normalizeCompanyCode(companyCode) {

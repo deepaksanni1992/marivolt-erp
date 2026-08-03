@@ -52,6 +52,10 @@ export const MOVEMENT_TYPES = Object.freeze({
   UNPACKED: "UNPACKED",
   DISPATCH_OUT: "DISPATCH_OUT",
   DISPATCH_CANCEL: "DISPATCH_CANCEL",
+  ARTICLE_CONVERSION_OUT: "ARTICLE_CONVERSION_OUT",
+  ARTICLE_CONVERSION_IN: "ARTICLE_CONVERSION_IN",
+  ARTICLE_CONVERSION_REVERSAL_OUT: "ARTICLE_CONVERSION_REVERSAL_OUT",
+  ARTICLE_CONVERSION_REVERSAL_IN: "ARTICLE_CONVERSION_REVERSAL_IN",
 });
 
 /**
@@ -79,6 +83,10 @@ const UNIFIED_TO_LEGACY_TX = Object.freeze({
   UNPACKED: "UNPACKED",
   DISPATCH_OUT: "DISPATCH_OUT",
   DISPATCH_CANCEL: "DISPATCH_CANCEL",
+  ARTICLE_CONVERSION_OUT: "STOCK_ADJUSTMENT",
+  ARTICLE_CONVERSION_IN: "STOCK_ADJUSTMENT",
+  ARTICLE_CONVERSION_REVERSAL_OUT: "STOCK_ADJUSTMENT",
+  ARTICLE_CONVERSION_REVERSAL_IN: "STOCK_ADJUSTMENT",
 });
 
 /* --------------------------------------------------------------- */
@@ -1017,6 +1025,272 @@ export async function stockAdjustment({
 }
 
 /**
+ * ARTICLE_CONVERSION_OUT + ARTICLE_CONVERSION_IN — same warehouse,
+ * different articles. Requires real physical available stock on source
+ * (no negative conversion). Carries unitCost onto both ledger legs.
+ * Optional effectKeys for idempotent retries.
+ */
+export async function articleConversion({
+  session,
+  companyId,
+  sourceArticle,
+  targetArticle,
+  warehouse,
+  sourceQty,
+  targetQty,
+  unitCost = 0,
+  currency = "USD",
+  referenceType = "ARTICLE_STOCK_CONVERSION",
+  referenceNo,
+  remarks = "",
+  createdBy = "",
+  sourceModule = "STORE",
+  transactionDate = null,
+  sourceDocumentType = "",
+  sourceDocumentId = null,
+  postingOperationId = "",
+  outEffectKey = "",
+  inEffectKey = "",
+  locationFrom = "",
+  locationTo = "",
+}) {
+  requireCompanyId(companyId);
+  const src = normArticle(sourceArticle);
+  const tgt = normArticle(targetArticle);
+  if (!src || !tgt) throw new Error("articleConversion: source and target articles required");
+  if (src === tgt) throw new Error("articleConversion: source and target articles must differ");
+  const srcQty = Number(sourceQty) || 0;
+  const tgtQty = Number(targetQty) || 0;
+  if (!(srcQty > 0) || !(tgtQty > 0)) throw new Error("articleConversion: quantities must be > 0");
+  const wh = normWarehouse(warehouse);
+  const cost = Math.max(0, Number(unitCost) || 0);
+
+  const outGuard = {
+    $expr: {
+      $gte: [
+        {
+          $subtract: [
+            { $ifNull: ["$quantity", 0] },
+            { $add: [{ $ifNull: ["$reservedQty", 0] }, { $ifNull: ["$packedQty", 0] }] },
+          ],
+        },
+        srcQty,
+      ],
+    },
+  };
+  const outUpdated = await bumpBuckets({
+    session,
+    companyId,
+    article: src,
+    warehouse: wh,
+    inc: { quantity: -srcQty, onHandQty: -srcQty },
+    guard: outGuard,
+  });
+  if (!outUpdated) {
+    const err = new Error(
+      `articleConversion: insufficient available qty for ${src} in ${wh}`
+    );
+    err.code = "ARTICLE_CONVERSION_STOCK_SHORTAGE";
+    err.article = src;
+    err.requestedQty = srcQty;
+    throw err;
+  }
+  await bumpBuckets({
+    session,
+    companyId,
+    article: tgt,
+    warehouse: wh,
+    inc: { quantity: tgtQty, onHandQty: tgtQty },
+    upsert: true,
+  });
+
+  const fromAfter = await snapshotAfter({ companyId, article: src, warehouse: wh, session });
+  const outRow = await createStockLedgerEntry({
+    session,
+    companyId,
+    transactionDate,
+    movementType: MOVEMENT_TYPES.ARTICLE_CONVERSION_OUT,
+    article: src,
+    warehouse: wh,
+    locationFrom: locationFrom || wh,
+    locationTo: locationTo || wh,
+    qtyOut: srcQty,
+    unitCost: cost,
+    currency,
+    referenceType,
+    referenceNo,
+    remarks,
+    createdBy,
+    sourceModule,
+    sourceDocumentType,
+    sourceDocumentId,
+    postingOperationId,
+    effectKey: outEffectKey,
+    ...fromAfter,
+  });
+  const toAfter = await snapshotAfter({ companyId, article: tgt, warehouse: wh, session });
+  const inRow = await createStockLedgerEntry({
+    session,
+    companyId,
+    transactionDate,
+    movementType: MOVEMENT_TYPES.ARTICLE_CONVERSION_IN,
+    article: tgt,
+    warehouse: wh,
+    locationFrom: locationFrom || wh,
+    locationTo: locationTo || wh,
+    qtyIn: tgtQty,
+    unitCost: cost,
+    currency,
+    referenceType,
+    referenceNo,
+    remarks,
+    createdBy,
+    sourceModule,
+    sourceDocumentType,
+    sourceDocumentId,
+    postingOperationId,
+    effectKey: inEffectKey,
+    ...toAfter,
+  });
+  return { out: outRow, in: inRow };
+}
+
+/**
+ * Reverse a posted article conversion: target OUT, source IN.
+ * Requires available (unreserved/unpacked) target stock.
+ */
+export async function reverseArticleConversion({
+  session,
+  companyId,
+  sourceArticle,
+  targetArticle,
+  warehouse,
+  sourceQty,
+  targetQty,
+  unitCost = 0,
+  currency = "USD",
+  referenceType = "ARTICLE_STOCK_CONVERSION",
+  referenceNo,
+  remarks = "",
+  createdBy = "",
+  sourceModule = "STORE",
+  transactionDate = null,
+  sourceDocumentType = "",
+  sourceDocumentId = null,
+  cancellationOperationId = "",
+  outEffectKey = "",
+  inEffectKey = "",
+  originalOutEffectKey = "",
+  originalInEffectKey = "",
+  reversedFromOutLedgerId = null,
+  reversedFromInLedgerId = null,
+  locationFrom = "",
+  locationTo = "",
+}) {
+  requireCompanyId(companyId);
+  const src = normArticle(sourceArticle);
+  const tgt = normArticle(targetArticle);
+  const srcQty = Number(sourceQty) || 0;
+  const tgtQty = Number(targetQty) || 0;
+  if (!(srcQty > 0) || !(tgtQty > 0)) throw new Error("reverseArticleConversion: quantities must be > 0");
+  const wh = normWarehouse(warehouse);
+  const cost = Math.max(0, Number(unitCost) || 0);
+
+  const outGuard = {
+    $expr: {
+      $gte: [
+        {
+          $subtract: [
+            { $ifNull: ["$quantity", 0] },
+            { $add: [{ $ifNull: ["$reservedQty", 0] }, { $ifNull: ["$packedQty", 0] }] },
+          ],
+        },
+        tgtQty,
+      ],
+    },
+  };
+  const outUpdated = await bumpBuckets({
+    session,
+    companyId,
+    article: tgt,
+    warehouse: wh,
+    inc: { quantity: -tgtQty, onHandQty: -tgtQty },
+    guard: outGuard,
+  });
+  if (!outUpdated) {
+    const err = new Error(
+      `reverseArticleConversion: insufficient available target qty for ${tgt} in ${wh}`
+    );
+    err.code = "ARTICLE_CONVERSION_REVERSAL_BLOCKED";
+    err.article = tgt;
+    err.requestedQty = tgtQty;
+    throw err;
+  }
+  await bumpBuckets({
+    session,
+    companyId,
+    article: src,
+    warehouse: wh,
+    inc: { quantity: srcQty, onHandQty: srcQty },
+    upsert: true,
+  });
+
+  const tgtAfter = await snapshotAfter({ companyId, article: tgt, warehouse: wh, session });
+  const outRow = await createStockLedgerEntry({
+    session,
+    companyId,
+    transactionDate,
+    movementType: MOVEMENT_TYPES.ARTICLE_CONVERSION_REVERSAL_OUT,
+    article: tgt,
+    warehouse: wh,
+    locationFrom: locationFrom || wh,
+    locationTo: locationTo || wh,
+    qtyOut: tgtQty,
+    unitCost: cost,
+    currency,
+    referenceType,
+    referenceNo,
+    remarks,
+    createdBy,
+    sourceModule,
+    sourceDocumentType,
+    sourceDocumentId,
+    cancellationOperationId,
+    effectKey: outEffectKey,
+    originalEffectKey: originalOutEffectKey,
+    reversedFromLedgerId: reversedFromOutLedgerId,
+    ...tgtAfter,
+  });
+  const srcAfter = await snapshotAfter({ companyId, article: src, warehouse: wh, session });
+  const inRow = await createStockLedgerEntry({
+    session,
+    companyId,
+    transactionDate,
+    movementType: MOVEMENT_TYPES.ARTICLE_CONVERSION_REVERSAL_IN,
+    article: src,
+    warehouse: wh,
+    locationFrom: locationFrom || wh,
+    locationTo: locationTo || wh,
+    qtyIn: srcQty,
+    unitCost: cost,
+    currency,
+    referenceType,
+    referenceNo,
+    remarks,
+    createdBy,
+    sourceModule,
+    sourceDocumentType,
+    sourceDocumentId,
+    cancellationOperationId,
+    effectKey: inEffectKey,
+    originalEffectKey: originalInEffectKey,
+    reversedFromLedgerId: reversedFromInLedgerId,
+    ...srcAfter,
+  });
+  return { out: outRow, in: inRow };
+}
+
+/**
  * PACKED — moves qty from reserved (allocation) into packed staging.
  * Physical on-hand unchanged; available unchanged.
  */
@@ -1409,6 +1683,8 @@ export default {
   cancelInvoice,
   stockTransfer,
   stockAdjustment,
+  articleConversion,
+  reverseArticleConversion,
   packFromAllocation,
   unpackFromPacked,
   dispatchFromPacked,

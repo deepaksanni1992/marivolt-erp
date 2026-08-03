@@ -12,6 +12,7 @@ import SalesInvoice from "../models/SalesInvoice.js";
 import StoreDispatch from "../models/StoreDispatch.js";
 import ItemMaster from "../models/itemMasterModel.js";
 import StockBalance from "../models/StockBalance.js";
+import ArticleStockConversion from "../models/ArticleStockConversion.js";
 import { isCustomsEnabled } from "../config/customsConfig.js";
 import { hasPermission } from "./roleService.js";
 
@@ -22,6 +23,7 @@ const FLOW_STAGES = [
   { key: "supplierInvoice", label: "Supplier Invoice", docType: "Supplier Invoice" },
   { key: "customsStock", label: "Customs Stock", docType: "Customs Stock" },
   { key: "customsLedger", label: "Customs Ledger", docType: "Customs Ledger" },
+  { key: "articleConversion", label: "Article Conversion", docType: "ARTICLE_CONVERSION" },
   { key: "salesInvoice", label: "Sales Invoice", docType: "Sales Invoice" },
   { key: "customsInvoice", label: "Customs Invoice", docType: "Customs Invoice" },
   { key: "dispatch", label: "Dispatch", docType: "Dispatch" },
@@ -302,17 +304,31 @@ export async function buildArticleTraceability(req, rawFilters = {}) {
   let customsMovements = [];
   let customsInvoices = [];
   if (customsOk) {
-    const ciFilter = withCompany(companyId, { articleNumber: article, status: { $ne: "CANCELLED" } });
+    const ciFilter = withCompany(companyId, {
+      status: { $ne: "CANCELLED" },
+      $or: [{ articleNumber: article }, { originalReceivedArticle: article }],
+    });
     if (partNumber) ciFilter.partNumber = partNumber;
     customsItems = await CustomsLotItem.find(ciFilter).sort({ supplierInvoiceDate: -1 }).limit(200).lean();
     const lotIds = [...new Set(customsItems.map((x) => String(x.customsLotId)).filter(Boolean))];
     if (lotIds.length) {
       customsLots = await CustomsLot.find(withCompany(companyId, { _id: { $in: lotIds } })).lean();
     }
-    customsMovements = await CustomsMovement.find(withCompany(companyId, { articleNumber: article }))
+    customsMovements = await CustomsMovement.find(
+      withCompany(companyId, {
+        $or: [{ articleNumber: article }, { referenceType: "ARTICLE_STOCK_CONVERSION" }],
+      })
+    )
       .sort({ movementDate: 1 })
       .limit(500)
       .lean();
+    // Keep movements that touch this article or its conversion refs
+    customsMovements = customsMovements.filter(
+      (mv) =>
+        upper(mv.articleNumber) === article ||
+        (String(mv.referenceType) === "ARTICLE_STOCK_CONVERSION" &&
+          customsItems.some((ci) => String(ci._id) === String(mv.customsLotItemId)))
+    );
     customsInvoices = await CustomsInvoice.find(
       withCompany(companyId, {
         "items.articleNumber": article,
@@ -330,8 +346,24 @@ export async function buildArticleTraceability(req, rawFilters = {}) {
     ? await SalesInvoice.find(siFilter).sort({ invoiceDate: -1 }).limit(100).lean()
     : [];
 
+  const conversions =
+    storeOk || (await hasPermission(req, "ARTICLE_CONVERSION", "view"))
+      ? await ArticleStockConversion.find(
+          withCompany(companyId, {
+            status: { $in: ["POSTED", "REVERSED"] },
+            $or: [{ sourceArticle: article }, { targetArticle: article }],
+          })
+        )
+          .sort({ conversionDate: -1 })
+          .limit(100)
+          .lean()
+      : [];
+
   const dispatches = storeOk
-    ? await StoreDispatch.find(withCompany(companyId, { "lines.article": article })).sort({ dispatchDate: -1 }).limit(100).lean()
+    ? await StoreDispatch.find(withCompany(companyId, { "lines.article": article }))
+        .sort({ dispatchDate: -1 })
+        .limit(100)
+        .lean()
     : [];
 
   const purchaseRows = [];
@@ -505,6 +537,15 @@ export async function buildArticleTraceability(req, rawFilters = {}) {
       openPath: openPath("Customs Ledger", { articleNumber: article }),
     },
     {
+      stage: "articleConversion",
+      label: "Article Conversion",
+      status: flowStatus(conversions.length > 0),
+      documentNumber: conversions[0]?.conversionNo || "Not Linked",
+      openPath: conversions[0]
+        ? `/store?tab=${encodeURIComponent("Article Stock Conversion")}&conversionNo=${encodeURIComponent(conversions[0].conversionNo)}`
+        : "",
+    },
+    {
       stage: "salesInvoice",
       label: "Sales Invoice",
       status: flowStatus(!!primarySi),
@@ -595,6 +636,40 @@ export async function buildArticleTraceability(req, rawFilters = {}) {
       status: mv.movementType,
       linkedDocument: mv.referenceType || "Not Linked",
       openPath: openPath("Customs Ledger", { articleNumber: article }),
+    });
+  }
+  for (const cv of conversions) {
+    const isSource = upper(cv.sourceArticle) === article;
+    const isReversed = String(cv.status).toUpperCase() === "REVERSED";
+    timelineEvents.push({
+      date: cv.postedAt || cv.conversionDate || cv.createdAt,
+      stage: "Article Conversion",
+      documentType: "ARTICLE_CONVERSION",
+      documentNumber: cv.conversionNo,
+      party: "",
+      qtyIn: isSource ? 0 : Number(cv.targetQty) || 0,
+      qtyOut: isSource ? Number(cv.sourceQty) || 0 : 0,
+      balance: null,
+      status: cv.status,
+      linkedDocument: isSource
+        ? `→ ${cv.targetArticle}`
+        : `Origin ${cv.sourceArticle}${cv.lotLayers?.[0]?.grnNo ? ` / GRN ${cv.lotLayers[0].grnNo}` : ""}`,
+      openPath: `/store?tab=${encodeURIComponent("Article Stock Conversion")}&conversionNo=${encodeURIComponent(cv.conversionNo)}`,
+      meta: {
+        sourceArticle: cv.sourceArticle,
+        targetArticle: cv.targetArticle,
+        sourceQty: cv.sourceQty,
+        targetQty: cv.targetQty,
+        conversionRatio: cv.conversionRatio,
+        reason: cv.reasonCode,
+        warehouse: cv.warehouse,
+        reversalStatus: isReversed ? "REVERSED" : "ACTIVE",
+        originalGrn: cv.lotLayers?.[0]?.grnNo || "",
+        originalPo: cv.lotLayers?.[0]?.poNo || "",
+        boe: cv.lotLayers?.[0]?.boeNumber || "",
+        bl: cv.lotLayers?.[0]?.blNumber || "",
+        user: cv.postedBy || cv.createdBy || "",
+      },
     });
   }
   for (const si of salesInvoices) {

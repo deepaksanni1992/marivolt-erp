@@ -45,6 +45,12 @@ const customsLotItemSchema = new mongoose.Schema(
     remarks1: { type: String, default: "", trim: true },
     remarks2: { type: String, default: "", trim: true },
     customsRemarks: { type: String, default: "", trim: true },
+    /** Article Stock Conversion lineage (additive; GRN inbound unchanged). */
+    originalReceivedArticle: { type: String, default: "", trim: true, uppercase: true },
+    conversionNo: { type: String, default: "", trim: true, uppercase: true, index: true },
+    conversionDocumentId: { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
+    convertedFromLotItemId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    isConversionLayer: { type: Boolean, default: false },
   },
   { timestamps: true },
 );

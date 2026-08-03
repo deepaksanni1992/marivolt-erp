@@ -17,7 +17,13 @@ const customsMovementSchema = new mongoose.Schema(
     qty: { type: Number, required: true, min: 0 },
     referenceType: {
       type: String,
-      enum: ["GRN", "SALES_INVOICE", "CUSTOMS_INVOICE", "MANUAL_ADJUSTMENT"],
+      enum: [
+        "GRN",
+        "SALES_INVOICE",
+        "CUSTOMS_INVOICE",
+        "MANUAL_ADJUSTMENT",
+        "ARTICLE_STOCK_CONVERSION",
+      ],
       required: true,
       index: true,
     },

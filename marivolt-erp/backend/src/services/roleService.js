@@ -65,6 +65,7 @@ const SYSTEM_DEFAULTS = {
     REPORTS: READ_ONLY_ACTIONS,
     PURCHASE: ["view"],
     LABELS: ["view", "print", "reprint"],
+    ARTICLE_CONVERSION: ["view", "create", "post"],
   }),
   LOGISTICS: buildMatrix({
     LOGISTICS: ["view", "create", "edit", "approve", "cancel", "export"],
