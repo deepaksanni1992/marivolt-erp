@@ -5,14 +5,17 @@
 import assert from "assert";
 import {
   OPERATIONAL_ISSUE_TYPES,
+  PROCUREMENT_QUEUE_TYPES,
   classifyIssueCategory,
   enrichIssue,
   isOperationalIssueType,
+  isProcurementQueueType,
   ISSUE_CATEGORIES,
   computeHealthScore,
   healthRating,
   parseAgingDays,
   buildIssueId,
+  agingBandFromDays,
   INTEGRITY_SCORE_WEIGHTS,
 } from "../src/services/dataHealthService.js";
 
@@ -32,7 +35,25 @@ ok("PI awaiting payment is operational", isOperationalIssueType("PI_AWAITING_PAY
 ok("Packing without invoice is operational", isOperationalIssueType("PACKING_WITHOUT_INVOICE"));
 ok("Packing without dispatch is operational", isOperationalIssueType("PACKING_WITHOUT_DISPATCH"));
 ok("Stock bucket integrity is NOT operational", !isOperationalIssueType("STOCK_BUCKET_INTEGRITY"));
-ok("Negative inventory is integrity", classifyIssueCategory("NEGATIVE_INVENTORY") === ISSUE_CATEGORIES.INTEGRITY);
+
+// Allocate-before-purchase / negative available — operational, not integrity
+for (const t of [
+  "NEGATIVE_INVENTORY",
+  "ALLOCATED_EXCEEDS_AVAILABLE",
+  "ALLOCATED_EXCEEDS_ONHAND",
+  "AVAILABLE_BELOW_ZERO",
+  "OUT_OF_STOCK_FOR_ALLOCATION",
+  "BACKORDER_REQUIRED",
+  "WAITING_PURCHASE_AFTER_ALLOCATION",
+]) {
+  ok(`${t} is operational`, classifyIssueCategory(t) === ISSUE_CATEGORIES.OPERATIONAL);
+  ok(`${t} is procurement queue`, isProcurementQueueType(t));
+}
+
+ok(
+  "NEGATIVE_PHYSICAL_ON_HAND remains integrity",
+  classifyIssueCategory("NEGATIVE_PHYSICAL_ON_HAND") === ISSUE_CATEGORIES.INTEGRITY
+);
 ok(
   "Dispatch without invoice is integrity (SI required by Store dispatch)",
   classifyIssueCategory("DISPATCH_WITHOUT_INVOICE") === ISSUE_CATEGORIES.INTEGRITY
@@ -60,6 +81,23 @@ ok("enrich sets OPERATIONAL category/section", enriched.category === ISSUE_CATEG
 ok("enrich adds pending label", /awaiting Allocation/i.test(enriched.pendingLabel || ""));
 ok("enrich marks aging when old enough", enriched.isAging === true);
 ok("enrich has stable issueId", Boolean(enriched.issueId));
+ok("enrich aging band 7+ for 20 days", enriched.agingBand === "7+");
+
+const waiting = enrichIssue(
+  {
+    issueType: "WAITING_PURCHASE_AFTER_ALLOCATION",
+    severity: "Critical",
+    description: "On hand 0, allocated 9, available -9",
+    documentNumber: "8X0098",
+    date: new Date(Date.UTC(2020, 0, 1)),
+  },
+  { companyCode: "MAR", now: new Date(Date.UTC(2020, 4, 1)) }
+);
+ok("waiting purchase forced to Info", waiting.severity === "Info");
+ok("waiting purchase operational", waiting.category === ISSUE_CATEGORIES.OPERATIONAL);
+ok("waiting purchase procurement group", waiting.operationalGroup === "PROCUREMENT");
+ok("waiting purchase follow-up action", /Purchasing/i.test(waiting.suggestedAction || ""));
+ok("waiting purchase aging band 90+", waiting.agingBand === "90+");
 
 const integrity = enrichIssue({
   issueType: "STOCK_BUCKET_INTEGRITY",
@@ -70,6 +108,15 @@ const integrity = enrichIssue({
 });
 ok("integrity keeps Critical severity", integrity.severity === "Critical");
 ok("integrity category INTEGRITY", integrity.category === ISSUE_CATEGORIES.INTEGRITY);
+
+const physicalNeg = enrichIssue({
+  issueType: "NEGATIVE_PHYSICAL_ON_HAND",
+  severity: "Critical",
+  documentNumber: "ART-NEG",
+  date: new Date(),
+});
+ok("physical negative stays Critical", physicalNeg.severity === "Critical");
+ok("physical negative integrity", physicalNeg.category === ISSUE_CATEGORIES.INTEGRITY);
 
 // --- Score: 100 OAs pending, zero integrity → 100 ---
 const manyOa = Array.from({ length: 100 }, (_, i) =>
@@ -108,6 +155,42 @@ const piPending = enrichIssue({
 });
 ok("PI without payment → no score penalty", computeHealthScore([piPending]).healthScore === 100);
 
+// Example: On Hand 0 / Allocated 9 / Available -9 → score unchanged
+const coverShortfall = [
+  enrichIssue({
+    issueType: "WAITING_PURCHASE_AFTER_ALLOCATION",
+    severity: "Critical",
+    documentNumber: "ART-1",
+    date: new Date(),
+  }),
+  enrichIssue({
+    issueType: "NEGATIVE_INVENTORY",
+    severity: "Critical",
+    documentNumber: "ART-1B",
+    date: new Date(),
+  }),
+  enrichIssue({
+    issueType: "ALLOCATED_EXCEEDS_AVAILABLE",
+    severity: "Critical",
+    documentNumber: "ART-1C",
+    date: new Date(),
+  }),
+  enrichIssue({
+    issueType: "AVAILABLE_BELOW_ZERO",
+    severity: "Critical",
+    documentNumber: "ART-1D",
+    date: new Date(),
+  }),
+];
+ok(
+  "allocate-before-purchase cover shortfall → Health Score 100",
+  computeHealthScore(coverShortfall).healthScore === 100
+);
+ok(
+  "cover shortfall → zero integrity penalties",
+  computeHealthScore(coverShortfall).scoreBreakdown.penaltyPoints === 0
+);
+
 const orphan = enrichIssue({
   issueType: "STOCK_BUCKET_INTEGRITY",
   severity: "Critical",
@@ -136,9 +219,14 @@ const customs = enrichIssue({
 });
 ok("customs mismatch → integrity penalty", computeHealthScore([customs]).healthScore === 85);
 
+ok(
+  "physical negative on hand → integrity penalty",
+  computeHealthScore([physicalNeg]).healthScore === 85
+);
+
 // Mixed: many operational + one critical integrity
-const mixed = computeHealthScore([...manyOa, orphan]);
-ok("mixed pending + one critical → still 85", mixed.healthScore === 85);
+const mixed = computeHealthScore([...manyOa, ...coverShortfall, orphan]);
+ok("mixed pending + cover shortfall + one critical → still 85", mixed.healthScore === 85);
 
 // Dedup same issueId
 const dup = computeHealthScore([orphan, { ...orphan }]);
@@ -156,6 +244,12 @@ ok("parseAgingDays negative → 7", parseAgingDays("-3") === 7);
 ok("parseAgingDays 14", parseAgingDays("14") === 14);
 ok("parseAgingDays clamps high", parseAgingDays("9999") === 365);
 
+ok("agingBand 0-6", agingBandFromDays(3) === "0-6");
+ok("agingBand 7+", agingBandFromDays(7) === "7+");
+ok("agingBand 30+", agingBandFromDays(30) === "30+");
+ok("agingBand 90+", agingBandFromDays(90) === "90+");
+ok("agingBand null", agingBandFromDays(null) === null);
+
 ok(
   "buildIssueId stable",
   buildIssueId({ companyCode: "MAR", issueType: "OA_WITHOUT_ALLOCATION", documentNumber: "OA-1" }) ===
@@ -163,5 +257,6 @@ ok(
 );
 
 ok("operational set includes packing without dispatch", OPERATIONAL_ISSUE_TYPES.has("PACKING_WITHOUT_DISPATCH"));
+ok("procurement set includes waiting purchase", PROCUREMENT_QUEUE_TYPES.has("WAITING_PURCHASE_AFTER_ALLOCATION"));
 
 console.log(`\n${passed} checks passed`);

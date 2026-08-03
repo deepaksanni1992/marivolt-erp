@@ -18,7 +18,10 @@ const SECTIONS = [
 
 const ISSUE_COLUMNS = [
   { key: "category", header: "Category" },
+  { key: "section", header: "Section" },
   { key: "severity", header: "Severity" },
+  { key: "agingBand", header: "Aging Band" },
+  { key: "operationalGroup", header: "Queue" },
   { key: "module", header: "Module" },
   { key: "issueType", header: "Issue Type" },
   { key: "pendingLabel", header: "Pending Label" },
@@ -46,6 +49,13 @@ function severityTone(s) {
   if (s === "Critical") return "bg-rose-50 text-rose-800 ring-rose-200";
   if (s === "Major") return "bg-amber-50 text-amber-900 ring-amber-200";
   if (s === "Info") return "bg-sky-50 text-sky-800 ring-sky-200";
+  return "bg-slate-50 text-slate-700 ring-slate-200";
+}
+
+function agingBandTone(band) {
+  if (band === "90+") return "bg-amber-100 text-amber-950 ring-amber-300";
+  if (band === "30+") return "bg-amber-50 text-amber-900 ring-amber-200";
+  if (band === "7+") return "bg-sky-50 text-sky-900 ring-sky-200";
   return "bg-slate-50 text-slate-700 ring-slate-200";
 }
 
@@ -97,13 +107,14 @@ function BarList({ items = [], labelKey = "label", valueKey = "count" }) {
   );
 }
 
-function IssueTable({ rows = [], emptyMessage = "No rows." }) {
+function IssueTable({ rows = [], emptyMessage = "No rows.", mode = "integrity" }) {
+  const showAging = mode === "operational" || mode === "aging";
   return (
     <div className="overflow-x-auto">
       <table className="min-w-full text-left text-xs">
         <thead className="bg-slate-100 text-[11px] uppercase tracking-wide text-slate-600">
           <tr>
-            <th className="px-2 py-2">Severity</th>
+            <th className="px-2 py-2">{showAging ? "Status" : "Severity"}</th>
             <th className="px-2 py-2">Type / Label</th>
             <th className="px-2 py-2">Document</th>
             <th className="px-2 py-2">Age</th>
@@ -121,15 +132,24 @@ function IssueTable({ rows = [], emptyMessage = "No rows." }) {
             </tr>
           ) : (
             rows.map((row, i) => (
-              <tr key={`${row.checkId}-${row.documentNumber}-${i}`} className="border-t hover:bg-slate-50">
+              <tr key={`${row.issueId || row.checkId}-${row.documentNumber}-${i}`} className="border-t hover:bg-slate-50">
                 <td className="px-2 py-1.5">
-                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${severityTone(row.severity)}`}>
-                    {row.severity}
-                  </span>
+                  {showAging ? (
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${agingBandTone(row.agingBand)}`}>
+                      {row.agingBand ? `Age ${row.agingBand}` : "Pending"}
+                    </span>
+                  ) : (
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${severityTone(row.severity)}`}>
+                      {row.severity}
+                    </span>
+                  )}
                 </td>
                 <td className="px-2 py-1.5">
                   <div className="font-mono text-[10px]">{row.issueType}</div>
                   {row.pendingLabel ? <div className="text-[11px] text-sky-800">{row.pendingLabel}</div> : null}
+                  {row.operationalGroup === "PROCUREMENT" ? (
+                    <div className="text-[10px] font-medium text-sky-700">Procurement queue</div>
+                  ) : null}
                 </td>
                 <td className="px-2 py-1.5">
                   {row.documentNumber}
@@ -139,9 +159,7 @@ function IssueTable({ rows = [], emptyMessage = "No rows." }) {
                 </td>
                 <td className="px-2 py-1.5 tabular-nums">
                   {row.ageDays != null ? `${row.ageDays}d` : "—"}
-                  {row.agingThresholdDays != null ? (
-                    <div className="text-[10px] text-slate-400">thr {row.agingThresholdDays}d</div>
-                  ) : null}
+                  {row.agingBand ? <div className="text-[10px] text-slate-500">{row.agingBand}</div> : null}
                 </td>
                 <td className="px-2 py-1.5 max-w-sm">{row.description}</td>
                 <td className="px-2 py-1.5 max-w-xs">{row.suggestedAction}</td>
@@ -310,7 +328,7 @@ export default function DataHealthDashboard() {
     <div className="p-4 md:p-6">
       <PageHeader
         title="Data Health Dashboard"
-        subtitle="Health Score reflects ERP Integrity only. Operational pending workflow states are informational and never reduce the score."
+        subtitle="Health Score reflects ERP Integrity only. Allocate-before-purchase and negative free available are Operational / Procurement Queue — never scored."
       >
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -446,18 +464,24 @@ export default function DataHealthDashboard() {
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <KpiCard title="Operational Pending" value={fmtNum(data?.operationalIssueCount ?? data?.operationalPendingCount)} tone="sky" hint="Informational — not scored" />
+            <KpiCard
+              title="Procurement Queue"
+              value={fmtNum(data?.procurementQueueCount)}
+              tone="sky"
+              hint="Waiting purchase / cover shortfall — allocate-before-stock is allowed"
+            />
             <KpiCard title="Aging Items" value={fmtNum(data?.agingIssueCount ?? data?.agingMonitorCount)} tone="amber" hint={`Threshold ${data?.agingThresholdDays ?? data?.agingDefaults?.defaultDays ?? 7} days · linked via sourceIssueId`} />
-            <KpiCard title="Integrity Critical" value={fmtNum(data?.criticalCount)} tone="rose" hint="Integrity severity only" />
-            <KpiCard title="Integrity Major" value={fmtNum(data?.majorCount)} tone="amber" hint="Integrity severity only" />
+            <KpiCard title="Integrity Critical" value={fmtNum(data?.criticalCount)} tone="rose" hint="Integrity severity only — never includes negative available" />
           </div>
 
           {/* Section 1 — ERP Integrity */}
           {(!section || section === "INTEGRITY") && (
             <section className="overflow-hidden rounded-2xl border border-rose-100 bg-white shadow-sm">
               <div className="border-b border-rose-100 bg-rose-50/60 px-4 py-3">
-                <h2 className="text-sm font-semibold text-rose-900">1. ERP Integrity (Critical)</h2>
+                <h2 className="text-sm font-semibold text-rose-900">1. ERP Integrity</h2>
                 <p className="text-xs text-rose-800/80">
-                  Genuine data failures only — stock buckets, ledger, broken references, customs qty, duplicates, outstanding mismatches. These drive Health Score.
+                  Genuine data failures only — stock buckets, orphan reserved/packed, ledger mismatches, broken references, customs qty, duplicates.
+                  Negative free available / allocate-before-PO are excluded. These drive Health Score.
                 </p>
               </div>
               <div className="grid gap-4 p-4 lg:grid-cols-2">
@@ -470,7 +494,7 @@ export default function DataHealthDashboard() {
                   <BarList items={(charts.topProblemAreas || []).map((x) => ({ label: x.issueType, count: x.count }))} />
                 </div>
               </div>
-              <IssueTable rows={integrityIssues} emptyMessage="No ERP integrity failures for current filters." />
+              <IssueTable rows={integrityIssues} mode="integrity" emptyMessage="No ERP integrity failures for current filters." />
             </section>
           )}
 
@@ -478,18 +502,33 @@ export default function DataHealthDashboard() {
           {(!section || section === "OPERATIONAL") && (
             <section className="overflow-hidden rounded-2xl border border-sky-100 bg-white shadow-sm">
               <div className="border-b border-sky-100 bg-sky-50/60 px-4 py-3">
-                <h2 className="text-sm font-semibold text-sky-900">2. Operational Pending (Informational)</h2>
+                <h2 className="text-sm font-semibold text-sky-900">2. Operational Pending / Procurement Queue</h2>
                 <p className="text-xs text-sky-800/80">
-                  Normal workflow states such as OA awaiting Allocation or PO awaiting GRN. Counters only — never reduce Health Score.
+                  Normal workflow states and allocate-before-purchase cover shortfalls (e.g. On Hand 0 / Allocated 9 / Available −9).
+                  Use age bands (7+ / 30+ / 90+) — never Critical/Major, never reduce Health Score.
                 </p>
               </div>
-              <div className="p-4">
-                <h3 className="mb-2 text-xs font-semibold uppercase text-slate-500">Pending counters</h3>
-                <BarList
-                  items={operationalCounters.map((x) => ({ label: x.label, count: x.count }))}
-                />
+              <div className="grid gap-4 p-4 lg:grid-cols-3">
+                <div>
+                  <h3 className="mb-2 text-xs font-semibold uppercase text-slate-500">All pending counters</h3>
+                  <BarList items={operationalCounters.map((x) => ({ label: x.label, count: x.count }))} />
+                </div>
+                <div>
+                  <h3 className="mb-2 text-xs font-semibold uppercase text-slate-500">Procurement queue</h3>
+                  <BarList
+                    items={(data?.procurementCounters || []).map((x) => ({ label: x.label, count: x.count }))}
+                  />
+                </div>
+                <div>
+                  <h3 className="mb-2 text-xs font-semibold uppercase text-slate-500">Aging bands</h3>
+                  <BarList items={(data?.agingBandCounters || []).map((x) => ({ label: x.label, count: x.count }))} />
+                </div>
               </div>
-              <IssueTable rows={operationalPending} emptyMessage="No operational pending items for current filters." />
+              <IssueTable
+                rows={operationalPending}
+                mode="operational"
+                emptyMessage="No operational pending items for current filters."
+              />
             </section>
           )}
 
@@ -499,10 +538,11 @@ export default function DataHealthDashboard() {
               <div className="border-b border-amber-100 bg-amber-50/60 px-4 py-3">
                 <h2 className="text-sm font-semibold text-amber-900">3. Aging Monitor</h2>
                 <p className="text-xs text-amber-800/80">
-                  Operational pending items older than configurable thresholds (default {data?.agingDefaults?.defaultDays ?? 7} days). Informational — not scored.
+                  Operational / procurement items older than configurable thresholds (default {data?.agingDefaults?.defaultDays ?? 7} days).
+                  Bands 7+ / 30+ / 90+ — management reminders only, not scored.
                 </p>
               </div>
-              <IssueTable rows={agingMonitor} emptyMessage="No aged pending items for current filters." />
+              <IssueTable rows={agingMonitor} mode="aging" emptyMessage="No aged pending items for current filters." />
             </section>
           )}
 

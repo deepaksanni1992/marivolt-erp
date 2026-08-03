@@ -63,8 +63,12 @@ export const ISSUE_CATEGORIES = Object.freeze({
  * - INVOICE_WITHOUT_DISPATCH → OPERATIONAL (invoice-before-dispatch is allowed)
  * - PO_AWAITING_GRN → OPERATIONAL
  * - PI_AWAITING_PAYMENT → OPERATIONAL
+ * - NEGATIVE_INVENTORY / AVAILABLE_BELOW_ZERO / ALLOCATED_EXCEEDS_* → OPERATIONAL
+ *   (Allocation before PO/GRN is intentional; free available may be negative)
+ * - WAITING_PURCHASE_AFTER_ALLOCATION → OPERATIONAL (procurement queue)
  * - GRN_WITHOUT_PO → INTEGRITY (Store GRN post is PO-line based; orphan GRN is a broken reference)
  * - DISPATCH_WITHOUT_INVOICE → INTEGRITY (dispatch create requires salesInvoiceId)
+ * - NEGATIVE_PHYSICAL_ON_HAND → INTEGRITY (true physical on-hand < 0)
  */
 export const OPERATIONAL_ISSUE_TYPES = Object.freeze(
   new Set([
@@ -83,6 +87,28 @@ export const OPERATIONAL_ISSUE_TYPES = Object.freeze(
     "ITEM_WITHOUT_VERTICAL",
     "ITEM_WITHOUT_BRAND",
     "ITEM_WITHOUT_MODEL",
+    // Sell / allocate before procurement — valid Marivolt workflow, not ERP defects
+    "NEGATIVE_INVENTORY",
+    "ALLOCATED_EXCEEDS_AVAILABLE",
+    "ALLOCATED_EXCEEDS_ONHAND",
+    "AVAILABLE_BELOW_ZERO",
+    "OUT_OF_STOCK_FOR_ALLOCATION",
+    "BACKORDER_REQUIRED",
+    "WAITING_PURCHASE_AFTER_ALLOCATION",
+  ])
+);
+
+/** Procurement / stock-cover queue within Operational Pending. */
+export const PROCUREMENT_QUEUE_TYPES = Object.freeze(
+  new Set([
+    "NEGATIVE_INVENTORY",
+    "ALLOCATED_EXCEEDS_AVAILABLE",
+    "ALLOCATED_EXCEEDS_ONHAND",
+    "AVAILABLE_BELOW_ZERO",
+    "OUT_OF_STOCK_FOR_ALLOCATION",
+    "BACKORDER_REQUIRED",
+    "WAITING_PURCHASE_AFTER_ALLOCATION",
+    "PO_AWAITING_GRN",
   ])
 );
 
@@ -103,7 +129,16 @@ export const OPERATIONAL_PENDING_LABELS = Object.freeze({
   ITEM_WITHOUT_VERTICAL: "Item master awaiting vertical",
   ITEM_WITHOUT_BRAND: "Item master awaiting brand",
   ITEM_WITHOUT_MODEL: "Item master awaiting model",
+  NEGATIVE_INVENTORY: "Waiting Purchase (available below zero)",
+  ALLOCATED_EXCEEDS_AVAILABLE: "Waiting Purchase (allocated exceeds available)",
+  ALLOCATED_EXCEEDS_ONHAND: "Waiting Purchase (allocated exceeds on hand)",
+  AVAILABLE_BELOW_ZERO: "Waiting Purchase (available below zero)",
+  OUT_OF_STOCK_FOR_ALLOCATION: "Out of stock for allocation — purchase required",
+  BACKORDER_REQUIRED: "Backorder required",
+  WAITING_PURCHASE_AFTER_ALLOCATION: "Waiting Purchase after Allocation",
 });
+
+const PROCUREMENT_FOLLOW_UP = "Follow up with Purchasing — allocate-before-stock is allowed; cover with PO/GRN";
 
 /** Optional per-type aging thresholds (days). Falls back to DEFAULT_AGING_DAYS. */
 function buildAgingDaysByType() {
@@ -121,6 +156,13 @@ function buildAgingDaysByType() {
     INVOICE_WITHOUT_DISPATCH: pick("DATA_HEALTH_AGING_INVOICE_DAYS"),
     PO_AWAITING_GRN: pick("DATA_HEALTH_AGING_PO_DAYS"),
     PI_AWAITING_PAYMENT: pick("DATA_HEALTH_AGING_PI_DAYS"),
+    WAITING_PURCHASE_AFTER_ALLOCATION: pick("DATA_HEALTH_AGING_PROCUREMENT_DAYS"),
+    AVAILABLE_BELOW_ZERO: pick("DATA_HEALTH_AGING_PROCUREMENT_DAYS"),
+    ALLOCATED_EXCEEDS_ONHAND: pick("DATA_HEALTH_AGING_PROCUREMENT_DAYS"),
+    ALLOCATED_EXCEEDS_AVAILABLE: pick("DATA_HEALTH_AGING_PROCUREMENT_DAYS"),
+    NEGATIVE_INVENTORY: pick("DATA_HEALTH_AGING_PROCUREMENT_DAYS"),
+    OUT_OF_STOCK_FOR_ALLOCATION: pick("DATA_HEALTH_AGING_PROCUREMENT_DAYS"),
+    BACKORDER_REQUIRED: pick("DATA_HEALTH_AGING_PROCUREMENT_DAYS"),
   });
 }
 
@@ -128,6 +170,10 @@ const AGING_DAYS_BY_TYPE = buildAgingDaysByType();
 
 export function isOperationalIssueType(issueType) {
   return OPERATIONAL_ISSUE_TYPES.has(String(issueType || "").trim().toUpperCase());
+}
+
+export function isProcurementQueueType(issueType) {
+  return PROCUREMENT_QUEUE_TYPES.has(String(issueType || "").trim().toUpperCase());
 }
 
 export function classifyIssueCategory(issueType) {
@@ -144,6 +190,19 @@ export function ageDaysFrom(date, now = new Date()) {
   const startUtc = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
   const nowUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   return Math.max(0, Math.floor((nowUtc - startUtc) / (24 * 60 * 60 * 1000)));
+}
+
+/**
+ * Aging band for operational / procurement monitors (not integrity severity).
+ * Bands: 0-6 · 7+ · 30+ · 90+
+ */
+export function agingBandFromDays(ageDays) {
+  if (ageDays == null || !Number.isFinite(Number(ageDays))) return null;
+  const n = Math.max(0, Math.floor(Number(ageDays)));
+  if (n >= 90) return "90+";
+  if (n >= 30) return "30+";
+  if (n >= 7) return "7+";
+  return "0-6";
 }
 
 function agingThresholdFor(issueType) {
@@ -179,6 +238,8 @@ export function enrichIssue(raw, opts = {}) {
     ageDays != null &&
     thresholdDays != null &&
     ageDays >= thresholdDays;
+  const agingBand = category === ISSUE_CATEGORIES.OPERATIONAL ? agingBandFromDays(ageDays) : null;
+  const operationalGroup = isProcurementQueueType(issueType) ? "PROCUREMENT" : category === ISSUE_CATEGORIES.OPERATIONAL ? "WORKFLOW" : null;
   const issueId =
     raw.issueId ||
     buildIssueId({
@@ -190,6 +251,11 @@ export function enrichIssue(raw, opts = {}) {
       warehouse: raw.warehouse || raw.reference,
     });
 
+  const suggestedAction =
+    category === ISSUE_CATEGORIES.OPERATIONAL && isProcurementQueueType(issueType)
+      ? PROCUREMENT_FOLLOW_UP
+      : raw.suggestedAction;
+
   return {
     ...raw,
     issueId,
@@ -198,13 +264,16 @@ export function enrichIssue(raw, opts = {}) {
     section: category,
     pendingLabel,
     ageDays,
+    agingBand,
     agingThresholdDays: thresholdDays,
     isAging: Boolean(isAging),
+    operationalGroup,
     // Operational rows stay visible as Info — never Critical/Major for scoring.
     severity:
       category === ISSUE_CATEGORIES.OPERATIONAL
         ? "Info"
         : raw.severity || "Minor",
+    suggestedAction,
     description:
       category === ISSUE_CATEGORIES.OPERATIONAL && pendingLabel
         ? `${pendingLabel}${raw.description ? ` — ${raw.description}` : ""}`
@@ -258,11 +327,26 @@ function operationalCounters(operationalPending) {
   for (const row of operationalPending) {
     const key = row.issueType;
     const label = row.pendingLabel || row.issueType;
-    const cur = byType.get(key) || { label, issueType: key, count: 0 };
+    const cur = byType.get(key) || { label, issueType: key, count: 0, group: row.operationalGroup || "WORKFLOW" };
     cur.count += 1;
     byType.set(key, cur);
   }
   return [...byType.values()].sort((a, b) => b.count - a.count);
+}
+
+function procurementCounters(operationalPending) {
+  return operationalCounters(
+    (operationalPending || []).filter((row) => isProcurementQueueType(row.issueType))
+  );
+}
+
+function agingBandCounters(rows) {
+  const bands = { "0-6": 0, "7+": 0, "30+": 0, "90+": 0 };
+  for (const row of rows || []) {
+    const band = row.agingBand || agingBandFromDays(row.ageDays);
+    if (band && bands[band] != null) bands[band] += 1;
+  }
+  return Object.entries(bands).map(([label, count]) => ({ label, count }));
 }
 
 /**
@@ -940,7 +1024,18 @@ async function runInventoryChecks(companyId) {
       },
       { $match: { $expr: { $or: [{ $lt: ["$available", -EPS] }, { $lt: ["$onHand", -EPS] }] } } },
       { $limit: ISSUE_CAP_PER_CHECK },
-      { $project: { article: 1, warehouse: 1, location: 1, available: 1, onHand: 1 } },
+      {
+        $project: {
+          article: 1,
+          warehouse: 1,
+          location: 1,
+          available: 1,
+          onHand: 1,
+          allocated: 1,
+          lastTransactionDate: 1,
+          updatedAt: 1,
+        },
+      },
     ]),
     StockBalance.aggregate([
       { $match: match },
@@ -952,7 +1047,17 @@ async function runInventoryChecks(companyId) {
       },
       { $match: { $expr: { $gt: ["$allocated", { $add: ["$onHand", EPS] }] } } },
       { $limit: ISSUE_CAP_PER_CHECK },
-      { $project: { article: 1, warehouse: 1, location: 1, allocated: 1, onHand: 1 } },
+      {
+        $project: {
+          article: 1,
+          warehouse: 1,
+          location: 1,
+          allocated: 1,
+          onHand: 1,
+          lastTransactionDate: 1,
+          updatedAt: 1,
+        },
+      },
     ]),
     StockBalance.aggregate([
       { $match: match },
@@ -994,38 +1099,80 @@ async function runInventoryChecks(companyId) {
     ]),
   ]);
 
-  for (const row of negative) {
+  const stockAgeDate = (row) => row.lastTransactionDate || row.updatedAt || null;
+  const waitingPurchaseKeys = new Set();
+
+  // Allocated > on-hand with non-negative physical stock = sell/allocate before procurement (operational).
+  for (const row of allocatedExceeds) {
+    const onHand = Number(row.onHand) || 0;
+    if (onHand < -EPS) continue; // physical negative handled as integrity below
+    const key = `${upper(row.article)}|${upper(row.warehouse || row.location || "")}`;
+    waitingPurchaseKeys.add(key);
     issues.push(
       mkIssue({
-        checkId: 9,
-        severity: "Critical",
+        checkId: 10,
+        severity: "Info",
         module: "Inventory",
-        issueType: "NEGATIVE_INVENTORY",
+        issueType: "WAITING_PURCHASE_AFTER_ALLOCATION",
         documentNumber: row.article,
         reference: row.warehouse || row.location,
-        description: `Negative stock: available=${row.available}, onHand=${row.onHand}`,
-        suggestedAction: "Run stock reconciliation and correct ledger",
+        description: `On hand ${onHand}, allocated ${row.allocated}, available shortfall ${Number(row.allocated) - onHand}. Allocation before PO/GRN is allowed.`,
+        suggestedAction: PROCUREMENT_FOLLOW_UP,
         openPath: `/store?tab=Stock`,
         article: row.article,
+        date: stockAgeDate(row),
       }),
     );
   }
 
-  for (const row of allocatedExceeds) {
-    issues.push(
-      mkIssue({
-        checkId: 10,
-        severity: "Critical",
-        module: "Inventory",
-        issueType: "ALLOCATED_EXCEEDS_AVAILABLE",
-        documentNumber: row.article,
-        reference: row.warehouse || row.location,
-        description: `Allocated ${row.allocated} exceeds on-hand ${row.onHand}`,
-        suggestedAction: "Review allocations and stock reservations",
-        openPath: `/store?tab=Stock`,
-        article: row.article,
-      }),
-    );
+  for (const row of negative) {
+    const onHand = Number(row.onHand) || 0;
+    const available = Number(row.available) || 0;
+    const allocated = Number(row.allocated) || 0;
+    const wh = row.warehouse || row.location;
+    const key = `${upper(row.article)}|${upper(wh || "")}`;
+
+    if (onHand < -EPS) {
+      // True physical ledger defect — integrity only.
+      issues.push(
+        mkIssue({
+          checkId: 9,
+          severity: "Critical",
+          module: "Inventory",
+          issueType: "NEGATIVE_PHYSICAL_ON_HAND",
+          documentNumber: row.article,
+          reference: wh,
+          description: `Negative physical on-hand: onHand=${onHand}, available=${available}`,
+          suggestedAction: "Investigate stock ledger / GRN / reverse transactions — physical on-hand must not be negative",
+          openPath: `/store?tab=Stock`,
+          article: row.article,
+          date: stockAgeDate(row),
+        }),
+      );
+      continue;
+    }
+
+    // Free available < 0 with onHand >= 0 is valid when reserved/packed cover exceeds on-hand.
+    if (available < -EPS && !waitingPurchaseKeys.has(key)) {
+      const issueType =
+        allocated > onHand + EPS ? "WAITING_PURCHASE_AFTER_ALLOCATION" : "AVAILABLE_BELOW_ZERO";
+      if (issueType === "WAITING_PURCHASE_AFTER_ALLOCATION") waitingPurchaseKeys.add(key);
+      issues.push(
+        mkIssue({
+          checkId: 9,
+          severity: "Info",
+          module: "Inventory",
+          issueType,
+          documentNumber: row.article,
+          reference: wh,
+          description: `On hand ${onHand}, allocated ${allocated}, available ${available}. Negative free available is a valid cover-shortfall until PO/GRN.`,
+          suggestedAction: PROCUREMENT_FOLLOW_UP,
+          openPath: `/store?tab=Stock`,
+          article: row.article,
+          date: stockAgeDate(row),
+        }),
+      );
+    }
   }
 
   for (const row of packedExceeds) {
@@ -1729,6 +1876,8 @@ async function runFullDataHealthScan(companyId, companyCode = "") {
     operationalPending,
     agingMonitor,
     operationalCounters: operationalCounters(operationalPending),
+    procurementCounters: procurementCounters(operationalPending),
+    agingBandCounters: agingBandCounters([...operationalPending, ...agingMonitor]),
     sections: {
       integrity: integrityIssues,
       operationalPending,
@@ -1743,6 +1892,7 @@ async function runFullDataHealthScan(companyId, companyCode = "") {
     integrityIssueCount: integrityIssues.length,
     operationalIssueCount: operationalPending.length,
     operationalPendingCount: operationalPending.length,
+    procurementQueueCount: operationalPending.filter((r) => isProcurementQueueType(r.issueType)).length,
     agingIssueCount: agingMonitor.length,
     agingMonitorCount: agingMonitor.length,
     uniquePendingDocumentCount: operationalPending.length,
@@ -1819,11 +1969,12 @@ export async function buildDataHealthDashboard(companyId, companyCode = "", rawF
     majorCount: scan.majorCount,
     minorCount: scan.minorCount,
     integrityIssueCount: scan.integrityIssueCount,
-    operationalIssueCount: scan.operationalIssueCount,
-    operationalPendingCount: scan.operationalPendingCount,
-    agingIssueCount: scan.agingIssueCount,
-    agingMonitorCount: scan.agingMonitorCount,
-    uniquePendingDocumentCount: scan.uniquePendingDocumentCount,
+    operationalIssueCount: filteredOperational.length,
+    operationalPendingCount: filteredOperational.length,
+    procurementQueueCount: filteredOperational.filter((r) => isProcurementQueueType(r.issueType)).length,
+    agingIssueCount: filteredAging.length,
+    agingMonitorCount: filteredAging.length,
+    uniquePendingDocumentCount: filteredOperational.length,
     totalIssues: filteredIssues.length,
     /** Combined integrity + operational (section field on each row). */
     issues: filteredIssues,
@@ -1831,6 +1982,8 @@ export async function buildDataHealthDashboard(companyId, companyCode = "", rawF
     operationalPending: filteredOperational,
     agingMonitor: filteredAging,
     operationalCounters: operationalCounters(filteredOperational),
+    procurementCounters: procurementCounters(filteredOperational),
+    agingBandCounters: agingBandCounters([...filteredOperational, ...filteredAging]),
     sections: {
       integrity: filteredIntegrity,
       operationalPending: filteredOperational,
