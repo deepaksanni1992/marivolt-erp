@@ -1,5 +1,10 @@
 /**
  * ERP Data Health — read-only validation engine (no mutations).
+ *
+ * Categories:
+ *   INTEGRITY  — genuine ERP data / stock / ledger failures (affect Health Score)
+ *   OPERATIONAL — normal workflow pending states (informational only)
+ *   AGING      — operational pending items past configurable age thresholds
  */
 import mongoose from "mongoose";
 import OrderAcknowledgement from "../models/OrderAcknowledgement.js";
@@ -24,6 +29,294 @@ import { getCustomsReconciliationMismatches } from "./customsReconciliationServi
 const EPS = 0.0001;
 const ISSUE_CAP_PER_CHECK = 40;
 const CACHE_MS = Number(process.env.DATA_HEALTH_CACHE_MS) || 5 * 60 * 1000;
+
+/** Parse DATA_HEALTH_AGING_DAYS safely: invalid/zero/negative → 7; clamp 1–365. */
+export function parseAgingDays(raw = process.env.DATA_HEALTH_AGING_DAYS) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 7;
+  return Math.min(365, Math.max(1, Math.floor(n)));
+}
+
+const DEFAULT_AGING_DAYS = parseAgingDays();
+
+/** Integrity score penalties (Health Score uses INTEGRITY only). */
+export const INTEGRITY_SCORE_WEIGHTS = Object.freeze({
+  Critical: 15,
+  Major: 5,
+  Minor: 1,
+});
+
+export const ISSUE_CATEGORIES = Object.freeze({
+  INTEGRITY: "INTEGRITY",
+  OPERATIONAL: "OPERATIONAL",
+  AGING: "AGING",
+});
+
+/**
+ * Issue types that are legitimate workflow pending states — never reduce Health Score.
+ *
+ * Decision table (Marivolt active workflows):
+ * - OA_WITHOUT_ALLOCATION → OPERATIONAL (OA may wait for allocation)
+ * - ALLOCATION_WITHOUT_PACKING → OPERATIONAL
+ * - PACKING_WITHOUT_INVOICE → OPERATIONAL
+ * - PACKING_WITHOUT_DISPATCH → OPERATIONAL
+ * - INVOICE_WITHOUT_DISPATCH → OPERATIONAL (invoice-before-dispatch is allowed)
+ * - PO_AWAITING_GRN → OPERATIONAL
+ * - PI_AWAITING_PAYMENT → OPERATIONAL
+ * - GRN_WITHOUT_PO → INTEGRITY (Store GRN post is PO-line based; orphan GRN is a broken reference)
+ * - DISPATCH_WITHOUT_INVOICE → INTEGRITY (dispatch create requires salesInvoiceId)
+ */
+export const OPERATIONAL_ISSUE_TYPES = Object.freeze(
+  new Set([
+    "OA_WITHOUT_ALLOCATION",
+    "ALLOCATION_WITHOUT_PACKING",
+    "PACKING_WITHOUT_INVOICE",
+    "PACKING_WITHOUT_DISPATCH",
+    "INVOICE_WITHOUT_DISPATCH",
+    "PO_AWAITING_GRN",
+    "PI_AWAITING_PAYMENT",
+    "SI_WITHOUT_CUSTOMS_INVOICE",
+    "PO_STATUS_NOT_UPDATED",
+    "MISSING_BL_NUMBER",
+    "MISSING_BOE_NUMBER",
+    "ITEM_WITHOUT_SUPPLIER",
+    "ITEM_WITHOUT_VERTICAL",
+    "ITEM_WITHOUT_BRAND",
+    "ITEM_WITHOUT_MODEL",
+  ])
+);
+
+/** Friendly pending labels for Operational / Aging sections. */
+export const OPERATIONAL_PENDING_LABELS = Object.freeze({
+  OA_WITHOUT_ALLOCATION: "OA awaiting Allocation",
+  ALLOCATION_WITHOUT_PACKING: "Allocation awaiting Packing",
+  PACKING_WITHOUT_INVOICE: "Packing awaiting Invoice",
+  PACKING_WITHOUT_DISPATCH: "Packing awaiting Dispatch",
+  INVOICE_WITHOUT_DISPATCH: "Sales Invoice awaiting Dispatch",
+  PO_AWAITING_GRN: "PO awaiting GRN",
+  PI_AWAITING_PAYMENT: "PI awaiting Payment",
+  SI_WITHOUT_CUSTOMS_INVOICE: "Sales Invoice awaiting Customs Invoice",
+  PO_STATUS_NOT_UPDATED: "PO status awaiting update",
+  MISSING_BL_NUMBER: "Customs lot awaiting BL number",
+  MISSING_BOE_NUMBER: "Customs lot awaiting BOE number",
+  ITEM_WITHOUT_SUPPLIER: "Item master awaiting supplier",
+  ITEM_WITHOUT_VERTICAL: "Item master awaiting vertical",
+  ITEM_WITHOUT_BRAND: "Item master awaiting brand",
+  ITEM_WITHOUT_MODEL: "Item master awaiting model",
+});
+
+/** Optional per-type aging thresholds (days). Falls back to DEFAULT_AGING_DAYS. */
+function buildAgingDaysByType() {
+  const base = DEFAULT_AGING_DAYS;
+  const pick = (envKey) => {
+    const n = Number(process.env[envKey]);
+    if (!Number.isFinite(n) || n <= 0) return base;
+    return Math.min(365, Math.max(1, Math.floor(n)));
+  };
+  return Object.freeze({
+    OA_WITHOUT_ALLOCATION: pick("DATA_HEALTH_AGING_OA_DAYS"),
+    ALLOCATION_WITHOUT_PACKING: pick("DATA_HEALTH_AGING_ALLOC_DAYS"),
+    PACKING_WITHOUT_INVOICE: pick("DATA_HEALTH_AGING_PACKING_DAYS"),
+    PACKING_WITHOUT_DISPATCH: pick("DATA_HEALTH_AGING_PACKING_DAYS"),
+    INVOICE_WITHOUT_DISPATCH: pick("DATA_HEALTH_AGING_INVOICE_DAYS"),
+    PO_AWAITING_GRN: pick("DATA_HEALTH_AGING_PO_DAYS"),
+    PI_AWAITING_PAYMENT: pick("DATA_HEALTH_AGING_PI_DAYS"),
+  });
+}
+
+const AGING_DAYS_BY_TYPE = buildAgingDaysByType();
+
+export function isOperationalIssueType(issueType) {
+  return OPERATIONAL_ISSUE_TYPES.has(String(issueType || "").trim().toUpperCase());
+}
+
+export function classifyIssueCategory(issueType) {
+  return isOperationalIssueType(issueType)
+    ? ISSUE_CATEGORIES.OPERATIONAL
+    : ISSUE_CATEGORIES.INTEGRITY;
+}
+
+/** UTC-safe whole-day age from an issue date. */
+export function ageDaysFrom(date, now = new Date()) {
+  if (!date) return null;
+  const d = new Date(date);
+  if (Number.isNaN(d.getTime())) return null;
+  const startUtc = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const nowUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  return Math.max(0, Math.floor((nowUtc - startUtc) / (24 * 60 * 60 * 1000)));
+}
+
+function agingThresholdFor(issueType) {
+  const key = String(issueType || "").trim().toUpperCase();
+  const n = AGING_DAYS_BY_TYPE[key];
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_AGING_DAYS;
+}
+
+/** Stable identity for dedupe / aging linkage. */
+export function buildIssueId({ companyCode = "", issueType, documentNumber, reference = "", article = "", warehouse = "" }) {
+  return [
+    String(companyCode || "").trim().toUpperCase() || "CO",
+    String(issueType || "").trim().toUpperCase(),
+    String(documentNumber || "").trim().toUpperCase() || "—",
+    String(reference || "").trim().toUpperCase() || "",
+    String(article || "").trim().toUpperCase() || "",
+    String(warehouse || "").trim().toUpperCase() || "",
+  ].join("|");
+}
+
+/**
+ * Enrich a raw issue with category / section / pending label / age / stable id.
+ * Operational items never contribute to Health Score.
+ */
+export function enrichIssue(raw, opts = {}) {
+  const issueType = String(raw.issueType || "").trim().toUpperCase();
+  const category = classifyIssueCategory(issueType);
+  const ageDays = ageDaysFrom(raw.date, opts.now);
+  const pendingLabel = OPERATIONAL_PENDING_LABELS[issueType] || null;
+  const thresholdDays = category === ISSUE_CATEGORIES.OPERATIONAL ? agingThresholdFor(issueType) : null;
+  const isAging =
+    category === ISSUE_CATEGORIES.OPERATIONAL &&
+    ageDays != null &&
+    thresholdDays != null &&
+    ageDays >= thresholdDays;
+  const issueId =
+    raw.issueId ||
+    buildIssueId({
+      companyCode: opts.companyCode || raw.companyCode,
+      issueType,
+      documentNumber: raw.documentNumber,
+      reference: raw.reference,
+      article: raw.article,
+      warehouse: raw.warehouse || raw.reference,
+    });
+
+  return {
+    ...raw,
+    issueId,
+    issueType,
+    category,
+    section: category,
+    pendingLabel,
+    ageDays,
+    agingThresholdDays: thresholdDays,
+    isAging: Boolean(isAging),
+    // Operational rows stay visible as Info — never Critical/Major for scoring.
+    severity:
+      category === ISSUE_CATEGORIES.OPERATIONAL
+        ? "Info"
+        : raw.severity || "Minor",
+    description:
+      category === ISSUE_CATEGORIES.OPERATIONAL && pendingLabel
+        ? `${pendingLabel}${raw.description ? ` — ${raw.description}` : ""}`
+        : raw.description,
+  };
+}
+
+function dedupeByIssueId(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const id = row.issueId || buildIssueId(row);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({ ...row, issueId: id });
+  }
+  return out;
+}
+
+function partitionIssues(enriched) {
+  const integrityIssues = [];
+  const operationalPending = [];
+  const agingMonitor = [];
+  for (const row of enriched) {
+    if (row.category === ISSUE_CATEGORIES.INTEGRITY) {
+      integrityIssues.push(row);
+      continue;
+    }
+    operationalPending.push(row);
+    if (row.isAging) {
+      // Linked aging representation — distinct ID, references operational source.
+      agingMonitor.push({
+        ...row,
+        issueId: `${row.issueId}|AGING`,
+        sourceIssueId: row.issueId,
+        category: ISSUE_CATEGORIES.AGING,
+        section: ISSUE_CATEGORIES.AGING,
+        severity: "Info",
+      });
+    }
+  }
+  return {
+    integrityIssues: dedupeByIssueId(integrityIssues),
+    operationalPending: dedupeByIssueId(operationalPending),
+    agingMonitor: dedupeByIssueId(agingMonitor),
+  };
+}
+
+function operationalCounters(operationalPending) {
+  const byType = new Map();
+  for (const row of operationalPending) {
+    const key = row.issueType;
+    const label = row.pendingLabel || row.issueType;
+    const cur = byType.get(key) || { label, issueType: key, count: 0 };
+    cur.count += 1;
+    byType.set(key, cur);
+  }
+  return [...byType.values()].sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Health Score — INTEGRITY issues only.
+ * Critical −15, Major −5, Minor −1; Info/Operational/Aging = 0.
+ * Deduped by issueId before scoring.
+ */
+export function computeHealthScore(issues) {
+  const integrity = dedupeByIssueId(
+    (issues || []).filter(
+      (row) =>
+        (!row.category || row.category === ISSUE_CATEGORIES.INTEGRITY) &&
+        row.severity !== "Info"
+    )
+  );
+  let penalties = 0;
+  const breakdown = { critical: 0, major: 0, minor: 0, penaltyPoints: 0 };
+  for (const row of integrity) {
+    if (row.severity === "Critical") {
+      penalties += INTEGRITY_SCORE_WEIGHTS.Critical;
+      breakdown.critical += 1;
+    } else if (row.severity === "Major") {
+      penalties += INTEGRITY_SCORE_WEIGHTS.Major;
+      breakdown.major += 1;
+    } else {
+      penalties += INTEGRITY_SCORE_WEIGHTS.Minor;
+      breakdown.minor += 1;
+    }
+  }
+  breakdown.penaltyPoints = penalties;
+  const healthScore = Math.max(0, Math.min(100, 100 - penalties));
+  return { healthScore, scoreBreakdown: breakdown };
+}
+
+export function healthRating(score) {
+  if (score >= 90) return "Healthy";
+  if (score >= 75) return "Attention";
+  if (score >= 50) return "Poor";
+  return "Critical";
+}
+
+function countBySeverity(issues) {
+  let criticalCount = 0;
+  let majorCount = 0;
+  let minorCount = 0;
+  let infoCount = 0;
+  for (const row of issues) {
+    if (row.severity === "Critical") criticalCount += 1;
+    else if (row.severity === "Major") majorCount += 1;
+    else if (row.severity === "Info") infoCount += 1;
+    else minorCount += 1;
+  }
+  return { criticalCount, majorCount, minorCount, infoCount };
+}
 
 const scanCache = new Map();
 
@@ -145,35 +438,6 @@ function applyFilters(issues, filters) {
     if (!inDateRange(row.date, filters.dateFrom, filters.dateTo)) return false;
     return true;
   });
-}
-
-function computeHealthScore(issues) {
-  let score = 100;
-  for (const row of issues) {
-    if (row.severity === "Critical") score -= 10;
-    else if (row.severity === "Major") score -= 5;
-    else score -= 1;
-  }
-  return Math.max(0, score);
-}
-
-function countBySeverity(issues) {
-  let criticalCount = 0;
-  let majorCount = 0;
-  let minorCount = 0;
-  for (const row of issues) {
-    if (row.severity === "Critical") criticalCount += 1;
-    else if (row.severity === "Major") majorCount += 1;
-    else minorCount += 1;
-  }
-  return { criticalCount, majorCount, minorCount };
-}
-
-function healthRating(score) {
-  if (score >= 98) return "Excellent";
-  if (score >= 90) return "Good";
-  if (score >= 75) return "Warning";
-  return "Critical";
 }
 
 function buildCharts(issues) {
@@ -337,8 +601,8 @@ async function runSalesChecks(companyId) {
         module: "Sales",
         issueType: "OA_WITHOUT_ALLOCATION",
         documentNumber: oa.oaNo,
-        description: "Order Acknowledgement exists without a linked allocation",
-        suggestedAction: "Create allocation from OA or cancel obsolete OA",
+        description: "Order Acknowledgement has no allocation yet (normal pending workflow)",
+        suggestedAction: "Create allocation when ready, or cancel obsolete OA",
         openPath: `/sales?tab=${encodeURIComponent("Order Acknowledgement")}`,
         date: oa.oaDate,
       }),
@@ -354,8 +618,8 @@ async function runSalesChecks(companyId) {
         issueType: "ALLOCATION_WITHOUT_PACKING",
         documentNumber: alloc.allocationNo,
         reference: alloc.linkedOANo || "",
-        description: "Allocation exists without store packing",
-        suggestedAction: "Create packing from allocation",
+        description: "Allocation has no store packing yet (normal pending workflow)",
+        suggestedAction: "Create packing from allocation when ready",
         openPath: "/store?tab=Packing",
         date: alloc.allocationDate,
       }),
@@ -366,12 +630,12 @@ async function runSalesChecks(companyId) {
     issues.push(
       mkIssue({
         checkId: 3,
-        severity: "Critical",
+        severity: "Major",
         module: "Sales",
         issueType: "PACKING_WITHOUT_INVOICE",
         documentNumber: pk.packingNo,
-        description: "Packing exists without sales invoice",
-        suggestedAction: "Create sales invoice from packing",
+        description: "Packing has no sales invoice yet (normal pending workflow)",
+        suggestedAction: "Create sales invoice from packing when ready",
         openPath: `/store?tab=Packing&packingNo=${encodeURIComponent(pk.packingNo)}`,
         date: pk.packingDate,
       }),
@@ -386,8 +650,8 @@ async function runSalesChecks(companyId) {
         module: "Sales",
         issueType: "INVOICE_WITHOUT_DISPATCH",
         documentNumber: si.invoiceNo,
-        description: "Sales invoice exists without dispatch record",
-        suggestedAction: "Create dispatch from packing/invoice",
+        description: "Sales invoice has no dispatch yet (allowed pending workflow)",
+        suggestedAction: "Create dispatch when goods are ready to ship",
         openPath: `/sales?tab=${encodeURIComponent("Sales Invoice")}&id=${si._id}`,
         date: si.invoiceDate,
       }),
@@ -403,10 +667,45 @@ async function runSalesChecks(companyId) {
         issueType: "DISPATCH_WITHOUT_INVOICE",
         documentNumber: d.dispatchNo,
         reference: d.salesInvoiceNo || "",
-        description: "Dispatch exists without valid sales invoice link",
+        description: "Dispatch exists without valid sales invoice link (broken document reference)",
         suggestedAction: "Link dispatch to sales invoice or cancel dispatch",
         openPath: `/store?tab=Dispatch&dispatchNo=${encodeURIComponent(d.dispatchNo)}`,
         date: d.dispatchDate,
+      }),
+    );
+  }
+
+  // Packing awaiting Dispatch (posted packing with no related store dispatch)
+  const packingAwaitingDispatch = await StorePacking.aggregate([
+    {
+      $match: withCompany(companyId, {
+        status: { $in: ["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED"] },
+      }),
+    },
+    {
+      $lookup: {
+        from: col(StoreDispatch),
+        localField: "_id",
+        foreignField: "packingId",
+        as: "dispatches",
+      },
+    },
+    { $match: { dispatches: { $size: 0 } } },
+    { $limit: ISSUE_CAP_PER_CHECK },
+    { $project: { packingNo: 1, packingDate: 1 } },
+  ]);
+  for (const pk of packingAwaitingDispatch) {
+    issues.push(
+      mkIssue({
+        checkId: 30,
+        severity: "Major",
+        module: "Sales",
+        issueType: "PACKING_WITHOUT_DISPATCH",
+        documentNumber: pk.packingNo,
+        description: "Posted packing has no dispatch yet (normal pending workflow)",
+        suggestedAction: "Create dispatch when ready to ship",
+        openPath: `/store?tab=Packing&packingNo=${encodeURIComponent(pk.packingNo)}`,
+        date: pk.packingDate,
       }),
     );
   }
@@ -545,10 +844,46 @@ async function runPurchaseChecks(companyId) {
         module: "Purchase",
         issueType: "PO_STATUS_NOT_UPDATED",
         documentNumber: po.poNo || po.poNumber,
-        description: "PO fully received but status not updated",
-        suggestedAction: "Update PO status to received/closed",
+        description: "PO fully received but status not updated (workflow status lag)",
+        suggestedAction: "Update PO status to received/closed when convenient",
         openPath: `/purchase?tab=orders&id=${po._id}`,
         date: po.orderDate,
+      }),
+    );
+  }
+
+  // PO awaiting GRN — open POs with no linked GRN (informational pending)
+  const poAwaitingGrn = await PurchaseOrder.aggregate([
+    {
+      $match: withCompany(companyId, {
+        status: { $nin: ["CANCELLED", "CLOSED", "COMPLETED", "FULLY_RECEIVED", "RECEIVED"] },
+      }),
+    },
+    {
+      $lookup: {
+        from: col(GRN),
+        localField: "_id",
+        foreignField: "poId",
+        as: "grns",
+      },
+    },
+    { $match: { grns: { $size: 0 } } },
+    { $limit: ISSUE_CAP_PER_CHECK },
+    { $project: { poNo: 1, poNumber: 1, orderDate: 1, _id: 1, supplierName: 1 } },
+  ]);
+  for (const po of poAwaitingGrn) {
+    issues.push(
+      mkIssue({
+        checkId: 31,
+        severity: "Minor",
+        module: "Purchase",
+        issueType: "PO_AWAITING_GRN",
+        documentNumber: po.poNo || po.poNumber,
+        description: "Purchase order has no GRN yet (normal pending workflow)",
+        suggestedAction: "Receive goods via GRN when shipment arrives",
+        openPath: `/purchase?tab=orders&id=${po._id}`,
+        date: po.orderDate,
+        supplier: po.supplierName,
       }),
     );
   }
@@ -1129,6 +1464,45 @@ async function runMasterDataOtherChecks(companyId) {
   return capIssues(issues);
 }
 
+async function runPurchaseInvoicePendingChecks(companyId) {
+  const issues = [];
+  const unpaid = await PurchaseInvoice.aggregate([
+    { $match: withCompany(companyId, { status: { $nin: ["CANCELLED", "PAID", "CLOSED"] } }) },
+    {
+      $addFields: {
+        balance: {
+          $ifNull: [
+            "$balanceAmount",
+            { $subtract: [{ $ifNull: ["$totalAmount", 0] }, { $ifNull: ["$totalPaidAmount", 0] }] },
+          ],
+        },
+      },
+    },
+    { $match: { $expr: { $gt: ["$balance", 0.02] } } },
+    { $sort: { invoiceDate: 1 } },
+    { $limit: ISSUE_CAP_PER_CHECK },
+    { $project: { invoiceNumber: 1, invoiceDate: 1, supplierName: 1, balance: 1 } },
+  ]);
+
+  for (const pi of unpaid) {
+    issues.push(
+      mkIssue({
+        checkId: 32,
+        severity: "Minor",
+        module: "Accounts",
+        issueType: "PI_AWAITING_PAYMENT",
+        documentNumber: pi.invoiceNumber,
+        description: `Purchase invoice balance ${pi.balance} awaiting payment (normal pending workflow)`,
+        suggestedAction: "Record supplier payment when due",
+        openPath: `/accounts?tab=payables`,
+        date: pi.invoiceDate,
+        supplier: pi.supplierName,
+      })
+    );
+  }
+  return capIssues(issues);
+}
+
 async function runOutstandingValidation(companyId) {
   const issues = [];
   const [customerMismatch, customerOverpaid, supplierMismatch, supplierOverpaid] = await Promise.all([
@@ -1296,6 +1670,7 @@ async function runFullDataHealthScan(companyId, companyCode = "") {
     masterOtherIssues,
     outstandingIssues,
     accountsOtherIssues,
+    piPendingIssues,
   ] = await Promise.all([
     entityCounts(companyId),
     runSalesChecks(companyId),
@@ -1307,9 +1682,10 @@ async function runFullDataHealthScan(companyId, companyCode = "") {
     runMasterDataOtherChecks(companyId),
     runOutstandingValidation(companyId),
     runAccountsOtherChecks(companyId),
+    runPurchaseInvoicePendingChecks(companyId),
   ]);
 
-  const issues = [
+  const rawIssues = [
     ...salesIssues,
     ...purchaseIssues,
     ...inventoryIssues,
@@ -1319,23 +1695,64 @@ async function runFullDataHealthScan(companyId, companyCode = "") {
     ...masterOtherIssues,
     ...outstandingIssues,
     ...accountsOtherIssues,
+    ...piPendingIssues,
   ];
 
-  const { criticalCount, majorCount, minorCount } = countBySeverity(issues);
-  const healthScore = computeHealthScore(issues);
+  const enriched = dedupeByIssueId(
+    rawIssues.map((row) => enrichIssue(row, { companyCode }))
+  );
+  const { integrityIssues, operationalPending, agingMonitor } = partitionIssues(enriched);
+
+  // Combined list for backward compatibility: integrity + operational only
+  // (Aging is linked via sourceIssueId — not double-counted here.)
+  const combinedIssues = [...integrityIssues, ...operationalPending];
+
+  // Health Score + severity KPIs use integrity failures only.
+  const { criticalCount, majorCount, minorCount } = countBySeverity(integrityIssues);
+  const { healthScore, scoreBreakdown } = computeHealthScore(integrityIssues);
+
+  const stockBucketIntegrity = integrityIssues.filter((r) => r.issueType === "STOCK_BUCKET_INTEGRITY");
+  const stockBucketSummary = {
+    mismatchCount: stockBucketIntegrity.length,
+    criticalCount: stockBucketIntegrity.filter((r) => r.severity === "Critical").length,
+    majorCount: stockBucketIntegrity.filter((r) => r.severity === "Major").length,
+    lastScan: new Date().toISOString(),
+  };
 
   return {
     lastAuditRun: new Date().toISOString(),
+    generatedAt: new Date().toISOString(),
     companyCode,
-    counts,
-    issues,
+    /** Combined integrity + operational (with `section`). Aging is separate. */
+    issues: combinedIssues,
+    integrityIssues,
+    operationalPending,
+    agingMonitor,
+    operationalCounters: operationalCounters(operationalPending),
+    sections: {
+      integrity: integrityIssues,
+      operationalPending,
+      agingMonitor,
+    },
     healthScore,
     healthRating: healthRating(healthScore),
+    scoreBreakdown,
     criticalCount,
     majorCount,
     minorCount,
-    totalIssues: issues.length,
-    charts: buildCharts(issues),
+    integrityIssueCount: integrityIssues.length,
+    operationalIssueCount: operationalPending.length,
+    operationalPendingCount: operationalPending.length,
+    agingIssueCount: agingMonitor.length,
+    agingMonitorCount: agingMonitor.length,
+    uniquePendingDocumentCount: operationalPending.length,
+    totalIssues: combinedIssues.length,
+    agingThresholdDays: DEFAULT_AGING_DAYS,
+    agingDefaults: { defaultDays: DEFAULT_AGING_DAYS },
+    stockBucketSummary,
+    charts: buildCharts(integrityIssues),
+    chartsOperational: buildCharts(operationalPending),
+    counts,
   };
 }
 
@@ -1364,26 +1781,65 @@ async function getOrRunScan(companyId, companyCode, refresh = false) {
 export async function buildDataHealthDashboard(companyId, companyCode = "", rawFilters = {}, options = {}) {
   const filters = parseFilters(rawFilters);
   const refresh = options.refresh || String(rawFilters.refresh || "").toLowerCase() === "true";
+  const sectionRaw = upper(rawFilters.section || rawFilters.category || "");
+  const sectionFilter = ["INTEGRITY", "OPERATIONAL", "OPERATIONAL_PENDING", "AGING"].includes(sectionRaw)
+    ? sectionRaw === "OPERATIONAL_PENDING"
+      ? "OPERATIONAL"
+      : sectionRaw
+    : "";
 
   const scan = await getOrRunScan(companyId, companyCode, refresh);
-  const filteredIssues = applyFilters(scan.issues, filters);
-  const charts = hasActiveFilters(filters) ? buildCharts(filteredIssues) : scan.charts;
+
+  let scoped = scan.issues || [];
+  if (sectionFilter === "INTEGRITY") scoped = scan.integrityIssues || [];
+  else if (sectionFilter === "OPERATIONAL") scoped = scan.operationalPending || [];
+  else if (sectionFilter === "AGING") scoped = scan.agingMonitor || [];
+
+  const filteredIssues = applyFilters(scoped, filters);
+  const filteredIntegrity = applyFilters(scan.integrityIssues || [], filters);
+  const filteredOperational = applyFilters(scan.operationalPending || [], filters);
+  const filteredAging = applyFilters(scan.agingMonitor || [], filters);
+
+  const charts = hasActiveFilters(filters) || sectionFilter
+    ? buildCharts(filteredIntegrity)
+    : scan.charts;
 
   return {
-    generatedAt: scan.lastAuditRun,
+    generatedAt: scan.generatedAt || scan.lastAuditRun,
     lastAuditRun: scan.lastAuditRun,
     fromCache: scan.fromCache,
     cacheExpiresAt: scan.cacheExpiresAt,
     companyCode: scan.companyCode,
-    filters,
+    filters: { ...filters, section: sectionFilter || "" },
     counts: scan.counts,
     healthScore: scan.healthScore,
     healthRating: scan.healthRating,
+    scoreBreakdown: scan.scoreBreakdown,
     criticalCount: scan.criticalCount,
     majorCount: scan.majorCount,
     minorCount: scan.minorCount,
+    integrityIssueCount: scan.integrityIssueCount,
+    operationalIssueCount: scan.operationalIssueCount,
+    operationalPendingCount: scan.operationalPendingCount,
+    agingIssueCount: scan.agingIssueCount,
+    agingMonitorCount: scan.agingMonitorCount,
+    uniquePendingDocumentCount: scan.uniquePendingDocumentCount,
     totalIssues: filteredIssues.length,
+    /** Combined integrity + operational (section field on each row). */
     issues: filteredIssues,
+    integrityIssues: filteredIntegrity,
+    operationalPending: filteredOperational,
+    agingMonitor: filteredAging,
+    operationalCounters: operationalCounters(filteredOperational),
+    sections: {
+      integrity: filteredIntegrity,
+      operationalPending: filteredOperational,
+      agingMonitor: filteredAging,
+    },
+    agingThresholdDays: scan.agingThresholdDays,
+    agingDefaults: scan.agingDefaults,
+    stockBucketSummary: scan.stockBucketSummary,
     charts,
+    chartsOperational: buildCharts(filteredOperational),
   };
 }

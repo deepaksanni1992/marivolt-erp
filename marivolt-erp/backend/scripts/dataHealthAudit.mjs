@@ -73,10 +73,21 @@ async function main() {
     if (d.lastAuditRun || d.generatedAt) pass("AUDIT-RUN", `lastAuditRun=${d.lastAuditRun || d.generatedAt}`);
     else fail("AUDIT-RUN", "lastAuditRun missing");
     if (typeof d.healthScore === "number" && d.healthScore >= 0 && d.healthScore <= 100) {
-      const expected = 100 - d.criticalCount * 10 - d.majorCount * 5 - d.minorCount * 1;
+      // Integrity-only: Critical −15, Major −5, Minor −1
+      const expected =
+        100 - (d.criticalCount || 0) * 15 - (d.majorCount || 0) * 5 - (d.minorCount || 0) * 1;
       const clamped = Math.max(0, expected);
-      if (Math.abs(d.healthScore - clamped) <= 0.01) pass("SCORE", `Health score ${d.healthScore} (${d.healthRating})`);
-      else warn("SCORE", `Score ${d.healthScore} vs expected ${clamped} (filtered issues may differ)`);
+      if (Math.abs(d.healthScore - clamped) <= 0.01) {
+        pass("SCORE", `Health score ${d.healthScore} (${d.healthRating}) integrity-only`);
+      } else if (d.scoreBreakdown) {
+        const sb = d.scoreBreakdown;
+        const alt = Math.max(0, 100 - (sb.critical || 0) * 15 - (sb.major || 0) * 5 - (sb.minor || 0) * 1);
+        if (Math.abs(d.healthScore - alt) <= 0.01) pass("SCORE", `Health score ${d.healthScore} matches scoreBreakdown`);
+        else warn("SCORE", `Score ${d.healthScore} vs expected ${clamped}`);
+      } else warn("SCORE", `Score ${d.healthScore} vs expected ${clamped} (filtered issues may differ)`);
+      if (d.sections?.integrity || d.integrityIssues) pass("SECTIONS", "integrity / operational sections present");
+      else warn("SECTIONS", "sections.integrity missing (older API?)");
+      if (typeof d.agingThresholdDays === "number") pass("AGING", `agingThresholdDays=${d.agingThresholdDays}`);
     } else fail("SCORE", "healthScore missing");
 
     if (Array.isArray(d.issues)) pass("ISSUES", `${d.issues.length} issue rows, critical=${d.criticalCount} major=${d.majorCount} minor=${d.minorCount}`);
