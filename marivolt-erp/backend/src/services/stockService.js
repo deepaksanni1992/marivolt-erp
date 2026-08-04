@@ -409,7 +409,11 @@ function buildLedgerRow({
 export async function createStockLedgerEntry(data) {
   requireCompanyId(data?.companyId);
   const row = buildLedgerRow(data);
-  const [doc] = await StockLedger.create([row], { session: data?.session });
+  // Single ledger row: array create + ordered keeps session semantics valid under Mongoose 9.
+  const [doc] = await StockLedger.create([row], {
+    session: data?.session,
+    ordered: true,
+  });
   return doc;
 }
 

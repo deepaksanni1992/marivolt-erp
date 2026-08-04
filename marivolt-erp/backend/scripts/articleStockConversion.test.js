@@ -195,5 +195,59 @@ run("Cost value preserved under ratio 2", () => {
   assert.equal(targetUnitCost * targetQty, unitCost * sourceQty);
 });
 
+run("Customs multi-doc create with session requires ordered:true", () => {
+  const src = fs.readFileSync(
+    path.join(backendRoot, "src/services/articleConversionCustomsService.js"),
+    "utf8"
+  );
+  // Regression for: Cannot call create() with a session and multiple documents unless ordered:true
+  assert.match(src, /CustomsMovement\.create\([\s\S]*?ordered:\s*true/);
+  assert.equal((src.match(/ordered:\s*true/g) || []).length >= 2, true);
+  // Single target lot item uses save({ session }) — not unsafe create(doc, { session })
+  assert.match(src, /new CustomsLotItem\(/);
+  assert.match(src, /await targetItem\.save\(\{ session \}\)/);
+  // No remaining multi-doc CustomsMovement.create options that omit ordered
+  const movementCreates = [...src.matchAll(/CustomsMovement\.create\(\s*\[[\s\S]*?\]\s*,\s*\{([^}]*)\}\s*\)/g)];
+  assert.ok(movementCreates.length >= 2, "expected post + reverse CustomsMovement.create");
+  for (const m of movementCreates) {
+    assert.match(m[1], /session/);
+    assert.match(m[1], /ordered:\s*true/);
+  }
+});
+
+run("stockService ledger create uses ordered:true with session", () => {
+  const src = fs.readFileSync(path.join(backendRoot, "src/services/stockService.js"), "utf8");
+  assert.match(
+    src,
+    /StockLedger\.create\(\[row\],\s*\{\s*session:\s*data\?\.session,\s*ordered:\s*true/
+  );
+});
+
+run("Post path runs customs retarget before stock mutation; claimed.save uses session", () => {
+  const src = fs.readFileSync(
+    path.join(backendRoot, "src/controllers/articleConversionController.js"),
+    "utf8"
+  );
+  const customsIdx = src.indexOf("retargetCustomsLotsForConversion");
+  const stockIdx = src.indexOf("stockService.articleConversion");
+  const saveIdx = src.indexOf("await claimed.save({ session })");
+  assert.ok(customsIdx > 0 && stockIdx > customsIdx, "customs before stock");
+  assert.ok(saveIdx > stockIdx, "status save after stock");
+  assert.match(src, /status:\s*"POSTING"/);
+  assert.match(src, /claimed\.status = "POSTED"/);
+});
+
+run("Mongoose 9 rejects multi-doc create+session without ordered", () => {
+  // Mirror the guard from mongoose/lib/model.js
+  function wouldThrow(docCount, session, ordered) {
+    const options = { session, ordered };
+    return Boolean(options.session && !options.ordered && docCount > 1);
+  }
+  assert.equal(wouldThrow(2, { id: "s" }, false), true);
+  assert.equal(wouldThrow(2, { id: "s" }, true), false);
+  assert.equal(wouldThrow(1, { id: "s" }, false), false);
+  assert.equal(wouldThrow(2, null, false), false);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed ? 1 : 0);

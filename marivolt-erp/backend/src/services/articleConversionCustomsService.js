@@ -139,54 +139,52 @@ export async function retargetCustomsLotsForConversion({
     const unitPrice = Number(sourceItem.unitPrice) || 0;
     const fx = Number(sourceItem.exchangeRateToAED) || 0;
     const unitWeight = Number(sourceItem.unitWeightKg || sourceItem.weightKg) || 0;
-    const [targetItem] = await CustomsLotItem.create(
-      [
-        {
-          companyId,
-          companyCode: companyCode || sourceItem.companyCode || "",
-          customsLotId: sourceItem.customsLotId,
-          customsLotRef: sourceItem.customsLotRef,
-          grnId: sourceItem.grnId,
-          grnNo: sourceItem.grnNo,
-          grnLineId: sourceItem.grnLineId,
-          articleNumber: tgtArt,
-          partNumber: sourceItem.partNumber || "",
-          partName: targetDescription || sourceItem.partName || "",
-          description: targetDescription || sourceItem.description || "",
-          hsCode: sourceItem.hsCode,
-          currency: sourceItem.currency,
-          unitPrice,
-          qtyImported: take,
-          qtyAvailable: take,
-          qtyConsumed: 0,
-          weightKg: unitWeight,
-          unitWeightKg: unitWeight,
-          totalWeightKg: unitWeight * take,
-          totalValue: unitPrice * take,
-          exchangeRateToAED: fx,
-          customsValueAED: unitPrice * take * fx,
-          customStock: take,
-          customStockBalance: take,
-          supplierInvoiceNumber: sourceItem.supplierInvoiceNumber,
-          supplierInvoiceDate: sourceItem.supplierInvoiceDate,
-          receivedDate: sourceItem.receivedDate,
-          boeNumber: sourceItem.boeNumber,
-          boeDate: sourceItem.boeDate,
-          blNumber: sourceItem.blNumber,
-          awbNumber: sourceItem.awbNumber,
-          countryOfOrigin: sourceItem.countryOfOrigin,
-          status: "IN_STOCK",
-          originalReceivedArticle: srcArt,
-          conversionNo: up(conversionNo),
-          conversionDocumentId: conversionDocumentId || null,
-          convertedFromLotItemId: sourceItem._id,
-          isConversionLayer: true,
-          customsRemarks: `Converted from ${srcArt} under ${up(conversionNo)}`,
-        },
-      ],
-      { session }
-    );
+    // Prefer save for true single-doc writes; array create requires ordered:true with sessions (Mongoose 9).
+    const targetItem = new CustomsLotItem({
+      companyId,
+      companyCode: companyCode || sourceItem.companyCode || "",
+      customsLotId: sourceItem.customsLotId,
+      customsLotRef: sourceItem.customsLotRef,
+      grnId: sourceItem.grnId,
+      grnNo: sourceItem.grnNo,
+      grnLineId: sourceItem.grnLineId,
+      articleNumber: tgtArt,
+      partNumber: sourceItem.partNumber || "",
+      partName: targetDescription || sourceItem.partName || "",
+      description: targetDescription || sourceItem.description || "",
+      hsCode: sourceItem.hsCode,
+      currency: sourceItem.currency,
+      unitPrice,
+      qtyImported: take,
+      qtyAvailable: take,
+      qtyConsumed: 0,
+      weightKg: unitWeight,
+      unitWeightKg: unitWeight,
+      totalWeightKg: unitWeight * take,
+      totalValue: unitPrice * take,
+      exchangeRateToAED: fx,
+      customsValueAED: unitPrice * take * fx,
+      customStock: take,
+      customStockBalance: take,
+      supplierInvoiceNumber: sourceItem.supplierInvoiceNumber,
+      supplierInvoiceDate: sourceItem.supplierInvoiceDate,
+      receivedDate: sourceItem.receivedDate,
+      boeNumber: sourceItem.boeNumber,
+      boeDate: sourceItem.boeDate,
+      blNumber: sourceItem.blNumber,
+      awbNumber: sourceItem.awbNumber,
+      countryOfOrigin: sourceItem.countryOfOrigin,
+      status: "IN_STOCK",
+      originalReceivedArticle: srcArt,
+      conversionNo: up(conversionNo),
+      conversionDocumentId: conversionDocumentId || null,
+      convertedFromLotItemId: sourceItem._id,
+      isConversionLayer: true,
+      customsRemarks: `Converted from ${srcArt} under ${up(conversionNo)}`,
+    });
+    await targetItem.save({ session });
 
+    // Multi-document create with a session MUST set ordered: true (Mongoose 9).
     await CustomsMovement.create(
       [
         {
@@ -222,7 +220,7 @@ export async function retargetCustomsLotsForConversion({
           createdBy,
         },
       ],
-      { session }
+      { session, ordered: true }
     );
 
     results.push({
@@ -340,7 +338,7 @@ export async function reverseCustomsLotsForConversion({
           createdBy,
         },
       ],
-      { session }
+      { session, ordered: true }
     );
   }
 }
