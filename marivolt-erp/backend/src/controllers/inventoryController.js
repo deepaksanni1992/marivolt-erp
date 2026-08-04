@@ -23,10 +23,12 @@ export async function listBalances(req, res) {
       StockBalance.countDocuments(filter),
     ]);
     const items = rawItems.map((r) => {
-      const phys = Number(r.quantity) || 0;
-      const resq = Number(r.reservedQty) || 0;
-      const availableQty = Math.max(0, phys - resq);
-      return { ...r, availableQty };
+      const phys = Number(r.onHandQty ?? r.quantity) || 0;
+      const resq = Math.max(Number(r.allocatedQty) || 0, Number(r.reservedQty) || 0);
+      const packed = Number(r.packedQty) || 0;
+      // Never trust stored availableQty — canonical free stock formula
+      const availableQty = phys - resq - packed;
+      return { ...r, onHandQty: phys, reservedQty: resq, packedQty: packed, availableQty };
     });
     res.json({ items, total, page, limit });
   } catch (err) {
@@ -45,16 +47,21 @@ export async function getBalance(req, res) {
         warehouse,
         quantity: 0,
         reservedQty: 0,
+        packedQty: 0,
         availableQty: 0,
         unitCost: 0,
         location: "",
       });
     }
-    const phys = Number(row.quantity) || 0;
-    const resq = Number(row.reservedQty) || 0;
+    const phys = Number(row.onHandQty ?? row.quantity) || 0;
+    const resq = Math.max(Number(row.allocatedQty) || 0, Number(row.reservedQty) || 0);
+    const packed = Number(row.packedQty) || 0;
     res.json({
       ...row,
-      availableQty: Math.max(0, phys - resq),
+      onHandQty: phys,
+      reservedQty: resq,
+      packedQty: packed,
+      availableQty: phys - resq - packed,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -87,18 +94,25 @@ export async function postStockIn(req, res) {
   try {
     const { itemCode, warehouse, qty, referenceType, referenceNumber, unitCost, remarks } = req.body;
     await session.withTransaction(async () => {
+      const code = String(itemCode || "").trim().toUpperCase();
+      const w = String(warehouse || "MAIN").trim().toUpperCase() || "MAIN";
+      const ref = String(referenceNumber || "").trim();
       await stockService.grnReceive({
         session,
         companyId: req.companyId,
-        article: itemCode,
-        warehouse,
+        article: code,
+        warehouse: w,
         qty,
         referenceType: referenceType || "GRN",
-        referenceNo: referenceNumber || "",
+        referenceNo: ref || `INV-IN:${code}:${w}`,
         unitCost,
         remarks,
         createdBy: req.user?.email || "",
         sourceModule: "INVENTORY",
+        effectKey: req.body?.idempotencyKey
+          ? String(req.body.idempotencyKey)
+          : undefined,
+        lineId: ref || "manual",
       });
     });
     const w = String(warehouse || "MAIN").trim().toUpperCase() || "MAIN";
@@ -117,18 +131,23 @@ export async function postStockOut(req, res) {
   try {
     const { itemCode, warehouse, qty, referenceType, referenceNumber, remarks } = req.body;
     await session.withTransaction(async () => {
+      const code = String(itemCode || "").trim().toUpperCase();
+      const w = String(warehouse || "MAIN").trim().toUpperCase() || "MAIN";
+      const ref = String(referenceNumber || "").trim();
       await stockService.stockAdjustment({
         session,
         companyId: req.companyId,
-        article: itemCode,
-        warehouse,
+        article: code,
+        warehouse: w,
         qty,
         direction: "Decrease",
         referenceType: referenceType || "STOCK_OUT",
-        referenceNo: referenceNumber || "",
+        referenceNo: ref || `INV-OUT:${code}:${w}`,
         remarks,
         createdBy: req.user?.email || "",
         sourceModule: "INVENTORY",
+        effectKey: req.body?.idempotencyKey ? String(req.body.idempotencyKey) : undefined,
+        lineId: ref || "manual",
       });
     });
     const w = String(warehouse || "MAIN").trim().toUpperCase() || "MAIN";
@@ -160,17 +179,27 @@ export async function postAdjustment(req, res) {
     });
     if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
     await session.withTransaction(async () => {
+      const code = String(itemCode || "").trim().toUpperCase();
+      const w = String(warehouse || "MAIN").trim().toUpperCase() || "MAIN";
+      const ref = String(req.body?.referenceNo || "").trim();
       await stockService.stockAdjustment({
         session,
         companyId: req.companyId,
-        article: itemCode,
-        warehouse,
+        article: code,
+        warehouse: w,
         qty: Math.abs(delta),
         direction: delta > 0 ? "Increase" : "Decrease",
         referenceType: "STOCK_ADJUSTMENT",
+        referenceNo: ref || `ADJ:${code}:${w}:${Math.abs(delta)}:${delta > 0 ? "IN" : "OUT"}`,
         remarks,
         createdBy: req.user?.email || "",
         sourceModule: "INVENTORY",
+        effectKey: req.body?.idempotencyKey
+          ? String(req.body.idempotencyKey)
+          : gate.request?._id
+            ? `phys:STOCK_ADJUSTMENT:${req.companyId}:APPR:${gate.request._id}:${code}`
+            : undefined,
+        lineId: ref || "manual",
       });
     });
     const w = String(warehouse || "MAIN").trim().toUpperCase() || "MAIN";
@@ -212,6 +241,10 @@ export async function postOpening(req, res) {
           remarks: remarks || "",
           createdBy: req.user?.email || "",
           sourceModule: "INVENTORY",
+          referenceNo: `OPENING:${code}:${w}`,
+          effectKey: req.body?.idempotencyKey
+            ? String(req.body.idempotencyKey)
+            : undefined,
         });
       } else {
         // Zero opening — seed an empty StockBalance row without

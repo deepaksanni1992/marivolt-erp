@@ -21,7 +21,11 @@ import {
   ALLOCATION_STATUSES_HOLDING_RESERVED,
   allocationLineRemainingReserved,
   PACKING_STATUSES_HOLDING_PACKED,
-} from "./stockBucketIntegrityService.js";
+  calculateExpectedReserved,
+  calculateExpectedPacked as calculateExpectedPackedShared,
+  computeExpectedReservedFromAllocations,
+  computeExpectedPackedFromPackings,
+} from "./stockExpectedBuckets.js";
 
 const EPS = 1e-6;
 
@@ -144,102 +148,17 @@ function toObjectId(id) {
 
 /**
  * Expected reserved from live OrderAllocation documents only.
+ * Delegates to shared calculateExpectedReserved (single formula for all scanners).
  */
 export async function calculateExpectedReservation(companyId, warehouse, article) {
-  const code = up(article);
-  const wh = up(warehouse) || "MAIN";
-  if (!companyId || !code) {
-    throw new Error("calculateExpectedReservation: companyId and article required");
-  }
-
-  const allocations = await OrderAllocation.find({
-    companyId,
-    warehouse: wh,
-    status: { $in: [...RESERVATION_HOLDING_ALLOCATION_STATUSES] },
-    "lines.article": code,
-  })
-    .select("_id allocationNo status customerName lines warehouse")
-    .lean();
-
-  let expectedReservedQty = 0;
-  const documents = [];
-  for (const a of allocations) {
-    const st = up(a.status);
-    if (st === "CANCELLED" || st === "REVERSED") continue;
-    if (!RESERVATION_HOLDING_ALLOCATION_STATUSES.includes(st)) continue;
-    for (const ln of a.lines || []) {
-      if (up(ln.article) !== code) continue;
-      const hold = allocationLineRemainingReserved(ln);
-      if (hold <= EPS) continue;
-      expectedReservedQty += hold;
-      documents.push({
-        type: "OrderAllocation",
-        id: String(a._id),
-        number: a.allocationNo || "",
-        qty: hold,
-        status: a.status,
-        customerName: a.customerName || "",
-      });
-    }
-  }
-
-  return {
-    companyId: String(companyId),
-    warehouse: wh,
-    article: code,
-    expectedReservedQty,
-    documents,
-  };
+  return calculateExpectedReserved(companyId, warehouse, article);
 }
 
 /**
  * Expected packed from live StorePacking documents only.
  */
 export async function calculateExpectedPacked(companyId, warehouse, article) {
-  const code = up(article);
-  const wh = up(warehouse) || "MAIN";
-  if (!companyId || !code) {
-    throw new Error("calculateExpectedPacked: companyId and article required");
-  }
-
-  const packings = await StorePacking.find({
-    companyId,
-    warehouse: wh,
-    status: { $in: [...RESERVATION_HOLDING_PACKING_STATUSES] },
-    "lines.article": code,
-  })
-    .select("_id packingNo status lines warehouse allocationNo")
-    .lean();
-
-  let expectedPackedQty = 0;
-  const documents = [];
-  for (const p of packings) {
-    const st = up(p.status);
-    if (st === "CANCELLED" || st === "CANCELLING" || st === "DRAFT") continue;
-    let q = 0;
-    for (const ln of p.lines || []) {
-      if (up(ln.article) !== code) continue;
-      q += Math.max(0, n(ln.packQty) - n(ln.dispatchedQty));
-    }
-    if (q <= EPS) continue;
-    expectedPackedQty += q;
-    documents.push({
-      type: "StorePacking",
-      id: String(p._id),
-      number: p.packingNo || "",
-      qty: q,
-      status: p.status,
-      allocationNo: p.allocationNo || "",
-    });
-  }
-
-  return {
-    companyId: String(companyId),
-    warehouse: wh,
-    article: code,
-    expectedPackedQty,
-    documents,
-  };
+  return calculateExpectedPackedShared(companyId, warehouse, article);
 }
 
 /**
@@ -565,7 +484,8 @@ export async function validateStockBuckets(companyId, warehouse, article, opts =
 
 /**
  * Bulk expected maps — avoids N+1 per StockBalance row.
- * Query count ≈ 1 balances + 1 allocation agg + 1 packing agg (+ bulkWrite).
+ * Uses shared computeExpectedReservedFromAllocations / computeExpectedPackedFromPackings
+ * (same formula as calculateExpectedReserved — no duplicated logic).
  */
 async function loadExpectedBucketMaps({ companyIds, warehouse, article }) {
   const cidFilter =
@@ -580,126 +500,62 @@ async function loadExpectedBucketMaps({ companyIds, warehouse, article }) {
     status: { $in: [...RESERVATION_HOLDING_ALLOCATION_STATUSES] },
   };
   if (wh) allocMatch.warehouse = wh;
+  if (art) allocMatch["lines.article"] = art;
 
   const packMatch = {
     companyId: cidFilter,
     status: { $in: [...RESERVATION_HOLDING_PACKING_STATUSES] },
   };
   if (wh) packMatch.warehouse = wh;
+  if (art) packMatch["lines.article"] = art;
 
-  const [reservedRows, packedRows] = await Promise.all([
-    OrderAllocation.aggregate([
-      { $match: allocMatch },
-      { $unwind: "$lines" },
-      ...(art ? [{ $match: { "lines.article": art } }] : []),
-      {
-        $project: {
-          companyId: 1,
-          warehouse: { $toUpper: { $ifNull: ["$warehouse", "MAIN"] } },
-          article: { $toUpper: { $ifNull: ["$lines.article", ""] } },
-          hold: {
-            $max: [
-              0,
-              {
-                $subtract: [
-                  { $ifNull: ["$lines.qty", 0] },
-                  { $ifNull: ["$lines.packedQty", 0] },
-                ],
-              },
-            ],
-          },
-          allocationNo: 1,
-          status: 1,
-          _id: 1,
-        },
-      },
-      { $match: { article: { $ne: "" }, hold: { $gt: 0 } } },
-      {
-        $group: {
-          _id: {
-            companyId: "$companyId",
-            warehouse: "$warehouse",
-            article: "$article",
-          },
-          expectedReservedQty: { $sum: "$hold" },
-          documents: {
-            $push: {
-              type: "OrderAllocation",
-              id: { $toString: "$_id" },
-              number: "$allocationNo",
-              qty: "$hold",
-              status: "$status",
-            },
-          },
-        },
-      },
-    ]),
-    StorePacking.aggregate([
-      { $match: packMatch },
-      { $unwind: "$lines" },
-      ...(art ? [{ $match: { "lines.article": art } }] : []),
-      {
-        $project: {
-          companyId: 1,
-          warehouse: { $toUpper: { $ifNull: ["$warehouse", "MAIN"] } },
-          article: { $toUpper: { $ifNull: ["$lines.article", ""] } },
-          hold: {
-            $max: [
-              0,
-              {
-                $subtract: [
-                  { $ifNull: ["$lines.packQty", 0] },
-                  { $ifNull: ["$lines.dispatchedQty", 0] },
-                ],
-              },
-            ],
-          },
-          packingNo: 1,
-          status: 1,
-          allocationNo: 1,
-          _id: 1,
-        },
-      },
-      { $match: { article: { $ne: "" }, hold: { $gt: 0 } } },
-      {
-        $group: {
-          _id: {
-            companyId: "$companyId",
-            warehouse: "$warehouse",
-            article: "$article",
-          },
-          expectedPackedQty: { $sum: "$hold" },
-          documents: {
-            $push: {
-              type: "StorePacking",
-              id: { $toString: "$_id" },
-              number: "$packingNo",
-              qty: "$hold",
-              status: "$status",
-              allocationNo: "$allocationNo",
-            },
-          },
-        },
-      },
-    ]),
+  const [allocations, packings] = await Promise.all([
+    OrderAllocation.find(allocMatch)
+      .select("_id allocationNo status customerName lines warehouse companyId")
+      .lean(),
+    StorePacking.find(packMatch)
+      .select("_id packingNo status lines warehouse allocationNo companyId")
+      .lean(),
   ]);
 
+  const { documents: reservedDocs } = computeExpectedReservedFromAllocations(allocations, {
+    article: art || undefined,
+  });
+  const { documents: packedDocs } = computeExpectedPackedFromPackings(packings, {
+    article: art || undefined,
+  });
+
   const reservedMap = new Map();
-  for (const row of reservedRows) {
-    const key = balanceKey(row._id.companyId, row._id.warehouse, row._id.article);
-    reservedMap.set(key, {
-      expectedReservedQty: n(row.expectedReservedQty),
-      documents: row.documents || [],
+  for (const d of reservedDocs) {
+    const key = balanceKey(d.companyId, d.warehouse, d.article);
+    const cur = reservedMap.get(key) || { expectedReservedQty: 0, documents: [] };
+    cur.expectedReservedQty += n(d.qty);
+    cur.documents.push({
+      type: d.type,
+      id: d.id,
+      number: d.number,
+      qty: d.qty,
+      status: d.status,
     });
+    reservedMap.set(key, cur);
   }
+
   const packedMap = new Map();
-  for (const row of packedRows) {
-    const key = balanceKey(row._id.companyId, row._id.warehouse, row._id.article);
-    packedMap.set(key, {
-      expectedPackedQty: n(row.expectedPackedQty),
-      documents: row.documents || [],
+  for (const d of packedDocs) {
+    const key = balanceKey(d.companyId, d.warehouse, d.article);
+    const cur = packedMap.get(key) || { expectedPackedQty: 0, documents: [] };
+    cur.expectedPackedQty += n(d.qty);
+    cur.documents.push({
+      type: d.type,
+      id: d.id,
+      number: d.number,
+      qty: d.qty,
+      status: d.status,
+      allocationNo: d.allocationNo,
     });
+    packedMap.set(key, cur);
   }
+
   return { reservedMap, packedMap };
 }
 

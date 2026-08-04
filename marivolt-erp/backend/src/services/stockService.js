@@ -27,6 +27,7 @@ import mongoose from "mongoose";
 import StockBalance from "../models/StockBalance.js";
 import StockLedger from "../models/StockLedger.js";
 import InventoryLedger from "../models/InventoryLedger.js";
+import { buildPhysicalEffectKey } from "./stockExpectedBuckets.js";
 
 /**
  * Debounced Reservation Integrity re-check after bucket mutations.
@@ -49,6 +50,37 @@ function notifyReservationIntegrity(companyId, warehouse, article, reason, sessi
   } catch (err) {
     console.error("[stockService] reservation integrity notify failed:", err?.message || err);
   }
+}
+
+/** Soft idempotency: return existing ledger when effectKey already posted. */
+async function findLedgerByEffectKey(effectKey, session) {
+  const ek = s(effectKey);
+  if (!ek) return null;
+  const q = StockLedger.findOne({ effectKey: ek });
+  if (session) q.session(session);
+  return q;
+}
+
+/**
+ * Resolve physical effectKey — prefer explicit, else build deterministic key.
+ * Empty referenceNo still produces a key (NOREF) so callers should pass stable refs.
+ */
+function resolvePhysicalEffectKey(opts) {
+  if (s(opts.effectKey)) return s(opts.effectKey);
+  if (!opts.article || !opts.companyId) return "";
+  return buildPhysicalEffectKey({
+    movementType: opts.movementType,
+    companyId: opts.companyId,
+    referenceNo: opts.referenceNo,
+    article: opts.article,
+    warehouse: opts.warehouse,
+    lineId: opts.lineId,
+    batchNo: opts.batchNo,
+    serialNo: opts.serialNo,
+    direction: opts.direction,
+    qty: opts.qty,
+    extra: opts.extra,
+  });
 }
 
 /* --------------------------------------------------------------- */
@@ -479,10 +511,30 @@ export async function grnReceive({
   transactionDate = null,
   /** Free-text putaway / bin (GRN line); appended to ledger remarks for traceability. */
   putawayLocation = "",
+  effectKey = "",
+  lineId = "",
 }) {
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
   if (!(q > 0)) throw new Error("grnReceive: qty must be > 0");
+
+  const ek = resolvePhysicalEffectKey({
+    effectKey,
+    movementType: MOVEMENT_TYPES.GRN_IN,
+    companyId,
+    referenceNo,
+    article,
+    warehouse,
+    lineId,
+    batchNo,
+    serialNo,
+    qty: q,
+  });
+  if (ek) {
+    const existing = await findLedgerByEffectKey(ek, session);
+    if (existing) return existing;
+  }
+
   const put = s(putawayLocation || "");
   const remarkParts = [s(remarks), put ? `Putaway: ${put}` : ""].filter(Boolean);
   const remarksCombined = remarkParts.join(" | ");
@@ -516,6 +568,7 @@ export async function grnReceive({
     currency,
     batchNo,
     serialNo,
+    effectKey: ek,
     ...after,
   });
   notifyReservationIntegrity(companyId, warehouse, article, "GRN", session);
@@ -545,10 +598,30 @@ export async function cancelGrn({
   batchNo = "",
   serialNo = "",
   transactionDate = null,
+  effectKey = "",
+  lineId = "",
 }) {
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
   if (!(q > 0)) throw new Error("cancelGrn: qty must be > 0");
+
+  const ek = resolvePhysicalEffectKey({
+    effectKey,
+    movementType: "GRN_CANCEL",
+    companyId,
+    referenceNo,
+    article,
+    warehouse,
+    lineId,
+    batchNo,
+    serialNo,
+    qty: q,
+  });
+  if (ek) {
+    const existing = await findLedgerByEffectKey(ek, session);
+    if (existing) return existing;
+  }
+
   // Guard: the canonical row must have at least `q` on-hand AND at
   // least `q` Available (on-hand − reserved − packed). This matches the
   // legacy `cancelGrn` controller's own pre-check but does it
@@ -613,6 +686,7 @@ export async function cancelGrn({
     currency,
     batchNo,
     serialNo,
+    effectKey: ek,
     ...after,
   });
 }
@@ -633,10 +707,27 @@ export async function openingBalance({
   sourceModule = "STORE",
   unitCost = 0,
   currency = "USD",
+  referenceNo = "",
+  effectKey = "",
 }) {
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
   if (!(q > 0)) throw new Error("openingBalance: qty must be > 0");
+
+  const ek = resolvePhysicalEffectKey({
+    effectKey,
+    movementType: MOVEMENT_TYPES.OPENING_BALANCE,
+    companyId,
+    referenceNo: referenceNo || `OPENING:${normArticle(article)}:${normWarehouse(warehouse)}`,
+    article,
+    warehouse,
+    qty: q,
+  });
+  if (ek) {
+    const existing = await findLedgerByEffectKey(ek, session);
+    if (existing) return existing;
+  }
+
   await bumpBuckets({
     session,
     companyId,
@@ -655,11 +746,13 @@ export async function openingBalance({
     locationTo: warehouse,
     qtyIn: q,
     referenceType: "OPENING",
+    referenceNo: referenceNo || ek,
     remarks,
     createdBy,
     sourceModule,
     unitCost,
     currency,
+    effectKey: ek,
     ...after,
   });
   notifyReservationIntegrity(companyId, warehouse, article, "INVENTORY_IMPORT", session);
@@ -1021,11 +1114,31 @@ export async function stockAdjustment({
   allowNegative = false,
   movementType = MOVEMENT_TYPES.STOCK_ADJUSTMENT,
   transactionDate = null,
+  effectKey = "",
+  lineId = "",
 }) {
   requireCompanyId(companyId);
   const q = Math.abs(Number(qty) || 0);
   if (!(q > 0)) throw new Error("stockAdjustment: qty must be > 0");
   const isIncrease = String(direction).toLowerCase() === "increase";
+  const dir = isIncrease ? "IN" : "OUT";
+
+  const ek = resolvePhysicalEffectKey({
+    effectKey,
+    movementType: movementType || MOVEMENT_TYPES.STOCK_ADJUSTMENT,
+    companyId,
+    referenceNo,
+    article,
+    warehouse,
+    lineId,
+    direction: dir,
+    qty: q,
+  });
+  if (ek) {
+    const existing = await findLedgerByEffectKey(ek, session);
+    if (existing) return existing;
+  }
+
   const incQty = isIncrease ? q : -q;
   const guard =
     isIncrease || allowNegative
@@ -1072,6 +1185,7 @@ export async function stockAdjustment({
     remarks,
     createdBy,
     sourceModule,
+    effectKey: ek,
     ...after,
   });
   notifyReservationIntegrity(companyId, warehouse, article, "STOCK_ADJUSTMENT", session);
@@ -1554,7 +1668,7 @@ export async function dispatchFromPacked({
     );
   }
   const after = await snapshotAfter({ companyId, article, warehouse, session });
-  return createStockLedgerEntry({
+  const ledger = await createStockLedgerEntry({
     session,
     companyId,
     transactionDate,
@@ -1585,6 +1699,8 @@ export async function dispatchFromPacked({
     effectKey,
     ...after,
   });
+  notifyReservationIntegrity(companyId, warehouse, article, "DISPATCH", session);
+  return ledger;
 }
 
 /**

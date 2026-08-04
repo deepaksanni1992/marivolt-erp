@@ -11,49 +11,23 @@ import StockBalance from "../models/StockBalance.js";
 import StockLedger from "../models/StockLedger.js";
 import OrderAllocation from "../models/OrderAllocation.js";
 import StorePacking from "../models/StorePacking.js";
+import {
+  ALLOCATION_STATUSES_HOLDING_RESERVED,
+  allocationLineRemainingReserved,
+  allocationStatusHoldsReservation,
+  PACKING_STATUSES_HOLDING_PACKED,
+  computeExpectedReservedFromAllocations,
+  computeExpectedPackedFromPackings,
+} from "./stockExpectedBuckets.js";
+
+export {
+  ALLOCATION_STATUSES_HOLDING_RESERVED,
+  allocationLineRemainingReserved,
+  allocationStatusHoldsReservation,
+  PACKING_STATUSES_HOLDING_PACKED,
+};
 
 const EPS = 1e-6;
-
-/** Allocation statuses that may still hold reservation (qty − packedQty).
- * OPEN / APPROVED: active hold.
- * PARTIALLY_PACKED: remaining unpaked qty holds reserved.
- * FULLY_PACKED: hold is normally 0 when line.packedQty === line.qty (no double-count with packed).
- * CLOSED (canonical INVOICED): remaining hold only if packedQty < qty; normally 0 after full pack/invoice.
- * CANCELLED: excluded — holds nothing.
- */
-export const ALLOCATION_STATUSES_HOLDING_RESERVED = Object.freeze([
-  "OPEN",
-  "PARTIALLY_PACKED",
-  "FULLY_PACKED",
-  "APPROVED",
-  "CLOSED",
-]);
-
-/**
- * Remaining reservation for one allocation line.
- * Never double-counts packed qty (moved to packed bucket on packing post).
- */
-export function allocationLineRemainingReserved(line = {}) {
-  return Math.max(0, n(line.qty) - n(line.packedQty));
-}
-
-/**
- * Whether a document status should be scanned for expected reserved.
- * CANCELLED/REVERSED never contribute.
- */
-export function allocationStatusHoldsReservation(status) {
-  const st = up(status);
-  if (!st || st === "CANCELLED" || st === "REVERSED") return false;
-  return ALLOCATION_STATUSES_HOLDING_RESERVED.includes(st);
-}
-
-/** Packing statuses that hold packed staging before dispatch/cancel. */
-export const PACKING_STATUSES_HOLDING_PACKED = Object.freeze([
-  "POSTED",
-  "PARTIALLY_PACKED",
-  "FULLY_PACKED",
-  "POSTING",
-]);
 
 /** Movement types that change physical on-hand. */
 export const ON_HAND_MOVEMENT_TYPES = Object.freeze([
@@ -87,6 +61,7 @@ export const MISMATCH_TYPES = Object.freeze({
   GHOST_PACKING_EFFECT: "GHOST_PACKING_EFFECT",
   NEGATIVE_BUCKET: "NEGATIVE_BUCKET",
   CROSS_COMPANY_REFERENCE: "CROSS_COMPANY_REFERENCE",
+  CROSS_COMPANY_MOVEMENT: "CROSS_COMPANY_MOVEMENT",
   WAREHOUSE_SCOPE_MISMATCH: "WAREHOUSE_SCOPE_MISMATCH",
   DUPLICATE_EFFECT: "DUPLICATE_EFFECT",
   LEGACY_UNCLASSIFIED: "LEGACY_UNCLASSIFIED",
@@ -105,6 +80,8 @@ function keyOf(companyId, warehouse, article) {
 function severityFor(types, orphanedReserved, orphanedPacked, onHandDelta) {
   if (
     types.includes(MISMATCH_TYPES.CROSS_COMPANY_REFERENCE) ||
+    types.includes(MISMATCH_TYPES.CROSS_COMPANY_MOVEMENT) ||
+    types.includes(MISMATCH_TYPES.WAREHOUSE_SCOPE_MISMATCH) ||
     types.includes(MISMATCH_TYPES.DUPLICATE_EFFECT) ||
     Math.abs(onHandDelta) > EPS
   ) {
@@ -264,20 +241,17 @@ export async function runStockBucketIntegrityAudit(opts = {}) {
     allocNosByCompany.set(String(a.companyId), set);
   }
 
-  // expected reserved / packed maps
+  // expected reserved / packed maps — MUST use shared calculateExpectedReserved helpers
   const expectedReserved = new Map(); // key -> { qty, docs: [] }
   const expectedPacked = new Map();
   /** allocationNo+article → packed qty claimed on live packing docs */
   const packingClaimByAllocArticle = new Map();
 
   for (const p of packings) {
-    const wh = up(p.warehouse) || "MAIN";
     for (const ln of p.lines || []) {
       const art = up(ln.article);
       if (!art) continue;
       if (opts.article && art !== up(opts.article)) continue;
-      // Staging still held = packed minus already dispatched from this line.
-      const staging = Math.max(0, n(ln.packQty) - n(ln.dispatchedQty));
       const claimed = n(ln.packQty);
       if (claimed > EPS) {
         const packClaimKey = `${String(p.companyId)}|${up(p.allocationNo)}|${art}`;
@@ -286,44 +260,43 @@ export async function runStockBucketIntegrityAudit(opts = {}) {
           (packingClaimByAllocArticle.get(packClaimKey) || 0) + claimed
         );
       }
-      if (staging <= EPS) continue;
-      const k = keyOf(p.companyId, wh, art);
-      const cur = expectedPacked.get(k) || { qty: 0, docs: [] };
-      cur.qty += staging;
-      cur.docs.push(p.packingNo);
-      expectedPacked.set(k, cur);
     }
   }
 
-  for (const a of allocations) {
-    const wh = up(a.warehouse) || "MAIN";
-    const st = up(a.status);
-    // FULLY_PACKED / CLOSED (invoiced): no remaining ERP reservation by lifecycle.
-    // Prevents false MISSING_RESERVED when line.packedQty was not backfilled (legacy).
-    if (st === "FULLY_PACKED" || st === "CLOSED") continue;
+  const packedResult = computeExpectedPackedFromPackings(packings, {
+    article: opts.article || undefined,
+  });
+  for (const d of packedResult.documents) {
+    const k = keyOf(d.companyId, d.warehouse, d.article);
+    const cur = expectedPacked.get(k) || { qty: 0, docs: [] };
+    cur.qty += d.qty;
+    cur.docs.push(d.number);
+    expectedPacked.set(k, cur);
+  }
 
-    for (const ln of a.lines || []) {
-      const art = up(ln.article);
-      if (!art) continue;
-      if (opts.article && art !== up(opts.article)) continue;
-      let hold = allocationLineRemainingReserved(ln);
-      // Prefer packing-document claims when allocation line packedQty is stale.
-      const packClaimKey = `${String(a.companyId)}|${up(a.allocationNo)}|${art}`;
-      const packedFromDocs = packingClaimByAllocArticle.get(packClaimKey) || 0;
-      if (packedFromDocs > n(ln.packedQty)) {
-        hold = Math.max(0, n(ln.qty) - packedFromDocs);
-      }
-      if (hold <= EPS) continue;
-      const k = keyOf(a.companyId, wh, art);
-      const cur = expectedReserved.get(k) || { qty: 0, docs: [] };
-      cur.qty += hold;
-      cur.docs.push(a.allocationNo);
-      expectedReserved.set(k, cur);
-    }
+  const reservedResult = computeExpectedReservedFromAllocations(allocations, {
+    article: opts.article || undefined,
+    packingClaimByAllocArticle,
+  });
+  for (const d of reservedResult.documents) {
+    const k = keyOf(d.companyId, d.warehouse, d.article);
+    const cur = expectedReserved.get(k) || { qty: 0, docs: [] };
+    cur.qty += d.qty;
+    cur.docs.push(d.number);
+    expectedReserved.set(k, cur);
   }
 
   // Ghost allocation ledger refs (ALLOCATION ledger with no live allocation doc)
   const ghostAllocByKey = new Map(); // balance key -> refs[]
+  const crossCompanyByKey = new Map();
+  const warehouseScopeByKey = new Map();
+  const ghostPackingByKey = new Map();
+
+  const allocByNo = new Map(); // `${companyId}|${allocationNo}` -> alloc
+  for (const a of allocations) {
+    allocByNo.set(`${String(a.companyId)}|${up(a.allocationNo)}`, a);
+  }
+
   for (const row of allocationLedgers) {
     const wh = up(row.warehouse || row.location) || "MAIN";
     const art = up(row.article);
@@ -331,12 +304,136 @@ export async function runStockBucketIntegrityAudit(opts = {}) {
     if (!art || !ref) continue;
     const live = allocNosByCompany.get(String(row.companyId));
     if (live && live.has(ref)) continue;
-    // Check if ANY allocation doc exists (including cancelled)
-    // Deferred: treat missing from active set as ghost candidate; refine below
     const k = keyOf(row.companyId, wh, art);
     const arr = ghostAllocByKey.get(k) || [];
     arr.push({ referenceNo: row.referenceNo, qtyOut: n(row.qtyOut), createdAt: row.createdAt });
     ghostAllocByKey.set(k, arr);
+  }
+
+  // Cross-company: ledger references an allocationNo that exists only under another company
+  for (const row of allocationLedgers) {
+    const ref = up(row.referenceNo);
+    const art = up(row.article);
+    if (!ref || !art) continue;
+    const ownKey = `${String(row.companyId)}|${ref}`;
+    if (allocByNo.has(ownKey)) continue;
+    for (const [k, a] of allocByNo) {
+      if (!k.endsWith(`|${ref}`)) continue;
+      if (String(a.companyId) === String(row.companyId)) continue;
+      const wh = up(row.warehouse || row.location) || "MAIN";
+      const balKey = keyOf(row.companyId, wh, art);
+      const list = crossCompanyByKey.get(balKey) || [];
+      list.push({
+        ledgerCompanyId: String(row.companyId),
+        allocationCompanyId: String(a.companyId),
+        referenceNo: row.referenceNo,
+      });
+      crossCompanyByKey.set(balKey, list);
+    }
+  }
+
+  // Warehouse scope: packing warehouse != linked allocation warehouse
+  for (const p of packings) {
+    const a = allocByNo.get(`${String(p.companyId)}|${up(p.allocationNo)}`);
+    if (!a) continue;
+    if (up(a.warehouse) === up(p.warehouse)) continue;
+    for (const ln of p.lines || []) {
+      const art = up(ln.article);
+      if (!art) continue;
+      const balKey = keyOf(p.companyId, up(p.warehouse) || "MAIN", art);
+      const list = warehouseScopeByKey.get(balKey) || [];
+      list.push({
+        packingNo: p.packingNo,
+        packingWarehouse: p.warehouse,
+        allocationNo: a.allocationNo,
+        allocationWarehouse: a.warehouse,
+      });
+      warehouseScopeByKey.set(balKey, list);
+    }
+  }
+
+  // Warehouse scope: StockBalance.warehouse/location mismatch vs allocation warehouse holding reserved
+  for (const a of allocations) {
+    const allocWh = up(a.warehouse) || "MAIN";
+    for (const ln of a.lines || []) {
+      const art = up(ln.article);
+      if (!art) continue;
+      const bal = balances.find(
+        (b) =>
+          String(b.companyId) === String(a.companyId) &&
+          up(b.article || b.itemCode) === art &&
+          (up(b.warehouse || b.location) || "MAIN") !== allocWh
+      );
+      // Only flag when balance exists under same company+article at a different warehouse
+      // AND that balance carries reserved while allocation is on another warehouse.
+      if (!bal) continue;
+      const balWh = up(bal.warehouse || bal.location) || "MAIN";
+      if (balWh === allocWh) continue;
+      const storedR = Math.max(n(bal.allocatedQty), n(bal.reservedQty));
+      if (storedR <= EPS) continue;
+      const balKey = keyOf(a.companyId, balWh, art);
+      const list = warehouseScopeByKey.get(balKey) || [];
+      list.push({
+        allocationNo: a.allocationNo,
+        allocationWarehouse: allocWh,
+        balanceWarehouse: balWh,
+        reason: "ALLOCATION_WAREHOUSE_NE_BALANCE",
+      });
+      warehouseScopeByKey.set(balKey, list);
+    }
+  }
+
+  // Cross-company: StockBalance company vs allocation company for same allocationNo on ledger
+  // (already covered via allocationLedgers). Also: ledger company != StockBalance company
+  // for same article+warehouse when a balance exists under another company.
+  const balanceCompanyByArtWh = new Map(); // `${wh}|${art}` -> Set of companyIds
+  for (const b of balances) {
+    const art = up(b.article || b.itemCode);
+    if (!art) continue;
+    const wh = up(b.warehouse || b.location) || "MAIN";
+    const k = `${wh}|${art}`;
+    const set = balanceCompanyByArtWh.get(k) || new Set();
+    set.add(String(b.companyId));
+    balanceCompanyByArtWh.set(k, set);
+  }
+  for (const row of allocationLedgers) {
+    const art = up(row.article);
+    const wh = up(row.warehouse || row.location) || "MAIN";
+    if (!art) continue;
+    const companies = balanceCompanyByArtWh.get(`${wh}|${art}`);
+    if (!companies || companies.size === 0) continue;
+    if (companies.has(String(row.companyId))) continue;
+    // Ledger company has no balance here, but another company does — cross-company movement risk
+    const foreignCompany = [...companies][0];
+    const balKey = keyOf(foreignCompany, wh, art);
+    const list = crossCompanyByKey.get(balKey) || [];
+    list.push({
+      ledgerCompanyId: String(row.companyId),
+      balanceCompanyId: foreignCompany,
+      referenceNo: row.referenceNo,
+      reason: "LEDGER_COMPANY_NE_BALANCE",
+    });
+    crossCompanyByKey.set(balKey, list);
+  }
+
+  // Ghost packing ledger: PACKED/UNPACKED effect without live packing doc
+  const packingNosByCompany = new Map();
+  for (const p of packings) {
+    const set = packingNosByCompany.get(String(p.companyId)) || new Set();
+    set.add(up(p.packingNo));
+    packingNosByCompany.set(String(p.companyId), set);
+  }
+  for (const row of packingLedgers) {
+    const ref = up(row.referenceNo);
+    const art = up(row.article);
+    if (!ref || !art) continue;
+    const live = packingNosByCompany.get(String(row.companyId));
+    if (live && live.has(ref)) continue;
+    const wh = up(row.warehouse || row.location) || "MAIN";
+    const k = keyOf(row.companyId, wh, art);
+    const arr = ghostPackingByKey.get(k) || [];
+    arr.push({ referenceNo: row.referenceNo, effectKey: row.effectKey, createdAt: row.createdAt });
+    ghostPackingByKey.set(k, arr);
   }
 
   // Verify cancelled allocations still exist for ghost filtering
@@ -444,6 +541,19 @@ export async function runStockBucketIntegrityAudit(opts = {}) {
     if (ghosts.length && orphanedReservedQty > EPS) {
       mismatchTypes.push(MISMATCH_TYPES.GHOST_ALLOCATION_EFFECT);
     }
+    const ghostPack = ghostPackingByKey.get(k) || [];
+    if (ghostPack.length && orphanedPackedQty > EPS) {
+      mismatchTypes.push(MISMATCH_TYPES.GHOST_PACKING_EFFECT);
+    }
+    const crossHits = crossCompanyByKey.get(k) || [];
+    if (crossHits.length) {
+      mismatchTypes.push(MISMATCH_TYPES.CROSS_COMPANY_MOVEMENT);
+      mismatchTypes.push(MISMATCH_TYPES.CROSS_COMPANY_REFERENCE);
+    }
+    const whHits = warehouseScopeByKey.get(k) || [];
+    if (whHits.length) {
+      mismatchTypes.push(MISMATCH_TYPES.WAREHOUSE_SCOPE_MISMATCH);
+    }
     if (onHandQty < -EPS || storedReservedQty < -EPS || storedPackedQty < -EPS) {
       mismatchTypes.push(MISMATCH_TYPES.NEGATIVE_BUCKET);
     }
@@ -493,6 +603,8 @@ export async function runStockBucketIntegrityAudit(opts = {}) {
       !mismatchTypes.includes(MISMATCH_TYPES.ON_HAND_LEDGER_MISMATCH) &&
       !mismatchTypes.includes(MISMATCH_TYPES.DUPLICATE_EFFECT) &&
       !mismatchTypes.includes(MISMATCH_TYPES.CROSS_COMPANY_REFERENCE) &&
+      !mismatchTypes.includes(MISMATCH_TYPES.CROSS_COMPANY_MOVEMENT) &&
+      !mismatchTypes.includes(MISMATCH_TYPES.WAREHOUSE_SCOPE_MISMATCH) &&
       missingReservedQty <= EPS &&
       missingPackedQty <= EPS;
 
@@ -542,7 +654,9 @@ export async function runStockBucketIntegrityAudit(opts = {}) {
       supportingAllocationNos: [...new Set(expR.docs)],
       supportingPackingNos: [...new Set(expP.docs)],
       ghostAllocationLedgerRefs: ghosts,
-      ghostPackingLedgerRefs: [],
+      ghostPackingLedgerRefs: ghostPack,
+      crossCompanyHits: crossHits,
+      warehouseScopeHits: whHits,
       lastUpdatedAt: b.updatedAt || null,
       mismatchTypes,
       severity,
@@ -574,7 +688,7 @@ export async function runStockBucketIntegrityAudit(opts = {}) {
       packingHoldingPacked: PACKING_STATUSES_HOLDING_PACKED,
       notes: [
         "Allocation hold = max(0, line.qty - max(line.packedQty, packingClaims)) for OPEN/PARTIALLY_PACKED/APPROVED.",
-        "FULLY_PACKED / CLOSED contribute 0 remaining reserved (prevents false MISSING_RESERVED when line.packedQty stale).",
+        "FULLY_PACKED / CLOSED remaining = max(0, qty − packedQty) via shared calculateExpectedReserved.",
         "Packed hold = sum max(0, packQty − dispatchedQty) on POSTED/PARTIALLY_PACKED/FULLY_PACKED/POSTING.",
         "availableQty may be negative (allowNegative allocations); STORED_AVAILABLE_MISMATCH uses unclamped onHand−reserved−packed.",
         "onHand ledger uses physical movement types only; ALLOCATION/PACKED excluded.",

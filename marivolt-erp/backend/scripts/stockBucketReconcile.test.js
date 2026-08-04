@@ -55,6 +55,8 @@ run("Reconcile service detects orphan when reserved > allocation evidence", () =
     path.join(backendRoot, "src/services/stockBucketReconcileService.js"),
     "utf8"
   );
+  assert.match(src, /computeExpectedReservedFromAllocations/);
+  assert.match(src, /stockExpectedBuckets/);
   assert.match(src, /orphanedReservedQty/);
   assert.match(src, /diagnoseOrphanedStockBuckets/);
   assert.match(src, /repairOrphanedStockBuckets/);

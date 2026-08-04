@@ -8,6 +8,12 @@ import OrderAllocation from "../models/OrderAllocation.js";
 import StorePacking from "../models/StorePacking.js";
 import StockLedger from "../models/StockLedger.js";
 import { writeAudit } from "./auditService.js";
+import {
+  ALLOCATION_STATUSES_HOLDING_RESERVED,
+  PACKING_STATUSES_HOLDING_PACKED,
+  computeExpectedReservedFromAllocations,
+  computeExpectedPackedFromPackings,
+} from "./stockExpectedBuckets.js";
 
 function n(v) {
   return Number(v) || 0;
@@ -16,13 +22,9 @@ function up(v) {
   return String(v ?? "").trim().toUpperCase();
 }
 
-const POSTED_PACKING = new Set(["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED", "POSTING"]);
-
 /**
- * Expected reserved = sum of (allocated − packedQty on line) for non-cancelled allocations.
- * Expected packed = sum of packQty on posted packings that still hold packed staging
- * (approximation: posted packing lines for article; architecture keeps packed on balance
- * until dispatch). For detection we also compare against live docs.
+ * Expected reserved / packed via shared stockExpectedBuckets helpers
+ * (same formula as Reservation Integrity and Stock Bucket Integrity).
  */
 export async function diagnoseOrphanedStockBuckets({
   companyId,
@@ -49,48 +51,39 @@ export async function diagnoseOrphanedStockBuckets({
   const allocations = await OrderAllocation.find({
     companyId,
     warehouse: wh,
-    status: { $nin: ["CANCELLED"] },
+    status: { $in: [...ALLOCATION_STATUSES_HOLDING_RESERVED] },
     "lines.article": code,
   })
-    .select("allocationNo status customerName lines")
+    .select("allocationNo status customerName lines companyId warehouse")
     .lean();
 
-  let expectedReservedQty = 0;
-  const allocationEvidence = [];
-  for (const a of allocations) {
-    for (const ln of a.lines || []) {
-      if (up(ln.article) !== code) continue;
-      const hold = Math.max(0, n(ln.qty) - n(ln.packedQty));
-      expectedReservedQty += hold;
-      allocationEvidence.push({
-        allocationNo: a.allocationNo,
-        status: a.status,
-        customerName: a.customerName,
-        holdQty: hold,
-      });
-    }
-  }
+  const { expectedReservedQty, documents: reservedDocs } = computeExpectedReservedFromAllocations(
+    allocations,
+    { article: code }
+  );
+  const allocationEvidence = reservedDocs.map((d) => ({
+    allocationNo: d.number,
+    status: d.status,
+    customerName: d.customerName,
+    holdQty: d.qty,
+  }));
 
   const packings = await StorePacking.find({
     companyId,
     warehouse: wh,
-    status: { $in: [...POSTED_PACKING] },
+    status: { $in: [...PACKING_STATUSES_HOLDING_PACKED] },
     "lines.article": code,
   })
-    .select("packingNo status lines")
+    .select("packingNo status lines companyId warehouse allocationNo")
     .lean();
 
-  let expectedPackedFromDocs = 0;
-  const packingEvidence = [];
-    for (const p of packings) {
-      let q = 0;
-      for (const ln of p.lines || []) {
-        if (up(ln.article) !== code) continue;
-        q += Math.max(0, n(ln.packQty) - n(ln.dispatchedQty));
-      }
-      expectedPackedFromDocs += q;
-      packingEvidence.push({ packingNo: p.packingNo, status: p.status, packQty: q });
-    }
+  const { expectedPackedQty: expectedPackedFromDocs, documents: packedDocs } =
+    computeExpectedPackedFromPackings(packings, { article: code });
+  const packingEvidence = packedDocs.map((d) => ({
+    packingNo: d.number,
+    status: d.status,
+    packQty: d.qty,
+  }));
 
   // Orphaned reservation: balance reserved above what open allocations explain.
   const orphanedReservedQty = Math.max(0, reservedQty - expectedReservedQty);

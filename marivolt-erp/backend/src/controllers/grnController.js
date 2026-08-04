@@ -963,6 +963,7 @@ export async function postGrnFromPo(req, res) {
                 createdBy: req.user?.email || "",
                 sourceModule: "STORE",
                 transactionDate: grn.grnDate,
+                lineId: String(line._id || line.lineId || `${article}:${wh}`),
               });
               line.recoveryInfo = recoveryInfo;
             }
@@ -1140,6 +1141,7 @@ export async function postGrn(req, res) {
             createdBy: req.user?.email || "",
             sourceModule: "STORE",
             transactionDate: grn.grnDate,
+            lineId: String(line._id || line.lineId || `${article}:${wh}`),
           });
           line.recoveryInfo = recoveryInfo;
         }
@@ -1274,6 +1276,7 @@ export async function cancelGrn(req, res) {
           remarks: `GRN cancelled: ${grn.grnNo}`,
           createdBy: req.user?.email || "",
           sourceModule: "STORE",
+          lineId: String(line._id || line.lineId || `${upper(line.article)}`),
         });
       }
       if (grn.poId) {

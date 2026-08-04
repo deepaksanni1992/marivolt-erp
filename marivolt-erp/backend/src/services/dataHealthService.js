@@ -1295,12 +1295,24 @@ async function runInventoryChecks(companyId) {
       if (!nonReservation.length) continue;
       const sev =
         row.severity === "Critical" ? "Critical" : row.severity === "Major" ? "Major" : "Minor";
+
+      const emitType = nonReservation.includes("CROSS_COMPANY_MOVEMENT") ||
+        nonReservation.includes("CROSS_COMPANY_REFERENCE")
+        ? "CROSS_COMPANY_MOVEMENT"
+        : nonReservation.includes("WAREHOUSE_SCOPE_MISMATCH")
+          ? "WAREHOUSE_SCOPE_MISMATCH"
+          : nonReservation.includes("GHOST_PACKING_EFFECT")
+            ? "PACKING_LEDGER_WITHOUT_DOCUMENT"
+            : nonReservation.includes("DUPLICATE_EFFECT")
+              ? "DUPLICATE_STOCK_LEDGER_EFFECT"
+              : "STOCK_BUCKET_INTEGRITY";
+
       issues.push(
         mkIssue({
           checkId: 26,
           severity: sev,
           module: "Inventory",
-          issueType: "STOCK_BUCKET_INTEGRITY",
+          issueType: emitType,
           documentNumber: row.article,
           reference: `${row.warehouseCode || row.location || ""}`,
           description: `Bucket mismatch [${nonReservation.join(", ")}]: reserved ${row.storedReservedQty}→${row.expectedReservedQty}, packed ${row.storedPackedQty}→${row.expectedPackedQty}`,
@@ -1325,6 +1337,85 @@ async function runInventoryChecks(companyId) {
         openPath: `/dashboard/stock-bucket-integrity`,
       }),
     );
+  }
+
+  // Duplicate physical postings (GRN / Opening / Adjustment) via effectKey prefix phys:
+  try {
+    const StockLedger = (await import("../models/StockLedger.js")).default;
+    const dups = await StockLedger.aggregate([
+      {
+        $match: {
+          companyId: new mongoose.Types.ObjectId(String(companyId)),
+          effectKey: { $type: "string", $gt: "" },
+          $or: [
+            { effectKey: { $regex: /^phys:GRN_IN:/ } },
+            { effectKey: { $regex: /^phys:OPENING_BALANCE:/ } },
+            { effectKey: { $regex: /^phys:STOCK_ADJUSTMENT:/ } },
+            { effectKey: { $regex: /^phys:GRN_CANCEL:/ } },
+          ],
+        },
+      },
+      { $group: { _id: "$effectKey", count: { $sum: 1 }, articles: { $addToSet: "$article" } } },
+      { $match: { count: { $gt: 1 } } },
+      { $limit: ISSUE_CAP_PER_CHECK },
+    ]);
+    for (const d of dups) {
+      const key = String(d._id || "");
+      const issueType = key.includes(":GRN_IN:")
+        ? "DUPLICATE_GRN"
+        : key.includes(":OPENING_BALANCE:")
+          ? "DUPLICATE_OPENING_BALANCE"
+          : key.includes(":STOCK_ADJUSTMENT:")
+            ? "DUPLICATE_STOCK_ADJUSTMENT"
+            : "DUPLICATE_STOCK_LEDGER_EFFECT";
+      issues.push(
+        mkIssue({
+          checkId: 28,
+          severity: "Critical",
+          module: "Inventory",
+          issueType,
+          documentNumber: (d.articles && d.articles[0]) || key,
+          reference: key,
+          description: `Duplicate physical effectKey (${d.count} rows): ${key}`,
+          suggestedAction: "Investigate ledger duplicates; physical posts must be idempotent",
+          openPath: `/dashboard/stock-bucket-integrity`,
+          article: (d.articles && d.articles[0]) || "",
+        }),
+      );
+    }
+  } catch (err) {
+    // non-fatal
+  }
+
+  // Negative customs quantities
+  try {
+    const neg = await CustomsLotItem.find({
+      companyId,
+      $or: [{ qtyAvailable: { $lt: 0 } }, { qtyImported: { $lt: 0 } }, { qtyConsumed: { $lt: 0 } }],
+    })
+      .select("articleNumber qtyAvailable qtyImported qtyConsumed customsLotRef")
+      .limit(ISSUE_CAP_PER_CHECK)
+      .lean();
+    for (const row of neg) {
+      const issueType =
+        Number(row.qtyAvailable) < 0 ? "NEGATIVE_CUSTOMS_AVAILABLE" : "NEGATIVE_CUSTOMS_QTY";
+      issues.push(
+        mkIssue({
+          checkId: 29,
+          severity: "Critical",
+          module: "Customs",
+          issueType,
+          documentNumber: row.articleNumber,
+          reference: row.customsLotRef || "",
+          description: `Customs negative qty: available=${row.qtyAvailable} imported=${row.qtyImported} consumed=${row.qtyConsumed}`,
+          suggestedAction: "Investigate customs lot movements / invoice finalize",
+          openPath: `/customs/reconciliation?article=${encodeURIComponent(row.articleNumber || "")}`,
+          article: row.articleNumber,
+        }),
+      );
+    }
+  } catch {
+    // customs optional
   }
 
   return capIssues(issues);

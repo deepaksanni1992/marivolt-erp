@@ -1117,6 +1117,7 @@ export async function postAdjustment(req, res) {
         createdBy: req.user?.email || "",
         sourceModule: "STORE",
         transactionDate: row.date,
+        lineId: String(row._id || row.adjustmentNo),
       });
       row.status = "Posted";
       row.postedAt = new Date();
