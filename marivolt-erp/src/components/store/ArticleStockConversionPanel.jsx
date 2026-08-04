@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiGetWithQuery, apiPost } from "../../lib/api.js";
+import { apiGet, apiGetWithQuery, apiPost, apiDelete } from "../../lib/api.js";
 import { notify, confirmDialog } from "../../lib/notifications.js";
 import LoadingButton from "../erp/LoadingButton.jsx";
 
@@ -14,6 +14,15 @@ const REASON_LABELS = {
   OTHER: "Other",
 };
 
+/** Display status: approved-but-unposted drafts surface as APPROVED. */
+function displayStatus(row) {
+  const st = String(row?.status || "").toUpperCase();
+  if (st === "DRAFT" && String(row?.approvalStatus || "").toUpperCase() === "APPROVED") {
+    return "APPROVED";
+  }
+  return st;
+}
+
 function StatusPill({ status }) {
   const s = String(status || "").toUpperCase();
   const tone =
@@ -21,9 +30,11 @@ function StatusPill({ status }) {
       ? "bg-emerald-100 text-emerald-800 ring-emerald-200"
       : s === "DRAFT"
         ? "bg-amber-100 text-amber-800 ring-amber-200"
-        : s === "REVERSED"
-          ? "bg-orange-100 text-orange-800 ring-orange-200"
-          : "bg-slate-100 text-slate-700 ring-slate-200";
+        : s === "APPROVED"
+          ? "bg-sky-100 text-sky-800 ring-sky-200"
+          : s === "REVERSED"
+            ? "bg-orange-100 text-orange-800 ring-orange-200"
+            : "bg-slate-100 text-slate-700 ring-slate-200";
   return <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${tone}`}>{s || "—"}</span>;
 }
 
@@ -41,6 +52,7 @@ export default function ArticleStockConversionPanel({ locations = [], deepLinkCo
   const [regSearch, setRegSearch] = useState("");
   const [reverseReason, setReverseReason] = useState("");
   const [reverseTarget, setReverseTarget] = useState(null);
+  const [viewTarget, setViewTarget] = useState(null);
 
   const { data: meta } = useQuery({
     queryKey: ["article-conversion-meta"],
@@ -142,6 +154,18 @@ export default function ArticleStockConversionPanel({ locations = [], deepLinkCo
     onError: (e) => notify.error(e.message || "Could not approve."),
   });
 
+  const deleteMut = useMutation({
+    mutationFn: (id) =>
+      apiDelete(`/article-conversions/${id}`, {
+        reason: "User deleted draft from Conversion Register",
+      }),
+    onSuccess: (res) => {
+      notify.success(`Article conversion ${res?.conversionNo || ""} deleted.`);
+      refetchRegister();
+    },
+    onError: (e) => notify.error(e.message || "Could not delete conversion."),
+  });
+
   const createMapMut = useMutation({
     mutationFn: (body) => apiPost("/article-conversions/mappings", body),
     onSuccess: () => {
@@ -206,6 +230,31 @@ export default function ArticleStockConversionPanel({ locations = [], deepLinkCo
     });
     if (!ok) return;
     postMut.mutate(row._id);
+  };
+
+  const onEdit = (row) => {
+    setWarehouse(row.warehouse || "MAIN");
+    setSourceArticle(row.sourceArticle || "");
+    setTargetArticle(row.targetArticle || "");
+    setSourceQty(String(row.sourceQty ?? ""));
+    setRatio(String(row.conversionRatio ?? "1"));
+    setReasonCode(row.reasonCode || "EQUIVALENT_ARTICLE_NUMBER");
+    setRemarks(row.remarks || "");
+    setSelectedLotId(row.selectedCustomsLotItemId ? String(row.selectedCustomsLotItemId) : "");
+    setSubTab("new");
+    notify.info(`Loaded ${row.conversionNo} into the form. Save creates a new draft — delete the old draft if replacing.`);
+  };
+
+  const onDelete = async (row) => {
+    const ok = await confirmDialog({
+      title: "Delete Article Conversion",
+      message: `Conversion:\n${row.conversionNo}\n\nThis draft has not affected stock.\n\nDelete permanently?`,
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      danger: true,
+    });
+    if (!ok) return;
+    deleteMut.mutate(row._id);
   };
 
   const onReverse = async (row) => {
@@ -423,18 +472,46 @@ export default function ArticleStockConversionPanel({ locations = [], deepLinkCo
                     <td className="px-2 py-2 text-right">{row.targetQty}</td>
                     <td className="px-2 py-2">{row.warehouse}</td>
                     <td className="px-2 py-2">{REASON_LABELS[row.reasonCode] || row.reasonCode}</td>
-                    <td className="px-2 py-2"><StatusPill status={row.status} /></td>
+                    <td className="px-2 py-2"><StatusPill status={displayStatus(row)} /></td>
                     <td className="px-2 py-2">{row.createdBy || "—"} / {row.postedBy || "—"}</td>
                     <td className="px-2 py-2 space-x-1">
-                      {row.status === "DRAFT" && row.requiresAdminApproval && row.approvalStatus !== "APPROVED" ? (
-                        <button type="button" className="rounded border px-2 py-0.5 text-[11px]" onClick={() => approveMut.mutate(row._id)}>Approve</button>
-                      ) : null}
-                      {row.status === "DRAFT" ? (
-                        <button type="button" className="rounded border border-emerald-600 px-2 py-0.5 text-[11px] text-emerald-800" onClick={() => onPost(row)}>Post</button>
-                      ) : null}
-                      {row.status === "POSTED" ? (
-                        <button type="button" className="rounded border border-rose-600 px-2 py-0.5 text-[11px] text-rose-800" onClick={() => onReverse(row)}>Reverse</button>
-                      ) : null}
+                      {(() => {
+                        const uiStatus = displayStatus(row);
+                        if (uiStatus === "DRAFT") {
+                          return (
+                            <>
+                              {row.requiresAdminApproval && row.approvalStatus !== "APPROVED" ? (
+                                <button type="button" className="rounded border px-2 py-0.5 text-[11px]" onClick={() => approveMut.mutate(row._id)}>Approve</button>
+                              ) : null}
+                              <button type="button" className="rounded border px-2 py-0.5 text-[11px]" onClick={() => onEdit(row)}>Edit</button>
+                              <button type="button" className="rounded border border-rose-500 px-2 py-0.5 text-[11px] text-rose-700" onClick={() => onDelete(row)}>Delete</button>
+                              <button type="button" className="rounded border border-emerald-600 px-2 py-0.5 text-[11px] text-emerald-800" onClick={() => onPost(row)}>Post</button>
+                            </>
+                          );
+                        }
+                        if (uiStatus === "APPROVED") {
+                          return (
+                            <>
+                              <button type="button" className="rounded border border-rose-500 px-2 py-0.5 text-[11px] text-rose-700" onClick={() => onDelete(row)}>Delete</button>
+                              <button type="button" className="rounded border border-emerald-600 px-2 py-0.5 text-[11px] text-emerald-800" onClick={() => onPost(row)}>Post</button>
+                            </>
+                          );
+                        }
+                        if (uiStatus === "POSTED") {
+                          return (
+                            <>
+                              <button type="button" className="rounded border px-2 py-0.5 text-[11px]" onClick={() => setViewTarget(row)}>View</button>
+                              <button type="button" className="rounded border border-rose-600 px-2 py-0.5 text-[11px] text-rose-800" onClick={() => onReverse(row)}>Reverse</button>
+                            </>
+                          );
+                        }
+                        if (uiStatus === "REVERSED" || uiStatus === "CANCELLED") {
+                          return (
+                            <button type="button" className="rounded border px-2 py-0.5 text-[11px]" onClick={() => setViewTarget(row)}>View</button>
+                          );
+                        }
+                        return null;
+                      })()}
                     </td>
                   </tr>
                 ))}
@@ -513,6 +590,24 @@ export default function ArticleStockConversionPanel({ locations = [], deepLinkCo
             <div className="flex justify-end gap-2">
               <button type="button" className="rounded border px-3 py-1.5 text-xs" onClick={() => setReverseTarget(null)}>Go Back</button>
               <button type="button" className="rounded bg-rose-700 px-3 py-1.5 text-xs text-white" onClick={confirmReverse}>Continue</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {viewTarget ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-lg rounded-xl bg-white p-4 shadow-lg space-y-2 text-sm">
+            <h3 className="font-semibold">{viewTarget.conversionNo}</h3>
+            <p><span className="text-slate-500">Status:</span> {displayStatus(viewTarget)}</p>
+            <p><span className="text-slate-500">Source → Target:</span> {viewTarget.sourceArticle} → {viewTarget.targetArticle}</p>
+            <p><span className="text-slate-500">Qty:</span> {viewTarget.sourceQty} → {viewTarget.targetQty}</p>
+            <p><span className="text-slate-500">Warehouse:</span> {viewTarget.warehouse}</p>
+            <p><span className="text-slate-500">Reason:</span> {REASON_LABELS[viewTarget.reasonCode] || viewTarget.reasonCode}</p>
+            <p><span className="text-slate-500">Remarks:</span> {viewTarget.remarks || "—"}</p>
+            <p><span className="text-slate-500">Created / Posted:</span> {viewTarget.createdBy || "—"} / {viewTarget.postedBy || "—"}</p>
+            <div className="flex justify-end pt-2">
+              <button type="button" className="rounded border px-3 py-1.5 text-xs" onClick={() => setViewTarget(null)}>Close</button>
             </div>
           </div>
         </div>

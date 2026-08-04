@@ -208,8 +208,8 @@ export function apiPatch(path, body) {
   return api.patch(path, body).then((r) => r.data);
 }
 
-export function apiDelete(path) {
-  return api.delete(path).then((r) => r.data);
+export function apiDelete(path, body) {
+  return api.delete(path, body != null ? { data: body } : undefined).then((r) => r.data);
 }
 
 export function apiGetWithQuery(path, params = {}) {

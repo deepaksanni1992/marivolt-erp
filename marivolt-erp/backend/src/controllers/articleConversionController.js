@@ -7,6 +7,9 @@ import ArticleEquivalenceMapping from "../models/ArticleEquivalenceMapping.js";
 import ItemMaster from "../models/itemMasterModel.js";
 import StockLocation from "../models/StockLocation.js";
 import CustomsLotItem from "../models/CustomsLotItem.js";
+import CustomsMovement from "../models/CustomsMovement.js";
+import StockLedger from "../models/StockLedger.js";
+import AuditLog from "../models/AuditLog.js";
 import OrderAllocation from "../models/OrderAllocation.js";
 import StorePacking from "../models/StorePacking.js";
 import * as stockService from "../services/stockService.js";
@@ -30,6 +33,9 @@ import {
   ARTICLE_CONVERSION_SOURCE_DOCUMENT_TYPE,
   ARTICLE_CONVERSION_STOCK_SHORTAGE,
   ARTICLE_CONVERSION_UOM_MISMATCH,
+  ARTICLE_CONVERSION_DELETE_BLOCKED,
+  ARTICLE_CONVERSION_DELETED,
+  ARTICLE_CONVERSION_POSTED_DELETE_MESSAGE,
   articleConversionConflictError,
   buildArticleConversionEffectKey,
   buildArticleConversionReversalEffectKey,
@@ -915,6 +921,201 @@ export async function cancelArticleConversionDraft(req, res) {
     res.json(doc);
   } catch (err) {
     res.status(400).json({ message: err.message });
+  }
+}
+
+/**
+ * Physically delete a DRAFT (or approved-but-unposted) conversion.
+ * Never deletes POSTED / REVERSED / CANCELLED documents.
+ */
+export async function deleteArticleConversion(req, res) {
+  const session = await mongoose.startSession();
+  try {
+    const id = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid conversion id", code: ARTICLE_CONVERSION_DELETE_BLOCKED });
+    }
+
+    const reason = t(req.body?.reason || req.query?.reason || "User deleted draft");
+    const deletedBy = req.user?.email || "";
+    let deletedSnapshot = null;
+
+    await session.withTransaction(async () => {
+      const doc = await ArticleStockConversion.findOne(withCompany(req, { _id: id })).session(session);
+      if (!doc) {
+        throw articleConversionConflictError(ARTICLE_CONVERSION_DELETE_BLOCKED, "Conversion not found", null, 404);
+      }
+
+      const st = String(doc.status || "").toUpperCase();
+      if (st === "POSTED" || st === "POSTING") {
+        throw articleConversionConflictError(
+          ARTICLE_CONVERSION_DELETE_BLOCKED,
+          ARTICLE_CONVERSION_POSTED_DELETE_MESSAGE,
+          { status: st },
+          409
+        );
+      }
+      if (st === "REVERSED" || st === "REVERSING" || st === "CANCELLED") {
+        throw articleConversionConflictError(
+          ARTICLE_CONVERSION_DELETE_BLOCKED,
+          `Article Conversions in status ${st} cannot be deleted. The audit trail is preserved.`,
+          { status: st },
+          409
+        );
+      }
+      // Deletable: DRAFT (includes approvalStatus APPROVED / PENDING / NOT_REQUIRED). Optional legacy APPROVED status.
+      if (st !== "DRAFT" && st !== "APPROVED") {
+        throw articleConversionConflictError(
+          ARTICLE_CONVERSION_DELETE_BLOCKED,
+          `Only DRAFT or APPROVED (unposted) conversions can be deleted (status ${st}).`,
+          { status: st },
+          409
+        );
+      }
+      if (doc.postedAt) {
+        throw articleConversionConflictError(
+          ARTICLE_CONVERSION_DELETE_BLOCKED,
+          ARTICLE_CONVERSION_POSTED_DELETE_MESSAGE,
+          { postedAt: doc.postedAt },
+          409
+        );
+      }
+      if (doc.outLedgerId || doc.inLedgerId || doc.reversalOutLedgerId || doc.reversalInLedgerId) {
+        throw articleConversionConflictError(
+          ARTICLE_CONVERSION_DELETE_BLOCKED,
+          "Conversion has ledger references and cannot be deleted.",
+          {
+            outLedgerId: doc.outLedgerId,
+            inLedgerId: doc.inLedgerId,
+          },
+          409
+        );
+      }
+
+      const ledgerFilter = {
+        companyId: req.companyId,
+        $or: [
+          { sourceDocumentId: doc._id, sourceDocumentType: ARTICLE_CONVERSION_SOURCE_DOCUMENT_TYPE },
+          { referenceType: "ARTICLE_STOCK_CONVERSION", referenceNo: doc.conversionNo },
+          {
+            effectKey: {
+              $in: [
+                buildArticleConversionEffectKey({
+                  companyId: req.companyId,
+                  conversionId: doc._id,
+                  movementType: "ARTICLE_CONVERSION_OUT",
+                  warehouse: doc.warehouse,
+                  article: doc.sourceArticle,
+                }),
+                buildArticleConversionEffectKey({
+                  companyId: req.companyId,
+                  conversionId: doc._id,
+                  movementType: "ARTICLE_CONVERSION_IN",
+                  warehouse: doc.warehouse,
+                  article: doc.targetArticle,
+                }),
+              ],
+            },
+          },
+        ],
+      };
+      const ledgerCount = await StockLedger.countDocuments(ledgerFilter).session(session);
+      if (ledgerCount > 0) {
+        throw articleConversionConflictError(
+          ARTICLE_CONVERSION_DELETE_BLOCKED,
+          "Conversion has StockLedger movements and cannot be deleted.",
+          { ledgerCount },
+          409
+        );
+      }
+
+      const customsCount = await CustomsMovement.countDocuments({
+        companyId: req.companyId,
+        $or: [
+          { referenceId: doc._id, referenceType: "ARTICLE_STOCK_CONVERSION" },
+          { referenceNumber: up(doc.conversionNo), referenceType: "ARTICLE_STOCK_CONVERSION" },
+        ],
+      }).session(session);
+      if (customsCount > 0) {
+        throw articleConversionConflictError(
+          ARTICLE_CONVERSION_DELETE_BLOCKED,
+          "Conversion has CustomsMovement records and cannot be deleted.",
+          { customsCount },
+          409
+        );
+      }
+
+      // Draft-only conversion layers (should not exist pre-post, but clean if orphaned flags appear)
+      const draftCustomsLayers = await CustomsLotItem.countDocuments({
+        companyId: req.companyId,
+        conversionDocumentId: doc._id,
+        isConversionLayer: true,
+      }).session(session);
+      if (draftCustomsLayers > 0) {
+        throw articleConversionConflictError(
+          ARTICLE_CONVERSION_DELETE_BLOCKED,
+          "Conversion has customs lot layers and cannot be deleted.",
+          { draftCustomsLayers },
+          409
+        );
+      }
+
+      deletedSnapshot = {
+        conversionNo: doc.conversionNo,
+        status: doc.status,
+        approvalStatus: doc.approvalStatus,
+        sourceArticle: doc.sourceArticle,
+        targetArticle: doc.targetArticle,
+        sourceQty: doc.sourceQty,
+        targetQty: doc.targetQty,
+        warehouse: doc.warehouse,
+      };
+
+      await ArticleStockConversion.deleteOne({ _id: doc._id, companyId: req.companyId }).session(session);
+
+      const deletedAt = new Date();
+      await AuditLog.create(
+        [
+          {
+            companyId: req.companyId,
+            userId: req.user?._id || null,
+            userName: req.user?.name || req.user?.fullName || "",
+            userEmail: deletedBy,
+            action: ARTICLE_CONVERSION_DELETED,
+            module: "STORE",
+            entityType: "ARTICLE_STOCK_CONVERSION",
+            entityId: String(id),
+            documentNo: deletedSnapshot.conversionNo,
+            description: `Article conversion ${deletedSnapshot.conversionNo} deleted`,
+            fromStatus: deletedSnapshot.status,
+            toStatus: "DELETED",
+            beforeData: deletedSnapshot,
+            metadata: {
+              conversionNo: deletedSnapshot.conversionNo,
+              reason,
+              deletedBy,
+              timestamp: deletedAt.toISOString(),
+              approvalStatus: deletedSnapshot.approvalStatus,
+            },
+          },
+        ],
+        { session, ordered: true }
+      );
+    });
+
+    res.json({
+      success: true,
+      code: ARTICLE_CONVERSION_DELETED,
+      conversionNo: deletedSnapshot?.conversionNo,
+      deleted: deletedSnapshot,
+    });
+  } catch (err) {
+    if (err?.code === ARTICLE_CONVERSION_DELETE_BLOCKED) {
+      return respondConflict(res, err);
+    }
+    res.status(400).json({ message: err.message, code: err.code || null });
+  } finally {
+    session.endSession();
   }
 }
 
