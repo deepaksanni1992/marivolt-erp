@@ -11,6 +11,14 @@ const dashboardGroup = {
   ],
 };
 
+const inventoryGroup = {
+  label: "Inventory",
+  items: [
+    { to: "/inventory", label: "Stock Balances" },
+    { to: "/inventory/integrity/reservation", label: "Reservation Integrity" },
+  ],
+};
+
 const flatLinks = [
   { to: "/items", label: "Item Master" },
   { to: "/purchase", label: "Purchase" },
@@ -50,6 +58,7 @@ function linkClass(isActive) {
 
 export default function Sidebar({ open, onClose }) {
   const [dashboardOpen, setDashboardOpen] = useState(true);
+  const [inventoryOpen, setInventoryOpen] = useState(true);
   const [customsOpen, setCustomsOpen] = useState(true);
   const [documentsOpen, setDocumentsOpen] = useState(true);
 
@@ -92,6 +101,24 @@ export default function Sidebar({ open, onClose }) {
                 {dashboardGroup.items.map(({ to, label }) => (
                   <li key={to}>
                     <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/dashboard"}>
+                      {label}
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </li>
+
+          <li>
+            <button type="button" className="erp-sidebar__group-btn" onClick={() => setInventoryOpen((v) => !v)}>
+              <span>{inventoryGroup.label}</span>
+              <span className="erp-sidebar__chevron">{inventoryOpen ? "▾" : "▸"}</span>
+            </button>
+            {inventoryOpen ? (
+              <ul className="erp-sidebar__submenu">
+                {inventoryGroup.items.map(({ to, label }) => (
+                  <li key={to}>
+                    <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/inventory"}>
                       {label}
                     </NavLink>
                   </li>

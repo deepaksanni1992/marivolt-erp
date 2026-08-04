@@ -35,6 +35,15 @@ ok("PI awaiting payment is operational", isOperationalIssueType("PI_AWAITING_PAY
 ok("Packing without invoice is operational", isOperationalIssueType("PACKING_WITHOUT_INVOICE"));
 ok("Packing without dispatch is operational", isOperationalIssueType("PACKING_WITHOUT_DISPATCH"));
 ok("Stock bucket integrity is NOT operational", !isOperationalIssueType("STOCK_BUCKET_INTEGRITY"));
+ok("ORPHAN_RESERVED_QTY is NOT operational", !isOperationalIssueType("ORPHAN_RESERVED_QTY"));
+ok(
+  "ORPHAN_RESERVED_QTY is integrity",
+  classifyIssueCategory("ORPHAN_RESERVED_QTY") === ISSUE_CATEGORIES.INTEGRITY
+);
+ok(
+  "RESERVED_QTY_MISMATCH is integrity",
+  classifyIssueCategory("RESERVED_QTY_MISMATCH") === ISSUE_CATEGORIES.INTEGRITY
+);
 
 // Allocate-before-purchase / negative available — operational, not integrity
 for (const t of [

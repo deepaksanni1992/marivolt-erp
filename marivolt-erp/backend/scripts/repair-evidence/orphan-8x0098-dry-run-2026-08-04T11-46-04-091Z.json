@@ -1,0 +1,169 @@
+{
+  "mode": "dry-run",
+  "at": "2026-08-04T11:46:04.090Z",
+  "target": {
+    "companyCode": "MAR",
+    "warehouse": "MAIN",
+    "article": "8X0098",
+    "stockBalanceId": "6a54ceccfa2faadf84deb2a0",
+    "missingAllocationId": "6a54cecb436e67731e3fa972",
+    "allocationNo": "MAR-ALLOC-0012",
+    "orphanQty": 9,
+    "originalAllocationLedgerId": "6a54cecc436e67731e3fa977",
+    "expectedOnHand": 9,
+    "expectedReservedBefore": 9,
+    "expectedPacked": 0,
+    "effectKey": "ORPHAN_RESERVATION_REPAIR:MAR:MAIN:8X0098:MAR-ALLOC-0012",
+    "remarks": "Administrative orphan reservation reconciliation. Original allocation MAR-ALLOC-0012 was hard-deleted by legacy customer transaction cleanup without stock release.",
+    "reason": "Legacy hard deletion of MAR-ALLOC-0012 without cancelAllocation"
+  },
+  "validation": {
+    "ok": true,
+    "alreadyRepaired": false,
+    "checks": [
+      {
+        "ok": true,
+        "message": "StockBalance company = MAR",
+        "detail": null
+      },
+      {
+        "ok": true,
+        "message": "StockBalance warehouse = MAIN",
+        "detail": null
+      },
+      {
+        "ok": true,
+        "message": "StockBalance article = 8X0098",
+        "detail": null
+      },
+      {
+        "ok": true,
+        "message": "onHandQty = 9",
+        "detail": null
+      },
+      {
+        "ok": true,
+        "message": "packedQty = 0",
+        "detail": null
+      },
+      {
+        "ok": true,
+        "message": "reservedQty = 9 (pre-repair)",
+        "detail": null
+      },
+      {
+        "ok": true,
+        "message": "Zero active OrderAllocation lines holding 8X0098",
+        "detail": null
+      },
+      {
+        "ok": true,
+        "message": "Zero packing lines holding 8X0098",
+        "detail": null
+      },
+      {
+        "ok": true,
+        "message": "Original ledger movementType = ALLOCATION",
+        "detail": null
+      },
+      {
+        "ok": true,
+        "message": "Original ledger referenceNo = MAR-ALLOC-0012",
+        "detail": null
+      },
+      {
+        "ok": true,
+        "message": "Original ledger qtyOut = 9",
+        "detail": null
+      },
+      {
+        "ok": true,
+        "message": "No existing ALLOCATION_CANCEL or orphan-repair ledger for MAR-ALLOC-0012",
+        "detail": null
+      },
+      {
+        "ok": true,
+        "message": "Expected reserved from active documents = 0",
+        "detail": null
+      },
+      {
+        "ok": true,
+        "message": "Orphan quantity is exactly 9",
+        "detail": null
+      },
+      {
+        "ok": true,
+        "message": "Missing allocation document remains absent (will not recreate)",
+        "detail": null
+      }
+    ],
+    "snapshot": {
+      "balance": {
+        "_id": "6a54ceccfa2faadf84deb2a0",
+        "batchNo": "",
+        "companyId": "69e9f1791bcc5763ef869447",
+        "location": "MAIN",
+        "article": "8X0098",
+        "serialNo": "",
+        "__v": 0,
+        "allocatedQty": 0,
+        "createdAt": "2026-07-13T11:41:00.048Z",
+        "dispatchedQty": 0,
+        "itemCode": "8X0098",
+        "onHandQty": 9,
+        "packedQty": 0,
+        "quantity": 9,
+        "reservedQty": 9,
+        "updatedAt": "2026-08-03T12:14:19.411Z",
+        "warehouse": "MAIN"
+      },
+      "originalLedger": {
+        "_id": "6a54cecc436e67731e3fa977",
+        "companyId": "69e9f1791bcc5763ef869447",
+        "transactionDate": "2026-07-13T11:41:00.185Z",
+        "transactionType": "SALES_ALLOCATION",
+        "referenceType": "ORDER_ALLOCATION",
+        "referenceNo": "MAR-ALLOC-0012",
+        "article": "8X0098",
+        "location": "MAIN",
+        "batchNo": "",
+        "serialNo": "",
+        "qtyIn": 0,
+        "qtyOut": 9,
+        "balanceQty": 0,
+        "unitCost": 0,
+        "oldCost": null,
+        "newCost": null,
+        "valuationDelta": null,
+        "allocationId": null,
+        "currency": "USD",
+        "remarks": "Reserve on OA→allocation (allowNegative) [NEGATIVE: available -9]",
+        "createdBy": "admin@marivoltz.com",
+        "movementType": "ALLOCATION",
+        "sourceModule": "SALES",
+        "warehouse": "MAIN",
+        "locationFrom": "",
+        "locationTo": "",
+        "customerName": "ALTAMAR OCEANIC MANAGEMENT - FZCO LLC",
+        "supplierName": "",
+        "onHandAfter": 0,
+        "allocatedAfter": 9,
+        "rtsAfter": 0,
+        "packedAfter": 0,
+        "dispatchedAfter": null,
+        "availableAfter": -9,
+        "isNegativeAllocation": true,
+        "createdAt": "2026-07-13T11:41:00.185Z",
+        "updatedAt": "2026-07-13T11:41:00.185Z",
+        "__v": 0
+      },
+      "openAllocs": [],
+      "packingDocs": [],
+      "openAllocationRemaining": 0,
+      "orphanQty": 9,
+      "availableBefore": 0,
+      "missingAllocationId": "6a54cecb436e67731e3fa972",
+      "effectKey": "ORPHAN_RESERVATION_REPAIR:MAR:MAIN:8X0098:MAR-ALLOC-0012"
+    }
+  }
+}

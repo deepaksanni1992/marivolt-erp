@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import Modal from "../components/erp/Modal.jsx";
@@ -80,8 +81,15 @@ export default function Inventory() {
     <div>
       <PageHeader
         title="Inventory"
-        subtitle="Balances, movement history, and manual stock adjustments."
-      />
+        subtitle="Balances, movement history, manual adjustments, and reservation integrity."
+      >
+        <Link
+          to="/inventory/integrity/reservation"
+          className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm font-semibold text-sky-800"
+        >
+          Reservation Integrity
+        </Link>
+      </PageHeader>
 
       {err ? (
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">

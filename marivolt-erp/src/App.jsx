@@ -9,6 +9,7 @@ import CompanySelect from "./pages/CompanySelect.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import DataHealthDashboard from "./pages/DataHealthDashboard.jsx";
 import StockBucketIntegrity from "./pages/StockBucketIntegrity.jsx";
+import ReservationIntegrity from "./pages/ReservationIntegrity.jsx";
 import ItemMaster from "./pages/ItemMaster.jsx";
 import ProcurementFoundation from "./pages/ProcurementFoundation.jsx";
 import Sales from "./pages/Sales.jsx";
@@ -61,6 +62,8 @@ export default function App() {
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="dashboard/data-health" element={<DataHealthDashboard />} />
           <Route path="dashboard/stock-bucket-integrity" element={<StockBucketIntegrity />} />
+          <Route path="inventory" element={<Inventory />} />
+          <Route path="inventory/integrity/reservation" element={<ReservationIntegrity />} />
           <Route path="items" element={<ItemMaster />} />
           <Route path="purchase" element={<ProcurementFoundation />} />
           <Route path="sales" element={<Sales />} />
@@ -74,7 +77,6 @@ export default function App() {
           <Route path="customs/reconciliation" element={<CustomsReconciliation />} />
           <Route path="search" element={<GlobalSearch />} />
           <Route path="traceability/article" element={<ArticleTraceability />} />
-          <Route path="inventory" element={<Inventory />} />
           <Route path="logistics" element={<Logistics />} />
           <Route path="accounts" element={<Accounts />} />
           <Route path="documents" element={<Documents />} />

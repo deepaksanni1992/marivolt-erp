@@ -28,6 +28,29 @@ import StockBalance from "../models/StockBalance.js";
 import StockLedger from "../models/StockLedger.js";
 import InventoryLedger from "../models/InventoryLedger.js";
 
+/**
+ * Debounced Reservation Integrity re-check after bucket mutations.
+ * Defers until the Mongo session commits when a session is present.
+ * Never throws into the stock mutation path.
+ */
+function notifyReservationIntegrity(companyId, warehouse, article, reason, session = null) {
+  try {
+    if (!companyId || !article) return;
+    import("./reservationIntegrityService.js")
+      .then((m) => {
+        m.scheduleReservationIntegrityAfterCommit(
+          { companyId, warehouse, article, reason },
+          session
+        );
+      })
+      .catch((err) => {
+        console.error("[stockService] reservation integrity schedule failed:", err?.message || err);
+      });
+  } catch (err) {
+    console.error("[stockService] reservation integrity notify failed:", err?.message || err);
+  }
+}
+
 /* --------------------------------------------------------------- */
 /*  Constants                                                       */
 /* --------------------------------------------------------------- */
@@ -474,7 +497,7 @@ export async function grnReceive({
     upsert: true,
   });
   const after = await snapshotAfter({ companyId, article, warehouse, session });
-  return createStockLedgerEntry({
+  const ledger = await createStockLedgerEntry({
     session,
     companyId,
     transactionDate,
@@ -495,6 +518,8 @@ export async function grnReceive({
     serialNo,
     ...after,
   });
+  notifyReservationIntegrity(companyId, warehouse, article, "GRN", session);
+  return ledger;
 }
 
 /**
@@ -621,7 +646,7 @@ export async function openingBalance({
     upsert: true,
   });
   const after = await snapshotAfter({ companyId, article, warehouse, session });
-  return createStockLedgerEntry({
+  const ledger = await createStockLedgerEntry({
     session,
     companyId,
     movementType: MOVEMENT_TYPES.OPENING_BALANCE,
@@ -637,6 +662,8 @@ export async function openingBalance({
     currency,
     ...after,
   });
+  notifyReservationIntegrity(companyId, warehouse, article, "INVENTORY_IMPORT", session);
+  return ledger;
 }
 
 /**
@@ -735,7 +762,7 @@ export async function allocateStock({
     }
   }
   const after = await snapshotAfter({ companyId, article, warehouse, session });
-  return createStockLedgerEntry({
+  const ledger = await createStockLedgerEntry({
     session,
     companyId,
     movementType: MOVEMENT_TYPES.ALLOCATION,
@@ -754,6 +781,8 @@ export async function allocateStock({
     effectKey: ek,
     ...after,
   });
+  notifyReservationIntegrity(companyId, warehouse, article, "ALLOCATION", session);
+  return ledger;
 }
 
 /**
@@ -803,7 +832,7 @@ export async function cancelAllocation({
     );
   }
   const after = await snapshotAfter({ companyId, article, warehouse, session });
-  return createStockLedgerEntry({
+  const ledger = await createStockLedgerEntry({
     session,
     companyId,
     movementType: MOVEMENT_TYPES.ALLOCATION_CANCEL,
@@ -819,6 +848,8 @@ export async function cancelAllocation({
     effectKey: ek,
     ...after,
   });
+  notifyReservationIntegrity(companyId, warehouse, article, "ALLOCATION_CANCEL", session);
+  return ledger;
 }
 
 /**
@@ -1027,7 +1058,7 @@ export async function stockAdjustment({
     );
   }
   const after = await snapshotAfter({ companyId, article, warehouse, session });
-  return createStockLedgerEntry({
+  const ledger = await createStockLedgerEntry({
     session,
     companyId,
     transactionDate,
@@ -1043,6 +1074,8 @@ export async function stockAdjustment({
     sourceModule,
     ...after,
   });
+  notifyReservationIntegrity(companyId, warehouse, article, "STOCK_ADJUSTMENT", session);
+  return ledger;
 }
 
 /**
@@ -1358,7 +1391,7 @@ export async function packFromAllocation({
     );
   }
   const after = await snapshotAfter({ companyId, article, warehouse, session });
-  return createStockLedgerEntry({
+  const ledger = await createStockLedgerEntry({
     session,
     companyId,
     transactionDate,
@@ -1384,6 +1417,8 @@ export async function packFromAllocation({
     effectKey,
     ...after,
   });
+  notifyReservationIntegrity(companyId, warehouse, article, "PACKING", session);
+  return ledger;
 }
 
 /**
@@ -1434,7 +1469,7 @@ export async function unpackFromPacked({
     );
   }
   const after = await snapshotAfter({ companyId, article, warehouse, session });
-  return createStockLedgerEntry({
+  const ledger = await createStockLedgerEntry({
     session,
     companyId,
     transactionDate,
@@ -1462,6 +1497,8 @@ export async function unpackFromPacked({
     reversedFromLedgerId,
     ...after,
   });
+  notifyReservationIntegrity(companyId, warehouse, article, "PACKING_CANCEL", session);
+  return ledger;
 }
 
 /**
@@ -1603,7 +1640,7 @@ export async function cancelDispatchFromPacked({
     upsert: true,
   });
   const after = await snapshotAfter({ companyId, article, warehouse, session });
-  return createStockLedgerEntry({
+  const ledger = await createStockLedgerEntry({
     session,
     companyId,
     transactionDate,
@@ -1636,6 +1673,8 @@ export async function cancelDispatchFromPacked({
     reversedFromLedgerId,
     ...after,
   });
+  notifyReservationIntegrity(companyId, warehouse, article, "DISPATCH_CANCEL", session);
+  return ledger;
 }
 
 /* --------------------------------------------------------------- */
@@ -1683,8 +1722,20 @@ export async function withTransaction(fn) {
   try {
     const result = await fn(session);
     await session.commitTransaction();
+    try {
+      const ri = await import("./reservationIntegrityService.js");
+      ri.releaseReservationIntegritySessionPending(session);
+    } catch (err) {
+      console.error("[stockService] RI post-commit release failed:", err?.message || err);
+    }
     return result;
   } catch (e) {
+    try {
+      const ri = await import("./reservationIntegrityService.js");
+      ri.discardReservationIntegritySessionPending(session);
+    } catch {
+      /* ignore */
+    }
     await session.abortTransaction();
     throw e;
   } finally {

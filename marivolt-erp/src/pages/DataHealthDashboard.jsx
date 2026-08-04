@@ -460,6 +460,14 @@ export default function DataHealthDashboard() {
                 Open diagnostic · not affected by OA/PO pending · last {fmtDateTime(data?.stockBucketSummary?.lastScan || data?.lastAuditRun)}
               </div>
             </Link>
+            <Link
+              to="/inventory/integrity/reservation"
+              className="rounded-xl border bg-white p-3 shadow-sm hover:border-emerald-300 hover:bg-emerald-50"
+            >
+              <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Reservation Integrity</div>
+              <div className="mt-1 text-sm font-semibold text-slate-900">Validate reserved / packed vs live docs</div>
+              <div className="mt-1 text-xs text-slate-500">Inventory → Integrity → Reservation Integrity</div>
+            </Link>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

@@ -1225,9 +1225,63 @@ async function runInventoryChecks(companyId) {
     );
   }
 
-  // Stock bucket integrity (orphaned reserved/packed vs live docs) — read-only sample.
+  // Reservation Integrity — expected reserved/packed from live documents only.
   try {
-    const { runStockBucketIntegrityAudit } = await import("./stockBucketIntegrityService.js");
+    const { validateAllStock } = await import("./reservationIntegrityService.js");
+    const ri = await validateAllStock({
+      companyId,
+      includeHealthy: false,
+      persist: true,
+    });
+    let emitted = 0;
+    for (const row of ri.rows || []) {
+      for (const iss of row.issues || []) {
+        if (emitted >= ISSUE_CAP_PER_CHECK) break;
+        emitted += 1;
+        issues.push(
+          mkIssue({
+            checkId: 27,
+            severity: iss.severity === "Critical" ? "Critical" : iss.severity === "Major" ? "Major" : "Minor",
+            module: "Inventory",
+            issueType: iss.issueType,
+            documentNumber: row.article,
+            reference: row.warehouse,
+            description: `${iss.issueType}: actual ${iss.actual} vs expected ${iss.expected} (Δ ${iss.difference})`,
+            suggestedAction: iss.repairRecommendation,
+            openPath: `/inventory/integrity/reservation?article=${encodeURIComponent(row.article)}&warehouse=${encodeURIComponent(row.warehouse || "")}`,
+            article: row.article,
+          }),
+        );
+      }
+      if (emitted >= ISSUE_CAP_PER_CHECK) break;
+    }
+  } catch (err) {
+    issues.push(
+      mkIssue({
+        checkId: 27,
+        severity: "Major",
+        module: "Inventory",
+        issueType: "RESERVED_QTY_MISMATCH",
+        documentNumber: "SCAN_ERROR",
+        description: `Reservation integrity scan failed: ${err.message}`,
+        suggestedAction: "Check admin logs / open Reservation Integrity and Run Validation",
+        openPath: `/inventory/integrity/reservation`,
+      }),
+    );
+  }
+
+  // Broader stock bucket integrity (ledger / on-hand / ghost effects) — exclude pure reservation types already scored above.
+  try {
+    const { runStockBucketIntegrityAudit, MISMATCH_TYPES } = await import(
+      "./stockBucketIntegrityService.js"
+    );
+    const reservationOnly = new Set([
+      MISMATCH_TYPES.ORPHANED_RESERVED,
+      MISMATCH_TYPES.MISSING_RESERVED,
+      MISMATCH_TYPES.ORPHANED_PACKED,
+      MISMATCH_TYPES.MISSING_PACKED,
+      MISMATCH_TYPES.STORED_AVAILABLE_MISMATCH,
+    ]);
     const bucket = await runStockBucketIntegrityAudit({
       companyId,
       includeHealthy: false,
@@ -1236,6 +1290,9 @@ async function runInventoryChecks(companyId) {
     });
     for (const row of (bucket.rows || []).slice(0, ISSUE_CAP_PER_CHECK)) {
       if (row.healthy) continue;
+      const types = (row.mismatchTypes || []).map(String);
+      const nonReservation = types.filter((x) => !reservationOnly.has(x));
+      if (!nonReservation.length) continue;
       const sev =
         row.severity === "Critical" ? "Critical" : row.severity === "Major" ? "Major" : "Minor";
       issues.push(
@@ -1246,7 +1303,7 @@ async function runInventoryChecks(companyId) {
           issueType: "STOCK_BUCKET_INTEGRITY",
           documentNumber: row.article,
           reference: `${row.warehouseCode || row.location || ""}`,
-          description: `Bucket mismatch [${(row.mismatchTypes || []).join(", ")}]: reserved ${row.storedReservedQty}→${row.expectedReservedQty}, packed ${row.storedPackedQty}→${row.expectedPackedQty}`,
+          description: `Bucket mismatch [${nonReservation.join(", ")}]: reserved ${row.storedReservedQty}→${row.expectedReservedQty}, packed ${row.storedPackedQty}→${row.expectedPackedQty}`,
           suggestedAction: row.safeRepairCandidate
             ? "Review on Stock Bucket Integrity screen; dry-run repair preview available"
             : row.repairBlockedReason || "Investigate manually — auto-repair blocked",

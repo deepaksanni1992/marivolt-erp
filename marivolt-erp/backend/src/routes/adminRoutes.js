@@ -27,6 +27,7 @@ import * as approvals from "../controllers/approvalController.js";
 import * as activity from "../controllers/userActivityController.js";
 import * as stockBuckets from "../controllers/stockBucketReconcileController.js";
 import * as stockBucketIntegrity from "../controllers/stockBucketIntegrityController.js";
+import * as reservationIntegrity from "../controllers/reservationIntegrityController.js";
 
 const adminRoles = ["super_admin", "company_admin", "admin"];
 
@@ -173,6 +174,38 @@ router.post(
   settingsApprove,
   requireRole(...adminRoles),
   stockBucketIntegrity.postBucketIntegrityRepair
+);
+
+/** Reservation Integrity Framework — validate / list / diagnose (repair apply gated). */
+router.get(
+  "/stock/reservation-integrity",
+  settingsView,
+  requireRole(...adminRoles),
+  reservationIntegrity.getReservationIntegrity
+);
+router.get(
+  "/stock/reservation-integrity/article/:article",
+  settingsView,
+  requireRole(...adminRoles),
+  reservationIntegrity.getReservationIntegrityArticle
+);
+router.post(
+  "/stock/reservation-integrity/validate",
+  settingsView,
+  requireRole(...adminRoles),
+  reservationIntegrity.postReservationIntegrityValidate
+);
+router.post(
+  "/stock/reservation-integrity/repair-diagnose",
+  settingsView,
+  requireRole(...adminRoles),
+  reservationIntegrity.postReservationIntegrityRepairDiagnose
+);
+router.post(
+  "/stock/reservation-integrity/repair",
+  settingsApprove,
+  requireRole(...adminRoles),
+  reservationIntegrity.postReservationIntegrityRepair
 );
 
 export default router;

@@ -39,6 +39,7 @@ const auditLogSchema = new mongoose.Schema(
         "ATTACHMENT",
         "LOGIN",
         "LOGOUT",
+        "ORPHAN_RESERVATION_REPAIRED",
         "OTHER",
       ],
       required: true,
