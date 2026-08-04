@@ -46,6 +46,7 @@ router.get("/:id/ap-summary", purchaseView, pod.getPoApSummary);
 router.get("/:id/supplier-proformas", purchaseView, spf.listSupplierProformasForPo);
 router.get("/:id", purchaseView, c.getPurchaseOrder);
 router.post("/", purchaseCreate, c.createPurchaseOrder);
+router.post("/:id/duplicate", purchaseCreate, c.duplicatePurchaseOrder);
 router.put("/:id", purchaseEdit, c.updatePurchaseOrder);
 router.post("/:id/submit", purchaseApprove, c.submitPurchaseOrder);
 router.post("/:id/approve", purchaseApprove, c.approvePurchaseOrder);

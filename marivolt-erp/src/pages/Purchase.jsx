@@ -1218,6 +1218,21 @@ export default function Purchase({ procurementEmbed = false } = {}) {
     onError: (e) => setErr(e.message || "Could not delete purchase order"),
   });
 
+  const duplicatePoMutation = useMutation({
+    mutationFn: (id) => apiPost(`/purchase-orders/${id}/duplicate`, {}),
+    onSuccess: (doc) => {
+      qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
+      qc.invalidateQueries({ queryKey: ["purchaseSummary"] });
+      qc.invalidateQueries({ queryKey: ["pendingPoReport"] });
+      const no = doc?.poNumber || doc?.poNo || "";
+      setErr("");
+      setNotice(no ? `Purchase order duplicated as ${no}.` : "Purchase order duplicated.");
+      notify.success(no ? `PO duplicated as ${no}` : "PO duplicated");
+      if (doc?._id) setDetailId(doc._id);
+    },
+    onError: (e) => setErr(e.message || "Could not duplicate purchase order"),
+  });
+
   function openPoForModify(id) {
     setErr("");
     apiGet(`/purchase-orders/${id}`)
@@ -1859,6 +1874,17 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                           >
                             {poCopyBusyId === r._id ? "…" : "View PO"}
                           </button>
+                          {String(r.status || "").toUpperCase() !== "CANCELLED" ? (
+                            <button
+                              type="button"
+                              title="Create a new draft PO copied from this order"
+                              className="rounded-md border border-gray-300 bg-white px-2.5 py-1 text-xs font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+                              disabled={duplicatePoMutation.isPending}
+                              onClick={() => duplicatePoMutation.mutate(r._id)}
+                            >
+                              {duplicatePoMutation.isPending ? "…" : "Duplicate"}
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             title="Opens print dialog — choose Save as PDF"
@@ -2637,6 +2663,17 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                   onClick={openModifyFromDetail}
                 >
                   Modify
+                </button>
+              ) : null}
+              {detail && String(detail.status || "").toUpperCase() !== "CANCELLED" ? (
+                <button
+                  type="button"
+                  title="Create a new draft PO copied from this order"
+                  className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+                  disabled={duplicatePoMutation.isPending}
+                  onClick={() => duplicatePoMutation.mutate(detail._id)}
+                >
+                  {duplicatePoMutation.isPending ? "Duplicating…" : "Duplicate"}
                 </button>
               ) : null}
               {detail && canModifyPoStatus(detail.status) && canDeletePurchaseOrderRole(auth?.user?.role) ? (

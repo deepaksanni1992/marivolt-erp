@@ -360,6 +360,144 @@ export async function createPurchaseOrder(req, res) {
   }
 }
 
+/** Reset receipt / allocation linkage when cloning a PO into a new draft. */
+export function clonePoLinesForDuplicate(lines = []) {
+  return (lines || []).map((line) => {
+    const plain = typeof line?.toObject === "function" ? line.toObject() : { ...line };
+    const qty = Number(plain.qty) || Number(plain.orderedQty) || 0;
+    const { _id, id, ...rest } = plain;
+    return {
+      ...rest,
+      qty,
+      orderedQty: qty,
+      pendingQty: qty,
+      cancelledQty: 0,
+      receivedQty: 0,
+      sourceOrderAllocationLineId: null,
+      sourceArticle: "",
+      sourceRequestedQty: 0,
+      sourceConvertedQty: 0,
+    };
+  });
+}
+
+/**
+ * Duplicate an existing PO as a new DRAFT with a fresh PO number.
+ * Copies commercial/header/lines; clears receipts, GRN/AP status, and allocation links.
+ */
+export async function duplicatePurchaseOrder(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid id" });
+    }
+    const src = await PurchaseOrder.findOne(withCompany(req, { _id: id })).lean();
+    if (!src) return res.status(404).json({ message: "Not found" });
+    if (String(src.status || "").toUpperCase() === "CANCELLED") {
+      return res.status(400).json({ message: "Cannot duplicate cancelled purchase order" });
+    }
+    const lines = clonePoLinesForDuplicate(src.lines);
+    if (!lines.length) {
+      return res.status(400).json({ message: "Source purchase order has no lines to duplicate" });
+    }
+
+    const company = await Company.findById(req.companyId).lean();
+    const {
+      _id,
+      __v,
+      createdAt,
+      updatedAt,
+      poNo,
+      poNumber,
+      status,
+      approvalStatus,
+      linkedPRs,
+      sourceType,
+      sourceOrderAllocationId,
+      sourceOrderAllocationNumber,
+      sourceQuotationId,
+      sourceQuotationNumber,
+      sourceOAId,
+      sourceOANumber,
+      sourceCustomerName,
+      apPaymentStatus,
+      supplierDocumentStatus,
+      grnProgressStatus,
+      grnReceiptStatus,
+      receivedQtySummary,
+      lines: _srcLines,
+      ...header
+    } = src;
+
+    const body = {
+      ...header,
+      companyId: req.companyId,
+      lines,
+      status: "DRAFT",
+      approvalStatus: "NOT_REQUIRED",
+      orderDate: new Date(),
+      linkedPRs: [],
+      sourceType: "DUPLICATE",
+      sourceOrderAllocationId: null,
+      sourceOrderAllocationNumber: "",
+      sourceQuotationId: null,
+      sourceQuotationNumber: "",
+      sourceOAId: null,
+      sourceOANumber: "",
+      sourceCustomerName: "",
+      apPaymentStatus: "NONE",
+      supplierDocumentStatus: "NONE",
+      grnProgressStatus: "NONE",
+      grnReceiptStatus: "NOT_RECEIVED",
+      receivedQtySummary: "",
+      createdBy: req.user?.email || "",
+    };
+    fillBlankBuyerSnapshot(body, company);
+    Object.assign(
+      body,
+      resolvePoPaymentFields(
+        { payment: body.payment, paymentTerms: body.paymentTerms },
+        ""
+      )
+    );
+
+    let lastErr = null;
+    for (let attempt = 0; attempt < MAX_PO_NUMBER_SAVE_RETRIES; attempt += 1) {
+      try {
+        await assignNewPurchaseOrderNumbers(body, req, company);
+        const doc = new PurchaseOrder(body);
+        recalcPoTotals(doc);
+        await doc.save();
+        await writeAudit(req, {
+          action: "CREATE",
+          module: "PURCHASE",
+          entityType: "PURCHASE_ORDER",
+          entityId: doc._id,
+          documentNo: doc.poNo,
+          description: `PO ${doc.poNo} duplicated from ${src.poNo || src.poNumber}`,
+          metadata: {
+            duplicatedFromId: src._id,
+            duplicatedFromPoNo: src.poNo || src.poNumber,
+            supplierName: doc.supplierName,
+            lineCount: doc.lines.length,
+            sourceType: "DUPLICATE",
+          },
+        });
+        return res.status(201).json(doc);
+      } catch (err) {
+        lastErr = err;
+        if (isDuplicatePoNumberError(err) && attempt < MAX_PO_NUMBER_SAVE_RETRIES - 1) {
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr || new Error("Could not duplicate purchase order");
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+}
+
 export async function updatePurchaseOrder(req, res) {
   try {
     const { id } = req.params;
