@@ -16,7 +16,7 @@ import Shipment from "../models/Shipment.js";
 import * as stockService from "../services/stockService.js";
 import { writeAudit } from "../services/auditService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
-import { deriveStockBuckets } from "../services/stockExpectedBuckets.js";
+import { deriveStockBuckets, buildDerivedAvailableExpression } from "../services/stockExpectedBuckets.js";
 
 /**
  * Derives the live stock buckets from a StockBalance row.
@@ -307,12 +307,13 @@ export async function listStockSummary(req, res) {
           allocatedQty: "$allocatedQty",
           packedQty: "$packedQty",
           dispatchedQty: "$dispatchedQty",
-          availableQty: {
-            $subtract: [
-              "$onHandQty",
-              { $add: ["$allocatedQty", "$packedQty"] },
-            ],
-          },
+          availableQty: buildDerivedAvailableExpression({
+            onHandField: "$onHandQty",
+            quantityField: "$quantity",
+            allocatedField: "$allocatedQty",
+            reservedField: "$allocatedQty",
+            packedField: "$packedQty",
+          }),
           pairKey: {
             $concat: [
               "$_id.article",

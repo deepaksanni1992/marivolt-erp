@@ -13,9 +13,51 @@ import KittingOrder from "../models/KittingOrder.js";
 import DeKittingOrder from "../models/DeKittingOrder.js";
 import LandedCostAllocation from "../models/LandedCostAllocation.js";
 import OrderAllocation from "../models/OrderAllocation.js";
+import {
+  buildDerivedAvailableExpression,
+} from "../services/stockExpectedBuckets.js";
 
 const cache = new Map();
 const CACHE_MS = 60 * 1000;
+
+/**
+ * Find StockBalance rows with true negative derived free stock.
+ * Never filters on persisted availableQty.
+ * Response `availableQty` is the derived value (contract field name unchanged).
+ */
+async function findNegativeDerivedBalances(match, { limit = 20, skip = 0 } = {}) {
+  const pipeline = [
+    { $match: match },
+    {
+      $addFields: {
+        derivedAvailableQty: buildDerivedAvailableExpression(),
+        storedAvailableQty: { $ifNull: ["$availableQty", null] },
+      },
+    },
+    { $match: { derivedAvailableQty: { $lt: 0 } } },
+    { $sort: { derivedAvailableQty: 1 } },
+    {
+      $facet: {
+        items: [
+          { $skip: skip },
+          { $limit: limit },
+          {
+            $addFields: {
+              // Contract: availableQty is the analytics-facing free stock figure.
+              availableQty: "$derivedAvailableQty",
+            },
+          },
+        ],
+        meta: [{ $count: "total" }],
+      },
+    },
+  ];
+  const [result] = await StockBalance.aggregate(pipeline);
+  return {
+    items: result?.items || [],
+    total: result?.meta?.[0]?.total || 0,
+  };
+}
 
 function monthKey(date = new Date()) {
   const d = new Date(date);
@@ -153,7 +195,7 @@ async function inventoryAnalytics(f) {
   if (f.warehouse) match.warehouse = f.warehouse;
   const ledgerMatch = { ...companyMatch(f.companyId), transactionDate: { $gte: f.dateFrom, $lte: f.dateTo } };
   if (f.warehouse) ledgerMatch.warehouse = f.warehouse;
-  const [stockRows, movement, topMoving, negativeItems] = await Promise.all([
+  const [stockRows, movement, topMoving, negativeResult] = await Promise.all([
     StockBalance.find(match).lean(),
     StockLedger.aggregate([
       { $match: ledgerMatch },
@@ -172,8 +214,9 @@ async function inventoryAnalytics(f) {
       { $sort: { movedQty: -1 } },
       { $limit: 10 },
     ]),
-    StockBalance.find({ ...match, availableQty: { $lt: 0 } }).sort({ availableQty: 1 }).limit(20).lean(),
+    findNegativeDerivedBalances(match, { limit: 20, skip: 0 }),
   ]);
+  const negativeItems = negativeResult.items;
   const stockValuation = stockRows.reduce((n, x) => n + (Number(x.onHandQty) || 0) * (Number(x.avgCost || x.unitCost) || 0), 0);
   const now = Date.now();
   const ageing = { "0-30": 0, "31-60": 0, "61-90": 0, "90+": 0 };
@@ -192,7 +235,7 @@ async function inventoryAnalytics(f) {
   return {
     kpis: {
       stockValuation,
-      negativeStockCount: negativeItems.length,
+      negativeStockCount: negativeResult.total,
       deadStockCount,
       fastMovingCount,
       onHandQty: stockRows.reduce((n, x) => n + (Number(x.onHandQty) || 0), 0),
@@ -207,7 +250,11 @@ async function inventoryAnalytics(f) {
       .sort((a, b) => new Date(a.lastTransactionDate || 0) - new Date(b.lastTransactionDate || 0))
       .slice(0, 10)
       .map((x) => ({ article: x.article, onHandQty: x.onHandQty, lastTransactionDate: x.lastTransactionDate })),
-    negativeStockItems: negativeItems.map((x) => ({ article: x.article, warehouse: x.warehouse || x.location, availableQty: x.availableQty })),
+    negativeStockItems: negativeItems.map((x) => ({
+      article: x.article,
+      warehouse: x.warehouse || x.location,
+      availableQty: x.availableQty,
+    })),
     inventoryAgeing: ageing,
   };
 }
@@ -476,12 +523,9 @@ export async function getAnalyticsDrilldown(req, res) {
     const f = normalizeFilters(req);
     const { page, limit, skip } = pagination(req);
     if (type === "negative-stock") {
-      const q = { ...companyMatch(f.companyId), availableQty: { $lt: 0 } };
+      const q = { ...companyMatch(f.companyId) };
       if (f.warehouse) q.warehouse = f.warehouse;
-      const [items, total] = await Promise.all([
-        StockBalance.find(q).sort({ availableQty: 1 }).skip(skip).limit(limit).lean(),
-        StockBalance.countDocuments(q),
-      ]);
+      const { items, total } = await findNegativeDerivedBalances(q, { skip, limit });
       return res.json({ items, total, page, limit });
     }
     if (type === "overdue-invoices") {

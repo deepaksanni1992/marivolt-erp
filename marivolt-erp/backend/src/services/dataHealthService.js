@@ -25,6 +25,7 @@ import PurchaseInvoice from "../models/PurchaseInvoice.js";
 import SupplierPayment from "../models/SupplierPayment.js";
 import { isCustomsEnabled } from "../config/customsConfig.js";
 import { getCustomsReconciliationMismatches } from "./customsReconciliationService.js";
+import { buildDerivedAvailableExpression } from "./stockExpectedBuckets.js";
 
 const EPS = 0.0001;
 const ISSUE_CAP_PER_CHECK = 40;
@@ -1004,22 +1005,9 @@ async function runInventoryChecks(companyId) {
         $addFields: {
           onHand: { $ifNull: ["$onHandQty", "$quantity"] },
           allocated: { $max: [{ $ifNull: ["$allocatedQty", 0] }, { $ifNull: ["$reservedQty", 0] }] },
-          available: {
-            $ifNull: [
-              "$availableQty",
-              {
-                $subtract: [
-                  { $ifNull: ["$onHandQty", "$quantity"] },
-                  {
-                    $add: [
-                      { $max: [{ $ifNull: ["$allocatedQty", 0] }, { $ifNull: ["$reservedQty", 0] }] },
-                      { $ifNull: ["$packedQty", 0] },
-                    ],
-                  },
-                ],
-              },
-            ],
-          },
+          // Never trust persisted availableQty for operational negative detection.
+          available: buildDerivedAvailableExpression(),
+          storedAvailableQty: { $ifNull: ["$availableQty", null] },
         },
       },
       { $match: { $expr: { $or: [{ $lt: ["$available", -EPS] }, { $lt: ["$onHand", -EPS] }] } } },
@@ -1032,6 +1020,7 @@ async function runInventoryChecks(companyId) {
           available: 1,
           onHand: 1,
           allocated: 1,
+          storedAvailableQty: 1,
           lastTransactionDate: 1,
           updatedAt: 1,
         },

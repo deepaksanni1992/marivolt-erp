@@ -268,4 +268,33 @@ ok(
 ok("operational set includes packing without dispatch", OPERATIONAL_ISSUE_TYPES.has("PACKING_WITHOUT_DISPATCH"));
 ok("procurement set includes waiting purchase", PROCUREMENT_QUEUE_TYPES.has("WAITING_PURCHASE_AFTER_ALLOCATION"));
 
+// Projection drift (AVAILABLE_QTY_MISMATCH) is integrity — separate from operational AVAILABLE_BELOW_ZERO
+ok(
+  "AVAILABLE_QTY_MISMATCH is integrity (projection drift)",
+  classifyIssueCategory("AVAILABLE_QTY_MISMATCH") === ISSUE_CATEGORIES.INTEGRITY
+);
+ok(
+  "AVAILABLE_QTY_MISMATCH is not operational",
+  !isOperationalIssueType("AVAILABLE_QTY_MISMATCH")
+);
+{
+  const drift = enrichIssue({
+    issueType: "AVAILABLE_QTY_MISMATCH",
+    severity: "Minor",
+    documentNumber: "ART-DRIFT",
+    date: new Date(),
+  });
+  const opNeg = enrichIssue({
+    issueType: "AVAILABLE_BELOW_ZERO",
+    severity: "Critical",
+    documentNumber: "ART-DRIFT",
+    date: new Date(),
+  });
+  const combined = computeHealthScore([drift, opNeg]);
+  ok(
+    "projection drift + operational below-zero → only drift integrity penalty (no duplicate)",
+    combined.healthScore === 100 - INTEGRITY_SCORE_WEIGHTS.Minor
+  );
+}
+
 console.log(`\n${passed} checks passed`);

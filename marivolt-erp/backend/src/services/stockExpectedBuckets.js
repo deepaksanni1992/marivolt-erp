@@ -247,6 +247,47 @@ export function deriveStockBuckets(row = {}) {
 }
 
 /**
+ * Mongo aggregation expression matching deriveAvailableQty() exactly.
+ * Null/missing bucket fields are treated as 0.
+ *
+ * derived = ifNull(onHandQty, quantity, 0)
+ *         − max(ifNull(allocatedQty,0), ifNull(reservedQty,0))
+ *         − ifNull(packedQty, 0)
+ */
+export function buildDerivedAvailableExpression({
+  onHandField = "$onHandQty",
+  quantityField = "$quantity",
+  allocatedField = "$allocatedQty",
+  reservedField = "$reservedQty",
+  packedField = "$packedQty",
+} = {}) {
+  return {
+    $subtract: [
+      { $ifNull: [onHandField, { $ifNull: [quantityField, 0] }] },
+      {
+        $add: [
+          {
+            $max: [{ $ifNull: [allocatedField, 0] }, { $ifNull: [reservedField, 0] }],
+          },
+          { $ifNull: [packedField, 0] },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * $match stage: derived availability strictly less than -eps (true negative free stock).
+ */
+export function buildDerivedAvailableNegativeMatch(eps = 1e-6) {
+  return {
+    $expr: {
+      $lt: [buildDerivedAvailableExpression(), -Math.abs(Number(eps) || 0)],
+    },
+  };
+}
+
+/**
  * Immutable physical stock effectKey.
  * Format: phys:{MOVEMENT}:{companyId}:{referenceNo}:{article}:{warehouse}[:lineId][:batch][:serial][:dir][:qty]
  */
@@ -289,6 +330,8 @@ export default {
   buildPhysicalEffectKey,
   deriveAvailableQty,
   deriveStockBuckets,
+  buildDerivedAvailableExpression,
+  buildDerivedAvailableNegativeMatch,
   ALLOCATION_STATUSES_HOLDING_RESERVED,
   allocationLineRemainingReserved,
   allocationStatusHoldsReservation,
