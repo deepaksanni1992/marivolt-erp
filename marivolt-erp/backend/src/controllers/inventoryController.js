@@ -13,23 +13,29 @@ export async function listBalances(req, res) {
     const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
     const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "100"), 10) || 100));
     const skip = (page - 1) * limit;
+    const availableOnly =
+      req.query.availableOnly === "true" || req.query.availableOnly === "1";
     const filter = withCompany(req);
     if (req.query.warehouse) filter.warehouse = String(req.query.warehouse).trim().toUpperCase();
     if (req.query.itemCode) {
       filter.itemCode = new RegExp(String(req.query.itemCode).trim(), "i");
     }
-    const [rawItems, total] = await Promise.all([
-      StockBalance.find(filter).sort({ itemCode: 1, warehouse: 1 }).skip(skip).limit(limit).lean(),
-      StockBalance.countDocuments(filter),
-    ]);
-    const items = rawItems.map((r) => {
+    // Trade-off: never filter Mongo on stored availableQty (stale). Pre-filter by
+    // company/warehouse/itemCode, derive available = onHand − reserved − packed,
+    // then apply availableOnly in memory before pagination.
+    const rawItems = await StockBalance.find(filter)
+      .sort({ itemCode: 1, warehouse: 1 })
+      .lean();
+    let items = rawItems.map((r) => {
       const phys = Number(r.onHandQty ?? r.quantity) || 0;
       const resq = Math.max(Number(r.allocatedQty) || 0, Number(r.reservedQty) || 0);
       const packed = Number(r.packedQty) || 0;
-      // Never trust stored availableQty — canonical free stock formula
       const availableQty = phys - resq - packed;
       return { ...r, onHandQty: phys, reservedQty: resq, packedQty: packed, availableQty };
     });
+    if (availableOnly) items = items.filter((r) => r.availableQty > 0);
+    const total = items.length;
+    items = items.slice(skip, skip + limit);
     res.json({ items, total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });

@@ -997,6 +997,11 @@ export async function cancelInvoice({
  * STOCK_TRANSFER_OUT + STOCK_TRANSFER_IN — atomically moves qty
  * from one warehouse to another. Two ledger entries are written
  * so each warehouse sees its own balance change.
+ *
+ * Deterministic physical effectKeys (via buildPhysicalEffectKey):
+ *   OUT: phys:STOCK_TRANSFER_OUT:{company}:{transferNo}:{article}:{fromWh}:{lineId}:TO:{toWh}:qty
+ *   IN:  phys:STOCK_TRANSFER_IN:{company}:{transferNo}:{article}:{toWh}:{lineId}:FROM:{fromWh}:qty
+ * Replay / retry returns existing ledgers without changing StockBalance.
  */
 export async function stockTransfer({
   session,
@@ -1012,6 +1017,9 @@ export async function stockTransfer({
   sourceModule = "STORE",
   allowNegative = false,
   transactionDate = null,
+  effectKeyOut = "",
+  effectKeyIn = "",
+  transferLineId = "",
 }) {
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
@@ -1019,6 +1027,52 @@ export async function stockTransfer({
   const fromWh = normWarehouse(fromWarehouse);
   const toWh = normWarehouse(toWarehouse);
   if (fromWh === toWh) throw new Error("stockTransfer: from and to warehouse must differ");
+
+  const lineId = s(transferLineId) || s(referenceNo) || "manual";
+  const outEk =
+    s(effectKeyOut) ||
+    resolvePhysicalEffectKey({
+      movementType: MOVEMENT_TYPES.STOCK_TRANSFER_OUT,
+      companyId,
+      referenceNo,
+      article,
+      warehouse: fromWh,
+      lineId,
+      qty: q,
+      extra: `TO:${toWh}`,
+    });
+  const inEk =
+    s(effectKeyIn) ||
+    resolvePhysicalEffectKey({
+      movementType: MOVEMENT_TYPES.STOCK_TRANSFER_IN,
+      companyId,
+      referenceNo,
+      article,
+      warehouse: toWh,
+      lineId,
+      qty: q,
+      extra: `FROM:${fromWh}`,
+    });
+
+  if (outEk && inEk) {
+    const [existingOut, existingIn] = await Promise.all([
+      findLedgerByEffectKey(outEk, session),
+      findLedgerByEffectKey(inEk, session),
+    ]);
+    if (existingOut && existingIn) {
+      return { out: existingOut, in: existingIn, idempotent: true };
+    }
+    // Partial prior write: do not bump again — return whatever exists.
+    if (existingOut || existingIn) {
+      return {
+        out: existingOut || null,
+        in: existingIn || null,
+        idempotent: true,
+        partial: true,
+      };
+    }
+  }
+
   // OUT side
   const outGuard = allowNegative
     ? null
@@ -1072,6 +1126,7 @@ export async function stockTransfer({
     remarks,
     createdBy,
     sourceModule,
+    effectKey: outEk,
     ...fromAfter,
   });
   const toAfter = await snapshotAfter({ companyId, article, warehouse: toWh, session });
@@ -1090,9 +1145,89 @@ export async function stockTransfer({
     remarks,
     createdBy,
     sourceModule,
+    effectKey: inEk,
     ...toAfter,
   });
+  notifyReservationIntegrity(companyId, fromWh, article, "STOCK_TRANSFER", session);
+  notifyReservationIntegrity(companyId, toWh, article, "STOCK_TRANSFER", session);
   return { out: outRow, in: inRow };
+}
+
+/**
+ * Reverse a posted stock transfer (B→A). Uses distinct REV effectKeys so
+ * cancel cannot collide with the original post keys.
+ * Does not change StockTransfer document lifecycle — caller owns that.
+ */
+export async function reverseStockTransfer({
+  session,
+  companyId,
+  article,
+  fromWarehouse,
+  toWarehouse,
+  qty,
+  referenceType = "TRANSFER_CANCEL",
+  referenceNo,
+  remarks = "",
+  createdBy = "",
+  sourceModule = "STORE",
+  allowNegative = false,
+  transactionDate = null,
+  transferLineId = "",
+  effectKeyOut = "",
+  effectKeyIn = "",
+}) {
+  requireCompanyId(companyId);
+  const q = Number(qty) || 0;
+  if (!(q > 0)) throw new Error("reverseStockTransfer: qty must be > 0");
+  // Reverse moves stock from original toWarehouse back to fromWarehouse
+  const origFrom = normWarehouse(fromWarehouse);
+  const origTo = normWarehouse(toWarehouse);
+  if (origFrom === origTo) throw new Error("reverseStockTransfer: warehouses must differ");
+
+  const lineId = s(transferLineId) || s(referenceNo) || "manual";
+  const outEk =
+    s(effectKeyOut) ||
+    resolvePhysicalEffectKey({
+      movementType: MOVEMENT_TYPES.STOCK_TRANSFER_OUT,
+      companyId,
+      referenceNo,
+      article,
+      warehouse: origTo,
+      lineId,
+      qty: q,
+      extra: `REV:TO:${origFrom}`,
+    });
+  const inEk =
+    s(effectKeyIn) ||
+    resolvePhysicalEffectKey({
+      movementType: MOVEMENT_TYPES.STOCK_TRANSFER_IN,
+      companyId,
+      referenceNo,
+      article,
+      warehouse: origFrom,
+      lineId,
+      qty: q,
+      extra: `REV:FROM:${origTo}`,
+    });
+
+  return stockTransfer({
+    session,
+    companyId,
+    article,
+    fromWarehouse: origTo,
+    toWarehouse: origFrom,
+    qty: q,
+    referenceType,
+    referenceNo,
+    remarks: remarks || `Reversal of transfer ${referenceNo || ""}`.trim(),
+    createdBy,
+    sourceModule,
+    allowNegative,
+    transactionDate,
+    effectKeyOut: outEk,
+    effectKeyIn: inEk,
+    transferLineId: lineId,
+  });
 }
 
 /**
@@ -1870,6 +2005,7 @@ export default {
   cancelAllocation,
   cancelInvoice,
   stockTransfer,
+  reverseStockTransfer,
   stockAdjustment,
   articleConversion,
   reverseArticleConversion,

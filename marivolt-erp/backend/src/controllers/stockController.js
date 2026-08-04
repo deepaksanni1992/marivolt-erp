@@ -169,18 +169,22 @@ export async function listStockBalance(req, res) {
     const search = t(req.query.search);
     const negativeOnly = req.query.negativeOnly === "true" || req.query.negativeOnly === "1";
     const allocatedOnly = req.query.allocatedOnly === "true" || req.query.allocatedOnly === "1";
+    // Never trust stored availableQty for filtering — derive after fetch.
+    const availableOnly = req.query.availableOnly === "true" || req.query.availableOnly === "1";
     const filter = withCompany(req);
     if (req.query.location) filter.location = t(req.query.location).toUpperCase();
     if (req.query.batchNo) filter.batchNo = new RegExp(t(req.query.batchNo), "i");
     if (req.query.article) filter.article = t(req.query.article).toUpperCase();
-    if (req.query.availableOnly === "true") filter.availableQty = { $gt: 0 };
+    // Trade-off: availableOnly / negativeOnly / allocatedOnly require derive-then-filter
+    // in memory because persisted availableQty can be stale. Company (+ optional
+    // location/article) Mongo pre-filter keeps the candidate set bounded; exact
+    // availability uses onHand − reserved − packed via deriveStockRow.
+    const needsDerivedPager = negativeOnly || allocatedOnly || availableOnly || Boolean(search);
 
-    // When the caller asked for a server-filtered subset (negative or allocated)
-    // we have to pull all matching rows for that filter and paginate after the
-    // derived computation, since availableQty is not a reliable persisted field.
-    const needsClientPager = negativeOnly || allocatedOnly;
     const baseQuery = StockBalance.find(filter).sort({ article: 1 });
-    const rows = needsClientPager ? await baseQuery.lean() : await baseQuery.skip(skip).limit(limit).lean();
+    const rows = needsDerivedPager
+      ? await baseQuery.lean()
+      : await baseQuery.skip(skip).limit(limit).lean();
     const articles = [...new Set(rows.map((r) => r.article))];
     const items = await ItemMaster.find(withCompany(req, { article: { $in: articles } })).lean();
     const byArticle = new Map(items.map((it) => [it.article, it]));
@@ -200,8 +204,9 @@ export async function listStockBalance(req, res) {
     }
     if (negativeOnly) merged = merged.filter((r) => r.availableQty < 0);
     if (allocatedOnly) merged = merged.filter((r) => Number(r.allocatedQty) > 0);
+    if (availableOnly) merged = merged.filter((r) => r.availableQty > 0);
     let total;
-    if (needsClientPager) {
+    if (needsDerivedPager) {
       total = merged.length;
       merged = merged.slice(skip, skip + limit);
     } else {
@@ -1189,6 +1194,7 @@ export async function postTransfer(req, res) {
         createdBy: req.user?.email || "",
         sourceModule: "STORE",
         transactionDate: row.date,
+        transferLineId: String(row._id),
       });
       row.status = "Posted";
       row.postedAt = new Date();
