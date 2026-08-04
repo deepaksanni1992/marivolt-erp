@@ -27,7 +27,7 @@ import mongoose from "mongoose";
 import StockBalance from "../models/StockBalance.js";
 import StockLedger from "../models/StockLedger.js";
 import InventoryLedger from "../models/InventoryLedger.js";
-import { buildPhysicalEffectKey } from "./stockExpectedBuckets.js";
+import { buildPhysicalEffectKey, deriveStockBuckets, deriveAvailableQty } from "./stockExpectedBuckets.js";
 
 /**
  * Debounced Reservation Integrity re-check after bucket mutations.
@@ -192,26 +192,20 @@ export async function getStockBalance({ companyId, article, warehouse, session }
 }
 
 function deriveBalanceShape(row, fallback = {}) {
-  const onHand = Number(row?.onHandQty ?? row?.quantity ?? 0) || 0;
-  const allocated = Math.max(
-    Number(row?.allocatedQty || 0),
-    Number(row?.reservedQty || 0)
-  );
-  const packed = Number(row?.packedQty || 0) || 0;
+  const buckets = deriveStockBuckets(row || {});
   const dispatched = Number(row?.dispatchedQty || 0) || 0;
-  const available = onHand - allocated - packed;
   return {
     _id: row?._id || null,
     companyId: row?.companyId || fallback.companyId || null,
     article: String(row?.article || row?.itemCode || fallback.code || "").toUpperCase(),
     warehouse: String(row?.warehouse || row?.location || fallback.wh || "MAIN").toUpperCase(),
-    onHandQty: onHand,
-    allocatedQty: allocated,
-    reservedQty: allocated,
-    packedQty: packed,
+    onHandQty: buckets.onHandQty,
+    allocatedQty: buckets.allocatedQty,
+    reservedQty: buckets.reservedQty,
+    packedQty: buckets.packedQty,
     dispatchedQty: dispatched,
-    availableQty: available,
-    isNegativeAvailable: available < 0,
+    availableQty: buckets.availableQty,
+    isNegativeAvailable: buckets.isNegativeAvailable,
     raw: row || null,
   };
 }
@@ -287,7 +281,11 @@ export async function recalculateStockBalance({ companyId, article, warehouse, s
   row.reservedQty = allocated;
   row.packedQty = packed;
   row.dispatchedQty = dispatched;
-  row.availableQty = onHand - allocated - packed;
+  row.availableQty = deriveAvailableQty({
+    onHandQty: onHand,
+    reservedQty: allocated,
+    packedQty: packed,
+  });
   row.itemCode = code;
   row.article = code;
   row.warehouse = wh;
@@ -2015,4 +2013,8 @@ export default {
   cancelDispatchFromPacked,
   getRecentLedgerEntries,
   withTransaction,
+  deriveAvailableQty,
+  deriveStockBuckets,
 };
+
+export { deriveAvailableQty, deriveStockBuckets };

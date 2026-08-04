@@ -551,6 +551,7 @@ export async function stockOutFromQuotation(req, res) {
           createdBy: userEmail,
           sourceModule: "SALES",
           allowNegative: true,
+          lineId: String(lineId),
         });
       }
     });

@@ -3,6 +3,7 @@ import PurchaseOrder from "../models/PurchaseOrder.js";
 import OrderAllocation from "../models/OrderAllocation.js";
 import ItemSupplier from "../models/itemSupplierModel.js";
 import * as stockService from "./stockService.js";
+import { deriveAvailableQty } from "./stockExpectedBuckets.js";
 
 /** PO statuses that reserve converted quantity from Order Allocation lines. */
 export const ACTIVE_PO_STATUSES = [
@@ -210,7 +211,12 @@ export async function buildOrderAllocationPoEligibility(companyId, allocationId)
       /* optional */
     }
 
-    const availableStockQty = Number(stock.availableQty) || 0;
+    const availableStockQty = deriveAvailableQty({
+      onHandQty: stock.onHandQty,
+      reservedQty: stock.reservedQty,
+      allocatedQty: stock.allocatedQty,
+      packedQty: stock.packedQty,
+    });
     const allocatedStockQty = computeAllocatedStockQty(orderedQty, stock);
     const suggestedPurchaseQty = computeSuggestedPurchaseQty(orderedQty, allocatedStockQty);
     const conversionStatus = derivePoConversionStatus(orderedQty, activeConvertedQty);

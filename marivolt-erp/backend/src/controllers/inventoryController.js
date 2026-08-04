@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import StockBalance from "../models/StockBalance.js";
 import InventoryLedger from "../models/InventoryLedger.js";
 import * as stockService from "../services/stockService.js";
+import { deriveStockBuckets } from "../services/stockExpectedBuckets.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 
 function withCompany(req, filter = {}) {
@@ -27,11 +28,14 @@ export async function listBalances(req, res) {
       .sort({ itemCode: 1, warehouse: 1 })
       .lean();
     let items = rawItems.map((r) => {
-      const phys = Number(r.onHandQty ?? r.quantity) || 0;
-      const resq = Math.max(Number(r.allocatedQty) || 0, Number(r.reservedQty) || 0);
-      const packed = Number(r.packedQty) || 0;
-      const availableQty = phys - resq - packed;
-      return { ...r, onHandQty: phys, reservedQty: resq, packedQty: packed, availableQty };
+      const buckets = deriveStockBuckets(r);
+      return {
+        ...r,
+        onHandQty: buckets.onHandQty,
+        reservedQty: buckets.reservedQty,
+        packedQty: buckets.packedQty,
+        availableQty: buckets.availableQty,
+      };
     });
     if (availableOnly) items = items.filter((r) => r.availableQty > 0);
     const total = items.length;
@@ -59,15 +63,13 @@ export async function getBalance(req, res) {
         location: "",
       });
     }
-    const phys = Number(row.onHandQty ?? row.quantity) || 0;
-    const resq = Math.max(Number(row.allocatedQty) || 0, Number(row.reservedQty) || 0);
-    const packed = Number(row.packedQty) || 0;
+    const buckets = deriveStockBuckets(row);
     res.json({
       ...row,
-      onHandQty: phys,
-      reservedQty: resq,
-      packedQty: packed,
-      availableQty: phys - resq - packed,
+      onHandQty: buckets.onHandQty,
+      reservedQty: buckets.reservedQty,
+      packedQty: buckets.packedQty,
+      availableQty: buckets.availableQty,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });

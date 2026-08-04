@@ -9,6 +9,10 @@ function snapshotFromBom(bom) {
   }));
 }
 
+function bomLineKey(line, index) {
+  return String(line?._id || line?.componentItemCode || line?.article || `bom:${index}`);
+}
+
 /**
  * Consumes components per BOM, receives parent (assembled kit) qty.
  * Routed through `stockService` so balances + ledger stay consistent
@@ -28,11 +32,14 @@ export async function runKitAssembly(order, createdBy, companyId) {
   const wh = order.warehouse;
   const kitQty = Number(order.quantity);
   let componentCostTotal = 0;
+  const orderLineId = String(order._id || refNum);
 
   await stockService.withTransaction(async (session) => {
+    let idx = 0;
     for (const line of bom.lines) {
       const componentArticle = line.componentItemCode || line.article;
       const need = (Number(line.qty) || 0) * kitQty;
+      const lineKey = bomLineKey(line, idx++);
       if (need <= 0) continue;
       const bal = await stockService.getStockBalance({
         companyId,
@@ -56,6 +63,7 @@ export async function runKitAssembly(order, createdBy, companyId) {
         sourceModule: "KITTING",
         allowNegative: true,
         movementType: stockService.MOVEMENT_TYPES.KIT_ASSEMBLY_OUT,
+        lineId: lineKey,
       });
     }
 
@@ -73,6 +81,7 @@ export async function runKitAssembly(order, createdBy, companyId) {
       createdBy,
       sourceModule: "KITTING",
       movementType: stockService.MOVEMENT_TYPES.KIT_ASSEMBLY_IN,
+      lineId: `PARENT:${orderLineId}`,
     });
     order.componentCostTotal = componentCostTotal;
     order.assembledCost = assembledCostPerKit;
@@ -98,6 +107,7 @@ export async function runDeKit(order, createdBy, companyId) {
   const wh = order.warehouse;
   const kitQty = Number(order.quantity);
   let componentCostTotal = 0;
+  const orderLineId = String(order._id || refNum);
 
   await stockService.withTransaction(async (session) => {
     await stockService.stockAdjustment({
@@ -114,11 +124,14 @@ export async function runDeKit(order, createdBy, companyId) {
       sourceModule: "KITTING",
       allowNegative: true,
       movementType: stockService.MOVEMENT_TYPES.DEKIT_OUT,
+      lineId: `PARENT:${orderLineId}`,
     });
 
+    let idx = 0;
     for (const line of bom.lines) {
       const componentArticle = line.componentItemCode || line.article;
       const qtyIn = (Number(line.qty) || 0) * kitQty;
+      const lineKey = bomLineKey(line, idx++);
       if (qtyIn <= 0) continue;
       const bal = await stockService.getStockBalance({
         companyId,
@@ -141,6 +154,7 @@ export async function runDeKit(order, createdBy, companyId) {
         createdBy,
         sourceModule: "KITTING",
         movementType: stockService.MOVEMENT_TYPES.DEKIT_IN,
+        lineId: lineKey,
       });
     }
     order.componentCostTotal = componentCostTotal;

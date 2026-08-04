@@ -4,6 +4,7 @@ import KittingOrder from "../models/KittingOrder.js";
 import StockBalance from "../models/StockBalance.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 import { runKitAssembly } from "../services/kittingExecution.js";
+import { deriveStockBuckets } from "../services/stockExpectedBuckets.js";
 
 function pagination(req) {
   const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
@@ -26,13 +27,14 @@ async function buildShortageAnalysis({ companyId, parentItemCode, warehouse, qua
     if (!article) continue;
     const requiredQty = (Number(ln.qty) || 0) * kitQty;
     const bal = await StockBalance.findOne({ companyId, article, warehouse: wh }).lean();
-    const availableQty = Number(bal?.availableQty ?? bal?.quantity ?? 0) || 0;
+    // Never trust persisted availableQty — derive from live buckets.
+    const { availableQty } = deriveStockBuckets(bal || {});
     const missingQty = Math.max(0, requiredQty - availableQty);
     const alternatives = [];
     const candidates = Array.isArray(ln.alternativeArticles) ? ln.alternativeArticles : [];
     for (const altArticle of candidates) {
       const alt = await StockBalance.findOne({ companyId, article: altArticle, warehouse: wh }).lean();
-      const altAvailable = Number(alt?.availableQty ?? alt?.quantity ?? 0) || 0;
+      const altAvailable = deriveStockBuckets(alt || {}).availableQty;
       if (altAvailable > 0) alternatives.push({ article: altArticle, availableQty: altAvailable });
     }
     lines.push({

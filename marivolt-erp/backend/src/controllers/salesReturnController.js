@@ -146,6 +146,7 @@ export async function postSalesReturn(req, res) {
           remarks: line.reason || sr.remarks || "",
           createdBy: userEmail,
           sourceModule: "SALES",
+          lineId: String(line._id || `${line.article}:${q}`),
         });
       }
 

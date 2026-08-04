@@ -113,7 +113,7 @@ function transferKeys({
   ok("listStockBalance does not Mongo-filter stored availableQty", !/filter\.availableQty\s*=/.test(stockCtrl));
   ok("listStockBalance derives then filters availableOnly", /availableOnly[\s\S]*availableQty > 0/.test(stockCtrl));
   ok("inventory listBalances never trusts stored available for filter", !/filter\.availableQty/.test(invCtrl));
-  ok("inventory listBalances derives available", /phys - resq - packed/.test(invCtrl));
+  ok("inventory listBalances derives available", /deriveStockBuckets/.test(invCtrl) || /phys - resq - packed/.test(invCtrl));
 }
 
 // --- Derived available filtering ---

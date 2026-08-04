@@ -205,7 +205,8 @@ ok("Rebuild kinds include HEALTH_CACHE", REBUILD_KINDS.includes("HEALTH_CACHE"))
   ok("dispatchFromPacked notifies RI", /notifyReservationIntegrity\(companyId, warehouse, article, "DISPATCH"/.test(stockService));
   ok("GRN controller passes lineId", /lineId: String\(line\._id/.test(grnCtrl));
   ok("Stock adjustment controller passes lineId", /lineId: String\(row\._id/.test(stockCtrl));
-  ok("listBalances available subtracts packed", /phys - resq - packed/.test(invCtrl));
+  ok("listBalances available subtracts packed", /deriveStockBuckets/.test(invCtrl) || /phys - resq - packed/.test(invCtrl));
+  ok("listBalances uses deriveStockBuckets", /deriveStockBuckets/.test(invCtrl));
   ok("Data Health emits CROSS_COMPANY_MOVEMENT", /CROSS_COMPANY_MOVEMENT/.test(dataHealth));
   ok("Data Health emits WAREHOUSE_SCOPE_MISMATCH", /WAREHOUSE_SCOPE_MISMATCH/.test(dataHealth));
   ok("Data Health detects DUPLICATE_GRN", /DUPLICATE_GRN/.test(dataHealth));

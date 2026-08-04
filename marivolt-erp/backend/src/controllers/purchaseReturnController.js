@@ -151,6 +151,7 @@ export async function postPurchaseReturn(req, res) {
           remarks: line.reason || pr.remarks || "",
           createdBy: userEmail,
           sourceModule: "PURCHASE",
+          lineId: String(line._id || `${line.itemCode}:${q}`),
         });
       }
 

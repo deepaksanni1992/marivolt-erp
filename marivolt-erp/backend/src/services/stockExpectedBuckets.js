@@ -206,6 +206,47 @@ export async function calculateExpectedPacked(companyId, warehouse, article) {
 }
 
 /**
+ * Canonical free-stock derivation — NEVER trust persisted availableQty.
+ * reserved = max(allocatedQty, reservedQty) for legacy dual-field compatibility.
+ * Does not clamp negatives (allowNegative allocations may produce negative free stock).
+ */
+export function deriveAvailableQty({
+  onHandQty,
+  quantity,
+  reservedQty,
+  allocatedQty,
+  packedQty,
+} = {}) {
+  const onHand = Number(onHandQty ?? quantity ?? 0) || 0;
+  const reserved = Math.max(Number(allocatedQty) || 0, Number(reservedQty) || 0);
+  const packed = Number(packedQty) || 0;
+  return onHand - reserved - packed;
+}
+
+/**
+ * Normalize a StockBalance-shaped row to live bucket fields + derived available.
+ */
+export function deriveStockBuckets(row = {}) {
+  const onHandQty = Number(row?.onHandQty ?? row?.quantity ?? 0) || 0;
+  const reservedQty = Math.max(Number(row?.allocatedQty) || 0, Number(row?.reservedQty) || 0);
+  const packedQty = Number(row?.packedQty) || 0;
+  const availableQty = deriveAvailableQty({
+    onHandQty,
+    reservedQty,
+    allocatedQty: reservedQty,
+    packedQty,
+  });
+  return {
+    onHandQty,
+    reservedQty,
+    allocatedQty: reservedQty,
+    packedQty,
+    availableQty,
+    isNegativeAvailable: availableQty < 0,
+  };
+}
+
+/**
  * Immutable physical stock effectKey.
  * Format: phys:{MOVEMENT}:{companyId}:{referenceNo}:{article}:{warehouse}[:lineId][:batch][:serial][:dir][:qty]
  */
@@ -246,6 +287,8 @@ export default {
   computeExpectedReservedFromAllocations,
   computeExpectedPackedFromPackings,
   buildPhysicalEffectKey,
+  deriveAvailableQty,
+  deriveStockBuckets,
   ALLOCATION_STATUSES_HOLDING_RESERVED,
   allocationLineRemainingReserved,
   allocationStatusHoldsReservation,

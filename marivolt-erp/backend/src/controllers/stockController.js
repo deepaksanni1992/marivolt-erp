@@ -16,32 +16,24 @@ import Shipment from "../models/Shipment.js";
 import * as stockService from "../services/stockService.js";
 import { writeAudit } from "../services/auditService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
+import { deriveStockBuckets } from "../services/stockExpectedBuckets.js";
 
 /**
  * Derives the live stock buckets from a StockBalance row.
- * We treat onHandQty (legacy `quantity`), reservedQty (legacy alias for
- * allocatedQty), packedQty as the source of truth and compute available
- * fresh on every read, because not every write path keeps `availableQty`
- * in sync (specifically the sales reserve path increments reservedQty
- * without touching availableQty).
+ * Delegates to canonical deriveStockBuckets — never trusts stored availableQty.
  */
 function deriveStockRow(row) {
-  const onHand = Number(row.onHandQty ?? row.quantity ?? 0) || 0;
-  // Some writers used reservedQty, others use allocatedQty — take the larger
-  // so a stale 0 in one of them does not under-report.
-  const allocated = Math.max(Number(row.allocatedQty || 0), Number(row.reservedQty || 0));
-  const packed = Number(row.packedQty || 0) || 0;
+  const buckets = deriveStockBuckets(row);
   const dispatched = Number(row.dispatchedQty || 0) || 0;
-  const available = onHand - allocated - packed;
   return {
     ...row,
-    onHandQty: onHand,
-    allocatedQty: allocated,
-    reservedQty: allocated,
-    packedQty: packed,
+    onHandQty: buckets.onHandQty,
+    allocatedQty: buckets.allocatedQty,
+    reservedQty: buckets.reservedQty,
+    packedQty: buckets.packedQty,
     dispatchedQty: dispatched,
-    availableQty: available,
-    isNegativeAvailable: available < 0,
+    availableQty: buckets.availableQty,
+    isNegativeAvailable: buckets.isNegativeAvailable,
   };
 }
 

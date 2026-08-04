@@ -10,6 +10,7 @@ import CustomsLotItem from "../models/CustomsLotItem.js";
 import OrderAllocation from "../models/OrderAllocation.js";
 import StorePacking from "../models/StorePacking.js";
 import * as stockService from "../services/stockService.js";
+import { deriveAvailableQty } from "../services/stockExpectedBuckets.js";
 import {
   retargetCustomsLotsForConversion,
   reverseCustomsLotsForConversion,
@@ -194,7 +195,8 @@ export async function getConversionArticleContext(req, res) {
     const reservedQty = Number(stock.reservedQty) || 0;
     const packedQty = Number(stock.packedQty) || 0;
     const onHandQty = Number(stock.onHandQty) || 0;
-    const availableQty = Number(stock.availableQty) || 0;
+    // Never trust persisted availableQty — derive from live buckets.
+    const availableQty = deriveAvailableQty({ onHandQty, reservedQty, packedQty });
     // Bucket hold that is not explained by open allocation remaining qty.
     const unexplainedReservedQty = Math.max(0, reservedQty - allocationHoldQty);
     const orphanedReservation =
@@ -338,7 +340,13 @@ export async function createArticleConversionDraft(req, res) {
       article: sourceArticle,
       warehouse,
     });
-    if (sourceQty > (Number(stock.availableQty) || 0) + 1e-6) {
+    const derivedAvail = deriveAvailableQty({
+      onHandQty: stock.onHandQty,
+      reservedQty: stock.reservedQty,
+      allocatedQty: stock.allocatedQty,
+      packedQty: stock.packedQty,
+    });
+    if (sourceQty > derivedAvail + 1e-6) {
       return respondConflict(
         res,
         articleConversionConflictError(
@@ -347,7 +355,7 @@ export async function createArticleConversionDraft(req, res) {
           {
             article: sourceArticle,
             requestedQty: sourceQty,
-            availableQty: stock.availableQty,
+            availableQty: derivedAvail,
           }
         )
       );
@@ -529,7 +537,12 @@ export async function postArticleConversion(req, res) {
         warehouse: claimed.warehouse,
         session,
       });
-      const available = Number(live.availableQty) || 0;
+      const available = deriveAvailableQty({
+        onHandQty: live.onHandQty,
+        reservedQty: live.reservedQty,
+        allocatedQty: live.allocatedQty,
+        packedQty: live.packedQty,
+      });
       if (claimed.sourceQty > available + 1e-6) {
         throw articleConversionConflictError(
           ARTICLE_CONVERSION_STOCK_SHORTAGE,
@@ -744,14 +757,20 @@ export async function reverseArticleConversionDoc(req, res) {
         warehouse: claimed.warehouse,
         session,
       });
-      if (claimed.targetQty > (Number(liveTarget.availableQty) || 0) + 1e-6) {
+      const targetAvailable = deriveAvailableQty({
+        onHandQty: liveTarget.onHandQty,
+        reservedQty: liveTarget.reservedQty,
+        allocatedQty: liveTarget.allocatedQty,
+        packedQty: liveTarget.packedQty,
+      });
+      if (claimed.targetQty > targetAvailable + 1e-6) {
         throw articleConversionConflictError(
           ARTICLE_CONVERSION_REVERSAL_BLOCKED,
           `Conversion cannot be reversed because Target Article ${claimed.targetArticle} stock is no longer fully available (allocated, packed, or consumed).`,
           {
             article: claimed.targetArticle,
             requestedQty: claimed.targetQty,
-            availableQty: liveTarget.availableQty,
+            availableQty: targetAvailable,
           }
         );
       }

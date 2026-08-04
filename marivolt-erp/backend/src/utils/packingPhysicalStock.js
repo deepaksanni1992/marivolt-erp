@@ -2,6 +2,7 @@
  * Physical stock visibility helpers for package-based packing.
  * Pure functions — no DB writes. Does not change reservation/ledger math.
  */
+import { deriveAvailableQty } from "../services/stockExpectedBuckets.js";
 
 export const PACKING_STOCK_STATUSES = Object.freeze([
   "READY",
@@ -37,10 +38,11 @@ export function derivePackingLineStock(
   const freeAvailableQty = onHandQty - reservedForOtherAllocationsQty - warehousePackedQty;
   const physicalPackableQty = Math.max(0, Math.min(allocationBalanceQty, freeAvailableQty));
   const shortageQty = Math.max(0, allocationBalanceQty - physicalPackableQty);
-  const availableStock =
-    stock?.availableQty != null
-      ? Number(stock.availableQty) || 0
-      : onHandQty - totalReserved - warehousePackedQty;
+  const availableStock = deriveAvailableQty({
+    onHandQty,
+    reservedQty: totalReserved,
+    packedQty: warehousePackedQty,
+  });
   // Negative allocation = this line's claim exceeds physical on-hand (or explicit flag).
   // Other allocations reducing freeAvailable is PARTIAL/SHORTAGE, not NEGATIVE_ALLOCATION.
   const isNeg =
