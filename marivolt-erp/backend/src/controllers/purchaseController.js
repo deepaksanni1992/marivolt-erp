@@ -8,7 +8,7 @@ import {
   isDuplicatePoNumberError,
   stripClientPoNumbers,
 } from "../services/poNumberService.js";
-import { applyPurchaseOrderDefaults } from "../constants/purchaseOrderDefaults.js";
+import { applyPurchaseOrderDefaults, resolvePoPaymentFields } from "../constants/purchaseOrderDefaults.js";
 import { buyerSnapshotFromCompany } from "../utils/companyBuyer.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 import { writeAudit, writeStatusChange } from "../services/auditService.js";
@@ -150,6 +150,7 @@ async function resolveSupplierSnapshot(req, body = {}) {
   } else if (body.supplierName) {
     supplierDoc = await Supplier.findOne(withCompany(req, { supplierName: String(body.supplierName).trim() })).lean();
   }
+  const supplierPaymentTerms = String(supplierDoc?.paymentTerms || "").trim();
   if (!supplierDoc) {
     return {
       supplierId: null,
@@ -157,6 +158,7 @@ async function resolveSupplierSnapshot(req, body = {}) {
       supplierAddress: String(body.supplierAddress || "").trim(),
       supplierPhone: String(body.supplierPhone || "").trim(),
       supplierEmail: String(body.supplierEmail || "").trim(),
+      supplierPaymentTerms: "",
       paymentTerms: String(body.paymentTerms || body.payment || "").trim(),
       currency: String(body.currency || "USD").trim().toUpperCase(),
     };
@@ -167,7 +169,8 @@ async function resolveSupplierSnapshot(req, body = {}) {
     supplierAddress: supplierDoc.address || "",
     supplierPhone: supplierDoc.phone || "",
     supplierEmail: supplierDoc.email || "",
-    paymentTerms: String(body.paymentTerms || supplierDoc.paymentTerms || body.payment || "").trim(),
+    supplierPaymentTerms,
+    paymentTerms: String(body.paymentTerms || body.payment || supplierPaymentTerms || "").trim(),
     currency: String(body.currency || supplierDoc.currency || "USD").trim().toUpperCase(),
   };
 }
@@ -252,6 +255,11 @@ export async function createPurchaseOrder(req, res) {
     }
     const company = await Company.findById(req.companyId).lean();
     Object.assign(body, buyerSnapshotFromCompany(company));
+    // Capture client payment fields before commercial defaults fill empty payment.
+    const clientPayment = {
+      payment: body.payment,
+      paymentTerms: body.paymentTerms,
+    };
     body = applyPurchaseOrderDefaults(body);
     const supplierSnapshot = await resolveSupplierSnapshot(req, body);
     body.supplierId = supplierSnapshot.supplierId;
@@ -259,7 +267,16 @@ export async function createPurchaseOrder(req, res) {
     body.supplierAddress = supplierSnapshot.supplierAddress;
     body.supplierPhone = supplierSnapshot.supplierPhone;
     body.supplierEmail = supplierSnapshot.supplierEmail;
-    body.paymentTerms = supplierSnapshot.paymentTerms;
+    Object.assign(
+      body,
+      resolvePoPaymentFields(
+        {
+          payment: clientPayment.payment,
+          paymentTerms: clientPayment.paymentTerms,
+        },
+        supplierSnapshot.supplierPaymentTerms
+      )
+    );
     body.currency = supplierSnapshot.currency;
     body.exchangeRate = Number(body.exchangeRate) || 1;
     body.approvalStatus = "NOT_REQUIRED";
@@ -456,8 +473,22 @@ export async function updatePurchaseOrder(req, res) {
       doc.supplierAddress = supplierSnapshot.supplierAddress;
       doc.supplierPhone = supplierSnapshot.supplierPhone;
       doc.supplierEmail = supplierSnapshot.supplierEmail;
-      doc.paymentTerms = supplierSnapshot.paymentTerms || doc.paymentTerms;
       doc.currency = supplierSnapshot.currency || doc.currency;
+      // Refresh payment from supplier only when the client did not send an override this request.
+      if (patch.payment === undefined && patch.paymentTerms === undefined) {
+        Object.assign(doc, resolvePoPaymentFields({}, supplierSnapshot.supplierPaymentTerms));
+      }
+    }
+    if (patch.payment !== undefined || patch.paymentTerms !== undefined) {
+      const v = String(
+        patch.paymentTerms !== undefined
+          ? patch.paymentTerms
+          : patch.payment !== undefined
+            ? patch.payment
+            : doc.payment || doc.paymentTerms || ""
+      ).trim();
+      doc.payment = v;
+      doc.paymentTerms = v;
     }
     fillBlankBuyerSnapshot(doc, company);
     if (doc.poNo && !doc.poNumber) doc.poNumber = doc.poNo;

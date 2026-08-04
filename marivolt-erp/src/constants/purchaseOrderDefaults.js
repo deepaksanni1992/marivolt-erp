@@ -12,6 +12,11 @@ export const COMMERCIAL_DEFAULTS = {
   payment: "100% against delivery",
 };
 
+/** Effective payment terms for display / print (`payment` commercial field or supplier snapshot). */
+export function resolvePoPaymentTerms(doc = {}) {
+  return String(doc?.payment || doc?.paymentTerms || "").trim();
+}
+
 export const DEFAULT_SPECIAL_REMARKS = "-";
 
 export const DEFAULT_CLOSING_NOTE =

@@ -9,6 +9,31 @@ export const DEFAULT_COMMERCIAL = {
   payment: "100% against delivery",
 };
 
+/**
+ * Keep PO `payment` (print/commercial) and `paymentTerms` (supplier snapshot) in sync.
+ * Priority: explicit paymentTerms → payment (non-default, or no supplier) → supplier master → default.
+ */
+export function resolvePoPaymentFields(body = {}, supplierPaymentTerms = "") {
+  const payment = String(body.payment ?? "").trim();
+  const paymentTerms = String(body.paymentTerms ?? "").trim();
+  const fromSupplier = String(supplierPaymentTerms ?? "").trim();
+  const commercialDefault = DEFAULT_COMMERCIAL.payment;
+
+  if (paymentTerms) {
+    return { payment: paymentTerms, paymentTerms };
+  }
+  if (payment && payment !== commercialDefault) {
+    return { payment, paymentTerms: payment };
+  }
+  if (fromSupplier) {
+    return { payment: fromSupplier, paymentTerms: fromSupplier };
+  }
+  if (payment) {
+    return { payment, paymentTerms: payment };
+  }
+  return { payment: commercialDefault, paymentTerms: commercialDefault };
+}
+
 export const DEFAULT_SPECIAL_REMARKS = "-";
 
 export const DEFAULT_CLOSING_NOTE =

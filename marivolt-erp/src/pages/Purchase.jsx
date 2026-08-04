@@ -23,6 +23,7 @@ import {
   DEFAULT_CLOSING_NOTE,
   DEFAULT_PURCHASE_TERMS,
   DEFAULT_SPECIAL_REMARKS,
+  resolvePoPaymentTerms,
 } from "../constants/purchaseOrderDefaults.js";
 import { buyerDefaultsFromCompany } from "../lib/companyBuyer.js";
 import { getReportBranding } from "../lib/reportBranding.js";
@@ -256,6 +257,7 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
     freight: form.freight,
     taxes: form.taxes,
     payment: form.payment,
+    paymentTerms: form.payment,
     specialRemarks: form.specialRemarks ?? "",
     termsAndConditions: form.termsAndConditions ?? "",
     closingNote: form.closingNote ?? "",
@@ -356,7 +358,7 @@ function purchaseOrderApiToForm(po) {
     packing: po.packing ?? COMMERCIAL_DEFAULTS.packing,
     freight: po.freight ?? COMMERCIAL_DEFAULTS.freight,
     taxes: po.taxes ?? COMMERCIAL_DEFAULTS.taxes,
-    payment: po.payment ?? COMMERCIAL_DEFAULTS.payment,
+    payment: resolvePoPaymentTerms(po) || COMMERCIAL_DEFAULTS.payment,
     specialRemarks:
       po.specialRemarks != null && po.specialRemarks !== "" ? po.specialRemarks : DEFAULT_SPECIAL_REMARKS,
     termsAndConditions:
@@ -774,7 +776,7 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
           ) : null}
         </div>
 
-        {(doc.delivery || doc.payment || doc.contactPerson) && (
+        {(doc.delivery || doc.payment || doc.paymentTerms || doc.contactPerson) && (
           <div className="mt-4 grid gap-2 border-t border-[#e5e7eb] pt-4 text-[12px] text-[#555] sm:grid-cols-3">
             {doc.contactPerson ? (
               <div>
@@ -788,10 +790,10 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
                 {doc.delivery}
               </div>
             ) : null}
-            {doc.payment ? (
+            {doc.payment || doc.paymentTerms ? (
               <div className="text-right sm:text-right">
-                <span className="font-semibold text-[#6b7280]">Payment: </span>
-                {doc.payment}
+                <span className="font-semibold text-[#6b7280]">Payment Terms: </span>
+                {resolvePoPaymentTerms(doc)}
               </div>
             ) : null}
           </div>
@@ -1086,6 +1088,35 @@ export default function Purchase({ procurementEmbed = false } = {}) {
     staleTime: 60_000,
   });
 
+  const supplierPaymentDefaultsAppliedRef = useRef("");
+
+  // When supplier is already set (e.g. from allocation prefill) and Supplier Master loads, apply payment terms once.
+  useEffect(() => {
+    if (!createOpen || editPoId) return;
+    const name = String(form.supplierName || "").trim();
+    if (!name || !(suppliersAll?.items?.length)) return;
+    const key = name.toLowerCase();
+    if (supplierPaymentDefaultsAppliedRef.current === key) return;
+    const s = (suppliersAll.items ?? []).find((x) => supplierMasterDisplayName(x).toLowerCase() === key);
+    if (!s) return;
+    const supplierPaymentTerms = String(s.paymentTerms || "").trim();
+    supplierPaymentDefaultsAppliedRef.current = key;
+    if (!supplierPaymentTerms) return;
+    setForm((f) => {
+      const current = String(f.payment || "").trim();
+      // Do not overwrite a user override that differs from both default and supplier terms.
+      if (
+        current &&
+        current !== COMMERCIAL_DEFAULTS.payment &&
+        current !== supplierPaymentTerms
+      ) {
+        return f;
+      }
+      if (current === supplierPaymentTerms) return f;
+      return { ...f, payment: supplierPaymentTerms };
+    });
+  }, [createOpen, editPoId, form.supplierName, suppliersAll?.items]);
+
   const { data: supList, isLoading: supLoading } = useQuery({
     queryKey: ["suppliers", supPage, supSearch],
     queryFn: () =>
@@ -1246,6 +1277,8 @@ export default function Purchase({ procurementEmbed = false } = {}) {
     const s = (suppliersAll?.items ?? []).find((x) => supplierMasterDisplayName(x).toLowerCase() === n);
     if (!s) return;
     const cur = String(s.currency || "").trim().toUpperCase();
+    const supplierPaymentTerms = String(s.paymentTerms || "").trim();
+    supplierPaymentDefaultsAppliedRef.current = n;
     setForm((f) => ({
       ...f,
       supplierName: supplierMasterDisplayName(s) || f.supplierName,
@@ -1254,6 +1287,8 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       supplierEmail: f.supplierEmail || s.email || "",
       contactPerson: f.contactPerson || s.contactPerson || s.contactName || "",
       currency: cur || f.currency,
+      // Auto-fill Payment Terms from Supplier Master; user may still override in the form.
+      ...(supplierPaymentTerms ? { payment: supplierPaymentTerms } : {}),
     }));
   }
 
@@ -1715,6 +1750,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                   createMutation.reset();
                   updatePoMutation.reset();
                   setEditPoId(null);
+                  supplierPaymentDefaultsAppliedRef.current = "";
                   setForm(initialPoForm(auth?.company));
                   setCreateOpen(true);
                 }}
@@ -2526,7 +2562,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                 ["Packing", detail.packing],
                 ["Freight", detail.freight],
                 ["Taxes", detail.taxes],
-                ["Payment", detail.payment],
+                ["Payment Terms", resolvePoPaymentTerms(detail)],
               ].map(([k, v]) => (
                 <div key={k} className="rounded-lg border border-gray-100 p-3 text-xs">
                   <div className="font-bold uppercase text-gray-500">{k}</div>
@@ -3216,10 +3252,11 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                 onChange={(e) => setForm((f) => ({ ...f, taxes: e.target.value }))}
               />
             </FormField>
-            <FormField label="Payment">
+            <FormField label="Payment Terms">
               <TextInput
                 value={form.payment}
                 onChange={(e) => setForm((f) => ({ ...f, payment: e.target.value }))}
+                placeholder="Auto-filled from Supplier Master; editable override"
               />
             </FormField>
           </div>

@@ -4,6 +4,7 @@ import { calcPoTotalsFromDoc } from "./poTotals.js";
 import { PDF_OPTS_ITEM_LINES, PO_LINE_COLGROUP, PO_LINE_TABLE_HEAD } from "./reportTableLayout.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 import { notify } from "./notifications.js";
+import { resolvePoPaymentTerms } from "../constants/purchaseOrderDefaults.js";
 
 /** Supplier-facing part reference only (no internal article / SPN). */
 export function supplierPartNumberForPrint(line) {
@@ -186,13 +187,15 @@ export function buildPurchaseOrderDocumentHtml(doc, company = null) {
       </div>
     </header>`;
 
+  const paymentTerms = resolvePoPaymentTerms(doc);
+
   const commercialGrid = [
     ["Delivery", doc.delivery],
     ["Insurance", doc.insurance],
     ["Packing", doc.packing],
     ["Freight", doc.freight],
     ["Taxes", doc.taxes],
-    ["Payment", doc.payment],
+    ["Payment Terms", paymentTerms],
   ].filter(([, v]) => v != null && String(v).trim() !== "");
 
   const commercialHtml =
@@ -271,11 +274,11 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
     }
   </div>
 
-  ${doc.contactPerson || doc.delivery || doc.payment ? `
+  ${doc.contactPerson || doc.delivery || paymentTerms ? `
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding-top:12px;margin-bottom:12px;border-top:1px solid #e5e7eb;font-size:12px;color:#555">
     ${doc.contactPerson ? `<div><span style="font-weight:600;color:#6b7280">Contact: </span>${escapeHtml(doc.contactPerson)}</div>` : "<div></div>"}
     ${doc.delivery ? `<div style="text-align:center"><span style="font-weight:600;color:#6b7280">Delivery: </span>${escapeHtml(doc.delivery)}</div>` : "<div></div>"}
-    ${doc.payment ? `<div style="text-align:right"><span style="font-weight:600;color:#6b7280">Payment: </span>${escapeHtml(doc.payment)}</div>` : "<div></div>"}
+    ${paymentTerms ? `<div style="text-align:right"><span style="font-weight:600;color:#6b7280">Payment Terms: </span>${escapeHtml(paymentTerms)}</div>` : "<div></div>"}
   </div>` : ""}
 
   ${doc.remarks ? `<div style="border:1px dashed #e5e7eb;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#374151"><strong style="color:#6b7280">Header remarks:</strong> ${escapeHtml(doc.remarks)}</div>` : ""}
