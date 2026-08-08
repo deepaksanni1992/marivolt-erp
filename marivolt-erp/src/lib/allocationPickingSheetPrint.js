@@ -47,16 +47,26 @@ const EXTRA_CSS = `
   .picking-meta {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 8px 16px;
+    gap: 6px 20px;
     margin: 10px 0 8px;
     font-size: 11px;
   }
-  .picking-meta div b { display: inline-block; min-width: 110px; color: #475569; }
+  .picking-meta div b {
+    display: inline-block;
+    min-width: 168px;
+    color: #475569;
+    font-weight: 600;
+  }
 `;
 
 function n(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
+}
+
+function dash(v) {
+  const s = String(v ?? "").trim();
+  return s || "—";
 }
 
 function putawayText(ln) {
@@ -75,8 +85,26 @@ function remarkText(ln) {
 }
 
 /**
+ * Resolve display refs: prefer API documentReferences, fall back to allocation fields.
+ */
+function resolveRefs(payload) {
+  const allocation = payload?.allocation || {};
+  const refs = payload?.documentReferences || {};
+  return {
+    allocationNo: dash(refs.allocationNo || allocation.allocationNo),
+    customerName: dash(refs.customerName || allocation.customerName),
+    customerReference: dash(refs.customerReference),
+    quotationNo: dash(refs.quotationNo || allocation.linkedQuotationNo),
+    orderAcknowledgementNo: dash(refs.orderAcknowledgementNo || allocation.linkedOANo),
+    proformaNo: dash(refs.proformaNo || allocation.linkedProformaNo),
+    warehouse: dash(refs.warehouse || allocation.warehouse || "MAIN"),
+    allocationDate: refs.allocationDate || allocation.allocationDate,
+  };
+}
+
+/**
  * Warehouse Allocation Picking Sheet — no commercial pricing.
- * @param {object} payload { allocation, lines, putawayDisclaimer? }
+ * @param {object} payload { allocation, documentReferences?, lines, putawayDisclaimer? }
  * @param {object} company
  * @param {{ exportPdf?: boolean, printedBy?: string }} opts
  */
@@ -89,13 +117,14 @@ export function renderAllocationPickingSheetPrintWindow(
   const lines = Array.isArray(payload?.lines) ? payload.lines : [];
   if (!allocation) return;
 
+  const refs = resolveRefs(payload);
   const brandingName = company.name || company.companyName || "MARIVOLT FZE";
   const printedAt = new Date();
   const header = buildReportHeaderHtml({
     documentTitle: "ALLOCATION PICKING SHEET",
     metaLines: [
-      { label: "Allocation", value: allocation.allocationNo || "-" },
-      { label: "Warehouse", value: allocation.warehouse || "MAIN" },
+      { label: "Allocation No.", value: refs.allocationNo },
+      { label: "Warehouse", value: refs.warehouse },
       { label: "Printed", value: printedAt.toLocaleString() },
     ],
     company,
@@ -104,11 +133,15 @@ export function renderAllocationPickingSheetPrintWindow(
 
   const meta = `
     <div class="picking-meta">
-      <div><b>Customer</b> ${escHtml(allocation.customerName || "—")}</div>
-      <div><b>OA No</b> ${escHtml(allocation.linkedOANo || "—")}</div>
-      <div><b>PI No</b> ${escHtml(allocation.linkedProformaNo || "—")}</div>
-      <div><b>Quotation</b> ${escHtml(allocation.linkedQuotationNo || "—")}</div>
-      <div><b>Allocation Date</b> ${escHtml(fmtReportDate(allocation.allocationDate))}</div>
+      <div><b>Allocation No.</b> ${escHtml(refs.allocationNo)}</div>
+      <div><b>Customer</b> ${escHtml(refs.customerName)}</div>
+      <div><b>Customer Ref. / PO No.</b> ${escHtml(refs.customerReference)}</div>
+      <div><b>Quotation No.</b> ${escHtml(refs.quotationNo)}</div>
+      <div><b>Order Acknowledgement No.</b> ${escHtml(refs.orderAcknowledgementNo)}</div>
+      <div><b>Proforma Invoice No.</b> ${escHtml(refs.proformaNo)}</div>
+      <div><b>Warehouse</b> ${escHtml(refs.warehouse)}</div>
+      <div><b>Allocation Date</b> ${escHtml(fmtReportDate(refs.allocationDate))}</div>
+      <div><b>Printed Date / Time</b> ${escHtml(printedAt.toLocaleString())}</div>
       <div><b>Printed By</b> ${escHtml(printedBy || "—")}</div>
     </div>
   `;
@@ -164,7 +197,7 @@ export function renderAllocationPickingSheetPrintWindow(
     </table>
   `;
 
-  const title = `Allocation Picking Sheet ${allocation.allocationNo || ""}`.trim();
+  const title = `Allocation Picking Sheet ${refs.allocationNo !== "—" ? refs.allocationNo : ""}`.trim();
   const html = buildCommercialReportDocumentHtml({
     title,
     bodyInnerHtml: header + meta + disclaimer + table,
@@ -174,7 +207,7 @@ export function renderAllocationPickingSheetPrintWindow(
 
   return deliverReportHtml(html, {
     exportPdf,
-    filename: `allocation-picking-sheet-${allocation.allocationNo || "export"}`,
+    filename: `allocation-picking-sheet-${refs.allocationNo !== "—" ? refs.allocationNo : "export"}`,
     pdfOptions: {
       ...PDF_OPTS_ITEM_LINES,
       landscape: true,

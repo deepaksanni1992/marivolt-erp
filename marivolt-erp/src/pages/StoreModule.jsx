@@ -3590,7 +3590,9 @@ export default function StoreModule() {
                   selectedSecondary={
                     packAllocSelectedMeta?.secondaryLabel ||
                     (packingFromAlloc?.allocation
-                      ? `${packingFromAlloc.allocation.customerName || ""} · OA ${packingFromAlloc.allocation.linkedOANo || "—"}`
+                      ? `${packingFromAlloc.allocation.customerName || ""} · Ref ${
+                          packingFromAlloc.documentReferences?.customerReference || "—"
+                        }`
                       : "")
                   }
                   placeholder="Search allocation, OA, PI, customer or article…"
@@ -3614,15 +3616,34 @@ export default function StoreModule() {
             </div>
             {packingFromAlloc?.allocation ? (
               <div className="mb-3 rounded border border-slate-200 bg-slate-50 p-3 text-xs">
-                <div>
-                  <span className="font-semibold">{packingFromAlloc.allocation.allocationNo}</span> ·{" "}
-                  {packingFromAlloc.allocation.customerName}
-                </div>
-                <div className="mt-1 text-slate-600">
-                  OA {packingFromAlloc.allocation.linkedOANo || "—"} · PI {packingFromAlloc.allocation.linkedProformaNo || "—"} · WH{" "}
-                  {packingFromAlloc.allocation.warehouse || "MAIN"}
-                </div>
-                <div className="mt-1 text-slate-500">
+                {(() => {
+                  const refs = packingFromAlloc.documentReferences || {};
+                  const alloc = packingFromAlloc.allocation;
+                  const dash = (v) => (String(v ?? "").trim() ? String(v).trim() : "—");
+                  const rows = [
+                    ["Allocation", dash(refs.allocationNo || alloc.allocationNo)],
+                    ["Customer", dash(refs.customerName || alloc.customerName)],
+                    ["Customer Ref.", dash(refs.customerReference)],
+                    ["Quotation", dash(refs.quotationNo || alloc.linkedQuotationNo)],
+                    [
+                      "Order Acknowledgement",
+                      dash(refs.orderAcknowledgementNo || alloc.linkedOANo),
+                    ],
+                    ["Proforma", dash(refs.proformaNo || alloc.linkedProformaNo)],
+                    ["Warehouse", dash(refs.warehouse || alloc.warehouse || "MAIN")],
+                  ];
+                  return (
+                    <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+                      {rows.map(([label, value]) => (
+                        <div key={label} className="min-w-0">
+                          <span className="text-slate-500">{label}:</span>{" "}
+                          <span className="font-medium text-slate-800">{value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+                <div className="mt-2 text-slate-500">
                   Stock checked at: {packingStockCheckedAt ? fmtDate(packingStockCheckedAt) : "—"}
                   <button
                     type="button"
@@ -3638,6 +3659,7 @@ export default function StoreModule() {
                       renderAllocationPickingSheetPrintWindow(
                         {
                           allocation: packingFromAlloc.allocation,
+                          documentReferences: packingFromAlloc.documentReferences,
                           lines: packingFromAlloc.lines,
                           putawayDisclaimer: packingFromAlloc.putawayDisclaimer,
                         },

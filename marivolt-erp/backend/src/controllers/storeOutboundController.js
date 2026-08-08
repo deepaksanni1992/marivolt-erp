@@ -17,6 +17,10 @@ import {
   resolveDocumentCustomerFields,
 } from "../utils/customerTransactionFields.js";
 import {
+  buildAllocationDocumentReferences,
+  resolveCustomerReferenceFromLineage,
+} from "../utils/allocationDocumentReferences.js";
+import {
   PACKING_CSV_HEADER,
   buildPackingImportPreview,
   validatePackingPackagesForSave,
@@ -95,7 +99,7 @@ function t(v) {
   return String(v ?? "").trim();
 }
 
-async function resolveCustomerSnapshotForAllocation(req, allocation) {
+async function loadAllocationLineageDocs(req, allocation) {
   const [oa, pi, quotation] = await Promise.all([
     allocation?.linkedOAId
       ? OrderAcknowledgement.findOne(withCompany(req, { _id: allocation.linkedOAId })).lean()
@@ -107,16 +111,17 @@ async function resolveCustomerSnapshotForAllocation(req, allocation) {
       ? Quotation.findOne(withCompany(req, { _id: allocation.linkedQuotationId })).lean()
       : null,
   ]);
+  return { oa, pi, quotation };
+}
+
+async function resolveCustomerSnapshotForAllocation(req, allocation) {
+  const { oa, pi, quotation } = await loadAllocationLineageDocs(req, allocation);
   const fromOa = oa ? resolveDocumentCustomerFields(oa) : {};
   const fromPi = pi ? resolveDocumentCustomerFields(pi) : {};
   const fromQtn = quotation ? resolveDocumentCustomerFields(quotation) : {};
   const pick = (key) => firstNonEmpty(fromOa[key], fromPi[key], fromQtn[key]);
   return {
-    customerReference: firstNonEmpty(
-      oa?.customerPORef,
-      pi?.customerReference,
-      quotation?.customerReference
-    ),
+    customerReference: resolveCustomerReferenceFromLineage({ oa, pi, quotation }),
     contactPerson: pick("contactPerson"),
     attention: pick("attention"),
     billingAddress: pick("billingAddress"),
@@ -723,7 +728,7 @@ export async function getPackingFromAllocation(req, res) {
       ...new Set((allocation.lines || []).map((ln) => String(ln.article || "").trim().toUpperCase()).filter(Boolean)),
     ];
 
-    const [balances, putawayByArticle] = await Promise.all([
+    const [balances, putawayByArticle, lineage] = await Promise.all([
       articles.length
         ? StockBalance.find({
             companyId: req.companyId,
@@ -738,7 +743,14 @@ export async function getPackingFromAllocation(req, res) {
         warehouse: wh,
         articles,
       }),
+      loadAllocationLineageDocs(req, allocation),
     ]);
+    const documentReferences = buildAllocationDocumentReferences({
+      allocation,
+      oa: lineage.oa,
+      pi: lineage.pi,
+      quotation: lineage.quotation,
+    });
 
     const stockByArticle = new Map();
     for (const b of balances) {
@@ -813,6 +825,7 @@ export async function getPackingFromAllocation(req, res) {
     }
     res.json({
       allocation,
+      documentReferences,
       lines,
       stockCheckedAt,
       hasNegativeAllocation: Boolean(allocation.hasNegativeAllocation),
