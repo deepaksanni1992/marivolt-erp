@@ -42,7 +42,7 @@ run("CASE 1 — Physical 9, Reserved Here 9, Free 0 → READY TO PICK Pick 9", (
   assert.equal(p.pickQty, 9);
   assert.equal(p.storeStatus, "READY TO PICK");
   assert.equal(p.storeRemarks, "STOCK EXISTS — BIN QTY NOT TRACKED");
-  assert.equal(p.pdfRemarks, "READY TO PICK — VERIFY BIN");
+  assert.equal(p.pdfRemarks, "READY TO PICK — VERIFY PUTAWAY");
   assert.equal(p.lastKnownPutaway.value, "A/01");
   assert.equal(p.lastKnownPutaway.historical, true);
 });

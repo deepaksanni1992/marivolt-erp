@@ -143,7 +143,7 @@ export function mapPackingPdfRemarks(derived = {}, lastKnownPutaway = null) {
   const shortage = Number(derived.shortageQty) || 0;
 
   if (storeStatus === "READY TO PICK") {
-    return hasPutaway ? "READY TO PICK — VERIFY BIN" : "READY TO PICK";
+    return hasPutaway ? "READY TO PICK — VERIFY PUTAWAY" : "READY TO PICK";
   }
   if (storeStatus === "PARTIAL STOCK") {
     return `PARTIAL STOCK — AVAILABLE ${pick} / SHORT ${shortage}`;
@@ -179,10 +179,12 @@ export function parsePutawayFromLedgerRemarks(remarks = "") {
  * From a flat list of GRN putaway candidates (already company-scoped),
  * pick the latest valid putaway per article for one warehouse.
  * Ignores cancelled / draft / empty putaway / other warehouses.
+ * Optional asOfDate: only evidence with date <= asOfDate (time-bounded lineage).
  */
-export function selectLatestPutawayByArticle(candidates = [], warehouse = "MAIN") {
+export function selectLatestPutawayByArticle(candidates = [], warehouse = "MAIN", asOfDate = null) {
   const wh = String(warehouse || "MAIN").trim().toUpperCase();
   const invalidStatuses = new Set(["CANCELLED", "DRAFT"]);
+  const asOfTs = asOfDate != null ? new Date(asOfDate).getTime() : null;
   const byArticle = new Map();
 
   for (const row of candidates) {
@@ -195,6 +197,8 @@ export function selectLatestPutawayByArticle(candidates = [], warehouse = "MAIN"
     if (rowWh !== wh) continue;
 
     const ts = new Date(row.date || row.postedAt || row.grnDate || 0).getTime() || 0;
+    if (asOfTs != null && Number.isFinite(asOfTs) && ts > asOfTs) continue;
+
     const prev = byArticle.get(art);
     if (
       !prev ||
@@ -204,6 +208,7 @@ export function selectLatestPutawayByArticle(candidates = [], warehouse = "MAIN"
       byArticle.set(art, {
         value: put,
         source: row.source || "GRN",
+        sourceType: row.source || "GRN",
         sourceDocument: row.sourceDocument || "",
         date: row.date || row.postedAt || row.grnDate || null,
         historical: true,
@@ -214,6 +219,109 @@ export function selectLatestPutawayByArticle(candidates = [], warehouse = "MAIN"
 
   for (const v of byArticle.values()) delete v._ts;
   return byArticle;
+}
+
+/**
+ * Whether a conversion may inherit putaway (same warehouse, no relocation).
+ * Pure — no DB.
+ */
+export function conversionAllowsPutawayInheritance(conv = {}, warehouse = "MAIN") {
+  const wh = String(warehouse || "MAIN").trim().toUpperCase();
+  const st = String(conv.status || "").toUpperCase();
+  if (st !== "POSTED") return false;
+  const convWh = String(conv.warehouse || "").trim().toUpperCase();
+  if (convWh !== wh) return false;
+  const srcLoc = String(conv.sourceLocation || "").trim().toUpperCase();
+  const tgtLoc = String(conv.targetLocation || "").trim().toUpperCase();
+  // Explicit different locations ⇒ treat as relocation; do not inherit.
+  if (srcLoc && tgtLoc && srcLoc !== tgtLoc) return false;
+  return true;
+}
+
+export const PUTAWAY_LINEAGE_MAX_DEPTH = 5;
+
+/**
+ * Pure conversion-lineage resolver.
+ *
+ * @param {string} targetArticle
+ * @param {object} opts
+ * @param {string} opts.warehouse
+ * @param {Map|Object} opts.directPutawayByArticle - article → putaway row (no asOf)
+ * @param {Array} opts.putawayCandidates - flat GRN/ledger candidates for time-bounded lookup
+ * @param {Array} opts.conversions - POSTED conversion docs { sourceArticle, targetArticle, warehouse, status, postedAt, conversionNo, sourceLocation, targetLocation }
+ * @param {number} opts.maxDepth
+ * @param {Date|string|null} opts.asOfDate - when resolving nested source, bound evidence
+ */
+export function resolvePutawayViaConversionLineage(
+  targetArticle,
+  {
+    warehouse = "MAIN",
+    putawayCandidates = [],
+    conversions = [],
+    maxDepth = PUTAWAY_LINEAGE_MAX_DEPTH,
+    asOfDate = null,
+    visited = null,
+    depth = 0,
+  } = {}
+) {
+  const art = String(targetArticle || "").trim().toUpperCase();
+  const wh = String(warehouse || "MAIN").trim().toUpperCase();
+  if (!art) return null;
+  if (depth > maxDepth) return null;
+
+  const seen = visited || new Set();
+  if (seen.has(art)) return null;
+  seen.add(art);
+
+  // Direct evidence for this article (time-bounded when asOf provided).
+  const directMap = selectLatestPutawayByArticle(putawayCandidates, wh, asOfDate);
+  const direct = directMap.get(art);
+  if (direct?.value) {
+    return { ...direct, sourceType: direct.sourceType || direct.source || "GRN" };
+  }
+
+  // Latest eligible conversion into this article (postedAt <= asOf when set).
+  const asOfTs = asOfDate != null ? new Date(asOfDate).getTime() : null;
+  let best = null;
+  let bestTs = -1;
+  for (const conv of conversions) {
+    if (!conversionAllowsPutawayInheritance(conv, wh)) continue;
+    if (String(conv.targetArticle || "").trim().toUpperCase() !== art) continue;
+    const postedAt = conv.postedAt || conv.conversionDate || null;
+    const ts = postedAt ? new Date(postedAt).getTime() || 0 : 0;
+    if (asOfTs != null && Number.isFinite(asOfTs) && ts > asOfTs) continue;
+    if (ts >= bestTs) {
+      bestTs = ts;
+      best = conv;
+    }
+  }
+  if (!best) return null;
+
+  const sourceArticle = String(best.sourceArticle || "").trim().toUpperCase();
+  if (!sourceArticle || sourceArticle === art) return null;
+
+  const inherited = resolvePutawayViaConversionLineage(sourceArticle, {
+    warehouse: wh,
+    putawayCandidates,
+    conversions,
+    maxDepth,
+    asOfDate: best.postedAt || best.conversionDate || asOfDate,
+    visited: seen,
+    depth: depth + 1,
+  });
+  if (!inherited?.value) return null;
+
+  return {
+    value: inherited.value,
+    source: "ARTICLE_CONVERSION",
+    sourceType: "ARTICLE_CONVERSION",
+    sourceDocument: best.conversionNo || "",
+    sourceArticle,
+    inheritedFromSourceType: inherited.sourceType || inherited.source || "",
+    inheritedFromDocument: inherited.sourceDocument || "",
+    date: best.postedAt || best.conversionDate || null,
+    historical: true,
+  };
 }
 
 /** Shortage for a requested pack quantity against free physical availability. */

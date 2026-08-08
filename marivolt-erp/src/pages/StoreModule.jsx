@@ -3725,8 +3725,17 @@ export default function StoreModule() {
                               <td className={`px-2 py-2 text-right font-semibold ${shortage > 0 ? "text-rose-700" : ""}`}>
                                 {shortage}
                               </td>
-                              <td className="max-w-[120px] px-2 py-2" title={putaway || undefined}>
-                                {putaway || "—"}
+                              <td className="max-w-[140px] px-2 py-2" title={putaway || undefined}>
+                                <div>{putaway || "—"}</div>
+                                {ln.lastKnownPutaway?.sourceType === "ARTICLE_CONVERSION" ? (
+                                  <div className="mt-0.5 text-[9px] font-normal normal-case text-slate-500">
+                                    Inherited from conversion{" "}
+                                    {ln.lastKnownPutaway.sourceDocument || "—"}
+                                    {ln.lastKnownPutaway.sourceArticle
+                                      ? ` / ${ln.lastKnownPutaway.sourceArticle}`
+                                      : ""}
+                                  </div>
+                                ) : null}
                               </td>
                               <td className="px-2 py-2">{packingStockBadge(status)}</td>
                               <td className="max-w-[160px] px-2 py-2 text-[10px] normal-case text-slate-600">

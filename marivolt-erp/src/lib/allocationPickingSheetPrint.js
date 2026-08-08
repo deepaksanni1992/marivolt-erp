@@ -61,7 +61,13 @@ function n(v) {
 
 function putawayText(ln) {
   const v = ln?.lastKnownPutaway?.value;
-  return v ? String(v) : "—";
+  if (!v) return "—";
+  const lk = ln.lastKnownPutaway;
+  if (lk?.sourceType === "ARTICLE_CONVERSION") {
+    const via = [lk.sourceDocument, lk.sourceArticle].filter(Boolean).join(" / ");
+    return via ? `${v} (via ${via})` : v;
+  }
+  return String(v);
 }
 
 function remarkText(ln) {
