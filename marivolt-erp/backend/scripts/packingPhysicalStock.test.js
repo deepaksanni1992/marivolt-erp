@@ -168,7 +168,11 @@ run("StorePacking model stores shortage acknowledgement fields", () => {
 
 run("Frontend packing UI shows stock columns and shortage confirm", () => {
   const ui = fs.readFileSync(path.join(backendRoot, "../src/pages/StoreModule.jsx"), "utf8");
-  assert.match(ui, /Free Available/);
+  assert.match(ui, /Reserved Here/);
+  assert.match(ui, /Pick Qty/);
+  assert.match(ui, /Last Known Putaway/);
+  assert.match(ui, /Print Picking Sheet/);
+  assert.match(ui, /renderAllocationPickingSheetPrintWindow/);
   assert.match(ui, /packingStockBadge/);
   assert.match(ui, /Physical stock shortage/);
   assert.match(ui, /PACKING_PHYSICAL_STOCK_SHORTAGE/);

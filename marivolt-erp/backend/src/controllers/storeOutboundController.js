@@ -38,12 +38,15 @@ import {
   isPackingEffectDuplicateKeyError,
   packingConflictError,
 } from "../utils/packingIdempotency.js";
+import StockBalance from "../models/StockBalance.js";
 import {
   PACKING_OVERRIDE_PHYSICAL_SHORTAGE_PERMISSION,
+  buildPackingStorePresentation,
   collectPackingShortages,
   derivePackingLineStock,
   shouldBlockPhysicalShortagePost,
 } from "../utils/packingPhysicalStock.js";
+import { batchLastKnownPutaway } from "../services/lastKnownPutawayService.js";
 import {
   CLAIMABLE_DISPATCH_CANCEL_STATUSES,
   DISPATCH_ALREADY_CANCELLED,
@@ -716,13 +719,54 @@ export async function getPackingFromAllocation(req, res) {
     const packedByLine = await sumPostedPackQtyByLine(req.companyId, allocation._id);
     const wh = String(allocation.warehouse || "MAIN").toUpperCase();
     const stockCheckedAt = new Date().toISOString();
+    const articles = [
+      ...new Set((allocation.lines || []).map((ln) => String(ln.article || "").trim().toUpperCase()).filter(Boolean)),
+    ];
+
+    const [balances, putawayByArticle] = await Promise.all([
+      articles.length
+        ? StockBalance.find({
+            companyId: req.companyId,
+            article: { $in: articles },
+            $or: [{ warehouse: wh }, { location: wh }],
+          })
+            .select("article warehouse location onHandQty quantity reservedQty allocatedQty packedQty availableQty")
+            .lean()
+        : [],
+      batchLastKnownPutaway({
+        companyId: req.companyId,
+        warehouse: wh,
+        articles,
+      }),
+    ]);
+
+    const stockByArticle = new Map();
+    for (const b of balances) {
+      const art = String(b.article || "").trim().toUpperCase();
+      const bWh = String(b.warehouse || b.location || "").trim().toUpperCase() || "MAIN";
+      if (bWh !== wh) continue;
+      const prev = stockByArticle.get(art) || {
+        onHandQty: 0,
+        reservedQty: 0,
+        allocatedQty: 0,
+        packedQty: 0,
+      };
+      prev.onHandQty += Number(b.onHandQty ?? b.quantity) || 0;
+      prev.reservedQty += Number(b.reservedQty) || 0;
+      prev.allocatedQty += Number(b.allocatedQty) || 0;
+      prev.packedQty += Number(b.packedQty) || 0;
+      stockByArticle.set(art, prev);
+    }
+
     const lines = [];
     for (const ln of allocation.lines || []) {
-      const stock = await stockService.getStockBalance({
-        companyId: req.companyId,
-        article: ln.article,
-        warehouse: wh,
-      });
+      const art = String(ln.article || "").trim().toUpperCase();
+      const stock = stockByArticle.get(art) || {
+        onHandQty: 0,
+        reservedQty: 0,
+        allocatedQty: 0,
+        packedQty: 0,
+      };
       const allocatedQty = Number(ln.qty) || 0;
       const alreadyPacked = packedByLine.get(String(ln._id)) || 0;
       const derived = derivePackingLineStock(stock, {
@@ -730,6 +774,8 @@ export async function getPackingFromAllocation(req, res) {
         alreadyPacked,
         isNegativeAllocation: Boolean(ln.isNegativeAllocation),
       });
+      const lastKnownPutaway = putawayByArticle.get(art) || null;
+      const presentation = buildPackingStorePresentation(derived, lastKnownPutaway);
       lines.push({
         allocationLineId: ln._id,
         article: ln.article,
@@ -737,6 +783,7 @@ export async function getPackingFromAllocation(req, res) {
         partNumber: ln.partNumber || "",
         materialCode: ln.materialCode || "",
         location: wh,
+        warehouse: wh,
         qty: allocatedQty,
         allocatedQty,
         alreadyPacked,
@@ -752,9 +799,14 @@ export async function getPackingFromAllocation(req, res) {
         warehousePackedQty: derived.warehousePackedQty,
         freeAvailableQty: derived.freeAvailableQty,
         physicalPackableQty: derived.physicalPackableQty,
+        pickQty: presentation.pickQty,
         shortageQty: derived.shortageQty,
         isNegativeAllocation: derived.isNegativeAllocation,
         stockStatus: derived.stockStatus,
+        storeStatus: presentation.storeStatus,
+        storeRemarks: presentation.storeRemarks,
+        pdfRemarks: presentation.pdfRemarks,
+        lastKnownPutaway,
         stockCheckedAt,
         uom: ln.uom || "PCS",
       });
@@ -764,6 +816,8 @@ export async function getPackingFromAllocation(req, res) {
       lines,
       stockCheckedAt,
       hasNegativeAllocation: Boolean(allocation.hasNegativeAllocation),
+      putawayDisclaimer:
+        "Last Known Putaway is a historical warehouse reference. Current rack/bin quantities are not tracked in the present inventory model.",
     });
   } catch (err) {
     res.status(500).json({ message: err.message });

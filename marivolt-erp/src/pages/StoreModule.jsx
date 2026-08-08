@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../context/AuthContext.jsx";
 import { api, apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
 import { renderStorePackingListPrintWindow } from "../lib/storePackingListPrint.js";
+import { renderAllocationPickingSheetPrintWindow } from "../lib/allocationPickingSheetPrint.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import { deliverReportHtml } from "../lib/reportPdfClient.js";
 import { GLOBAL_REPORT_PRINT_CSS } from "../lib/reportPrintLayout.js";
@@ -222,23 +223,32 @@ function StatusPill({ status, tone = "slate" }) {
 function packingStockBadge(status) {
   const s = String(status || "UNKNOWN").toUpperCase().replace(/\s+/g, "_");
   let tone = "slate";
-  let label = s;
-  if (s === "READY") {
+  let label = String(status || "UNKNOWN");
+  if (s === "READY" || s === "READY_TO_PICK") {
     tone = "emerald";
-  } else if (s === "PARTIAL") {
+    label = "READY TO PICK";
+  } else if (s === "PARTIAL" || s === "PARTIAL_STOCK") {
     tone = "amber";
-    label = "PARTIAL";
-  } else if (s === "SHORTAGE") {
+    label = "PARTIAL STOCK";
+  } else if (s === "SHORTAGE" || s === "NO_STOCK" || s === "NO_STOCK_/_SHORTAGE") {
     tone = "rose";
-    label = "SHORTAGE";
+    label = s.includes("SHORTAGE") && !s.startsWith("NO") ? "NO STOCK / SHORTAGE" : label.replace(/_/g, " ");
+  } else if (s === "RESERVED_FOR_OTHER_ALLOCATION") {
+    tone = "amber";
+    label = "RESERVED FOR OTHER ALLOCATION";
   } else if (s === "NEGATIVE_ALLOCATION") {
     tone = "orange";
     label = "NEGATIVE ALLOCATION";
+  } else if (s === "PACKED") {
+    tone = "sky";
+    label = "PACKED";
   } else if (s === "NOT_AVAILABLE") {
     tone = "rose";
     label = "NOT AVAILABLE";
-  } else {
+  } else if (s === "UNKNOWN") {
     label = "UNKNOWN";
+  } else {
+    label = label.replace(/_/g, " ");
   }
   return <StatusPill status={label} tone={tone} />;
 }
@@ -3621,6 +3631,32 @@ export default function StoreModule() {
                   >
                     Refresh stock
                   </button>
+                  <button
+                    type="button"
+                    className="ml-3 rounded border border-slate-300 bg-white px-2 py-0.5 text-sky-800 hover:bg-slate-50"
+                    onClick={() =>
+                      renderAllocationPickingSheetPrintWindow(
+                        {
+                          allocation: packingFromAlloc.allocation,
+                          lines: packingFromAlloc.lines,
+                          putawayDisclaimer: packingFromAlloc.putawayDisclaimer,
+                        },
+                        auth?.company || {},
+                        {
+                          printedBy:
+                            auth?.user?.name ||
+                            auth?.user?.username ||
+                            auth?.user?.email ||
+                            "",
+                        }
+                      )
+                    }
+                  >
+                    Print Picking Sheet
+                  </button>
+                </div>
+                <div className="mt-2 text-[10px] text-slate-500">
+                  Last Known Putaway is historical only — current bin quantity is not tracked.
                 </div>
                 {packingFromAlloc.hasNegativeAllocation || packingFromAlloc.allocation.hasNegativeAllocation ? (
                   <div className="mt-2 rounded border border-orange-200 bg-orange-50 px-2 py-1 text-orange-900">
@@ -3637,33 +3673,38 @@ export default function StoreModule() {
                     <span className="text-xs text-slate-500">Packed in packages: {packingPackageStats.totalPackageQty}</span>
                   </div>
                   <div className="overflow-auto">
-                    <table className="w-full text-xs">
+                    <table className="min-w-[1100px] w-full text-xs">
                       <thead className="bg-white uppercase text-slate-600">
                         <tr>
                           <th className="px-2 py-2 text-left">Article</th>
                           <th className="px-2 py-2 text-left">Description</th>
-                          <th className="px-2 py-2 text-right">Allocated</th>
-                          <th className="px-2 py-2 text-right">Prev Packed</th>
-                          <th className="px-2 py-2 text-right">In Packages</th>
+                          <th className="px-2 py-2 text-left">Part No</th>
                           <th className="px-2 py-2 text-right">Packing Balance</th>
-                          <th className="px-2 py-2 text-right">On Hand</th>
-                          <th className="px-2 py-2 text-right">Reserved</th>
-                          <th className="px-2 py-2 text-right">Free Available</th>
+                          <th className="px-2 py-2 text-right">Physical</th>
+                          <th className="px-2 py-2 text-right">Reserved Here</th>
+                          <th className="px-2 py-2 text-right">Pick Qty</th>
                           <th className="px-2 py-2 text-right">Shortage</th>
-                          <th className="px-2 py-2 text-left">Stock Status</th>
+                          <th className="px-2 py-2 text-left">Last Known Putaway</th>
+                          <th className="px-2 py-2 text-left">Status</th>
+                          <th className="px-2 py-2 text-left">Remarks</th>
                         </tr>
                       </thead>
                       <tbody>
                         {packingPackageStats.lines.map((ln) => {
                           const shortage = Number(ln.shortageQty) || 0;
-                          const status = ln.stockStatus || "UNKNOWN";
+                          const status = ln.storeStatus || ln.stockStatus || "UNKNOWN";
+                          const pickQty = ln.pickQty ?? ln.physicalPackableQty;
+                          const putaway = ln.lastKnownPutaway?.value || "";
                           return (
                             <tr
                               key={String(ln.allocationLineId)}
                               className={`border-t ${
-                                ln.overPacked > 0 || status === "SHORTAGE" || status === "NEGATIVE_ALLOCATION"
+                                ln.overPacked > 0 ||
+                                String(status).includes("NO STOCK") ||
+                                String(status).includes("SHORTAGE") ||
+                                ln.stockStatus === "NEGATIVE_ALLOCATION"
                                   ? "bg-rose-50"
-                                  : status === "PARTIAL"
+                                  : ln.stockStatus === "PARTIAL" || String(status).includes("PARTIAL")
                                     ? "bg-amber-50"
                                     : ln.balancePack === 0
                                       ? "bg-emerald-50"
@@ -3671,28 +3712,25 @@ export default function StoreModule() {
                               }`}
                             >
                               <td className="px-2 py-2 font-mono">{ln.article}</td>
-                              <td className="max-w-[160px] truncate px-2 py-2" title={ln.description}>
-                                {ln.description || "—"}
+                              <td className="max-w-[140px] px-2 py-2" title={ln.description}>
+                                <span className="line-clamp-2">{ln.description || "—"}</span>
                               </td>
-                              <td className="px-2 py-2 text-right">{ln.allocatedQty ?? ln.qty}</td>
-                              <td className="px-2 py-2 text-right">{ln.alreadyPacked}</td>
-                              <td className="px-2 py-2 text-right font-semibold">{ln.inPackages}</td>
+                              <td className="px-2 py-2 font-mono text-[11px]">{ln.partNumber || "—"}</td>
                               <td className={`px-2 py-2 text-right font-semibold ${ln.overPacked > 0 ? "text-rose-700" : ""}`}>
                                 {ln.overPacked > 0 ? `Over ${ln.overPacked}` : ln.balancePack}
                               </td>
                               <td className="px-2 py-2 text-right">{ln.onHandQty ?? "—"}</td>
-                              <td className="px-2 py-2 text-right">{ln.reservedQty ?? "—"}</td>
-                              <td className="px-2 py-2 text-right">{ln.freeAvailableQty ?? ln.availableStock ?? "—"}</td>
+                              <td className="px-2 py-2 text-right">{ln.reservedForThisAllocationQty ?? "—"}</td>
+                              <td className="px-2 py-2 text-right font-semibold">{pickQty ?? "—"}</td>
                               <td className={`px-2 py-2 text-right font-semibold ${shortage > 0 ? "text-rose-700" : ""}`}>
                                 {shortage}
                               </td>
-                              <td className="px-2 py-2">
-                                {packingStockBadge(status)}
-                                {shortage > 0 ? (
-                                  <div className="mt-1 max-w-[180px] text-[10px] font-normal normal-case text-rose-700">
-                                    Physical stock is unavailable. Allocation exists, but {shortage} {ln.uom || "PCS"} cannot currently be packed.
-                                  </div>
-                                ) : null}
+                              <td className="max-w-[120px] px-2 py-2" title={putaway || undefined}>
+                                {putaway || "—"}
+                              </td>
+                              <td className="px-2 py-2">{packingStockBadge(status)}</td>
+                              <td className="max-w-[160px] px-2 py-2 text-[10px] normal-case text-slate-600">
+                                {ln.storeRemarks || "—"}
                               </td>
                             </tr>
                           );
