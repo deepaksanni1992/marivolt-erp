@@ -1,8 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import Modal from "../erp/Modal.jsx";
 import { TextInput } from "../erp/FormField.jsx";
-import { poConversionStatusClass } from "../../lib/allocationPoSession.js";
+import {
+  allocationProcurementStatusClass,
+  formatStatusLabel,
+  poConversionStatusClass,
+} from "../../lib/allocationPoSession.js";
 import { notify } from "../../lib/notifications.js";
+
+function qty(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
 
 export default function ConvertAllocationToPoModal({
   open,
@@ -17,6 +26,15 @@ export default function ConvertAllocationToPoModal({
   const [qtyByLine, setQtyByLine] = useState({});
   const [useSuggestedQty, setUseSuggestedQty] = useState(true);
 
+  function suggestedFor(line) {
+    const shortfall = qty(line.purchaseShortfallQty ?? line.suggestedPurchaseQty);
+    const remaining = qty(line.remainingConvertibleQty);
+    const defaultReq = qty(line.defaultRequestedQty);
+    if (defaultReq > 0) return Math.min(defaultReq, remaining || defaultReq);
+    if (shortfall > 0) return Math.min(shortfall, remaining || shortfall);
+    return 0;
+  }
+
   useEffect(() => {
     if (!open) return;
     const nextSelected = {};
@@ -25,9 +43,7 @@ export default function ConvertAllocationToPoModal({
       if (!line.eligible) continue;
       const id = String(line.allocationLineId);
       nextSelected[id] = true;
-      const suggested = Number(line.suggestedPurchaseQty) || 0;
-      const remaining = Number(line.remainingConvertibleQty) || 0;
-      nextQty[id] = suggested > 0 ? suggested : remaining > 0 ? remaining : 0;
+      nextQty[id] = suggestedFor(line);
     }
     setSelected(nextSelected);
     setQtyByLine(nextQty);
@@ -43,9 +59,7 @@ export default function ConvertAllocationToPoModal({
         if (!line.eligible) continue;
         const id = String(line.allocationLineId);
         if (!selected[id]) continue;
-        const suggested = Number(line.suggestedPurchaseQty) || 0;
-        const remaining = Number(line.remainingConvertibleQty) || 0;
-        next[id] = suggested > 0 ? Math.min(suggested, remaining) : remaining;
+        next[id] = suggestedFor(line);
       }
       return next;
     });
@@ -70,12 +84,10 @@ export default function ConvertAllocationToPoModal({
       const id = String(line.allocationLineId);
       next[id] = on;
       if (on) {
-        const suggested = Number(line.suggestedPurchaseQty) || 0;
-        const remaining = Number(line.remainingConvertibleQty) || 0;
         if (useSuggestedQty) {
-          nextQty[id] = suggested > 0 ? Math.min(suggested, remaining) : remaining;
+          nextQty[id] = suggestedFor(line);
         } else if (!(Number(nextQty[id]) > 0)) {
-          nextQty[id] = remaining;
+          nextQty[id] = suggestedFor(line) || qty(line.remainingConvertibleQty);
         }
       }
     }
@@ -100,6 +112,7 @@ export default function ConvertAllocationToPoModal({
           remarks: l.remarks,
           requestedQty,
           remainingConvertibleQty: l.remainingConvertibleQty,
+          purchaseShortfallQty: l.purchaseShortfallQty,
           purchaseIntelligence: intel,
           unitPrice: intel.lastPurchasePrice ?? intel.preferredPrice ?? 0,
           leadTime: intel.lastLeadTime || intel.preferredLeadTime || "",
@@ -117,10 +130,12 @@ export default function ConvertAllocationToPoModal({
     for (const row of picked) {
       const src = lines.find((l) => String(l.allocationLineId) === String(row.allocationLineId));
       if (!src) continue;
-      const remaining = Number(src.remainingConvertibleQty) || 0;
-      if (row.requestedQty > remaining + 1e-6) {
+      const remaining = qty(src.remainingConvertibleQty);
+      const shortfall = qty(src.purchaseShortfallQty ?? src.suggestedPurchaseQty);
+      const maxAllowed = Math.min(remaining, shortfall > 0 ? shortfall : remaining);
+      if (row.requestedQty > maxAllowed + 1e-6) {
         notify.error(
-          `Requested quantity for ${row.article} exceeds remaining convertible quantity (${remaining}).`
+          `Requested quantity for ${row.article} exceeds purchase shortfall / convertible quantity (${maxAllowed}).`
         );
         return;
       }
@@ -140,8 +155,9 @@ export default function ConvertAllocationToPoModal({
       ) : (
         <div className="space-y-4 text-sm">
           <p className="text-gray-600">
-            Every allocation line can be converted to a Purchase Order. Suggested purchase quantity is
-            informational only. Quantities are not reserved until the PO is saved.
+            Suggested purchase quantity is the <strong>Purchase Shortfall</strong> (uncovered customer
+            demand after reserved/packed stock and valid incoming PO coverage). Fully reserved lines
+            suggest 0 and are not eligible. Quantities are not reserved until the PO is saved.
           </p>
 
           <label className="flex items-center gap-2 text-sm text-gray-700">
@@ -150,7 +166,7 @@ export default function ConvertAllocationToPoModal({
               checked={useSuggestedQty}
               onChange={(e) => setUseSuggestedQty(e.target.checked)}
             />
-            Use Suggested Purchase Quantity (default)
+            Use Purchase Shortfall as suggested qty (default)
           </label>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -161,7 +177,7 @@ export default function ConvertAllocationToPoModal({
               className="min-w-[280px] flex-1"
             />
             <button type="button" className="rounded-lg border px-3 py-1.5 text-xs" onClick={() => toggleAll(true)}>
-              Select All
+              Select All Eligible
             </button>
             <button type="button" className="rounded-lg border px-3 py-1.5 text-xs" onClick={() => toggleAll(false)}>
               Clear All
@@ -169,7 +185,7 @@ export default function ConvertAllocationToPoModal({
           </div>
 
           <div className="overflow-x-auto rounded-xl border">
-            <table className="min-w-[1400px] w-full text-xs">
+            <table className="min-w-[1500px] w-full text-xs">
               <thead className="bg-gray-50 text-left">
                 <tr>
                   <th className="px-2 py-2">Select</th>
@@ -177,13 +193,13 @@ export default function ConvertAllocationToPoModal({
                   <th className="px-2 py-2">Description</th>
                   <th className="px-2 py-2">SPN / Part</th>
                   <th className="px-2 py-2 text-right">Ordered Qty</th>
-                  <th className="px-2 py-2 text-right">Available Stock</th>
-                  <th className="px-2 py-2 text-right">Allocated Stock</th>
-                  <th className="px-2 py-2 text-right">Suggested Purchase Qty</th>
+                  <th className="px-2 py-2 text-right">Reserved Here</th>
+                  <th className="px-2 py-2 text-right">Free Stock</th>
+                  <th className="px-2 py-2 text-right">Purchase Shortfall</th>
                   <th className="px-2 py-2 text-right">Already Converted</th>
-                  <th className="px-2 py-2 text-right">Remaining Convertible</th>
+                  <th className="px-2 py-2 text-right">PO Qty Not Converted</th>
                   <th className="px-2 py-2 text-right">Requested PO Qty</th>
-                  <th className="px-2 py-2">Status</th>
+                  <th className="px-2 py-2">Procurement</th>
                 </tr>
               </thead>
               <tbody>
@@ -198,7 +214,9 @@ export default function ConvertAllocationToPoModal({
                     const id = String(line.allocationLineId);
                     const checked = !!selected[id];
                     const disabled = !line.eligible;
-                    const remaining = Number(line.remainingConvertibleQty) || 0;
+                    const remaining = qty(line.remainingConvertibleQty);
+                    const shortfall = qty(line.purchaseShortfallQty ?? line.suggestedPurchaseQty);
+                    const maxReq = Math.min(remaining, shortfall > 0 ? shortfall : remaining);
                     return (
                       <tr key={id} className="border-t">
                         <td className="px-2 py-2">
@@ -214,19 +232,23 @@ export default function ConvertAllocationToPoModal({
                         <td className="px-2 py-2 font-mono">{line.article}</td>
                         <td className="px-2 py-2">{line.description || "—"}</td>
                         <td className="px-2 py-2">{line.partNumber || "—"}</td>
-                        <td className="px-2 py-2 text-right tabular-nums">{line.orderedQty}</td>
-                        <td className="px-2 py-2 text-right tabular-nums">{line.availableStockQty}</td>
-                        <td className="px-2 py-2 text-right tabular-nums">{line.allocatedStockQty}</td>
-                        <td className="px-2 py-2 text-right tabular-nums text-gray-600">
-                          {line.suggestedPurchaseQty}
+                        <td className="px-2 py-2 text-right tabular-nums">{qty(line.orderedQty)}</td>
+                        <td className="px-2 py-2 text-right tabular-nums">
+                          {qty(line.reservedForThisAllocation)}
                         </td>
-                        <td className="px-2 py-2 text-right tabular-nums">{line.alreadyConvertedToPoQty}</td>
-                        <td className="px-2 py-2 text-right tabular-nums font-medium">{remaining}</td>
+                        <td className="px-2 py-2 text-right tabular-nums">
+                          {qty(line.freeAvailableQty ?? line.availableStockQty)}
+                        </td>
+                        <td className="px-2 py-2 text-right tabular-nums font-medium">{shortfall}</td>
+                        <td className="px-2 py-2 text-right tabular-nums">
+                          {qty(line.alreadyConvertedToPoQty)}
+                        </td>
+                        <td className="px-2 py-2 text-right tabular-nums">{remaining}</td>
                         <td className="px-2 py-2 text-right">
                           <input
                             type="number"
                             min={checked && !disabled ? 1 : 0}
-                            max={remaining}
+                            max={maxReq}
                             step="0.0001"
                             disabled={!checked || disabled || useSuggestedQty}
                             className="w-24 rounded border px-2 py-1 text-right disabled:bg-gray-100"
@@ -241,9 +263,13 @@ export default function ConvertAllocationToPoModal({
                         </td>
                         <td className="px-2 py-2">
                           <span
-                            className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${poConversionStatusClass(line.conversionStatus)}`}
+                            className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${
+                              line.procurementStatus
+                                ? allocationProcurementStatusClass(line.procurementStatus)
+                                : poConversionStatusClass(line.conversionStatus)
+                            }`}
                           >
-                            {line.conversionStatus}
+                            {formatStatusLabel(line.procurementStatus || line.conversionStatus)}
                           </span>
                         </td>
                       </tr>

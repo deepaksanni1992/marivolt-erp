@@ -33,7 +33,42 @@ export function poConversionStatusClass(status) {
     NOT_CONVERTED: "bg-amber-50 text-amber-900 ring-amber-200",
     PARTIALLY_CONVERTED: "bg-sky-50 text-sky-900 ring-sky-200",
     FULLY_CONVERTED: "bg-emerald-50 text-emerald-900 ring-emerald-200",
+    PO_CREATED: "bg-emerald-50 text-emerald-900 ring-emerald-200",
+    PARTIALLY_RECEIVED: "bg-sky-50 text-sky-900 ring-sky-200",
+    RECEIVED: "bg-emerald-50 text-emerald-900 ring-emerald-200",
     PO_CANCELLED: "bg-rose-50 text-rose-900 ring-rose-200",
   };
   return map[s] || map.NOT_CONVERTED;
+}
+
+export function allocationStockStatusClass(status) {
+  const s = String(status || "").toUpperCase();
+  const map = {
+    FULLY_RESERVED: "bg-emerald-50 text-emerald-900 ring-emerald-200",
+    AVAILABLE: "bg-emerald-50 text-emerald-900 ring-emerald-200",
+    PARTIALLY_RESERVED: "bg-amber-50 text-amber-900 ring-amber-200",
+    PURCHASE_REQUIRED: "bg-rose-50 text-rose-900 ring-rose-200",
+    PACKED: "bg-sky-50 text-sky-900 ring-sky-200",
+    COMPLETED: "bg-zinc-100 text-zinc-800 ring-zinc-200",
+  };
+  return map[s] || "bg-zinc-50 text-zinc-700 ring-zinc-200";
+}
+
+export function allocationProcurementStatusClass(status) {
+  const s = String(status || "").toUpperCase();
+  const map = {
+    NOT_REQUIRED: "bg-slate-100 text-slate-700 ring-slate-200",
+    NOT_CONVERTED: "bg-amber-50 text-amber-900 ring-amber-200",
+    PARTIALLY_CONVERTED: "bg-sky-50 text-sky-900 ring-sky-200",
+    PO_CREATED: "bg-emerald-50 text-emerald-900 ring-emerald-200",
+    PARTIALLY_RECEIVED: "bg-sky-50 text-sky-900 ring-sky-200",
+    RECEIVED: "bg-emerald-50 text-emerald-900 ring-emerald-200",
+  };
+  return map[s] || map.NOT_CONVERTED;
+}
+
+export function formatStatusLabel(status) {
+  return String(status || "—")
+    .replace(/_/g, " ")
+    .trim();
 }

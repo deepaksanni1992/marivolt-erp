@@ -3,12 +3,23 @@ import {
   listLinkedPurchaseOrdersForAllocation,
   validatePurchaseOrderAllocationLinks,
 } from "../services/orderAllocationPoConversionService.js";
+import { getAllocationStockPosition } from "../services/allocationStockPositionService.js";
 import { writeAudit } from "../services/auditService.js";
 
 export async function getOrderAllocationPoEligibility(req, res) {
   try {
     const { id } = req.params;
     const data = await buildOrderAllocationPoEligibility(req.companyId, id);
+    res.json(data);
+  } catch (err) {
+    res.status(err.message?.includes("not found") ? 404 : 400).json({ message: err.message });
+  }
+}
+
+export async function getOrderAllocationStockPosition(req, res) {
+  try {
+    const { id } = req.params;
+    const data = await getAllocationStockPosition(req.companyId, id);
     res.json(data);
   } catch (err) {
     res.status(err.message?.includes("not found") ? 404 : 400).json({ message: err.message });

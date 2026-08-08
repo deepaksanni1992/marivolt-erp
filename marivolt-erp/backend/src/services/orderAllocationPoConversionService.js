@@ -185,10 +185,18 @@ export async function buildOrderAllocationPoEligibility(companyId, allocationId)
   const cancelled = String(allocation.status || "").toUpperCase() === "CANCELLED";
   const wh = String(allocation.warehouse || "MAIN").toUpperCase();
 
-  const [{ byLineId: activeByLine }, cancelledByLine] = await Promise.all([
+  // Dynamic import avoids circular load with allocationStockPositionService.
+  const { getAllocationStockPosition } = await import("./allocationStockPositionService.js");
+
+  const [{ byLineId: activeByLine }, cancelledByLine, stockPosition] = await Promise.all([
     sumActivePoQtyByAllocationLine(companyId, allocation._id),
     sumCancelledPoQtyByAllocationLine(companyId, allocation._id),
+    getAllocationStockPosition(companyId, allocationId).catch(() => null),
   ]);
+
+  const positionByLineId = new Map(
+    (stockPosition?.lines || []).map((l) => [String(l.allocationLineId), l])
+  );
 
   const lines = [];
   for (const line of allocation.lines || []) {
@@ -199,28 +207,47 @@ export async function buildOrderAllocationPoEligibility(companyId, allocationId)
     const activeConvertedQty = activeEntry.activeConvertedQty;
     const alreadyConvertedToPoQty = activeConvertedQty;
     const remainingConvertibleQty = computeRemainingConvertibleQty(orderedQty, activeConvertedQty);
+    const pos = positionByLineId.get(lineId);
 
     let stock = { availableQty: 0, onHandQty: 0, reservedQty: 0 };
-    try {
-      stock = await stockService.getStockBalance({
-        companyId,
-        article: line.article,
-        warehouse: wh,
-      });
-    } catch {
-      /* optional */
+    if (!pos) {
+      try {
+        stock = await stockService.getStockBalance({
+          companyId,
+          article: line.article,
+          warehouse: wh,
+        });
+      } catch {
+        /* optional */
+      }
     }
 
-    const availableStockQty = deriveAvailableQty({
-      onHandQty: stock.onHandQty,
-      reservedQty: stock.reservedQty,
-      allocatedQty: stock.allocatedQty,
-      packedQty: stock.packedQty,
-    });
-    const allocatedStockQty = computeAllocatedStockQty(orderedQty, stock);
-    const suggestedPurchaseQty = computeSuggestedPurchaseQty(orderedQty, allocatedStockQty);
+    const availableStockQty = pos
+      ? Number(pos.canonicalFreeAvailableQty ?? pos.freeAvailableQty) || 0
+      : deriveAvailableQty({
+          onHandQty: stock.onHandQty,
+          reservedQty: stock.reservedQty,
+          allocatedQty: stock.allocatedQty,
+          packedQty: stock.packedQty,
+        });
+
+    const allocatedStockQty = pos
+      ? Number(pos.currentAllocationCoverageQty) || 0
+      : computeAllocatedStockQty(orderedQty, stock);
+
+    // Suggested purchase = demand shortfall (not ordered − onHand, not PO-remaining).
+    const suggestedPurchaseQty = pos
+      ? Math.max(0, Number(pos.purchaseShortfallQty) || 0)
+      : computeSuggestedPurchaseQty(orderedQty, allocatedStockQty);
+
     const conversionStatus = derivePoConversionStatus(orderedQty, activeConvertedQty);
     const purchaseIntelligence = await fetchPurchaseIntelligenceForArticle(companyId, line.article);
+
+    const purchaseShortfallQty = suggestedPurchaseQty;
+    const defaultRequestedQty =
+      purchaseShortfallQty > 0
+        ? Math.min(purchaseShortfallQty, remainingConvertibleQty || purchaseShortfallQty)
+        : 0;
 
     lines.push({
       allocationLineId: line._id,
@@ -234,20 +261,38 @@ export async function buildOrderAllocationPoEligibility(companyId, allocationId)
       availableStockQty,
       allocatedStockQty,
       suggestedPurchaseQty,
+      purchaseShortfallQty,
+      physicalQty: pos?.physicalQty ?? (Number(stock.onHandQty) || 0),
+      reservedForThisAllocation: pos?.reservedForThisAllocation ?? 0,
+      reservedForOtherAllocations: pos?.reservedForOtherAllocations ?? 0,
+      packedForThisAllocation: pos?.packedForThisAllocation ?? (Number(line.packedQty) || 0),
+      freeAvailableQty: pos?.freeAvailableQty ?? availableStockQty,
+      currentAllocationCoverageQty: pos?.currentAllocationCoverageQty ?? allocatedStockQty,
+      incomingPoCoverageQty: pos?.incomingPoCoverageQty ?? 0,
+      stockStatus: pos?.stockStatus || null,
+      procurementStatus: pos?.procurementStatus || null,
+      poQtyNotConverted: pos?.poQtyNotConverted ?? remainingConvertibleQty,
+      reservationBreakdown: pos?.reservationBreakdown || [],
       alreadyConvertedToPoQty,
       activeConvertedQty,
       cancelledConvertedQty: cancelledEntry.cancelledConvertedQty,
       remainingConvertibleQty,
-      /** @deprecated use remainingConvertibleQty */
+      /** Explicit rename of legacy "Remaining" (PO qty not converted). */
+      poQtyNotConvertedLabel: "PO Qty Not Converted",
+      /** @deprecated use remainingConvertibleQty / poQtyNotConverted */
       remainingEligibleQty: remainingConvertibleQty,
-      defaultRequestedQty: suggestedPurchaseQty > 0 ? suggestedPurchaseQty : remainingConvertibleQty,
+      defaultRequestedQty,
       conversionStatus,
       linkedPoNumbers: activeEntry.poNumbers,
       cancelledPoNumbers: cancelledEntry.poNumbers,
       remarks: line.remarks || "",
       existingSupplier: purchaseIntelligence.lastSupplier || purchaseIntelligence.preferredSupplier || "",
       purchaseIntelligence,
-      eligible: !cancelled && orderedQty > 0 && remainingConvertibleQty > 0,
+      eligible:
+        !cancelled &&
+        orderedQty > 0 &&
+        purchaseShortfallQty > 0 &&
+        remainingConvertibleQty > 0,
     });
   }
 
@@ -277,7 +322,8 @@ export async function buildOrderAllocationPoEligibility(companyId, allocationId)
     },
     lines,
     eligibleLineCount,
-    canConvertToPo: !cancelled && lines.some((l) => l.orderedQty > 0 && l.remainingConvertibleQty > 0),
+    canConvertToPo: !cancelled && lines.some((l) => l.eligible),
+    stockPosition: stockPosition || null,
   };
 }
 
@@ -395,6 +441,10 @@ export async function validatePurchaseOrderAllocationLinks({
     const eligible = eligibleByLineId.get(sourceLineId);
     const orderedQty = Number(allocLine.qty) || 0;
     let remaining = eligible?.remainingConvertibleQty ?? computeRemainingConvertibleQty(orderedQty, 0);
+    let purchaseCap =
+      eligible?.purchaseShortfallQty != null
+        ? Math.max(0, Number(eligible.purchaseShortfallQty) || 0)
+        : remaining;
 
     if (excludePoId) {
       const existingPo = await PurchaseOrder.findOne({ companyId, _id: excludePoId }).lean();
@@ -403,14 +453,17 @@ export async function validatePurchaseOrderAllocationLinks({
           (l) => String(l.sourceOrderAllocationLineId) === sourceLineId
         );
         if (prev) {
-          remaining += Number(prev.sourceConvertedQty ?? prev.qty) || 0;
+          const prevQty = Number(prev.sourceConvertedQty ?? prev.qty) || 0;
+          remaining += prevQty;
+          purchaseCap += prevQty;
         }
       }
     }
 
-    if (convertedQty > remaining + 1e-6) {
+    const maxAllowed = Math.min(remaining, purchaseCap);
+    if (convertedQty > maxAllowed + 1e-6) {
       errors.push(
-        `Requested quantity (${convertedQty}) for article ${allocLine.article} exceeds remaining convertible quantity (${remaining}).`
+        `Requested quantity (${convertedQty}) for article ${allocLine.article} exceeds purchase shortfall / convertible quantity (${maxAllowed}).`
       );
       continue;
     }
