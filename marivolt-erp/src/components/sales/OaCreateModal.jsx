@@ -35,9 +35,11 @@ export function emptyOaWorkingLine() {
 
 export function defaultOaForm() {
   return {
-    oaSourceType: "BLANK",
+    oaSourceType: "FROM_QUOTATION",
     sourceQuotationId: "",
     sourceQuotationNo: "",
+    customerId: "",
+    paymentType: "",
     oaNo: "",
     oaDate: new Date().toISOString().slice(0, 10),
     customerName: "",
@@ -94,9 +96,11 @@ function computeWorkingGrandTotal(form) {
 
 function buildOaCreatePayload(form, { allowOverOrder = false, allowStaleConsumption = false } = {}) {
   return {
-    oaSourceType: form.oaSourceType || "BLANK",
+    oaSourceType: "FROM_QUOTATION",
     linkedQuotationId: form.sourceQuotationId || undefined,
     linkedQuotationNo: form.sourceQuotationNo || undefined,
+    customerId: form.customerId || undefined,
+    paymentType: form.paymentType || undefined,
     _sourceMetadata: form._sourceMetadata,
     sourceMetadata: form._sourceMetadata,
     consumptionBaseline: form.consumptionBaseline,
@@ -178,6 +182,7 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
   const [staleConsumptionConfirm, setStaleConsumptionConfirm] = useState(null);
   const [selectingQuotation, setSelectingQuotation] = useState(false);
   const [refreshingConsumption, setRefreshingConsumption] = useState(false);
+  const [quotationSourceLocked, setQuotationSourceLocked] = useState(false);
   const csvInputRef = useRef(null);
   const linesRef = useRef(form.lines);
   const mountedRef = useRef(true);
@@ -196,12 +201,15 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
   useEffect(() => {
     if (!open) return;
     if (initialForm) {
+      setQuotationSourceLocked(Boolean(initialForm.sourceQuotationId || initialForm.linkedQuotationId));
       setForm({
         ...defaultOaForm(),
         ...initialForm,
+        oaSourceType: "FROM_QUOTATION",
         lines: initialForm.lines?.length ? initialForm.lines : [emptyOaWorkingLine()],
       });
     } else {
+      setQuotationSourceLocked(false);
       setForm(defaultOaForm());
     }
     setSearch(defaultSearch());
@@ -212,7 +220,8 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
     setStaleConsumptionConfirm(null);
   }, [open, initialForm]);
 
-  const fromQuotation = form.oaSourceType === "FROM_QUOTATION";
+  const fromQuotation = true;
+  const sourceLocked = quotationSourceLocked || Boolean(form.sourceQuotationId);
   const overOrderViolations = useMemo(
     () => (fromQuotation ? findClientOverOrderViolations(form.lines) : []),
     [fromQuotation, form.lines]
@@ -363,25 +372,35 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
     <>
       <Modal open={open} onClose={onClose} title="New Order Acknowledgement" wide>
         <div className="mb-3 rounded-lg bg-sky-50 px-3 py-2 text-xs text-sky-900 ring-1 ring-sky-200">
-          This OA is created as a new transaction snapshot. The original quotation will not be changed.
+          This OA is created as a new transaction snapshot from a Quotation. Blank OA creation is not allowed.
         </div>
 
-        <FormField label="Source Type">
+        <FormField label="Source">
+          <div className="rounded-xl border bg-gray-50 px-3 py-2 text-sm text-gray-800">
+            {sourceLocked
+              ? `From Quotation ${form.sourceQuotationNo || form.sourceQuotationId}`
+              : "From Quotation — select a quotation below"}
+          </div>
+        </FormField>
+
+        <FormField label="Workflow payment type">
           <select
             className="w-full rounded-xl border px-3 py-2 text-sm"
-            value={form.oaSourceType}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v === "BLANK") {
-                setForm(defaultOaForm());
-              } else {
-                setForm((f) => ({ ...f, oaSourceType: "FROM_QUOTATION" }));
-              }
-            }}
+            value={form.paymentType === "ADVANCE" || form.paymentType === "CREDIT" ? form.paymentType : ""}
+            onChange={(e) =>
+              setForm((f) => ({
+                ...f,
+                paymentType: e.target.value === "ADVANCE" || e.target.value === "CREDIT" ? e.target.value : "",
+              }))
+            }
           >
-            <option value="BLANK">Blank OA</option>
-            <option value="FROM_QUOTATION">From Quotation</option>
+            <option value="">Resolve from customer / select…</option>
+            <option value="ADVANCE">ADVANCE</option>
+            <option value="CREDIT">CREDIT</option>
           </select>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Controls PI vs Allocation branching. Snapshotted onto the OA (not commercial payment terms text).
+          </p>
         </FormField>
 
         {fromQuotation && !form.sourceQuotationId ? (
@@ -519,16 +538,19 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
                 </button>
                 <button
                   type="button"
-                  className="ml-3 text-xs underline"
-                  onClick={() =>
+                  className="ml-3 text-xs underline disabled:opacity-40"
+                  disabled={quotationSourceLocked}
+                  title={quotationSourceLocked ? "Source quotation is locked for this conversion" : "Change quotation"}
+                  onClick={() => {
+                    if (quotationSourceLocked) return;
                     setForm((f) => ({
                       ...f,
                       sourceQuotationId: "",
                       sourceQuotationNo: "",
                       consumptionBaseline: null,
                       lines: [emptyOaWorkingLine()],
-                    }))
-                  }
+                    }));
+                  }}
                 >
                   Change quotation
                 </button>
@@ -551,6 +573,7 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
           <FormField label="Linked Quotation No">
             <TextInput
               value={form.sourceQuotationNo || ""}
+              disabled={quotationSourceLocked}
               onChange={(e) => setForm((f) => ({ ...f, sourceQuotationNo: e.target.value }))}
             />
           </FormField>

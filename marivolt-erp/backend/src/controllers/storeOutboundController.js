@@ -19,6 +19,7 @@ import {
 import {
   buildAllocationDocumentReferences,
   resolveCustomerReferenceFromLineage,
+  resolveLinkedOaIdFromAllocationLineage,
 } from "../utils/allocationDocumentReferences.js";
 import {
   PACKING_CSV_HEADER,
@@ -100,10 +101,9 @@ function t(v) {
 }
 
 async function loadAllocationLineageDocs(req, allocation) {
-  const [oa, pi, quotation] = await Promise.all([
-    allocation?.linkedOAId
-      ? OrderAcknowledgement.findOne(withCompany(req, { _id: allocation.linkedOAId })).lean()
-      : null,
+  // Load PI first so historical allocations that omitted linkedOAId can still
+  // resolve OA via the persisted Proforma → OA relationship.
+  const [pi, quotation] = await Promise.all([
     allocation?.linkedProformaId
       ? ProformaInvoice.findOne(withCompany(req, { _id: allocation.linkedProformaId })).lean()
       : null,
@@ -111,6 +111,10 @@ async function loadAllocationLineageDocs(req, allocation) {
       ? Quotation.findOne(withCompany(req, { _id: allocation.linkedQuotationId })).lean()
       : null,
   ]);
+  const oaId = resolveLinkedOaIdFromAllocationLineage({ allocation, pi });
+  const oa = oaId
+    ? await OrderAcknowledgement.findOne(withCompany(req, { _id: oaId })).lean()
+    : null;
   return { oa, pi, quotation };
 }
 

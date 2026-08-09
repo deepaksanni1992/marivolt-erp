@@ -507,6 +507,9 @@ function orderAcknowledgementCanCreateAdditionalProforma(oa) {
 function orderAcknowledgementPiConvertTitle(oa) {
   if (!oa) return "";
   if (String(oa.status || "").toUpperCase() === "CANCELLED") return "Cancelled OA cannot be converted";
+  if (oaWorkflowPaymentType(oa) === "CREDIT") {
+    return "CREDIT OA uses Order Allocation (not Proforma)";
+  }
   if (orderAcknowledgementCanCreateAdditionalProforma(oa)) {
     const rem = Number(oa.piRemainingEligibleAmount);
     if (Number.isFinite(rem)) {
@@ -515,6 +518,24 @@ function orderAcknowledgementPiConvertTitle(oa) {
     return "Create Proforma Invoice";
   }
   return "PI-eligible amount fully issued for this OA";
+}
+
+/** OA.paymentType ADVANCE|CREDIT — authoritative workflow branch. */
+function oaWorkflowPaymentType(oa) {
+  const raw = String(oa?.paymentTypeResolved || oa?.paymentType || "").trim().toUpperCase();
+  return raw === "ADVANCE" || raw === "CREDIT" ? raw : "";
+}
+
+function oaShowsConvertToPi(oa) {
+  if (!oa) return false;
+  if (typeof oa.canConvertToProforma === "boolean") return oa.canConvertToProforma;
+  return oaWorkflowPaymentType(oa) === "ADVANCE";
+}
+
+function oaShowsConvertToAllocation(oa) {
+  if (!oa) return false;
+  if (typeof oa.canConvertToAllocation === "boolean") return oa.canConvertToAllocation;
+  return oaWorkflowPaymentType(oa) === "CREDIT";
 }
 
 function orderAcknowledgementLocked(oa) {
@@ -802,6 +823,7 @@ function oaDetailToEditableForm(oa) {
     billingAddress: oa.billingAddress || "",
     shippingAddress: oa.shippingAddress || "",
     paymentTerms: oa.paymentTerms || "",
+    paymentType: oa.paymentTypeResolved || oa.paymentType || "CREDIT",
     incoterm: oa.incoterm || "",
     dispatchTerms: oa.dispatchTerms || "",
     currency: String(oa.currency || "USD").toUpperCase(),
@@ -3136,6 +3158,16 @@ ${GLOBAL_REPORT_TABLE_CSS}
     onError: (e) => setErr(e.message),
   });
 
+  const convertToCiplFromSalesInvoiceMutation = useMutation({
+    mutationFn: (id) => apiPost(`/sales/convert/sales-invoice/${id}/to-cipl`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sales-cipl"] });
+      qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["sales-invoice-detail", detailId] });
+      setErr("");
+    },
+    onError: (e) => setErr(e.message),
+  });
   const convertToSalesDispatchFromSalesInvoiceMutation = useMutation({
     mutationFn: (id) => apiPost(`/sales/convert/sales-invoice/${id}/to-sales-dispatch`, {}),
     onSuccess: (dispatch) => {
@@ -3469,8 +3501,17 @@ ${GLOBAL_REPORT_TABLE_CSS}
             type="button"
             disabled={
               activeTab === "Order Allocation" ||
+              activeTab === "Order Acknowledgement" ||
+              activeTab === "Proforma Invoice" ||
               activeTab === "Reports" ||
               activeTab === "Dispatch Status"
+            }
+            title={
+              activeTab === "Order Acknowledgement"
+                ? "Create OA from an approved Quotation"
+                : activeTab === "Proforma Invoice"
+                ? "Create Proforma from an ADVANCE Order Acknowledgement"
+                : undefined
             }
             onClick={async () => {
               setErr("");
@@ -3479,11 +3520,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 setIsQuotationNoEdited(false);
                 setCreateOpen(true);
               }
-              else if (activeTab === "Order Acknowledgement") {
-                setOaInitialForm(null);
-                setOaCreateOpen(true);
-              }
-              else if (activeTab === "Proforma Invoice") setProformaCreateOpen(true);
               else if (activeTab === "Sales Invoice") openPackingInvoiceModal();
               else if (activeTab === "Sales Return") setSrCreateOpen(true);
             }}
@@ -3494,9 +3530,9 @@ ${GLOBAL_REPORT_TABLE_CSS}
               : activeTab === "Quotation"
               ? "New quotation"
               : activeTab === "Order Acknowledgement"
-              ? "New OA"
+              ? "OA from Quotation"
               : activeTab === "Proforma Invoice"
-              ? "New proforma"
+              ? "PI from ADVANCE OA"
               : activeTab === "Sales Invoice"
               ? "Create from Packing"
               : activeTab === "Dispatch Status"
@@ -4845,6 +4881,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                             <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("oa", r._id, true)}>
                               Export PDF
                             </button>
+                            {oaShowsConvertToPi(r) ? (
                             <button
                               type="button"
                               className={`rounded-lg border px-2 py-1 text-xs ${!canCreatePi || isCancelled ? "opacity-40" : ""}`}
@@ -4854,24 +4891,18 @@ ${GLOBAL_REPORT_TABLE_CSS}
                             >
                               Convert to PI
                             </button>
+                            ) : null}
+                            {oaShowsConvertToAllocation(r) ? (
                             <button
                               type="button"
                               className={`rounded-lg border px-2 py-1 text-xs ${isCancelled ? "opacity-40" : ""}`}
                               disabled={isCancelled}
-                              title={isCancelled ? "Cancelled OA cannot be converted" : ""}
-                              onClick={() => convertToCiplFromOAMutation.mutate(r._id)}
-                            >
-                              Convert to CIPL
-                            </button>
-                            <button
-                              type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${isCancelled ? "opacity-40" : ""}`}
-                              disabled={isCancelled}
-                              title={isCancelled ? "Cancelled OA cannot be converted" : ""}
+                              title={isCancelled ? "Cancelled OA cannot be converted" : "Create Order Allocation"}
                               onClick={() => convertToOrderAllocationFromOAMutation.mutate({ id: r._id })}
                             >
                               Convert to Order Allocation
                             </button>
+                            ) : null}
                           </div>
                         </td>
                       </tr>
@@ -5075,15 +5106,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                             >
                               Cancel PI
                             </button>
-                            <button
-                              type="button"
-                              className={`rounded-lg border px-2 py-1 text-xs ${piApproved || isCancelled ? "opacity-40" : ""}`}
-                              disabled={piApproved || isCancelled}
-                              title={isCancelled ? "Cancelled proforma cannot be converted" : piApproved ? "Already converted from this PI" : ""}
-                              onClick={() => convertProformaToCiplMutation.mutate(r._id)}
-                            >
-                              Convert to CIPL
-                            </button>
                             {(() => {
                               const piStatus = String(r.status || "").toUpperCase();
                               const allocReady =
@@ -5179,13 +5201,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     </tr>
                   ) : (
                     allocationRows.map((r) => {
-                      const readyPacking = readyPackingInvoiceRows.find(
-                        (p) => String(p.allocationId) === String(r._id),
-                      );
-                      const canCreateInvoiceFromPacking =
-                        String(r.packingStatus || "").toUpperCase() === "FULLY_PACKED" &&
-                        String(r.invoiceStatus || "NOT_INVOICED").toUpperCase() !== "FULLY_INVOICED" &&
-                        !!readyPacking;
                       return (
                       <tr key={r._id} className="border-b border-gray-100 hover:bg-gray-50/80">
                         <td className="px-3 py-2 font-mono text-xs">{r.allocationNo}</td>
@@ -5292,15 +5307,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                             >
                               Export CSV
                             </button>
-                            {canCreateInvoiceFromPacking ? (
-                              <button
-                                type="button"
-                                className="rounded-lg border px-2 py-1 text-xs"
-                                onClick={() => openPackingInvoiceModal(readyPacking._id)}
-                              >
-                                Create Invoice
-                              </button>
-                            ) : null}
                           </div>
                         </td>
                       </tr>
@@ -5542,6 +5548,18 @@ ${GLOBAL_REPORT_TABLE_CSS}
                               onClick={() => convertToSalesDispatchFromSalesInvoiceMutation.mutate(r._id)}
                             >
                               Convert to Sales Dispatch
+                            </button>
+                            <button
+                              type="button"
+                              className={`rounded-lg border px-2 py-1 text-xs ${String(r.documentStatus || r.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                              disabled={
+                                String(r.documentStatus || r.status || "").toUpperCase() === "CANCELLED" ||
+                                convertToCiplFromSalesInvoiceMutation.isPending
+                              }
+                              title="Create CIPL from this Sales Invoice"
+                              onClick={() => convertToCiplFromSalesInvoiceMutation.mutate(r._id)}
+                            >
+                              Convert to CIPL
                             </button>
                             <button
                               type="button"
@@ -6365,12 +6383,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <button type="button" className="rounded-xl border px-2 py-1 text-xs opacity-40" disabled title="Approve the quotation first">
                 Convert to OA
               </button>
-              <button type="button" className="rounded-xl border px-2 py-1 text-xs opacity-40" disabled title="Approve the quotation first">
-                Convert to PI
-              </button>
-              <button type="button" className="rounded-xl border px-2 py-1 text-xs opacity-40" disabled title="Approve the quotation first">
-                Convert to CIPL
-              </button>
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -6601,33 +6613,33 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   {deleteQuotationMutation.isPending ? "Deleting…" : "Delete quotation"}
                 </button>
               ) : null}
-              <button
-                type="button"
-                className={`rounded-xl border px-2 py-1 text-xs ${detail.status !== "APPROVED" ? "opacity-40" : ""}`}
-                disabled={detail.status !== "APPROVED" || convertToOAMutation.isPending}
-                title={detail.status !== "APPROVED" ? "Quotation must be APPROVED" : "Open New OA form from this quotation (snapshot)"}
-                onClick={() => convertToOAMutation.mutate(detail._id)}
-              >
-                Convert to OA
-              </button>
-              <button
-                type="button"
-                className={`rounded-xl border px-2 py-1 text-xs ${detail.status !== "APPROVED" ? "opacity-40" : ""}`}
-                disabled={detail.status !== "APPROVED" || convertToProformaFromQuotationMutation.isPending}
-                title={detail.status !== "APPROVED" ? "Quotation must be APPROVED" : ""}
-                onClick={() => convertToProformaFromQuotationMutation.mutate(detail._id)}
-              >
-                Convert to PI
-              </button>
-              <button
-                type="button"
-                className={`rounded-xl border px-2 py-1 text-xs ${detail.status !== "APPROVED" ? "opacity-40" : ""}`}
-                disabled={detail.status !== "APPROVED" || convertToCiplFromQuotationMutation.isPending}
-                title={detail.status !== "APPROVED" ? "Quotation must be APPROVED" : ""}
-                onClick={() => convertToCiplFromQuotationMutation.mutate(detail._id)}
-              >
-                Convert to CIPL
-              </button>
+              {detail.hasActiveOA || detail.linkedOAId ? (
+                <button
+                  type="button"
+                  className="rounded-xl border px-2 py-1 text-xs"
+                  title={detail.linkedOANo ? `Open ${detail.linkedOANo}` : "Open Order Acknowledgement"}
+                  onClick={() => {
+                    setActiveTab("Order Acknowledgement");
+                    setDetailId(String(detail.linkedOAId));
+                  }}
+                >
+                  Open OA{detail.linkedOANo ? ` (${detail.linkedOANo})` : ""}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className={`rounded-xl border px-2 py-1 text-xs ${detail.status !== "APPROVED" ? "opacity-40" : ""}`}
+                  disabled={detail.status !== "APPROVED" || convertToOAMutation.isPending}
+                  title={
+                    detail.status !== "APPROVED"
+                      ? "Quotation must be APPROVED"
+                      : "Create Order Acknowledgement from this quotation"
+                  }
+                  onClick={() => convertToOAMutation.mutate(detail._id)}
+                >
+                  Convert to OA
+                </button>
+              )}
             </div>
           </div>
         ) : tabContent === "quotation" ? (
@@ -6697,6 +6709,27 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 </FormField>
                 <FormField label="Incoterm">
                   <TextInput value={detailOADraftForm.incoterm || ""} onChange={(e) => setDetailOADraftForm((f) => ({ ...f, incoterm: e.target.value }))} />
+                </FormField>
+                <FormField label="Workflow payment type">
+                  <select
+                    className="w-full rounded-xl border px-3 py-2 text-sm disabled:bg-slate-50 disabled:opacity-70"
+                    value={detailOADraftForm.paymentType === "ADVANCE" ? "ADVANCE" : "CREDIT"}
+                    disabled={Boolean(oaDetail?.paymentTypeLocked)}
+                    title={
+                      oaDetail?.paymentTypeLocked
+                        ? "Payment type is locked after Proforma or Allocation"
+                        : "ADVANCE → Proforma; CREDIT → Allocation"
+                    }
+                    onChange={(e) =>
+                      setDetailOADraftForm((f) => ({
+                        ...f,
+                        paymentType: e.target.value === "ADVANCE" ? "ADVANCE" : "CREDIT",
+                      }))
+                    }
+                  >
+                    <option value="CREDIT">CREDIT (Allocation)</option>
+                    <option value="ADVANCE">ADVANCE (Proforma)</option>
+                  </select>
                 </FormField>
                 <FormField label="Delivery / schedule">
                   <TextInput
@@ -7021,8 +7054,11 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   const canCreatePi = orderAcknowledgementCanCreateAdditionalProforma(oaDetail);
                   const isCancelled = String(oaDetail.status || "").toUpperCase() === "CANCELLED";
                   const canCancelOa = orderAcknowledgementCanCancel(oaDetail);
+                  const showPi = oaShowsConvertToPi(oaDetail);
+                  const showAlloc = oaShowsConvertToAllocation(oaDetail);
                   return (
                     <>
+                      {showPi ? (
                       <button
                         type="button"
                         className={`rounded-xl border px-2 py-1 text-xs ${!canCreatePi || isCancelled ? "opacity-40" : ""}`}
@@ -7032,6 +7068,18 @@ ${GLOBAL_REPORT_TABLE_CSS}
                       >
                         Convert to PI
                       </button>
+                      ) : null}
+                      {showAlloc ? (
+                      <button
+                        type="button"
+                        className={`rounded-xl border px-2 py-1 text-xs ${isCancelled ? "opacity-40" : ""}`}
+                        disabled={isCancelled || convertToOrderAllocationFromOAMutation.isPending}
+                        title={isCancelled ? "Cancelled OA cannot be converted" : "Create Order Allocation"}
+                        onClick={() => convertToOrderAllocationFromOAMutation.mutate({ id: oaDetail._id })}
+                      >
+                        Convert to Order Allocation
+                      </button>
+                      ) : null}
                       <button
                         type="button"
                         className={`rounded-xl border border-amber-300 px-2 py-1 text-xs text-amber-900 ${!canCancelOa ? "opacity-40" : "hover:bg-amber-50"}`}
@@ -7044,24 +7092,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     </>
                   );
                 })()}
-                <button
-                  type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
-                  disabled={String(oaDetail.status || "").toUpperCase() === "CANCELLED"}
-                  title={String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "Cancelled OA cannot be converted" : ""}
-                  onClick={() => convertToCiplFromOAMutation.mutate(oaDetail._id)}
-                >
-                  Convert to CIPL
-                </button>
-                <button
-                  type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
-                  disabled={String(oaDetail.status || "").toUpperCase() === "CANCELLED"}
-                  title={String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "Cancelled OA cannot be converted" : ""}
-                  onClick={() => convertToOrderAllocationFromOAMutation.mutate({ id: oaDetail._id })}
-                >
-                  Convert to Order Allocation
-                </button>
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -7234,6 +7264,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 </button>
               </div>
               <div className="flex flex-wrap gap-2 opacity-70">
+                {oaShowsConvertToPi(oaDetail) ? (
                 <button
                   type="button"
                   className={`rounded-xl border px-2 py-1 text-xs ${!canCreatePi || String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
@@ -7243,14 +7274,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 >
                   Convert to PI
                 </button>
-                <button
-                  type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
-                  disabled={String(oaDetail.status || "").toUpperCase() === "CANCELLED"}
-                  onClick={() => convertToCiplFromOAMutation.mutate(oaDetail._id)}
-                >
-                  Convert to CIPL
-                </button>
+                ) : null}
+                {oaShowsConvertToAllocation(oaDetail) ? (
                 <button
                   type="button"
                   className={`rounded-xl border px-2 py-1 text-xs ${String(oaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
@@ -7259,6 +7284,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 >
                   Convert to Order Allocation
                 </button>
+                ) : null}
                 <button
                   type="button"
                   className={`rounded-xl border border-amber-300 px-2 py-1 text-xs text-amber-900 ${!canCancelOa ? "opacity-40" : "hover:bg-amber-50"}`}
@@ -7644,15 +7670,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 </button>
                 <button
                   type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
-                  disabled={String(proformaDetail.status || "").toUpperCase() === "CANCELLED"}
-                  title={String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "Cancelled proforma cannot be converted" : ""}
-                  onClick={() => convertProformaToCiplMutation.mutate(proformaDetail._id)}
-                >
-                  Convert to CIPL
-                </button>
-                <button
-                  type="button"
                   className={`rounded-xl border px-2 py-1 text-xs ${String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED" || String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
                   disabled={String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED" || String(proformaDetail.status || "").toUpperCase() === "CANCELLED"}
                   title={String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "Cancelled proforma cannot be converted" : String(detailProformaDraftForm.status || "").toUpperCase() !== "APPROVED" ? "Set PI status to APPROVED first" : ""}
@@ -7832,14 +7849,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 </button>
               </div>
               <div className="flex flex-wrap gap-2 opacity-80">
-                <button
-                  type="button"
-                  className={`rounded-xl border px-2 py-1 text-xs ${["APPROVED", "CONVERTED", "CANCELLED"].includes(String(proformaDetail.status || "").toUpperCase()) ? "opacity-40" : ""}`}
-                  disabled={["APPROVED", "CONVERTED", "CANCELLED"].includes(String(proformaDetail.status || "").toUpperCase())}
-                  onClick={() => convertProformaToCiplMutation.mutate(proformaDetail._id)}
-                >
-                  Convert to CIPL
-                </button>
                 <button
                   type="button"
                   className={`rounded-xl border px-2 py-1 text-xs ${String(proformaDetail.status || "").toUpperCase() !== "APPROVED" || String(proformaDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
@@ -8184,6 +8193,18 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   onClick={() => convertToSalesDispatchFromSalesInvoiceMutation.mutate(salesInvoiceDetail._id)}
                 >
                   Convert to Sales Dispatch
+                </button>
+                <button
+                  type="button"
+                  className={`rounded-xl border px-2 py-1 text-xs ${String(salesInvoiceDetail.documentStatus || salesInvoiceDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                  disabled={
+                    String(salesInvoiceDetail.documentStatus || salesInvoiceDetail.status || "").toUpperCase() === "CANCELLED" ||
+                    convertToCiplFromSalesInvoiceMutation.isPending
+                  }
+                  title="Create CIPL from this Sales Invoice"
+                  onClick={() => convertToCiplFromSalesInvoiceMutation.mutate(salesInvoiceDetail._id)}
+                >
+                  Convert to CIPL
                 </button>
               </div>
             </div>

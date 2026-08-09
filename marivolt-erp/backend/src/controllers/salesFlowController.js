@@ -79,6 +79,17 @@ import {
   suggestOaStatusAfterPiIssuance,
 } from "../utils/oaLifecycle.js";
 import {
+  SALES_FLOW_ERRORS,
+  assertAdvanceOaForProforma,
+  assertCreditOaForAllocation,
+  assertPiMayConvertToAllocation,
+  isOaPaymentTypeLocked,
+  normalizeOaPaymentType,
+  oaImmediateNextActions,
+  resolveOaWorkflowPaymentType,
+  statusError,
+} from "../utils/salesFlowSequential.js";
+import {
   ACTIVE_ALLOCATION_ALREADY_EXISTS,
   activeAllocationConflictError,
   activeAllocationStatusFilter,
@@ -1079,8 +1090,17 @@ async function enrichOAsWithCancelEligibility(req, oas = [], { includeProformaHi
         ? await loadOaProformaHistory(req, oa._id, { oaCommercial: oa.grandTotal })
         : undefined;
 
+      const paymentTypeResolved = resolveOaWorkflowPaymentType(oa);
+      const paymentTypeLocked = isOaPaymentTypeLocked(oa) || hasActiveProforma || hasOrderAllocation || hasSalesInvoice;
+      const nextActions = oaImmediateNextActions({ ...oa, paymentType: paymentTypeResolved || oa.paymentType });
+
       return {
         ...oa,
+        paymentType: paymentTypeResolved || oa.paymentType || "",
+        paymentTypeResolved,
+        paymentTypeLocked,
+        canConvertToProforma: nextActions.convertToProforma && st !== "CANCELLED",
+        canConvertToAllocation: nextActions.convertToAllocation && st !== "CANCELLED",
         hasActiveProforma,
         canCancelOA,
         cancelOABlockReason,
@@ -1135,6 +1155,8 @@ function escapeRegex(s) {
 
 /**
  * Advance-payment customers must have a paid/approved proforma on the OA before stock reservation.
+ * @deprecated Prefer OA.paymentType CREDIT|ADVANCE gating via assertCreditOaForAllocation /
+ * convertProformaToOrderAllocation. Kept only for reference; no longer called on OA→ALLOC.
  */
 async function assertOaReadyForStockAllocation(req, oa, session) {
   const name = String(oa.customerName || "").trim();
@@ -1160,6 +1182,35 @@ async function assertOaReadyForStockAllocation(req, oa, session) {
       "Advance payment customer: create a proforma from this OA, mark payment received, then allocate stock."
     );
   }
+}
+
+/**
+ * Resolve OA workflow paymentType for new OA create/convert.
+ * Never silently defaults to CREDIT — unresolved → 422.
+ */
+async function resolveWorkflowPaymentTypeDefault(req, { customerId, customerName, bodyPaymentType } = {}) {
+  const fromBody = normalizeOaPaymentType(bodyPaymentType);
+  if (fromBody) return fromBody;
+  let cust = null;
+  if (customerId && mongoose.Types.ObjectId.isValid(String(customerId))) {
+    cust = await Customer.findOne(withCompany(req, { _id: customerId })).select("paymentTerms").lean();
+  }
+  if (!cust && String(customerName || "").trim()) {
+    cust = await Customer.findOne({
+      companyId: req.companyId,
+      name: new RegExp(`^${escapeRegex(String(customerName).trim())}$`, "i"),
+    })
+      .select("paymentTerms")
+      .lean();
+  }
+  if (!cust) {
+    throw statusError(SALES_FLOW_ERRORS.OA_PAYMENT_TYPE_UNRESOLVED, 422);
+  }
+  const pt = normalizeOaPaymentType(cust.paymentTerms);
+  if (!pt) {
+    throw statusError(SALES_FLOW_ERRORS.OA_PAYMENT_TYPE_UNRESOLVED, 422);
+  }
+  return pt;
 }
 
 const PENDING_QUOTATION_STATUSES = ["DRAFT", "SENT"];
@@ -2249,6 +2300,17 @@ export async function createOA(req, res) {
       return res.status(400).json({ message: "Customer name is required", code: "VALIDATION" });
     }
 
+    const linkedQtnId = body.linkedQuotationId || body.sourceQuotationId;
+    if (!linkedQtnId || !mongoose.Types.ObjectId.isValid(String(linkedQtnId))) {
+      return res.status(422).json({ message: SALES_FLOW_ERRORS.OA_MUST_FROM_QTN });
+    }
+    const quotation = await Quotation.findOne(withCompany(req, { _id: linkedQtnId }))
+      .select("_id quotationNo customerId customerName status")
+      .lean();
+    if (!quotation) {
+      return res.status(422).json({ message: SALES_FLOW_ERRORS.OA_MUST_FROM_QTN });
+    }
+
     const lineErrors = validateOaLineFields(body.lines || [], { fromWorkingCopy });
     if (lineErrors.length) {
       return res.status(400).json({
@@ -2305,24 +2367,29 @@ export async function createOA(req, res) {
       });
     }
     const totals = computeTotals(lines, body);
-    const linkedQtnId = body.linkedQuotationId || body.sourceQuotationId;
     let termsAndConditions = t(body.termsAndConditions);
-    if (!termsAndConditions && linkedQtnId && mongoose.Types.ObjectId.isValid(String(linkedQtnId))) {
+    if (!termsAndConditions) {
       termsAndConditions = await resolveTermsFromQuotation(req, linkedQtnId);
     }
     const sourceMeta = fromWorkingCopy ? buildOaSourceMetadataForPersist(body, req.user) : {};
+    const paymentType = await resolveWorkflowPaymentTypeDefault(req, {
+      customerId: body.customerId || quotation.customerId,
+      customerName: body.customerName || quotation.customerName,
+      bodyPaymentType: body.paymentType,
+    });
     const doc = await OrderAcknowledgement.create({
       companyId: req.companyId,
       oaNo,
       oaDate: body.oaDate ? new Date(body.oaDate) : new Date(),
-      oaSourceType: String(body.oaSourceType || "").toUpperCase() === "FROM_QUOTATION" ? "FROM_QUOTATION" : "BLANK",
-      linkedQuotationId: mongoose.Types.ObjectId.isValid(String(linkedQtnId || ""))
-        ? new mongoose.Types.ObjectId(String(linkedQtnId))
-        : null,
-      linkedQuotationNo: String(body.linkedQuotationNo || body.sourceQuotationNo || sourceMeta.sourceDocumentNumber || "").trim(),
+      oaSourceType: "FROM_QUOTATION",
+      linkedQuotationId: quotation._id,
+      linkedQuotationNo: String(
+        body.linkedQuotationNo || body.sourceQuotationNo || sourceMeta.sourceDocumentNumber || quotation.quotationNo || ""
+      ).trim(),
       ...sourceMeta,
-      customerName: String(body.customerName || "").trim(),
+      customerName: String(body.customerName || quotation.customerName || "").trim(),
       customerPORef: String(body.customerPORef || body.customerReference || "").trim(),
+      paymentType,
       ...pickCustomerTransactionFieldsFromBody({
         contactPerson: body.contactPerson || "",
         attention: body.attention || "",
@@ -2454,6 +2521,18 @@ export async function updateOA(req, res) {
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
+    }
+    if (req.body.paymentType !== undefined) {
+      const nextPt = normalizeOaPaymentType(req.body.paymentType);
+      if (!nextPt) {
+        return res.status(400).json({ message: "paymentType must be ADVANCE or CREDIT" });
+      }
+      const locked =
+        isOaPaymentTypeLocked(doc) || hasActiveProforma || hasOrderAllocation || hasSalesInvoice;
+      if (locked && nextPt !== normalizeOaPaymentType(doc.paymentType)) {
+        return res.status(409).json({ message: SALES_FLOW_ERRORS.OA_PAYMENT_TYPE_LOCKED });
+      }
+      doc.paymentType = nextPt;
     }
     Object.assign(doc, pickCustomerTransactionFieldsFromBody(req.body));
     if (req.body.customerPODate !== undefined) {
@@ -2692,6 +2771,30 @@ export async function createProforma(req, res) {
     const body = { ...req.body };
     const lines = normalizeLines(body.lines || []);
     if (!lines.length) return res.status(400).json({ message: "Proforma requires at least one line" });
+
+    if (!body.linkedOAId || !mongoose.Types.ObjectId.isValid(String(body.linkedOAId))) {
+      return res.status(422).json({ message: SALES_FLOW_ERRORS.PI_MUST_FROM_ADVANCE_OA });
+    }
+    const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: body.linkedOAId })).lean();
+    if (!oa) {
+      return res.status(422).json({ message: SALES_FLOW_ERRORS.PI_MUST_FROM_ADVANCE_OA });
+    }
+    try {
+      assertAdvanceOaForProforma(oa);
+    } catch (gateErr) {
+      return res.status(gateErr.statusCode || 409).json({
+        message: gateErr.message || SALES_FLOW_ERRORS.PI_MUST_FROM_ADVANCE_OA,
+      });
+    }
+
+    const linkedOAId = oa._id;
+    const linkedOANo = String(body.linkedOANo || oa.oaNo || "").trim();
+    const linkedQuotationId = body.linkedQuotationId || oa.linkedQuotationId || null;
+    const linkedQuotationNo = String(body.linkedQuotationNo || oa.linkedQuotationNo || "").trim();
+    if (!linkedOANo || !linkedQuotationId || !linkedQuotationNo) {
+      return res.status(422).json({ message: SALES_FLOW_ERRORS.PI_MUST_FROM_ADVANCE_OA });
+    }
+
     let proformaNo;
     if (String(body.proformaNo || "").trim()) {
       const prepared = await applyManualSalesDocumentNumber({
@@ -2719,16 +2822,13 @@ export async function createProforma(req, res) {
     }
     const customerFields = pickCustomerTransactionFieldsFromBody(body);
     let maxRequestedAmount = null;
-    if (body.linkedOAId && mongoose.Types.ObjectId.isValid(String(body.linkedOAId))) {
-      const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: body.linkedOAId })).lean();
-      if (oa) {
-        const capacity = await resolveOaPiCapacity(req, oa);
-        maxRequestedAmount = capacity.piRemainingEligibleAmount;
-        if (maxRequestedAmount <= 0.005) {
-          return res.status(409).json({
-            message: "PI-eligible amount for this Order Acknowledgement is fully issued",
-          });
-        }
+    {
+      const capacity = await resolveOaPiCapacity(req, oa);
+      maxRequestedAmount = capacity.piRemainingEligibleAmount;
+      if (maxRequestedAmount <= 0.005) {
+        return res.status(409).json({
+          message: "PI-eligible amount for this Order Acknowledgement is fully issued",
+        });
       }
     }
     const paymentRequest = buildValidatedPiPaymentRequest(totals.grandTotal, body, { maxRequestedAmount });
@@ -2740,13 +2840,17 @@ export async function createProforma(req, res) {
       lines,
       ...totals,
       ...paymentRequest,
+      linkedOAId,
+      linkedOANo,
+      linkedQuotationId,
+      linkedQuotationNo,
       proformaNo,
       companyId: req.companyId,
       createdBy: req.user?.email || "",
     });
-    if (doc.linkedOAId) {
-      const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: doc.linkedOAId }));
-      if (oa) await syncOaStatusFromPiCapacity(req, oa);
+    {
+      const oaDoc = await OrderAcknowledgement.findOne(withCompany(req, { _id: linkedOAId }));
+      if (oaDoc) await syncOaStatusFromPiCapacity(req, oaDoc);
     }
     res.status(201).json(doc);
   } catch (err) {
@@ -2995,6 +3099,11 @@ export async function convertQuotationToOA(req, res) {
     const lines = normalizeLines(quotation.lines.map((line) => line.toObject?.() || line));
     const totals = computeTotals(lines, quotation);
     const customerFields = copyCustomerTransactionFields(quotation);
+    const paymentType = await resolveWorkflowPaymentTypeDefault(req, {
+      customerId: quotation.customerId,
+      customerName: quotation.customerName,
+      bodyPaymentType: req.body?.paymentType,
+    });
     const doc = await OrderAcknowledgement.create({
       companyId: req.companyId,
       oaNo,
@@ -3003,6 +3112,7 @@ export async function convertQuotationToOA(req, res) {
       linkedQuotationNo: quotation.quotationNo,
       customerName: quotation.customerName,
       customerPORef: quotation.customerReference || "",
+      paymentType,
       ...customerFields,
       incoterm: quotation.incoterm || "",
       currency: quotation.currency || "USD",
@@ -3025,71 +3135,12 @@ export async function convertQuotationToOA(req, res) {
     await quotation.save();
     res.status(201).json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message });
   }
 }
 
 export async function convertQuotationToProforma(req, res) {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid quotation id" });
-    const quotation = await Quotation.findOne(withCompany(req, { _id: id }));
-    validateConversionSource(quotation, "quotation");
-    requireApprovedQuotationForConversion(quotation);
-    if (!quotation.lines?.length) {
-      return res.status(400).json({ message: "Quotation requires at least one line to convert" });
-    }
-    const already = await ProformaInvoice.findOne(
-      withCompany(req, { linkedQuotationId: quotation._id, status: { $ne: "CANCELLED" } })
-    );
-    if (already) return res.status(409).json({ message: `Proforma already exists (${already.proformaNo})` });
-
-    const proformaNo = await nextUniqueSalesDocNumber({
-      companyId: req.companyId,
-      companyCode: req.companyCode,
-      docKey: "PROFORMA",
-      model: ProformaInvoice,
-      field: "proformaNo",
-    });
-    const lines = normalizeLines(quotation.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines, quotation);
-    const currency = quotation.currency || "USD";
-    const bankDetails = (await resolveBankDetailsTextForCurrency(withCompany(req), currency)) || "";
-    const customerFields = copyCustomerTransactionFields(quotation);
-    const paymentRequest = defaultFullPiPaymentRequest(totals.grandTotal);
-    const doc = await ProformaInvoice.create({
-      companyId: req.companyId,
-      proformaNo,
-      proformaDate: new Date(),
-      linkedQuotationId: quotation._id,
-      linkedQuotationNo: quotation.quotationNo,
-      customerName: quotation.customerName,
-      customerReference: quotation.customerReference || "",
-      ...customerFields,
-      validity: quotation.validityDate ? new Date(quotation.validityDate).toISOString().slice(0, 10) : "",
-      shipmentTerms: quotation.deliveryTerms || "",
-      currency,
-      bankDetails,
-      remarks: quotation.remarks || "",
-      termsAndConditions: quotation.termsAndConditions || "",
-      vertical: quotation.vertical || "",
-      engine: quotation.engine || "",
-      model: quotation.model || "",
-      config: quotation.config || "",
-      esn: quotation.esn || "",
-      lines,
-      ...totals,
-      ...paymentRequest,
-      status: "DRAFT",
-      createdBy: req.user?.email || "",
-    });
-    if (!quotation.convertedTo?.includes("PROFORMA")) quotation.convertedTo = [...(quotation.convertedTo || []), "PROFORMA"];
-    quotation.updatedBy = req.user?.email || "";
-    await quotation.save();
-    res.status(201).json(doc);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
+  return res.status(409).json({ message: SALES_FLOW_ERRORS.QTN_PI });
 }
 
 export async function convertOAToProforma(req, res) {
@@ -3098,6 +3149,11 @@ export async function convertOAToProforma(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid OA id" });
     const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: id }));
     validateConversionSource(oa, "order acknowledgement");
+    try {
+      assertAdvanceOaForProforma(oa);
+    } catch (gateErr) {
+      return res.status(gateErr.statusCode || 409).json({ message: gateErr.message });
+    }
     if (!oa.lines?.length) return res.status(400).json({ message: "OA requires at least one line to convert" });
     const capacity = await resolveOaPiCapacity(req, oa);
     if (["CANCELLED", "COMPLETED", "CLOSED"].includes(String(oa.status || "").toUpperCase())) {
@@ -3173,37 +3229,18 @@ export async function convertOAToProforma(req, res) {
       createdBy: req.user?.email || "",
     });
     if (!oa.convertedTo?.includes("PROFORMA")) oa.convertedTo = [...(oa.convertedTo || []), "PROFORMA"];
+    if (!normalizeOaPaymentType(oa.paymentType)) oa.paymentType = "ADVANCE";
     oa.updatedBy = req.user?.email || "";
     await oa.save();
     await syncOaStatusFromPiCapacity(req, oa);
     res.status(201).json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message });
   }
 }
 
 export async function convertOAToSalesInvoice(req, res) {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid OA id" });
-    const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: id }));
-    validateConversionSource(oa, "order acknowledgement");
-    const allocation = await OrderAllocation.findOne(
-      withCompany(req, { linkedOAId: oa._id, status: { $ne: "CANCELLED" } })
-    )
-      .sort({ allocationDate: -1 })
-      .lean();
-    if (!allocation) {
-      return res.status(400).json({
-        message: "Packing must be completed before creating Sales Invoice",
-      });
-    }
-    req.params.id = String(allocation._id);
-    req.body = { ...(req.body || {}), sourceOAId: id };
-    return convertOrderAllocationToSalesInvoice(req, res);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
+  return res.status(409).json({ message: SALES_FLOW_ERRORS.SI_FROM_PACKING_ONLY });
 }
 
 export async function listSalesInvoices(req, res) {
@@ -4211,83 +4248,11 @@ export async function convertSalesInvoiceToSalesDispatch(req, res) {
 }
 
 export async function convertProformaToSalesInvoice(req, res) {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid proforma id" });
-    const proforma = await ProformaInvoice.findOne(withCompany(req, { _id: id }));
-    validateConversionSource(proforma, "proforma");
-    const allocation = await OrderAllocation.findOne(
-      withCompany(req, { linkedProformaId: proforma._id, status: { $ne: "CANCELLED" } })
-    )
-      .sort({ allocationDate: -1 })
-      .lean();
-    if (!allocation) {
-      return res.status(400).json({
-        message: "Packing must be completed before creating Sales Invoice",
-      });
-    }
-    req.params.id = String(allocation._id);
-    req.body = { ...(req.body || {}), sourceProformaId: id };
-    return convertOrderAllocationToSalesInvoice(req, res);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
+  return res.status(409).json({ message: SALES_FLOW_ERRORS.SI_FROM_PACKING_ONLY });
 }
 
 export async function convertProformaToCipl(req, res) {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid proforma id" });
-    const proforma = await ProformaInvoice.findOne(withCompany(req, { _id: id }));
-    validateConversionSource(proforma, "proforma");
-    if (!proforma.lines?.length) return res.status(400).json({ message: "Proforma requires at least one line to convert" });
-    const si = await SalesInvoice.findOne(
-      withCompany(req, { linkedProformaId: proforma._id, status: { $ne: "CANCELLED" } })
-    );
-    if (si) return res.status(409).json({ message: `Sales invoice already exists (${si.invoiceNo}) — cannot create CIPL from proforma` });
-    const already = await Cipl.findOne(
-      withCompany(req, { linkedProformaId: proforma._id, status: { $ne: "CANCELLED" } })
-    );
-    if (already) return res.status(409).json({ message: `CIPL already exists (${already.ciplNo})` });
-
-    const ciplNo = await nextSalesDocNumber({
-      companyId: req.companyId,
-      companyCode: req.companyCode,
-      docKey: "CIPL",
-    });
-    const lines = normalizeLines(proforma.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines, proforma);
-    const doc = await Cipl.create({
-      companyId: req.companyId,
-      ciplNo,
-      ciplDate: new Date(),
-      linkedQuotationId: proforma.linkedQuotationId || null,
-      linkedQuotationNo: proforma.linkedQuotationNo || "",
-      linkedOAId: proforma.linkedOAId || null,
-      linkedOANo: proforma.linkedOANo || "",
-      linkedProformaId: proforma._id,
-      linkedProformaNo: proforma.proformaNo,
-      customerName: proforma.customerName,
-      incoterm: "",
-      currency: proforma.currency || "USD",
-      remarks: proforma.remarks || "",
-      vertical: proforma.vertical || "",
-      engine: proforma.engine || "",
-      model: proforma.model || "",
-      config: proforma.config || "",
-      esn: proforma.esn || "",
-      lines,
-      ...totals,
-      status: "DRAFT",
-      createdBy: req.user?.email || "",
-    });
-    proforma.status = "APPROVED";
-    proforma.updatedBy = req.user?.email || "";
-    await proforma.save();
-    res.status(201).json(doc);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
+  return res.status(409).json({ message: SALES_FLOW_ERRORS.PI_CIPL });
 }
 
 export async function listOrderAllocations(req, res) {
@@ -4577,6 +4542,11 @@ export async function convertOAToOrderAllocation(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid OA id" });
     const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: id }));
     validateConversionSource(oa, "order acknowledgement");
+    try {
+      assertCreditOaForAllocation(oa);
+    } catch (gateErr) {
+      return res.status(gateErr.statusCode || 409).json({ message: gateErr.message });
+    }
     if (!oa.lines?.length) return res.status(400).json({ message: "OA requires at least one line to convert" });
     const already = await findActiveAllocationByOA(req, oa._id);
     if (already) {
@@ -4610,7 +4580,10 @@ export async function convertOAToOrderAllocation(req, res) {
       const oaFresh = await OrderAcknowledgement.findOne(withCompany(req, { _id: oa._id })).session(session);
       validateConversionSource(oaFresh, "order acknowledgement");
       if (!oaFresh.lines?.length) throw new Error("OA requires at least one line to convert");
-      await assertOaReadyForStockAllocation(req, oaFresh, session);
+      assertCreditOaForAllocation(oaFresh);
+      if (!normalizeOaPaymentType(oaFresh.paymentType)) {
+        oaFresh.paymentType = "CREDIT";
+      }
 
       // Create-first under unique partial index so a concurrent loser fails before stock reserve.
       // P3 create order (single txn): create doc (_id) → stamp reservationIdentityNo +
@@ -4862,6 +4835,23 @@ export async function convertProformaToOrderAllocation(req, res) {
       });
     }
     if (!proforma.lines?.length) return res.status(400).json({ message: "Proforma requires at least one line to convert" });
+    let legacyPiAlloc = false;
+    try {
+      const gate = assertPiMayConvertToAllocation(proforma);
+      legacyPiAlloc = gate.legacy === true;
+    } catch (gateErr) {
+      return res.status(gateErr.statusCode || 422).json({ message: gateErr.message });
+    }
+    if (!legacyPiAlloc) {
+      const linkedOa = await OrderAcknowledgement.findOne(withCompany(req, { _id: proforma.linkedOAId })).lean();
+      if (!linkedOa) {
+        return res.status(422).json({ message: SALES_FLOW_ERRORS.PI_MISSING_OA });
+      }
+      const oaPt = resolveOaWorkflowPaymentType(linkedOa);
+      if (oaPt && oaPt !== "ADVANCE") {
+        return res.status(409).json({ message: SALES_FLOW_ERRORS.PI_OA_NOT_ADVANCE });
+      }
+    }
     const alreadyByPi = await findActiveAllocationByProforma(req, proforma._id);
     if (alreadyByPi) {
       return res.status(409).json({
@@ -4923,6 +4913,25 @@ export async function convertProformaToOrderAllocation(req, res) {
         if (existingOa) throw activeAllocationConflictError(existingOa);
       }
 
+      // Prefer PI denormalized OA fields; if id present but number blank, resolve oaNo from OA.
+      // Legacy PI (pre-cutoff, no linkedOAId): leave OA blank — never infer sibling OA.
+      let linkedOAId = legacyPiAlloc ? null : proformaFresh.linkedOAId || null;
+      let linkedOANo = legacyPiAlloc ? "" : String(proformaFresh.linkedOANo || "").trim();
+      if (linkedOAId && !linkedOANo) {
+        const oaForNo = await OrderAcknowledgement.findOne(withCompany(req, { _id: linkedOAId }))
+          .select("oaNo paymentType")
+          .session(session)
+          .lean();
+        linkedOANo = String(oaForNo?.oaNo || "").trim();
+        if (oaForNo && !normalizeOaPaymentType(oaForNo.paymentType)) {
+          await OrderAcknowledgement.updateOne(
+            withCompany(req, { _id: linkedOAId }),
+            { $set: { paymentType: "ADVANCE" } },
+            { session }
+          );
+        }
+      }
+
       let doc;
       try {
         [doc] = await OrderAllocation.create(
@@ -4933,8 +4942,8 @@ export async function convertProformaToOrderAllocation(req, res) {
               allocationDate: new Date(),
               linkedQuotationId: proformaFresh.linkedQuotationId || null,
               linkedQuotationNo: proformaFresh.linkedQuotationNo || "",
-              linkedOAId: proformaFresh.linkedOAId || null,
-              linkedOANo: proformaFresh.linkedOANo || "",
+              linkedOAId,
+              linkedOANo,
               linkedProformaId: proformaFresh._id,
               linkedProformaNo: proformaFresh.proformaNo,
               customerName: proformaFresh.customerName,
@@ -4953,6 +4962,7 @@ export async function convertProformaToOrderAllocation(req, res) {
               dispatchStatus: "NOT_DISPATCHED",
               reservationEffectVersion: RESERVATION_EFFECT_VERSION_V2,
               reservationIdentityNo: allocationNo,
+              remarks: legacyPiAlloc ? "Legacy PI allocation created without OA lineage" : "",
               createdBy: req.user?.email || "",
             },
           ],
@@ -5007,10 +5017,14 @@ export async function convertProformaToOrderAllocation(req, res) {
       entityId: doc._id,
       documentNo: doc.allocationNo,
       toStatus: "ALLOCATED",
-      description: `Order Allocation ${doc.allocationNo} created from proforma ${proforma.proformaNo}`,
+      description: legacyPiAlloc
+        ? `Order Allocation ${doc.allocationNo} created from legacy proforma ${proforma.proformaNo} without OA lineage`
+        : `Order Allocation ${doc.allocationNo} created from proforma ${proforma.proformaNo}`,
       metadata: {
         sourceDoc: { type: "PROFORMA", id: String(proforma._id), no: proforma.proformaNo },
         hasNegativeAllocation: doc.hasNegativeAllocation === true,
+        legacyPiWithoutOa: legacyPiAlloc === true,
+        legacyNote: legacyPiAlloc ? "Legacy PI allocation created without OA lineage" : undefined,
       },
     });
     res.status(201).json(doc);
@@ -5043,28 +5057,7 @@ export async function convertProformaToOrderAllocation(req, res) {
 }
 
 export async function convertOrderAllocationToSalesInvoice(req, res) {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid order allocation id" });
-    const allocation = await OrderAllocation.findOne(withCompany(req, { _id: id })).lean();
-    validateConversionSource(allocation, "order allocation");
-    const ready = await firstReadyPackingForAllocation(req, allocation._id);
-    if (!ready) {
-      return res.status(400).json({
-        message: "Packing must be completed before creating Sales Invoice",
-      });
-    }
-    req.params.id = String(ready.packing._id);
-    req.body = { ...(req.body || {}), sourceAllocationId: id };
-    return convertPackingToSalesInvoice(req, res);
-  } catch (err) {
-    const msg = err.message || String(err);
-    if (err?.code === "INVALID_TRANSITION" || err?.code === "STOCK_INSUFFICIENT") {
-      return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
-    }
-    if (String(msg).includes("already exists")) return res.status(409).json({ message: msg });
-    res.status(400).json({ message: msg });
-  }
+  return res.status(409).json({ message: SALES_FLOW_ERRORS.SI_FROM_PACKING_ONLY });
 }
 
 export async function cancelOrderAllocation(req, res) {
@@ -5392,100 +5385,11 @@ export async function cancelCipl(req, res) {
 }
 
 export async function convertQuotationToCipl(req, res) {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid quotation id" });
-    const quotation = await Quotation.findOne(withCompany(req, { _id: id }));
-    validateConversionSource(quotation, "quotation");
-    requireApprovedQuotationForConversion(quotation);
-    if (!quotation.lines?.length) return res.status(400).json({ message: "Quotation requires at least one line to convert" });
-    const already = await Cipl.findOne(
-      withCompany(req, { linkedQuotationId: quotation._id, status: { $ne: "CANCELLED" } })
-    );
-    if (already) return res.status(409).json({ message: `CIPL already exists (${already.ciplNo})` });
-
-    const ciplNo = await nextSalesDocNumber({
-      companyId: req.companyId,
-      companyCode: req.companyCode,
-      docKey: "CIPL",
-    });
-    const lines = normalizeLines(quotation.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines, quotation);
-    const doc = await Cipl.create({
-      companyId: req.companyId,
-      ciplNo,
-      ciplDate: new Date(),
-      linkedQuotationId: quotation._id,
-      linkedQuotationNo: quotation.quotationNo,
-      customerName: quotation.customerName,
-      incoterm: quotation.incoterm || "",
-      currency: quotation.currency || "USD",
-      remarks: quotation.remarks || "",
-      vertical: quotation.vertical || "",
-      engine: quotation.engine || "",
-      model: quotation.model || "",
-      config: quotation.config || "",
-      esn: quotation.esn || "",
-      lines,
-      ...totals,
-      status: "DRAFT",
-      createdBy: req.user?.email || "",
-    });
-    if (!quotation.convertedTo?.includes("CIPL")) quotation.convertedTo = [...(quotation.convertedTo || []), "CIPL"];
-    quotation.updatedBy = req.user?.email || "";
-    await quotation.save();
-    res.status(201).json(doc);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
+  return res.status(409).json({ message: SALES_FLOW_ERRORS.QTN_CIPL });
 }
 
 export async function convertOAToCipl(req, res) {
-  try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid OA id" });
-    const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: id }));
-    validateConversionSource(oa, "order acknowledgement");
-    if (!oa.lines?.length) return res.status(400).json({ message: "OA requires at least one line to convert" });
-    const already = await Cipl.findOne(withCompany(req, { linkedOAId: oa._id, status: { $ne: "CANCELLED" } }));
-    if (already) return res.status(409).json({ message: `CIPL already exists (${already.ciplNo})` });
-
-    const ciplNo = await nextSalesDocNumber({
-      companyId: req.companyId,
-      companyCode: req.companyCode,
-      docKey: "CIPL",
-    });
-    const lines = normalizeLines(oa.lines.map((line) => line.toObject?.() || line));
-    const totals = computeTotals(lines, oa);
-    const doc = await Cipl.create({
-      companyId: req.companyId,
-      ciplNo,
-      ciplDate: new Date(),
-      linkedQuotationId: oa.linkedQuotationId || null,
-      linkedQuotationNo: oa.linkedQuotationNo || "",
-      linkedOAId: oa._id,
-      linkedOANo: oa.oaNo,
-      customerName: oa.customerName,
-      incoterm: oa.incoterm || "",
-      currency: oa.currency || "USD",
-      remarks: oa.acknowledgementNotes || "",
-      vertical: oa.vertical || "",
-      engine: oa.engine || "",
-      model: oa.model || "",
-      config: oa.config || "",
-      esn: oa.esn || "",
-      lines,
-      ...totals,
-      status: "DRAFT",
-      createdBy: req.user?.email || "",
-    });
-    if (!oa.convertedTo?.includes("CIPL")) oa.convertedTo = [...(oa.convertedTo || []), "CIPL"];
-    oa.updatedBy = req.user?.email || "";
-    await oa.save();
-    res.status(201).json(doc);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
+  return res.status(409).json({ message: SALES_FLOW_ERRORS.OA_CIPL });
 }
 
 export async function convertSalesInvoiceToCipl(req, res) {

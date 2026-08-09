@@ -13,6 +13,17 @@ function displayOrEmpty(v) {
 }
 
 /**
+ * Explicit OA id for lineage load (never invents by customer/quotation/sequence).
+ * Allocation.linkedOAId → Proforma.linkedOAId.
+ *
+ * @param {{ allocation?: object|null, pi?: object|null }} args
+ * @returns {any|null}
+ */
+export function resolveLinkedOaIdFromAllocationLineage({ allocation = null, pi = null } = {}) {
+  return allocation?.linkedOAId || pi?.linkedOAId || null;
+}
+
+/**
  * Same precedence as storeOutboundController.resolveCustomerSnapshotForAllocation:
  * OA.customerPORef → PI.customerReference → Quotation.customerReference
  *
@@ -34,6 +45,9 @@ export function resolveCustomerReferenceFromLineage({ oa = null, pi = null, quot
 /**
  * Normalized document references for packing / picking sheet UI + PDF.
  *
+ * OA number precedence (human-readable only):
+ * Allocation.linkedOANo → OA.oaNo → PI.linkedOANo
+ *
  * @param {{
  *   allocation?: object|null,
  *   oa?: object|null,
@@ -53,7 +67,9 @@ export function buildAllocationDocumentReferences({
   const quotationNo = displayOrEmpty(
     allocation?.linkedQuotationNo || quotation?.quotationNo || quotation?.quotationNumber
   );
-  const orderAcknowledgementNo = displayOrEmpty(allocation?.linkedOANo || oa?.oaNo);
+  const orderAcknowledgementNo = displayOrEmpty(
+    allocation?.linkedOANo || oa?.oaNo || pi?.linkedOANo
+  );
   const proformaNo = displayOrEmpty(allocation?.linkedProformaNo || pi?.proformaNo);
   const customerReference = resolveCustomerReferenceFromLineage({ oa, pi, quotation });
 

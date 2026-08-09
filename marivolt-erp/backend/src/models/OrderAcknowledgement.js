@@ -49,6 +49,21 @@ const orderAcknowledgementSchema = new mongoose.Schema(
     acknowledgementNotes: { type: String, default: "" },
     termsAndConditions: { type: String, default: "" },
     deliverySchedule: { type: String, default: "" },
+    /**
+     * Workflow payment type — ADVANCE | CREDIT.
+     * Authoritative for sequential sales branching (PI vs Allocation).
+     * Independent of commercial `paymentTerms` text printed on PDFs.
+     * Snapshotted from Customer Master Credit Terms when OA is created from Quotation.
+     */
+    paymentType: {
+      type: String,
+      enum: ["ADVANCE", "CREDIT"],
+      default: "CREDIT",
+      trim: true,
+      uppercase: true,
+      index: true,
+    },
+    /** Commercial payment terms free-text for PDFs — not ADVANCE/CREDIT workflow. */
     paymentTerms: { type: String, default: "" },
     incoterm: { type: String, default: "" },
     dispatchTerms: { type: String, default: "" },

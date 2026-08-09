@@ -35,6 +35,7 @@ import {
   resolveDocumentCustomerFields,
 } from "../utils/customerTransactionFields.js";
 import { writeAudit } from "../services/auditService.js";
+import { normalizeOaPaymentType } from "../utils/salesFlowSequential.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -284,7 +285,18 @@ export async function getQuotation(req, res) {
     const row = await Quotation.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
     const [enriched] = await enrichQuotationsWithDeleteEligibility(req, [row]);
-    res.json(enriched || row);
+    const base = enriched || row;
+    const linkedOA = await OrderAcknowledgement.findOne(
+      withCompany(req, { linkedQuotationId: row._id, status: { $ne: "CANCELLED" } })
+    )
+      .select("_id oaNo status paymentType")
+      .lean();
+    res.json({
+      ...base,
+      linkedOAId: linkedOA?._id || null,
+      linkedOANo: linkedOA?.oaNo || "",
+      hasActiveOA: Boolean(linkedOA?._id),
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -745,7 +757,29 @@ export async function getQuotationOaSource(req, res) {
     if (!row.lines?.length) {
       return res.status(400).json({ message: "Quotation has no lines to copy into OA" });
     }
-    res.json(await buildOaWorkingCopyFromQuotation(req.companyId, row, { copiedBy: req.user?.email || "" }));
+    const working = await buildOaWorkingCopyFromQuotation(req.companyId, row, {
+      copiedBy: req.user?.email || "",
+    });
+    working.customerId = row.customerId ? String(row.customerId) : "";
+    working.oaSourceType = "FROM_QUOTATION";
+    let paymentType = "";
+    if (row.customerId) {
+      const cust = await Customer.findOne(withCompany(req, { _id: row.customerId }))
+        .select("paymentTerms")
+        .lean();
+      paymentType = normalizeOaPaymentType(cust?.paymentTerms);
+    }
+    if (!paymentType && String(row.customerName || "").trim()) {
+      const custByName = await Customer.findOne({
+        companyId: req.companyId,
+        name: new RegExp(`^${String(row.customerName).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"),
+      })
+        .select("paymentTerms")
+        .lean();
+      paymentType = normalizeOaPaymentType(custByName?.paymentTerms);
+    }
+    if (paymentType) working.paymentType = paymentType;
+    res.json(working);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
