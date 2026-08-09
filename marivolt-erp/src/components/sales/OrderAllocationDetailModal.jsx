@@ -1,8 +1,8 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import Modal from "../erp/Modal.jsx";
-import { apiGet } from "../../lib/api.js";
+import { apiGet, apiPatch } from "../../lib/api.js";
 import {
   allocationStockStatusClass,
   allocationProcurementStatusClass,
@@ -95,7 +95,11 @@ export default function OrderAllocationDetailModal({
   onConvertToPo,
 }) {
   const canConvert = userCanCreatePoFromAllocation(authUser);
+  const queryClient = useQueryClient();
   const [breakdownLine, setBreakdownLine] = useState(null);
+  const [editingNo, setEditingNo] = useState(false);
+  const [draftNo, setDraftNo] = useState("");
+  const [numberError, setNumberError] = useState("");
 
   const { data: eligibility, isLoading: eligLoading, refetch } = useQuery({
     queryKey: ["order-allocation-po-eligibility", allocationId],
@@ -113,6 +117,32 @@ export default function OrderAllocationDetailModal({
   const lines = eligibility?.lines || [];
   const activePos = linkedPo?.active || [];
   const cancelledPos = linkedPo?.cancelled || [];
+  const canEditAllocationNo = allocation?.canEditAllocationNo === true;
+  const editBlockedReason =
+    allocation?.allocationNoEditBlockedReason ||
+    "Allocation number cannot be changed in the current lifecycle state.";
+
+  useEffect(() => {
+    if (!open) {
+      setEditingNo(false);
+      setDraftNo("");
+      setNumberError("");
+    }
+  }, [open, allocationId]);
+
+  const saveNumber = useMutation({
+    mutationFn: (allocationNo) =>
+      apiPatch(`/sales/order-allocations/${allocationId}/allocation-no`, { allocationNo }),
+    onSuccess: async () => {
+      setEditingNo(false);
+      setNumberError("");
+      await refetch();
+      queryClient.invalidateQueries({ queryKey: ["order-allocations"] });
+    },
+    onError: (e) => {
+      setNumberError(e?.response?.data?.message || e.message || "Failed to update allocation number");
+    },
+  });
 
   return (
     <>
@@ -132,7 +162,60 @@ export default function OrderAllocationDetailModal({
             <div className="grid gap-3 sm:grid-cols-3">
               <div>
                 <div className="text-xs text-gray-500">Allocation No</div>
-                <div className="font-mono">{allocation.allocationNo}</div>
+                {editingNo ? (
+                  <div className="mt-1 space-y-2">
+                    <input
+                      type="text"
+                      className="w-full rounded-lg border px-2 py-1 font-mono text-sm"
+                      value={draftNo}
+                      onChange={(e) => setDraftNo(e.target.value)}
+                      autoFocus
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="rounded-lg border bg-zinc-900 px-2 py-1 text-xs text-white disabled:opacity-40"
+                        disabled={saveNumber.isPending}
+                        onClick={() => saveNumber.mutate(draftNo)}
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-lg border px-2 py-1 text-xs"
+                        disabled={saveNumber.isPending}
+                        onClick={() => {
+                          setEditingNo(false);
+                          setDraftNo(allocation.allocationNo || "");
+                          setNumberError("");
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    {numberError ? <p className="text-xs text-red-700">{numberError}</p> : null}
+                  </div>
+                ) : (
+                  <div className="mt-0.5 flex flex-wrap items-center gap-2">
+                    <span className="font-mono">{allocation.allocationNo}</span>
+                    <button
+                      type="button"
+                      className="rounded border px-2 py-0.5 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+                      disabled={!canEditAllocationNo}
+                      title={canEditAllocationNo ? "Edit allocation number" : editBlockedReason}
+                      onClick={() => {
+                        setDraftNo(allocation.allocationNo || "");
+                        setNumberError("");
+                        setEditingNo(true);
+                      }}
+                    >
+                      Edit
+                    </button>
+                  </div>
+                )}
+                {!canEditAllocationNo && !editingNo ? (
+                  <p className="mt-1 text-xs text-amber-800">{editBlockedReason}</p>
+                ) : null}
               </div>
               <div>
                 <div className="text-xs text-gray-500">Customer</div>

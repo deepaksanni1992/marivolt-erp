@@ -4,6 +4,7 @@ import OrderAllocation from "../models/OrderAllocation.js";
 import ItemSupplier from "../models/itemSupplierModel.js";
 import * as stockService from "./stockService.js";
 import { deriveAvailableQty } from "./stockExpectedBuckets.js";
+import { evaluateOrderAllocationNumberEditability } from "../utils/orderAllocationNumberEdit.js";
 
 /** PO statuses that reserve converted quantity from Order Allocation lines. */
 export const ACTIVE_PO_STATUSES = [
@@ -297,6 +298,10 @@ export async function buildOrderAllocationPoEligibility(companyId, allocationId)
   }
 
   const eligibleLineCount = lines.filter((l) => l.eligible).length;
+  const numberEdit = await evaluateOrderAllocationNumberEditability({
+    companyId,
+    allocation,
+  });
 
   return {
     allocation: {
@@ -318,7 +323,13 @@ export async function buildOrderAllocationPoEligibility(companyId, allocationId)
       config: allocation.config,
       esn: allocation.esn,
       warehouse: allocation.warehouse,
+      packingStatus: allocation.packingStatus,
+      invoiceStatus: allocation.invoiceStatus,
+      dispatchStatus: allocation.dispatchStatus,
+      reservationEffectVersion: allocation.reservationEffectVersion,
       cancelled,
+      canEditAllocationNo: numberEdit.allowed,
+      allocationNoEditBlockedReason: numberEdit.allowed ? "" : numberEdit.reason,
     },
     lines,
     eligibleLineCount,

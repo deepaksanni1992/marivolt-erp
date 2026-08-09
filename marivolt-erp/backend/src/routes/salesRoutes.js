@@ -102,6 +102,7 @@ router.patch("/sales-returns/:id/post", salesApprove, salesReturn.postSalesRetur
 
 router.get("/order-allocations", salesView, flow.listOrderAllocations);
 router.get("/order-allocations/:id", salesView, flow.getOrderAllocation);
+router.patch("/order-allocations/:id/allocation-no", salesEdit, flow.updateOrderAllocationNumber);
 router.get("/order-allocations/:id/po-eligibility", salesView, allocationPo.getOrderAllocationPoEligibility);
 router.get("/order-allocations/:id/stock-position", salesView, allocationPo.getOrderAllocationStockPosition);
 router.get("/order-allocations/:id/linked-purchase-orders", salesView, allocationPo.getOrderAllocationLinkedPurchaseOrders);

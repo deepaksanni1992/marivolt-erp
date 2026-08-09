@@ -61,8 +61,15 @@ ok("CSV export helper exists", /auditRowsToCsv/.test(service));
 ok("GET bucket-integrity route", /\/stock\/bucket-integrity/.test(adminRoutes));
 ok("repair-preview route", /repair-preview/.test(adminRoutes));
 ok("repair controller uses applyBucketIntegrityRepair", /applyBucketIntegrityRepair/.test(controller));
-ok("allocateStock accepts effectKey", /effectKey = ""/.test(stockService) && /alloc:reserve:/.test(salesFlow));
-ok("cancelAllocation accepts effectKey", /alloc:release:/.test(salesFlow));
+ok(
+  "allocateStock accepts effectKey",
+  /effectKey = ""/.test(stockService) &&
+    (/alloc:reserve:/.test(salesFlow) || /buildAllocReserveEffectKeyForAllocation/.test(salesFlow))
+);
+ok(
+  "cancelAllocation accepts effectKey",
+  /alloc:release:/.test(salesFlow) || /resolveAllocReleaseEffectKey/.test(salesFlow)
+);
 ok("cancel releases without stockReservedAt gate", !/if \(alloc\.stockReservedAt && releaseLines\.length\)/.test(salesFlow));
 ok("cancel uses qty − packedQty", /packedQty/.test(salesFlow.split("cancelOrderAllocation")[1]?.slice(0, 2500) || ""));
 ok("OrderAllocation hard delete blocked", /ALLOCATION_HARD_DELETE_BLOCKED/.test(allocModel));

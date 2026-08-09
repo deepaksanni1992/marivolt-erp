@@ -10,6 +10,7 @@ import OrderAllocation from "../models/OrderAllocation.js";
 import SalesInvoice from "../models/SalesInvoice.js";
 import Cipl from "../models/Cipl.js";
 import { resolveSalesDocumentType, salesDocumentTypeLabel } from "./salesDocNumber.js";
+import { assertOrderAllocationNumberChangeAllowed } from "./orderAllocationNumberEdit.js";
 
 function statusError(message, statusCode = 400) {
   const err = new Error(message);
@@ -29,6 +30,7 @@ async function anyExists(queries) {
  *   companyId: any,
  *   documentType: string,
  *   documentId: any,
+ *   document?: object,
  *   existsFns?: {
  *     oaByQuotation?: Function,
  *     piByQuotation?: Function,
@@ -42,6 +44,10 @@ async function anyExists(queries) {
  *     allocByPi?: Function,
  *     ciplByPi?: Function,
  *     siByPi?: Function,
+ *     packing?: Function,
+ *     salesInvoice?: Function,
+ *     storeDispatch?: Function,
+ *     purchaseOrder?: Function,
  *   }
  * }} args
  */
@@ -49,6 +55,7 @@ export async function assertSalesDocumentNumberChangeAllowed({
   companyId,
   documentType,
   documentId,
+  document = null,
   existsFns = {},
 } = {}) {
   const type = resolveSalesDocumentType(documentType);
@@ -56,6 +63,19 @@ export async function assertSalesDocumentNumberChangeAllowed({
   if (!companyId || !documentId) throw statusError("companyId and documentId required");
 
   const label = salesDocumentTypeLabel(type);
+
+  if (type === "ALLOC") {
+    const allocation =
+      document ||
+      (await OrderAllocation.findOne({ companyId, _id: documentId }).lean());
+    if (!allocation) throw statusError("Order Allocation not found.", 404);
+    await assertOrderAllocationNumberChangeAllowed({
+      companyId,
+      allocation,
+      existsFns,
+    });
+    return;
+  }
 
   if (type === "OA") {
     const blocked = await anyExists([

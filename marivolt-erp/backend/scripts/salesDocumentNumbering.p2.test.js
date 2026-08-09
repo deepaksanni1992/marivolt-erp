@@ -437,7 +437,7 @@ await run("Future-dated canonical bumps only matching date key", async () => {
   assert.equal(await CounterModel.getSeq("company-mar", "salesdoc:QT:260809"), 0);
 });
 
-await run("Live sources — QT/OA/PI use applyManual; ALLOC/SI invoiceNo not update-editable", () => {
+await run("Live sources — QT/OA/PI use applyManual; SI invoiceNo not update-editable", () => {
   const qt = fs.readFileSync(path.join(srcRoot, "controllers", "quotationController.js"), "utf8");
   const sales = fs.readFileSync(path.join(srcRoot, "controllers", "salesFlowController.js"), "utf8");
   const sd = fs.readFileSync(path.join(srcRoot, "services", "canonicalSalesDispatchService.js"), "utf8");
@@ -446,11 +446,9 @@ await run("Live sources — QT/OA/PI use applyManual; ALLOC/SI invoiceNo not upd
   assert.ok(sales.includes('documentType: "OA"'));
   assert.ok(sales.includes('documentType: "PI"'));
   assert.ok(sd.includes('documentType: "SD"'));
-  // Allocation / SI: no applyManual for renumber; invoiceNo not in update allowed list
-  assert.equal(sales.includes('documentType: "ALLOC"'), false);
+  // SI renumber remains out of scope (ALLOC controlled rename is covered by P3 tests)
   assert.equal(sales.includes('documentType: "SI"'), false);
   assert.ok(!/allowed = \[[^\]]*["']invoiceNo["']/s.test(sales));
-  assert.equal(sales.includes("req.body.allocationNo"), false);
   assert.equal(sales.includes("req.body.invoiceNo"), false);
 });
 

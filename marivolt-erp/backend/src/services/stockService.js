@@ -782,6 +782,7 @@ export async function allocateStock({
   sourceModule = "SALES",
   allowNegative = false,
   effectKey = "",
+  allocationId = null,
 }) {
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
@@ -874,6 +875,8 @@ export async function allocateStock({
     sourceModule,
     isNegativeAllocation: after.isNegativeAvailable,
     effectKey: ek,
+    allocationId: allocationId || null,
+    sourceAllocationId: allocationId || null,
     ...after,
   });
   notifyReservationIntegrity(companyId, warehouse, article, "ALLOCATION", session);
@@ -898,6 +901,7 @@ export async function cancelAllocation({
   createdBy = "",
   sourceModule = "SALES",
   effectKey = "",
+  allocationId = null,
 }) {
   requireCompanyId(companyId);
   const q = Number(qty) || 0;
@@ -941,6 +945,8 @@ export async function cancelAllocation({
     createdBy,
     sourceModule,
     effectKey: ek,
+    allocationId: allocationId || null,
+    sourceAllocationId: allocationId || null,
     ...after,
   });
   notifyReservationIntegrity(companyId, warehouse, article, "ALLOCATION_CANCEL", session);

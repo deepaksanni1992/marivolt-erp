@@ -18,7 +18,7 @@ import ProformaInvoice from "../src/models/ProformaInvoice.js";
 import OrderAllocation from "../src/models/OrderAllocation.js";
 import StorePacking from "../src/models/StorePacking.js";
 import SalesInvoice from "../src/models/SalesInvoice.js";
-import stockService from "../src/services/stockService.js";
+import * as stockService from "../src/services/stockService.js";
 import StoreDispatch from "../src/models/StoreDispatch.js";
 import SalesDispatch from "../src/models/SalesDispatch.js";
 import SalesReturn from "../src/models/SalesReturn.js";
@@ -31,6 +31,8 @@ import CustomerLedger from "../src/models/CustomerLedger.js";
 import CashBankEntry from "../src/models/CashBankEntry.js";
 import SalesDoc from "../src/models/SalesDoc.js";
 import ApprovalRequest from "../src/models/ApprovalRequest.js";
+import StockLedger from "../src/models/StockLedger.js";
+import { resolveAllocReleaseEffectKey } from "../src/utils/allocationReservationKeys.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, "../.env") });
@@ -120,7 +122,16 @@ async function cancelAllocationsWithStockRelease(filter, dryRun) {
 
     await stockService.withTransaction(async (session) => {
       for (const [article, qty] of dedupeArticles(releaseLines)) {
-        const effectKey = `alloc:release:${String(alloc.companyId)}:${String(alloc.allocationNo)}:${article}`;
+        const resolved = await resolveAllocReleaseEffectKey({
+          companyId: alloc.companyId,
+          allocation: alloc,
+          article,
+          reserveExists: async (effectKey) => {
+            const q = StockLedger.findOne({ effectKey }).select("_id").lean();
+            if (session) q.session(session);
+            return Boolean(await q);
+          },
+        });
         try {
           await stockService.cancelAllocation({
             session,
@@ -134,7 +145,8 @@ async function cancelAllocationsWithStockRelease(filter, dryRun) {
             remarks: "Customer transaction wipe — atomic cancel with reservation release",
             createdBy: "deleteCustomerTransactions.mjs",
             sourceModule: "SALES",
-            effectKey,
+            effectKey: resolved.effectKey,
+            allocationId: alloc._id,
           });
         } catch (err) {
           // Already released / never reserved — still allow document cancel (idempotent wipe).

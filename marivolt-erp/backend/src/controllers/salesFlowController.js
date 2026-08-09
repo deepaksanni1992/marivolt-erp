@@ -23,8 +23,15 @@ import {
   validateManualSalesDocumentNumber,
 } from "../utils/salesDocNumber.js";
 import { assertSalesDocumentNumberChangeAllowed } from "../utils/salesDocumentNumberChangeGuard.js";
+import { evaluateOrderAllocationNumberEditability } from "../utils/orderAllocationNumberEdit.js";
+import {
+  buildAllocReserveEffectKeyV2,
+  resolveAllocReleaseEffectKey,
+  RESERVATION_EFFECT_VERSION_V2,
+} from "../utils/allocationReservationKeys.js";
 import { formatDuplicateKeyError } from "../utils/mongoErrors.js";
 import * as stockService from "../services/stockService.js";
+import StockLedger from "../models/StockLedger.js";
 import {
   DOC_TYPES,
   assertTransition,
@@ -238,11 +245,26 @@ async function reserveAllocationLines({
   createdBy,
   allowNegative,
   sourceModule = "SALES",
+  allocation = null,
 }) {
+  // P3 — New reserves ALWAYS use immutable v2 identity. Never fall back to
+  // allocationNo-based v1 keys (compatibility-only for historical ledger rows).
+  if (!allocation?._id) {
+    const err = new Error(
+      "reserveAllocationLines requires allocation._id for immutable reservation identity (v2)"
+    );
+    err.statusCode = 500;
+    throw err;
+  }
   const negativeArticles = new Set();
   const ledgerIds = [];
+  const allocationId = allocation._id;
   for (const [article, qty] of dedupeLines(lines)) {
-    const effectKey = `alloc:reserve:${String(companyId)}:${String(referenceNo || "").trim()}:${article}`;
+    const effectKey = buildAllocReserveEffectKeyV2({
+      companyId,
+      allocationId,
+      article,
+    });
     const ledger = await stockService.allocateStock({
       session,
       companyId,
@@ -257,6 +279,7 @@ async function reserveAllocationLines({
       sourceModule,
       allowNegative,
       effectKey,
+      allocationId,
     });
     ledgerIds.push(ledger._id);
     if (ledger.isNegativeAllocation) negativeArticles.add(article);
@@ -4183,7 +4206,17 @@ export async function getOrderAllocation(req, res) {
       return { ...l, packedQty, pendingPackQty, pendingQty: pendingPackQty };
     });
     const snapshot = await allocationFulfilmentSnapshot(req.companyId, doc);
-    res.json({ ...doc, ...snapshot, lines });
+    const numberEdit = await evaluateOrderAllocationNumberEditability({
+      companyId: req.companyId,
+      allocation: doc,
+    });
+    res.json({
+      ...doc,
+      ...snapshot,
+      lines,
+      canEditAllocationNo: numberEdit.allowed,
+      allocationNoEditBlockedReason: numberEdit.allowed ? "" : numberEdit.reason,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -4443,6 +4476,9 @@ export async function convertOAToOrderAllocation(req, res) {
       await assertOaReadyForStockAllocation(req, oaFresh, session);
 
       // Create-first under unique partial index so a concurrent loser fails before stock reserve.
+      // P3 create order (single txn): create doc (_id) → stamp reservationIdentityNo +
+      // reservationEffectVersion=2 → reserve with alloc:reserve:v2:{companyId}:{allocationId}:{article}
+      // → bump StockBalance → write StockLedger → save stockReservedAt. Rollback if reserve fails.
       const existing = await findActiveAllocationByOA(req, oaFresh._id, session);
       if (existing) throw activeAllocationConflictError(existing);
 
@@ -4472,6 +4508,8 @@ export async function convertOAToOrderAllocation(req, res) {
               packingStatus: "NOT_PACKED",
               invoiceStatus: "NOT_INVOICED",
               dispatchStatus: "NOT_DISPATCHED",
+              reservationEffectVersion: RESERVATION_EFFECT_VERSION_V2,
+              reservationIdentityNo: allocationNo,
               createdBy: req.user?.email || "",
             },
           ],
@@ -4497,6 +4535,7 @@ export async function convertOAToOrderAllocation(req, res) {
         remarks: allowNegative ? "Reserve on OA→allocation (allowNegative)" : "Reserve on OA→allocation",
         createdBy: req.user?.email || "",
         allowNegative,
+        allocation: doc,
       });
       if (negativeArticles.size) {
         for (const line of doc.lines || []) {
@@ -4508,6 +4547,8 @@ export async function convertOAToOrderAllocation(req, res) {
         if (negativeReason) doc.negativeAllocationReason = negativeReason;
       }
       doc.stockReservedAt = new Date();
+      doc.reservationEffectVersion = RESERVATION_EFFECT_VERSION_V2;
+      if (!doc.reservationIdentityNo) doc.reservationIdentityNo = allocationNo;
       doc.updatedBy = req.user?.email || "";
       await doc.save({ session });
       oaFresh.status = "PACKING";
@@ -4773,6 +4814,8 @@ export async function convertProformaToOrderAllocation(req, res) {
               packingStatus: "NOT_PACKED",
               invoiceStatus: "NOT_INVOICED",
               dispatchStatus: "NOT_DISPATCHED",
+              reservationEffectVersion: RESERVATION_EFFECT_VERSION_V2,
+              reservationIdentityNo: allocationNo,
               createdBy: req.user?.email || "",
             },
           ],
@@ -4802,6 +4845,7 @@ export async function convertProformaToOrderAllocation(req, res) {
         remarks: allowNegative ? "Reserve on proforma→allocation (allowNegative)" : "Reserve on proforma→allocation",
         createdBy: req.user?.email || "",
         allowNegative,
+        allocation: doc,
       });
       if (negativeArticles.size) {
         for (const line of doc.lines || []) {
@@ -4813,6 +4857,8 @@ export async function convertProformaToOrderAllocation(req, res) {
         if (negativeReason) doc.negativeAllocationReason = negativeReason;
       }
       doc.stockReservedAt = new Date();
+      doc.reservationEffectVersion = RESERVATION_EFFECT_VERSION_V2;
+      if (!doc.reservationIdentityNo) doc.reservationIdentityNo = allocationNo;
       doc.updatedBy = req.user?.email || "";
       await doc.save({ session });
     });
@@ -4929,7 +4975,16 @@ export async function cancelOrderAllocation(req, res) {
       // alone (legacy rows / deleted-doc orphans left reserved without that stamp).
       if (releaseLines.length) {
         for (const [article, qty] of dedupeLines(releaseLines)) {
-          const effectKey = `alloc:release:${String(req.companyId)}:${String(alloc.allocationNo)}:${article}`;
+          const resolved = await resolveAllocReleaseEffectKey({
+            companyId: req.companyId,
+            allocation: alloc,
+            article,
+            reserveExists: async (effectKey) => {
+              const q = StockLedger.findOne({ effectKey }).select("_id").lean();
+              if (session) q.session(session);
+              return Boolean(await q);
+            },
+          });
           await stockService.cancelAllocation({
             session,
             companyId: req.companyId,
@@ -4942,7 +4997,8 @@ export async function cancelOrderAllocation(req, res) {
             remarks: reason,
             createdBy: req.user?.email || "",
             sourceModule: "SALES",
-            effectKey,
+            effectKey: resolved.effectKey,
+            allocationId: alloc._id,
           });
         }
       }
@@ -4970,6 +5026,124 @@ export async function cancelOrderAllocation(req, res) {
       return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
     }
     res.status(400).json({ message: err.message });
+  }
+}
+
+/**
+ * P3 — Narrow scoped allocation number change (backend-enforced lifecycle + v2 identity).
+ * Body: { allocationNo }
+ */
+export async function updateOrderAllocationNumber(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    if (req.body?.allocationNo === undefined) {
+      return res.status(400).json({ message: "allocationNo is required" });
+    }
+    // Internal system fields — never client-writable.
+    if (
+      req.body?.reservationEffectVersion !== undefined ||
+      req.body?.reservationIdentityNo !== undefined
+    ) {
+      return res.status(400).json({
+        message: "reservationEffectVersion and reservationIdentityNo are system fields and cannot be changed.",
+      });
+    }
+
+    const doc = await OrderAllocation.findOne(withCompany(req, { _id: id }));
+    if (!doc) return res.status(404).json({ message: "Not found" });
+
+    const previousNo = String(doc.allocationNo || "").trim();
+    const frozenIdentityNo = String(doc.reservationIdentityNo || "").trim();
+    const frozenEffectVersion = Number(doc.reservationEffectVersion) || 1;
+    let numberChange = null;
+
+    try {
+      const validated = validateManualSalesDocumentNumber({
+        value: req.body.allocationNo,
+        expectedDocumentType: "ALLOC",
+      });
+      if (validated.number !== previousNo) {
+        await assertSalesDocumentNumberChangeAllowed({
+          companyId: req.companyId,
+          documentType: "ORDER_ALLOCATION",
+          documentId: doc._id,
+          document: doc,
+        });
+        const prepared = await applyManualSalesDocumentNumber({
+          companyId: req.companyId,
+          documentType: "ALLOC",
+          value: req.body.allocationNo,
+          model: OrderAllocation,
+          field: "allocationNo",
+          excludeId: doc._id,
+          previousNumber: previousNo,
+        });
+        numberChange = { oldNumber: previousNo, newNumber: prepared.number };
+        doc.allocationNo = prepared.number;
+      } else {
+        doc.allocationNo = validated.number;
+      }
+    } catch (numErr) {
+      return res.status(numErr.statusCode || 400).json({ message: numErr.message });
+    }
+
+    if (!numberChange) {
+      const numberEdit = await evaluateOrderAllocationNumberEditability({
+        companyId: req.companyId,
+        allocation: doc,
+      });
+      return res.json({
+        ...doc.toObject(),
+        canEditAllocationNo: numberEdit.allowed,
+        allocationNoEditBlockedReason: numberEdit.allowed ? "" : numberEdit.reason,
+      });
+    }
+
+    // Never mutate frozen reservation identity / version on display rename.
+    doc.reservationIdentityNo = frozenIdentityNo;
+    doc.reservationEffectVersion = frozenEffectVersion;
+    doc.updatedBy = req.user?.email || "";
+    try {
+      await doc.save();
+    } catch (saveErr) {
+      const dup = mapSalesDocNumberDuplicateError(saveErr, {
+        documentLabel: "Order Allocation",
+        number: numberChange.newNumber,
+      });
+      if (dup) return res.status(dup.statusCode || 409).json({ message: dup.message });
+      throw saveErr;
+    }
+
+    await writeAudit(req, {
+      action: "UPDATE",
+      module: "SALES",
+      entityType: "ORDER_ALLOCATION",
+      entityId: doc._id,
+      documentNo: doc.allocationNo,
+      description: `Order Allocation number changed from ${numberChange.oldNumber || "—"} to ${numberChange.newNumber}`,
+      beforeData: { allocationNo: numberChange.oldNumber },
+      afterData: { allocationNo: numberChange.newNumber },
+      metadata: {
+        documentNumberChanged: true,
+        documentType: "ORDER_ALLOCATION",
+        oldNumber: numberChange.oldNumber,
+        newNumber: numberChange.newNumber,
+      },
+    });
+
+    const fresh = await OrderAllocation.findOne(withCompany(req, { _id: id })).lean();
+    const numberEdit = await evaluateOrderAllocationNumberEditability({
+      companyId: req.companyId,
+      allocation: fresh,
+    });
+    res.json({
+      ...fresh,
+      canEditAllocationNo: numberEdit.allowed,
+      allocationNoEditBlockedReason: numberEdit.allowed ? "" : numberEdit.reason,
+    });
+  } catch (err) {
+    res.status(err.statusCode || 400).json({ message: err.message });
   }
 }
 

@@ -84,6 +84,21 @@ const orderAllocationSchema = new mongoose.Schema(
     },
     /** Set when SALES_RESERVE was applied for this allocation (legacy rows may be null). */
     stockReservedAt: { type: Date, default: null },
+    /**
+     * P3 — Reservation identity family semantics (not "reserve succeeded").
+     * 1 = legacy / missing field → v1 human-number keys
+     * 2 = immutable v2 keys (allocationId + article)
+     * Default stays 1 so hydrated legacy docs never masquerade as v2.
+     * New creates explicitly set 2 before reserve; do not change default globally.
+     */
+    reservationEffectVersion: { type: Number, default: 1, min: 1 },
+    /**
+     * P3 — Frozen ORIGINAL allocationNo used for v1 effectKey reconstruction.
+     * Immutable after first establishment; never updated on display rename.
+     * Empty on pre-P3 legacy rows → release falls back to current allocationNo
+     * (safe because legacy active reservations cannot be renamed).
+     */
+    reservationIdentityNo: { type: String, default: "", trim: true },
     /** True when at least one line was reserved while available stock was below 0. */
     hasNegativeAllocation: { type: Boolean, default: false, index: true },
     /** Audit trail captured when an admin approved overriding negative stock at allocation time. */

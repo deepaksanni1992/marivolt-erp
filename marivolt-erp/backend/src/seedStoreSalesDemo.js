@@ -211,6 +211,8 @@ async function seedOneCompany(company) {
             model: "Inline",
             esn: "ESN-SEED-1",
             status: "OPEN",
+            reservationEffectVersion: 2,
+            reservationIdentityNo: allocationNo,
             remarks: DEMO_TAG,
             lines: [
               {
@@ -235,6 +237,7 @@ async function seedOneCompany(company) {
         { session }
       );
 
+      const { buildAllocReserveEffectKeyV2 } = await import("./utils/allocationReservationKeys.js");
       await stockService.allocateStock({
         session,
         companyId,
@@ -247,7 +250,15 @@ async function seedOneCompany(company) {
         remarks: DEMO_TAG,
         createdBy: "seed:store-sales-demo",
         sourceModule: "SALES",
+        effectKey: buildAllocReserveEffectKeyV2({
+          companyId,
+          allocationId: allocation._id,
+          article: ARTICLE,
+        }),
+        allocationId: allocation._id,
       });
+      allocation.stockReservedAt = new Date();
+      await allocation.save({ session });
 
       const packingNo = `${code}-ERP-DEMO-PACK`;
       const packQty = 6;
