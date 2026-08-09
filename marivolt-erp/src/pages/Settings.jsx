@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   apiGet,
@@ -14,6 +14,14 @@ import { FormField, SelectInput, TextInput } from "../components/erp/FormField.j
 import { useAuth } from "../context/AuthContext.jsx";
 import LabelSettingsPanel from "../components/store/LabelSettingsPanel.jsx";
 import { notify, confirmDialog } from "../lib/notifications.js";
+import { getFrontendCommit, shortCommit } from "../lib/deploymentVersion.js";
+import {
+  buildCreateUserPayload,
+  canShowCreateUserUi,
+  roleDisplayLabel,
+  validateCreateUserForm,
+} from "../lib/userAdmin.js";
+import { isFullAdminRole } from "../lib/rbac.js";
 
 const TABS = [
   { id: "companies", label: "Companies" },
@@ -26,6 +34,7 @@ const TABS = [
   { id: "approvalQueue", label: "Approval Queue" },
   { id: "users", label: "User Management" },
   { id: "activity", label: "User Activity" },
+  { id: "deployment", label: "Deployment" },
 ];
 
 function fmtDate(value) {
@@ -90,6 +99,7 @@ export default function Settings() {
       {tab === "approvalQueue" && <ApprovalQueueTab />}
       {tab === "users" && <UsersTab />}
       {tab === "activity" && <ActivityTab />}
+      {tab === "deployment" && <DeploymentTab />}
     </div>
   );
 }
@@ -1638,19 +1648,82 @@ function ApprovalQueueTab() {
 }
 
 /* ----------------------------------------------------------------- */
-/* User Management (admin — 2FA status / reset only, no secrets)      */
+/* User Management (admin — create + 2FA reset; no secrets logged)    */
 /* ----------------------------------------------------------------- */
+
+const EMPTY_CREATE_USER = {
+  name: "",
+  username: "",
+  email: "",
+  role: "staff",
+  allowedCompanies: [],
+  defaultCompanyId: "",
+  temporaryPassword: "",
+  isActive: true,
+};
+
+function companyLabel(c) {
+  if (!c) return "—";
+  if (typeof c === "string") return c;
+  const code = String(c.code || "").trim();
+  const name = String(c.name || "").trim();
+  if (code && name) return `${code} — ${name}`;
+  return name || code || String(c._id || "—");
+}
+
+function formatCompanies(list) {
+  if (!Array.isArray(list) || !list.length) return "—";
+  return list.map(companyLabel).join(", ");
+}
 
 function UsersTab() {
   const qc = useQueryClient();
   const { auth } = useAuth();
+  const actorRole = auth?.user?.role;
+  const showCreate = canShowCreateUserUi(actorRole);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [form, setForm] = useState(EMPTY_CREATE_USER);
+
   const { data: users = [], isLoading, refetch } = useQuery({
     queryKey: ["authUsers"],
     queryFn: () => apiGet("/auth/users"),
   });
 
+  const { data: rolesMeta } = useQuery({
+    queryKey: ["authAssignableRoles"],
+    queryFn: () => apiGet("/auth/assignable-roles"),
+    enabled: showCreate,
+  });
+
+  const { data: companiesData } = useQuery({
+    queryKey: ["adminCompanies"],
+    queryFn: () => apiGet("/admin/companies"),
+    enabled: showCreate,
+  });
+
+  const roleOptions = useMemo(() => {
+    const roles = Array.isArray(rolesMeta?.roles) ? rolesMeta.roles : [];
+    const labels = rolesMeta?.labels || {};
+    return roles.map((r) => ({
+      value: r,
+      label: labels[r] || roleDisplayLabel(r),
+    }));
+  }, [rolesMeta]);
+
+  const companies = useMemo(() => {
+    const items = companiesData?.items || [];
+    return items.filter((c) => c?.isActive !== false);
+  }, [companiesData]);
+
   const reset2fa = useMutation({
     mutationFn: (userId) => apiPost(`/auth/users/${userId}/reset-2fa`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["authUsers"] });
+    },
+  });
+
+  const createUser = useMutation({
+    mutationFn: (payload) => apiPost("/auth/users", payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["authUsers"] });
     },
@@ -1663,12 +1736,68 @@ function UsersTab() {
     return name || email || u.username || "—";
   }
 
+  function openCreate() {
+    const firstId = companies[0]?._id ? String(companies[0]._id) : "";
+    setForm({
+      ...EMPTY_CREATE_USER,
+      role: roleOptions.some((o) => o.value === "store_operator")
+        ? "staff"
+        : roleOptions[0]?.value || "staff",
+      allowedCompanies: firstId ? [firstId] : [],
+      defaultCompanyId: firstId,
+      temporaryPassword: "",
+    });
+    setCreateOpen(true);
+  }
+
+  function closeCreate() {
+    setCreateOpen(false);
+    setForm(EMPTY_CREATE_USER);
+  }
+
+  function toggleAllowedCompany(id) {
+    const cid = String(id);
+    setForm((prev) => {
+      const set = new Set((prev.allowedCompanies || []).map(String));
+      if (set.has(cid)) set.delete(cid);
+      else set.add(cid);
+      const allowedCompanies = [...set];
+      let defaultCompanyId = String(prev.defaultCompanyId || "");
+      if (defaultCompanyId && !allowedCompanies.includes(defaultCompanyId)) {
+        defaultCompanyId = allowedCompanies[0] || "";
+      }
+      if (!defaultCompanyId && allowedCompanies[0]) defaultCompanyId = allowedCompanies[0];
+      return { ...prev, allowedCompanies, defaultCompanyId };
+    });
+  }
+
+  async function onSubmitCreate(e) {
+    e.preventDefault();
+    const validated = validateCreateUserForm(form);
+    if (!validated.ok) {
+      notify.error(validated.errors[0] || "Invalid form");
+      return;
+    }
+    if (roleOptions.length && !roleOptions.some((o) => o.value === validated.role)) {
+      notify.error("Selected role is not assignable");
+      return;
+    }
+    const payload = buildCreateUserPayload(form, validated);
+    createUser.mutate(payload, {
+      onSuccess: () => {
+        notify.success(`User created: ${payload.email}`);
+        closeCreate();
+      },
+      onError: (err) => notify.error(err.message || "Create user failed"),
+    });
+  }
+
   async function onReset2fa(user) {
     const label = userLabel(user);
     if (
-      !await confirmDialog(
+      !(await confirmDialog(
         `Reset Authenticator for ${label}? This clears only that user's 2FA. Their secret and QR code are not shown.`
-      )
+      ))
     ) {
       return;
     }
@@ -1681,15 +1810,21 @@ function UsersTab() {
   return (
     <div>
       <p className="mb-3 text-sm text-slate-600">
-        View 2FA status per user and reset if someone loses their phone. Users enable Authenticator from their own
-        Security page (profile menu). Secrets and QR codes are never shown here.
+        Create users for authorized admin roles, view company assignment and 2FA status, and reset Authenticator if
+        someone loses their phone. Secrets and QR codes are never shown here.
       </p>
-      <div className="mb-3 flex justify-end">
-        <button
-          type="button"
-          className="rounded-xl border px-3 py-2 text-sm"
-          onClick={() => refetch()}
-        >
+      <div className="mb-3 flex flex-wrap justify-end gap-2">
+        {showCreate ? (
+          <button
+            type="button"
+            className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white"
+            onClick={openCreate}
+            data-testid="create-user-open"
+          >
+            Create User
+          </button>
+        ) : null}
+        <button type="button" className="rounded-xl border px-3 py-2 text-sm" onClick={() => refetch()}>
           Refresh
         </button>
       </div>
@@ -1697,33 +1832,50 @@ function UsersTab() {
         <table className="min-w-full text-sm">
           <thead className="bg-slate-50">
             <tr>
-              <Th>User</Th>
-              <Th>2FA enabled</Th>
-              <Th>Enabled date</Th>
+              <Th>Username</Th>
+              <Th>Name / Email</Th>
+              <Th>Role</Th>
+              <Th>Default company</Th>
+              <Th>Allowed companies</Th>
+              <Th>Status</Th>
+              <Th>2FA</Th>
+              <Th>Last login</Th>
               <Th></Th>
             </tr>
           </thead>
           <tbody>
             {isLoading ? (
               <tr>
-                <td colSpan={4} className="px-3 py-6 text-center text-slate-500">
+                <td colSpan={9} className="px-3 py-6 text-center text-slate-500">
                   Loading...
                 </td>
               </tr>
             ) : users.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-3 py-6 text-center text-slate-500">
+                <td colSpan={9} className="px-3 py-6 text-center text-slate-500">
                   No users found.
                 </td>
               </tr>
             ) : (
               users.map((u) => (
                 <tr key={u._id} className="border-t border-slate-100 hover:bg-slate-50">
-                  <Td className="font-medium">{userLabel(u)}</Td>
+                  <Td className="font-medium">{u.username || "—"}</Td>
+                  <Td>
+                    <div className="font-medium text-slate-800">{u.name || "—"}</div>
+                    <div className="text-xs text-slate-500">{u.email || "—"}</div>
+                  </Td>
+                  <Td>{roleDisplayLabel(u.role)}</Td>
+                  <Td>{companyLabel(u.defaultCompany)}</Td>
+                  <Td className="max-w-[220px] truncate" title={formatCompanies(u.allowedCompanies)}>
+                    {formatCompanies(u.allowedCompanies)}
+                  </Td>
+                  <Td>
+                    {u.isActive === false ? badge("Inactive", "amber") : badge("Active", "green")}
+                  </Td>
                   <Td>
                     {u.twoFactorEnabled ? badge("Yes", "green") : badge("No", "slate")}
                   </Td>
-                  <Td>{fmtDate(u.twoFactorEnabledAt)}</Td>
+                  <Td>{fmtDate(u.lastLoginAt)}</Td>
                   <Td>
                     {u.twoFactorEnabled ? (
                       <button
@@ -1749,6 +1901,170 @@ function UsersTab() {
           </tbody>
         </table>
       </div>
+
+      <Modal open={createOpen} title="Create User" subtitle="Admin-only. Temporary password is not stored in the browser after submit." onClose={closeCreate} wide>
+        <form className="space-y-3" onSubmit={onSubmitCreate} autoComplete="off">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <FormField label="Username">
+              <TextInput
+                value={form.username}
+                onChange={(e) => setForm((p) => ({ ...p, username: e.target.value }))}
+                placeholder="optional login username"
+                autoComplete="off"
+              />
+            </FormField>
+            <FormField label="Display name">
+              <TextInput
+                value={form.name}
+                onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+                placeholder="Full name"
+                autoComplete="off"
+              />
+            </FormField>
+            <FormField label="Email" required>
+              <TextInput
+                type="email"
+                value={form.email}
+                onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))}
+                required
+                autoComplete="off"
+              />
+            </FormField>
+            <FormField label="Role" required>
+              <SelectInput
+                value={form.role}
+                onChange={(e) => setForm((p) => ({ ...p, role: e.target.value }))}
+                data-testid="create-user-role"
+              >
+                {roleOptions.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </SelectInput>
+            </FormField>
+          </div>
+
+          <FormField label="Allowed companies" required>
+            <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-slate-200 p-2">
+              {companies.length === 0 ? (
+                <p className="text-xs text-slate-500">No active companies available.</p>
+              ) : (
+                companies.map((c) => {
+                  const id = String(c._id);
+                  const checked = (form.allowedCompanies || []).map(String).includes(id);
+                  return (
+                    <label key={id} className="flex cursor-pointer items-center gap-2 text-sm">
+                      <input type="checkbox" checked={checked} onChange={() => toggleAllowedCompany(id)} />
+                      <span>{companyLabel(c)}</span>
+                    </label>
+                  );
+                })
+              )}
+            </div>
+          </FormField>
+
+          <FormField label="Default company" required>
+            <SelectInput
+              value={form.defaultCompanyId}
+              onChange={(e) => setForm((p) => ({ ...p, defaultCompanyId: e.target.value }))}
+            >
+              <option value="">Select…</option>
+              {(form.allowedCompanies || []).map((id) => {
+                const c = companies.find((x) => String(x._id) === String(id));
+                return (
+                  <option key={id} value={id}>
+                    {companyLabel(c || { _id: id })}
+                  </option>
+                );
+              })}
+            </SelectInput>
+          </FormField>
+
+          <FormField label="Temporary password" required>
+            <TextInput
+              type="password"
+              value={form.temporaryPassword}
+              onChange={(e) => setForm((p) => ({ ...p, temporaryPassword: e.target.value }))}
+              placeholder="Min. 10 characters"
+              autoComplete="new-password"
+              required
+            />
+          </FormField>
+
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={form.isActive !== false}
+              onChange={(e) => setForm((p) => ({ ...p, isActive: e.target.checked }))}
+            />
+            Active
+          </label>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" className="rounded-xl border px-3 py-2 text-sm" onClick={closeCreate}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+              disabled={createUser.isPending}
+              data-testid="create-user-submit"
+            >
+              {createUser.isPending ? "Creating…" : "Create User"}
+            </button>
+          </div>
+        </form>
+      </Modal>
+    </div>
+  );
+}
+
+function DeploymentTab() {
+  const { auth } = useAuth();
+  const admin = isFullAdminRole(auth?.user?.role);
+  const frontendCommit = getFrontendCommit();
+  const { data: version, isLoading, error, refetch } = useQuery({
+    queryKey: ["apiVersion"],
+    queryFn: () => apiGet("/version"),
+    enabled: admin,
+    retry: false,
+  });
+
+  if (!admin) {
+    return <p className="text-sm text-slate-600">Deployment metadata is available to admin roles only.</p>;
+  }
+
+  return (
+    <div className="max-w-xl space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
+      <p className="text-sm text-slate-600">
+        Non-secret build identifiers for verifying frontend and backend deployments before operational user setup.
+      </p>
+      <dl className="space-y-2 text-sm">
+        <div className="flex justify-between gap-4 border-b border-slate-100 py-2">
+          <dt className="text-slate-500">Frontend commit</dt>
+          <dd className="font-mono text-slate-900" data-testid="frontend-commit">
+            {shortCommit(frontendCommit) || "unknown"}
+          </dd>
+        </div>
+        <div className="flex justify-between gap-4 border-b border-slate-100 py-2">
+          <dt className="text-slate-500">Backend commit</dt>
+          <dd className="font-mono text-slate-900" data-testid="backend-commit">
+            {isLoading ? "…" : shortCommit(version?.commit) || (error ? "unavailable" : "unknown")}
+          </dd>
+        </div>
+        <div className="flex justify-between gap-4 border-b border-slate-100 py-2">
+          <dt className="text-slate-500">Backend environment</dt>
+          <dd className="font-mono text-slate-900">{version?.environment || "—"}</dd>
+        </div>
+        <div className="flex justify-between gap-4 py-2">
+          <dt className="text-slate-500">Backend build time</dt>
+          <dd className="font-mono text-slate-900">{version?.buildTime || "—"}</dd>
+        </div>
+      </dl>
+      <button type="button" className="rounded-xl border px-3 py-2 text-sm" onClick={() => refetch()}>
+        Refresh backend version
+      </button>
     </div>
   );
 }

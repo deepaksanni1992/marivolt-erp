@@ -267,6 +267,7 @@ run("Admin user create endpoint exists with role guards", () => {
   assert.match(src, /assertAssignableCompanies/);
   assert.match(src, /pickUserCreateBody/);
   assert.ok(ADMIN_ASSIGNABLE_ROLES.includes("staff"));
+  assert.ok(ADMIN_ASSIGNABLE_ROLES.includes("store_operator"));
 });
 
 run("Frontend has no public register UI", () => {

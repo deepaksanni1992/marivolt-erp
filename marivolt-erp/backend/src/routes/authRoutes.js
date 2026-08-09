@@ -10,7 +10,9 @@ import { authRateLimitersFromEnv } from "../middleware/rateLimit.js";
 import {
   assertAssignableCompanies,
   assertAssignableRole,
+  assignableRolesForActor,
   pickUserCreateBody,
+  ROLE_DISPLAY_LABELS,
   resolveCreatePassword,
 } from "../utils/authAdminPolicy.js";
 import {
@@ -694,6 +696,25 @@ router.get("/companies", requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/auth/assignable-roles — roles Admin may assign when creating users
+router.get(
+  "/assignable-roles",
+  requireAuth,
+  requireCompanyContext,
+  requireRole(...adminRoles),
+  async (req, res) => {
+    try {
+      const roles = assignableRolesForActor(req.user?.role);
+      res.json({
+        roles,
+        labels: ROLE_DISPLAY_LABELS,
+      });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
 // GET /api/auth/users — list users (admin only)
 router.get("/users", requireAuth, requireCompanyContext, requireRole("super_admin", "company_admin", "admin"), async (req, res) => {
   try {
@@ -703,7 +724,7 @@ router.get("/users", requireAuth, requireCompanyContext, requireRole("super_admi
         : { allowedCompanies: req.companyId };
     const users = await User.find(filter)
       .select(
-        "name email username role allowedCompanies defaultCompany createdAt twoFactorEnabled twoFactorEnabledAt"
+        "name email username role allowedCompanies defaultCompany isActive lastLoginAt createdAt twoFactorEnabled twoFactorEnabledAt"
       )
       .populate("allowedCompanies", "name code")
       .populate("defaultCompany", "name code")

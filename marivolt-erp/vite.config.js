@@ -9,8 +9,23 @@ const apiProxy = {
   },
 };
 
+/** Prefer platform-injected SHA; never hardcode a release commit in source. */
+const appCommit = String(
+  process.env.VERCEL_GIT_COMMIT_SHA ||
+    process.env.VITE_APP_COMMIT ||
+    process.env.COMMIT_SHA ||
+    process.env.GIT_COMMIT_SHA ||
+    process.env.RENDER_GIT_COMMIT ||
+    ""
+)
+  .trim()
+  .slice(0, 40);
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  define: {
+    "import.meta.env.VITE_APP_COMMIT": JSON.stringify(appCommit),
+  },
   server: {
     // `vite` dev: same-origin `/api/*` → local Express (backend/.env + S3).
     proxy: apiProxy,

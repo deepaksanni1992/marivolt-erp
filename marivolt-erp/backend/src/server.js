@@ -47,6 +47,7 @@ import { isCustomsEnabled } from "./config/customsConfig.js";
 import { ensureSearchIndexes } from "./config/searchIndexes.js";
 import { isS3Configured } from "./config/s3.js";
 import { createCorsOriginDelegate } from "./utils/corsAllowlist.js";
+import { getDeploymentVersion } from "./utils/deploymentVersion.js";
 import { shutdownBrowser } from "./services/pdfBrowserManager.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -136,6 +137,10 @@ async function startServer() {
 
     app.get("/api/health", (req, res) => {
       res.json({ ok: true, message: "Marivoltz API running" });
+    });
+
+    app.get("/api/version", (req, res) => {
+      res.json(getDeploymentVersion());
     });
 
     app.use((req, res) => {

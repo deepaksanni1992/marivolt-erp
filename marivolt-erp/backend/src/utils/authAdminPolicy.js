@@ -75,6 +75,35 @@ export function normalizeRole(role) {
     .trim();
 }
 
+/** Human labels for Admin UI (backend remains allowlist source of truth). */
+export const ROLE_DISPLAY_LABELS = Object.freeze({
+  super_admin: "Super Admin",
+  company_admin: "Company Admin",
+  admin: "Admin",
+  staff: "Staff",
+  purchase_sales: "Purchase & Sales",
+  accounts_logistics: "Accounts & Logistics",
+  sales: "Sales",
+  purchase: "Purchase",
+  store: "Store",
+  store_operator: "Store Operator",
+  logistics: "Logistics",
+  accounts: "Accounts",
+  view_only: "View Only",
+});
+
+export function roleDisplayLabel(role) {
+  const r = normalizeRole(role);
+  return ROLE_DISPLAY_LABELS[r] || r || "—";
+}
+
+/** Roles an actor may assign in Admin Create User UI. */
+export function assignableRolesForActor(actorRole) {
+  const actor = normalizeRole(actorRole);
+  if (actor === "super_admin") return [...USER_ROLES];
+  return [...ADMIN_ASSIGNABLE_ROLES];
+}
+
 export function isSuperAdminRole(role) {
   return normalizeRole(role) === "super_admin";
 }
