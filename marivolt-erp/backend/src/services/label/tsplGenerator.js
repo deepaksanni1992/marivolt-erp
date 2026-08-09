@@ -168,42 +168,119 @@ export function getFixedLabelSize() {
 /**
  * Analyze packing Description fit for 100×50 layout (same rules as TSPL).
  * QTY row height is reserved so description never overlaps it.
+ * Prefer dynamic desc height from content; leftover height redistributes to fixed rows.
  */
-export function analyzePackingDescriptionLayout(description = "", opts = {}) {
+export function computePackingLabelLayout(description = "", opts = {}) {
   const dpi = Number(opts.dpi) || 203;
   const dpm = dotsPerMm(dpi);
   const scale = (dotsAt203) => Math.round(dotsAt203 * (dpm / 8));
   const heightDots = Math.round(LABEL_HEIGHT_MM * dpm);
   const margin = scale(10);
   const outerH = heightDots - margin * 2;
-  const fixedRowH = scale(28);
-  const qtyRowH = scale(36);
-  const fixedBeforeDesc = 7;
-  const usedFixed = fixedBeforeDesc * fixedRowH + qtyRowH;
-  const availableForDesc = Math.max(fixedRowH, outerH - usedFixed);
-  const availableMaxLines = Math.max(2, Math.floor(availableForDesc / scale(16)));
+  const labelColRatio = 0.26;
 
+  // Minimums — slightly taller than prior 28 for readability; QTY reserved largest.
+  const minNormalH = scale(26);
+  const minEmphasisH = scale(30); // Customer / Article / Part No.
+  const minDescH = scale(24);
+  const qtyRowH = scale(44);
+
+  const fixedSpecs = [
+    { key: "Customer", minH: minEmphasisH, grow: 1.2 },
+    { key: "Customer Ref.", minH: minNormalH, grow: 0.8 },
+    { key: "Brand", minH: minNormalH, grow: 0.8 },
+    { key: "Model", minH: minNormalH, grow: 0.8 },
+    { key: "Article", minH: minEmphasisH, grow: 1.1 },
+    { key: "S. No.", minH: minNormalH, grow: 0.7 },
+    { key: "Part No.", minH: minEmphasisH, grow: 1.1 },
+  ];
+
+  const fixedMinSum = fixedSpecs.reduce((s, r) => s + r.minH, 0);
+  const reserved = fixedMinSum + qtyRowH;
+  const availableForDesc = Math.max(minDescH, outerH - reserved);
+  const availableMaxLines = Math.max(2, Math.floor(availableForDesc / scale(18)));
+
+  // Prefer slightly larger description text; shrink only when needed.
   const descFit = fitPackingDescription(description || "", {
-    maxWidthChars: 36,
+    maxWidthChars: 40,
     maxLines: 5,
-    preferredFontSize: 7,
+    preferredFontSize: 8,
     minFontSize: 5,
     availableMaxLines,
   });
 
-  const descLineDots = Math.max(scale(16), Math.round((descFit.fontSize / 7) * scale(18)));
-  const descH = Math.min(
-    availableForDesc,
-    Math.max(fixedRowH, descFit.lines.length * descLineDots + scale(4))
+  const descLineDots = Math.max(scale(17), Math.round((descFit.fontSize / 8) * scale(20)));
+  const contentDescH = Math.max(
+    minDescH,
+    descFit.lines.length * descLineDots + scale(6)
   );
+  // Dynamic: short text → one-line-ish row; long text grows up to available.
+  let descH = Math.min(availableForDesc, contentDescH);
+
+  // Leftover when description is short — distribute to improve fixed-row readability.
+  let used = fixedMinSum + descH + qtyRowH;
+  let leftover = Math.max(0, outerH - used);
+  const heights = Object.fromEntries(fixedSpecs.map((r) => [r.key, r.minH]));
+  if (leftover > 0) {
+    const growTotal = fixedSpecs.reduce((s, r) => s + r.grow, 0) || 1;
+    for (const r of fixedSpecs) {
+      const share = Math.floor((leftover * r.grow) / growTotal);
+      const cap = r.minH + scale(10);
+      const next = Math.min(cap, heights[r.key] + share);
+      leftover -= next - heights[r.key];
+      heights[r.key] = next;
+    }
+    // Any remaining dots go to Description (still below availableForDesc).
+    if (leftover > 0) {
+      const room = availableForDesc - descH;
+      const add = Math.min(leftover, Math.max(0, room));
+      descH += add;
+      leftover -= add;
+    }
+    if (leftover > 0) {
+      heights.Customer = (heights.Customer || minEmphasisH) + leftover;
+    }
+  }
+
+  // Final guard: total must not exceed outerH (prefer trimming desc).
+  used =
+    fixedSpecs.reduce((s, r) => s + heights[r.key], 0) + descH + qtyRowH;
+  if (used > outerH) {
+    descH = Math.max(minDescH, descH - (used - outerH));
+  }
 
   return {
     ...descFit,
+    dpi,
+    scale,
+    margin,
+    outerH,
+    labelColRatio,
+    qtyRowH,
     descH,
     availableForDesc,
     qtyRowReserved: true,
     descriptionTruncated: descFit.truncated === true,
+    descLineDots,
+    rowHeights: {
+      ...heights,
+      Description: descH,
+      QTY: qtyRowH,
+    },
+    fonts: {
+      // TSPL font "0" multipliers [xMul, yMul]
+      fieldLabel: [1, 1],
+      valueNormal: [1, 1],
+      valueCustomer: [2, 1], // stronger when space allows (short names); layout still works for long
+      valueEmphasis: [2, 1], // Article / Part No.
+      valueQty: [2, 2], // strongest
+      description: [1, 1],
+    },
   };
+}
+
+export function analyzePackingDescriptionLayout(description = "", opts = {}) {
+  return computePackingLabelLayout(description, opts);
 }
 
 /**
@@ -215,7 +292,8 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
   const dpm = dotsPerMm(dpi);
   const scale = (dotsAt203) => Math.round(dotsAt203 * (dpm / 8));
 
-  const customer = escapeTspl(line.customerName || "");
+  const customerRaw = t(line.customerName);
+  const customer = escapeTspl(customerRaw);
   const customerRef = escapeTspl(line.customerRef || "") || "—";
   const brand = escapeTspl(line.brand || "") || "—";
   const modelName = escapeTspl(line.modelName || "") || "—";
@@ -230,35 +308,88 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
   const h = LABEL_HEIGHT_MM;
   const widthDots = Math.round(w * dpm);
   const heightDots = Math.round(h * dpm);
-  const margin = scale(10);
+  const layout = computePackingLabelLayout(line.description || "", { dpi });
+  const margin = layout.margin ?? scale(10);
   const outerX = margin;
   const outerY = margin;
   const outerW = widthDots - margin * 2;
-  const outerH = heightDots - margin * 2;
-  const labelColW = Math.round(outerW * 0.28);
+  const outerH = layout.outerH ?? heightDots - margin * 2;
+  const labelColW = Math.round(outerW * (layout.labelColRatio || 0.26));
   const valueColX = outerX + labelColW;
-  const textPad = scale(6);
-
-  // Fixed rows (except Description): Customer, Customer Ref, Brand, Model, Article, S.No., Part No., QTY
-  // Description is dynamic between Part No. and QTY.
-  const fixedRowH = scale(28);
-  const qtyRowH = scale(36);
+  const textPad = scale(5);
   const border = 2;
 
-  const layout = analyzePackingDescriptionLayout(line.description || "", { dpi });
-  const descFit = layout;
-  const descH = layout.descH;
+  const rh = layout.rowHeights;
+  const fonts = layout.fonts;
+  // Customer double-width only when name is short enough for the value column.
+  const customerMul =
+    customerRaw.length > 0 && customerRaw.length <= 22 ? fonts.valueCustomer : fonts.valueNormal;
 
   const rows = [
-    { label: "Customer", value: customer || "—", h: fixedRowH, boldValue: false },
-    { label: "Customer Ref.", value: customerRef, h: fixedRowH, boldValue: false },
-    { label: "Brand", value: brand, h: fixedRowH, boldValue: false },
-    { label: "Model", value: modelName, h: fixedRowH, boldValue: false },
-    { label: "Article", value: article, h: fixedRowH, boldValue: true },
-    { label: "S. No.", value: serialNo, h: fixedRowH, boldValue: false },
-    { label: "Part No.", value: partNo, h: fixedRowH, boldValue: false },
-    { label: "Description", value: null, h: descH, desc: true },
-    { label: "QTY", value: qtyDisplay, h: qtyRowH, boldValue: true },
+    {
+      label: "Customer",
+      value: customer || "—",
+      h: rh.Customer,
+      valueMul: customerMul,
+      labelMul: fonts.fieldLabel,
+    },
+    {
+      label: "Customer Ref.",
+      value: customerRef,
+      h: rh["Customer Ref."],
+      valueMul: fonts.valueNormal,
+      labelMul: fonts.fieldLabel,
+    },
+    {
+      label: "Brand",
+      value: brand,
+      h: rh.Brand,
+      valueMul: fonts.valueNormal,
+      labelMul: fonts.fieldLabel,
+    },
+    {
+      label: "Model",
+      value: modelName,
+      h: rh.Model,
+      valueMul: fonts.valueNormal,
+      labelMul: fonts.fieldLabel,
+    },
+    {
+      label: "Article",
+      value: article,
+      h: rh.Article,
+      valueMul: fonts.valueEmphasis,
+      labelMul: fonts.fieldLabel,
+    },
+    {
+      label: "S. No.",
+      value: serialNo,
+      h: rh["S. No."],
+      valueMul: fonts.valueNormal,
+      labelMul: fonts.fieldLabel,
+    },
+    {
+      label: "Part No.",
+      value: partNo,
+      h: rh["Part No."],
+      valueMul: fonts.valueEmphasis,
+      labelMul: fonts.fieldLabel,
+    },
+    {
+      label: "Description",
+      value: null,
+      h: rh.Description,
+      desc: true,
+      valueMul: fonts.description,
+      labelMul: fonts.fieldLabel,
+    },
+    {
+      label: "QTY",
+      value: qtyDisplay,
+      h: rh.QTY,
+      valueMul: fonts.valueQty,
+      labelMul: fonts.fieldLabel,
+    },
   ];
 
   const cmds = [
@@ -278,39 +409,49 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
     if (i < rows.length - 1) {
       cmds.push(`BAR ${outerX},${y2},${outerW},${1}`);
     }
-    const labelY = y + Math.max(scale(6), Math.floor((row.h - scale(16)) / 2));
-    cmds.push(`TEXT ${outerX + textPad},${labelY},"0",0,1,1,"${escapeTspl(row.label)}"`);
+    const [lx, ly] = row.labelMul || [1, 1];
+    const labelTextH = scale(ly >= 2 ? 22 : 16);
+    const labelY = y + Math.max(scale(4), Math.floor((row.h - labelTextH) / 2));
+    cmds.push(
+      `TEXT ${outerX + textPad},${labelY},"0",0,${lx},${ly},"${escapeTspl(row.label)}"`
+    );
 
     if (row.desc) {
-      const lh = Math.max(scale(16), Math.round((descFit.fontSize / 7) * scale(18)));
+      const lh = layout.descLineDots || Math.max(scale(17), Math.round((layout.fontSize / 8) * scale(20)));
       let dy = y + scale(4);
-      const mul = 1;
-      for (const dl of descFit.lines) {
-        cmds.push(`TEXT ${valueColX + textPad},${dy},"0",0,${mul},${mul},"${escapeTspl(dl)}"`);
+      const [dx, dyMul] = fonts.description;
+      for (const dl of layout.lines) {
+        cmds.push(
+          `TEXT ${valueColX + textPad},${dy},"0",0,${dx},${dyMul},"${escapeTspl(dl)}"`
+        );
         dy += lh;
       }
     } else {
-      const mul = row.boldValue ? 2 : 1;
-      const valueY = y + Math.max(scale(4), Math.floor((row.h - scale(mul === 2 ? 28 : 16)) / 2));
-      cmds.push(`TEXT ${valueColX + textPad},${valueY},"0",0,${mul},${mul === 2 ? 1 : 1},"${escapeTspl(row.value)}"`);
+      const [vx, vy] = row.valueMul || [1, 1];
+      const valueTextH = scale(vy >= 2 ? 28 : vx >= 2 ? 20 : 16);
+      const valueY = y + Math.max(scale(3), Math.floor((row.h - valueTextH) / 2));
+      cmds.push(
+        `TEXT ${valueColX + textPad},${valueY},"0",0,${vx},${vy},"${escapeTspl(row.value)}"`
+      );
     }
     y = y2;
   }
 
-  // Guard: QTY row always starts at or before outer bottom (no overlap beyond box).
   cmds.push("PRINT 1,1");
   return cmds.join("\r\n") + "\r\n";
 }
 
 /** Metadata companion for a packing face (overflow / fit). */
 export function packingLabelDescriptionMeta(line = {}, opts = {}) {
-  const layout = analyzePackingDescriptionLayout(line.description || "", opts);
+  const layout = computePackingLabelLayout(line.description || "", opts);
   return {
     descriptionTruncated: layout.descriptionTruncated === true,
     descriptionOverflow: layout.descriptionTruncated === true,
     descriptionFontSize: layout.fontSize,
     descriptionLineCount: layout.lines.length,
     descriptionFullLineCount: layout.fullLineCount,
+    descriptionLines: layout.lines,
+    rowHeights: layout.rowHeights,
   };
 }
 
@@ -329,27 +470,78 @@ export function buildPackingJobTspl(lines = [], opts = {}) {
   return parts.join("");
 }
 
-/** Preview-friendly rows from the same normalized packing line payload. */
+/** Preview-friendly rows from the same normalized packing line payload + layout weights. */
 export function packingLabelPreviewRows(line = {}) {
   const meta = packingLabelDescriptionMeta(line);
+  const heights = meta.rowHeights || {};
+  const totalH =
+    Object.values(heights).reduce((s, n) => s + (Number(n) || 0), 0) || 1;
+  const weight = (key, fallback = 1) =>
+    Math.max(0.5, ((Number(heights[key]) || fallback) / totalH) * 100);
+
+  const qtyValue =
+    t(line.qtyDisplay) || formatPackingQtyDisplay(line.labelQty, line.totalQty ?? line.qty);
+
   return [
-    { label: "Customer", value: t(line.customerName) || "—" },
-    { label: "Customer Ref.", value: t(line.customerRef) || "—" },
-    { label: "Brand", value: t(line.brand) || "—" },
-    { label: "Model", value: t(line.modelName) || "—" },
-    { label: "Article", value: t(line.article).toUpperCase() || "—" },
-    { label: "S. No.", value: line.serialNo != null && line.serialNo !== "" ? String(line.serialNo) : "—" },
-    { label: "Part No.", value: t(line.partNo || line.spn) || "—" },
-    { label: "Description", value: t(line.description) || "—" },
+    {
+      label: "Customer",
+      value: t(line.customerName) || "—",
+      emphasis: "customer",
+      weight: weight("Customer", 30),
+    },
+    {
+      label: "Customer Ref.",
+      value: t(line.customerRef) || "—",
+      emphasis: "normal",
+      weight: weight("Customer Ref.", 26),
+    },
+    {
+      label: "Brand",
+      value: t(line.brand) || "—",
+      emphasis: "normal",
+      weight: weight("Brand", 26),
+    },
+    {
+      label: "Model",
+      value: t(line.modelName) || "—",
+      emphasis: "normal",
+      weight: weight("Model", 26),
+    },
+    {
+      label: "Article",
+      value: t(line.article).toUpperCase() || "—",
+      emphasis: "strong",
+      weight: weight("Article", 30),
+    },
+    {
+      label: "S. No.",
+      value: line.serialNo != null && line.serialNo !== "" ? String(line.serialNo) : "—",
+      emphasis: "normal",
+      weight: weight("S. No.", 26),
+    },
+    {
+      label: "Part No.",
+      value: t(line.partNo || line.spn) || "—",
+      emphasis: "strong",
+      weight: weight("Part No.", 30),
+    },
+    {
+      label: "Description",
+      value: (meta.descriptionLines && meta.descriptionLines.length
+        ? meta.descriptionLines.join("\n")
+        : t(line.description)) || "—",
+      emphasis: "desc",
+      weight: weight("Description", 40),
+      descriptionTruncated: meta.descriptionTruncated,
+      descriptionLines: meta.descriptionLines || [],
+    },
     {
       label: "QTY",
-      value: t(line.qtyDisplay) || formatPackingQtyDisplay(line.labelQty, line.totalQty ?? line.qty),
+      value: qtyValue,
+      emphasis: "qty",
+      weight: weight("QTY", 44),
     },
-  ].map((row) =>
-    row.label === "Description"
-      ? { ...row, descriptionTruncated: meta.descriptionTruncated }
-      : row
-  );
+  ];
 }
 
 /** One-off test label for agent/printer connectivity checks. */

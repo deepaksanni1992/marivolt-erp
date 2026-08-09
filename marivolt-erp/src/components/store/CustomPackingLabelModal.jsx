@@ -4,6 +4,7 @@ import Modal from "../erp/Modal.jsx";
 import LoadingButton from "../erp/LoadingButton.jsx";
 import { apiPost } from "../../lib/api.js";
 import { emptyCustomPackingLabelRow } from "../../lib/labelPrinting.js";
+import { PackingLabelPreviewFace } from "./PackingLabelPreviewFace.jsx";
 
 /**
  * Manual CUSTOM_PACKING labels — same 100×50 packing face.
@@ -276,31 +277,7 @@ export default function CustomPackingLabelModal({
               </button>
             </div>
           </div>
-          <div
-            className="mx-auto overflow-hidden rounded border border-slate-800 bg-white text-[10px] leading-tight shadow"
-            style={{ aspectRatio: "100 / 50", maxWidth: 420 }}
-          >
-            <table className="h-full w-full table-fixed border-collapse">
-              <tbody>
-                {(currentPreview.previewRows || []).map((row) => (
-                  <tr key={row.label} className="border-b border-slate-300 last:border-b-0">
-                    <td className="w-[28%] border-r border-slate-300 px-1 py-0.5 font-medium text-slate-600">
-                      {row.label}
-                    </td>
-                    <td
-                      className={[
-                        "px-1 py-0.5",
-                        row.label === "QTY" ? "text-sm font-bold" : "",
-                        row.descriptionTruncated ? "text-amber-800" : "",
-                      ].join(" ")}
-                    >
-                      {row.value}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <PackingLabelPreviewFace rows={currentPreview.previewRows || []} />
         </div>
       ) : (
         <p className="mb-3 text-xs text-slate-500">Preview required before print.</p>

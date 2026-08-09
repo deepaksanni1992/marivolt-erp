@@ -9,6 +9,7 @@ import {
   selectAllPackingLabelRows,
   selectAvailablePackingLabelRows,
 } from "../../lib/labelPrinting.js";
+import { PackingLabelPreviewFace } from "./PackingLabelPreviewFace.jsx";
 
 /**
  * Packing Labels — multi-select + manual qty + preview + print.
@@ -303,29 +304,7 @@ export default function PackingLabelsModal({
               Description exceeds printable area. Review label before printing.
             </p>
           ) : null}
-          <div
-            className="mx-auto overflow-hidden rounded border-2 border-slate-800 bg-white text-[10px] shadow"
-            style={{ width: 360, height: 180, aspectRatio: "2 / 1" }}
-          >
-            <table className="h-full w-full table-fixed border-collapse">
-              <tbody>
-                {(currentPreview.previewRows || []).map((row) => (
-                  <tr key={row.label} className="border-b border-slate-300">
-                    <td className="w-[28%] border-r border-slate-300 px-1 py-0.5 font-semibold text-slate-700">
-                      {row.label}
-                    </td>
-                    <td
-                      className={`px-1 py-0.5 ${
-                        row.label === "QTY" || row.label === "Article" ? "font-bold" : ""
-                      }`}
-                    >
-                      {row.value}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <PackingLabelPreviewFace rows={currentPreview.previewRows || []} />
         </div>
       ) : null}
 

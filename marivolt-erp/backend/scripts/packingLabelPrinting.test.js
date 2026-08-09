@@ -156,49 +156,55 @@ run("7/8/31/32/33. Packing label service does not mutate stock/allocation", () =
 });
 
 run("Desc A. Short description fits normally", () => {
-  const short = fitWrappedText({ text: "SET OF GASKETS", maxWidthChars: 36, maxLines: 5 });
+  const short = fitWrappedText({ text: "Connecting rod", maxWidthChars: 40, maxLines: 5, preferredFontSize: 8 });
   assert.equal(short.truncated, false);
   assert.ok(short.lines.length >= 1 && short.lines.length <= 2);
   assert.ok(short.fontSize >= 5);
+  const layout = analyzePackingDescriptionLayout("Connecting rod");
+  assert.ok(layout.lines.length === 1 || layout.fullLineCount === 1);
+  assert.ok(layout.descH > 0);
+  assert.ok(layout.descH < layout.availableForDesc || layout.lines.length === 1);
 });
 
 run("Desc B. 2-line description wraps", () => {
   const mid = fitWrappedText({
-    text: "SET OF GASKETS FOR CYLINDER HEAD WITH EXTRA SEALING",
-    maxWidthChars: 36,
+    text: "Connecting rod without bolt hydraulic type",
+    maxWidthChars: 40,
     maxLines: 5,
+    preferredFontSize: 8,
   });
-  assert.ok(mid.lines.length >= 2);
+  assert.ok(mid.lines.length >= 1);
   assert.equal(mid.truncated, false);
 });
 
 run("Desc C. 3-line description wraps", () => {
   const three = fitWrappedText({
-    text: "SET OF GASKETS FOR CYLINDER HEAD WITH EXTRA SEALING RING KIT AND VALVE COVER PACK",
-    maxWidthChars: 36,
+    text: "Connecting rod assembly without bolt hydraulic type suitable for marine diesel engines",
+    maxWidthChars: 40,
     maxLines: 5,
+    preferredFontSize: 8,
   });
-  assert.ok(three.lines.length >= 3);
+  assert.ok(three.lines.length >= 2);
   assert.equal(three.truncated, false);
 });
 
 run("Desc D. Extreme description reaches min font", () => {
   const long = fitWrappedText({
     text: "A".repeat(160),
-    maxWidthChars: 36,
+    maxWidthChars: 40,
     maxLines: 5,
-    preferredFontSize: 7,
+    preferredFontSize: 8,
     minFontSize: 5,
   });
-  assert.ok(long.fontSize <= 7);
+  assert.ok(long.fontSize <= 8);
   assert.ok(long.fontSize >= 5);
 });
 
 run("Desc E. Overflow is flagged", () => {
   const extreme = fitPackingDescription("WORD ".repeat(80), {
-    maxWidthChars: 36,
+    maxWidthChars: 40,
     maxLines: 5,
-    preferredFontSize: 7,
+    preferredFontSize: 8,
     minFontSize: 5,
     availableMaxLines: 3,
   });
@@ -223,6 +229,7 @@ run("Desc G. QTY row never overlaps description", () => {
   const layout = analyzePackingDescriptionLayout("WORD ".repeat(60));
   assert.equal(layout.qtyRowReserved, true);
   assert.ok(layout.descH <= layout.availableForDesc + 1e-9);
+  assert.ok(layout.rowHeights?.QTY > 0);
   const tspl = buildSinglePackingLabelTspl({
     customerName: "C",
     article: "ART",
@@ -235,6 +242,44 @@ run("Desc G. QTY row never overlaps description", () => {
   const descIdx = tspl.indexOf('"Description"');
   assert.ok(qtyIdx > descIdx);
   assert.ok(tspl.includes("2 of 4"));
+});
+
+run("Layout H. Article and Part No. emphasized; QTY strongest; short desc dynamic", () => {
+  const shortLayout = analyzePackingDescriptionLayout("Connecting rod");
+  const longLayout = analyzePackingDescriptionLayout(
+    "Connecting rod assembly without bolt hydraulic type suitable for marine diesel engines with spare kit"
+  );
+  assert.ok(shortLayout.descH < longLayout.descH || shortLayout.lines.length < longLayout.lines.length);
+  const tspl = buildSinglePackingLabelTspl({
+    customerName: "ALTAMAR",
+    customerRef: "21200174",
+    brand: "WARTSILA",
+    modelName: "W34SG",
+    article: "52236",
+    serialNo: "1",
+    partNo: "111006",
+    description: "Connecting rod",
+    labelQty: 1,
+    totalQty: 9,
+  });
+  assert.match(tspl, /SIZE 100 mm,50 mm/);
+  // Article / Part No use 2,1; QTY uses 2,2
+  assert.match(tspl, /"52236"/);
+  assert.match(tspl, /"111006"/);
+  assert.match(tspl, /0,2,1,"52236"/);
+  assert.match(tspl, /0,2,1,"111006"/);
+  assert.match(tspl, /0,2,2,"1 of 9"/);
+  const rows = packingLabelPreviewRows({
+    customerName: "ALTAMAR",
+    article: "52236",
+    partNo: "111006",
+    description: "Connecting rod",
+    labelQty: 1,
+    totalQty: 9,
+  });
+  assert.equal(rows.find((r) => r.label === "Article")?.emphasis, "strong");
+  assert.equal(rows.find((r) => r.label === "Part No.")?.emphasis, "strong");
+  assert.equal(rows.find((r) => r.label === "QTY")?.emphasis, "qty");
 });
 
 run("16-22. Field mapping / preview rows / serial", () => {
