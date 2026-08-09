@@ -39,6 +39,7 @@ import {
 import { notify, confirmDialog } from "../lib/notifications.js";
 import ArticleStockConversionPanel from "../components/store/ArticleStockConversionPanel.jsx";
 import LoadingButton from "../components/erp/LoadingButton.jsx";
+import { filterStoreTabsForRole, isStoreOperatorRole } from "../lib/rbac.js";
 
 const TABS = [
   "GRN",
@@ -298,11 +299,22 @@ function packageTypeLabel(v) {
 }
 
 export default function StoreModule() {
-  const { auth } = useAuth();
+  const { auth, role, can } = useAuth();
   const nav = useNavigate();
   const qc = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [tab, setTab] = useState("GRN");
+  const visibleTabs = useMemo(() => filterStoreTabsForRole(TABS, role), [role]);
+  const isStoreOp = isStoreOperatorRole(role);
+  const canCancelStore = can("STORE", "cancel");
+  const canDeleteStore = can("STORE", "delete");
+  const canCreateSalesInvoice = can("SALES", "create");
+  const [tab, setTab] = useState(() => filterStoreTabsForRole(TABS, auth?.user?.role)?.[0] || "GRN");
+
+  useEffect(() => {
+    if (visibleTabs.length && !visibleTabs.includes(tab)) {
+      setTab(visibleTabs[0]);
+    }
+  }, [visibleTabs, tab]);
   const [article, setArticle] = useState("");
   const [warehouse, setWarehouse] = useState("");
   const [location, setLocation] = useState("");
@@ -769,7 +781,7 @@ export default function StoreModule() {
     const po = searchParams.get("grnPoId");
     const packingNo = String(searchParams.get("packingNo") || "").trim();
     const dispatchNo = String(searchParams.get("dispatchNo") || "").trim();
-    if (tabq && TABS.includes(tabq)) setTab(tabq);
+    if (tabq && visibleTabs.includes(tabq)) setTab(tabq);
     if (packingNo) {
       setTab("Packing");
       setPackingStatusFilter("FULLY_PACKED");
@@ -1630,12 +1642,14 @@ export default function StoreModule() {
       <div className="rounded-2xl border bg-white p-4">
         <h1 className="text-2xl font-semibold">Store</h1>
         <p className="text-sm text-slate-600">
-          GRN, Landed Cost Allocation, Stock View, Stock Ledger, Adjustment, Transfer, Locations, Negative Allocation Report
+          {isStoreOp
+            ? "GRN, Stock View, Stock Ledger, Packing, and Label printing"
+            : "GRN, Landed Cost Allocation, Stock View, Stock Ledger, Adjustment, Transfer, Locations, Negative Allocation Report"}
         </p>
       </div>
 
       <div className="flex flex-wrap gap-2 rounded-2xl border bg-white p-2">
-        {TABS.map((x) => (
+        {visibleTabs.map((x) => (
           <button
             key={x}
             type="button"
@@ -1656,13 +1670,15 @@ export default function StoreModule() {
           <div className="rounded-2xl border bg-white p-4">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-sm font-semibold text-slate-800">GRN from purchase order</h3>
-              <button
-                type="button"
-                className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
-                onClick={() => nav("/customs/stock")}
-              >
-                View Customs Stock
-              </button>
+              {!isStoreOp ? (
+                <button
+                  type="button"
+                  className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                  onClick={() => nav("/customs/stock")}
+                >
+                  View Customs Stock
+                </button>
+              ) : null}
             </div>
             <div className="flex flex-wrap items-end gap-2">
               <SearchableDocumentSelect
@@ -2408,7 +2424,7 @@ export default function StoreModule() {
                               >
                                 Export PDF
                               </button>
-                              {canCancel ? (
+                              {canCancel && canCancelStore ? (
                                 <button
                                   type="button"
                                   className="rounded border border-rose-200 px-2 py-0.5 text-[11px] font-semibold text-rose-800 disabled:opacity-40"
@@ -2426,7 +2442,7 @@ export default function StoreModule() {
                                   Cancel GRN
                                 </button>
                               ) : null}
-                              {isDraft ? (
+                              {isDraft && canDeleteStore ? (
                                 <button
                                   type="button"
                                   className="rounded border px-2 py-0.5 text-[11px] font-semibold text-slate-600 disabled:opacity-40"
@@ -4407,20 +4423,22 @@ export default function StoreModule() {
                               >
                                 Post
                               </button>
-                              <button
-                                type="button"
-                                className="rounded border px-2 py-0.5 text-xs text-rose-700 hover:bg-rose-50"
-                                disabled={cancelPackingMut.isPending}
-                                onClick={async () => {
-                                  const reason = window.prompt("Cancel reason?", "") ?? "";
-                                  cancelPackingMut.mutate({ id: p._id, reason });
-                                }}
-                              >
-                                Cancel
-                              </button>
+                              {canCancelStore ? (
+                                <button
+                                  type="button"
+                                  className="rounded border px-2 py-0.5 text-xs text-rose-700 hover:bg-rose-50"
+                                  disabled={cancelPackingMut.isPending}
+                                  onClick={async () => {
+                                    const reason = window.prompt("Cancel reason?", "") ?? "";
+                                    cancelPackingMut.mutate({ id: p._id, reason });
+                                  }}
+                                >
+                                  Cancel
+                                </button>
+                              ) : null}
                             </>
                           ) : null}
-                          {packingReadyForSalesInvoice(p) ? (
+                          {packingReadyForSalesInvoice(p) && canCreateSalesInvoice ? (
                             <button
                               type="button"
                               className="rounded border px-2 py-0.5 text-xs text-sky-800 hover:bg-sky-50"

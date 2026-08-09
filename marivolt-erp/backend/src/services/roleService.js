@@ -67,6 +67,19 @@ const SYSTEM_DEFAULTS = {
     LABELS: ["view", "print", "reprint"],
     ARTICLE_CONVERSION: ["view", "create", "post", "delete", "reverse", "approve"],
   }),
+  /**
+   * Basic warehouse floor operator (planned Store1).
+   * Can GRN / pick / pack / print labels. Cannot cancel, reverse, delete posted,
+   * adjust stock, configure labels, or access commercial modules.
+   * Uses STORE.post (not STORE.approve) so stock adjustments remaining on approve stay blocked.
+   */
+  STORE_OPERATOR: buildMatrix({
+    STORE: ["view", "create", "edit", "post", "export"],
+    LABELS: ["view", "print", "reprint"],
+    ITEM_MASTER: ["view"],
+    PURCHASE: ["view"],
+    TRACEABILITY: ["article_view"],
+  }),
   LOGISTICS: buildMatrix({
     LOGISTICS: ["view", "create", "edit", "approve", "cancel", "export"],
     TRACEABILITY: ["article_view"],
@@ -98,6 +111,7 @@ const LEGACY_ROLE_MAP = {
   sales: "SALES",
   purchase: "PURCHASE",
   store: "STORE",
+  store_operator: "STORE_OPERATOR",
   logistics: "LOGISTICS",
   accounts: "ACCOUNTS",
   view_only: "VIEW_ONLY",

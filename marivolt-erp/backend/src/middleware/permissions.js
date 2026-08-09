@@ -66,4 +66,28 @@ export function requireAnyPermission(...checks) {
   };
 }
 
-export default { requirePermission, requireAnyPermission };
+/**
+ * Explicitly deny listed roles even if a coarser permission would otherwise pass.
+ * Used to keep STORE_OPERATOR off stock adjustment / dispatch / repair surfaces
+ * that share STORE.create with GRN/packing drafts.
+ */
+export function denyRoles(...roleCodes) {
+  const denied = new Set(
+    roleCodes
+      .flat()
+      .map((r) => normaliseRoleCode(r))
+      .filter(Boolean)
+  );
+  return function denyRolesGuard(req, res, next) {
+    const role = normaliseRoleCode(req.user?.role || "");
+    if (role && denied.has(role)) {
+      return res.status(403).json({
+        message: "Permission denied for this role",
+        code: "PERMISSION_DENIED",
+      });
+    }
+    return next();
+  };
+}
+
+export default { requirePermission, requireAnyPermission, denyRoles };

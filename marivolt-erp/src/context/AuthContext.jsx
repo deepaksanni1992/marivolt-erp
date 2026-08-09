@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, loadStoredAuth, persistStoredAuth } from "../lib/api.js";
+import { canFromMatrix, isFullAdminRole, normalizeUserRole } from "../lib/rbac.js";
 
 const AuthContext = createContext(null);
 
@@ -12,6 +13,7 @@ export function AuthProvider({ children }) {
   const queryClient = useQueryClient();
   const [auth, setAuth] = useState(() => loadAuth());
   const [authReady, setAuthReady] = useState(() => !loadAuth()?.token);
+  const [permissionMatrix, setPermissionMatrix] = useState(null);
 
   const persist = useCallback((next) => {
     persistStoredAuth(next);
@@ -51,6 +53,25 @@ export function AuthProvider({ children }) {
       cancelled = true;
     };
   }, [queryClient, persist]);
+
+  useEffect(() => {
+    if (!auth?.token) {
+      setPermissionMatrix(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .get("/admin/me/permissions")
+      .then(({ data }) => {
+        if (!cancelled) setPermissionMatrix(data?.matrix || {});
+      })
+      .catch(() => {
+        if (!cancelled) setPermissionMatrix({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [auth?.token, auth?.user?.role]);
 
   async function login(identifier, password) {
     const { data } = await api.post("/auth/login", { email: identifier, password });
@@ -109,7 +130,20 @@ export function AuthProvider({ children }) {
   function logout() {
     queryClient.clear();
     persist(null);
+    setPermissionMatrix(null);
   }
+
+  const role = auth?.user?.role || "";
+
+  const can = useCallback(
+    (moduleName, action) => {
+      const normalised = normalizeUserRole(role);
+      if (normalised === "super_admin") return true;
+      if (isFullAdminRole(role) && !permissionMatrix) return true;
+      return canFromMatrix(permissionMatrix, moduleName, action);
+    },
+    [role, permissionMatrix]
+  );
 
   const value = {
     auth,
@@ -117,6 +151,9 @@ export function AuthProvider({ children }) {
     isLoggedIn: !!auth?.token && !!auth?.user,
     requiresCompanySelection: !!auth?.requiresCompanySelection && !auth?.token,
     requires2FA: !!auth?.requires2FA && !auth?.token,
+    permissionMatrix,
+    role,
+    can,
     login,
     verify2FA,
     selectCompany,

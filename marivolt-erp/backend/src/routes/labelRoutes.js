@@ -14,7 +14,6 @@ const labelsReprint = requirePermission("LABELS", "reprint");
 const labelsAdmin = requirePermission("LABELS", "admin");
 const labelsSettingsWrite = requireAnyPermission(
   ["LABELS", "admin"],
-  ["LABELS", "print"],
   ["SETTINGS", "edit"]
 );
 

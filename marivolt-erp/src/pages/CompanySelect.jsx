@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
+import { defaultHomePathForRole } from "../lib/rbac.js";
 
 export default function CompanySelect() {
   const nav = useNavigate();
@@ -17,8 +18,8 @@ export default function CompanySelect() {
     setError("");
     setLoading(true);
     try {
-      await selectCompany(companyId);
-      nav("/dashboard", { replace: true });
+      const data = await selectCompany(companyId);
+      nav(defaultHomePathForRole(data?.user?.role || auth?.user?.role), { replace: true });
     } catch (err) {
       setError(err.message || "Failed to select company");
     } finally {

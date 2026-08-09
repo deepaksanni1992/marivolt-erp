@@ -1,5 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { useState } from "react";
+import { useAuth } from "../context/AuthContext.jsx";
+import { isStoreOperatorRole } from "../lib/rbac.js";
 
 const dashboardGroup = {
   label: "Dashboard",
@@ -57,6 +59,8 @@ function linkClass(isActive) {
 }
 
 export default function Sidebar({ open, onClose }) {
+  const { role } = useAuth();
+  const storeOnly = isStoreOperatorRole(role);
   const [dashboardOpen, setDashboardOpen] = useState(true);
   const [inventoryOpen, setInventoryOpen] = useState(true);
   const [customsOpen, setCustomsOpen] = useState(true);
@@ -91,93 +95,103 @@ export default function Sidebar({ open, onClose }) {
       <nav className="max-h-[calc(100vh-4rem)] overflow-y-auto p-3">
         <div className="erp-sidebar__section-header mb-2 px-2 text-xs">Menu</div>
         <ul className="erp-sidebar__menu">
-          <li>
-            <button type="button" className="erp-sidebar__group-btn" onClick={() => setDashboardOpen((v) => !v)}>
-              <span>{dashboardGroup.label}</span>
-              <span className="erp-sidebar__chevron">{dashboardOpen ? "▾" : "▸"}</span>
-            </button>
-            {dashboardOpen ? (
-              <ul className="erp-sidebar__submenu">
-                {dashboardGroup.items.map(({ to, label }) => (
-                  <li key={to}>
-                    <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/dashboard"}>
-                      {label}
-                    </NavLink>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </li>
-
-          <li>
-            <button type="button" className="erp-sidebar__group-btn" onClick={() => setInventoryOpen((v) => !v)}>
-              <span>{inventoryGroup.label}</span>
-              <span className="erp-sidebar__chevron">{inventoryOpen ? "▾" : "▸"}</span>
-            </button>
-            {inventoryOpen ? (
-              <ul className="erp-sidebar__submenu">
-                {inventoryGroup.items.map(({ to, label }) => (
-                  <li key={to}>
-                    <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/inventory"}>
-                      {label}
-                    </NavLink>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </li>
-
-          {flatLinks.slice(0, 5).map(({ to, label }) => (
-            <li key={to}>
-              <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
-                {label}
+          {storeOnly ? (
+            <li>
+              <NavLink to="/store" className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
+                Store
               </NavLink>
             </li>
-          ))}
+          ) : (
+            <>
+              <li>
+                <button type="button" className="erp-sidebar__group-btn" onClick={() => setDashboardOpen((v) => !v)}>
+                  <span>{dashboardGroup.label}</span>
+                  <span className="erp-sidebar__chevron">{dashboardOpen ? "▾" : "▸"}</span>
+                </button>
+                {dashboardOpen ? (
+                  <ul className="erp-sidebar__submenu">
+                    {dashboardGroup.items.map(({ to, label }) => (
+                      <li key={to}>
+                        <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/dashboard"}>
+                          {label}
+                        </NavLink>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </li>
 
-          <li>
-            <button type="button" className="erp-sidebar__group-btn" onClick={() => setCustomsOpen((v) => !v)}>
-              <span>{customsGroup.label}</span>
-              <span className="erp-sidebar__chevron">{customsOpen ? "▾" : "▸"}</span>
-            </button>
-            {customsOpen ? (
-              <ul className="erp-sidebar__submenu">
-                {customsGroup.items.map(({ to, label }) => (
-                  <li key={to}>
-                    <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
-                      {label}
-                    </NavLink>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </li>
+              <li>
+                <button type="button" className="erp-sidebar__group-btn" onClick={() => setInventoryOpen((v) => !v)}>
+                  <span>{inventoryGroup.label}</span>
+                  <span className="erp-sidebar__chevron">{inventoryOpen ? "▾" : "▸"}</span>
+                </button>
+                {inventoryOpen ? (
+                  <ul className="erp-sidebar__submenu">
+                    {inventoryGroup.items.map(({ to, label }) => (
+                      <li key={to}>
+                        <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/inventory"}>
+                          {label}
+                        </NavLink>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </li>
 
-          <li>
-            <button type="button" className="erp-sidebar__group-btn" onClick={() => setDocumentsOpen((v) => !v)}>
-              <span>{documentsGroup.label}</span>
-              <span className="erp-sidebar__chevron">{documentsOpen ? "▾" : "▸"}</span>
-            </button>
-            {documentsOpen ? (
-              <ul className="erp-sidebar__submenu">
-                {documentsGroup.items.map(({ to, label }) => (
-                  <li key={to}>
-                    <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/documents"}>
-                      {label}
-                    </NavLink>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </li>
+              {flatLinks.slice(0, 5).map(({ to, label }) => (
+                <li key={to}>
+                  <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
+                    {label}
+                  </NavLink>
+                </li>
+              ))}
 
-          {flatLinks.slice(5).map(({ to, label }) => (
-            <li key={to}>
-              <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
-                {label}
-              </NavLink>
-            </li>
-          ))}
+              <li>
+                <button type="button" className="erp-sidebar__group-btn" onClick={() => setCustomsOpen((v) => !v)}>
+                  <span>{customsGroup.label}</span>
+                  <span className="erp-sidebar__chevron">{customsOpen ? "▾" : "▸"}</span>
+                </button>
+                {customsOpen ? (
+                  <ul className="erp-sidebar__submenu">
+                    {customsGroup.items.map(({ to, label }) => (
+                      <li key={to}>
+                        <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
+                          {label}
+                        </NavLink>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </li>
+
+              <li>
+                <button type="button" className="erp-sidebar__group-btn" onClick={() => setDocumentsOpen((v) => !v)}>
+                  <span>{documentsGroup.label}</span>
+                  <span className="erp-sidebar__chevron">{documentsOpen ? "▾" : "▸"}</span>
+                </button>
+                {documentsOpen ? (
+                  <ul className="erp-sidebar__submenu">
+                    {documentsGroup.items.map(({ to, label }) => (
+                      <li key={to}>
+                        <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/documents"}>
+                          {label}
+                        </NavLink>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </li>
+
+              {flatLinks.slice(5).map(({ to, label }) => (
+                <li key={to}>
+                  <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
+                    {label}
+                  </NavLink>
+                </li>
+              ))}
+            </>
+          )}
         </ul>
       </nav>
     </aside>

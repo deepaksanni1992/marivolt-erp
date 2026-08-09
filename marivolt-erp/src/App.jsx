@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import AppLayout from "./components/AppLayout.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
+import { defaultHomePathForRole } from "./lib/rbac.js";
 
 import Login from "./pages/Login.jsx";
 import TwoFactorVerify from "./pages/TwoFactorVerify.jsx";
@@ -34,8 +35,13 @@ import Settings from "./pages/Settings.jsx";
 import MyProfile from "./pages/MyProfile.jsx";
 import ProfileSecurity from "./pages/ProfileSecurity.jsx";
 
+function HomeRedirect() {
+  const { role } = useAuth();
+  return <Navigate to={defaultHomePathForRole(role)} replace />;
+}
+
 function CatchAllRedirect() {
-  const { isLoggedIn, requiresCompanySelection, requires2FA, authReady } = useAuth();
+  const { isLoggedIn, requiresCompanySelection, requires2FA, authReady, role } = useAuth();
   if (!authReady) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-50 text-sm text-gray-600">
@@ -45,7 +51,7 @@ function CatchAllRedirect() {
   }
   if (requiresCompanySelection) return <Navigate to="/select-company" replace />;
   if (requires2FA) return <Navigate to="/verify-2fa" replace />;
-  if (isLoggedIn) return <Navigate to="/dashboard" replace />;
+  if (isLoggedIn) return <Navigate to={defaultHomePathForRole(role)} replace />;
   return <Navigate to="/login" replace />;
 }
 
@@ -58,7 +64,7 @@ export default function App() {
 
       <Route element={<ProtectedRoute />}>
         <Route path="/" element={<AppLayout />}>
-          <Route index element={<Navigate to="/dashboard" replace />} />
+          <Route index element={<HomeRedirect />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="dashboard/data-health" element={<DataHealthDashboard />} />
           <Route path="dashboard/stock-bucket-integrity" element={<StockBucketIntegrity />} />

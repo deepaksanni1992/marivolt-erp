@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
+import { defaultHomePathForRole } from "../lib/rbac.js";
 
 export default function TwoFactorVerify() {
   const nav = useNavigate();
@@ -24,7 +25,7 @@ export default function TwoFactorVerify() {
     try {
       const data = await verify2FA(code.trim());
       if (data?.requiresCompanySelection) nav("/select-company", { replace: true });
-      else nav("/dashboard", { replace: true });
+      else nav(defaultHomePathForRole(data?.user?.role || auth?.user?.role), { replace: true });
     } catch (err) {
       setError(err.message || "Verification failed");
     } finally {

@@ -30,6 +30,7 @@ const userSchema = new mongoose.Schema(
         "sales",
         "purchase",
         "store",
+        "store_operator",
         "logistics",
         "accounts",
         "view_only",

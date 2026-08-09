@@ -3,14 +3,17 @@ import { useState } from "react";
 import { useAuth } from "../context/AuthContext.jsx";
 import UserMenu from "./UserMenu.jsx";
 import { notify } from "../lib/notifications.js";
+import { defaultHomePathForRole, isStoreOperatorRole } from "../lib/rbac.js";
 
 export default function Topbar({ onMenuClick }) {
   const nav = useNavigate();
-  const { auth, selectCompany } = useAuth();
+  const { auth, selectCompany, role } = useAuth();
   const [headerQ, setHeaderQ] = useState("");
+  const storeOnly = isStoreOperatorRole(role);
 
   function submitHeaderSearch(e) {
     e?.preventDefault?.();
+    if (storeOnly) return;
     const q = headerQ.trim();
     if (!q) return;
     nav(`/search?q=${encodeURIComponent(q)}`);
@@ -20,8 +23,8 @@ export default function Topbar({ onMenuClick }) {
     const nextCompanyId = e.target.value;
     if (!nextCompanyId || nextCompanyId === auth?.company?.id) return;
     try {
-      await selectCompany(nextCompanyId);
-      nav("/dashboard");
+      const data = await selectCompany(nextCompanyId);
+      nav(defaultHomePathForRole(data?.user?.role || role));
     } catch (err) {
       notify.error(err.message || "Failed to switch company");
     }
@@ -50,15 +53,19 @@ export default function Topbar({ onMenuClick }) {
           )}
         </div>
 
-        <form onSubmit={submitHeaderSearch} className="mx-4 hidden flex-1 max-w-xl md:flex">
-          <input
-            type="search"
-            value={headerQ}
-            onChange={(e) => setHeaderQ(e.target.value)}
-            placeholder="Search ERP — document, article, customer, BL, BOE…"
-            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-slate-400 focus:bg-white"
-          />
-        </form>
+        {!storeOnly ? (
+          <form onSubmit={submitHeaderSearch} className="mx-4 hidden flex-1 max-w-xl md:flex">
+            <input
+              type="search"
+              value={headerQ}
+              onChange={(e) => setHeaderQ(e.target.value)}
+              placeholder="Search ERP — document, article, customer, BL, BOE…"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-slate-400 focus:bg-white"
+            />
+          </form>
+        ) : (
+          <div className="mx-4 hidden flex-1 md:block" />
+        )}
 
         <div className="flex items-center gap-3">
           {!!auth?.companies?.length && (

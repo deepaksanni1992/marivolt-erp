@@ -62,6 +62,7 @@ export const SYSTEM_ROLE_CODES = [
   "SALES",
   "PURCHASE",
   "STORE",
+  "STORE_OPERATOR",
   "LOGISTICS",
   "ACCOUNTS",
   "VIEW_ONLY",
