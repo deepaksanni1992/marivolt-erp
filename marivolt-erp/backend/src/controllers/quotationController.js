@@ -311,11 +311,12 @@ export async function createQuotation(req, res) {
       return res.status(403).json({ message: "Active company context required" });
     }
     if (!body.quotationNo) {
+      // P1: daily sequence uses UAE business date of creation clock — not editable quotationDate.
       body.quotationNo = await nextUniqueSalesDocNumber({
         companyId: req.companyId,
         companyCode: req.companyCode,
         docKey: "QUOTATION",
-        referenceDate: body.quotationDate || new Date(),
+        referenceDate: new Date(),
         model: Quotation,
         field: "quotationNo",
       });
