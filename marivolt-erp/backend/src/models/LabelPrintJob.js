@@ -26,6 +26,20 @@ const labelJobLineSchema = new mongoose.Schema(
     barcodeValue: { type: String, default: "", trim: true },
     labelQty: { type: Number, default: 1, min: 0 },
     poLineId: { type: String, default: "" },
+    /** Packing customer sticker fields (additive; unused by GRN). */
+    customerName: { type: String, default: "", trim: true },
+    customerRef: { type: String, default: "", trim: true },
+    brand: { type: String, default: "", trim: true },
+    modelName: { type: String, default: "", trim: true },
+    serialNo: { type: Number, default: 0, min: 0 },
+    partNo: { type: String, default: "", trim: true },
+    totalQty: { type: Number, default: 0, min: 0 },
+    qtyDisplay: { type: String, default: "", trim: true },
+    lineCopies: { type: Number, default: 1, min: 1 },
+    packingLineId: { type: String, default: "" },
+    allocationLineId: { type: String, default: "" },
+    packageId: { type: String, default: "" },
+    descriptionTruncated: { type: Boolean, default: false },
   },
   { _id: false }
 );
@@ -39,7 +53,7 @@ const labelPrintJobSchema = new mongoose.Schema(
       index: true,
     },
     jobNo: { type: String, required: true, trim: true, uppercase: true },
-    sourceType: { type: String, enum: ["GRN", "STOCK", "MANUAL"], default: "GRN" },
+    sourceType: { type: String, enum: ["GRN", "STOCK", "MANUAL", "PACKING"], default: "GRN" },
     sourceId: { type: mongoose.Schema.Types.ObjectId, default: null },
     sourceNo: { type: String, default: "", trim: true, uppercase: true, index: true },
     warehouseCode: { type: String, default: "", trim: true, uppercase: true },
@@ -71,6 +85,13 @@ const labelPrintJobSchema = new mongoose.Schema(
     createdByName: { type: String, default: "" },
     /** Client-supplied key; unique per company when set — prevents duplicate enqueue on retry. */
     idempotencyKey: { type: String, default: null, trim: true },
+    /** Packing print mode metadata (PRE_PACKING | POSTED_PACKING | REPRINT). */
+    packingMode: { type: String, default: "", trim: true, uppercase: true },
+    allocationId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    packingId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    /** True when any packing line description could not fully fit at min font. */
+    descriptionTruncated: { type: Boolean, default: false },
+    packingSelectionFingerprint: { type: String, default: "", trim: true },
   },
   { timestamps: true }
 );

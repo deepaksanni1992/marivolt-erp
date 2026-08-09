@@ -5,6 +5,9 @@ export const LABEL_WIDTH_MM = 100;
 export const LABEL_HEIGHT_MM = 50;
 export const MARIVOLT_STANDARD_TEMPLATE_CODE = "MARIVOLT_STANDARD";
 export const MARIVOLT_STANDARD_TEMPLATE_NAME = "MARIVOLT STANDARD LABEL";
+/** Packing customer sticker — same physical size, different layout (no barcode). */
+export const PACKING_STANDARD_TEMPLATE_CODE = "PACKING_STANDARD_100X50";
+export const PACKING_STANDARD_TEMPLATE_NAME = "PACKING STANDARD 100×50";
 
 const labelTemplateSchema = new mongoose.Schema(
   {

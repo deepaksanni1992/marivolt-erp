@@ -331,6 +331,26 @@ export async function createFromGrn(req, res) {
   }
 }
 
+export async function createFromPacking(req, res) {
+  try {
+    const { createJobsFromPacking } = await import("../services/label/packingLabelService.js");
+    const job = await createJobsFromPacking(req, req.body || {});
+    res.status(201).json({ success: true, job });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function previewFromPacking(req, res) {
+  try {
+    const { previewPackingLabels } = await import("../services/label/packingLabelService.js");
+    const preview = await previewPackingLabels(req, req.body || {});
+    res.json({ success: true, ...preview });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
 export async function listJobs(req, res) {
   try {
     const filter = { companyId: req.companyId };

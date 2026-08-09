@@ -3,6 +3,8 @@ import LabelTemplate, {
   LABEL_WIDTH_MM,
   MARIVOLT_STANDARD_TEMPLATE_CODE,
   MARIVOLT_STANDARD_TEMPLATE_NAME,
+  PACKING_STANDARD_TEMPLATE_CODE,
+  PACKING_STANDARD_TEMPLATE_NAME,
 } from "../../models/LabelTemplate.js";
 
 export async function ensureMarivoltStandardTemplate() {
@@ -22,8 +24,26 @@ export async function ensureMarivoltStandardTemplate() {
   });
 }
 
+export async function ensurePackingStandardTemplate() {
+  const existing = await LabelTemplate.findOne({ code: PACKING_STANDARD_TEMPLATE_CODE });
+  if (existing) return existing;
+  return LabelTemplate.create({
+    companyId: null,
+    code: PACKING_STANDARD_TEMPLATE_CODE,
+    name: PACKING_STANDARD_TEMPLATE_NAME,
+    widthMm: LABEL_WIDTH_MM,
+    heightMm: LABEL_HEIGHT_MM,
+    language: "TSPL",
+    layoutVersion: 1,
+    barcodeMode: "ARTICLE",
+    isSystem: true,
+    isActive: true,
+  });
+}
+
 export async function listTemplates() {
   await ensureMarivoltStandardTemplate();
+  await ensurePackingStandardTemplate();
   return LabelTemplate.find({ isActive: true }).sort({ code: 1 }).lean();
 }
 
@@ -32,9 +52,16 @@ export async function getStandardTemplate() {
   return LabelTemplate.findOne({ code: MARIVOLT_STANDARD_TEMPLATE_CODE }).lean();
 }
 
+export async function getPackingStandardTemplate() {
+  await ensurePackingStandardTemplate();
+  return LabelTemplate.findOne({ code: PACKING_STANDARD_TEMPLATE_CODE }).lean();
+}
+
 export {
   MARIVOLT_STANDARD_TEMPLATE_CODE,
   MARIVOLT_STANDARD_TEMPLATE_NAME,
+  PACKING_STANDARD_TEMPLATE_CODE,
+  PACKING_STANDARD_TEMPLATE_NAME,
   LABEL_WIDTH_MM,
   LABEL_HEIGHT_MM,
 };

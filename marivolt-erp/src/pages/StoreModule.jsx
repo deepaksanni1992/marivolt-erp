@@ -20,6 +20,7 @@ import CreateInvoiceFromPackingModal, { packingReadyForSalesInvoice } from "../c
 import GrnCustomsSection from "../components/store/GrnCustomsSection.jsx";
 import LabelQueuePanel from "../components/store/LabelQueuePanel.jsx";
 import PostGrnLabelDecisionDialog from "../components/store/PostGrnLabelDecisionDialog.jsx";
+import PackingLabelsModal from "../components/store/PackingLabelsModal.jsx";
 import {
   buildGrnCustomsPayload,
   defaultGrnLineCustomsFields,
@@ -334,6 +335,8 @@ export default function StoreModule() {
   const [packAllocSelectedMeta, setPackAllocSelectedMeta] = useState(null);
   const [packAllocQueryId, setPackAllocQueryId] = useState("");
   const [packPackages, setPackPackages] = useState([]);
+  const [packingLabelsModal, setPackingLabelsModal] = useState(null);
+  const [postPackingLabelAsk, setPostPackingLabelAsk] = useState(null);
   const [packAddArticlePkgId, setPackAddArticlePkgId] = useState("");
   const [packAddArticleSearch, setPackAddArticleSearch] = useState("");
   const [packCsvPreview, setPackCsvPreview] = useState(null);
@@ -1020,7 +1023,7 @@ export default function StoreModule() {
 
   const postPackingMut = useMutation({
     mutationFn: (id) => apiPost(`/packing/${id}/post`, {}),
-    onSuccess: () => {
+    onSuccess: (doc, id) => {
       qc.invalidateQueries({ queryKey: ["store-packing"] });
       qc.invalidateQueries({ queryKey: ["packing-allocations-pending"] });
       qc.invalidateQueries({ queryKey: ["packing-from-allocation", packAllocQueryId] });
@@ -1028,6 +1031,11 @@ export default function StoreModule() {
       qc.invalidateQueries({ queryKey: ["stock-summary"] });
       qc.invalidateQueries({ queryKey: ["sales-dispatch-status"] });
       notify.success("Packing posted.");
+      const packingDoc = doc?._id ? doc : { _id: id, packingNo: doc?.packingNo || "" };
+      setPostPackingLabelAsk({
+        packing: packingDoc,
+        packingId: packingDoc._id || id,
+      });
     },
     onError: (e) => {
       if (e?.code === "PACKING_PHYSICAL_STOCK_SHORTAGE") {
@@ -3817,6 +3825,21 @@ export default function StoreModule() {
                       >
                         Add package
                       </button>
+                      <button
+                        type="button"
+                        className="rounded border border-sky-700 px-2 py-1.5 text-xs font-medium text-sky-900 hover:bg-sky-50"
+                        disabled={!packingFromAlloc?.lines?.length}
+                        onClick={() =>
+                          setPackingLabelsModal({
+                            mode: "PRE_PACKING",
+                            allocation: packingFromAlloc.allocation,
+                            lines: packingFromAlloc.lines,
+                            documentReferences: packingFromAlloc.documentReferences,
+                          })
+                        }
+                      >
+                        Print Packing Labels
+                      </button>
                     </div>
                   </div>
                   <div className="space-y-3">
@@ -4349,6 +4372,31 @@ export default function StoreModule() {
                             >
                               PDF
                             </button>
+                          {["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED"].includes(String(p.status || "").toUpperCase()) ? (
+                            <button
+                              type="button"
+                              className="rounded border px-2 py-0.5 text-xs text-sky-800 hover:bg-sky-50"
+                              onClick={() =>
+                                setPackingLabelsModal({
+                                  mode: "POSTED_PACKING",
+                                  packing: p,
+                                  lines: (p.lines || []).map((ln) => ({
+                                    ...ln,
+                                    packingLineId: ln._id,
+                                    allocatedQty: ln.allocatedQty,
+                                    packQty: ln.packQty,
+                                    physicalPackableQty: ln.packQty,
+                                  })),
+                                  documentReferences: {
+                                    customerName: p.customerName,
+                                    customerReference: p.customerReference,
+                                  },
+                                })
+                              }
+                            >
+                              Print Packing Labels
+                            </button>
+                          ) : null}
                           {p.status === "DRAFT" ? (
                             <>
                               <button
@@ -5049,6 +5097,81 @@ export default function StoreModule() {
             "Label printing skipped. Labels can be printed later from the GRN or Label Queue."
           );
         }}
+      />
+
+      {postPackingLabelAsk ? (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-3">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/45"
+            aria-label="Skip packing labels"
+            onClick={() => setPostPackingLabelAsk(null)}
+          />
+          <div className="relative w-full max-w-md rounded-2xl border bg-white p-5 shadow-xl">
+            <h2 className="text-lg font-semibold text-slate-900">Print Packing Labels Now?</h2>
+            <p className="mt-2 text-sm text-slate-600">
+              Packing posted. Print customer packing stickers (100 × 50 mm), or skip and print later from Packing documents.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-lg border px-3 py-2 text-sm"
+                onClick={() => setPostPackingLabelAsk(null)}
+              >
+                Skip
+              </button>
+              <button
+                type="button"
+                className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
+                onClick={async () => {
+                  try {
+                    const id = postPackingLabelAsk.packingId;
+                    const p = await apiGet(`/packing/${id}`);
+                    setPostPackingLabelAsk(null);
+                    setPackingLabelsModal({
+                      mode: "POSTED_PACKING",
+                      packing: p,
+                      lines: (p.lines || []).map((ln) => ({
+                        ...ln,
+                        packingLineId: ln._id,
+                        allocatedQty: ln.allocatedQty,
+                        packQty: ln.packQty,
+                        physicalPackableQty: ln.packQty,
+                      })),
+                      documentReferences: {
+                        customerName: p.customerName,
+                        customerReference: p.customerReference,
+                      },
+                    });
+                  } catch (e) {
+                    notify.error(e.message || "Could not load packing for labels");
+                  }
+                }}
+              >
+                Print
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <PackingLabelsModal
+        open={Boolean(packingLabelsModal)}
+        onClose={() => setPackingLabelsModal(null)}
+        mode={packingLabelsModal?.mode || "PRE_PACKING"}
+        packing={packingLabelsModal?.packing || null}
+        allocation={packingLabelsModal?.allocation || null}
+        lines={packingLabelsModal?.lines || []}
+        documentReferences={packingLabelsModal?.documentReferences || null}
+        printerCode={labelPrinterCode}
+        printers={labelPrintersData?.items || []}
+        onPrinted={(job) => {
+          notify.success(
+            formatLabelsQueuedMessage(job?.requestedLabels || 0) || "Packing labels queued."
+          );
+          qc.invalidateQueries({ queryKey: ["label-jobs"] });
+        }}
+        onError={(msg) => notify.error(msg)}
       />
     </div>
   );

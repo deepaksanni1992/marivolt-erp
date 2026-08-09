@@ -1,0 +1,359 @@
+import { useEffect, useMemo, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import Modal from "../erp/Modal.jsx";
+import LoadingButton from "../erp/LoadingButton.jsx";
+import { apiPost } from "../../lib/api.js";
+import {
+  buildPackingLabelSelections,
+  defaultPackingLabelRows,
+  selectAllPackingLabelRows,
+  selectAvailablePackingLabelRows,
+} from "../../lib/labelPrinting.js";
+
+/**
+ * Packing Labels — multi-select + manual qty + preview + print.
+ * Does not mutate allocation/packing/stock; print is label-only.
+ */
+export default function PackingLabelsModal({
+  open,
+  onClose,
+  mode = "PRE_PACKING",
+  packing = null,
+  allocation = null,
+  lines = [],
+  documentReferences = null,
+  printerCode = "",
+  printers = [],
+  onPrinted,
+  onError,
+}) {
+  const [rows, setRows] = useState([]);
+  const [selectedPrinter, setSelectedPrinter] = useState("");
+  const [previewIdx, setPreviewIdx] = useState(0);
+  const [previewLabels, setPreviewLabels] = useState([]);
+  const [previewErr, setPreviewErr] = useState("");
+  const [descriptionTruncated, setDescriptionTruncated] = useState(false);
+  const [confirmTruncation, setConfirmTruncation] = useState(false);
+  const titleNo = packing?.packingNo || allocation?.allocationNo || "";
+
+  useEffect(() => {
+    if (!open) return;
+    setRows(defaultPackingLabelRows(lines, { mode }));
+    setSelectedPrinter(printerCode || "");
+    setPreviewIdx(0);
+    setPreviewLabels([]);
+    setPreviewErr("");
+    setDescriptionTruncated(false);
+    setConfirmTruncation(false);
+  }, [open, lines, mode, printerCode]);
+
+  const selectedCount = useMemo(() => rows.filter((r) => r.selected).length, [rows]);
+
+  const printBlockedByOverflow = descriptionTruncated && !confirmTruncation;
+
+  const previewMut = useMutation({
+    mutationFn: async () => {
+      const selections = buildPackingLabelSelections(rows);
+      if (!selections.length) throw new Error("Select at least one line");
+      return apiPost("/labels/jobs/from-packing/preview", {
+        mode,
+        packingId: packing?._id || undefined,
+        allocationId: allocation?._id || packing?.allocationId || undefined,
+        selections,
+        printerCode: selectedPrinter || undefined,
+      });
+    },
+    onSuccess: (data) => {
+      setPreviewLabels(data.labels || []);
+      setPreviewIdx(0);
+      setPreviewErr("");
+      const overflow = data.descriptionTruncated === true || data.requiresTruncationConfirmation === true;
+      setDescriptionTruncated(overflow);
+      if (!overflow) setConfirmTruncation(false);
+    },
+    onError: (e) => {
+      setPreviewErr(e.message || "Preview failed");
+      onError?.(e.message || "Preview failed");
+    },
+  });
+
+  const printMut = useMutation({
+    mutationFn: async () => {
+      const selections = buildPackingLabelSelections(rows);
+      if (!selections.length) throw new Error("Select at least one line");
+      if (printBlockedByOverflow) {
+        throw new Error("Confirm truncated description before printing.");
+      }
+      const body = {
+        mode,
+        packingId: packing?._id || undefined,
+        allocationId: allocation?._id || packing?.allocationId || undefined,
+        selections,
+        printerCode: selectedPrinter || undefined,
+      };
+      // Server generates selection-aware hashed idempotency for PRE and POSTED.
+      if (mode === "REPRINT") {
+        body.mode = "REPRINT";
+        body.reason = "Packing label reprint";
+      }
+      if (descriptionTruncated || confirmTruncation) {
+        body.confirmDescriptionTruncation = true;
+      }
+      return apiPost("/labels/jobs/from-packing", body);
+    },
+    onSuccess: (data) => {
+      onPrinted?.(data?.job);
+      onClose?.();
+    },
+    onError: (e) => {
+      const msg = e.message || "Print failed";
+      if (
+        e.code === "LABEL_DESCRIPTION_OVERFLOW" ||
+        /truncat|exceeds printable/i.test(msg)
+      ) {
+        setDescriptionTruncated(true);
+      }
+      onError?.(msg);
+    },
+  });
+
+  const currentPreview = previewLabels[previewIdx] || null;
+  const currentOverflow =
+    currentPreview?.descriptionTruncated === true ||
+    (currentPreview?.previewRows || []).some((r) => r.descriptionTruncated === true);
+
+  if (!open) return null;
+
+  return (
+    <Modal open={open} onClose={onClose} title={`Packing Labels — ${titleNo || "—"}`} wide>
+      <div className="mb-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="rounded border px-2 py-1 text-xs hover:bg-slate-50"
+          onClick={() => setRows((prev) => selectAllPackingLabelRows(prev))}
+        >
+          Select All Allocated
+        </button>
+        <button
+          type="button"
+          className="rounded border px-2 py-1 text-xs hover:bg-slate-50"
+          onClick={() => setRows((prev) => selectAvailablePackingLabelRows(prev, { mode }))}
+        >
+          Select Available Only
+        </button>
+        <button
+          type="button"
+          className="rounded border px-2 py-1 text-xs hover:bg-slate-50"
+          onClick={() => setRows((prev) => prev.map((r) => ({ ...r, selected: false })))}
+        >
+          Clear Selection
+        </button>
+        <span className="self-center text-xs text-slate-500">{selectedCount} selected</span>
+      </div>
+
+      {mode === "PRE_PACKING" ? (
+        <p className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900">
+          Pre-packing / manual labels. Printing does not change allocation, reservation, packing qty, or stock.
+        </p>
+      ) : null}
+
+      <div className="mb-3 overflow-auto">
+        <table className="min-w-[960px] w-full text-xs">
+          <thead className="bg-slate-100 uppercase text-slate-600">
+            <tr>
+              <th className="px-2 py-2 text-left">Sel</th>
+              <th className="px-2 py-2 text-left">S. No.</th>
+              <th className="px-2 py-2 text-left">Article</th>
+              <th className="px-2 py-2 text-left">Description</th>
+              <th className="px-2 py-2 text-left">Part No.</th>
+              <th className="px-2 py-2 text-right">Allocated</th>
+              <th className="px-2 py-2 text-right">{mode === "PRE_PACKING" ? "Available" : "Packed"}</th>
+              <th className="px-2 py-2 text-right">Label Qty</th>
+              <th className="px-2 py-2 text-right">Copies</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, idx) => (
+              <tr key={r.key} className="border-t">
+                <td className="px-2 py-1.5">
+                  <input
+                    type="checkbox"
+                    checked={r.selected}
+                    onChange={(e) =>
+                      setRows((prev) =>
+                        prev.map((x) => (x.key === r.key ? { ...x, selected: e.target.checked } : x))
+                      )
+                    }
+                  />
+                </td>
+                <td className="px-2 py-1.5">{idx + 1}</td>
+                <td className="px-2 py-1.5 font-mono">{r.article}</td>
+                <td className="max-w-[180px] px-2 py-1.5" title={r.description}>
+                  <span className="line-clamp-2">{r.description || "—"}</span>
+                </td>
+                <td className="px-2 py-1.5 font-mono">{r.partNumber || "—"}</td>
+                <td className="px-2 py-1.5 text-right">{r.allocatedQty}</td>
+                <td className="px-2 py-1.5 text-right">{r.capQty}</td>
+                <td className="px-2 py-1.5 text-right">
+                  <input
+                    type="number"
+                    min={1}
+                    max={Math.max(1, Number(r.capQty) || 1)}
+                    className="w-20 rounded border px-1 py-0.5 text-right"
+                    value={r.labelQty}
+                    disabled={!r.selected}
+                    onChange={(e) =>
+                      setRows((prev) =>
+                        prev.map((x) =>
+                          x.key === r.key ? { ...x, labelQty: e.target.value } : x
+                        )
+                      )
+                    }
+                  />
+                </td>
+                <td className="px-2 py-1.5 text-right">
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    className="w-16 rounded border px-1 py-0.5 text-right"
+                    value={r.copies}
+                    disabled={!r.selected}
+                    onChange={(e) =>
+                      setRows((prev) =>
+                        prev.map((x) => (x.key === r.key ? { ...x, copies: e.target.value } : x))
+                      )
+                    }
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mb-3 grid gap-3 sm:grid-cols-2">
+        <label className="text-xs text-slate-600">
+          Printer
+          <select
+            className="mt-1 block w-full rounded border px-2 py-1.5 text-sm"
+            value={selectedPrinter}
+            onChange={(e) => setSelectedPrinter(e.target.value)}
+          >
+            <option value="">Auto-route</option>
+            {(printers || []).map((p) => (
+              <option key={p._id || p.code} value={p.code}>
+                {p.code} — {p.windowsPrinterName}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="text-xs text-slate-500">
+          Customer: {documentReferences?.customerName || allocation?.customerName || packing?.customerName || "—"}
+          <br />
+          Customer Ref.: {documentReferences?.customerReference || packing?.customerReference || "—"}
+        </div>
+      </div>
+
+      {previewErr ? <p className="mb-2 text-xs text-rose-700">{previewErr}</p> : null}
+
+      {descriptionTruncated ? (
+        <div className="mb-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+          <p className="font-semibold">Description exceeds printable area. Review label before printing.</p>
+          <p className="mt-1">Printed text will be truncated.</p>
+          <label className="mt-2 flex items-start gap-2">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={confirmTruncation}
+              onChange={(e) => setConfirmTruncation(e.target.checked)}
+            />
+            <span>Print with truncated description</span>
+          </label>
+        </div>
+      ) : null}
+
+      {currentPreview ? (
+        <div className="mb-3 rounded border bg-slate-50 p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-xs font-semibold uppercase text-slate-600">
+              Preview {previewIdx + 1}/{previewLabels.length} (100 × 50 mm)
+            </div>
+            <div className="flex gap-1">
+              <button
+                type="button"
+                className="rounded border px-2 py-0.5 text-xs disabled:opacity-40"
+                disabled={previewIdx <= 0}
+                onClick={() => setPreviewIdx((i) => Math.max(0, i - 1))}
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                className="rounded border px-2 py-0.5 text-xs disabled:opacity-40"
+                disabled={previewIdx >= previewLabels.length - 1}
+                onClick={() => setPreviewIdx((i) => Math.min(previewLabels.length - 1, i + 1))}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+          {currentOverflow ? (
+            <p className="mb-2 text-xs font-medium text-amber-800">
+              Description exceeds printable area. Review label before printing.
+            </p>
+          ) : null}
+          <div
+            className="mx-auto overflow-hidden rounded border-2 border-slate-800 bg-white text-[10px] shadow"
+            style={{ width: 360, height: 180, aspectRatio: "2 / 1" }}
+          >
+            <table className="h-full w-full table-fixed border-collapse">
+              <tbody>
+                {(currentPreview.previewRows || []).map((row) => (
+                  <tr key={row.label} className="border-b border-slate-300">
+                    <td className="w-[28%] border-r border-slate-300 px-1 py-0.5 font-semibold text-slate-700">
+                      {row.label}
+                    </td>
+                    <td
+                      className={`px-1 py-0.5 ${
+                        row.label === "QTY" || row.label === "Article" ? "font-bold" : ""
+                      }`}
+                    >
+                      {row.value}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap justify-end gap-2">
+        <button type="button" className="rounded border px-3 py-1.5 text-sm" onClick={onClose}>
+          Cancel
+        </button>
+        <LoadingButton
+          type="button"
+          variant="secondary"
+          loading={previewMut.isPending}
+          loadingText="Preview…"
+          disabled={selectedCount <= 0}
+          onClick={() => previewMut.mutate()}
+        >
+          Preview Selected
+        </LoadingButton>
+        <LoadingButton
+          type="button"
+          variant="primary"
+          loading={printMut.isPending}
+          loadingText="Queueing…"
+          disabled={selectedCount <= 0 || printBlockedByOverflow}
+          onClick={() => printMut.mutate()}
+        >
+          Print Selected
+        </LoadingButton>
+      </div>
+    </Modal>
+  );
+}

@@ -1027,8 +1027,25 @@ export async function reprintJob(req, jobId, body = {}) {
   const printer = await resolvePrinterForJob(req.companyId, body.printerCode || null, {
     warehouseCode: upper(body.warehouseCode) || upper(parent.warehouseCode),
   });
-  const requestedLabels = lines.reduce((s, ln) => s + Math.max(0, Number(ln.labelQty) || 0) * copies, 0);
-  const tsplPayload = buildJobTspl(lines, { copies, companyName: "MARIVOLT FZE", barcodeMode: "ARTICLE" });
+  const requestedLabels = lines.reduce((s, ln) => {
+    if (parent.sourceType === "PACKING" || parent.templateCode === "PACKING_STANDARD_100X50") {
+      return s + Math.max(1, Number(ln.lineCopies || copies) || 1);
+    }
+    return s + Math.max(0, Number(ln.labelQty) || 0) * copies;
+  }, 0);
+  const isPacking =
+    parent.sourceType === "PACKING" || String(parent.templateCode || "").includes("PACKING");
+  const { buildPackingJobTspl } = await import("./tsplGenerator.js");
+  const { PACKING_STANDARD_TEMPLATE_CODE } = await import("./labelTemplateService.js");
+  const tsplPayload = isPacking
+    ? buildPackingJobTspl(
+        lines.map((ln) => ({
+          ...ln,
+          lineCopies: Math.max(1, Number(ln.lineCopies || copies) || 1),
+        })),
+        {}
+      )
+    : buildJobTspl(lines, { copies, companyName: "MARIVOLT FZE", barcodeMode: "ARTICLE" });
   const job = await LabelPrintJob.create({
     companyId: req.companyId,
     jobNo: jobNo(),
@@ -1039,8 +1056,8 @@ export async function reprintJob(req, jobId, body = {}) {
     printerConfigId: printer._id,
     agentId: upper(printer.agentId),
     windowsPrinterName: printer.windowsPrinterName,
-    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
-    copies,
+    templateCode: isPacking ? PACKING_STANDARD_TEMPLATE_CODE : MARIVOLT_STANDARD_TEMPLATE_CODE,
+    copies: isPacking ? 1 : copies,
     requestedLabels,
     printedLabels: 0,
     remainingLabels: requestedLabels,
@@ -1052,6 +1069,9 @@ export async function reprintJob(req, jobId, body = {}) {
     parentJobId: parent._id,
     createdByUserId: req.user?.id || null,
     createdByName: t(req.user?.name || ""),
+    packingMode: isPacking ? "REPRINT" : "",
+    allocationId: parent.allocationId || null,
+    packingId: parent.packingId || null,
   });
   await syncGrnLabelStatus(job.sourceId, job);
   await recordLabelHistory({
