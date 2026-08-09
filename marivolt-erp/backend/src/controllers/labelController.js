@@ -351,6 +351,30 @@ export async function previewFromPacking(req, res) {
   }
 }
 
+export async function createFromCustomPacking(req, res) {
+  try {
+    const { createJobsFromCustomPacking } = await import(
+      "../services/label/customPackingLabelService.js"
+    );
+    const job = await createJobsFromCustomPacking(req, req.body || {});
+    res.status(201).json({ success: true, job });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function previewFromCustomPacking(req, res) {
+  try {
+    const { previewCustomPackingLabels } = await import(
+      "../services/label/customPackingLabelService.js"
+    );
+    const preview = await previewCustomPackingLabels(req, req.body || {});
+    res.json({ success: true, ...preview });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
 export async function listJobs(req, res) {
   try {
     const filter = { companyId: req.companyId };

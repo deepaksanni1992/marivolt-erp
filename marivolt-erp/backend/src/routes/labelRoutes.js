@@ -78,6 +78,8 @@ router.post("/test-print", labelsAdmin, testPrintRateLimit, c.testPrint);
 router.post("/jobs/from-grn", labelsPrint, c.createFromGrn);
 router.post("/jobs/from-packing", labelsPrint, c.createFromPacking);
 router.post("/jobs/from-packing/preview", labelsView, c.previewFromPacking);
+router.post("/jobs/from-custom-packing", labelsPrint, c.createFromCustomPacking);
+router.post("/jobs/from-custom-packing/preview", labelsView, c.previewFromCustomPacking);
 router.post("/jobs/stock-reprint", labelsReprint, c.stockReprint);
 router.get("/jobs", labelsView, c.listJobs);
 router.get("/jobs/:id", labelsView, c.getJob);

@@ -183,3 +183,29 @@ export function buildPackingLabelSelections(rows) {
       copies: Math.max(1, Math.floor(Number(r.copies) || 1)),
     }));
 }
+
+/** Blank row for Custom Packing Label modal (manual entry). */
+export function emptyCustomPackingLabelRow() {
+  return {
+    key: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    customerName: "",
+    customerRef: "",
+    brand: "",
+    modelName: "",
+    article: "",
+    serialNo: "",
+    partNo: "",
+    description: "",
+    labelQty: "1",
+    totalQty: "",
+    copies: "1",
+  };
+}
+
+/** Display label for Label Queue source column. */
+export function formatLabelJobSource(job) {
+  const type = String(job?.sourceType || "").toUpperCase();
+  if (type === "CUSTOM_PACKING") return "CUSTOM LABEL";
+  const no = String(job?.sourceNo || "").trim();
+  return no ? `${type} ${no}` : type || "—";
+}

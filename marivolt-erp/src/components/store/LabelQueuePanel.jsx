@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost } from "../../lib/api.js";
-import { LABEL_TEMPLATE_NAME, REPRINT_REASONS } from "../../lib/labelPrinting.js";
+import { formatLabelJobSource, LABEL_TEMPLATE_NAME, REPRINT_REASONS } from "../../lib/labelPrinting.js";
+import CustomPackingLabelModal from "./CustomPackingLabelModal.jsx";
 
 export default function LabelQueuePanel({ onMessage }) {
   const qc = useQueryClient();
@@ -10,11 +11,18 @@ export default function LabelQueuePanel({ onMessage }) {
   const [printedQty, setPrintedQty] = useState("");
   const [reprintJob, setReprintJob] = useState(null);
   const [reprintReason, setReprintReason] = useState(REPRINT_REASONS[0]);
+  const [customOpen, setCustomOpen] = useState(false);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["label-jobs", status],
     queryFn: () => apiGet(`/labels/jobs${status ? `?status=${encodeURIComponent(status)}` : ""}`),
   });
+
+  const { data: printersData } = useQuery({
+    queryKey: ["label-printers"],
+    queryFn: () => apiGet("/labels/printers"),
+  });
+  const printers = printersData?.items || printersData?.printers || [];
 
   const retryMut = useMutation({
     mutationFn: (id) => apiPost(`/labels/jobs/${id}/retry`, {}),
@@ -86,6 +94,14 @@ export default function LabelQueuePanel({ onMessage }) {
         >
           Refresh
         </button>
+        <button
+          type="button"
+          className="rounded bg-slate-900 px-2 py-1 text-xs font-semibold text-white"
+          onClick={() => setCustomOpen(true)}
+          data-testid="custom-packing-label-open"
+        >
+          Custom Label
+        </button>
       </div>
       {isLoading && <p className="text-xs text-slate-500">Loading…</p>}
       {error && <p className="text-xs text-rose-600">{error.message}</p>}
@@ -110,7 +126,7 @@ export default function LabelQueuePanel({ onMessage }) {
               <tr key={j._id} className="border-t border-slate-100">
                 <td className="px-2 py-1.5 font-mono">{j.jobNo}</td>
                 <td className="px-2 py-1.5">
-                  {j.sourceType} {j.sourceNo}
+                  {formatLabelJobSource(j)}
                   {j.isReprint ? " · reprint" : ""}
                 </td>
                 <td className="px-2 py-1.5 font-semibold">{j.status}</td>
@@ -251,6 +267,17 @@ export default function LabelQueuePanel({ onMessage }) {
           </div>
         </div>
       )}
+
+      <CustomPackingLabelModal
+        open={customOpen}
+        onClose={() => setCustomOpen(false)}
+        printers={printers}
+        onPrinted={() => {
+          qc.invalidateQueries({ queryKey: ["label-jobs"] });
+          onMessage?.("Custom packing label queued.");
+        }}
+        onError={(msg) => onMessage?.(msg)}
+      />
     </div>
   );
 }

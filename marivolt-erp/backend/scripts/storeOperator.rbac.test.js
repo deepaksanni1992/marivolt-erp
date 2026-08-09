@@ -150,6 +150,7 @@ run("Label admin remains gated; print/reprint routes present", () => {
   assert.ok(labelRoutes.includes("labelsPrint") || labelRoutes.includes('requirePermission("LABELS", "print")'));
   assert.ok(labelRoutes.includes("/jobs/from-grn"));
   assert.ok(labelRoutes.includes("/jobs/from-packing"));
+  assert.ok(labelRoutes.includes("/jobs/from-custom-packing"));
   // Settings write must NOT be available via LABELS.print alone
   assert.ok(!labelRoutes.includes('["LABELS", "print"]'));
   assert.ok(labelRoutes.includes('["LABELS", "admin"]'));

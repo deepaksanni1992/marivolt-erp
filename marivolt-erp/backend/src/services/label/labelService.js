@@ -1028,13 +1028,19 @@ export async function reprintJob(req, jobId, body = {}) {
     warehouseCode: upper(body.warehouseCode) || upper(parent.warehouseCode),
   });
   const requestedLabels = lines.reduce((s, ln) => {
-    if (parent.sourceType === "PACKING" || parent.templateCode === "PACKING_STANDARD_100X50") {
+    if (
+      parent.sourceType === "PACKING" ||
+      parent.sourceType === "CUSTOM_PACKING" ||
+      parent.templateCode === "PACKING_STANDARD_100X50"
+    ) {
       return s + Math.max(1, Number(ln.lineCopies || copies) || 1);
     }
     return s + Math.max(0, Number(ln.labelQty) || 0) * copies;
   }, 0);
   const isPacking =
-    parent.sourceType === "PACKING" || String(parent.templateCode || "").includes("PACKING");
+    parent.sourceType === "PACKING" ||
+    parent.sourceType === "CUSTOM_PACKING" ||
+    String(parent.templateCode || "").includes("PACKING");
   const { buildPackingJobTspl } = await import("./tsplGenerator.js");
   const { PACKING_STANDARD_TEMPLATE_CODE } = await import("./labelTemplateService.js");
   const tsplPayload = isPacking
