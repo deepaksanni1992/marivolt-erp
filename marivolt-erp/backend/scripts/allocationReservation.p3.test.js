@@ -535,7 +535,7 @@ await run("same-number update unchanged — no counter bump", async () => {
   assert.equal(await CounterModel.getSeq(companyId, "salesdoc:ALLOC:260809"), 5);
 });
 
-await run("live sources — v2-only new reserves + rename endpoint + no SI renumber", () => {
+await run("live sources — v2-only new reserves + rename endpoint; SI uses dedicated P4 path", () => {
   const sales = fs.readFileSync(path.join(srcRoot, "controllers", "salesFlowController.js"), "utf8");
   const keys = fs.readFileSync(path.join(srcRoot, "utils", "allocationReservationKeys.js"), "utf8");
   const routes = fs.readFileSync(path.join(srcRoot, "routes", "salesRoutes.js"), "utf8");
@@ -558,12 +558,12 @@ await run("live sources — v2-only new reserves + rename endpoint + no SI renum
   assert.ok(sales.includes("requires allocation._id for immutable reservation identity"));
   assert.ok(seed.includes("buildAllocReserveEffectKeyV2"));
 
-  // Identity fields rejected on number API
+  // Identity fields rejected on allocation number API
   assert.ok(sales.includes("reservationEffectVersion and reservationIdentityNo are system fields"));
 
-  // SI renumber still out of scope
-  assert.equal(sales.includes('documentType: "SI"'), false);
-  assert.equal(sales.includes("req.body.invoiceNo"), false);
+  // SI renumber is dedicated P4 endpoint (not general update allowed list)
+  assert.ok(sales.includes("updateSalesInvoiceNumber"));
+  assert.ok(!/allowed = \[[^\]]*["']invoiceNo["']/s.test(sales));
 
   // Historical ledger rewrite must not appear
   assert.equal(sales.includes("StockLedger.updateMany"), false);

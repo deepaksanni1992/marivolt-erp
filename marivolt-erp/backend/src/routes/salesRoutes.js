@@ -80,6 +80,7 @@ router.post("/sales-invoices/from-packing/:id", salesCreate, flow.convertPacking
 router.get("/sales-invoices/:id", salesView, flow.getSalesInvoice);
 router.get("/sales-invoices/:id/print", salesExport, flow.getSalesInvoicePrintData);
 router.put("/sales-invoices/:id", salesEdit, flow.updateSalesInvoice);
+router.patch("/sales-invoices/:id/invoice-no", salesEdit, flow.updateSalesInvoiceNumber);
 router.patch("/sales-invoices/:id/cancel", salesCancel, flow.cancelSalesInvoice);
 router.get("/dispatch-status", salesView, storeOutbound.listDispatchStatus);
 router.get("/sales-dispatches/pending-invoices", salesView, canonicalDispatch.listPendingSalesDispatchInvoices);

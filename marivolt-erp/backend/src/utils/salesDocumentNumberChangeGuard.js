@@ -11,6 +11,7 @@ import SalesInvoice from "../models/SalesInvoice.js";
 import Cipl from "../models/Cipl.js";
 import { resolveSalesDocumentType, salesDocumentTypeLabel } from "./salesDocNumber.js";
 import { assertOrderAllocationNumberChangeAllowed } from "./orderAllocationNumberEdit.js";
+import { assertSalesInvoiceNumberChangeAllowed } from "./salesInvoiceNumberEdit.js";
 
 function statusError(message, statusCode = 400) {
   const err = new Error(message);
@@ -150,6 +151,19 @@ export async function assertSalesDocumentNumberChangeAllowed({
         "Proforma Invoice number cannot be changed because downstream documents already reference this Proforma Invoice."
       );
     }
+    return;
+  }
+
+  if (type === "SI") {
+    const invoice =
+      document ||
+      (await SalesInvoice.findOne({ companyId, _id: documentId }).lean());
+    if (!invoice) throw statusError("Sales Invoice not found.", 404);
+    await assertSalesInvoiceNumberChangeAllowed({
+      companyId,
+      salesInvoice: invoice,
+      existsFns,
+    });
     return;
   }
 

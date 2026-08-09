@@ -24,6 +24,7 @@ import {
 } from "../utils/salesDocNumber.js";
 import { assertSalesDocumentNumberChangeAllowed } from "../utils/salesDocumentNumberChangeGuard.js";
 import { evaluateOrderAllocationNumberEditability } from "../utils/orderAllocationNumberEdit.js";
+import { getSalesInvoiceNumberEditability } from "../utils/salesInvoiceNumberEdit.js";
 import {
   buildAllocReserveEffectKeyV2,
   resolveAllocReleaseEffectKey,
@@ -88,6 +89,7 @@ import {
   isInvoiceDispatchEligible,
   legacyStatusFromDimensions,
   normalizeDocumentStatus,
+  normalizeDispatchStatus,
   normalizePaymentStatus,
   rejectProtectedSiStateFields,
 } from "../utils/salesInvoiceState.js";
@@ -3303,7 +3305,18 @@ export async function getSalesInvoice(req, res) {
     const [enriched] = await enrichSalesInvoicesWithPaymentState(req, [doc]);
     const base = enriched || doc;
     const resolvedTermsAndConditions = await resolveEffectiveTermsAndConditions(req, base, "SALES_INVOICE");
-    res.json({ ...base, resolvedTermsAndConditions });
+    const numberEdit = await getSalesInvoiceNumberEditability({
+      companyId: req.companyId,
+      salesInvoice: base,
+    });
+    res.json({
+      ...base,
+      resolvedTermsAndConditions,
+      canEditInvoiceNo: numberEdit.allowed,
+      invoiceNoEditBlockedReason: numberEdit.allowed ? "" : numberEdit.reason,
+      numberEditability: numberEdit.numberEditability,
+      dependencySummary: numberEdit.dependencySummary,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -3673,6 +3686,130 @@ export async function updateSalesInvoice(req, res) {
       return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
     }
     res.status(400).json({ message: err.message });
+  }
+}
+
+/**
+ * P4 — Narrow scoped Sales Invoice number change.
+ * Body: { invoiceNo, reason } — reason required when number actually changes.
+ * Does not cascade denormalized snapshots; blocks when downstream financial/fulfililment docs exist.
+ */
+export async function updateSalesInvoiceNumber(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
+    if (req.body?.invoiceNo === undefined) {
+      return res.status(400).json({ message: "invoiceNo is required" });
+    }
+
+    const doc = await SalesInvoice.findOne(withCompany(req, { _id: id }));
+    if (!doc) return res.status(404).json({ message: "Not found" });
+
+    const previousNo = String(doc.invoiceNo || doc.invoiceNumber || "").trim();
+    let numberChange = null;
+    let reason = String(req.body?.reason ?? "").trim();
+
+    try {
+      const validated = validateManualSalesDocumentNumber({
+        value: req.body.invoiceNo,
+        expectedDocumentType: "SI",
+      });
+      if (validated.number !== previousNo) {
+        if (!reason) {
+          return res.status(400).json({ message: "A reason is required to change the Sales Invoice number." });
+        }
+        await assertSalesDocumentNumberChangeAllowed({
+          companyId: req.companyId,
+          documentType: "SALES_INVOICE",
+          documentId: doc._id,
+          document: doc,
+        });
+        const prepared = await applyManualSalesDocumentNumber({
+          companyId: req.companyId,
+          documentType: "SI",
+          value: req.body.invoiceNo,
+          model: SalesInvoice,
+          field: "invoiceNo",
+          excludeId: doc._id,
+          previousNumber: previousNo,
+        });
+        numberChange = { oldNumber: previousNo, newNumber: prepared.number, reason };
+        doc.invoiceNo = prepared.number;
+        doc.invoiceNumber = prepared.number;
+      } else {
+        doc.invoiceNo = validated.number;
+        doc.invoiceNumber = validated.number;
+      }
+    } catch (numErr) {
+      return res.status(numErr.statusCode || 400).json({ message: numErr.message });
+    }
+
+    const attachEditability = async (invoiceDoc) => {
+      const plain = invoiceDoc.toObject ? invoiceDoc.toObject() : invoiceDoc;
+      const numberEdit = await getSalesInvoiceNumberEditability({
+        companyId: req.companyId,
+        salesInvoice: plain,
+      });
+      return {
+        ...plain,
+        canEditInvoiceNo: numberEdit.allowed,
+        invoiceNoEditBlockedReason: numberEdit.allowed ? "" : numberEdit.reason,
+        numberEditability: numberEdit.numberEditability,
+        dependencySummary: numberEdit.dependencySummary,
+      };
+    };
+
+    if (!numberChange) {
+      return res.json(await attachEditability(doc));
+    }
+
+    doc.updatedBy = req.user?.email || "";
+    try {
+      await doc.save();
+    } catch (saveErr) {
+      const dup = mapSalesDocNumberDuplicateError(saveErr, {
+        documentLabel: "Sales Invoice",
+        number: numberChange.newNumber,
+      });
+      if (dup) return res.status(dup.statusCode || 409).json({ message: dup.message });
+      throw saveErr;
+    }
+
+    const docStatus = normalizeDocumentStatus(
+      doc.documentStatus ||
+        (["DRAFT", "CANCELLED"].includes(String(doc.status || "").toUpperCase()) ? doc.status : "ISSUED")
+    );
+    const paymentStatus = normalizePaymentStatus(doc.paymentStatus);
+    const dispatchStatus = normalizeDispatchStatus(doc.dispatchStatus);
+
+    await writeAudit(req, {
+      action: "UPDATE",
+      module: "SALES",
+      entityType: "SALES_INVOICE",
+      entityId: doc._id,
+      documentNo: doc.invoiceNo,
+      description: `Sales Invoice number changed from ${numberChange.oldNumber || "—"} to ${numberChange.newNumber}`,
+      beforeData: { invoiceNo: numberChange.oldNumber },
+      afterData: { invoiceNo: numberChange.newNumber },
+      metadata: {
+        documentNumberChanged: true,
+        documentType: "SALES_INVOICE",
+        oldNumber: numberChange.oldNumber,
+        newNumber: numberChange.newNumber,
+        reason: numberChange.reason,
+        financialStateAtChange: {
+          documentStatus: docStatus,
+          paymentStatus,
+          dispatchStatus,
+          totalReceivedAmount: Number(doc.totalReceivedAmount) || 0,
+        },
+      },
+    });
+
+    const fresh = await SalesInvoice.findOne(withCompany(req, { _id: id })).lean();
+    res.json(await attachEditability(fresh));
+  } catch (err) {
+    res.status(err.statusCode || 400).json({ message: err.message });
   }
 }
 

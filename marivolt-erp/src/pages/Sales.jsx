@@ -1832,6 +1832,7 @@ export default function Sales() {
   });
   const [detailProformaDraftForm, setDetailProformaDraftForm] = useState(null);
   const [detailSalesInvoiceDraftForm, setDetailSalesInvoiceDraftForm] = useState(null);
+  const [siNumberEdit, setSiNumberEdit] = useState({ open: false, value: "", reason: "", error: "" });
   const [selectedReportId, setSelectedReportId] = useState("");
   const reportViewerRef = useRef(null);
   const [reportPage, setReportPage] = useState(1);
@@ -2709,6 +2710,28 @@ ${GLOBAL_REPORT_TABLE_CSS}
     },
     onError: (e) => setErr(e.message),
   });
+
+  const patchSalesInvoiceNumberMutation = useMutation({
+    mutationFn: ({ invoiceNo, reason }) =>
+      apiPatch(`/sales/sales-invoices/${detailId}/invoice-no`, { invoiceNo, reason }),
+    onSuccess: () => {
+      setSiNumberEdit({ open: false, value: "", reason: "", error: "" });
+      qc.invalidateQueries({ queryKey: ["sales-sales-invoices"] });
+      if (detailId) qc.invalidateQueries({ queryKey: ["sales-invoice-detail", detailId] });
+    },
+    onError: (e) => {
+      setSiNumberEdit((s) => ({
+        ...s,
+        error: e?.response?.data?.message || e.message || "Failed to update invoice number",
+      }));
+    },
+  });
+
+  useEffect(() => {
+    if (activeTab !== "Sales Invoice" || !detailId) {
+      setSiNumberEdit({ open: false, value: "", reason: "", error: "" });
+    }
+  }, [activeTab, detailId]);
 
   useEffect(() => {
     if (activeTab !== "Sales Invoice" || !detailId) {
@@ -7990,7 +8013,83 @@ ${GLOBAL_REPORT_TABLE_CSS}
           ) : (
             <div className="space-y-3 text-sm">
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                <div><div className="text-gray-500">Invoice No</div><div className="font-mono">{salesInvoiceDetail.invoiceNo}</div></div>
+                <div>
+                  <div className="text-gray-500">Invoice No</div>
+                  {siNumberEdit.open ? (
+                    <div className="mt-1 space-y-2">
+                      <TextInput
+                        className="font-mono"
+                        value={siNumberEdit.value}
+                        onChange={(e) => setSiNumberEdit((s) => ({ ...s, value: e.target.value, error: "" }))}
+                        autoFocus
+                      />
+                      <TextInput
+                        placeholder="Reason for change (required)"
+                        value={siNumberEdit.reason}
+                        onChange={(e) => setSiNumberEdit((s) => ({ ...s, reason: e.target.value, error: "" }))}
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="rounded-lg border bg-zinc-900 px-2 py-1 text-xs text-white disabled:opacity-40"
+                          disabled={patchSalesInvoiceNumberMutation.isPending}
+                          onClick={() =>
+                            patchSalesInvoiceNumberMutation.mutate({
+                              invoiceNo: siNumberEdit.value,
+                              reason: siNumberEdit.reason,
+                            })
+                          }
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-lg border px-2 py-1 text-xs"
+                          disabled={patchSalesInvoiceNumberMutation.isPending}
+                          onClick={() => setSiNumberEdit({ open: false, value: "", reason: "", error: "" })}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      {siNumberEdit.error ? <p className="text-xs text-red-700">{siNumberEdit.error}</p> : null}
+                    </div>
+                  ) : (
+                    <div className="mt-0.5 flex flex-wrap items-center gap-2">
+                      <span className="font-mono">{salesInvoiceDetail.invoiceNo}</span>
+                      <button
+                        type="button"
+                        className="rounded border px-2 py-0.5 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled={salesInvoiceDetail.canEditInvoiceNo !== true && salesInvoiceDetail.numberEditability?.allowed !== true}
+                        title={
+                          salesInvoiceDetail.canEditInvoiceNo === true || salesInvoiceDetail.numberEditability?.allowed === true
+                            ? "Edit sales invoice number"
+                            : salesInvoiceDetail.invoiceNoEditBlockedReason ||
+                              salesInvoiceDetail.numberEditability?.reason ||
+                              "Sales Invoice number cannot be changed in the current lifecycle state."
+                        }
+                        onClick={() =>
+                          setSiNumberEdit({
+                            open: true,
+                            value: salesInvoiceDetail.invoiceNo || "",
+                            reason: "",
+                            error: "",
+                          })
+                        }
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  )}
+                  {salesInvoiceDetail.canEditInvoiceNo !== true &&
+                  salesInvoiceDetail.numberEditability?.allowed !== true &&
+                  !siNumberEdit.open ? (
+                    <p className="mt-1 text-xs text-amber-800">
+                      {salesInvoiceDetail.invoiceNoEditBlockedReason ||
+                        salesInvoiceDetail.numberEditability?.reason ||
+                        ""}
+                    </p>
+                  ) : null}
+                </div>
                 <div><div className="text-gray-500">Customer</div><div>{salesInvoiceDetail.customerName}</div></div>
                 <div>
                   <div className="text-gray-500">Document</div>

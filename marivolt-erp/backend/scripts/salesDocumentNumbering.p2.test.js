@@ -437,7 +437,7 @@ await run("Future-dated canonical bumps only matching date key", async () => {
   assert.equal(await CounterModel.getSeq("company-mar", "salesdoc:QT:260809"), 0);
 });
 
-await run("Live sources — QT/OA/PI use applyManual; SI invoiceNo not update-editable", () => {
+await run("Live sources — QT/OA/PI use applyManual; SI renumber is dedicated P4 endpoint", () => {
   const qt = fs.readFileSync(path.join(srcRoot, "controllers", "quotationController.js"), "utf8");
   const sales = fs.readFileSync(path.join(srcRoot, "controllers", "salesFlowController.js"), "utf8");
   const sd = fs.readFileSync(path.join(srcRoot, "services", "canonicalSalesDispatchService.js"), "utf8");
@@ -446,10 +446,9 @@ await run("Live sources — QT/OA/PI use applyManual; SI invoiceNo not update-ed
   assert.ok(sales.includes('documentType: "OA"'));
   assert.ok(sales.includes('documentType: "PI"'));
   assert.ok(sd.includes('documentType: "SD"'));
-  // SI renumber remains out of scope (ALLOC controlled rename is covered by P3 tests)
-  assert.equal(sales.includes('documentType: "SI"'), false);
+  // SI: dedicated updateSalesInvoiceNumber path (not general update allowed list)
+  assert.ok(sales.includes("updateSalesInvoiceNumber"));
   assert.ok(!/allowed = \[[^\]]*["']invoiceNo["']/s.test(sales));
-  assert.equal(sales.includes("req.body.invoiceNo"), false);
 });
 
 await run("SD create path validates manual override; StoreDispatch stays DISPATCH", () => {
