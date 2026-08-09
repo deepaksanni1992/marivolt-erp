@@ -300,20 +300,271 @@ export async function nextUniqueSalesDocNumber({
   throw new Error(`Unable to allocate a unique ${docKey} number after ${maxAttempts} attempts`);
 }
 
-/** Validate manual document number change on update (company-scoped uniqueness). */
-export async function assertUniqueSalesDocNumberForUpdate({ companyId, model, field, value, excludeId }) {
+/**
+ * Preview next automatic number without consuming the counter.
+ * Display-only — create path remains authoritative.
+ */
+export async function peekNextSalesDocumentNumber({
+  companyId,
+  documentType,
+  referenceDate,
+  timezone = DEFAULT_SALES_DOC_TIMEZONE,
+  CounterModel = Counter,
+}) {
+  const type = resolveSalesDocumentType(documentType);
+  if (!type) throw new Error(`Unsupported sales documentType: ${documentType}`);
+  if (!companyId) throw new Error("companyId required to peek sales document number");
+  const instant = toValidDate(referenceDate) || new Date();
+  const tz = resolveSalesDocTimezone(timezone);
+  const { token } = getBusinessDateParts(instant, tz);
+  const key = salesDocumentCounterKey(type, token);
+  const row = await CounterModel.findOne({ companyId, key }).lean();
+  const nextSeq = (Number(row?.seq) || 0) + 1;
+  return formatSalesDocumentNumber(type, token, nextSeq);
+}
+
+export const SALES_DOC_NUMBER_MAX_LENGTH = 80;
+
+/** Safe printable characters for manual document numbers. */
+const MANUAL_NUMBER_SAFE_RE = /^[A-Za-z0-9 _\-\/\.()]+$/;
+
+const DOCUMENT_TYPE_LABELS = Object.freeze({
+  QT: "Quotation",
+  OA: "Order Acknowledgement",
+  PI: "Proforma Invoice",
+  ALLOC: "Order Allocation",
+  SI: "Sales Invoice",
+  SD: "Sales Dispatch",
+});
+
+export function salesDocumentTypeLabel(documentTypeOrDocKey) {
+  const type = resolveSalesDocumentType(documentTypeOrDocKey);
+  return (type && DOCUMENT_TYPE_LABELS[type]) || "Document";
+}
+
+function statusError(message, statusCode = 400) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
+}
+
+/**
+ * Parse XX/YYMMDD.ab (sequence may be 1+ digits).
+ * Canonical prefixes normalize to uppercase; custom strings are noncanonical.
+ */
+export function parseCanonicalSalesDocumentNumber(number) {
+  const raw = String(number ?? "").trim();
+  if (!raw) return { isCanonical: false, raw: "" };
+  const m = raw.match(/^(QT|OA|PI|ALLOC|SI|SD)\/(\d{6})\.(\d+)$/i);
+  if (!m) return { isCanonical: false, raw };
+  const documentType = m[1].toUpperCase();
+  const dateToken = m[2];
+  const sequence = Number.parseInt(m[3], 10);
+  if (!(sequence > 0) || !Number.isFinite(sequence)) {
+    return { isCanonical: false, raw };
+  }
+  return {
+    isCanonical: true,
+    documentType,
+    dateToken,
+    sequence,
+    normalized: formatSalesDocumentNumber(documentType, dateToken, sequence),
+    raw,
+  };
+}
+
+/**
+ * Synchronous validation for manual override (no DB / counter).
+ * Canonical wrong-type prefix rejected; custom noncanonical allowed.
+ */
+export function validateManualSalesDocumentNumber({
+  value,
+  expectedDocumentType,
+  documentLabel,
+} = {}) {
+  const label = documentLabel || salesDocumentTypeLabel(expectedDocumentType);
   const trimmed = String(value ?? "").trim();
   if (!trimmed) {
-    const err = new Error(`${field} is required`);
-    err.statusCode = 400;
-    throw err;
+    throw statusError("Document number is required.");
+  }
+  if (trimmed.length > SALES_DOC_NUMBER_MAX_LENGTH) {
+    throw statusError(`Document number is too long (maximum ${SALES_DOC_NUMBER_MAX_LENGTH} characters).`);
+  }
+  if (/[\x00-\x1F\x7F]/.test(trimmed)) {
+    throw statusError("Document number contains invalid control characters.");
+  }
+  if (!MANUAL_NUMBER_SAFE_RE.test(trimmed)) {
+    throw statusError(
+      "Document number contains invalid characters. Use letters, numbers, spaces, and - _ / . ( )"
+    );
+  }
+
+  const expectedType = resolveSalesDocumentType(expectedDocumentType);
+  if (!expectedType) {
+    throw statusError(`Unsupported document type for number validation: ${expectedDocumentType}`);
+  }
+
+  const parsed = parseCanonicalSalesDocumentNumber(trimmed);
+  if (parsed.isCanonical) {
+    if (parsed.documentType !== expectedType) {
+      throw statusError(`${label} number cannot use the ${parsed.documentType} prefix.`);
+    }
+    return {
+      number: parsed.normalized,
+      parsed,
+      numberSource: "MANUAL",
+    };
+  }
+
+  // Custom / noncanonical — preserve user case after trim
+  return {
+    number: trimmed,
+    parsed,
+    numberSource: "MANUAL",
+  };
+}
+
+/**
+ * Atomic catch-up: raise daily counter to at least `sequence` via $max.
+ * Never decreases. Custom (noncanonical) numbers must not call this.
+ */
+export async function bumpSalesDocumentCounterToAtLeast({
+  companyId,
+  documentType,
+  dateToken,
+  sequence,
+  CounterModel = Counter,
+}) {
+  const type = resolveSalesDocumentType(documentType);
+  if (!type) throw new Error(`Unsupported sales documentType: ${documentType}`);
+  if (!companyId) throw new Error("companyId required for counter catch-up");
+  const seq = Number(sequence);
+  if (!(seq > 0) || !Number.isFinite(seq)) {
+    throw new Error(`Invalid catch-up sequence: ${sequence}`);
+  }
+  const key = salesDocumentCounterKey(type, dateToken);
+  const row = await CounterModel.findOneAndUpdate(
+    { companyId, key },
+    {
+      $setOnInsert: { companyId, key },
+      $max: { seq: Math.trunc(seq) },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: false, lean: true }
+  );
+  return Number(row?.seq) || 0;
+}
+
+/**
+ * Full P2 manual-number pipeline: validate → uniqueness → canonical counter catch-up.
+ *
+ * When `previousNumber` normalizes to the same value, uniqueness/counter are skipped
+ * (same-number update must not bump the counter).
+ */
+export async function applyManualSalesDocumentNumber({
+  companyId,
+  documentType,
+  value,
+  model,
+  field,
+  excludeId = null,
+  previousNumber = null,
+  documentLabel,
+  CounterModel = Counter,
+}) {
+  const expectedType = resolveSalesDocumentType(documentType);
+  const label = documentLabel || salesDocumentTypeLabel(expectedType);
+  if (!companyId) throw statusError("companyId required");
+  if (!model || !field) throw statusError("model and field required for uniqueness check");
+
+  const validated = validateManualSalesDocumentNumber({
+    value,
+    expectedDocumentType: expectedType,
+    documentLabel: label,
+  });
+
+  const prev = String(previousNumber ?? "").trim();
+  if (prev && validated.number === prev) {
+    return {
+      number: validated.number,
+      numberSource: "MANUAL",
+      isCanonical: validated.parsed.isCanonical,
+      parsed: validated.parsed,
+      unchanged: true,
+    };
+  }
+
+  const filter = { companyId, [field]: validated.number };
+  if (excludeId) filter._id = { $ne: excludeId };
+  const exists = await model.exists(filter);
+  if (exists) {
+    throw statusError(`${label} number ${validated.number} already exists.`, 409);
+  }
+
+  if (validated.parsed.isCanonical) {
+    await bumpSalesDocumentCounterToAtLeast({
+      companyId,
+      documentType: validated.parsed.documentType,
+      dateToken: validated.parsed.dateToken,
+      sequence: validated.parsed.sequence,
+      CounterModel,
+    });
+  }
+
+  return {
+    number: validated.number,
+    numberSource: "MANUAL",
+    isCanonical: validated.parsed.isCanonical,
+    parsed: validated.parsed,
+    unchanged: false,
+  };
+}
+
+/**
+ * Validate manual document number change on update (company-scoped uniqueness).
+ * P2: also enforces character rules / wrong-type canonical prefix.
+ * Does NOT bump counters — use applyManualSalesDocumentNumber for catch-up.
+ */
+export async function assertUniqueSalesDocNumberForUpdate({
+  companyId,
+  model,
+  field,
+  value,
+  excludeId,
+  documentType,
+  documentLabel,
+}) {
+  if (documentType) {
+    const validated = validateManualSalesDocumentNumber({
+      value,
+      expectedDocumentType: documentType,
+      documentLabel,
+    });
+    const filter = { companyId, [field]: validated.number };
+    if (excludeId) filter._id = { $ne: excludeId };
+    const exists = await model.exists(filter);
+    if (exists) {
+      const label = documentLabel || salesDocumentTypeLabel(documentType);
+      throw statusError(`${label} number ${validated.number} already exists.`, 409);
+    }
+    return validated.number;
+  }
+
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) {
+    throw statusError("Document number is required.");
   }
   if (!excludeId) return trimmed;
   const exists = await model.exists({ companyId, [field]: trimmed, _id: { $ne: excludeId } });
   if (exists) {
-    const err = new Error(`Document number "${trimmed}" is already in use`);
-    err.statusCode = 409;
-    throw err;
+    throw statusError(`Document number "${trimmed}" is already in use`, 409);
   }
   return trimmed;
+}
+
+/** Map Mongo duplicate-key errors to a clean 409 message when possible. */
+export function mapSalesDocNumberDuplicateError(err, { documentLabel = "Document", number = "" } = {}) {
+  if (!err || err.code !== 11000) return null;
+  const label = documentLabel || "Document";
+  const n = String(number || "").trim();
+  return statusError(n ? `${label} number ${n} already exists.` : `${label} number already exists.`, 409);
 }

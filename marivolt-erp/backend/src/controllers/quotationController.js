@@ -6,7 +6,14 @@ import Item from "../models/itemModel.js";
 import ItemTechnical from "../models/itemTechnicalModel.js";
 import OrderAcknowledgement from "../models/OrderAcknowledgement.js";
 import * as stockService from "../services/stockService.js";
-import { nextSalesDocNumber, nextUniqueSalesDocNumber } from "../utils/salesDocNumber.js";
+import {
+  applyManualSalesDocumentNumber,
+  mapSalesDocNumberDuplicateError,
+  nextUniqueSalesDocNumber,
+  peekNextSalesDocumentNumber,
+  validateManualSalesDocumentNumber,
+} from "../utils/salesDocNumber.js";
+import { assertSalesDocumentNumberChangeAllowed } from "../utils/salesDocumentNumberChangeGuard.js";
 import {
   isSalesQuotationDeleteAdmin,
   quotationCanBeDeleted,
@@ -285,10 +292,10 @@ export async function getQuotation(req, res) {
 
 export async function getNextQuotationNumber(req, res) {
   try {
-    const quotationNo = await nextSalesDocNumber({
+    // Preview only — does not consume the daily counter (P2).
+    const quotationNo = await peekNextSalesDocumentNumber({
       companyId: req.companyId,
-      companyCode: req.companyCode,
-      docKey: "QUOTATION",
+      documentType: "QT",
       referenceDate: req.query.date || new Date(),
     });
     res.json({ quotationNo });
@@ -310,7 +317,16 @@ export async function createQuotation(req, res) {
     if (!company || !company.isActive) {
       return res.status(403).json({ message: "Active company context required" });
     }
-    if (!body.quotationNo) {
+    if (String(body.quotationNo || "").trim()) {
+      const prepared = await applyManualSalesDocumentNumber({
+        companyId: req.companyId,
+        documentType: "QT",
+        value: body.quotationNo,
+        model: Quotation,
+        field: "quotationNo",
+      });
+      body.quotationNo = prepared.number;
+    } else {
       // P1: daily sequence uses UAE business date of creation clock — not editable quotationDate.
       body.quotationNo = await nextUniqueSalesDocNumber({
         companyId: req.companyId,
@@ -360,7 +376,12 @@ export async function createQuotation(req, res) {
     await autoCreateItemsFromQuotation({ req, quotation: doc });
     res.status(201).json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    const dup = mapSalesDocNumberDuplicateError(err, {
+      documentLabel: "Quotation",
+      number: req.body?.quotationNo,
+    });
+    if (dup) return res.status(dup.statusCode).json({ message: dup.message });
+    res.status(err.statusCode || 400).json({ message: err.message });
   }
 }
 
@@ -376,9 +397,39 @@ export async function updateQuotation(req, res) {
       return res.status(400).json({ message: "Only DRAFT quotations can be edited" });
     }
     const beforeSnapshot = doc.toObject();
+    let numberChange = null;
+
+    if (req.body.quotationNo !== undefined) {
+      const previousNo = String(doc.quotationNo || "").trim();
+      const validated = validateManualSalesDocumentNumber({
+        value: req.body.quotationNo,
+        expectedDocumentType: "QT",
+      });
+      if (validated.number !== previousNo) {
+        await assertSalesDocumentNumberChangeAllowed({
+          companyId: req.companyId,
+          documentType: "QT",
+          documentId: doc._id,
+        });
+        const prepared = await applyManualSalesDocumentNumber({
+          companyId: req.companyId,
+          documentType: "QT",
+          value: req.body.quotationNo,
+          model: Quotation,
+          field: "quotationNo",
+          excludeId: doc._id,
+          previousNumber: previousNo,
+        });
+        numberChange = { oldNumber: previousNo, newNumber: prepared.number };
+        doc.quotationNo = prepared.number;
+        doc.quotationNumber = prepared.number;
+      } else {
+        doc.quotationNo = validated.number;
+        doc.quotationNumber = validated.number;
+      }
+    }
 
     const allowed = [
-      "quotationNo",
       "customerId",
       "customerName",
       "customerReference",
@@ -467,16 +518,35 @@ export async function updateQuotation(req, res) {
       entityType: "QUOTATION",
       entityId: doc._id,
       documentNo: doc.quotationNo || "",
-      description: `Quotation ${doc.quotationNo || ""} updated`,
-      beforeData: customerTransactionAuditFieldSlice(beforeSnapshot),
+      description: numberChange
+        ? `Quotation number changed from ${numberChange.oldNumber || "—"} to ${numberChange.newNumber}`
+        : `Quotation ${doc.quotationNo || ""} updated`,
+      beforeData: {
+        ...customerTransactionAuditFieldSlice(beforeSnapshot),
+        ...(numberChange ? { quotationNo: numberChange.oldNumber } : {}),
+      },
       afterData: {
         ...customerTransactionAuditFieldSlice(doc),
         ...(customerFieldChanges ? { customerFieldChanges } : {}),
+        ...(numberChange ? { quotationNo: numberChange.newNumber } : {}),
       },
+      metadata: numberChange
+        ? {
+            documentNumberChanged: true,
+            documentType: "QT",
+            oldNumber: numberChange.oldNumber,
+            newNumber: numberChange.newNumber,
+          }
+        : null,
     });
     res.json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    const dup = mapSalesDocNumberDuplicateError(err, {
+      documentLabel: "Quotation",
+      number: req.body?.quotationNo,
+    });
+    if (dup) return res.status(dup.statusCode).json({ message: dup.message });
+    res.status(err.statusCode || 400).json({ message: err.message });
   }
 }
 

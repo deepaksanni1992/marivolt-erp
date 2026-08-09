@@ -3218,6 +3218,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
   }, []);
 
   const [proformaForm, setProformaForm] = useState({
+    proformaNo: "",
     proformaDate: new Date().toISOString().slice(0, 10),
     customerName: "",
     customerReference: "",
@@ -3316,6 +3317,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
       qc.invalidateQueries({ queryKey: ["sales-proforma"] });
       setProformaCreateOpen(false);
       setProformaForm({
+        proformaNo: "",
         proformaDate: new Date().toISOString().slice(0, 10),
         customerName: "",
         customerReference: "",
@@ -5966,8 +5968,11 @@ ${GLOBAL_REPORT_TABLE_CSS}
               Draft quotation — edit below, save changes, then use status buttons to approve when ready. Conversion to OA / Proforma is only available after <b>APPROVED</b>.
             </div>
             <div className="grid gap-3 sm:grid-cols-4">
-              <FormField label="Quotation No">
+              <FormField label="Document No.">
                 <TextInput value={detailQuotationDraftForm.quotationNo} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, quotationNo: e.target.value }))} />
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Automatically generated. You may edit this number before finalization.
+                </p>
               </FormField>
               <FormField label="Quotation Date">
                 <TextInput type="date" value={detailQuotationDraftForm.quotationDate} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, quotationDate: e.target.value }))} />
@@ -6619,11 +6624,14 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <OaProformaHistorySection oa={oaDetail} money={money} onOpenPi={openLinkedProforma} />
               <OaCommercialRevisionHistory oa={oaDetail} money={money} />
               <div className="grid gap-3 sm:grid-cols-4">
-                <FormField label="OA No">
+                <FormField label="Document No.">
                   <TextInput
                     value={detailOADraftForm.oaNo || ""}
                     onChange={(e) => setDetailOADraftForm((f) => ({ ...f, oaNo: e.target.value }))}
                   />
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Automatically generated. You may edit this number before finalization.
+                  </p>
                 </FormField>
                 <FormField label="OA Date">
                   <TextInput
@@ -7253,11 +7261,14 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 Draft proforma — edit below and save. After conversion to Sales Invoice or CIPL the status becomes <b>Approved</b> and editing is disabled.
               </div>
               <div className="grid gap-3 sm:grid-cols-4">
-                <FormField label="PI No">
+                <FormField label="Document No.">
                   <TextInput
                     value={detailProformaDraftForm.proformaNo || ""}
                     onChange={(e) => setDetailProformaDraftForm((f) => ({ ...f, proformaNo: e.target.value }))}
                   />
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Automatically generated. You may edit this number before finalization.
+                  </p>
                 </FormField>
                 <FormField label="PI Date">
                   <TextInput
@@ -8923,7 +8934,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
         xlarge
       >
         <div className="grid gap-3 sm:grid-cols-4">
-          <FormField label="Quotation No">
+          <FormField label="Document No.">
             <TextInput
               value={form.quotationNo || ""}
               onChange={(e) => {
@@ -8931,6 +8942,9 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 setForm((f) => ({ ...f, quotationNo: e.target.value }));
               }}
             />
+            <p className="mt-1 text-[11px] text-slate-500">
+              Automatically generated. You may edit this number before finalization.
+            </p>
           </FormField>
           <FormField label="Quotation Date">
             <TextInput
@@ -9432,6 +9446,16 @@ ${GLOBAL_REPORT_TABLE_CSS}
 
       <Modal open={proformaCreateOpen} onClose={() => setProformaCreateOpen(false)} title="New Proforma Invoice" wide>
         <div className="grid gap-3 sm:grid-cols-4">
+          <FormField label="Document No.">
+            <TextInput
+              value={proformaForm.proformaNo || ""}
+              onChange={(e) => setProformaForm((f) => ({ ...f, proformaNo: e.target.value }))}
+              placeholder="Leave blank for automatic number"
+            />
+            <p className="mt-1 text-[11px] text-slate-500">
+              Automatically generated. You may edit this number before finalization.
+            </p>
+          </FormField>
           <FormField label="PI Date">
             <TextInput
               type="date"

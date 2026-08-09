@@ -15,7 +15,14 @@ import Customer from "../models/Customer.js";
 import Company from "../models/Company.js";
 import Item from "../models/Item.js";
 import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
-import { nextSalesDocNumber, nextUniqueSalesDocNumber, assertUniqueSalesDocNumberForUpdate } from "../utils/salesDocNumber.js";
+import {
+  applyManualSalesDocumentNumber,
+  mapSalesDocNumberDuplicateError,
+  nextSalesDocNumber,
+  nextUniqueSalesDocNumber,
+  validateManualSalesDocumentNumber,
+} from "../utils/salesDocNumber.js";
+import { assertSalesDocumentNumberChangeAllowed } from "../utils/salesDocumentNumberChangeGuard.js";
 import { formatDuplicateKeyError } from "../utils/mongoErrors.js";
 import * as stockService from "../services/stockService.js";
 import {
@@ -2253,15 +2260,25 @@ export async function createOA(req, res) {
         code: "VALIDATION",
       });
     }
-    const oaNo =
-      body.oaNo ||
-      (await nextUniqueSalesDocNumber({
+    let oaNo;
+    if (String(body.oaNo || "").trim()) {
+      const prepared = await applyManualSalesDocumentNumber({
+        companyId: req.companyId,
+        documentType: "OA",
+        value: body.oaNo,
+        model: OrderAcknowledgement,
+        field: "oaNo",
+      });
+      oaNo = prepared.number;
+    } else {
+      oaNo = await nextUniqueSalesDocNumber({
         companyId: req.companyId,
         companyCode: req.companyCode,
         docKey: "ORDER_ACK",
         model: OrderAcknowledgement,
         field: "oaNo",
-      }));
+      });
+    }
     const totals = computeTotals(lines, body);
     const linkedQtnId = body.linkedQuotationId || body.sourceQuotationId;
     let termsAndConditions = t(body.termsAndConditions);
@@ -2312,7 +2329,12 @@ export async function createOA(req, res) {
     // Snapshot OA creation never mutates the source quotation.
     res.status(201).json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    const dup = mapSalesDocNumberDuplicateError(err, {
+      documentLabel: "Order Acknowledgement",
+      number: req.body?.oaNo,
+    });
+    if (dup) return res.status(dup.statusCode).json({ message: dup.message });
+    res.status(err.statusCode || 400).json({ message: err.message });
   }
 }
 
@@ -2343,6 +2365,38 @@ export async function updateOA(req, res) {
       });
     }
     const beforeSnapshot = doc.toObject();
+    let numberChange = null;
+    if (req.body.oaNo !== undefined) {
+      try {
+        const previousNo = String(doc.oaNo || "").trim();
+        const validated = validateManualSalesDocumentNumber({
+          value: req.body.oaNo,
+          expectedDocumentType: "OA",
+        });
+        if (validated.number !== previousNo) {
+          await assertSalesDocumentNumberChangeAllowed({
+            companyId: req.companyId,
+            documentType: "OA",
+            documentId: doc._id,
+          });
+          const prepared = await applyManualSalesDocumentNumber({
+            companyId: req.companyId,
+            documentType: "OA",
+            value: req.body.oaNo,
+            model: OrderAcknowledgement,
+            field: "oaNo",
+            excludeId: doc._id,
+            previousNumber: previousNo,
+          });
+          numberChange = { oldNumber: previousNo, newNumber: prepared.number };
+          doc.oaNo = prepared.number;
+        } else {
+          doc.oaNo = validated.number;
+        }
+      } catch (numErr) {
+        return res.status(numErr.statusCode || 400).json({ message: numErr.message });
+      }
+    }
     const allowed = [
       "oaDate",
       "customerName",
@@ -2377,19 +2431,6 @@ export async function updateOA(req, res) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
     }
     Object.assign(doc, pickCustomerTransactionFieldsFromBody(req.body));
-    if (req.body.oaNo !== undefined) {
-      try {
-        doc.oaNo = await assertUniqueSalesDocNumberForUpdate({
-          companyId: req.companyId,
-          model: OrderAcknowledgement,
-          field: "oaNo",
-          value: req.body.oaNo,
-          excludeId: doc._id,
-        });
-      } catch (numErr) {
-        return res.status(numErr.statusCode || 400).json({ message: numErr.message });
-      }
-    }
     if (req.body.customerPODate !== undefined) {
       const raw = req.body.customerPODate;
       doc.customerPODate = raw === "" || raw === null || raw === undefined ? null : new Date(raw);
@@ -2452,23 +2493,44 @@ export async function updateOA(req, res) {
       await syncOaStatusFromPiCapacity(req, doc);
     }
     const customerFieldChanges = diffCustomerTransactionFields(beforeSnapshot, doc);
+    const auditMetadata = {
+      ...(commercialRevision
+        ? {
+            commercialRevision: true,
+            revisionNumber: commercialRevision.revisionNumber,
+            reason: commercialRevision.reason,
+          }
+        : {}),
+      ...(numberChange
+        ? {
+            documentNumberChanged: true,
+            documentType: "OA",
+            oldNumber: numberChange.oldNumber,
+            newNumber: numberChange.newNumber,
+          }
+        : {}),
+    };
     await writeAudit(req, {
-      action: commercialRevision ? "UPDATE" : "UPDATE",
+      action: "UPDATE",
       module: "SALES",
       entityType: "ORDER_ACKNOWLEDGEMENT",
       entityId: doc._id,
       documentNo: doc.oaNo || "",
-      description: commercialRevision
-        ? `Order Acknowledgement ${doc.oaNo || ""} commercial revision #${commercialRevision.revisionNumber}`
-        : `Order Acknowledgement ${doc.oaNo || ""} updated`,
+      description: numberChange
+        ? `Order Acknowledgement number changed from ${numberChange.oldNumber || "—"} to ${numberChange.newNumber}`
+        : commercialRevision
+          ? `Order Acknowledgement ${doc.oaNo || ""} commercial revision #${commercialRevision.revisionNumber}`
+          : `Order Acknowledgement ${doc.oaNo || ""} updated`,
       beforeData: {
         ...customerTransactionAuditFieldSlice(beforeSnapshot),
         grandTotal: previousCommercial,
+        ...(numberChange ? { oaNo: numberChange.oldNumber } : {}),
       },
       afterData: {
         ...customerTransactionAuditFieldSlice(doc),
         grandTotal: revisedCommercial,
         ...(customerFieldChanges ? { customerFieldChanges } : {}),
+        ...(numberChange ? { oaNo: numberChange.newNumber } : {}),
         ...(commercialRevision
           ? {
               commercialRevision: {
@@ -2483,20 +2545,19 @@ export async function updateOA(req, res) {
             }
           : {}),
       },
-      metadata: commercialRevision
-        ? {
-            commercialRevision: true,
-            revisionNumber: commercialRevision.revisionNumber,
-            reason: commercialRevision.reason,
-          }
-        : null,
+      metadata: Object.keys(auditMetadata).length ? auditMetadata : null,
     });
     const [enriched] = await enrichOAsWithCancelEligibility(req, [doc.toObject()], {
       includeProformaHistory: true,
     });
     res.json(enriched || doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    const dup = mapSalesDocNumberDuplicateError(err, {
+      documentLabel: "Order Acknowledgement",
+      number: req.body?.oaNo,
+    });
+    if (dup) return res.status(dup.statusCode).json({ message: dup.message });
+    res.status(err.statusCode || 400).json({ message: err.message });
   }
 }
 
@@ -2606,15 +2667,25 @@ export async function createProforma(req, res) {
     const body = { ...req.body };
     const lines = normalizeLines(body.lines || []);
     if (!lines.length) return res.status(400).json({ message: "Proforma requires at least one line" });
-    const proformaNo =
-      body.proformaNo ||
-      (await nextUniqueSalesDocNumber({
+    let proformaNo;
+    if (String(body.proformaNo || "").trim()) {
+      const prepared = await applyManualSalesDocumentNumber({
+        companyId: req.companyId,
+        documentType: "PI",
+        value: body.proformaNo,
+        model: ProformaInvoice,
+        field: "proformaNo",
+      });
+      proformaNo = prepared.number;
+    } else {
+      proformaNo = await nextUniqueSalesDocNumber({
         companyId: req.companyId,
         companyCode: req.companyCode,
         docKey: "PROFORMA",
         model: ProformaInvoice,
         field: "proformaNo",
-      }));
+      });
+    }
     const totals = computeTotals(lines, body);
     const currency = body.currency || "USD";
     let bankDetails = String(body.bankDetails || "").trim();
@@ -2654,7 +2725,12 @@ export async function createProforma(req, res) {
     }
     res.status(201).json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    const dup = mapSalesDocNumberDuplicateError(err, {
+      documentLabel: "Proforma Invoice",
+      number: req.body?.proformaNo,
+    });
+    if (dup) return res.status(dup.statusCode).json({ message: dup.message });
+    res.status(err.statusCode || 400).json({ message: err.message });
   }
 }
 
@@ -2670,6 +2746,38 @@ export async function updateProforma(req, res) {
       });
     }
     const beforeSnapshot = doc.toObject();
+    let numberChange = null;
+    if (req.body.proformaNo !== undefined) {
+      try {
+        const previousNo = String(doc.proformaNo || "").trim();
+        const validated = validateManualSalesDocumentNumber({
+          value: req.body.proformaNo,
+          expectedDocumentType: "PI",
+        });
+        if (validated.number !== previousNo) {
+          await assertSalesDocumentNumberChangeAllowed({
+            companyId: req.companyId,
+            documentType: "PI",
+            documentId: doc._id,
+          });
+          const prepared = await applyManualSalesDocumentNumber({
+            companyId: req.companyId,
+            documentType: "PI",
+            value: req.body.proformaNo,
+            model: ProformaInvoice,
+            field: "proformaNo",
+            excludeId: doc._id,
+            previousNumber: previousNo,
+          });
+          numberChange = { oldNumber: previousNo, newNumber: prepared.number };
+          doc.proformaNo = prepared.number;
+        } else {
+          doc.proformaNo = validated.number;
+        }
+      } catch (numErr) {
+        return res.status(numErr.statusCode || 400).json({ message: numErr.message });
+      }
+    }
     const previousCurrency = String(doc.currency || "USD").trim().toUpperCase();
     const allowed = [
       "proformaDate",
@@ -2707,19 +2815,6 @@ export async function updateProforma(req, res) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
     }
     Object.assign(doc, pickCustomerTransactionFieldsFromBody(req.body));
-    if (req.body.proformaNo !== undefined) {
-      try {
-        doc.proformaNo = await assertUniqueSalesDocNumberForUpdate({
-          companyId: req.companyId,
-          model: ProformaInvoice,
-          field: "proformaNo",
-          value: req.body.proformaNo,
-          excludeId: doc._id,
-        });
-      } catch (numErr) {
-        return res.status(numErr.statusCode || 400).json({ message: numErr.message });
-      }
-    }
     const newCurrency = String(doc.currency || "USD").trim().toUpperCase();
     if (newCurrency !== previousCurrency) {
       const bankText = await resolveBankDetailsTextForCurrency(withCompany(req), doc.currency);
@@ -2762,12 +2857,15 @@ export async function updateProforma(req, res) {
       entityType: "PROFORMA_INVOICE",
       entityId: doc._id,
       documentNo: doc.proformaNo || "",
-      description: `Proforma Invoice ${doc.proformaNo || ""} updated`,
+      description: numberChange
+        ? `Proforma Invoice number changed from ${numberChange.oldNumber || "—"} to ${numberChange.newNumber}`
+        : `Proforma Invoice ${doc.proformaNo || ""} updated`,
       beforeData: {
         ...customerTransactionAuditFieldSlice(beforeSnapshot),
         piValueType: beforeSnapshot.piValueType || "FULL",
         requestedAmount: beforeSnapshot.requestedAmount,
         advancePercentage: beforeSnapshot.advancePercentage,
+        ...(numberChange ? { proformaNo: numberChange.oldNumber } : {}),
       },
       afterData: {
         ...customerTransactionAuditFieldSlice(doc),
@@ -2775,7 +2873,16 @@ export async function updateProforma(req, res) {
         requestedAmount: doc.requestedAmount,
         advancePercentage: doc.advancePercentage,
         ...(customerFieldChanges ? { customerFieldChanges } : {}),
+        ...(numberChange ? { proformaNo: numberChange.newNumber } : {}),
       },
+      metadata: numberChange
+        ? {
+            documentNumberChanged: true,
+            documentType: "PI",
+            oldNumber: numberChange.oldNumber,
+            newNumber: numberChange.newNumber,
+          }
+        : null,
     });
     if (doc.linkedOAId) {
       const oa = await OrderAcknowledgement.findOne(withCompany(req, { _id: doc.linkedOAId }));
@@ -2783,7 +2890,12 @@ export async function updateProforma(req, res) {
     }
     res.json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    const dup = mapSalesDocNumberDuplicateError(err, {
+      documentLabel: "Proforma Invoice",
+      number: req.body?.proformaNo,
+    });
+    if (dup) return res.status(dup.statusCode).json({ message: dup.message });
+    res.status(err.statusCode || 400).json({ message: err.message });
   }
 }
 

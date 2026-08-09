@@ -15,7 +15,10 @@ import {
   cancelStoreDispatch,
 } from "../controllers/storeOutboundController.js";
 import { writeAudit } from "./auditService.js";
-import { nextSalesDocNumber } from "../utils/salesDocNumber.js";
+import {
+  applyManualSalesDocumentNumber,
+  nextUniqueSalesDocNumber,
+} from "../utils/salesDocNumber.js";
 import { isInvoiceDispatchEligible } from "../utils/salesInvoiceState.js";
 
 function withCompany(req, filter = {}) {
@@ -127,13 +130,25 @@ export async function createCanonicalSalesDispatch(req, body = {}) {
     throw err;
   }
   const qtyTotal = lines.reduce((s, ln) => s + (Number(ln.qty) || 0), 0);
-  const dispatchNo =
-    t(body.dispatchNo) ||
-    (await nextSalesDocNumber({
+  let dispatchNo;
+  if (t(body.dispatchNo)) {
+    const prepared = await applyManualSalesDocumentNumber({
+      companyId: req.companyId,
+      documentType: "SD",
+      value: body.dispatchNo,
+      model: SalesDispatch,
+      field: "dispatchNo",
+    });
+    dispatchNo = prepared.number;
+  } else {
+    dispatchNo = await nextUniqueSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
       docKey: "SALES_DISPATCH",
-    }));
+      model: SalesDispatch,
+      field: "dispatchNo",
+    });
+  }
 
   const doc = await SalesDispatch.create({
     companyId: req.companyId,

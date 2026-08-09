@@ -538,12 +538,15 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
         ) : null}
 
         <div className="mt-4 grid gap-3 sm:grid-cols-4">
-          <FormField label="OA No">
+          <FormField label="Document No.">
             <TextInput
               value={form.oaNo || ""}
               onChange={(e) => setForm((f) => ({ ...f, oaNo: e.target.value }))}
-              placeholder="Leave blank for auto number"
+              placeholder="Leave blank for automatic number"
             />
+            <p className="mt-1 text-[11px] text-slate-500">
+              Automatically generated. You may edit this number before finalization.
+            </p>
           </FormField>
           <FormField label="Linked Quotation No">
             <TextInput
