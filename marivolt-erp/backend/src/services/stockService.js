@@ -485,6 +485,29 @@ async function bumpBuckets({
   return updated;
 }
 
+/**
+ * Persist StockBalance.availableQty from authoritative buckets via canonical
+ * deriveAvailableQty. Does not mutate onHand / reserved / allocated / packed.
+ * Used by article conversion (and reverse) after physical $inc — not a global
+ * bumpBuckets change.
+ */
+async function refreshStoredAvailableQty(balanceDoc, session = null) {
+  if (!balanceDoc) return null;
+  const projected = deriveAvailableQty({
+    onHandQty: balanceDoc.onHandQty,
+    quantity: balanceDoc.quantity,
+    reservedQty: balanceDoc.reservedQty,
+    allocatedQty: balanceDoc.allocatedQty,
+    packedQty: balanceDoc.packedQty,
+  });
+  if (Number(balanceDoc.availableQty) === projected) {
+    return balanceDoc;
+  }
+  balanceDoc.availableQty = projected;
+  await balanceDoc.save({ session });
+  return balanceDoc;
+}
+
 /* --------------------------------------------------------------- */
 /*  High-level operations                                           */
 /* --------------------------------------------------------------- */
@@ -1406,7 +1429,9 @@ export async function articleConversion({
     err.requestedQty = srcQty;
     throw err;
   }
-  await bumpBuckets({
+  await refreshStoredAvailableQty(outUpdated, session);
+
+  const inUpdated = await bumpBuckets({
     session,
     companyId,
     article: tgt,
@@ -1414,6 +1439,7 @@ export async function articleConversion({
     inc: { quantity: tgtQty, onHandQty: tgtQty },
     upsert: true,
   });
+  await refreshStoredAvailableQty(inUpdated, session);
 
   const fromAfter = await snapshotAfter({ companyId, article: src, warehouse: wh, session });
   const outRow = await createStockLedgerEntry({
@@ -1537,7 +1563,9 @@ export async function reverseArticleConversion({
     err.requestedQty = tgtQty;
     throw err;
   }
-  await bumpBuckets({
+  await refreshStoredAvailableQty(outUpdated, session);
+
+  const inUpdated = await bumpBuckets({
     session,
     companyId,
     article: src,
@@ -1545,6 +1573,7 @@ export async function reverseArticleConversion({
     inc: { quantity: srcQty, onHandQty: srcQty },
     upsert: true,
   });
+  await refreshStoredAvailableQty(inUpdated, session);
 
   const tgtAfter = await snapshotAfter({ companyId, article: tgt, warehouse: wh, session });
   const outRow = await createStockLedgerEntry({
