@@ -94,7 +94,10 @@ export default function ArticleStockConversionPanel({ locations = [], deepLinkCo
   });
 
   useEffect(() => {
-    if (deepLinkConversionNo) setSubTab("register");
+    if (deepLinkConversionNo) {
+      setSubTab("register");
+      setRegSearch(deepLinkConversionNo);
+    }
   }, [deepLinkConversionNo]);
 
   const targetQty = useMemo(() => {

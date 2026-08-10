@@ -22,6 +22,7 @@ import {
   buildCustomsLotStockGroup,
   computeLotItemCustomsEconomics,
   resolveValuationMethod,
+  resolveCustomsLotItemProvenance,
 } from "../utils/customsBoeAverage.js";
 import {
   compareCustomsFifoOrder,
@@ -925,6 +926,7 @@ export function mapCustomsStockRow(item, lot, srNo) {
     status: item.status || "IN_STOCK",
     grnId: item.grnId || lot?.grnId || null,
     grnNo: item.grnNo || lot?.grnNo || "",
+    ...resolveCustomsLotItemProvenance(item, lot || {}),
     documents: {
       blDocumentId: lot?.documents?.blDocumentId || null,
       supplierInvoiceDocumentId: lot?.documents?.supplierInvoiceDocumentId || null,

@@ -34,9 +34,28 @@ const CSV_COLUMNS = [
   { key: "currency", header: "Currency" },
   { key: "valuationMethod", header: "Valuation Method" },
   { key: "grnNo", header: "GRN No" },
+  { key: "sourceType", header: "Source Type" },
+  { key: "sourceRef", header: "Source Ref" },
+  { key: "originalGrnNo", header: "Original GRN" },
+  { key: "originalReceivedArticle", header: "Original Received Article" },
+  { key: "conversionNo", header: "Conversion No" },
+  { key: "conversionStatus", header: "Conversion Status" },
   { key: "status", header: "Status" },
   { key: "companyCode", header: "Company" },
 ];
+
+function sourceTypeLabel(sourceType) {
+  const t = String(sourceType || "").toUpperCase();
+  if (t === "ARTICLE_CONVERSION") return "ARTICLE CONVERSION";
+  if (t === "GRN") return "GRN";
+  if (t === "LEGACY") return "LEGACY";
+  if (t === "OTHER") return "OTHER";
+  return t || "—";
+}
+
+function isConvertedOut(article) {
+  return String(article?.conversionStatus || "").toUpperCase() === "CONVERTED_OUT";
+}
 
 function fmtDate(v) {
   if (!v) return "—";
@@ -480,14 +499,15 @@ export default function CustomsStock() {
                               Articles in lot {g.customsLotRef || key}
                               {isLegacy ? " · Valuation: Legacy Line Value (no BOE-average economics)" : ""}
                             </div>
-                            <table className="w-full min-w-[1200px] text-xs">
+                            <table className="w-full min-w-[1280px] text-xs">
                               <thead className="text-left text-[10px] uppercase text-slate-500">
                                 <tr>
                                   <th className="px-2 py-1">Article</th>
                                   <th className="px-2 py-1">Part</th>
                                   <th className="px-2 py-1">Description</th>
                                   <th className="px-2 py-1">HS / COO</th>
-                                  <th className="px-2 py-1">GRN</th>
+                                  <th className="px-2 py-1">Source</th>
+                                  <th className="px-2 py-1">Original GRN</th>
                                   <th className="px-2 py-1 text-right">Physical GRN Qty</th>
                                   <th className="px-2 py-1 text-right">Imported</th>
                                   <th className="px-2 py-1 text-right">Exported</th>
@@ -500,12 +520,30 @@ export default function CustomsStock() {
                                 </tr>
                               </thead>
                               <tbody>
-                                {(g.articles || []).map((a) => (
+                                {(g.articles || []).map((a) => {
+                                  const convertedOut = isConvertedOut(a);
+                                  const isConversion =
+                                    String(a.sourceType || "").toUpperCase() === "ARTICLE_CONVERSION";
+                                  const originalGrn = a.originalGrnNo || a.grnNo || "";
+                                  const tip =
+                                    a.provenanceTooltip ||
+                                    (a.originalReceivedArticle
+                                      ? `Original received article: ${a.originalReceivedArticle}`
+                                      : "");
+                                  return (
                                   <tr
                                     key={String(a._id)}
                                     className={`border-t border-slate-200 ${a.matchHighlight ? "bg-amber-50" : ""}`}
+                                    title={tip || undefined}
                                   >
-                                    <td className="px-2 py-1 font-mono font-semibold">{a.articleNumber || "—"}</td>
+                                    <td className="px-2 py-1 font-mono font-semibold">
+                                      <div>{a.articleNumber || "—"}</div>
+                                      {convertedOut ? (
+                                        <span className="mt-0.5 inline-flex rounded-full bg-violet-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-violet-800 ring-1 ring-violet-200">
+                                          Converted Out
+                                        </span>
+                                      ) : null}
+                                    </td>
                                     <td className="px-2 py-1 font-mono">{a.partNumber || "—"}</td>
                                     <td className="max-w-[160px] truncate px-2 py-1" title={a.partName}>
                                       {a.partName || "—"}
@@ -513,7 +551,20 @@ export default function CustomsStock() {
                                     <td className="px-2 py-1 font-mono">
                                       {a.hsCode || "—"} / {a.countryOfOrigin || "—"}
                                     </td>
-                                    <td className="px-2 py-1 font-mono">{a.grnNo || "—"}</td>
+                                    <td className="px-2 py-1">
+                                      <div className="font-semibold text-slate-800">
+                                        {sourceTypeLabel(a.sourceType)}
+                                      </div>
+                                      <div className="font-mono text-[11px] text-slate-600">
+                                        {a.sourceRef || "—"}
+                                      </div>
+                                      {isConversion && a.originalReceivedArticle ? (
+                                        <div className="mt-0.5 text-[10px] text-slate-500">
+                                          from {a.originalReceivedArticle}
+                                        </div>
+                                      ) : null}
+                                    </td>
+                                    <td className="px-2 py-1 font-mono">{originalGrn || "—"}</td>
                                     <td className="px-2 py-1 text-right tabular-nums">
                                       {fmtNum(a.physicalQtyImported, 4)}
                                     </td>
@@ -539,19 +590,49 @@ export default function CustomsStock() {
                                       {money(a.remainingCustomsValue, g.currency)}
                                     </td>
                                     <td className="px-2 py-1">
-                                      <button
-                                        type="button"
-                                        className="rounded border px-1.5 py-0.5 text-[10px] font-semibold disabled:opacity-40"
-                                        disabled={!a.grnNo}
-                                        onClick={() =>
-                                          nav(`/store?tab=GRN&grnNo=${encodeURIComponent(a.grnNo)}`)
-                                        }
-                                      >
-                                        View GRN
-                                      </button>
+                                      <div className="flex flex-col gap-1">
+                                        {isConversion || convertedOut ? (
+                                          <>
+                                            <button
+                                              type="button"
+                                              className="rounded border px-1.5 py-0.5 text-[10px] font-semibold disabled:opacity-40"
+                                              disabled={!(a.conversionNo || (isConversion && a.sourceRef))}
+                                              onClick={() =>
+                                                nav(
+                                                  `/store?tab=${encodeURIComponent("Article Stock Conversion")}&conversionNo=${encodeURIComponent(a.conversionNo || a.sourceRef || "")}`,
+                                                )
+                                              }
+                                            >
+                                              View Conversion
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="rounded border px-1.5 py-0.5 text-[10px] font-semibold disabled:opacity-40"
+                                              disabled={!originalGrn}
+                                              onClick={() =>
+                                                nav(`/store?tab=GRN&grnNo=${encodeURIComponent(originalGrn)}`)
+                                              }
+                                            >
+                                              View Original GRN
+                                            </button>
+                                          </>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            className="rounded border px-1.5 py-0.5 text-[10px] font-semibold disabled:opacity-40"
+                                            disabled={!originalGrn}
+                                            onClick={() =>
+                                              nav(`/store?tab=GRN&grnNo=${encodeURIComponent(originalGrn)}`)
+                                            }
+                                          >
+                                            View GRN
+                                          </button>
+                                        )}
+                                      </div>
                                     </td>
                                   </tr>
-                                ))}
+                                  );
+                                })}
                               </tbody>
                             </table>
                           </td>

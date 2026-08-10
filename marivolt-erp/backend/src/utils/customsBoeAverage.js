@@ -266,41 +266,305 @@ export function compareSalesVsBoeCustomsUnit({
   };
 }
 
+/** Primary inbound/source classification for Customs Stock article rows (display/provenance). */
+export const CUSTOMS_SOURCE_GRN = "GRN";
+export const CUSTOMS_SOURCE_ARTICLE_CONVERSION = "ARTICLE_CONVERSION";
+export const CUSTOMS_SOURCE_LEGACY = "LEGACY";
+export const CUSTOMS_SOURCE_OTHER = "OTHER";
+
+/** Display badge when a direct GRN layer was fully retargeted by article conversion. */
+export const CUSTOMS_CONVERSION_STATUS_CONVERTED_OUT = "CONVERTED_OUT";
+
 /**
- * Per-line customs qty/value economics for stock display (uses stored totalValue when present).
+ * Map source lot-item id → conversion metadata from sibling derived layers in the same lot.
+ * Used only for presentation (Converted Out); does not mutate stock.
+ */
+export function indexConvertedOutSources(items = []) {
+  const map = new Map();
+  for (const item of items || []) {
+    const fromId = item?.convertedFromLotItemId != null ? String(item.convertedFromLotItemId) : "";
+    if (!fromId) continue;
+    const conversionNo = String(item.conversionNo || "").trim().toUpperCase();
+    const prev = map.get(fromId);
+    // Prefer an entry that carries a conversion number when multiple derived rows exist.
+    if (!prev || (!prev.conversionNo && conversionNo)) {
+      map.set(fromId, {
+        conversionNo,
+        conversionDocumentId: item.conversionDocumentId || null,
+        targetArticle: String(item.articleNumber || "").trim().toUpperCase(),
+      });
+    }
+  }
+  return map;
+}
+
+/**
+ * Resolve additive provenance fields for one CustomsLotItem in a stock group.
+ * Does not invent conversion refs for historical/legacy rows.
+ *
+ * @param {object} item
+ * @param {object} lot
+ * @param {{ convertedOutMeta?: { conversionNo?: string, conversionDocumentId?: *, targetArticle?: string } | null }} [opts]
+ */
+export function resolveCustomsLotItemProvenance(item = {}, lot = {}, opts = {}) {
+  const grnNo = String(item.grnNo || lot.grnNo || "").trim();
+  const isConversionLayer = Boolean(item.isConversionLayer);
+  const conversionNo = String(item.conversionNo || "").trim().toUpperCase();
+  const convertedFromLotItemId =
+    item.convertedFromLotItemId != null && item.convertedFromLotItemId !== ""
+      ? String(item.convertedFromLotItemId)
+      : "";
+  const originalReceivedArticle = String(item.originalReceivedArticle || "").trim().toUpperCase();
+  const conversionDocumentId = item.conversionDocumentId || null;
+  const qtyAvailable = Number(item.qtyAvailable) || 0;
+  const convertedOutMeta = opts.convertedOutMeta || null;
+
+  const looksConverted =
+    isConversionLayer || Boolean(conversionNo) || Boolean(convertedFromLotItemId);
+
+  let sourceType = CUSTOMS_SOURCE_LEGACY;
+  let sourceRef = "";
+
+  if (looksConverted) {
+    sourceType = CUSTOMS_SOURCE_ARTICLE_CONVERSION;
+    sourceRef = conversionNo;
+  } else if (grnNo) {
+    sourceType = CUSTOMS_SOURCE_GRN;
+    sourceRef = grnNo;
+  } else if (item.grnId || lot.grnId) {
+    // GRN id without readable number — still treat as GRN when known, else legacy.
+    sourceType = CUSTOMS_SOURCE_GRN;
+    sourceRef = grnNo;
+  }
+
+  const originalGrnNo = grnNo;
+
+  // Converted Out: only when a derived layer points at this item AND availability is depleted.
+  // Do not label ordinary export/consume as Converted Out.
+  let conversionStatus = "";
+  let convertedOutConversionNo = "";
+  let convertedOutDocumentId = null;
+  if (
+    convertedOutMeta &&
+    sourceType === CUSTOMS_SOURCE_GRN &&
+    !looksConverted &&
+    qtyAvailable <= 1e-6
+  ) {
+    conversionStatus = CUSTOMS_CONVERSION_STATUS_CONVERTED_OUT;
+    convertedOutConversionNo = String(convertedOutMeta.conversionNo || "").trim().toUpperCase();
+    convertedOutDocumentId = convertedOutMeta.conversionDocumentId || null;
+  }
+
+  const effectiveConversionNo = conversionNo || convertedOutConversionNo || "";
+  const effectiveConversionDocumentId = conversionDocumentId || convertedOutDocumentId || null;
+
+  let provenanceTooltip = "";
+  if (sourceType === CUSTOMS_SOURCE_ARTICLE_CONVERSION) {
+    const fromArt = originalReceivedArticle || "source article";
+    const conv = effectiveConversionNo || "article conversion";
+    const origGrn = originalGrnNo || "—";
+    const boe = String(item.boeNumber || lot.boeNumber || "").trim() || "—";
+    provenanceTooltip = `Derived from article ${fromArt} under ${conv}. Original customs provenance: ${origGrn} / BOE ${boe}.`;
+  } else if (conversionStatus === CUSTOMS_CONVERSION_STATUS_CONVERTED_OUT) {
+    const toArt = String(convertedOutMeta?.targetArticle || "").trim() || "target article";
+    const conv = convertedOutConversionNo || "article conversion";
+    provenanceTooltip = `Converted out to ${toArt} under ${conv}. Original GRN receipt layer (depleted).`;
+  }
+
+  return {
+    sourceType,
+    sourceRef,
+    originalGrnNo,
+    originalReceivedArticle:
+      sourceType === CUSTOMS_SOURCE_ARTICLE_CONVERSION ? originalReceivedArticle : originalReceivedArticle || "",
+    conversionNo: effectiveConversionNo,
+    conversionDocumentId: effectiveConversionDocumentId,
+    convertedFromLotItemId: convertedFromLotItemId || null,
+    isConversionLayer,
+    conversionStatus,
+    provenanceTooltip,
+  };
+}
+
+/**
+ * Per-line customs qty/value economics for stock display.
+ *
+ * Distinguishes:
+ * - historicalImportedValue — stored layer totalValue (audit; may remain on converted-out rows)
+ * - remainingCustomsValue — CURRENT remaining customs value (never uses stale totalValue when qty=0)
+ * - importedCustomsValue — current-layer imported value for stock totals (0 when layer fully emptied without export)
+ *
+ * totalValue in the schema is the layer's customs value for its qtyImported basis; conversion must
+ * reduce it when retargeting. This helper still guards display when older rows left totalValue stale.
  */
 export function computeLotItemCustomsEconomics(item = {}) {
   const qtyImported = Number(item.qtyImported) || 0;
   const qtyAvailable = Number(item.qtyAvailable) || 0;
   const qtyConsumed = Number(item.qtyConsumed) || 0;
   const unit = Number(item.customsUnitValue ?? item.unitPrice) || 0;
-  const customsQtyImported = roundCustomsQty(Number(item.customsQtyImported) || qtyImported);
+  const storedTotal =
+    item.totalValue != null && item.totalValue !== "" ? roundCustomsMoney(item.totalValue) : null;
+
+  /** Fully emptied without customs export — typical converted-out GRN layer after retarget. */
+  const emptiedWithoutExport = qtyImported <= 1e-9 && qtyAvailable <= 1e-9 && qtyConsumed <= 1e-9;
+
+  let customsQtyImported = roundCustomsQty(Number(item.customsQtyImported) || qtyImported);
+  if (emptiedWithoutExport) {
+    customsQtyImported = 0;
+  }
+
   const remainingCustomsQty =
-    qtyImported > 0
-      ? roundCustomsQty(Math.max(0, customsQtyImported * (qtyAvailable / qtyImported)))
-      : roundCustomsQty(Math.max(0, customsQtyImported - qtyConsumed));
+    qtyAvailable <= 1e-9
+      ? 0
+      : qtyImported > 1e-9
+        ? roundCustomsQty(Math.max(0, customsQtyImported * (qtyAvailable / qtyImported)))
+        : roundCustomsQty(Math.max(0, qtyAvailable));
+
   const exportedCustomsQty = roundCustomsQty(Math.max(0, customsQtyImported - remainingCustomsQty));
-  const totalValue =
-    item.totalValue != null && item.totalValue !== ""
-      ? roundCustomsMoney(item.totalValue)
-      : roundCustomsMoney(customsQtyImported * unit);
-  const consumedCustomsValue =
-    qtyImported > 0
-      ? roundCustomsMoney(totalValue * (qtyConsumed / qtyImported))
-      : roundCustomsMoney(exportedCustomsQty * unit);
-  const remainingCustomsValue = roundCustomsMoney(totalValue - consumedCustomsValue);
+
+  const historicalImportedValue =
+    storedTotal != null ? storedTotal : roundCustomsMoney((Number(item.customsQtyImported) || qtyImported) * unit);
+
+  // Empty retargeted layers must not contribute current imported value (avoids BOE double-count with target).
+  const importedCustomsValue = emptiedWithoutExport ? 0 : historicalImportedValue;
+
+  let remainingCustomsValue;
+  if (remainingCustomsQty <= 1e-9) {
+    remainingCustomsValue = 0;
+  } else if (qtyImported > 1e-9 && storedTotal != null) {
+    remainingCustomsValue = roundCustomsMoney(storedTotal * (qtyAvailable / qtyImported));
+  } else {
+    remainingCustomsValue = roundCustomsMoney(remainingCustomsQty * unit);
+  }
+
+  let consumedCustomsValue;
+  if (emptiedWithoutExport) {
+    consumedCustomsValue = 0;
+  } else if (qtyImported > 1e-9 && storedTotal != null) {
+    consumedCustomsValue = roundCustomsMoney(storedTotal * (qtyConsumed / qtyImported));
+  } else {
+    consumedCustomsValue = roundCustomsMoney(exportedCustomsQty * unit);
+  }
 
   return {
     customsQtyImported,
     exportedCustomsQty,
     remainingCustomsQty,
     customsUnitValue: unit,
-    importedCustomsValue: totalValue,
+    importedCustomsValue,
+    historicalImportedValue,
     consumedCustomsValue,
     remainingCustomsValue,
     physicalQtyImported: qtyImported,
     physicalQtyExported: qtyConsumed,
     physicalQtyRemaining: qtyAvailable,
+  };
+}
+
+/**
+ * Compute customs qty/value to move from a source layer during article conversion.
+ * Conserves remaining customs value; does not invent value.
+ */
+export function computeConversionCustomsTransfer({
+  take,
+  qtyAvailable,
+  qtyImported,
+  qtyConsumed = 0,
+  unitPrice = 0,
+  customsUnitValue = null,
+  totalValue = null,
+  customsQtyImported = null,
+  customsValueAED = null,
+  exchangeRateToAED = 0,
+} = {}) {
+  const takeQty = Number(take) || 0;
+  const avail = Number(qtyAvailable) || 0;
+  const imported = Number(qtyImported) || 0;
+  const consumed = Number(qtyConsumed) || 0;
+  const unit = Number(customsUnitValue ?? unitPrice) || 0;
+  const fx = Number(exchangeRateToAED) || 0;
+  const srcTotal = totalValue != null && totalValue !== "" ? Number(totalValue) : NaN;
+  const srcCqi =
+    customsQtyImported != null && customsQtyImported !== ""
+      ? Number(customsQtyImported)
+      : imported;
+  const srcAed = customsValueAED != null && customsValueAED !== "" ? Number(customsValueAED) : NaN;
+
+  if (!(takeQty > 0) || !(avail > 0) || takeQty > avail + 1e-6) {
+    return {
+      ok: false,
+      transferQty: 0,
+      transferCustomsQty: 0,
+      transferValue: 0,
+      transferValueAED: 0,
+      unit,
+      nextQtyAvailable: avail,
+      nextQtyImported: imported,
+      nextTotalValue: Number.isFinite(srcTotal) ? roundCustomsMoney(srcTotal) : 0,
+      nextCustomsQtyImported: Number.isFinite(srcCqi) ? roundCustomsQty(srcCqi) : 0,
+      nextCustomsValueAED: Number.isFinite(srcAed) ? roundCustomsMoney(srcAed) : 0,
+      message: "Invalid conversion take/availability",
+    };
+  }
+
+  const nextAvail = Math.max(0, avail - takeQty);
+  const nextImported = Math.max(consumed + nextAvail, imported - takeQty);
+
+  let remainingValueOnAvail;
+  if (imported > 1e-9 && Number.isFinite(srcTotal)) {
+    remainingValueOnAvail = roundCustomsMoney(srcTotal * (avail / imported));
+  } else {
+    remainingValueOnAvail = roundCustomsMoney(unit * avail);
+  }
+
+  const transferValue =
+    nextAvail <= 1e-9
+      ? remainingValueOnAvail
+      : roundCustomsMoney(remainingValueOnAvail * (takeQty / avail));
+
+  const transferCustomsQty =
+    imported > 1e-9 && Number.isFinite(srcCqi)
+      ? nextAvail <= 1e-9 && consumed <= 1e-9
+        ? roundCustomsQty(srcCqi)
+        : roundCustomsQty(srcCqi * (takeQty / imported))
+      : roundCustomsQty(takeQty);
+
+  let nextTotalValue = 0;
+  if (Number.isFinite(srcTotal)) {
+    nextTotalValue = Math.max(0, roundCustomsMoney(srcTotal - transferValue));
+  }
+
+  let nextCustomsQtyImported = 0;
+  if (Number.isFinite(srcCqi)) {
+    nextCustomsQtyImported = Math.max(0, roundCustomsQty(srcCqi - transferCustomsQty));
+  }
+
+  let transferValueAED = 0;
+  let nextCustomsValueAED = Number.isFinite(srcAed) ? roundCustomsMoney(srcAed) : 0;
+  if (Number.isFinite(srcAed) && imported > 1e-9) {
+    const remainingAedOnAvail = roundCustomsMoney(srcAed * (avail / imported));
+    transferValueAED =
+      nextAvail <= 1e-9
+        ? remainingAedOnAvail
+        : roundCustomsMoney(remainingAedOnAvail * (takeQty / avail));
+    nextCustomsValueAED = Math.max(0, roundCustomsMoney(srcAed - transferValueAED));
+  } else if (fx > 0) {
+    transferValueAED = roundCustomsMoney(transferValue * fx);
+    nextCustomsValueAED = Math.max(0, roundCustomsMoney((Number.isFinite(srcAed) ? srcAed : 0) - transferValueAED));
+  }
+
+  return {
+    ok: true,
+    transferQty: takeQty,
+    transferCustomsQty,
+    transferValue,
+    transferValueAED,
+    unit,
+    nextQtyAvailable: nextAvail,
+    nextQtyImported: nextImported,
+    nextTotalValue,
+    nextCustomsQtyImported,
+    nextCustomsValueAED,
   };
 }
 
@@ -314,6 +578,8 @@ export function buildCustomsLotStockGroup(lot = {}, items = [], { srNo = 1, matc
     String(lot.status || "").toUpperCase() === "CANCELLED" ||
     (items.length > 0 && items.every((i) => String(i.status || "").toUpperCase() === "CANCELLED"));
 
+  const convertedOutBy = indexConvertedOutSources(items);
+
   const articles = (items || []).map((item) => {
     const eco = computeLotItemCustomsEconomics(item);
     const articleMatch =
@@ -321,6 +587,10 @@ export function buildCustomsLotStockGroup(lot = {}, items = [], { srNo = 1, matc
       String(item.articleNumber || "")
         .toUpperCase()
         .includes(String(matchArticle).toUpperCase());
+    const itemId = item._id != null ? String(item._id) : "";
+    const provenance = resolveCustomsLotItemProvenance(item, lot, {
+      convertedOutMeta: itemId ? convertedOutBy.get(itemId) || null : null,
+    });
     return {
       _id: item._id,
       customsLotItemId: item._id,
@@ -331,6 +601,7 @@ export function buildCustomsLotStockGroup(lot = {}, items = [], { srNo = 1, matc
       hsCode: item.hsCode || "",
       countryOfOrigin: item.countryOfOrigin || "",
       grnId: item.grnId || lot.grnId || null,
+      // Retain grnNo for legacy consumers / Original GRN drill-down; primary source is sourceRef.
       grnNo: item.grnNo || lot.grnNo || "",
       location: item.location || item.remarks1 || "",
       status: item.status || "",
@@ -338,6 +609,12 @@ export function buildCustomsLotStockGroup(lot = {}, items = [], { srNo = 1, matc
       matchHighlight: Boolean(articleMatch),
       ...eco,
       valuationMethod: resolveValuationMethod(item.valuationMethod || valuationMethod),
+      ...provenance,
+      provenanceTooltip:
+        provenance.conversionStatus === CUSTOMS_CONVERSION_STATUS_CONVERTED_OUT &&
+        Number(eco.historicalImportedValue) > 0
+          ? `${provenance.provenanceTooltip} Historical customs value: ${eco.historicalImportedValue}.`.trim()
+          : provenance.provenanceTooltip,
     };
   });
 

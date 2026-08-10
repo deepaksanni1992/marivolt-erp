@@ -1,12 +1,18 @@
 /**
  * Article Stock Conversion — customs lot retarget + posting orchestration helpers.
  * Physical ERP stock moves through stockService.articleConversion / reverseArticleConversion.
- * Customs qty is conserved by splitting lot items under the same customsLotId (no new GRN inbound).
+ * Customs qty AND customs economic value are conserved by splitting lot items under the
+ * same customsLotId (no new GRN inbound / no value creation).
  */
 import CustomsLot from "../models/CustomsLot.js";
 import CustomsLotItem from "../models/CustomsLotItem.js";
 import CustomsMovement from "../models/CustomsMovement.js";
 import { sortCustomsLotsForFifo } from "../utils/customsFifo.js";
+import {
+  computeConversionCustomsTransfer,
+  roundCustomsMoney,
+  roundCustomsQty,
+} from "../utils/customsBoeAverage.js";
 
 function up(v) {
   return String(v ?? "").trim().toUpperCase();
@@ -87,8 +93,9 @@ export async function selectCustomsLayersForConversion({
 }
 
 /**
- * Move customs availability from source article layers to target article layers
- * under the same customsLotId. Conserves Σ qtyImported and Σ qtyAvailable on the lot.
+ * Move customs availability AND economic value from source article layers to target
+ * article layers under the same customsLotId.
+ * Conserves Σ remaining customs qty and Σ remaining customs value on the lot.
  */
 export async function retargetCustomsLotsForConversion({
   session,
@@ -125,20 +132,38 @@ export async function retargetCustomsLotsForConversion({
       throw new Error(`Customs layer available ${avail} < conversion take ${take}`);
     }
 
-    const imported = Number(sourceItem.qtyImported) || 0;
-    const consumed = Number(sourceItem.qtyConsumed) || 0;
-    const nextAvail = Math.max(0, avail - take);
-    const nextImported = Math.max(consumed + nextAvail, imported - take);
-    sourceItem.qtyAvailable = nextAvail;
-    sourceItem.qtyImported = nextImported;
-    sourceItem.customStock = nextAvail;
-    sourceItem.customStockBalance = nextAvail;
-    sourceItem.status = deriveItemStatus(nextAvail, nextImported);
-    await sourceItem.save({ session });
+    const transfer = computeConversionCustomsTransfer({
+      take,
+      qtyAvailable: avail,
+      qtyImported: Number(sourceItem.qtyImported) || 0,
+      qtyConsumed: Number(sourceItem.qtyConsumed) || 0,
+      unitPrice: Number(sourceItem.unitPrice) || 0,
+      customsUnitValue: sourceItem.customsUnitValue,
+      totalValue: sourceItem.totalValue,
+      customsQtyImported: sourceItem.customsQtyImported,
+      customsValueAED: sourceItem.customsValueAED,
+      exchangeRateToAED: sourceItem.exchangeRateToAED,
+    });
+    if (!transfer.ok) {
+      throw new Error(transfer.message || "Customs conversion value transfer failed");
+    }
 
-    const unitPrice = Number(sourceItem.unitPrice) || 0;
+    const unit = transfer.unit;
     const fx = Number(sourceItem.exchangeRateToAED) || 0;
     const unitWeight = Number(sourceItem.unitWeightKg || sourceItem.weightKg) || 0;
+    const valuationMethod = sourceItem.valuationMethod || "";
+
+    sourceItem.qtyAvailable = transfer.nextQtyAvailable;
+    sourceItem.qtyImported = transfer.nextQtyImported;
+    sourceItem.totalValue = transfer.nextTotalValue;
+    sourceItem.customsQtyImported = transfer.nextCustomsQtyImported;
+    sourceItem.customsValueAED = transfer.nextCustomsValueAED;
+    sourceItem.totalWeightKg = unitWeight * transfer.nextQtyAvailable;
+    sourceItem.customStock = transfer.nextQtyAvailable;
+    sourceItem.customStockBalance = transfer.nextQtyAvailable;
+    sourceItem.status = deriveItemStatus(transfer.nextQtyAvailable, transfer.nextQtyImported);
+    await sourceItem.save({ session });
+
     // Prefer save for true single-doc writes; array create requires ordered:true with sessions (Mongoose 9).
     const targetItem = new CustomsLotItem({
       companyId,
@@ -154,16 +179,19 @@ export async function retargetCustomsLotsForConversion({
       description: targetDescription || sourceItem.description || "",
       hsCode: sourceItem.hsCode,
       currency: sourceItem.currency,
-      unitPrice,
+      unitPrice: unit,
+      customsUnitValue: unit,
+      ...(valuationMethod ? { valuationMethod } : {}),
+      customsQtyImported: transfer.transferCustomsQty,
       qtyImported: take,
       qtyAvailable: take,
       qtyConsumed: 0,
       weightKg: unitWeight,
       unitWeightKg: unitWeight,
       totalWeightKg: unitWeight * take,
-      totalValue: unitPrice * take,
+      totalValue: transfer.transferValue,
       exchangeRateToAED: fx,
-      customsValueAED: unitPrice * take * fx,
+      customsValueAED: transfer.transferValueAED,
       customStock: take,
       customStockBalance: take,
       supplierInvoiceNumber: sourceItem.supplierInvoiceNumber,
@@ -196,6 +224,10 @@ export async function retargetCustomsLotsForConversion({
           articleNumber: srcArt,
           partNumber: sourceItem.partNumber || "",
           qty: take,
+          customsUnitValue: unit || null,
+          customsValue: transfer.transferValue,
+          currency: sourceItem.currency || "",
+          valuationMethod: valuationMethod || "",
           referenceType: "ARTICLE_STOCK_CONVERSION",
           referenceId: conversionDocumentId || null,
           referenceNumber: up(conversionNo),
@@ -212,6 +244,10 @@ export async function retargetCustomsLotsForConversion({
           articleNumber: tgtArt,
           partNumber: sourceItem.partNumber || "",
           qty: take,
+          customsUnitValue: unit || null,
+          customsValue: transfer.transferValue,
+          currency: sourceItem.currency || "",
+          valuationMethod: valuationMethod || "",
           referenceType: "ARTICLE_STOCK_CONVERSION",
           referenceId: conversionDocumentId || null,
           referenceNumber: up(conversionNo),
@@ -237,11 +273,12 @@ export async function retargetCustomsLotsForConversion({
       supplierInvoiceNumber: sourceItem.supplierInvoiceNumber,
       sourceQty: take,
       targetQty: take,
-      unitCost: unitPrice,
+      unitCost: unit,
       currency: sourceItem.currency || "USD",
       exchangeRateToAED: fx,
-      sourceStockValue: unitPrice * take,
-      targetStockValue: unitPrice * take,
+      sourceStockValue: transfer.transferValue,
+      targetStockValue: transfer.transferValue,
+      transferCustomsQty: transfer.transferCustomsQty,
     });
   }
   return results;
@@ -249,6 +286,7 @@ export async function retargetCustomsLotsForConversion({
 
 /**
  * Reverse customs conversion layers: reduce target conversion layers, restore source.
+ * Restores customs qty AND economic value (totalValue / customsValueAED / customsQtyImported).
  */
 export async function reverseCustomsLotsForConversion({
   session,
@@ -289,8 +327,37 @@ export async function reverseCustomsLotsForConversion({
       throw err;
     }
 
+    const tgtImported = Number(targetItem.qtyImported) || 0;
+    const tgtTotal = Number(targetItem.totalValue) || 0;
+    const tgtCqi = Number(targetItem.customsQtyImported) || tgtImported;
+    const tgtAed = Number(targetItem.customsValueAED) || 0;
+    const unit = Number(targetItem.customsUnitValue ?? targetItem.unitPrice ?? sourceItem.unitPrice) || 0;
+    const valuationMethod = targetItem.valuationMethod || sourceItem.valuationMethod || "";
+
+    const restoreValue =
+      tgtImported > 1e-9 && Math.abs(take - tgtAvail) < 1e-9
+        ? roundCustomsMoney(tgtTotal)
+        : tgtImported > 1e-9
+          ? roundCustomsMoney(tgtTotal * (take / tgtImported))
+          : roundCustomsMoney(unit * take);
+    const restoreCqi =
+      tgtImported > 1e-9 && Math.abs(take - tgtAvail) < 1e-9
+        ? roundCustomsQty(tgtCqi)
+        : tgtImported > 1e-9
+          ? roundCustomsQty(tgtCqi * (take / tgtImported))
+          : roundCustomsQty(take);
+    const restoreAed =
+      tgtImported > 1e-9 && Math.abs(take - tgtAvail) < 1e-9
+        ? roundCustomsMoney(tgtAed)
+        : tgtImported > 1e-9
+          ? roundCustomsMoney(tgtAed * (take / tgtImported))
+          : 0;
+
     targetItem.qtyAvailable = Math.max(0, tgtAvail - take);
-    targetItem.qtyImported = Math.max(0, (Number(targetItem.qtyImported) || 0) - take);
+    targetItem.qtyImported = Math.max(0, tgtImported - take);
+    targetItem.totalValue = Math.max(0, roundCustomsMoney(tgtTotal - restoreValue));
+    targetItem.customsQtyImported = Math.max(0, roundCustomsQty(tgtCqi - restoreCqi));
+    targetItem.customsValueAED = Math.max(0, roundCustomsMoney(tgtAed - restoreAed));
     targetItem.customStock = targetItem.qtyAvailable;
     targetItem.customStockBalance = targetItem.qtyAvailable;
     targetItem.status = deriveItemStatus(targetItem.qtyAvailable, targetItem.qtyImported);
@@ -300,6 +367,13 @@ export async function reverseCustomsLotsForConversion({
     const srcImported = Number(sourceItem.qtyImported) || 0;
     sourceItem.qtyAvailable = srcAvail + take;
     sourceItem.qtyImported = srcImported + take;
+    sourceItem.totalValue = roundCustomsMoney((Number(sourceItem.totalValue) || 0) + restoreValue);
+    sourceItem.customsQtyImported = roundCustomsQty(
+      (Number(sourceItem.customsQtyImported) || srcImported) + restoreCqi,
+    );
+    sourceItem.customsValueAED = roundCustomsMoney(
+      (Number(sourceItem.customsValueAED) || 0) + restoreAed,
+    );
     sourceItem.customStock = sourceItem.qtyAvailable;
     sourceItem.customStockBalance = sourceItem.qtyAvailable;
     sourceItem.status = deriveItemStatus(sourceItem.qtyAvailable, sourceItem.qtyImported);
@@ -315,6 +389,10 @@ export async function reverseCustomsLotsForConversion({
           customsLotItemId: targetItem._id,
           articleNumber: targetItem.articleNumber,
           qty: take,
+          customsUnitValue: unit || null,
+          customsValue: restoreValue,
+          currency: targetItem.currency || "",
+          valuationMethod: valuationMethod || "",
           referenceType: "ARTICLE_STOCK_CONVERSION",
           referenceId: conversionDocumentId || null,
           referenceNumber: up(conversionNo),
@@ -330,6 +408,10 @@ export async function reverseCustomsLotsForConversion({
           customsLotItemId: sourceItem._id,
           articleNumber: sourceItem.articleNumber,
           qty: take,
+          customsUnitValue: unit || null,
+          customsValue: restoreValue,
+          currency: sourceItem.currency || "",
+          valuationMethod: valuationMethod || "",
           referenceType: "ARTICLE_STOCK_CONVERSION",
           referenceId: conversionDocumentId || null,
           referenceNumber: up(conversionNo),
