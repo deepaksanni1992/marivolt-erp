@@ -22,6 +22,9 @@ const CSV_COLUMNS = [
   { key: "partNumber", header: "Part Number" },
   { key: "hsCode", header: "HS Code" },
   { key: "currency", header: "Currency" },
+  { key: "boeDeclaredQty", header: "BOE Declared Qty" },
+  { key: "boeDeclaredValue", header: "BOE Declared Value" },
+  { key: "customsUnitValue", header: "BOE Customs Unit Value" },
   { key: "unitPrice", header: "Unit Price" },
   { key: "qtyImported", header: "Qty Imported" },
   { key: "weightKg", header: "Weight in KG" },
@@ -46,6 +49,16 @@ function fmtNum(v, digits = 2) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "—";
   return n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: digits });
+}
+
+function boeCustomsUnit(row) {
+  const n = Number(row?.customsUnitValue ?? row?.unitPrice);
+  return Number.isFinite(n) ? n : null;
+}
+
+function optionalNum(v, digits = 2) {
+  if (v == null || v === "") return "—";
+  return fmtNum(v, digits);
 }
 
 function statusTone(status) {
@@ -140,6 +153,9 @@ export default function CustomsStock() {
       const exportRows = (data.items || []).map((row) => ({
         ...row,
         date: fmtDate(row.date),
+        boeDeclaredQty: row.boeDeclaredQty,
+        boeDeclaredValue: row.boeDeclaredValue,
+        customsUnitValue: boeCustomsUnit(row),
         unitPrice: row.unitPrice,
         qtyImported: row.qtyImported,
         weightKg: row.weightKg,
@@ -288,6 +304,8 @@ export default function CustomsStock() {
           <button type="button" className="rounded border px-2 py-1 text-slate-700 hover:bg-slate-50" onClick={resetFilters}>
             Reset filters
           </button>
+          {/* BOE lot-level grouping / declared-value rollups deferred — per-line economics shown when API provides them. */}
+          <span className="text-slate-400">BOE declared totals are per lot when available; line grouping not shown here.</span>
         </div>
       </div>
 
@@ -299,7 +317,7 @@ export default function CustomsStock() {
 
       <div className="overflow-hidden rounded-2xl border bg-white">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[2200px] text-xs">
+          <table className="w-full min-w-[2500px] text-xs">
             <thead className="bg-slate-100 text-left text-[11px] uppercase tracking-wide text-slate-600">
               <tr>
                 <th className="sticky left-0 z-10 bg-slate-100 px-2 py-2">Sr No</th>
@@ -314,6 +332,9 @@ export default function CustomsStock() {
                 <th className="px-2 py-2">Part Number</th>
                 <th className="px-2 py-2">HS Code</th>
                 <th className="px-2 py-2">Currency</th>
+                <th className="px-2 py-2 text-right">BOE Decl. Qty</th>
+                <th className="px-2 py-2 text-right">BOE Decl. Value</th>
+                <th className="px-2 py-2 text-right">BOE Customs Unit</th>
                 <th className="px-2 py-2 text-right">Unit Price</th>
                 <th className="px-2 py-2 text-right">Qty Imported</th>
                 <th className="px-2 py-2 text-right">Weight KG</th>
@@ -329,7 +350,7 @@ export default function CustomsStock() {
             <tbody>
               {stockQ.isLoading ? (
                 <tr>
-                  <td colSpan={22} className="px-4 py-8 text-center text-slate-500">
+                  <td colSpan={25} className="px-4 py-8 text-center text-slate-500">
                     Loading customs stock…
                   </td>
                 </tr>
@@ -352,6 +373,9 @@ export default function CustomsStock() {
                     <td className="px-2 py-1.5 font-mono">{row.partNumber || "—"}</td>
                     <td className="px-2 py-1.5 font-mono">{row.hsCode || "—"}</td>
                     <td className="px-2 py-1.5">{row.currency || "—"}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{optionalNum(row.boeDeclaredQty, 4)}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{optionalNum(row.boeDeclaredValue, 2)}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{optionalNum(boeCustomsUnit(row), 4)}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{fmtNum(row.unitPrice, 4)}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{fmtNum(row.qtyImported, 4)}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{fmtNum(row.weightKg, 4)}</td>
@@ -403,7 +427,7 @@ export default function CustomsStock() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={22} className="px-4 py-10 text-center text-slate-500">
+                  <td colSpan={25} className="px-4 py-10 text-center text-slate-500">
                     No customs stock records. Post a GRN with customs information to create inbound stock.
                   </td>
                 </tr>

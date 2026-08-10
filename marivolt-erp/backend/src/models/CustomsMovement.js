@@ -15,6 +15,15 @@ const customsMovementSchema = new mongoose.Schema(
     articleNumber: { type: String, default: "", trim: true, uppercase: true, index: true },
     partNumber: { type: String, default: "", trim: true, uppercase: true },
     qty: { type: Number, required: true, min: 0 },
+    /** Additive value snapshot (optional for legacy movements). */
+    customsUnitValue: { type: Number, default: null, min: 0 },
+    customsValue: { type: Number, default: null, min: 0 },
+    currency: { type: String, default: "", trim: true, uppercase: true },
+    valuationMethod: {
+      type: String,
+      enum: ["", "LEGACY_LINE_VALUE", "BOE_AVERAGE"],
+      default: "",
+    },
     referenceType: {
       type: String,
       enum: [

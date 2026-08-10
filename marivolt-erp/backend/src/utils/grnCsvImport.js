@@ -25,11 +25,11 @@ export const GRN_CSV_HEADERS = Object.freeze([
   "HS Code",
   "Unit Weight",
   "Weight",
-  "Customs Unit Price",
-  "Total Price",
+  "BOE Declared Qty",
+  "Customs UOM",
+  "BOE Declared Value",
   "Currency",
   "Exchange Rate",
-  "AED Value",
 ]);
 
 export function normalizeCsvHeaderKey(h) {
@@ -125,8 +125,9 @@ function cellNum(row, headerLabel) {
 }
 
 /**
- * Map one official-template row to customs line-override fields.
- * Auto-fills Weight / Total Price / AED Value only when blank.
+ * Map one official-template row to customs line-override / header fields.
+ * Does not treat Customs Unit Price as source of truth (column removed).
+ * BOE Declared Qty/Value map to header defaults; line may include customsQty when needed.
  */
 export function mapCsvRowToCustomsOverride(row, grnQty) {
   const qty = Math.max(0, Number(grnQty) || 0);
@@ -136,26 +137,18 @@ export function mapCsvRowToCustomsOverride(row, grnQty) {
     weight = qty * unitWeight;
   }
 
-  const customsUnitPrice = cellNum(row, "Customs Unit Price");
-  let totalPrice = cellNum(row, "Total Price");
-  if (totalPrice == null && customsUnitPrice != null && !Number.isNaN(customsUnitPrice) && qty > 0) {
-    totalPrice = qty * customsUnitPrice;
-  }
-
+  const boeDeclaredQty = cellNum(row, "BOE Declared Qty");
+  const boeDeclaredValue = cellNum(row, "BOE Declared Value");
+  const customsUom = cell(row, "Customs UOM");
   const exchangeRate = cellNum(row, "Exchange Rate");
-  let aedValue = cellNum(row, "AED Value");
-  if (
-    aedValue == null &&
-    totalPrice != null &&
-    !Number.isNaN(totalPrice) &&
-    exchangeRate != null &&
-    !Number.isNaN(exchangeRate)
-  ) {
-    aedValue = totalPrice * exchangeRate;
-  }
-
   const awbBl = cell(row, "AWB No. / BL No.");
   const currency = cell(row, "Currency");
+
+  // Reject legacy column if present under old aliases in row bag
+  const legacyUnitPrice = cellNum(row, "Customs Unit Price");
+  if (legacyUnitPrice != null && !Number.isNaN(legacyUnitPrice) && legacyUnitPrice > 0) {
+    // Stash for headerDefaults detection — post will reject unit-price-only without BOE fields
+  }
 
   const override = {};
   const setStr = (key, val) => {
@@ -180,25 +173,24 @@ export function mapCsvRowToCustomsOverride(row, grnQty) {
   setStr("hsCode", cell(row, "HS Code"));
   setNum("unitWeightKg", unitWeight != null && !Number.isNaN(unitWeight) ? unitWeight : null);
   setNum("totalWeightKg", weight != null && !Number.isNaN(weight) ? weight : null);
-  setNum(
-    "customsUnitPrice",
-    customsUnitPrice != null && !Number.isNaN(customsUnitPrice) ? customsUnitPrice : null
-  );
-  setNum("customsTotalPrice", totalPrice != null && !Number.isNaN(totalPrice) ? totalPrice : null);
   setStr("customsCurrency", currency ? currency.toUpperCase() : "");
   setNum("exchangeRateToAED", exchangeRate != null && !Number.isNaN(exchangeRate) ? exchangeRate : null);
-  setNum("customsValueAED", aedValue != null && !Number.isNaN(aedValue) ? aedValue : null);
+  setNum("boeDeclaredQty", boeDeclaredQty != null && !Number.isNaN(boeDeclaredQty) ? boeDeclaredQty : null);
+  setNum("boeDeclaredValue", boeDeclaredValue != null && !Number.isNaN(boeDeclaredValue) ? boeDeclaredValue : null);
+  setStr("customsUom", customsUom ? customsUom.toUpperCase() : "");
+  // Never set customsUnitPrice from CSV for BOE_AVERAGE
 
   return {
     override,
     computed: {
       weight: weight != null && !Number.isNaN(weight) ? weight : null,
-      totalPrice: totalPrice != null && !Number.isNaN(totalPrice) ? totalPrice : null,
-      aedValue: aedValue != null && !Number.isNaN(aedValue) ? aedValue : null,
       unitWeight: unitWeight != null && !Number.isNaN(unitWeight) ? unitWeight : null,
-      customsUnitPrice:
-        customsUnitPrice != null && !Number.isNaN(customsUnitPrice) ? customsUnitPrice : null,
+      boeDeclaredQty: boeDeclaredQty != null && !Number.isNaN(boeDeclaredQty) ? boeDeclaredQty : null,
+      boeDeclaredValue: boeDeclaredValue != null && !Number.isNaN(boeDeclaredValue) ? boeDeclaredValue : null,
+      customsUom: customsUom || null,
       exchangeRate: exchangeRate != null && !Number.isNaN(exchangeRate) ? exchangeRate : null,
+      legacyCustomsUnitPriceIgnored:
+        legacyUnitPrice != null && !Number.isNaN(legacyUnitPrice) ? legacyUnitPrice : null,
     },
   };
 }
@@ -219,15 +211,13 @@ export function customsOverrideToLineEditFields(override = {}) {
   set("customsSupplierInvoiceDate", o.supplierInvoiceDate);
   set("customsHsCode", o.hsCode);
   set("customsCountryOfOrigin", o.countryOfOrigin);
-  set("customsUnitPrice", o.customsUnitPrice);
+  set("customsQty", o.customsQty);
   set("customsCurrency", o.customsCurrency);
   set("customsUnitWeightKg", o.unitWeightKg);
   set("customsWeightKg", o.unitWeightKg);
   set("customsExchangeRateToAED", o.exchangeRateToAED);
   set("customsRemarks", o.customsRemarks);
   set("customsTotalWeightKg", o.totalWeightKg);
-  set("customsTotalPrice", o.customsTotalPrice);
-  set("customsValueAED", o.customsValueAED);
   return out;
 }
 
@@ -246,10 +236,12 @@ export function suggestHeaderDefaultsFromOverrides(overrides = []) {
       countryOfOrigin: o.countryOfOrigin || "",
       hsCode: o.hsCode || "",
       unitWeightKg: o.unitWeightKg != null ? o.unitWeightKg : "",
-      customsUnitPrice: o.customsUnitPrice != null ? o.customsUnitPrice : "",
       customsCurrency: o.customsCurrency || "",
       exchangeRateToAED: o.exchangeRateToAED != null ? o.exchangeRateToAED : "",
       customsRemarks: o.customsRemarks || "",
+      boeDeclaredQty: o.boeDeclaredQty != null ? o.boeDeclaredQty : "",
+      customsUom: o.customsUom || "",
+      boeDeclaredValue: o.boeDeclaredValue != null ? o.boeDeclaredValue : "",
     };
   }
   return null;
@@ -536,11 +528,11 @@ export function buildGrnCsvTemplateCsv(lines = []) {
       "HS Code": "",
       "Unit Weight": "",
       Weight: "",
-      "Customs Unit Price": "",
-      "Total Price": "",
+      "BOE Declared Qty": "",
+      "Customs UOM": "",
+      "BOE Declared Value": "",
       Currency: "",
       "Exchange Rate": "",
-      "AED Value": "",
     };
     return buildGrnCsvRow(values);
   });
@@ -579,10 +571,24 @@ export function validateGrnCsvRowRequiredFields(row) {
   if (fx == null) messages.push("Exchange Rate is required.");
   else if (Number.isNaN(fx) || !(fx > 0)) messages.push("Exchange Rate must be greater than zero.");
 
-  const unitPrice = cellNum(row, "Customs Unit Price");
-  if (unitPrice == null) messages.push("Customs Unit Price is required.");
-  else if (Number.isNaN(unitPrice) || !(unitPrice > 0)) {
-    messages.push("Customs Unit Price must be greater than zero.");
+  const boeQty = cellNum(row, "BOE Declared Qty");
+  if (boeQty == null) messages.push("BOE Declared Qty is required.");
+  else if (Number.isNaN(boeQty) || !(boeQty > 0)) {
+    messages.push("BOE Declared Qty must be greater than zero.");
+  }
+
+  const boeValue = cellNum(row, "BOE Declared Value");
+  if (boeValue == null) messages.push("BOE Declared Value is required.");
+  else if (Number.isNaN(boeValue) || boeValue < 0) {
+    messages.push("BOE Declared Value must be a non-negative number.");
+  }
+
+  // Legacy column must not be trusted if somehow present in a non-strict parse path
+  const legacyPrice = cellNum(row, "Customs Unit Price");
+  if (legacyPrice != null && !Number.isNaN(legacyPrice) && legacyPrice > 0) {
+    messages.push(
+      "Customs Unit Price is no longer accepted. Use BOE Declared Qty and BOE Declared Value."
+    );
   }
 
   if (!cell(row, "Country Of Origin")) messages.push("Country Of Origin is required.");

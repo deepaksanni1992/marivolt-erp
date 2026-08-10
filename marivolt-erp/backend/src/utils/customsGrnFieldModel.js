@@ -1,10 +1,20 @@
 /**
- * Canonical Customs GRN field model (revised).
+ * Canonical Customs GRN field model (revised + BOE_AVERAGE).
  *
- * Resolution: line override if present, else header default.
- * On post: persist ONLY resolved effective values on GRN line + Customs lot/item.
- * Do not depend on mutable GRN header after posting.
+ * NEW posts: BOE Declared Value / BOE Declared Qty → frozen customsUnitValue.
+ * Client-supplied customsUnitPrice / customsUnitValue are ignored for BOE_AVERAGE.
+ * Legacy line-priced records remain readable without mass migration.
  */
+
+import {
+  CUSTOMS_VALUATION_BOE_AVERAGE,
+  CUSTOMS_VALUATION_LEGACY_LINE,
+  computeBoeCustomsUnitValue,
+  resolveLineCustomsQuantities,
+  allocateBoeLineValues,
+  roundCustomsMoney,
+  roundCustomsQty,
+} from "./customsBoeAverage.js";
 
 export const CUSTOMS_GRN_HEADER_FIELDS = [
   "receivedDate",
@@ -21,17 +31,24 @@ export const CUSTOMS_GRN_HEADER_FIELDS = [
   "customsCurrency",
   "exchangeRateToAED",
   "customsRemarks",
+  "boeDeclaredQty",
+  "customsUom",
+  "boeDeclaredValue",
+  "grossWeightKg",
+  "netWeightKg",
+  "valuationMethod",
 ];
 
-/** Line may override any header field; also carries computed totals. */
+/** Line may override metadata; customsQty used for non-1:1 UOM mapping. */
 export const CUSTOMS_GRN_LINE_FIELDS = [
   ...CUSTOMS_GRN_HEADER_FIELDS,
   "totalWeightKg",
   "customsTotalPrice",
   "customsValueAED",
+  "customsQty",
 ];
 
-/** Mandatory when customs capture is active for the GRN. BL/AWB/remarks optional. */
+/** Mandatory metadata when customs capture is active. Unit price is NOT required for BOE_AVERAGE. */
 export const CUSTOMS_GRN_MANDATORY_EFFECTIVE = [
   "receivedDate",
   "boeNumber",
@@ -40,9 +57,14 @@ export const CUSTOMS_GRN_MANDATORY_EFFECTIVE = [
   "supplierInvoiceDate",
   "customsCurrency",
   "exchangeRateToAED",
-  "customsUnitPrice",
   "countryOfOrigin",
   "hsCode",
+];
+
+export const CUSTOMS_BOE_MANDATORY_HEADER = [
+  "boeDeclaredQty",
+  "boeDeclaredValue",
+  "customsCurrency",
 ];
 
 function t(v) {
@@ -60,7 +82,6 @@ export function parseCustomsDate(value) {
   }
   const s = t(value);
   if (!s) return null;
-  // Date-only YYYY-MM-DD → local calendar day (no silent TZ shift of calendar date)
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
     const [y, m, d] = s.split("-").map(Number);
     const dt = new Date(y, m - 1, d, 12, 0, 0, 0);
@@ -105,16 +126,35 @@ function pickNum(v) {
 }
 
 /**
- * Resolve effective customs values for one GRN line.
- * Never falls back to commercial unitCost — customs price must come from capture.
- * Totals are always recalculated server-side (client-imported totals are ignored).
- * TotalWeightKg uses qty × unitWeight unless an authorised weight override is granted.
+ * New GRN customs capture uses BOE_AVERAGE when declared qty+value are present.
+ * Legacy unit-price-only payloads are rejected for new posts (clear message).
+ */
+export function detectCustomsValuationMode(header = {}) {
+  const declaredQty = pickNum(header.boeDeclaredQty);
+  const declaredValue = pickNum(header.boeDeclaredValue);
+  const method = upper(header.valuationMethod);
+  if (method === CUSTOMS_VALUATION_BOE_AVERAGE) return CUSTOMS_VALUATION_BOE_AVERAGE;
+  if (declaredQty != null && declaredQty > 0 && declaredValue != null && declaredValue >= 0) {
+    return CUSTOMS_VALUATION_BOE_AVERAGE;
+  }
+  if (method === CUSTOMS_VALUATION_LEGACY_LINE) return CUSTOMS_VALUATION_LEGACY_LINE;
+  const legacyPrice = pickNum(header.customsUnitPrice ?? header.unitPrice);
+  if (legacyPrice != null && legacyPrice > 0) return "LEGACY_REJECTED";
+  return CUSTOMS_VALUATION_BOE_AVERAGE;
+}
+
+/**
+ * Resolve effective customs metadata for one GRN line (HS/COO/dates/weight).
+ * For BOE_AVERAGE, unit value is injected by the BOE resolver — not from line/header price.
  */
 export function resolveCustomsLineEffective({
   header = {},
   override = {},
   quantity = 0,
   allowances = {},
+  customsUnitValue = null,
+  customsQty = null,
+  valuationMethod = CUSTOMS_VALUATION_BOE_AVERAGE,
 } = {}) {
   const qty = Math.max(0, Number(quantity) || 0);
 
@@ -140,11 +180,9 @@ export function resolveCustomsLineEffective({
   };
 
   const unitWeightKg = pick("unitWeightKg", { numeric: true }) ?? 0;
-  const customsUnitPrice = pick("customsUnitPrice", { numeric: true }) ?? 0;
   let customsCurrency = pick("customsCurrency", { upperCase: true });
   let exchangeRateToAED = pick("exchangeRateToAED", { numeric: true });
 
-  // AED forces FX = 1 (server-side; client cannot send a different rate for AED)
   if (customsCurrency === "AED") {
     exchangeRateToAED = 1;
   }
@@ -152,7 +190,6 @@ export function resolveCustomsLineEffective({
   const rate =
     exchangeRateToAED == null || !(Number(exchangeRateToAED) > 0) ? null : Number(exchangeRateToAED);
 
-  // Computed totals — always server-side from qty × unit fields
   const computedTotalWeight = qty > 0 && unitWeightKg > 0 ? qty * unitWeightKg : 0;
   let totalWeightKg = computedTotalWeight;
   if (
@@ -163,8 +200,17 @@ export function resolveCustomsLineEffective({
     totalWeightKg = pickNum(override.totalWeightKg);
   }
 
-  const customsTotalPrice = qty * customsUnitPrice;
-  const customsValueAED = rate != null ? customsTotalPrice * rate : 0;
+  const method = upper(valuationMethod) || CUSTOMS_VALUATION_BOE_AVERAGE;
+  let unitPrice = 0;
+  if (method === CUSTOMS_VALUATION_BOE_AVERAGE) {
+    unitPrice = Number(customsUnitValue) || 0;
+  } else {
+    unitPrice = pick("customsUnitPrice", { numeric: true }) ?? 0;
+  }
+
+  const cQty = customsQty != null ? roundCustomsQty(customsQty) : roundCustomsQty(qty);
+  const customsTotalPrice = roundCustomsMoney(cQty * unitPrice);
+  const customsValueAED = rate != null ? roundCustomsMoney(customsTotalPrice * rate) : 0;
 
   return {
     receivedDate: pickDate("receivedDate"),
@@ -178,13 +224,19 @@ export function resolveCustomsLineEffective({
     hsCode: pick("hsCode", { upperCase: true }),
     unitWeightKg,
     totalWeightKg: Number(totalWeightKg) || 0,
-    customsUnitPrice,
-    customsTotalPrice: Number(customsTotalPrice) || 0,
+    customsUnitPrice: unitPrice,
+    customsUnitValue: unitPrice,
+    customsTotalPrice,
     customsCurrency,
     exchangeRateToAED: rate,
-    customsValueAED: Number(customsValueAED) || 0,
+    customsValueAED,
     customsRemarks: pick("customsRemarks"),
     quantity: qty,
+    customsQty: cQty,
+    valuationMethod: method,
+    boeDeclaredQty: pickNum(header.boeDeclaredQty) ?? 0,
+    boeDeclaredValue: pickNum(header.boeDeclaredValue) ?? 0,
+    customsUom: upper(header.customsUom || "PCS") || "PCS",
   };
 }
 
@@ -198,7 +250,6 @@ export function validateCustomsMandatoryEffective(effective, { location = "" } =
     supplierInvoiceDate: "Supplier Invoice Date",
     customsCurrency: "Customs Currency",
     exchangeRateToAED: "Exchange Rate to AED",
-    customsUnitPrice: "Customs Unit Price",
     countryOfOrigin: "Country of Origin",
     hsCode: "HS Code",
   };
@@ -209,7 +260,7 @@ export function validateCustomsMandatoryEffective(effective, { location = "" } =
       if (!v) errors.push(`${label[key]} is required`);
       continue;
     }
-    if (key === "customsUnitPrice" || key === "exchangeRateToAED") {
+    if (key === "exchangeRateToAED") {
       if (v == null || !(Number(v) > 0)) errors.push(`${label[key]} is required and must be greater than zero`);
       continue;
     }
@@ -226,10 +277,6 @@ export function validateCustomsMandatoryEffective(effective, { location = "" } =
   return errors;
 }
 
-/**
- * Merge client-requested date/weight overrides with server-granted permission.
- * Client checkboxes alone NEVER grant allowance — permissionRequired must be true.
- */
 export function resolveCustomsAllowances({ requested = {}, permissionGranted = false } = {}) {
   const grant = Boolean(permissionGranted);
   return {
@@ -240,10 +287,6 @@ export function resolveCustomsAllowances({ requested = {}, permissionGranted = f
   };
 }
 
-/**
- * Date validation. Does not mutate dates.
- * allowances must already be permission-gated via resolveCustomsAllowances.
- */
 export function validateCustomsDates(effective, { poDate = null, allowances = {} } = {}) {
   const errors = [];
   const po = parseCustomsDate(poDate);
@@ -279,10 +322,6 @@ export function validateCustomsDates(effective, { poDate = null, allowances = {}
   return errors;
 }
 
-/**
- * Normalize raw customs body into header defaults + line override map.
- * Accepts both revised names and legacy aliases (currency, unitPrice, weightKg, remarks).
- */
 export function normalizeCustomsHeaderDefaults(raw = {}) {
   const c = raw?.customs && typeof raw.customs === "object" ? raw.customs : raw;
   return {
@@ -296,10 +335,19 @@ export function normalizeCustomsHeaderDefaults(raw = {}) {
     countryOfOrigin: t(c.countryOfOrigin ?? c.CountryOfOrigin),
     hsCode: t(c.hsCode ?? c.HSCode),
     unitWeightKg: c.unitWeightKg ?? c.UnitWeightKg ?? c.weightKg ?? "",
+    // Legacy aliases retained for detection only — ignored for BOE_AVERAGE unit value.
     customsUnitPrice: c.customsUnitPrice ?? c.CustomsUnitPrice ?? c.unitPrice ?? "",
     customsCurrency: t(c.customsCurrency ?? c.CustomsCurrency ?? c.currency),
     exchangeRateToAED: c.exchangeRateToAED ?? c.ExchangeRateToAED ?? "",
     customsRemarks: t(c.customsRemarks ?? c.CustomsRemarks ?? c.remarks),
+    boeDeclaredQty: c.boeDeclaredQty ?? c.BOEDeclaredQty ?? "",
+    customsUom: t(c.customsUom ?? c.CustomsUom ?? c.customsUOM),
+    boeDeclaredValue: c.boeDeclaredValue ?? c.BOEDeclaredValue ?? c.customsDeclaredValue ?? "",
+    grossWeightKg: c.grossWeightKg ?? c.GrossWeightKg ?? "",
+    netWeightKg: c.netWeightKg ?? c.NetWeightKg ?? "",
+    valuationMethod: t(c.valuationMethod ?? c.ValuationMethod),
+    // Spoof attempts — never used as source of truth
+    customsUnitValue: c.customsUnitValue ?? c.CustomsUnitValue ?? "",
   };
 }
 
@@ -323,6 +371,7 @@ export function normalizeCustomsLineOverride(row = {}) {
     exchangeRateToAED: ["exchangeRateToAED", "ExchangeRateToAED"],
     customsValueAED: ["customsValueAED", "CustomsValueAED"],
     customsRemarks: ["customsRemarks", "CustomsRemarks", "remarks"],
+    customsQty: ["customsQty", "CustomsQty", "boeLineQty"],
   };
   for (const [canon, aliases] of Object.entries(map)) {
     for (const a of aliases) {
@@ -346,8 +395,7 @@ export function buildLineOverrideMap(customs = {}) {
 }
 
 /**
- * Validate all selected lines when customs capture is active.
- * Returns { ok, errors: [{ line, article, messages }] }.
+ * Validate customs capture for GRN (BOE_AVERAGE authoritative for new posts).
  */
 export function validateCustomsCaptureForGrn({
   header = {},
@@ -358,22 +406,116 @@ export function validateCustomsCaptureForGrn({
 } = {}) {
   const headerNorm = normalizeCustomsHeaderDefaults(header);
   const errors = [];
+  const mode = detectCustomsValuationMode(headerNorm);
 
-  for (const line of lines) {
-    const qty = Number(line.acceptedQty ?? line.receivedQty ?? line.quantity ?? line.grnQty) || 0;
-    if (qty <= 0) continue;
+  if (mode === "LEGACY_REJECTED") {
+    return {
+      ok: false,
+      errors: [
+        {
+          line: "HEADER",
+          article: "",
+          messages: [
+            "Manual Customs Unit Price is no longer accepted. Provide BOE Declared Customs Qty and BOE Declared Value; the system calculates BOE Customs Unit Value.",
+          ],
+        },
+      ],
+      valuationMethod: CUSTOMS_VALUATION_BOE_AVERAGE,
+    };
+  }
+
+  const declaredQty = pickNum(headerNorm.boeDeclaredQty);
+  const declaredValue = pickNum(headerNorm.boeDeclaredValue);
+  if (declaredQty == null || !(declaredQty > 0)) {
+    errors.push({
+      line: "HEADER",
+      article: "",
+      messages: ["BOE Declared Customs Qty is required and must be greater than zero"],
+    });
+  }
+  if (declaredValue == null || declaredValue < 0) {
+    errors.push({
+      line: "HEADER",
+      article: "",
+      messages: ["BOE Declared Value is required and must be a non-negative number"],
+    });
+  }
+  if (!t(headerNorm.customsCurrency)) {
+    errors.push({
+      line: "HEADER",
+      article: "",
+      messages: ["Customs Currency is required"],
+    });
+  }
+
+  // Reject client spoof of unit value — we always recompute
+  const unitCalc = computeBoeCustomsUnitValue(declaredValue ?? 0, declaredQty ?? 0);
+  if (!unitCalc.ok && declaredQty > 0 && declaredValue != null) {
+    errors.push({ line: "HEADER", article: "", messages: [unitCalc.message] });
+  }
+
+  const activeLines = (lines || []).filter(
+    (ln) => (Number(ln.acceptedQty ?? ln.receivedQty ?? ln.quantity ?? ln.grnQty) || 0) > 0
+  );
+
+  const qtyLines = activeLines.map((ln) => {
+    const key = String(ln.poLineId ?? ln._id ?? "");
+    const override = lineOverrides.get(key) || normalizeCustomsLineOverride(ln.customsOverride || {});
+    return {
+      poLineId: ln.poLineId ?? ln._id,
+      article: ln.article,
+      acceptedQty: ln.acceptedQty ?? ln.receivedQty ?? ln.quantity ?? ln.grnQty,
+      uom: ln.uom || "PCS",
+      customsQty: override.customsQty,
+      location: ln.location,
+      override,
+    };
+  });
+
+  const qtyResolve = resolveLineCustomsQuantities({
+    lines: qtyLines,
+    boeDeclaredQty: declaredQty,
+    customsUom: headerNorm.customsUom || "PCS",
+  });
+  if (!qtyResolve.ok) {
+    errors.push({ line: "HEADER", article: "", messages: [qtyResolve.message] });
+  }
+
+  const customsUnitValue = unitCalc.ok ? unitCalc.customsUnitValue : 0;
+  const valueLines = allocateBoeLineValues({
+    lines: (qtyResolve.lines || []).map((r) => ({ ...r, customsQty: r.customsQty })),
+    boeDeclaredValue: declaredValue,
+    customsUnitValue,
+  });
+  const valueByKey = new Map(valueLines.map((r) => [String(r.key || r.poLineId || r.article), r]));
+
+  for (const line of activeLines) {
     const key = String(line.poLineId ?? line._id ?? "");
-    const override = lineOverrides.get(key) || normalizeCustomsLineOverride(line.customsOverride || {});
+    const override = lineOverrides.get(key) || {};
+    const mapped = valueByKey.get(key) || valueByKey.get(String(line.article || ""));
     const effective = resolveCustomsLineEffective({
       header: headerNorm,
       override,
-      quantity: qty,
+      quantity: Number(line.acceptedQty ?? line.receivedQty) || 0,
       allowances,
+      customsUnitValue,
+      customsQty: mapped?.customsQty,
+      valuationMethod: CUSTOMS_VALUATION_BOE_AVERAGE,
     });
+    if (mapped) {
+      effective.customsTotalPrice = mapped.customsTotalPrice;
+      effective.customsQty = mapped.customsQty;
+      const rate = effective.exchangeRateToAED;
+      effective.customsValueAED =
+        rate != null ? roundCustomsMoney(effective.customsTotalPrice * rate) : 0;
+    }
     const msgs = [
       ...validateCustomsMandatoryEffective(effective, { location: line.location }),
       ...validateCustomsDates(effective, { poDate, allowances }),
     ];
+    if (!(Number(effective.customsUnitValue) >= 0) || !Number.isFinite(Number(effective.customsUnitValue))) {
+      msgs.push("BOE Customs Unit Value is invalid");
+    }
     if (msgs.length) {
       errors.push({
         line: key || line.article || "?",
@@ -384,7 +526,15 @@ export function validateCustomsCaptureForGrn({
     }
   }
 
-  return { ok: errors.length === 0, errors };
+  return {
+    ok: errors.length === 0,
+    errors,
+    valuationMethod: CUSTOMS_VALUATION_BOE_AVERAGE,
+    customsUnitValue,
+    boeDeclaredQty: declaredQty,
+    boeDeclaredValue: declaredValue,
+    lineCustomsQty: valueByKey,
+  };
 }
 
 /** Snapshot for GRN line persistence (effective only). */
@@ -401,12 +551,18 @@ export function toPersistedGrnLineCustoms(effective) {
     hsCode: effective.hsCode || "",
     unitWeightKg: Number(effective.unitWeightKg) || 0,
     totalWeightKg: Number(effective.totalWeightKg) || 0,
-    customsUnitPrice: Number(effective.customsUnitPrice) || 0,
+    customsUnitPrice: Number(effective.customsUnitValue ?? effective.customsUnitPrice) || 0,
+    customsUnitValue: Number(effective.customsUnitValue ?? effective.customsUnitPrice) || 0,
     customsTotalPrice: Number(effective.customsTotalPrice) || 0,
     customsCurrency: effective.customsCurrency || "",
     exchangeRateToAED: Number(effective.exchangeRateToAED) || 0,
     customsValueAED: Number(effective.customsValueAED) || 0,
     customsRemarks: effective.customsRemarks || "",
+    valuationMethod: effective.valuationMethod || CUSTOMS_VALUATION_BOE_AVERAGE,
+    customsQty: Number(effective.customsQty) || 0,
+    boeDeclaredQty: Number(effective.boeDeclaredQty) || 0,
+    boeDeclaredValue: Number(effective.boeDeclaredValue) || 0,
+    customsUom: effective.customsUom || "",
   };
 }
 
@@ -422,3 +578,10 @@ export class CustomsGrnValidationError extends Error {
     this.statusCode = 400;
   }
 }
+
+export {
+  CUSTOMS_VALUATION_BOE_AVERAGE,
+  CUSTOMS_VALUATION_LEGACY_LINE,
+  computeBoeCustomsUnitValue,
+  roundCustomsMoney,
+};

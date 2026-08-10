@@ -30,6 +30,17 @@ const grnCustomsCaptureSchema = new mongoose.Schema(
     exchangeRateToAED: { type: Number, default: 0, min: 0 },
     customsValueAED: { type: Number, default: 0, min: 0 },
     customsRemarks: { type: String, default: "", trim: true },
+    /** Additive BOE-average snapshot fields (optional on legacy captures). */
+    valuationMethod: {
+      type: String,
+      enum: ["LEGACY_LINE_VALUE", "BOE_AVERAGE"],
+      default: "LEGACY_LINE_VALUE",
+    },
+    customsQty: { type: Number, default: 0, min: 0 },
+    customsUnitValue: { type: Number, default: 0, min: 0 },
+    boeDeclaredQty: { type: Number, default: 0, min: 0 },
+    boeDeclaredValue: { type: Number, default: 0, min: 0 },
+    customsUom: { type: String, default: "", trim: true, uppercase: true },
   },
   { _id: false }
 );

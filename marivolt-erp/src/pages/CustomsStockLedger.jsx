@@ -23,6 +23,9 @@ const CSV_COLUMNS = [
   { key: "qtyIn", header: "Qty In" },
   { key: "qtyOut", header: "Qty Out" },
   { key: "balance", header: "Balance" },
+  { key: "customsUnitValue", header: "Customs Unit Value" },
+  { key: "customsValue", header: "Customs Value" },
+  { key: "currency", header: "Currency" },
   { key: "referenceType", header: "Reference Type" },
   { key: "referenceNumber", header: "Reference Number" },
   { key: "user", header: "User" },
@@ -40,6 +43,11 @@ function fmtNum(v, digits = 4) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "—";
   return n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: digits });
+}
+
+function optionalNum(v, digits = 4) {
+  if (v == null || v === "") return "—";
+  return fmtNum(v, digits);
 }
 
 function movementTone(type) {
@@ -240,7 +248,7 @@ export default function CustomsStockLedger() {
 
       <div className="overflow-hidden rounded-2xl border bg-white">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[2100px] text-xs">
+          <table className="w-full min-w-[2400px] text-xs">
             <thead className="bg-slate-100 text-left text-[11px] uppercase tracking-wide text-slate-600">
               <tr>
                 <th className="px-2 py-2">Date</th>
@@ -257,6 +265,9 @@ export default function CustomsStockLedger() {
                 <th className="px-2 py-2 text-right">Qty In</th>
                 <th className="px-2 py-2 text-right">Qty Out</th>
                 <th className="px-2 py-2 text-right">Balance</th>
+                <th className="px-2 py-2 text-right">Customs Unit Value</th>
+                <th className="px-2 py-2 text-right">Customs Value</th>
+                <th className="px-2 py-2">Currency</th>
                 <th className="px-2 py-2">Reference Type</th>
                 <th className="px-2 py-2">Reference Number</th>
                 <th className="px-2 py-2">User</th>
@@ -266,7 +277,7 @@ export default function CustomsStockLedger() {
             <tbody>
               {ledgerQ.isLoading ? (
                 <tr>
-                  <td colSpan={18} className="px-4 py-8 text-center text-slate-500">Loading ledger…</td>
+                  <td colSpan={21} className="px-4 py-8 text-center text-slate-500">Loading ledger…</td>
                 </tr>
               ) : rows.length ? (
                 rows.map((row) => (
@@ -289,6 +300,9 @@ export default function CustomsStockLedger() {
                     <td className="px-2 py-1.5 text-right tabular-nums text-emerald-800">{row.qtyIn > 0 ? fmtNum(row.qtyIn) : "—"}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums text-rose-800">{row.qtyOut > 0 ? fmtNum(row.qtyOut) : "—"}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums font-semibold">{fmtNum(row.balance)}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{optionalNum(row.customsUnitValue, 4)}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{optionalNum(row.customsValue, 2)}</td>
+                    <td className="px-2 py-1.5">{row.currency || "—"}</td>
                     <td className="px-2 py-1.5">{String(row.referenceType || "").replace(/_/g, " ") || "—"}</td>
                     <td className="px-2 py-1.5 font-mono">{row.referenceNumber || "—"}</td>
                     <td className="px-2 py-1.5">{row.user || "—"}</td>
@@ -297,7 +311,7 @@ export default function CustomsStockLedger() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={18} className="px-4 py-10 text-center text-slate-500">
+                  <td colSpan={21} className="px-4 py-10 text-center text-slate-500">
                     No customs movements yet. Post a GRN with customs data to create INBOUND ledger entries.
                   </td>
                 </tr>

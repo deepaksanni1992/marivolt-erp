@@ -19,6 +19,13 @@ const customsInvoiceItemAllocationSchema = new mongoose.Schema(
     hsCode: { type: String, default: "", trim: true },
     currency: { type: String, default: "USD", trim: true, uppercase: true },
     unitPrice: { type: Number, default: 0, min: 0 },
+    /** Frozen BOE customs unit value snapshot (alias of unitPrice for BOE_AVERAGE). */
+    customsUnitValue: { type: Number, default: 0, min: 0 },
+    valuationMethod: {
+      type: String,
+      enum: ["", "LEGACY_LINE_VALUE", "BOE_AVERAGE"],
+      default: "",
+    },
     weightKg: { type: Number, default: 0, min: 0 },
     unitWeightKg: { type: Number, default: 0, min: 0 },
     totalWeightKg: { type: Number, default: 0, min: 0 },
@@ -44,6 +51,10 @@ const customsInvoiceItemSchema = new mongoose.Schema(
     partName: { type: String, default: "", trim: true },
     description: { type: String, default: "", trim: true },
     qtyExported: { type: Number, default: 0, min: 0 },
+    /** Sales line unit price snapshot for risk comparison (informational). */
+    salesUnitPrice: { type: Number, default: 0, min: 0 },
+    salesCurrency: { type: String, default: "", trim: true, uppercase: true },
+    salesUnitPriceAed: { type: Number, default: null },
     allocations: { type: [customsInvoiceItemAllocationSchema], default: [] },
   },
   { _id: true },
@@ -66,6 +77,8 @@ const customsInvoiceSchema = new mongoose.Schema(
       index: true,
     },
     remarks: { type: String, default: "", trim: true },
+    /** Required when any allocation has sales price below BOE customs unit value. */
+    customsValueRiskReason: { type: String, default: "", trim: true },
     items: { type: [customsInvoiceItemSchema], default: [] },
     createdBy: { type: String, default: "" },
     updatedBy: { type: String, default: "" },

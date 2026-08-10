@@ -90,7 +90,7 @@ export async function updateCustomsInvoice(req, res) {
 export async function finalizeCustomsInvoice(req, res) {
   try {
     if (!isCustomsEnabled()) return disabled(res);
-    const doc = await svc.finalizeCustomsInvoice(req, req.params.id);
+    const doc = await svc.finalizeCustomsInvoice(req, req.params.id, req.body || {});
     res.json({ enabled: true, item: doc });
   } catch (err) {
     res.status(400).json({ message: err.message || "Failed to finalize customs invoice" });

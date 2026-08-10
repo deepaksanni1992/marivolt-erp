@@ -69,11 +69,11 @@ function sampleValues(over = {}) {
     "HS Code": "8501.10",
     "Unit Weight": "2.5",
     Weight: "",
-    "Customs Unit Price": "12.5",
-    "Total Price": "",
+    "BOE Declared Qty": "10",
+    "Customs UOM": "PCS",
+    "BOE Declared Value": "125",
     Currency: "USD",
     "Exchange Rate": "3.67",
-    "AED Value": "",
     ...over,
   };
 }
@@ -104,11 +104,11 @@ run("template columns and order", () => {
     "HS Code",
     "Unit Weight",
     "Weight",
-    "Customs Unit Price",
-    "Total Price",
+    "BOE Declared Qty",
+    "Customs UOM",
+    "BOE Declared Value",
     "Currency",
     "Exchange Rate",
-    "AED Value",
   ];
   assert.deepStrictEqual([...GRN_CSV_HEADERS], expected);
   assert.strictEqual(grnCsvTemplateHeaderLine().trim(), expected.join(","));
@@ -156,25 +156,25 @@ run("renamed column rejected", () => {
   assert.ok(r.details.some((d) => /PO Line ID/.test(d)));
 });
 
-run("auto calculations when Weight / Total Price / AED Value blank", () => {
+run("auto calculations when Weight blank; BOE fields mapped", () => {
   const parsed = parseGrnCsvText(sampleCsv());
   assert.strictEqual(parsed.ok, true);
   const qty = readGrnQtyFromCsvRow(parsed.rows[0]);
   const { override, computed } = mapCsvRowToCustomsOverride(parsed.rows[0], qty);
   assert.strictEqual(computed.weight, 25);
   assert.strictEqual(override.totalWeightKg, 25);
-  assert.strictEqual(computed.totalPrice, 125);
-  assert.ok(Math.abs(computed.aedValue - 125 * 3.67) < 1e-9);
+  assert.strictEqual(computed.boeDeclaredQty, 10);
+  assert.strictEqual(computed.boeDeclaredValue, 125);
+  assert.strictEqual(override.boeDeclaredQty, 10);
+  assert.strictEqual(override.boeDeclaredValue, 125);
+  assert.strictEqual(override.customsUom, "PCS");
+  assert.strictEqual(override.customsUnitPrice, undefined);
 });
 
-run("never overwrite user-entered Weight / Total Price / AED Value", () => {
-  const parsed = parseGrnCsvText(
-    sampleCsv({ Weight: "30", "Total Price": "999", "AED Value": "50" })
-  );
+run("never overwrite user-entered Weight", () => {
+  const parsed = parseGrnCsvText(sampleCsv({ Weight: "30" }));
   const { override } = mapCsvRowToCustomsOverride(parsed.rows[0], 10);
   assert.strictEqual(override.totalWeightKg, 30);
-  assert.strictEqual(override.customsTotalPrice, 999);
-  assert.strictEqual(override.customsValueAED, 50);
 });
 
 run("successful import parse + required field validation", () => {
@@ -203,15 +203,20 @@ run("mapped import feeds customs field model (posting-ready)", () => {
   const parsed = parseGrnCsvText(sampleCsv());
   const qty = readGrnQtyFromCsvRow(parsed.rows[0]);
   const { override } = mapCsvRowToCustomsOverride(parsed.rows[0], qty);
+  const header = suggestHeaderDefaultsFromOverrides([override]);
   const norm = normalizeCustomsLineOverride(override);
+  const unit = 125 / 10;
   const effective = resolveCustomsLineEffective({
-    header: {},
+    header,
     override: norm,
     quantity: qty,
+    customsUnitValue: unit,
+    customsQty: qty,
   });
   const mandatory = validateCustomsMandatoryEffective(effective, { location: "BIN-A" });
   assert.deepStrictEqual(mandatory, []);
   assert.strictEqual(effective.boeNumber, "BOE1");
+  assert.strictEqual(effective.customsUnitValue, 12.5);
   assert.strictEqual(effective.customsTotalPrice, 125);
 });
 
@@ -231,15 +236,18 @@ run("posting after import: payload + capture validation ok (no GRN post)", () =>
   const payload = buildGrnCustomsPayload(header, lineEdits, [{ poLineId: SAMPLE_LINE_ID }], "USD");
   assert.ok(payload);
   assert.strictEqual(payload.boeNumber, "BOE1");
+  assert.strictEqual(payload.boeDeclaredQty, 10);
+  assert.strictEqual(payload.boeDeclaredValue, 125);
 
   const capture = validateCustomsCaptureForGrn({
     header: payload,
     lineOverrides: new Map([[SAMPLE_LINE_ID, normalizeCustomsLineOverride(override)]]),
-    lines: [{ poLineId: SAMPLE_LINE_ID, article: "ART-1", location: "BIN-A", grnQty: qty }],
+    lines: [{ poLineId: SAMPLE_LINE_ID, article: "ART-1", location: "BIN-A", acceptedQty: qty, uom: "PCS" }],
     poDate: "2026-01-01",
     allowances: {},
   });
   assert.strictEqual(capture.ok, true, JSON.stringify(capture.errors));
+  assert.strictEqual(capture.customsUnitValue, 12.5);
 });
 
 run("legacy template constants and detectGrnCsvFormat are gone", () => {
@@ -368,7 +376,9 @@ run("filled template exports Mongo _id as PO Line ID", () => {
       "Supplier Invoice Date": "2026-01-01",
       "Country Of Origin": "DE",
       "HS Code": "1",
-      "Customs Unit Price": "1",
+      "BOE Declared Qty": "9",
+      "Customs UOM": "PCS",
+      "BOE Declared Value": "9",
       Currency: "EUR",
       "Exchange Rate": "1",
     })}\n`

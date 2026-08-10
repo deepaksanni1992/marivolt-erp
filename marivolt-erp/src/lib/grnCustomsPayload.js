@@ -1,4 +1,4 @@
-/** Default empty customs capture state for GRN posting (revised field model). */
+/** Default empty customs capture state for GRN posting (BOE_AVERAGE). */
 export function emptyGrnCustomsState() {
   return {
     receivedDate: new Date().toISOString().slice(0, 10),
@@ -11,10 +11,14 @@ export function emptyGrnCustomsState() {
     countryOfOrigin: "",
     hsCode: "",
     unitWeightKg: "",
-    customsUnitPrice: "",
     customsCurrency: "",
     exchangeRateToAED: "",
     customsRemarks: "",
+    boeDeclaredQty: "",
+    customsUom: "PCS",
+    boeDeclaredValue: "",
+    grossWeightKg: "",
+    netWeightKg: "",
     allowBoeBeforePoDate: false,
     allowInvoiceAfterReceivedDate: false,
     allowFutureReceivedDate: false,
@@ -42,12 +46,12 @@ function hasLineCustomsFields(ed = {}) {
     ed.customsSupplierInvoiceDate,
     ed.customsHsCode,
     ed.customsCountryOfOrigin,
-    ed.customsUnitPrice,
     ed.customsCurrency,
     ed.customsUnitWeightKg,
     ed.customsWeightKg,
     ed.customsExchangeRateToAED,
     ed.customsRemarks,
+    ed.customsQty,
   ].some((f) => trim(f));
 }
 
@@ -66,13 +70,16 @@ export function hasGrnCustomsInput(customs) {
     customs.hsCode,
     customs.customsCurrency,
     customs.currency,
-    customs.customsUnitPrice,
-    customs.unitPrice,
     customs.unitWeightKg,
     customs.weightKg,
     customs.exchangeRateToAED,
     customs.customsRemarks,
     customs.remarks,
+    customs.boeDeclaredQty,
+    customs.boeDeclaredValue,
+    customs.customsUom,
+    customs.grossWeightKg,
+    customs.netWeightKg,
   ];
   if (headerFields.some((f) => trim(f))) return true;
 
@@ -82,10 +89,17 @@ export function hasGrnCustomsInput(customs) {
   return false;
 }
 
+/** Preview BOE customs unit value (UI only — backend recalculates). */
+export function previewBoeCustomsUnitValue(declaredValue, declaredQty) {
+  const v = Number(declaredValue);
+  const q = Number(declaredQty);
+  if (!Number.isFinite(v) || !Number.isFinite(q) || !(q > 0)) return null;
+  return Math.round((v / q + Number.EPSILON) * 100) / 100;
+}
+
 /**
  * Build customs payload for POST /grn/post.
- * Returns null when no customs input — GRN behaves without customs lot.
- * When present, backend enforces mandatory fields + date rules.
+ * Does NOT send customsUnitPrice / customsUnitValue as source of truth.
  */
 export function buildGrnCustomsPayload(customs, lineEdits, selectedLines, defaultCurrency = "USD") {
   if (!hasGrnCustomsInput(customs)) {
@@ -121,8 +135,8 @@ export function buildGrnCustomsPayload(customs, lineEdits, selectedLines, defaul
     setIf("customsCurrency", ed.customsCurrency);
     setIf("customsRemarks", ed.customsRemarks);
 
-    const unitPrice = trim(ed.customsUnitPrice);
-    if (unitPrice) row.customsUnitPrice = Number(unitPrice) || 0;
+    const customsQty = trim(ed.customsQty);
+    if (customsQty) row.customsQty = Number(customsQty) || 0;
     const unitWt = trim(ed.customsUnitWeightKg || ed.customsWeightKg);
     if (unitWt) row.unitWeightKg = Number(unitWt) || 0;
     const fx = trim(ed.customsExchangeRateToAED);
@@ -144,9 +158,12 @@ export function buildGrnCustomsPayload(customs, lineEdits, selectedLines, defaul
     hsCode: trim(customs.hsCode),
     customsCurrency: headerCurrency.toUpperCase(),
     currency: headerCurrency.toUpperCase(),
-    customsUnitPrice: trim(customs.customsUnitPrice || customs.unitPrice)
-      ? Number(customs.customsUnitPrice || customs.unitPrice)
-      : undefined,
+    valuationMethod: "BOE_AVERAGE",
+    boeDeclaredQty: trim(customs.boeDeclaredQty) ? Number(customs.boeDeclaredQty) : undefined,
+    customsUom: trim(customs.customsUom) || "PCS",
+    boeDeclaredValue: trim(customs.boeDeclaredValue) ? Number(customs.boeDeclaredValue) : undefined,
+    grossWeightKg: trim(customs.grossWeightKg) ? Number(customs.grossWeightKg) : undefined,
+    netWeightKg: trim(customs.netWeightKg) ? Number(customs.netWeightKg) : undefined,
     unitWeightKg: trim(customs.unitWeightKg || customs.weightKg)
       ? Number(customs.unitWeightKg || customs.weightKg)
       : undefined,
@@ -181,7 +198,7 @@ export function defaultGrnLineCustomsFields() {
     customsSupplierInvoiceDate: "",
     customsHsCode: "",
     customsCountryOfOrigin: "",
-    customsUnitPrice: "",
+    customsQty: "",
     customsCurrency: "",
     customsUnitWeightKg: "",
     customsWeightKg: "",

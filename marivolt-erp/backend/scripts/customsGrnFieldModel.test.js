@@ -52,9 +52,10 @@ const tmrStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padS
 
 run("Line override wins over header", () => {
   const eff = resolveCustomsLineEffective({
-    header: { hsCode: "HDR", countryOfOrigin: "IN", customsUnitPrice: 10, customsCurrency: "USD", exchangeRateToAED: 3.67 },
+    header: { hsCode: "HDR", countryOfOrigin: "IN", customsCurrency: "USD", exchangeRateToAED: 3.67 },
     override: { hsCode: "LINE" },
     quantity: 2,
+    customsUnitValue: 10,
   });
   assert.equal(eff.hsCode, "LINE");
   assert.equal(eff.countryOfOrigin, "IN");
@@ -64,9 +65,10 @@ run("Line override wins over header", () => {
 
 run("Server ignores client-imported totals (always recalculates)", () => {
   const eff = resolveCustomsLineEffective({
-    header: { customsUnitPrice: 10, customsCurrency: "USD", exchangeRateToAED: 2, unitWeightKg: 1 },
+    header: { customsCurrency: "USD", exchangeRateToAED: 2, unitWeightKg: 1 },
     override: { customsTotalPrice: 999, customsValueAED: 999, totalWeightKg: 999 },
     quantity: 3,
+    customsUnitValue: 10,
   });
   assert.equal(eff.customsTotalPrice, 30);
   assert.equal(eff.customsValueAED, 60);
@@ -75,8 +77,9 @@ run("Server ignores client-imported totals (always recalculates)", () => {
 
 run("AED currency forces FX = 1", () => {
   const eff = resolveCustomsLineEffective({
-    header: { customsCurrency: "AED", customsUnitPrice: 5, exchangeRateToAED: 3.67 },
+    header: { customsCurrency: "AED", exchangeRateToAED: 3.67 },
     quantity: 2,
+    customsUnitValue: 5,
   });
   assert.equal(eff.exchangeRateToAED, 1);
   assert.equal(eff.customsValueAED, 10);
@@ -141,10 +144,10 @@ run("Mandatory validation passes when complete", () => {
       countryOfOrigin: "IN",
       hsCode: "8481",
       customsCurrency: "USD",
-      customsUnitPrice: 12,
       exchangeRateToAED: 3.67,
     },
     quantity: 2,
+    customsUnitValue: 12,
   });
   const errs = validateCustomsMandatoryEffective(eff, { location: "RACK-A" });
   assert.deepEqual(errs, []);
@@ -160,11 +163,14 @@ run("BL and AWB optional (neither / either / both)", () => {
     countryOfOrigin: "IN",
     hsCode: "8481",
     customsCurrency: "USD",
-    customsUnitPrice: 1,
     exchangeRateToAED: 3.67,
   };
   for (const extra of [{}, { blNumber: "BL1" }, { awbNumber: "AWB1" }, { blNumber: "BL1", awbNumber: "AWB1" }]) {
-    const eff = resolveCustomsLineEffective({ header: { ...base, ...extra }, quantity: 1 });
+    const eff = resolveCustomsLineEffective({
+      header: { ...base, ...extra },
+      quantity: 1,
+      customsUnitValue: 1,
+    });
     assert.deepEqual(validateCustomsMandatoryEffective(eff, { location: "L1" }), []);
   }
 });
@@ -238,16 +244,19 @@ run("Capture validation aggregates per line", () => {
     countryOfOrigin: "IN",
     hsCode: "1",
     customsCurrency: "USD",
-    customsUnitPrice: 5,
+    boeDeclaredQty: 2,
+    boeDeclaredValue: 10,
+    customsUom: "PCS",
     exchangeRateToAED: 3.67,
   });
   const r = validateCustomsCaptureForGrn({
     header,
     lineOverrides: buildLineOverrideMap({ lineOverrides: [] }),
-    lines: [{ poLineId: "a", article: "ART-1", acceptedQty: 2, location: "BIN-1" }],
+    lines: [{ poLineId: "a", article: "ART-1", acceptedQty: 2, location: "BIN-1", uom: "PCS" }],
     poDate: yStr,
   });
-  assert.equal(r.ok, true);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+  assert.equal(r.customsUnitValue, 5);
 });
 
 run("Persisted snapshot shape", () => {
@@ -262,16 +271,20 @@ run("Persisted snapshot shape", () => {
         countryOfOrigin: "ae",
         hsCode: "x",
         customsCurrency: "usd",
-        customsUnitPrice: 2,
         exchangeRateToAED: 3.67,
         unitWeightKg: 1,
+        boeDeclaredQty: 3,
+        boeDeclaredValue: 6,
       },
       quantity: 3,
+      customsUnitValue: 2,
+      customsQty: 3,
     })
   );
   assert.equal(snap.countryOfOrigin, "AE");
   assert.equal(snap.totalWeightKg, 3);
   assert.equal(snap.customsTotalPrice, 6);
+  assert.equal(snap.customsUnitValue, 2);
 });
 
 run("GRN model has customsCapture; lot/item have new fields", () => {
@@ -281,9 +294,12 @@ run("GRN model has customsCapture; lot/item have new fields", () => {
   assert.match(grn, /customsCapture/);
   assert.match(lot, /boeDate/);
   assert.match(lot, /exchangeRateToAED/);
+  assert.match(lot, /valuationMethod/);
+  assert.match(lot, /boeDeclaredValue/);
   assert.match(item, /customsValueAED/);
   assert.match(item, /unitWeightKg/);
   assert.match(item, /receivedDate/);
+  assert.match(item, /customsUnitValue/);
 });
 
 run("Service uses permission-gated allowances / no unitCost customs fallback", () => {
@@ -292,6 +308,7 @@ run("Service uses permission-gated allowances / no unitCost customs fallback", (
   assert.match(svc, /resolveCustomsAllowances/);
   assert.match(svc, /hasPermission\(req,\s*"STORE",\s*"approve"\)/);
   assert.match(svc, /customsCapture/);
+  assert.match(svc, /BOE_AVERAGE|customsBoeAverage/);
   assert.doesNotMatch(svc, /override\.unitPrice \?\? \(payload\.unitPrice \|\| undefined\) \?\? line\.unitCost/);
 });
 
@@ -302,15 +319,19 @@ run("Customs lot unique on company+grnId; BOE not globally unique", () => {
   assert.doesNotMatch(lot, /unique: true[\s\S]*boeNumber/);
 });
 
-run("Frontend header includes ReceivedDate / BOEDate / FX", () => {
+run("Frontend header includes BOE Declared Qty/Value and FX", () => {
   const ui = fs.readFileSync(path.join(frontRoot, "components/store/GrnCustomsSection.jsx"), "utf8");
   const payload = fs.readFileSync(path.join(frontRoot, "lib/grnCustomsPayload.js"), "utf8");
   assert.match(ui, /Received Date/);
   assert.match(ui, /BOE Date/);
+  assert.match(ui, /BOE Declared Customs Qty/);
+  assert.match(ui, /BOE Declared Value/);
   assert.match(ui, /Exchange Rate to AED/);
   assert.match(ui, /STORE approve permission/);
   assert.match(payload, /exchangeRateToAED/);
-  assert.match(payload, /customsUnitPrice/);
+  assert.match(payload, /boeDeclaredQty/);
+  assert.match(payload, /boeDeclaredValue/);
+  assert.doesNotMatch(payload, /customsUnitPrice:\s*trim/);
 });
 
 run("FIFO sort helper uses CG2 customsFifo util", () => {

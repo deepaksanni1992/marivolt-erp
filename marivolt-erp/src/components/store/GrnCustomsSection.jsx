@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { apiGet, apiPostFormData } from "../../lib/api.js";
+import { previewBoeCustomsUnitValue } from "../../lib/grnCustomsPayload.js";
 
 const DOC_SLOTS = [
   {
@@ -85,11 +86,15 @@ export default function GrnCustomsSection({
   defaultCurrency = "USD",
   disabled = false,
   onError,
+  /** Optional default for BOE Declared Qty when UOM-compatible (sum of accepted GRN qty). */
+  suggestedBoeQty = null,
 }) {
   const fileRefs = useRef({});
   const [uploading, setUploading] = useState("");
 
   const setField = (field, next) => onChange({ ...value, [field]: next });
+  const previewUnit = previewBoeCustomsUnitValue(value.boeDeclaredValue, value.boeDeclaredQty);
+  const trimLocal = (v) => String(v ?? "").trim();
 
   const uploadFile = async (file, slot) => {
     if (!file) return;
@@ -142,9 +147,9 @@ export default function GrnCustomsSection({
         <div>
           <h4 className="text-sm font-semibold text-slate-800">Customs Information</h4>
           <p className="text-[11px] text-slate-500">
-            Header defaults apply to all selected lines unless overridden per line. Leave blank to post
-            without customs stock. When any customs field is entered, mandatory fields (*) and date rules
-            are enforced. BL and AWB are optional (either, both, or neither).
+            Enter BOE declared qty and value — customs unit value is calculated automatically. Commercial GRN
+            cost is unchanged. Leave blank to post without customs stock. When any customs field is entered,
+            mandatory fields (*) and date rules are enforced. BL and AWB are optional.
           </p>
         </div>
       </div>
@@ -215,6 +220,86 @@ export default function GrnCustomsSection({
       </div>
 
       <div className="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        BOE valuation
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <Field label="BOE Declared Customs Qty" required>
+          <input
+            type="number"
+            min="0"
+            step="any"
+            className={inputCls}
+            disabled={disabled}
+            placeholder={suggestedBoeQty > 0 ? String(suggestedBoeQty) : ""}
+            value={value.boeDeclaredQty ?? ""}
+            onChange={(e) => setField("boeDeclaredQty", e.target.value)}
+            onBlur={() => {
+              if (!trimLocal(value.boeDeclaredQty) && suggestedBoeQty > 0) {
+                setField("boeDeclaredQty", String(suggestedBoeQty));
+              }
+            }}
+          />
+        </Field>
+        <Field label="Customs UOM" required>
+          <input
+            className={inputCls}
+            disabled={disabled}
+            value={value.customsUom || "PCS"}
+            onChange={(e) => setField("customsUom", e.target.value.toUpperCase())}
+          />
+        </Field>
+        <Field label="BOE Declared Value" required>
+          <input
+            type="number"
+            min="0"
+            step="any"
+            className={inputCls}
+            disabled={disabled}
+            value={value.boeDeclaredValue ?? ""}
+            onChange={(e) => setField("boeDeclaredValue", e.target.value)}
+          />
+        </Field>
+        <Field label="BOE Customs Unit Value">
+          <input
+            type="text"
+            className={`${inputCls} bg-slate-100`}
+            disabled
+            readOnly
+            value={
+              previewUnit != null
+                ? `${previewUnit}${value.customsCurrency || defaultCurrency ? ` ${String(value.customsCurrency || defaultCurrency).toUpperCase()}` : ""}`
+                : "—"
+            }
+          />
+          <span className="mt-0.5 block text-[10px] text-slate-500">
+            Calculated as Declared Value ÷ Declared Qty (server is authoritative)
+          </span>
+        </Field>
+        <Field label="Gross Weight (KG)">
+          <input
+            type="number"
+            min="0"
+            step="any"
+            className={inputCls}
+            disabled={disabled}
+            value={value.grossWeightKg ?? ""}
+            onChange={(e) => setField("grossWeightKg", e.target.value)}
+          />
+        </Field>
+        <Field label="Net Weight (KG)">
+          <input
+            type="number"
+            min="0"
+            step="any"
+            className={inputCls}
+            disabled={disabled}
+            value={value.netWeightKg ?? ""}
+            onChange={(e) => setField("netWeightKg", e.target.value)}
+          />
+        </Field>
+      </div>
+
+      <div className="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
         Customs defaults
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -243,17 +328,6 @@ export default function GrnCustomsSection({
             disabled={disabled}
             value={value.unitWeightKg ?? value.weightKg ?? ""}
             onChange={(e) => setField("unitWeightKg", e.target.value)}
-          />
-        </Field>
-        <Field label="Customs Unit Price" required>
-          <input
-            type="number"
-            min="0"
-            step="any"
-            className={inputCls}
-            disabled={disabled}
-            value={value.customsUnitPrice ?? value.unitPrice ?? ""}
-            onChange={(e) => setField("customsUnitPrice", e.target.value)}
           />
         </Field>
         <Field label="Customs Currency" required>

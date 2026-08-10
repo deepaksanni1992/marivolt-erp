@@ -1,8 +1,12 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import PageHeader from "../components/erp/PageHeader.jsx";
 import CustomsInvoiceManualAllocModal from "../components/customs/CustomsInvoiceManualAllocModal.jsx";
+import {
+  CustomsAllocationRiskTable,
+  previewRequiresRiskReason,
+} from "../components/customs/CustomsAllocationRiskPreview.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
 import { printCustomsInvoice } from "../lib/customsInvoicePrint.js";
@@ -207,6 +211,7 @@ function CustomsInvoiceDetail({ id }) {
   const [draftItems, setDraftItems] = useState(null);
   const [preview, setPreview] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [customsValueRiskReason, setCustomsValueRiskReason] = useState("");
 
   const detailQ = useQuery({
     queryKey: ["customs-invoice", id, auth?.company?.id],
@@ -218,9 +223,14 @@ function CustomsInvoiceDetail({ id }) {
   const allowOverride = detailQ.data?.canOverride === true;
   const isDraft = String(invoice?.status || "").toUpperCase() === "DRAFT";
   const items = draftItems ?? invoice?.items ?? [];
+  const riskReasonRequired = isDraft && previewRequiresRiskReason(preview);
+
+  useEffect(() => {
+    setCustomsValueRiskReason(invoice?.customsValueRiskReason || "");
+  }, [invoice?._id, invoice?.customsValueRiskReason]);
 
   const loadPreview = useCallback(async () => {
-    if (!invoice?.salesInvoiceId) return;
+    if (!invoice?.salesInvoiceId) return null;
     setPreviewLoading(true);
     try {
       const data = await apiPost(
@@ -244,9 +254,11 @@ function CustomsInvoiceDetail({ id }) {
         },
       );
       setPreview(data);
+      return data;
     } catch (err) {
       notify.error(err.message || "Preview failed");
       setPreview(null);
+      return null;
     } finally {
       setPreviewLoading(false);
     }
@@ -267,7 +279,7 @@ function CustomsInvoiceDetail({ id }) {
   });
 
   const finalizeMutation = useMutation({
-    mutationFn: () => apiPost(`/customs/invoices/${id}/finalize`, {}),
+    mutationFn: (body) => apiPost(`/customs/invoices/${id}/finalize`, body),
     onSuccess: (data) => {
       queryClient.setQueryData(["customs-invoice", id, auth?.company?.id], (prev) => ({
         ...data,
@@ -412,6 +424,32 @@ function CustomsInvoiceDetail({ id }) {
                         {alloc.overrideReason ? (
                           <div className="mt-0.5 text-amber-800">Reason: {alloc.overrideReason}</div>
                         ) : null}
+                        {preview?.lines?.length ? (
+                          (() => {
+                            const previewLine = (preview.lines || []).find(
+                              (pl) =>
+                                pl.salesInvoiceLineId === line.salesInvoiceLineId ||
+                                pl.articleNumber === line.articleNumber,
+                            );
+                            const risk = previewLine?.riskComparison?.[ai];
+                            if (!risk) return null;
+                            if (risk.comparable === false) {
+                              return (
+                                <div className="mt-0.5 text-amber-700">
+                                  Customs price comparison unavailable — FX conversion required.
+                                </div>
+                              );
+                            }
+                            if (risk.warning) {
+                              return (
+                                <div className="mt-0.5 font-medium text-amber-800">
+                                  Sales price is below BOE Customs Unit Value.
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()
+                        ) : null}
                       </div>
                     ))}
                   </div>
@@ -486,37 +524,21 @@ function CustomsInvoiceDetail({ id }) {
               ))}
             </ul>
           ) : null}
-          <div className="overflow-x-auto rounded border bg-white">
-            <table className="min-w-full text-xs">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="px-2 py-1 text-left">Article</th>
-                  <th className="px-2 py-1 text-right">Requested</th>
-                  <th className="px-2 py-1 text-left">Allocated BOEs</th>
-                  <th className="px-2 py-1 text-right">AED</th>
-                  <th className="px-2 py-1 text-right">Weight</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(preview.lines || []).map((line, i) => (
-                  <tr key={i} className="border-t align-top">
-                    <td className="px-2 py-1 font-mono">{line.articleNumber}</td>
-                    <td className="px-2 py-1 text-right">{fmtNum(line.requestedQty)}</td>
-                    <td className="px-2 py-1">
-                      {(line.allocations || []).map((a, ai) => (
-                        <div key={ai}>
-                          {a.boeNumber || "—"} → {fmtNum(a.allocatedQty)}
-                          {a.remainingAfter != null ? ` (rem ${fmtNum(a.remainingAfter)})` : ""}
-                        </div>
-                      ))}
-                    </td>
-                    <td className="px-2 py-1 text-right">{fmtNum(line.customsValueAED)}</td>
-                    <td className="px-2 py-1 text-right">{fmtNum(line.totalWeightKg)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <CustomsAllocationRiskTable lines={preview.lines || []} />
+          {riskReasonRequired ? (
+            <div className="rounded border border-amber-200 bg-amber-50 p-2">
+              <label className="block text-xs font-medium text-amber-900">
+                Customs value risk reason (required before finalize)
+                <textarea
+                  className="mt-1 w-full rounded border px-2 py-1 text-xs text-gray-900"
+                  rows={3}
+                  value={customsValueRiskReason}
+                  onChange={(e) => setCustomsValueRiskReason(e.target.value)}
+                  placeholder="Internal note explaining why sales price is below BOE customs unit value…"
+                />
+              </label>
+            </div>
+          ) : null}
           <p className="text-xs text-sky-900">
             Totals: qty {fmtNum(preview.totals?.requestedQty)} · AED {fmtNum(preview.totals?.customsValueAED)} ·{" "}
             {fmtNum(preview.totals?.totalWeightKg)} kg
@@ -546,9 +568,18 @@ function CustomsInvoiceDetail({ id }) {
               className="rounded-xl bg-gray-900 px-3 py-1.5 text-sm text-white disabled:opacity-50"
               disabled={finalizeMutation.isPending || updateMutation.isPending}
               onClick={async () => {
-                if (!preview) await loadPreview();
+                const activePreview = preview || (await loadPreview());
+                if (!activePreview) return;
+                if (previewRequiresRiskReason(activePreview) && !customsValueRiskReason.trim()) {
+                  notify.error(
+                    "Sales price is below BOE Customs Unit Value. Provide a customs value risk reason before finalizing.",
+                  );
+                  return;
+                }
                 if (!await confirmDialog("Finalize customs invoice? This will reduce customs lot remaining qty.")) return;
-                finalizeMutation.mutate();
+                finalizeMutation.mutate({
+                  customsValueRiskReason: customsValueRiskReason.trim() || undefined,
+                });
               }}
             >
               {finalizeMutation.isPending ? "Finalizing…" : "Finalize"}

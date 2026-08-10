@@ -858,10 +858,14 @@ export default function StoreModule() {
             countryOfOrigin: merge("countryOfOrigin", hd.countryOfOrigin),
             hsCode: merge("hsCode", hd.hsCode),
             unitWeightKg: merge("unitWeightKg", hd.unitWeightKg),
-            customsUnitPrice: merge("customsUnitPrice", hd.customsUnitPrice),
             customsCurrency: merge("customsCurrency", hd.customsCurrency),
             exchangeRateToAED: merge("exchangeRateToAED", hd.exchangeRateToAED),
             customsRemarks: merge("customsRemarks", hd.customsRemarks),
+            boeDeclaredQty: merge("boeDeclaredQty", hd.boeDeclaredQty),
+            customsUom: merge("customsUom", hd.customsUom),
+            boeDeclaredValue: merge("boeDeclaredValue", hd.boeDeclaredValue),
+            grossWeightKg: merge("grossWeightKg", hd.grossWeightKg),
+            netWeightKg: merge("netWeightKg", hd.netWeightKg),
           };
         });
       }
@@ -2060,7 +2064,9 @@ export default function StoreModule() {
                         <th className="px-2 py-2">Remarks</th>
                         <th className="px-2 py-2">HS Code</th>
                         <th className="px-2 py-2">COO</th>
-                        <th className="px-2 py-2 text-right">Customs Unit Price</th>
+                        <th className="px-2 py-2 text-right" title="Required when Customs UOM differs from inventory UOM">
+                          Customs Qty
+                        </th>
                         <th className="px-2 py-2">Curr</th>
                         <th className="px-2 py-2 text-right">Unit Wt KG</th>
                         <th className="px-2 py-2 text-right">FX→AED</th>
@@ -2189,13 +2195,14 @@ export default function StoreModule() {
                                 min="0"
                                 step="any"
                                 className="w-20 rounded border px-1 py-0.5 text-right tabular-nums"
-                                placeholder={grnCustoms.customsUnitPrice || grnCustoms.unitPrice || "—"}
+                                placeholder="—"
+                                title="Leave blank for 1:1 PCS flow; required when Customs UOM differs"
                                 disabled={pend <= 0 || !selectable}
-                                value={ed.customsUnitPrice}
+                                value={ed.customsQty || ""}
                                 onChange={(e) =>
                                   setGrnLineEdits((p) => ({
                                     ...p,
-                                    [id]: { ...ed, customsUnitPrice: e.target.value },
+                                    [id]: { ...ed, customsQty: e.target.value },
                                   }))
                                 }
                               />
@@ -2375,6 +2382,15 @@ export default function StoreModule() {
                   poNo={grnPoSnapshot?.header?.poNo || grnPoSnapshot?.header?.poNumber}
                   supplierName={grnPoSnapshot?.header?.supplierName}
                   defaultCurrency={grnPoSnapshot?.header?.currency || "USD"}
+                  suggestedBoeQty={
+                    (grnLinesForUi || []).reduce((sum, ln) => {
+                      const id = ln.poLineId != null ? String(ln.poLineId) : "";
+                      const ed = grnLineEdits[id] || {};
+                      if (!ed.selected) return sum;
+                      const q = Number(ed.grnQty);
+                      return sum + (Number.isFinite(q) && q > 0 ? q : 0);
+                    }, 0) || null
+                  }
                   disabled={
                     postGrnFromPoMut.isPending ||
                     postGrnAndPrintMut.isPending ||

@@ -16,6 +16,16 @@ const customsLotItemSchema = new mongoose.Schema(
     hsCode: { type: String, default: "", trim: true, uppercase: true },
     currency: { type: String, default: "USD", trim: true, uppercase: true },
     unitPrice: { type: Number, default: 0, min: 0 },
+    /** Frozen BOE customs unit value when valuationMethod=BOE_AVERAGE (mirrors unitPrice). */
+    customsUnitValue: { type: Number, default: 0, min: 0 },
+    /** Customs qty units for this line (may differ from physical inventory qty). */
+    customsQtyImported: { type: Number, default: 0, min: 0 },
+    valuationMethod: {
+      type: String,
+      enum: ["LEGACY_LINE_VALUE", "BOE_AVERAGE"],
+      default: "LEGACY_LINE_VALUE",
+      index: true,
+    },
     qtyImported: { type: Number, required: true, min: 0 },
     qtyAvailable: { type: Number, required: true, min: 0 },
     qtyConsumed: { type: Number, default: 0, min: 0 },

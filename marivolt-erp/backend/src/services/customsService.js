@@ -16,6 +16,11 @@ import {
   validateCustomsCaptureForGrn,
 } from "../utils/customsGrnFieldModel.js";
 import {
+  CUSTOMS_VALUATION_BOE_AVERAGE,
+  roundCustomsMoney,
+  roundCustomsQty,
+} from "../utils/customsBoeAverage.js";
+import {
   compareCustomsFifoOrder,
   sortCustomsLotsForFifo,
   allocateQtyAcrossLotsFifo,
@@ -114,6 +119,11 @@ export function hasCustomsPayload(body = {}) {
     customs?.customsCurrency,
     customs?.unitPrice,
     customs?.customsUnitPrice,
+    customs?.boeDeclaredQty,
+    customs?.boeDeclaredValue,
+    customs?.customsUom,
+    customs?.grossWeightKg,
+    customs?.netWeightKg,
     customs?.weightKg,
     customs?.unitWeightKg,
     customs?.exchangeRateToAED,
@@ -137,6 +147,7 @@ export function hasCustomsPayload(body = {}) {
         row?.countryOfOrigin,
         row?.unitPrice,
         row?.customsUnitPrice,
+        row?.customsQty,
         row?.weightKg,
         row?.unitWeightKg,
         row?.currency,
@@ -261,6 +272,12 @@ export async function applyResolvedCustomsToGrnLines({ grn, body = {}, poDate = 
   });
   if (!result.ok) throw new CustomsGrnValidationError(result.errors);
 
+  payload.valuationMethod = result.valuationMethod || CUSTOMS_VALUATION_BOE_AVERAGE;
+  payload.customsUnitValue = result.customsUnitValue;
+  payload.boeDeclaredQty = result.boeDeclaredQty;
+  payload.boeDeclaredValue = result.boeDeclaredValue;
+  payload.lineCustomsQty = result.lineCustomsQty;
+
   for (const line of grn.items || []) {
     const qty = Number(line.acceptedQty ?? line.receivedQty) || 0;
     if (qty <= 0) {
@@ -269,12 +286,23 @@ export async function applyResolvedCustomsToGrnLines({ grn, body = {}, poDate = 
     }
     const key = String(line.poLineId ?? "");
     const override = payload.lineOverrides.get(key) || {};
+    const mapped = result.lineCustomsQty?.get(key);
     const effective = resolveCustomsLineEffective({
       header: payload.header,
       override,
       quantity: qty,
       allowances,
+      customsUnitValue: result.customsUnitValue,
+      customsQty: mapped?.customsQty,
+      valuationMethod: result.valuationMethod,
     });
+    if (mapped) {
+      effective.customsTotalPrice = mapped.customsTotalPrice;
+      effective.customsQty = mapped.customsQty;
+      const rate = effective.exchangeRateToAED;
+      effective.customsValueAED =
+        rate != null ? roundCustomsMoney(effective.customsTotalPrice * rate) : 0;
+    }
     line.customsCapture = toPersistedGrnLineCustoms(effective);
   }
 
@@ -317,9 +345,16 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {}, po
     companyCode: req.companyCode,
   });
 
-  // Lot header stores first-line effective identity for list/search only.
-  // Line items hold the authoritative resolved values.
+  // Lot header stores BOE economics (authoritative for BOE_AVERAGE) + first-line identity for search.
   const firstCapture = (grn.items || []).find((ln) => ln.customsCapture)?.customsCapture || {};
+  const valuationMethod = payload.valuationMethod || CUSTOMS_VALUATION_BOE_AVERAGE;
+  const customsUnitValue = Number(payload.customsUnitValue ?? firstCapture.customsUnitValue) || 0;
+  const boeDeclaredQty = Number(payload.boeDeclaredQty ?? firstCapture.boeDeclaredQty) || 0;
+  const boeDeclaredValue = Number(payload.boeDeclaredValue ?? firstCapture.boeDeclaredValue) || 0;
+  const customsUom = upper(payload.header.customsUom || firstCapture.customsUom || "PCS") || "PCS";
+  const grossWeightKg = Number(payload.header.grossWeightKg) || 0;
+  const netWeightKg = Number(payload.header.netWeightKg) || 0;
+  const lockedAt = new Date();
 
   const lotRows = await CustomsLot.create(
     [
@@ -343,9 +378,17 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {}, po
         countryOfOrigin: firstCapture.countryOfOrigin || upper(payload.header.countryOfOrigin),
         hsCode: firstCapture.hsCode || upper(payload.header.hsCode),
         unitWeightKg: Number(firstCapture.unitWeightKg) || 0,
-        customsUnitPrice: Number(firstCapture.customsUnitPrice) || 0,
+        customsUnitPrice: customsUnitValue,
         currency: firstCapture.customsCurrency || upper(payload.header.customsCurrency || "USD"),
         exchangeRateToAED: Number(firstCapture.exchangeRateToAED) || 0,
+        valuationMethod,
+        boeDeclaredQty,
+        customsUom,
+        boeDeclaredValue,
+        customsUnitValue,
+        grossWeightKg,
+        netWeightKg,
+        valuationLockedAt: lockedAt,
         status: "OPEN",
         remarks: firstCapture.customsRemarks || payload.header.customsRemarks,
         documents: payload.documents,
@@ -362,14 +405,28 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {}, po
     const qty = Number(line.acceptedQty ?? line.receivedQty) || 0;
     if (qty <= 0) continue;
 
-    const cap = line.customsCapture || toPersistedGrnLineCustoms(
-      resolveCustomsLineEffective({
-        header: payload.header,
-        override: payload.lineOverrides.get(String(line.poLineId ?? "")) || {},
-        quantity: qty,
-        allowances: payload.allowances || {},
-      })
-    );
+    const key = String(line.poLineId ?? "");
+    const mapped = payload.lineCustomsQty?.get(key);
+    const cap =
+      line.customsCapture ||
+      toPersistedGrnLineCustoms(
+        resolveCustomsLineEffective({
+          header: payload.header,
+          override: payload.lineOverrides.get(key) || {},
+          quantity: qty,
+          allowances: payload.allowances || {},
+          customsUnitValue,
+          customsQty: mapped?.customsQty,
+          valuationMethod,
+        }),
+      );
+
+    const unitValue = Number(cap.customsUnitValue ?? cap.customsUnitPrice) || customsUnitValue;
+    const customsQtyImported = roundCustomsQty(cap.customsQty || mapped?.customsQty || qty);
+    const lineTotal =
+      mapped?.customsTotalPrice != null
+        ? Number(mapped.customsTotalPrice)
+        : Number(cap.customsTotalPrice) || roundCustomsMoney(customsQtyImported * unitValue);
 
     const itemRows = await CustomsLotItem.create(
       [
@@ -387,14 +444,17 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {}, po
           description: line.description || "",
           hsCode: upper(cap.hsCode || ""),
           currency: upper(cap.customsCurrency || "USD"),
-          unitPrice: Number(cap.customsUnitPrice) || 0,
+          unitPrice: unitValue,
+          customsUnitValue: unitValue,
+          customsQtyImported,
+          valuationMethod,
           qtyImported: qty,
           qtyAvailable: qty,
           qtyConsumed: 0,
           weightKg: Number(cap.unitWeightKg) || 0,
           unitWeightKg: Number(cap.unitWeightKg) || 0,
           totalWeightKg: Number(cap.totalWeightKg) || 0,
-          totalValue: Number(cap.customsTotalPrice) || 0,
+          totalValue: lineTotal,
           exchangeRateToAED: Number(cap.exchangeRateToAED) || 0,
           customsValueAED: Number(cap.customsValueAED) || 0,
           customStock: qty,
@@ -427,6 +487,10 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {}, po
       articleNumber: item.articleNumber,
       partNumber: item.partNumber,
       qty,
+      customsUnitValue: unitValue,
+      customsValue: lineTotal,
+      currency: item.currency,
+      valuationMethod,
       referenceType: "GRN",
       referenceId: grn._id,
       referenceNumber: grn.grnNo,
@@ -511,6 +575,18 @@ export async function reverseCustomsLotForCancelledGrn({ session, req, grn }) {
   for (const item of items) {
     const qty = Number(item.qtyAvailable) || 0;
     if (qty > 0) {
+      const unitValue = Number(item.customsUnitValue ?? item.unitPrice) || 0;
+      const customsQtyImported = Number(item.customsQtyImported) || Number(item.qtyImported) || 0;
+      const qtyImported = Number(item.qtyImported) || 0;
+      const customsQtyMoved =
+        qtyImported > 0
+          ? roundCustomsQty((qty / qtyImported) * (customsQtyImported || qtyImported))
+          : roundCustomsQty(qty);
+      const customsValue =
+        item.totalValue != null && qtyImported > 0 && Math.abs(qty - qtyImported) < 1e-9
+          ? roundCustomsMoney(item.totalValue)
+          : roundCustomsMoney(customsQtyMoved * unitValue);
+
       await createCustomsMovement({
         session,
         req,
@@ -520,6 +596,10 @@ export async function reverseCustomsLotForCancelledGrn({ session, req, grn }) {
         articleNumber: item.articleNumber,
         partNumber: item.partNumber,
         qty,
+        customsUnitValue: unitValue || null,
+        customsValue: unitValue > 0 || item.totalValue != null ? customsValue : null,
+        currency: item.currency || "",
+        valuationMethod: item.valuationMethod || "",
         referenceType: "GRN",
         referenceId: grn._id,
         referenceNumber: grn.grnNo,
@@ -559,6 +639,10 @@ export async function createCustomsMovement({
   articleNumber,
   partNumber = "",
   qty,
+  customsUnitValue = null,
+  customsValue = null,
+  currency = "",
+  valuationMethod = "",
   referenceType,
   referenceId = null,
   referenceNumber = "",
@@ -576,6 +660,10 @@ export async function createCustomsMovement({
         articleNumber: upper(articleNumber),
         partNumber: upper(partNumber),
         qty: Number(qty) || 0,
+        customsUnitValue: customsUnitValue == null ? null : Number(customsUnitValue),
+        customsValue: customsValue == null ? null : Number(customsValue),
+        currency: upper(currency || ""),
+        valuationMethod: valuationMethod || "",
         referenceType,
         referenceId,
         referenceNumber: t(referenceNumber),
@@ -587,6 +675,42 @@ export async function createCustomsMovement({
     session ? { session } : undefined,
   );
   return rows[0];
+}
+
+/**
+ * Resolve frozen customs value for a physical qty movement against a lot item.
+ * Uses BOE unit value × proportional customs qty; never re-averages remaining stock.
+ */
+export function resolveMovementCustomsValueSnapshot({ item, qty } = {}) {
+  const physicalQty = Number(qty) || 0;
+  const unitValue = Number(item?.customsUnitValue ?? item?.unitPrice) || 0;
+  const qtyImported = Number(item?.qtyImported) || 0;
+  const customsQtyImported = Number(item?.customsQtyImported) || qtyImported;
+  const currency = upper(item?.currency || "");
+  const valuationMethod = item?.valuationMethod || "";
+
+  if (!(physicalQty > 0)) {
+    return {
+      customsUnitValue: unitValue || null,
+      customsValue: null,
+      currency,
+      valuationMethod,
+      customsQtyMoved: 0,
+    };
+  }
+
+  const customsQtyMoved =
+    qtyImported > 0
+      ? roundCustomsQty((physicalQty / qtyImported) * (customsQtyImported || qtyImported))
+      : roundCustomsQty(physicalQty);
+
+  return {
+    customsUnitValue: unitValue || null,
+    customsValue: unitValue ? roundCustomsMoney(customsQtyMoved * unitValue) : null,
+    currency,
+    valuationMethod,
+    customsQtyMoved,
+  };
 }
 
 /**
@@ -749,8 +873,20 @@ async function buildCustomsStockItemQuery(companyId, filters = {}) {
 export function mapCustomsStockRow(item, lot, srNo) {
   const qtyImported = Number(item.qtyImported) || 0;
   const qtyAvailable = Number(item.qtyAvailable) || 0;
-  const unitPrice = Number(item.unitPrice) || 0;
+  const qtyConsumed = Number(item.qtyConsumed) || 0;
+  const unitPrice = Number(item.customsUnitValue ?? item.unitPrice) || 0;
   const totalValue = Number(item.totalValue) || qtyImported * unitPrice;
+  const valuationMethod = item.valuationMethod || lot?.valuationMethod || "LEGACY_LINE_VALUE";
+  const customsQtyImported = Number(item.customsQtyImported) || qtyImported;
+  const remainingCustomsQty =
+    qtyImported > 0
+      ? Math.max(0, customsQtyImported * (qtyAvailable / qtyImported))
+      : Math.max(0, customsQtyImported - qtyConsumed);
+  const consumedCustomsValue =
+    qtyImported > 0
+      ? Math.round((totalValue * (qtyConsumed / qtyImported) + Number.EPSILON) * 100) / 100
+      : Math.round((qtyConsumed * unitPrice + Number.EPSILON) * 100) / 100;
+  const remainingCustomsValue = Math.round((totalValue - consumedCustomsValue + Number.EPSILON) * 100) / 100;
 
   return {
     srNo,
@@ -771,7 +907,20 @@ export function mapCustomsStockRow(item, lot, srNo) {
     hsCode: item.hsCode || "",
     currency: item.currency || lot?.currency || "USD",
     unitPrice,
+    customsUnitValue: unitPrice,
+    valuationMethod,
+    boeDeclaredQty: Number(lot?.boeDeclaredQty) || 0,
+    boeDeclaredValue: Number(lot?.boeDeclaredValue) || 0,
+    customsUom: lot?.customsUom || "",
+    customsQtyImported,
+    remainingCustomsQty,
     qtyImported,
+    qtyConsumed,
+    qtyAvailable,
+    exportedQty: qtyConsumed,
+    remainingQty: qtyAvailable,
+    consumedCustomsValue,
+    remainingCustomsValue,
     weightKg: Number(item.weightKg) || 0,
     totalValue,
     customsStock: qtyImported,
@@ -807,7 +956,9 @@ export async function listCustomsStockPage(companyId, filters = {}, paging = {})
   const lotIds = [...new Set(items.map((row) => String(row.customsLotId)).filter(Boolean))];
   const lots = lotIds.length
     ? await CustomsLot.find({ _id: { $in: lotIds } })
-        .select("supplierName supplierInvoiceNumber supplierInvoiceDate countryOfOrigin currency boeNumber blNumber awbNumber grnId grnNo customsLotRef companyCode documents")
+        .select(
+          "supplierName supplierInvoiceNumber supplierInvoiceDate countryOfOrigin currency boeNumber blNumber awbNumber grnId grnNo customsLotRef companyCode documents valuationMethod boeDeclaredQty boeDeclaredValue customsUnitValue customsUom"
+        )
         .lean()
     : [];
   const lotMap = new Map(lots.map((lot) => [String(lot._id), lot]));
@@ -916,15 +1067,22 @@ export function mapCustomsLedgerRow(movement, lot, item, balanceAfter, srNo) {
     awbNumber: item?.awbNumber || lot?.awbNumber || "",
     supplierInvoiceNumber: item?.supplierInvoiceNumber || lot?.supplierInvoiceNumber || "",
     supplier: lot?.supplierName || "",
+    qty: Number(movement.qty) || 0,
     qtyIn,
     qtyOut,
     balance: balanceAfter,
+    customsUnitValue: movement.customsUnitValue != null ? Number(movement.customsUnitValue) : null,
+    customsValue: movement.customsValue != null ? Number(movement.customsValue) : null,
+    currency: movement.currency || item?.currency || lot?.currency || "",
+    valuationMethod: movement.valuationMethod || item?.valuationMethod || "",
     referenceType: movement.referenceType,
     referenceNumber: movement.referenceNumber || "",
+    referenceId: movement.referenceId || null,
     user: movement.createdBy || "",
     remarks: movement.remarks || "",
     customsLotItemId: movement.customsLotItemId,
     customsLotId: movement.customsLotId,
+    grnNo: item?.grnNo || lot?.grnNo || "",
   };
 }
 

@@ -8,10 +8,21 @@ import {
   createCustomsMovement,
   customsWithCompanyId,
   isCustomsEnabled,
+  resolveMovementCustomsValueSnapshot,
 } from "./customsService.js";
 import { nextCustomsInvoiceNumber } from "./customsNumberService.js";
 import { hasPermission } from "./roleService.js";
 import { writeAudit } from "./auditService.js";
+import {
+  compareSalesVsBoeCustomsUnit,
+  roundCustomsMoney,
+  resolveValuationMethod,
+} from "../utils/customsBoeAverage.js";
+
+/** Default: any negative variance triggers warning / reason requirement. */
+const CUSTOMS_LOW_VALUE_WARNING_PERCENT = Number(
+  process.env.CUSTOMS_LOW_VALUE_WARNING_PERCENT ?? 0,
+);
 
 function t(v) {
   return String(v ?? "").trim();
@@ -72,7 +83,7 @@ async function loadLotMaps(lotItemIds) {
   const lots = lotIds.length
     ? await CustomsLot.find({ _id: { $in: lotIds } })
         .select(
-          "supplierName documents boeNumber boeDate blNumber awbNumber supplierInvoiceNumber supplierInvoiceDate receivedDate countryOfOrigin currency exchangeRateToAED status companyId"
+          "supplierName documents boeNumber boeDate blNumber awbNumber supplierInvoiceNumber supplierInvoiceDate receivedDate countryOfOrigin currency exchangeRateToAED status companyId valuationMethod customsUnitValue boeDeclaredQty boeDeclaredValue"
         )
         .lean()
     : [];
@@ -84,7 +95,16 @@ async function loadLotMaps(lotItemIds) {
 }
 
 function buildAllocationRecord({ item, lot, qty, mode, override = {}, remainingAfter = null }) {
-  const unitPrice = Number(override.unitPrice ?? item?.unitPrice ?? item?.customsUnitPrice) || 0;
+  const valuationMethod = resolveValuationMethod(
+    item?.valuationMethod || lot?.valuationMethod || override.valuationMethod,
+  );
+  // Frozen BOE / lot unit value is authoritative for real stock; dummy may supply override.
+  const frozenUnit =
+    Number(item?.customsUnitValue ?? item?.unitPrice ?? lot?.customsUnitValue ?? lot?.customsUnitPrice) || 0;
+  const unitPrice =
+    mode === "OVERRIDE_DUMMY"
+      ? Number(override.unitPrice ?? override.customsUnitValue ?? frozenUnit) || 0
+      : frozenUnit || Number(override.unitPrice) || 0;
   const unitWeightKg =
     Number(override.unitWeightKg ?? override.weightKg ?? item?.unitWeightKg ?? item?.weightKg) || 0;
   const q = Number(qty) || 0;
@@ -92,9 +112,16 @@ function buildAllocationRecord({ item, lot, qty, mode, override = {}, remainingA
   const documentLinks = [docs.blDocumentId, docs.supplierInvoiceDocumentId].filter(Boolean);
   const fx =
     Number(override.exchangeRateToAED ?? item?.exchangeRateToAED ?? lot?.exchangeRateToAED) || 0;
-  const totalValue = q * unitPrice;
+
+  let totalValue;
+  if (item && mode !== "OVERRIDE_DUMMY") {
+    const snap = resolveMovementCustomsValueSnapshot({ item, qty: q });
+    totalValue = snap.customsValue != null ? snap.customsValue : roundCustomsMoney(q * unitPrice);
+  } else {
+    totalValue = roundCustomsMoney(q * unitPrice);
+  }
   const totalWeightKg = q * unitWeightKg;
-  const customsValueAED = fx > 0 ? totalValue * fx : Number(item?.customsValueAED) || 0;
+  const customsValueAED = fx > 0 ? roundCustomsMoney(totalValue * fx) : Number(item?.customsValueAED) || 0;
 
   return {
     customsLotItemId: item?._id || null,
@@ -116,6 +143,8 @@ function buildAllocationRecord({ item, lot, qty, mode, override = {}, remainingA
     hsCode: upper(override.hsCode || item?.hsCode),
     currency: upper(override.currency || item?.currency || lot?.currency || "USD"),
     unitPrice,
+    customsUnitValue: unitPrice,
+    valuationMethod: mode === "OVERRIDE_DUMMY" ? valuationMethod || "" : valuationMethod,
     weightKg: unitWeightKg,
     unitWeightKg,
     totalWeightKg,
@@ -126,6 +155,55 @@ function buildAllocationRecord({ item, lot, qty, mode, override = {}, remainingA
     overrideReason: t(override.overrideReason),
     documentLinks,
   };
+}
+
+function resolveSalesLinePriceSnapshot(salesInvoice, line) {
+  const salesUnitPrice = Number(line?.price) || 0;
+  const salesCurrency = upper(salesInvoice?.currency || "");
+  // No document-level FX on Sales Invoice today — AED conversion only when currency is AED.
+  const salesUnitPriceAed = salesCurrency === "AED" ? salesUnitPrice : null;
+  return { salesUnitPrice, salesCurrency, salesUnitPriceAed };
+}
+
+function enrichLineWithRisk(line, salesInvoice, salesLine) {
+  const salesSnap = resolveSalesLinePriceSnapshot(salesInvoice, salesLine || {});
+  const riskRows = (line.allocations || []).map((a) => {
+    const cmp = compareSalesVsBoeCustomsUnit({
+      salesUnitPrice: salesSnap.salesUnitPrice,
+      salesCurrency: salesSnap.salesCurrency,
+      salesUnitPriceAed: salesSnap.salesUnitPriceAed,
+      boeCustomsUnitValue: Number(a.customsUnitValue ?? a.unitPrice) || 0,
+      boeCurrency: a.currency,
+      boeExchangeRateToAed: a.exchangeRateToAED,
+    });
+    return {
+      ...cmp,
+      allocationId: a._id,
+      boeNumber: a.boeNumber,
+      customsUnitValue: Number(a.customsUnitValue ?? a.unitPrice) || 0,
+      salesUnitPrice: salesSnap.salesUnitPrice,
+      salesCurrency: salesSnap.salesCurrency,
+    };
+  });
+  const hasWarning = riskRows.some((r) => r.comparable && r.warning);
+  const needsReason =
+    hasWarning &&
+    riskRows.some((r) => {
+      if (!r.comparable || !r.warning) return false;
+      const pct = Math.abs(Number(r.variancePct) || 0);
+      return pct >= CUSTOMS_LOW_VALUE_WARNING_PERCENT;
+    });
+  return {
+    ...line,
+    ...salesSnap,
+    riskComparison: riskRows,
+    customsValueRisk: hasWarning,
+    customsValueRiskRequiresReason: needsReason,
+  };
+}
+
+function collectRiskRequiresReason(items = []) {
+  return items.some((line) => line.customsValueRiskRequiresReason);
 }
 
 function assertManualAllocationAllowed({ item, lot, qty, companyId }) {
@@ -304,11 +382,20 @@ async function buildItemsFromSalesInvoice(salesInvoice, { companyId, session, al
       partName: line.description || "",
       description: line.description || "",
       qtyExported,
+      ...resolveSalesLinePriceSnapshot(salesInvoice, line),
       allocations,
     });
   }
 
-  return { items, warnings };
+  return {
+    items: items.map((line) => {
+      const salesLine = (salesInvoice.lines || []).find(
+        (l) => String(l._id) === String(line.salesInvoiceLineId),
+      );
+      return enrichLineWithRisk(line, salesInvoice, salesLine);
+    }),
+    warnings,
+  };
 }
 
 export async function listAvailableCustomsLots(companyId, { articleNumber, partNumber = "" } = {}) {
@@ -350,6 +437,8 @@ export async function listAvailableCustomsLots(companyId, { articleNumber, partN
       countryOfOrigin: item.countryOfOrigin || lot.countryOfOrigin || "",
       hsCode: item.hsCode || "",
       unitPrice: item.unitPrice || 0,
+      customsUnitValue: Number(item.customsUnitValue ?? item.unitPrice) || 0,
+      valuationMethod: item.valuationMethod || "",
       unitWeightKg: item.unitWeightKg || item.weightKg || 0,
       exchangeRateToAED: item.exchangeRateToAED || lot.exchangeRateToAED || 0,
       articleNumber: item.articleNumber,
@@ -385,6 +474,11 @@ export async function previewCustomsAllocationFromSalesInvoice(req, salesInvoice
     partNumber: line.partNumber,
     description: line.description,
     requestedQty: line.qtyExported,
+    salesUnitPrice: line.salesUnitPrice,
+    salesCurrency: line.salesCurrency,
+    customsValueRisk: line.customsValueRisk,
+    customsValueRiskRequiresReason: line.customsValueRiskRequiresReason,
+    riskComparison: line.riskComparison,
     allocatedBoeCount: line.allocations.length,
     allocations: line.allocations.map((a) => ({
       boeNumber: a.boeNumber,
@@ -396,7 +490,10 @@ export async function previewCustomsAllocationFromSalesInvoice(req, salesInvoice
       countryOfOrigin: a.countryOfOrigin,
       hsCode: a.hsCode,
       unitPrice: a.unitPrice,
+      customsUnitValue: a.customsUnitValue,
+      valuationMethod: a.valuationMethod,
       totalValue: a.totalValue,
+      currency: a.currency,
       customsValueAED: a.customsValueAED,
       unitWeightKg: a.unitWeightKg,
       totalWeightKg: a.totalWeightKg,
@@ -415,6 +512,7 @@ export async function previewCustomsAllocationFromSalesInvoice(req, salesInvoice
     existingCustomsInvoice: existing || null,
     canOverride: allowOverride,
     warnings,
+    customsValueRiskRequiresReason: collectRiskRequiresReason(items),
     lines: previewLines,
     totals: {
       requestedQty: previewLines.reduce((s, l) => s + (Number(l.requestedQty) || 0), 0),
@@ -455,6 +553,7 @@ export async function createCustomsInvoiceFromSalesInvoice(req, salesInvoiceId, 
       invoiceDate: body.invoiceDate ? new Date(body.invoiceDate) : new Date(),
       status: "DRAFT",
       remarks: t(body.remarks),
+      customsValueRiskReason: t(body.customsValueRiskReason),
       items,
       createdBy: req.user?.email || "",
       updatedBy: req.user?.email || "",
@@ -498,6 +597,7 @@ export async function updateCustomsInvoiceDraft(req, customsInvoiceId, body = {}
   }
 
   if (body.remarks != null) doc.remarks = t(body.remarks);
+  if (body.customsValueRiskReason != null) doc.customsValueRiskReason = t(body.customsValueRiskReason);
   if (body.invoiceDate) doc.invoiceDate = new Date(body.invoiceDate);
   doc.updatedBy = req.user?.email || "";
   await doc.save();
@@ -546,7 +646,7 @@ async function refreshCustomsLotStatus(companyId, customsLotId, session) {
   await lot.save({ session });
 }
 
-export async function finalizeCustomsInvoice(req, customsInvoiceId) {
+export async function finalizeCustomsInvoice(req, customsInvoiceId, body = {}) {
   if (!isCustomsEnabled()) throw new Error("Customs module is disabled");
 
   const session = await mongoose.startSession();
@@ -563,6 +663,27 @@ export async function finalizeCustomsInvoice(req, customsInvoiceId) {
         return;
       }
       if (doc.status !== "DRAFT") throw new Error("Only DRAFT customs invoices can be finalized");
+
+      // Recompute risk from stored snapshots + sales invoice; require reason when below BOE.
+      const salesInvoice = doc.salesInvoiceId
+        ? await SalesInvoice.findOne(customsWithCompanyId(req.companyId, { _id: doc.salesInvoiceId }))
+            .session(session)
+            .lean()
+        : null;
+      const riskItems = (doc.items || []).map((line) => {
+        const salesLine = (salesInvoice?.lines || []).find(
+          (l) => String(l._id) === String(line.salesInvoiceLineId),
+        );
+        return enrichLineWithRisk(line.toObject?.() || line, salesInvoice || {}, salesLine);
+      });
+      if (collectRiskRequiresReason(riskItems) && !t(doc.customsValueRiskReason || body?.customsValueRiskReason)) {
+        throw new Error(
+          "Sales price is below BOE Customs Unit Value on one or more lines. Provide customsValueRiskReason before finalization (internal risk note only).",
+        );
+      }
+      if (body?.customsValueRiskReason != null) {
+        doc.customsValueRiskReason = t(body.customsValueRiskReason);
+      }
 
       const allowOverride = await userCanOverride(req);
       const touchedLotIds = new Set();
@@ -597,6 +718,17 @@ export async function finalizeCustomsInvoice(req, customsInvoiceId) {
           await item.save({ session });
           touchedLotIds.add(String(item.customsLotId));
 
+          const snap = resolveMovementCustomsValueSnapshot({ item, qty });
+          // Prefer allocation snapshot when present (immutable invoice economics).
+          const customsUnitValue =
+            alloc.customsUnitValue != null && alloc.customsUnitValue !== ""
+              ? Number(alloc.customsUnitValue)
+              : snap.customsUnitValue;
+          const customsValue =
+            alloc.totalValue != null && alloc.totalValue !== ""
+              ? Number(alloc.totalValue)
+              : snap.customsValue;
+
           await createCustomsMovement({
             session,
             req,
@@ -606,6 +738,10 @@ export async function finalizeCustomsInvoice(req, customsInvoiceId) {
             articleNumber: item.articleNumber,
             partNumber: item.partNumber,
             qty,
+            customsUnitValue,
+            customsValue,
+            currency: alloc.currency || item.currency || "",
+            valuationMethod: alloc.valuationMethod || item.valuationMethod || "",
             referenceType: "CUSTOMS_INVOICE",
             referenceId: doc._id,
             referenceNumber: doc.customsInvoiceNumber,
@@ -683,6 +819,11 @@ export async function cancelCustomsInvoice(req, customsInvoiceId, reason = "") {
               articleNumber: item.articleNumber,
               partNumber: item.partNumber,
               qty,
+              customsUnitValue:
+                alloc.customsUnitValue != null ? Number(alloc.customsUnitValue) : Number(item.customsUnitValue ?? item.unitPrice) || null,
+              customsValue: alloc.totalValue != null ? Number(alloc.totalValue) : null,
+              currency: alloc.currency || item.currency || "",
+              valuationMethod: alloc.valuationMethod || item.valuationMethod || "",
               referenceType: "CUSTOMS_INVOICE",
               referenceId: doc._id,
               referenceNumber: doc.customsInvoiceNumber,

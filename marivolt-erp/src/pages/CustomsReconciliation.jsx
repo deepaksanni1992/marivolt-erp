@@ -56,6 +56,55 @@ function statusClass(status) {
   return "bg-slate-50 text-slate-700 ring-slate-200";
 }
 
+function isBoeAverageMethod(method) {
+  return String(method || "").toUpperCase() === "BOE_AVERAGE";
+}
+
+function pickDeclaredField(items, field) {
+  for (const it of items) {
+    const v = it?.[field] ?? it?.lot?.[field];
+    if (v != null && v !== "") return Number(v);
+  }
+  return null;
+}
+
+/** BOE_AVERAGE declared qty/value invariants — skipped for LEGACY_LINE_VALUE rows. */
+function computeBoeAverageInvariants(items = []) {
+  const groups = new Map();
+  for (const it of items) {
+    if (!isBoeAverageMethod(it.valuationMethod)) continue;
+    const key = it.boeNumber || "—";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(it);
+  }
+
+  const results = [];
+  for (const [boeNumber, group] of groups) {
+    const declaredQty = pickDeclaredField(group, "boeDeclaredQty");
+    const declaredValue = pickDeclaredField(group, "boeDeclaredValue");
+    if (declaredQty == null && declaredValue == null) continue;
+
+    const sumQty = group.reduce(
+      (s, it) => s + (Number(it.customsQtyImported ?? it.qtyImported) || 0),
+      0,
+    );
+    const sumValue = group.reduce((s, it) => s + (Number(it.totalValue) || 0), 0);
+    const qtyOk = declaredQty == null || Math.abs(sumQty - declaredQty) < 0.0001;
+    const valueOk = declaredValue == null || Math.abs(sumValue - declaredValue) < 0.01;
+
+    results.push({
+      boeNumber,
+      declaredQty,
+      declaredValue,
+      sumQty,
+      sumValue,
+      qtyOk,
+      valueOk,
+    });
+  }
+  return results;
+}
+
 function KpiCard({ title, value, hint, tone = "slate" }) {
   const tones = {
     slate: "text-slate-900",
@@ -592,6 +641,26 @@ export default function CustomsReconciliation() {
               <p className="mb-2 text-xs text-slate-600">
                 Available customs stock: <strong>{fmtNum(detailQ.data?.customs?.currentStock, 4)}</strong>
               </p>
+              {(() => {
+                const customsItems = detailQ.data?.customs?.items || [];
+                const invariants = computeBoeAverageInvariants(customsItems);
+                return invariants.length ? (
+                  <div className="mb-3 rounded border border-sky-200 bg-sky-50 p-2 text-xs text-sky-900">
+                    <div className="font-semibold">BOE average declared invariants</div>
+                    {invariants.map((inv) => (
+                      <div key={inv.boeNumber} className="mt-1">
+                        BOE {inv.boeNumber}: qty Σ {fmtNum(inv.sumQty, 4)}
+                        {inv.declaredQty != null ? ` vs declared ${fmtNum(inv.declaredQty, 4)}` : ""}
+                        {inv.declaredQty != null ? (inv.qtyOk ? " ✓" : " ⚠ mismatch") : ""}
+                        {" · "}
+                        value Σ {fmtMoney(inv.sumValue)}
+                        {inv.declaredValue != null ? ` vs declared ${fmtMoney(inv.declaredValue)}` : ""}
+                        {inv.declaredValue != null ? (inv.valueOk ? " ✓" : " ⚠ mismatch") : ""}
+                      </div>
+                    ))}
+                  </div>
+                ) : null;
+              })()}
               <div className="mb-3 max-h-40 overflow-auto rounded border bg-white text-xs">
                 <table className="min-w-full">
                   <thead className="bg-slate-100">
@@ -599,6 +668,10 @@ export default function CustomsReconciliation() {
                       <th className="px-2 py-1 text-left">BOE</th>
                       <th className="px-2 py-1 text-left">BL</th>
                       <th className="px-2 py-1 text-left">Invoice</th>
+                      <th className="px-2 py-1 text-left">Valuation</th>
+                      <th className="px-2 py-1 text-right">BOE Decl. Qty</th>
+                      <th className="px-2 py-1 text-right">BOE Decl. Value</th>
+                      <th className="px-2 py-1 text-right">Customs Unit</th>
                       <th className="px-2 py-1 text-right">Imported</th>
                       <th className="px-2 py-1 text-right">Consumed</th>
                       <th className="px-2 py-1 text-right">Available</th>
@@ -610,6 +683,22 @@ export default function CustomsReconciliation() {
                         <td className="px-2 py-1">{it.boeNumber || "—"}</td>
                         <td className="px-2 py-1">{it.blNumber || "—"}</td>
                         <td className="px-2 py-1">{it.supplierInvoiceNumber || "—"}</td>
+                        <td className="px-2 py-1">{it.valuationMethod || "—"}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">
+                          {isBoeAverageMethod(it.valuationMethod) && it.boeDeclaredQty != null
+                            ? fmtNum(it.boeDeclaredQty, 4)
+                            : "—"}
+                        </td>
+                        <td className="px-2 py-1 text-right tabular-nums">
+                          {isBoeAverageMethod(it.valuationMethod) && it.boeDeclaredValue != null
+                            ? fmtMoney(it.boeDeclaredValue)
+                            : "—"}
+                        </td>
+                        <td className="px-2 py-1 text-right tabular-nums">
+                          {it.customsUnitValue != null || it.unitPrice != null
+                            ? fmtNum(it.customsUnitValue ?? it.unitPrice, 4)
+                            : "—"}
+                        </td>
                         <td className="px-2 py-1 text-right tabular-nums">{fmtNum(it.qtyImported, 4)}</td>
                         <td className="px-2 py-1 text-right tabular-nums">{fmtNum(it.qtyConsumed, 4)}</td>
                         <td className="px-2 py-1 text-right tabular-nums">{fmtNum(it.qtyAvailable, 4)}</td>

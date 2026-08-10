@@ -34,6 +34,21 @@ const customsLotSchema = new mongoose.Schema(
     customsUnitPrice: { type: Number, default: 0, min: 0 },
     currency: { type: String, default: "USD", trim: true, uppercase: true },
     exchangeRateToAED: { type: Number, default: 0, min: 0 },
+    /** Additive BOE-average economics (new posts). Absent ⇒ LEGACY_LINE_VALUE. */
+    valuationMethod: {
+      type: String,
+      enum: ["LEGACY_LINE_VALUE", "BOE_AVERAGE"],
+      default: "LEGACY_LINE_VALUE",
+      index: true,
+    },
+    boeDeclaredQty: { type: Number, default: 0, min: 0 },
+    customsUom: { type: String, default: "", trim: true, uppercase: true },
+    boeDeclaredValue: { type: Number, default: 0, min: 0 },
+    /** Frozen BOE average unit value (authoritative for BOE_AVERAGE). */
+    customsUnitValue: { type: Number, default: 0, min: 0 },
+    grossWeightKg: { type: Number, default: 0, min: 0 },
+    netWeightKg: { type: Number, default: 0, min: 0 },
+    valuationLockedAt: { type: Date, default: null },
     status: {
       type: String,
       enum: ["OPEN", "PARTIAL", "CONSUMED", "CANCELLED"],

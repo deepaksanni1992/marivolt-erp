@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../../context/AuthContext.jsx";
 import { apiGet, apiPost } from "../../lib/api.js";
 import { notify } from "../../lib/notifications.js";
+import { CustomsAllocationRiskTable } from "./CustomsAllocationRiskPreview.jsx";
 
 const LEGACY_ELIGIBLE = new Set(["ISSUED", "DISPATCHED", "PARTIALLY_PAID", "PAID"]);
 
@@ -181,6 +182,13 @@ export default function SalesCustomsInvoicePanel({ salesInvoice }) {
               ))}
               {(preview.lines || []).length > 8 ? (
                 <div className="text-gray-500">…and {(preview.lines || []).length - 8} more lines</div>
+              ) : null}
+              <CustomsAllocationRiskTable lines={preview.lines || []} />
+              {preview.customsValueRiskRequiresReason ? (
+                <p className="mt-2 text-amber-800">
+                  Sales price is below BOE Customs Unit Value — a risk reason will be required before finalizing on the
+                  customs invoice detail page.
+                </p>
               ) : null}
               {preview.canOverride ? (
                 <div className="mt-1 text-gray-500">BOE Override permission available on detail page.</div>
