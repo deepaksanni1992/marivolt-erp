@@ -70,8 +70,8 @@ export function wrapDescription(text, maxCharsPerLine = 42, maxLines = 2) {
 }
 
 /**
- * Build TSPL for one physical label.
- * Phase 1 rule: each label represents one received unit → display Qty: 1 UOM.
+ * Build TSPL for one physical label (MARIVOLT_STANDARD).
+ * Face qty defaults to 1 (legacy unit sticker); pass opts.qtyPerLabel for distributed GRN labels.
  */
 export function buildSingleLabelTspl(line = {}, opts = {}) {
   const dpi = Number(opts.dpi) || 203;
@@ -85,7 +85,6 @@ export function buildSingleLabelTspl(line = {}, opts = {}) {
   const descLines = wrapDescription(line.description || "");
   const spn = escapeTspl(line.spn || "") || "—";
   const materialCode = escapeTspl(line.materialCode || "") || "—";
-  // Phase 1: one physical label = one unit
   const qtyOnLabel = opts.qtyPerLabel != null ? Number(opts.qtyPerLabel) : 1;
   const qtyDisplay = Number.isFinite(qtyOnLabel) && qtyOnLabel > 0 ? String(qtyOnLabel) : "1";
   const uom = escapeTspl(line.uom || "PCS") || "PCS";
@@ -147,12 +146,34 @@ export function buildSingleLabelTspl(line = {}, opts = {}) {
 }
 
 /**
- * Build full TSPL: labelQty × copies physical labels, each showing Qty: 1 UOM.
+ * Build full TSPL for GRN / stock / manual jobs.
+ *
+ * Legacy (no labelDistribution):
+ *   labelQty × copies physical labels, each showing Qty: 1 UOM (unit stickers).
+ *
+ * Distribution mode (labelDistribution: [10,10,5]):
+ *   one physical label per entry with that face qty (× copies).
+ *   Remainder labels show the actual remainder — never padded to a full chunk.
  */
 export function buildJobTspl(lines = [], opts = {}) {
   const copies = Math.max(1, Number(opts.copies) || 1);
   const parts = [];
   for (const line of lines) {
+    const dist = Array.isArray(line.labelDistribution)
+      ? line.labelDistribution
+          .map((q) => Number(q))
+          .filter((q) => Number.isFinite(q) && q > 0)
+      : null;
+
+    if (dist && dist.length > 0) {
+      for (const faceQty of dist) {
+        for (let c = 0; c < copies; c++) {
+          parts.push(buildSingleLabelTspl(line, { ...opts, qtyPerLabel: faceQty }));
+        }
+      }
+      continue;
+    }
+
     const n = Math.max(0, Math.floor(Number(line.labelQty) || 0)) * copies;
     for (let i = 0; i < n; i++) {
       parts.push(buildSingleLabelTspl(line, { ...opts, qtyPerLabel: 1 }));

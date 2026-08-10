@@ -35,6 +35,11 @@ import PrintAgent from "../../models/PrintAgent.js";
 import LabelPrintJob from "../../models/LabelPrintJob.js";
 import { encodeBarcodeValue } from "./barcodeGenerator.js";
 import { buildJobTspl, buildTestLabelTspl } from "./tsplGenerator.js";
+import {
+  distributeByQtyPerLabel,
+  validateGrnLabelLinePrintConfig,
+  buildGrnLabelConfigFingerprint,
+} from "../../utils/grnLabelDistribution.js";
 
 function t(v) {
   return String(v ?? "").trim();
@@ -91,6 +96,152 @@ function formatReceivedDate(d) {
   if (Number.isNaN(dt.getTime())) return t(d).slice(0, 10);
   const p = (n) => String(n).padStart(2, "0");
   return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}`;
+}
+
+function countRequestedPhysicalLabels(jobLines, copies = 1) {
+  const c = Math.max(1, Number(copies) || 1);
+  return (jobLines || []).reduce((s, ln) => {
+    if (Array.isArray(ln.labelDistribution) && ln.labelDistribution.length > 0) {
+      return s + ln.labelDistribution.length * c;
+    }
+    return s + Math.max(0, Number(ln.labelQty) || 0) * c;
+  }, 0);
+}
+
+/**
+ * Build one GRN job line from GRN item + optional client selection.
+ * New fields: qtyPerLabel / labelCount / labelDistribution.
+ * Legacy: labelQty alone → unit stickers (Qty:1 × N), unchanged.
+ */
+function buildGrnJobLineFromSelection({
+  item = {},
+  article,
+  poLineId,
+  receivedQty,
+  sel,
+  grnNo,
+  poNo,
+  receivedDate,
+  barcodeMode = "ARTICLE",
+  allowLegacyUnitStickers = true,
+  locationOverride,
+} = {}) {
+  const hasNewFields =
+    sel &&
+    (sel.qtyPerLabel != null ||
+      sel.labelQtyPerLabel != null ||
+      sel.labelCount != null ||
+      sel.noOfLabels != null ||
+      (Array.isArray(sel.labelDistribution) && sel.labelDistribution.length > 0));
+
+  let labelDistribution;
+  let qtyPerLabel = 0;
+  let labelCount = 0;
+  let labelQty = 0;
+
+  if (hasNewFields) {
+    const qtyPer =
+      sel.qtyPerLabel != null && sel.qtyPerLabel !== ""
+        ? Number(sel.qtyPerLabel)
+        : sel.labelQtyPerLabel != null && sel.labelQtyPerLabel !== ""
+          ? Number(sel.labelQtyPerLabel)
+          : 1;
+    const countRaw =
+      sel.labelCount != null && sel.labelCount !== ""
+        ? Number(sel.labelCount)
+        : sel.noOfLabels != null && sel.noOfLabels !== ""
+          ? Number(sel.noOfLabels)
+          : null;
+
+    const validated = validateGrnLabelLinePrintConfig({
+      print: true,
+      article,
+      receivedQty,
+      qtyPerLabel: qtyPer,
+      labelCount: countRaw != null && Number.isFinite(countRaw) ? countRaw : distributeByQtyPerLabel(receivedQty, qtyPer).length,
+      labelDistribution: Array.isArray(sel.labelDistribution) ? sel.labelDistribution : undefined,
+    });
+    if (!validated.ok) {
+      const err = new Error(validated.message || `Invalid label config for ${article}`);
+      err.code = "LABEL_DISTRIBUTION_INVALID";
+      err.statusCode = 400;
+      throw err;
+    }
+    labelDistribution = validated.distribution;
+    qtyPerLabel = Number(validated.qtyPerLabel) || qtyPer;
+    labelCount = labelDistribution.length;
+    labelQty = labelCount;
+  } else {
+    // Legacy path: labelQty = number of unit stickers
+    let legacyQty = receivedQty;
+    if (sel && sel.labelQty != null && sel.labelQty !== "") {
+      legacyQty = Number(sel.labelQty);
+    }
+    if (!Number.isFinite(legacyQty) || legacyQty < 0) {
+      const err = new Error(`Label Qty must be a non-negative number for ${article || "line"}`);
+      err.code = "LABEL_QTY_INVALID";
+      err.statusCode = 400;
+      throw err;
+    }
+    legacyQty = Math.floor(legacyQty);
+    if (legacyQty <= 0) return null;
+    if (legacyQty > receivedQty + 1e-9) {
+      const err = new Error(
+        `Label Qty (${legacyQty}) cannot exceed received qty (${receivedQty}) for ${article}`
+      );
+      err.code = "LABEL_QTY_EXCEEDS_RECEIVED";
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!allowLegacyUnitStickers) {
+      // Convert legacy count into unit distribution for pre-post default
+      labelDistribution = distributeByQtyPerLabel(legacyQty, 1);
+      qtyPerLabel = 1;
+      labelCount = labelDistribution.length;
+      labelQty = labelCount;
+    } else {
+      labelQty = legacyQty;
+      qtyPerLabel = 1;
+      labelCount = legacyQty;
+      // omit labelDistribution → TSPL emits Qty:1 × labelQty (legacy)
+    }
+  }
+
+  const barcode = encodeBarcodeValue({ mode: barcodeMode, article });
+  return {
+    article,
+    description: t(item.description),
+    spn: t(item.spn || item.partNumber),
+    materialCode: t(item.materialCode),
+    qty: receivedQty,
+    uom: t(item.uom) || "PCS",
+    poNo: t(poNo),
+    grnNo: t(grnNo),
+    receivedDate: t(receivedDate),
+    location: t(locationOverride != null ? locationOverride : item.location),
+    barcodeValue: barcode.value,
+    labelQty,
+    qtyPerLabel,
+    labelCount,
+    ...(labelDistribution ? { labelDistribution } : {}),
+    poLineId,
+  };
+}
+
+export async function linkPrepostJobsToGrn(companyId, draftRef, grnNo) {
+  const ref = upper(draftRef);
+  const no = upper(grnNo);
+  if (!ref || !no || !companyId) return { modifiedCount: 0 };
+  const res = await LabelPrintJob.updateMany(
+    {
+      companyId,
+      sourceType: "GRN_PREPOST",
+      draftRef: ref,
+      $or: [{ linkedGrnNo: "" }, { linkedGrnNo: null }, { linkedGrnNo: { $exists: false } }],
+    },
+    { $set: { linkedGrnNo: no } }
+  );
+  return { modifiedCount: res?.modifiedCount || 0 };
 }
 
 /**
@@ -150,56 +301,32 @@ export async function createJobsFromGrn(req, body = {}) {
     const article = upper(item.article);
     const poLineId = item.poLineId != null ? String(item.poLineId) : "";
     const receivedQty = Number(item.acceptedQty ?? item.receivedQty) || 0;
-    let labelQty = receivedQty;
     let include = true;
+    let sel = null;
     if (selection) {
-      const sel = selection.find(
+      sel = selection.find(
         (s) =>
           (poLineId && String(s.poLineId) === poLineId) ||
           (s.article && upper(s.article) === article)
       );
-      if (!sel || sel.print === false) {
-        include = false;
-      } else if (sel.labelQty != null && sel.labelQty !== "") {
-        labelQty = Number(sel.labelQty);
-      }
+      if (!sel || sel.print === false) include = false;
     }
     if (!include) continue;
-    if (!Number.isFinite(labelQty) || labelQty < 0) {
-      const err = new Error(`Label Qty must be a non-negative number for ${article || "line"}`);
-      err.code = "LABEL_QTY_INVALID";
-      err.statusCode = 400;
-      throw err;
-    }
-    labelQty = Math.floor(labelQty);
-    if (labelQty <= 0) continue;
-    if (labelQty > receivedQty + 1e-9) {
-      const err = new Error(
-        `Label Qty (${labelQty}) cannot exceed received qty (${receivedQty}) for ${article}`
-      );
-      err.code = "LABEL_QTY_EXCEEDS_RECEIVED";
-      err.statusCode = 400;
-      throw err;
-    }
-    const barcode = encodeBarcodeValue({
-      mode: template?.barcodeMode || "ARTICLE",
+
+    const built = buildGrnJobLineFromSelection({
+      item,
       article,
-    });
-    jobLines.push({
-      article,
-      description: t(item.description),
-      spn: t(item.spn || item.partNumber),
-      materialCode: t(item.materialCode),
-      qty: receivedQty,
-      uom: t(item.uom) || "PCS",
-      poNo: t(item.poNo || grn.poNo),
-      grnNo,
-      receivedDate: formatReceivedDate(grn.grnDate || grn.postedAt),
-      location: t(item.location),
-      barcodeValue: barcode.value,
-      labelQty,
       poLineId,
+      receivedQty,
+      sel,
+      grnNo,
+      poNo: t(item.poNo || grn.poNo),
+      receivedDate: formatReceivedDate(grn.grnDate || grn.postedAt),
+      barcodeMode: template?.barcodeMode || "ARTICLE",
+      allowLegacyUnitStickers: true,
     });
+    if (!built) continue;
+    jobLines.push(built);
   }
 
   if (!jobLines.length) {
@@ -209,13 +336,27 @@ export async function createJobsFromGrn(req, body = {}) {
     throw err;
   }
 
-  const requestedLabels = jobLines.reduce((s, ln) => s + Math.max(0, Number(ln.labelQty) || 0) * copies, 0);
+  const requestedLabels = countRequestedPhysicalLabels(jobLines, copies);
   if (requestedLabels > settings.maxPerJob) {
     const err = new Error(`Requested labels (${requestedLabels}) exceed max per job (${settings.maxPerJob})`);
     err.code = "LABEL_MAX_EXCEEDED";
     err.statusCode = 400;
     throw err;
   }
+
+  const fingerprint =
+    t(body.labelConfigFingerprint).slice(0, 500) ||
+    buildGrnLabelConfigFingerprint(
+      jobLines.map((ln) => ({
+        poLineId: ln.poLineId,
+        article: ln.article,
+        print: true,
+        receivedQty: ln.qty,
+        qtyPerLabel: ln.qtyPerLabel,
+        labelCount: ln.labelCount,
+        labelDistribution: ln.labelDistribution,
+      }))
+    );
 
   const tsplPayload = buildJobTspl(jobLines, {
     copies,
@@ -231,6 +372,9 @@ export async function createJobsFromGrn(req, body = {}) {
       sourceType: "GRN",
       sourceId: grn._id,
       sourceNo: grnNo,
+      draftRef: t(body.draftRef).toUpperCase().slice(0, 80),
+      linkedGrnNo: grnNo,
+      labelConfigFingerprint: fingerprint,
       warehouseCode: t(printer.warehouseCode),
       printerConfigId: printer._id,
       agentId: upper(printer.agentId),
@@ -254,6 +398,12 @@ export async function createJobsFromGrn(req, body = {}) {
     }
     throw e;
   }
+
+  // Link any matching pre-post jobs to this GRN (additive; do not rewrite history).
+  if (body.draftRef) {
+    await linkPrepostJobsToGrn(companyId, body.draftRef, grnNo);
+  }
+
   await syncGrnLabelStatus(grn._id, job);
   await recordLabelHistory({
     jobId: job._id,
@@ -272,6 +422,184 @@ export async function createJobsFromGrn(req, body = {}) {
     action: "CREATE",
     job,
     description: `Label job ${job.jobNo} queued for GRN ${grnNo}`,
+  });
+
+  return job;
+}
+
+/**
+ * Pre-GRN label print — queue only. ZERO stock / PO / GRN / customs side effects.
+ * Uses draftRef (GRN-DRAFT-…) as sourceNo; does not allocate a real GRN number.
+ */
+export async function createJobsFromGrnPrepost(req, body = {}) {
+  const companyId = req.companyId;
+  const settings = await getLabelSettings(companyId);
+  if (!settings.enabled) {
+    const err = new Error("Label printing is disabled. Enable it in Label Settings.");
+    err.code = "LABEL_DISABLED";
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const draftRef = upper(body.draftRef || body.draftNo);
+  if (!draftRef || !draftRef.startsWith("GRN-DRAFT")) {
+    const err = new Error("draftRef is required (GRN-DRAFT-…)");
+    err.code = "DRAFT_REF_REQUIRED";
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const idempotencyKey = t(body.idempotencyKey).slice(0, 120) || null;
+  if (idempotencyKey) {
+    const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
+    if (existing) return existing;
+  }
+
+  const linesIn = Array.isArray(body.lines) ? body.lines : [];
+  if (!linesIn.length) {
+    const err = new Error("No label lines selected for printing");
+    err.code = "LABEL_NO_LINES";
+    err.statusCode = 400;
+    throw err;
+  }
+
+  await ensureMarivoltStandardTemplate();
+  const template = await getStandardTemplate();
+  const warehouseHint = upper(body.warehouseCode) || "";
+  const printer = await resolvePrinterForJob(companyId, body.printerCode, {
+    warehouseCode: warehouseHint,
+  });
+  const copies = Math.max(1, Number(body.copies) || settings.defaultCopies || 1);
+  const poNo = t(body.poNo);
+  const receivedDate = formatReceivedDate(body.receivedDate || new Date());
+
+  const jobLines = [];
+  for (const sel of linesIn) {
+    if (sel?.print === false) continue;
+    const article = upper(sel.article);
+    if (!article) {
+      const err = new Error("article is required on each print line");
+      err.statusCode = 400;
+      throw err;
+    }
+    const receivedQty = Number(sel.receivedQty ?? sel.grnQty) || 0;
+    const built = buildGrnJobLineFromSelection({
+      item: {
+        description: sel.description,
+        spn: sel.spn || sel.partNumber,
+        materialCode: sel.materialCode,
+        uom: sel.uom,
+        location: sel.location,
+      },
+      article,
+      poLineId: sel.poLineId != null ? String(sel.poLineId) : "",
+      receivedQty,
+      sel: {
+        ...sel,
+        print: true,
+        // Force distribution mode for pre-post (no silent legacy unit-only ambiguity when new fields sent)
+        qtyPerLabel: sel.qtyPerLabel ?? sel.labelQtyPerLabel ?? (sel.labelDistribution ? undefined : 1),
+        labelCount: sel.labelCount ?? sel.noOfLabels,
+        labelDistribution: sel.labelDistribution,
+        labelQty: sel.labelQty,
+      },
+      grnNo: draftRef,
+      poNo: t(sel.poNo || poNo),
+      receivedDate,
+      barcodeMode: template?.barcodeMode || "ARTICLE",
+      allowLegacyUnitStickers: false,
+      locationOverride: sel.location,
+    });
+    if (built) jobLines.push(built);
+  }
+
+  if (!jobLines.length) {
+    const err = new Error("No label lines selected for printing");
+    err.code = "LABEL_NO_LINES";
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const requestedLabels = countRequestedPhysicalLabels(jobLines, copies);
+  if (requestedLabels > settings.maxPerJob) {
+    const err = new Error(`Requested labels (${requestedLabels}) exceed max per job (${settings.maxPerJob})`);
+    err.code = "LABEL_MAX_EXCEEDED";
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const fingerprint =
+    t(body.labelConfigFingerprint).slice(0, 500) ||
+    buildGrnLabelConfigFingerprint(
+      jobLines.map((ln) => ({
+        poLineId: ln.poLineId,
+        article: ln.article,
+        print: true,
+        receivedQty: ln.qty,
+        qtyPerLabel: ln.qtyPerLabel,
+        labelCount: ln.labelCount,
+        labelDistribution: ln.labelDistribution,
+      }))
+    );
+
+  const tsplPayload = buildJobTspl(jobLines, {
+    copies,
+    companyName: "MARIVOLT FZE",
+    barcodeMode: template?.barcodeMode || "ARTICLE",
+  });
+
+  let job;
+  try {
+    job = await LabelPrintJob.create({
+      companyId,
+      jobNo: jobNo(),
+      sourceType: "GRN_PREPOST",
+      sourceId: null,
+      sourceNo: draftRef,
+      draftRef,
+      linkedGrnNo: "",
+      labelConfigFingerprint: fingerprint,
+      warehouseCode: t(printer.warehouseCode),
+      printerConfigId: printer._id,
+      agentId: upper(printer.agentId),
+      windowsPrinterName: t(printer.windowsPrinterName),
+      templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
+      copies,
+      requestedLabels,
+      printedLabels: 0,
+      remainingLabels: requestedLabels,
+      lines: jobLines,
+      tsplPayload,
+      status: "PENDING",
+      createdByUserId: req.user?.id || req.user?._id || null,
+      createdByName: t(req.user?.name || req.user?.email || ""),
+      idempotencyKey,
+    });
+  } catch (e) {
+    if (idempotencyKey && (e?.code === 11000 || String(e?.message || "").includes("duplicate"))) {
+      const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
+      if (existing) return existing;
+    }
+    throw e;
+  }
+
+  await recordLabelHistory({
+    jobId: job._id,
+    companyId,
+    agentId: job.agentId,
+    windowsPrinterName: job.windowsPrinterName,
+    requestedQty: requestedLabels,
+    printedQty: 0,
+    status: "PENDING",
+    templateCode: job.templateCode,
+    userId: job.createdByUserId,
+    userName: job.createdByName,
+    event: "ENQUEUE_PREPOST",
+  });
+  await auditLabelEvent(req, {
+    action: "CREATE",
+    job,
+    description: `Pre-GRN label job ${job.jobNo} queued draft=${draftRef} po=${poNo || "—"}`,
   });
 
   return job;
@@ -1035,6 +1363,9 @@ export async function reprintJob(req, jobId, body = {}) {
     ) {
       return s + Math.max(1, Number(ln.lineCopies || copies) || 1);
     }
+    if (Array.isArray(ln.labelDistribution) && ln.labelDistribution.length > 0) {
+      return s + ln.labelDistribution.length * copies;
+    }
     return s + Math.max(0, Number(ln.labelQty) || 0) * copies;
   }, 0);
   const isPacking =
@@ -1058,6 +1389,9 @@ export async function reprintJob(req, jobId, body = {}) {
     sourceType: parent.sourceType,
     sourceId: parent.sourceId,
     sourceNo: parent.sourceNo,
+    draftRef: parent.draftRef || "",
+    linkedGrnNo: parent.linkedGrnNo || "",
+    labelConfigFingerprint: parent.labelConfigFingerprint || "",
     warehouseCode: printer.warehouseCode,
     printerConfigId: printer._id,
     agentId: upper(printer.agentId),

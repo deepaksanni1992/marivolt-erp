@@ -20,6 +20,7 @@ import CreateInvoiceFromPackingModal, { packingReadyForSalesInvoice } from "../c
 import GrnCustomsSection from "../components/store/GrnCustomsSection.jsx";
 import LabelQueuePanel from "../components/store/LabelQueuePanel.jsx";
 import PostGrnLabelDecisionDialog from "../components/store/PostGrnLabelDecisionDialog.jsx";
+import GrnLabelPreviewModal from "../components/store/GrnLabelPreviewModal.jsx";
 import PackingLabelsModal from "../components/store/PackingLabelsModal.jsx";
 import {
   buildGrnCustomsPayload,
@@ -28,12 +29,23 @@ import {
 } from "../lib/grnCustomsPayload.js";
 import {
   LABEL_TEMPLATE_NAME,
+  GRN_LABEL_LARGE_PRINT_CONFIRM_AT,
+  applyGrnQtyToLabelFields,
+  buildGrnLabelConfigFingerprint,
+  buildGrnLabelPreviewRows,
+  buildGrnPrepostIdempotencyKey,
   buildLabelLinesFromEdits,
   buildInitialGrnLabelIdempotencyKey,
   defaultLabelLineFields,
+  formatLabelDistribution,
   formatLabelsQueuedMessage,
+  getLineLabelDistribution,
+  newGrnDraftRef,
+  resolveCompletedGrnLabelPrint,
   resolvePostGrnLabelMode,
   sumPhysicalLabelQty,
+  syncLabelFieldsFromLabelCount,
+  syncLabelFieldsFromQtyPerLabel,
   validateInitialLabelLines,
 } from "../lib/labelPrinting.js";
 import { notify, confirmDialog } from "../lib/notifications.js";
@@ -336,6 +348,12 @@ export default function StoreModule() {
   const [labelCopies, setLabelCopies] = useState(1);
   /** Post-GRN optional label decision (posted GRN + label payload snapshot). */
   const [postGrnLabelDecision, setPostGrnLabelDecision] = useState(null);
+  /** Stable session id for pre-GRN printing (not a real GRN number). */
+  const [grnDraftRef, setGrnDraftRef] = useState(() => newGrnDraftRef());
+  /** Last successful pre/post label print for this draft session. */
+  const [grnLabelPrintState, setGrnLabelPrintState] = useState(null);
+  const [grnLabelPreview, setGrnLabelPreview] = useState(null);
+  const [grnStaleLabelAck, setGrnStaleLabelAck] = useState(false);
   const grnUrlPoLoadedRef = useRef("");
   const grnCsvInputRef = useRef(null);
   const [grnRegSearchInput, setGrnRegSearchInput] = useState(() => searchParams.get("grnQ") || "");
@@ -488,36 +506,87 @@ export default function StoreModule() {
       }
       setGrnLineEdits(init);
       setGrnCustoms(emptyGrnCustomsState());
+      setGrnDraftRef(newGrnDraftRef());
+      setGrnLabelPrintState(null);
+      setGrnLabelPreview(null);
+      setGrnStaleLabelAck(false);
     },
     onError: (e) => {
       setGrnPoSnapshot(null);
       setGrnLineEdits({});
       setGrnUiErr(e.message || String(e));
+      setGrnLabelPrintState(null);
+      setGrnLabelPreview(null);
     },
   });
 
-  const refreshAfterGrnPost = (posted) => {
+  const refreshAfterGrnPost = async (posted) => {
     qc.invalidateQueries({ queryKey: ["grn"] });
     qc.invalidateQueries({ queryKey: ["stock-ledger-unified"] });
     qc.invalidateQueries({ queryKey: ["stock-summary"] });
     qc.invalidateQueries({ queryKey: ["customs-stock"] });
     const pid = grnPoSnapshot?.header?._id;
+    const grnNo = posted?.grnNo;
+    if (grnNo && grnDraftRef) {
+      try {
+        await apiPost("/labels/jobs/link-grn-prepost", {
+          draftRef: grnDraftRef,
+          grnNo,
+        });
+        qc.invalidateQueries({ queryKey: ["label-jobs"] });
+      } catch (linkErr) {
+        // Non-blocking: GRN stock post already succeeded. Do not retry/rollback posting.
+        const detail = linkErr?.message || "audit link failed";
+        notify.warning(
+          `GRN ${grnNo} posted successfully, but pre-print jobs could not be linked (${detail}). Jobs remain searchable by draft ref.`
+        );
+      }
+    }
     setGrnLineEdits({});
     setGrnCustoms(emptyGrnCustomsState());
     if (pid) loadGrnPoMut.mutate(String(pid));
-    const grnNo = posted?.grnNo;
     const msg = grnNo ? `GRN posted successfully. (${grnNo})` : "GRN posted successfully.";
     setGrnUiErr(msg);
   };
 
+  const fetchLabelJobById = useCallback(async (jobId) => apiGet(`/labels/jobs/${jobId}`), []);
+
+  const rememberQueuedLabelJob = (job, labelBody) => {
+    const j = job?.job || job;
+    const jobId = j?._id || j?.id;
+    if (!jobId || !labelBody?.labelConfigFingerprint) return;
+    setGrnLabelPrintState({
+      jobId: String(jobId),
+      fingerprint: labelBody.labelConfigFingerprint,
+      draftRef: labelBody.draftRef || grnDraftRef,
+      status: String(j?.status || "PENDING").toUpperCase(),
+      queuedAt: Date.now(),
+      printedQtyByLine: Object.fromEntries(
+        (labelBody.lines || [])
+          .filter((ln) => ln.print !== false)
+          .map((ln) => [String(ln.poLineId || ln.article), Number(ln.receivedQty) || 0])
+      ),
+      labelDistributionByLine: Object.fromEntries(
+        (labelBody.lines || [])
+          .filter((ln) => ln.print !== false)
+          .map((ln) => [
+            String(ln.poLineId || ln.article),
+            Array.isArray(ln.labelDistribution) ? ln.labelDistribution : [],
+          ])
+      ),
+    });
+    setGrnStaleLabelAck(false);
+  };
+
   const queueLabelsAfterGrnMut = useMutation({
     mutationFn: ({ labelBody }) => apiPost("/labels/jobs/from-grn", labelBody),
-    onSuccess: (_data, vars) => {
+    onSuccess: (data, vars) => {
       qc.invalidateQueries({ queryKey: ["label-jobs"] });
       qc.invalidateQueries({ queryKey: ["grn"] });
       const count = Number(vars?.totalLabelQty) || sumPhysicalLabelQty(vars?.labelBody?.lines);
       notify.success(formatLabelsQueuedMessage(count));
       setPostGrnLabelDecision(null);
+      rememberQueuedLabelJob(data, vars?.labelBody);
       setGrnUiErr((prev) => `${prev || "GRN posted successfully."} Labels queued.`.trim());
     },
     onError: (e) => {
@@ -531,13 +600,41 @@ export default function StoreModule() {
     },
   });
 
+  const queueGrnPrepostLabelsMut = useMutation({
+    mutationFn: ({ labelBody }) => apiPost("/labels/jobs/from-grn-prepost", labelBody),
+    onSuccess: (data, vars) => {
+      qc.invalidateQueries({ queryKey: ["label-jobs"] });
+      const count = Number(vars?.totalLabelQty) || sumPhysicalLabelQty(vars?.labelBody?.lines);
+      notify.success(formatLabelsQueuedMessage(count));
+      setGrnLabelPreview(null);
+      rememberQueuedLabelJob(data, vars?.labelBody);
+      setGrnUiErr(
+        `Labels queued (pre-GRN). ${formatLabelsQueuedMessage(count)} Success is confirmed when the job reaches COMPLETED.`
+      );
+    },
+    onError: (e) => {
+      notify.error(e.message || "Could not queue pre-GRN labels.");
+      setGrnUiErr(e.message || String(e));
+    },
+  });
+
   const postGrnFromPoMut = useMutation({
     mutationFn: ({ postBody }) => apiPost("/grn/post", postBody),
-    onSuccess: (data, vars) => {
+    onSuccess: async (data, vars) => {
       const mode = vars?.mode || "none";
       const labelContext = vars?.labelContext || null;
-      refreshAfterGrnPost(data);
+      const skipLabels = vars?.skipLabelsBecauseAlreadyPrinted === true;
+      await refreshAfterGrnPost(data);
       notify.success("GRN posted successfully.");
+
+      if (skipLabels) {
+        setGrnUiErr(
+          data?.grnNo
+            ? `GRN posted successfully. (${data.grnNo}) Labels already printed for this configuration — not re-queued.`
+            : "GRN posted successfully. Labels already printed for this configuration — not re-queued."
+        );
+        return;
+      }
 
       if (mode === "none" || !data?.grnNo) return;
 
@@ -545,6 +642,7 @@ export default function StoreModule() {
       const labelBody = {
         ...(labelContext?.labelBody || {}),
         grnNo: data.grnNo,
+        draftRef: grnDraftRef,
         idempotencyKey,
       };
 
@@ -587,6 +685,7 @@ export default function StoreModule() {
         const labelJob = await apiPost("/labels/jobs/from-grn", {
           ...labelBody,
           grnNo: posted.grnNo,
+          draftRef: labelBody.draftRef || grnDraftRef,
           idempotencyKey:
             labelBody.idempotencyKey || buildInitialGrnLabelIdempotencyKey(posted.grnNo),
         });
@@ -595,8 +694,8 @@ export default function StoreModule() {
         return { posted, labelError: labelErr, labelBody };
       }
     },
-    onSuccess: (result) => {
-      refreshAfterGrnPost(result?.posted);
+    onSuccess: async (result) => {
+      await refreshAfterGrnPost(result?.posted);
       notify.success("GRN posted successfully.");
       qc.invalidateQueries({ queryKey: ["label-jobs"] });
       const grnNo = result?.posted?.grnNo;
@@ -610,6 +709,7 @@ export default function StoreModule() {
       } else if (result?.labelJob) {
         const count = sumPhysicalLabelQty(result?.labelBody?.lines);
         notify.success(formatLabelsQueuedMessage(count));
+        rememberQueuedLabelJob(result.labelJob, result.labelBody);
         setGrnUiErr(
           grnNo
             ? `GRN posted successfully. (${grnNo}) ${formatLabelsQueuedMessage(count)}`
@@ -722,15 +822,17 @@ export default function StoreModule() {
           const id = String(u.poLineId);
           const cur = next[id] || {};
           const customsEdits = u.customsLineEdits && typeof u.customsLineEdits === "object" ? u.customsLineEdits : {};
-          next[id] = {
-            ...cur,
-            ...customsEdits,
-            selected: true,
-            grnQty: String(u.grnQty),
-            warehouse: u.warehouse || cur.warehouse || GRN_DEFAULT_WAREHOUSE_CODE,
-            location: u.location || "",
-            remarks: u.remarks != null ? u.remarks : cur.remarks || "",
-          };
+          next[id] = applyGrnQtyToLabelFields(
+            {
+              ...cur,
+              ...customsEdits,
+              selected: true,
+              warehouse: u.warehouse || cur.warehouse || GRN_DEFAULT_WAREHOUSE_CODE,
+              location: u.location || "",
+              remarks: u.remarks != null ? u.remarks : cur.remarks || "",
+            },
+            u.grnQty
+          );
         }
         return next;
       });
@@ -1437,6 +1539,75 @@ export default function StoreModule() {
     [grnLinesForUi]
   );
 
+  const grnCurrentLabelFingerprint = useMemo(() => {
+    const selected = (grnLinesForUi || []).filter((ln) => {
+      const id = ln.poLineId != null ? String(ln.poLineId) : "";
+      const ed = grnLineEdits[id];
+      return ed?.selected && ed.printLabel !== false && grnLineRowSelectable(ln);
+    });
+    if (!selected.length) {
+      // Also consider print-enabled lines with qty even if not yet selected for post,
+      // when building stale context from all print-enabled editable lines with qty.
+      const printable = (grnLinesForUi || []).filter((ln) => {
+        const id = ln.poLineId != null ? String(ln.poLineId) : "";
+        const ed = grnLineEdits[id];
+        return ed && ed.printLabel !== false && Number(ed.grnQty) > 0;
+      });
+      if (!printable.length) return "";
+      return buildGrnLabelConfigFingerprint(buildLabelLinesFromEdits(printable, grnLineEdits));
+    }
+    return buildGrnLabelConfigFingerprint(buildLabelLinesFromEdits(selected, grnLineEdits));
+  }, [grnLinesForUi, grnLineEdits]);
+
+  const grnStaleLabelWarnings = useMemo(() => {
+    if (!grnLabelPrintState?.fingerprint || !grnCurrentLabelFingerprint) return [];
+    if (grnLabelPrintState.fingerprint === grnCurrentLabelFingerprint) return [];
+    // Only warn when a prior job was recorded; completion is re-checked at post/print time.
+    // Fingerprint mismatch means physical output would differ (qty and/or distribution).
+    const warnings = [];
+    for (const ln of grnLinesForUi) {
+      const id = ln.poLineId != null ? String(ln.poLineId) : "";
+      const ed = grnLineEdits[id];
+      if (!ed || ed.printLabel === false) continue;
+      const key = id || String(ln.article || "");
+      const prevDist = grnLabelPrintState.labelDistributionByLine?.[key];
+      const curDist = getLineLabelDistribution(ed);
+      const prevQty = grnLabelPrintState.printedQtyByLine?.[key];
+      const curQty = Number(ed.grnQty) || 0;
+      const distChanged =
+        Array.isArray(prevDist) &&
+        (prevDist.length !== curDist.length ||
+          prevDist.some((q, i) => Math.abs(Number(q) - Number(curDist[i] || 0)) > 1e-9));
+      const qtyChanged = prevQty != null && Math.abs(curQty - prevQty) > 1e-9;
+      if (!distChanged && !qtyChanged && prevDist == null) {
+        // Fallback: fingerprint already differs — still show line-level notice when article was in prior print
+        if (prevQty == null) continue;
+      }
+      if (distChanged || qtyChanged || (prevQty != null && grnLabelPrintState.fingerprint !== grnCurrentLabelFingerprint)) {
+        const prevText = Array.isArray(prevDist) && prevDist.length
+          ? formatLabelDistribution(prevDist)
+          : prevQty != null
+            ? `Qty ${prevQty}`
+            : "previous configuration";
+        const curText = formatLabelDistribution(curDist);
+        warnings.push({
+          article: ln.article,
+          printedQty: prevQty,
+          currentQty: curQty,
+          message: `Labels were previously printed as ${prevText}. Current configuration is ${curText} (GRN Qty ${curQty}). Printed labels may no longer match this GRN.`,
+        });
+      }
+    }
+    if (!warnings.length) {
+      warnings.push({
+        article: "",
+        message:
+          "Label print configuration changed since the last queued/printed job. Re-preview / reprint labels, or acknowledge before posting.",
+      });
+    }
+    return warnings;
+  }, [grnLinesForUi, grnLineEdits, grnLabelPrintState, grnCurrentLabelFingerprint]);
+
   const buildGrnPostPayloadFromUi = () => {
     const h = grnPoSnapshot?.header;
     if (!h?._id) {
@@ -1841,7 +2012,7 @@ export default function StoreModule() {
                             remarks: "",
                           };
                           if (anySel && !cur.selected) continue;
-                          next[id] = { ...cur, grnQty: String(pend) };
+                          next[id] = applyGrnQtyToLabelFields(cur, pend);
                         }
                         return next;
                       });
@@ -1894,7 +2065,12 @@ export default function StoreModule() {
                         <th className="px-2 py-2 text-right">Unit Wt KG</th>
                         <th className="px-2 py-2 text-right">FX→AED</th>
                         <th className="px-2 py-2 text-center">Print</th>
-                        <th className="px-2 py-2 text-right">Label Qty</th>
+                        <th className="px-2 py-2 text-right" title="Number of pieces represented by each physical label.">
+                          Qty / Label
+                        </th>
+                        <th className="px-2 py-2 text-right" title="Number of physical labels to print.">
+                          No. Labels
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1946,11 +2122,7 @@ export default function StoreModule() {
                                 onChange={(e) =>
                                   setGrnLineEdits((p) => ({
                                     ...p,
-                                    [id]: {
-                                      ...ed,
-                                      grnQty: e.target.value,
-                                      labelQty: e.target.value,
-                                    },
+                                    [id]: applyGrnQtyToLabelFields(ed, e.target.value),
                                   }))
                                 }
                               />
@@ -2103,16 +2275,41 @@ export default function StoreModule() {
                                 type="number"
                                 min="0"
                                 step="any"
-                                className="w-16 rounded border px-1 py-0.5 text-right tabular-nums"
+                                title="Number of pieces represented by each physical label."
+                                className="w-14 rounded border px-1 py-0.5 text-right tabular-nums"
                                 disabled={pend <= 0 || !selectable || ed.printLabel === false}
-                                value={ed.labelQty ?? ed.grnQty}
+                                value={ed.labelQtyPerLabel ?? "1"}
                                 onChange={(e) =>
                                   setGrnLineEdits((p) => ({
                                     ...p,
-                                    [id]: { ...ed, labelQty: e.target.value },
+                                    [id]: syncLabelFieldsFromQtyPerLabel(ed, e.target.value),
                                   }))
                                 }
                               />
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              <div className="flex flex-col items-end gap-0.5">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="1"
+                                  title="Number of physical labels to print."
+                                  className="w-14 rounded border px-1 py-0.5 text-right tabular-nums"
+                                  disabled={pend <= 0 || !selectable || ed.printLabel === false}
+                                  value={ed.labelCount ?? ed.labelQty ?? ed.grnQty}
+                                  onChange={(e) =>
+                                    setGrnLineEdits((p) => ({
+                                      ...p,
+                                      [id]: syncLabelFieldsFromLabelCount(ed, e.target.value),
+                                    }))
+                                  }
+                                />
+                                {ed.printLabel !== false && Number(ed.grnQty) > 0 ? (
+                                  <span className="max-w-[88px] truncate text-[9px] leading-tight text-slate-500" title={`Distribution: ${formatLabelDistribution(getLineLabelDistribution(ed))}`}>
+                                    {formatLabelDistribution(getLineLabelDistribution(ed))}
+                                  </span>
+                                ) : null}
+                              </div>
                             </td>
                           </tr>
                         );
@@ -2120,6 +2317,57 @@ export default function StoreModule() {
                     </tbody>
                   </table>
                 </div>
+                {grnStaleLabelWarnings.length ? (
+                  <div className="mt-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+                    <div className="font-semibold">Printed labels may be stale</div>
+                    <ul className="mt-1 list-disc pl-4">
+                      {grnStaleLabelWarnings.map((w, idx) => (
+                        <li key={`${w.article || "cfg"}-${idx}`}>
+                          {w.article ? `${w.article}: ` : ""}
+                          {w.message}
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="rounded border border-amber-400 bg-white px-2 py-1 text-[11px] font-semibold"
+                        onClick={() => {
+                          setGrnStaleLabelAck(false);
+                          // Open preview for re-print of current config
+                          const built = buildGrnPostPayloadFromUi();
+                          if (!built) return;
+                          const labelLines = buildLabelLinesFromEdits(built.selectedLines, grnLineEdits).filter(
+                            (ln) => ln.print !== false
+                          );
+                          const validated = validateInitialLabelLines(labelLines);
+                          if (!validated.ok) {
+                            setGrnUiErr(validated.message);
+                            notify.warning(validated.message);
+                            return;
+                          }
+                          const previewRows = buildGrnLabelPreviewRows(labelLines);
+                          setGrnLabelPreview({
+                            mode: "prepost",
+                            lines: labelLines,
+                            previewRows,
+                            totalLabels: sumPhysicalLabelQty(labelLines),
+                          });
+                        }}
+                      >
+                        Re-preview / Reprint Labels
+                      </button>
+                      <label className="inline-flex items-center gap-1 text-[11px]">
+                        <input
+                          type="checkbox"
+                          checked={grnStaleLabelAck}
+                          onChange={(e) => setGrnStaleLabelAck(e.target.checked)}
+                        />
+                        Continue posting with mismatched labels
+                      </label>
+                    </div>
+                  </div>
+                ) : null}
                 <GrnCustomsSection
                   value={grnCustoms}
                   onChange={setGrnCustoms}
@@ -2172,17 +2420,59 @@ export default function StoreModule() {
                   <LoadingButton
                     type="button"
                     className="rounded px-3 py-2"
+                    loading={queueGrnPrepostLabelsMut.isPending}
+                    loadingText="Preparing labels..."
+                    disabled={
+                      postGrnFromPoMut.isPending ||
+                      postGrnAndPrintMut.isPending ||
+                      queueLabelsAfterGrnMut.isPending ||
+                      queueGrnPrepostLabelsMut.isPending ||
+                      Boolean(postGrnLabelDecision) ||
+                      grnTotalPending <= 0 ||
+                      !grnPoSnapshot?.header?._id ||
+                      labelSettingsData?.enabled === false
+                    }
+                    onClick={() => {
+                      setGrnUiErr("");
+                      const built = buildGrnPostPayloadFromUi();
+                      if (!built) return;
+                      const labelLines = buildLabelLinesFromEdits(built.selectedLines, grnLineEdits);
+                      const validated = validateInitialLabelLines(labelLines);
+                      if (!validated.ok) {
+                        setGrnUiErr(validated.message);
+                        notify.warning(validated.message);
+                        return;
+                      }
+                      if (sumPhysicalLabelQty(labelLines) <= 0) {
+                        notify.warning("No print-enabled lines with labels to queue.");
+                        return;
+                      }
+                      const previewRows = buildGrnLabelPreviewRows(labelLines);
+                      setGrnLabelPreview({
+                        mode: "prepost",
+                        lines: labelLines,
+                        previewRows,
+                        totalLabels: sumPhysicalLabelQty(labelLines),
+                      });
+                    }}
+                  >
+                    Preview & Print Labels
+                  </LoadingButton>
+                  <LoadingButton
+                    type="button"
+                    className="rounded px-3 py-2"
                     loading={postGrnFromPoMut.isPending}
                     loadingText="Posting GRN..."
                     disabled={
                       postGrnFromPoMut.isPending ||
                       postGrnAndPrintMut.isPending ||
                       queueLabelsAfterGrnMut.isPending ||
+                      queueGrnPrepostLabelsMut.isPending ||
                       Boolean(postGrnLabelDecision) ||
                       grnTotalPending <= 0 ||
                       !grnPoSnapshot?.header?._id
                     }
-                    onClick={() => {
+                    onClick={async () => {
                       setGrnUiErr("");
                       if (
                         postGrnFromPoMut.isPending ||
@@ -2192,10 +2482,18 @@ export default function StoreModule() {
                       ) {
                         return;
                       }
+                      if (grnStaleLabelWarnings.length && !grnStaleLabelAck) {
+                        const msg =
+                          "Label configuration changed since the last print job. Re-preview/reprint labels, or acknowledge Continue posting.";
+                        setGrnUiErr(msg);
+                        notify.warning(msg);
+                        return;
+                      }
                       const built = buildGrnPostPayloadFromUi();
                       if (!built) return;
                       const mode = resolvePostGrnLabelMode(labelSettingsData);
                       let labelContext = null;
+                      let skipLabelsBecauseAlreadyPrinted = false;
                       if (mode !== "none") {
                         const labelLines = buildLabelLinesFromEdits(built.selectedLines, grnLineEdits);
                         const validated = validateInitialLabelLines(labelLines);
@@ -2204,21 +2502,39 @@ export default function StoreModule() {
                           notify.warning(validated.message);
                           return;
                         }
-                        labelContext = {
-                          warehouseCode: GRN_DEFAULT_WAREHOUSE_CODE,
-                          selectedLineCount: built.selectedLines.length,
-                          totalLabelQty: sumPhysicalLabelQty(labelLines),
-                          labelBody: {
-                            printerCode: labelPrinterCode || undefined,
-                            copies: labelCopies,
-                            lines: labelLines,
-                          },
-                        };
+                        const fingerprint = buildGrnLabelConfigFingerprint(labelLines);
+                        const completed = await resolveCompletedGrnLabelPrint(
+                          grnLabelPrintState,
+                          fingerprint,
+                          fetchLabelJobById
+                        );
+                        if (completed.completed) {
+                          skipLabelsBecauseAlreadyPrinted = true;
+                          if (grnLabelPrintState && completed.status) {
+                            setGrnLabelPrintState((prev) =>
+                              prev ? { ...prev, status: completed.status } : prev
+                            );
+                          }
+                        } else {
+                          labelContext = {
+                            warehouseCode: GRN_DEFAULT_WAREHOUSE_CODE,
+                            selectedLineCount: built.selectedLines.length,
+                            totalLabelQty: sumPhysicalLabelQty(labelLines),
+                            labelBody: {
+                              printerCode: labelPrinterCode || undefined,
+                              copies: labelCopies,
+                              lines: labelLines,
+                              draftRef: grnDraftRef,
+                              labelConfigFingerprint: fingerprint,
+                            },
+                          };
+                        }
                       }
                       postGrnFromPoMut.mutate({
                         postBody: built.postBody,
                         mode,
                         labelContext,
+                        skipLabelsBecauseAlreadyPrinted,
                       });
                     }}
                   >
@@ -2234,12 +2550,13 @@ export default function StoreModule() {
                       postGrnFromPoMut.isPending ||
                       postGrnAndPrintMut.isPending ||
                       queueLabelsAfterGrnMut.isPending ||
+                      queueGrnPrepostLabelsMut.isPending ||
                       Boolean(postGrnLabelDecision) ||
                       grnTotalPending <= 0 ||
                       !grnPoSnapshot?.header?._id ||
                       labelSettingsData?.enabled === false
                     }
-                    onClick={() => {
+                    onClick={async () => {
                       setGrnUiErr("");
                       if (
                         postGrnAndPrintMut.isPending ||
@@ -2247,6 +2564,13 @@ export default function StoreModule() {
                         queueLabelsAfterGrnMut.isPending ||
                         postGrnLabelDecision
                       ) {
+                        return;
+                      }
+                      if (grnStaleLabelWarnings.length && !grnStaleLabelAck) {
+                        const msg =
+                          "Label configuration changed since the last print job. Re-preview/reprint labels, or acknowledge Continue posting.";
+                        setGrnUiErr(msg);
+                        notify.warning(msg);
                         return;
                       }
                       const built = buildGrnPostPayloadFromUi();
@@ -2258,13 +2582,74 @@ export default function StoreModule() {
                         notify.warning(validated.message);
                         return;
                       }
+                      const fingerprint = buildGrnLabelConfigFingerprint(labelLines);
+                      const totalLabels = sumPhysicalLabelQty(labelLines);
+                      const completed = await resolveCompletedGrnLabelPrint(
+                        grnLabelPrintState,
+                        fingerprint,
+                        fetchLabelJobById
+                      );
+                      if (completed.completed) {
+                        if (grnLabelPrintState && completed.status) {
+                          setGrnLabelPrintState((prev) =>
+                            prev ? { ...prev, status: completed.status } : prev
+                          );
+                        }
+                        const postOnly = await confirmDialog({
+                          title: "Labels already printed successfully",
+                          message:
+                            "This exact label configuration was already printed (job COMPLETED). Post GRN without reprinting?",
+                          confirmLabel: "Post without printing",
+                          cancelLabel: "More options…",
+                        });
+                        if (postOnly) {
+                          postGrnFromPoMut.mutate({
+                            postBody: built.postBody,
+                            mode: "none",
+                            labelContext: null,
+                            skipLabelsBecauseAlreadyPrinted: true,
+                          });
+                          return;
+                        }
+                        const reprint = await confirmDialog({
+                          title: "Reprint labels?",
+                          message:
+                            "Queue another set of the same labels after posting? This creates an additional print job (explicit reprint).",
+                          confirmLabel: "Post GRN & Reprint",
+                          cancelLabel: "Cancel",
+                        });
+                        if (!reprint) return;
+                        postGrnAndPrintMut.mutate({
+                          postBody: built.postBody,
+                          labelBody: {
+                            printerCode: labelPrinterCode || undefined,
+                            copies: labelCopies,
+                            lines: labelLines,
+                            draftRef: grnDraftRef,
+                            labelConfigFingerprint: fingerprint,
+                            // Unique key so this is an explicit additional job, not the initial idempotent enqueue.
+                            idempotencyKey: `grn:reprint:${Date.now()}:${fingerprint.slice(0, 24)}`.slice(0, 120),
+                          },
+                        });
+                        return;
+                      }
+                      if (totalLabels >= GRN_LABEL_LARGE_PRINT_CONFIRM_AT) {
+                        const okLarge = await confirmDialog({
+                          title: "Large label print",
+                          message: `You are about to queue ${totalLabels} physical labels after posting. Continue?`,
+                          confirmLabel: "Post & Print",
+                          cancelLabel: "Cancel",
+                        });
+                        if (!okLarge) return;
+                      }
                       postGrnAndPrintMut.mutate({
                         postBody: built.postBody,
                         labelBody: {
                           printerCode: labelPrinterCode || undefined,
                           copies: labelCopies,
                           lines: labelLines,
-                          // Key finalized after GRN number is known (mutationFn).
+                          draftRef: grnDraftRef,
+                          labelConfigFingerprint: fingerprint,
                         },
                       });
                     }}
@@ -5114,6 +5499,51 @@ export default function StoreModule() {
           notify.info(
             "Label printing skipped. Labels can be printed later from the GRN or Label Queue."
           );
+        }}
+      />
+
+      <GrnLabelPreviewModal
+        open={Boolean(grnLabelPreview)}
+        title="Preview & Print Labels"
+        draftRef={grnDraftRef}
+        poNo={grnPoSnapshot?.header?.poNo || grnPoSnapshot?.header?.poNumber || ""}
+        lines={grnLabelPreview?.previewRows || []}
+        totalLabels={grnLabelPreview?.totalLabels || 0}
+        isPrinting={queueGrnPrepostLabelsMut.isPending}
+        staleWarning={
+          grnStaleLabelWarnings.length
+            ? grnStaleLabelWarnings.map((w) => w.message).join(" ")
+            : ""
+        }
+        onCancel={() => {
+          if (!queueGrnPrepostLabelsMut.isPending) setGrnLabelPreview(null);
+        }}
+        onPrint={async () => {
+          if (!grnLabelPreview?.lines?.length || queueGrnPrepostLabelsMut.isPending) return;
+          const total = grnLabelPreview.totalLabels || 0;
+          if (total >= GRN_LABEL_LARGE_PRINT_CONFIRM_AT) {
+            const okLarge = await confirmDialog({
+              title: "Large label print",
+              message: `You are about to queue ${total} physical labels. Continue?`,
+              confirmLabel: "Queue labels",
+              cancelLabel: "Cancel",
+            });
+            if (!okLarge) return;
+          }
+          const fingerprint = buildGrnLabelConfigFingerprint(grnLabelPreview.lines);
+          queueGrnPrepostLabelsMut.mutate({
+            totalLabelQty: total,
+            labelBody: {
+              draftRef: grnDraftRef,
+              poNo: grnPoSnapshot?.header?.poNo || grnPoSnapshot?.header?.poNumber || "",
+              warehouseCode: GRN_DEFAULT_WAREHOUSE_CODE,
+              printerCode: labelPrinterCode || undefined,
+              copies: labelCopies,
+              lines: grnLabelPreview.lines,
+              labelConfigFingerprint: fingerprint,
+              idempotencyKey: buildGrnPrepostIdempotencyKey(grnDraftRef, fingerprint),
+            },
+          });
         }}
       />
 

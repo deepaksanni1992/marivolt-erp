@@ -216,6 +216,16 @@ run("Each physical label displays Qty: 1 UOM (unit-label semantics)", () => {
   assert.ok(job.includes("Qty: 1 PCS"));
 });
 
+run("Distributed GRN labels show face qty remainder (10+10+5)", () => {
+  const job = buildJobTspl(
+    [{ article: "W1", uom: "PCS", qty: 25, labelQty: 3, labelDistribution: [10, 10, 5] }],
+    { copies: 1 }
+  );
+  assert.strictEqual((job.match(/PRINT 1,1/g) || []).length, 3);
+  assert.strictEqual((job.match(/Qty: 10 PCS/g) || []).length, 2);
+  assert.strictEqual((job.match(/Qty: 5 PCS/g) || []).length, 1);
+});
+
 run("203 and 300 DPI dot dimensions for 100×50 mm", () => {
   const d203 = labelDotDimensions(203);
   assert.ok(Math.abs(d203.widthDots - 800) <= 2, `203 width ${d203.widthDots}`);

@@ -25,6 +25,12 @@ const labelJobLineSchema = new mongoose.Schema(
     location: { type: String, default: "", trim: true },
     barcodeValue: { type: String, default: "", trim: true },
     labelQty: { type: Number, default: 1, min: 0 },
+    /** Qty represented on each physical label (primary chunk size). Additive. */
+    qtyPerLabel: { type: Number, default: 0, min: 0 },
+    /** Number of physical labels for this line. Additive. */
+    labelCount: { type: Number, default: 0, min: 0 },
+    /** Actual face quantities sent to printer, e.g. [10,10,5]. Additive for audit/reprint. */
+    labelDistribution: { type: [Number], default: undefined },
     poLineId: { type: String, default: "" },
     /** Packing customer sticker fields (additive; unused by GRN). */
     customerName: { type: String, default: "", trim: true },
@@ -55,11 +61,17 @@ const labelPrintJobSchema = new mongoose.Schema(
     jobNo: { type: String, required: true, trim: true, uppercase: true },
     sourceType: {
       type: String,
-      enum: ["GRN", "STOCK", "MANUAL", "PACKING", "CUSTOM_PACKING"],
+      enum: ["GRN", "GRN_PREPOST", "STOCK", "MANUAL", "PACKING", "CUSTOM_PACKING"],
       default: "GRN",
     },
     sourceId: { type: mongoose.Schema.Types.ObjectId, default: null },
     sourceNo: { type: String, default: "", trim: true, uppercase: true, index: true },
+    /** Pre-GRN draft session reference (GRN-DRAFT-…). Additive. */
+    draftRef: { type: String, default: "", trim: true, uppercase: true, index: true },
+    /** Linked final GRN number after post (pre-post jobs). Additive; never rewrite history destructively. */
+    linkedGrnNo: { type: String, default: "", trim: true, uppercase: true },
+    /** Fingerprint of label config used for stale detection / idempotency. */
+    labelConfigFingerprint: { type: String, default: "", trim: true },
     warehouseCode: { type: String, default: "", trim: true, uppercase: true },
     printerConfigId: { type: mongoose.Schema.Types.ObjectId, ref: "PrinterConfig", default: null },
     agentId: { type: String, default: "", trim: true, uppercase: true, index: true },

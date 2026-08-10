@@ -322,10 +322,99 @@ export async function testConnection(req, res) {
   }
 }
 
+export async function linkGrnPrepost(req, res) {
+  try {
+    const body = req.body || {};
+    const result = await labelService.linkPrepostJobsToGrn(
+      req.companyId,
+      body.draftRef || body.draftNo,
+      body.grnNo
+    );
+    res.json({ success: true, ...result });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
 export async function createFromGrn(req, res) {
   try {
     const job = await labelService.createJobsFromGrn(req, req.body || {});
     res.status(201).json({ success: true, job });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function createFromGrnPrepost(req, res) {
+  try {
+    const job = await labelService.createJobsFromGrnPrepost(req, req.body || {});
+    res.status(201).json({ success: true, job });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+/** Preview-only: validates distribution, returns face quantities. No job, no stock. */
+export async function previewFromGrnPrepost(req, res) {
+  try {
+    const body = req.body || {};
+    const linesIn = Array.isArray(body.lines) ? body.lines : [];
+    const {
+      validateGrnLabelLinePrintConfig,
+      formatLabelDistribution,
+      sumDistribution,
+    } = await import("../utils/grnLabelDistribution.js");
+
+    const previewLines = [];
+    let totalLabels = 0;
+    for (const sel of linesIn) {
+      if (sel?.print === false) continue;
+      const receivedQty = Number(sel.receivedQty ?? sel.grnQty) || 0;
+      const validated = validateGrnLabelLinePrintConfig({
+        print: true,
+        article: sel.article,
+        receivedQty,
+        qtyPerLabel: sel.qtyPerLabel ?? sel.labelQtyPerLabel,
+        labelCount: sel.labelCount ?? sel.noOfLabels,
+        labelDistribution: sel.labelDistribution,
+      });
+      if (!validated.ok) {
+        const err = new Error(validated.message);
+        err.statusCode = 400;
+        err.code = "LABEL_DISTRIBUTION_INVALID";
+        throw err;
+      }
+      const dist = validated.distribution;
+      totalLabels += dist.length;
+      previewLines.push({
+        article: String(sel.article || "").toUpperCase(),
+        poLineId: sel.poLineId != null ? String(sel.poLineId) : "",
+        grnQty: receivedQty,
+        qtyPerLabel: validated.qtyPerLabel,
+        labelCount: dist.length,
+        labelDistribution: dist,
+        distributionText: formatLabelDistribution(dist),
+        labels: dist.map((qty, idx) => ({ index: idx + 1, qty })),
+      });
+    }
+    if (!previewLines.length) {
+      const err = new Error("No label lines selected for printing");
+      err.statusCode = 400;
+      err.code = "LABEL_NO_LINES";
+      throw err;
+    }
+    res.json({
+      success: true,
+      draftRef: body.draftRef || "",
+      poNo: body.poNo || "",
+      totalLabels,
+      lines: previewLines,
+      sumCheck: previewLines.map((ln) => ({
+        article: ln.article,
+        sum: sumDistribution(ln.labelDistribution),
+        grnQty: ln.grnQty,
+      })),
+    });
   } catch (err) {
     sendErr(res, err);
   }
