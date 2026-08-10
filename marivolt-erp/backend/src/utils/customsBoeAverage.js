@@ -265,3 +265,174 @@ export function compareSalesVsBoeCustomsUnit({
     variancePct,
   };
 }
+
+/**
+ * Per-line customs qty/value economics for stock display (uses stored totalValue when present).
+ */
+export function computeLotItemCustomsEconomics(item = {}) {
+  const qtyImported = Number(item.qtyImported) || 0;
+  const qtyAvailable = Number(item.qtyAvailable) || 0;
+  const qtyConsumed = Number(item.qtyConsumed) || 0;
+  const unit = Number(item.customsUnitValue ?? item.unitPrice) || 0;
+  const customsQtyImported = roundCustomsQty(Number(item.customsQtyImported) || qtyImported);
+  const remainingCustomsQty =
+    qtyImported > 0
+      ? roundCustomsQty(Math.max(0, customsQtyImported * (qtyAvailable / qtyImported)))
+      : roundCustomsQty(Math.max(0, customsQtyImported - qtyConsumed));
+  const exportedCustomsQty = roundCustomsQty(Math.max(0, customsQtyImported - remainingCustomsQty));
+  const totalValue =
+    item.totalValue != null && item.totalValue !== ""
+      ? roundCustomsMoney(item.totalValue)
+      : roundCustomsMoney(customsQtyImported * unit);
+  const consumedCustomsValue =
+    qtyImported > 0
+      ? roundCustomsMoney(totalValue * (qtyConsumed / qtyImported))
+      : roundCustomsMoney(exportedCustomsQty * unit);
+  const remainingCustomsValue = roundCustomsMoney(totalValue - consumedCustomsValue);
+
+  return {
+    customsQtyImported,
+    exportedCustomsQty,
+    remainingCustomsQty,
+    customsUnitValue: unit,
+    importedCustomsValue: totalValue,
+    consumedCustomsValue,
+    remainingCustomsValue,
+    physicalQtyImported: qtyImported,
+    physicalQtyExported: qtyConsumed,
+    physicalQtyRemaining: qtyAvailable,
+  };
+}
+
+/**
+ * Build one Customs Stock BOE/lot group. Group key is always customsLotId (never BOE number alone).
+ */
+export function buildCustomsLotStockGroup(lot = {}, items = [], { srNo = 1, matchArticle = "" } = {}) {
+  const valuationMethod = resolveValuationMethod(lot.valuationMethod || items[0]?.valuationMethod);
+  const isBoeAvg = isBoeAverageValuation(valuationMethod);
+  const lotCancelled =
+    String(lot.status || "").toUpperCase() === "CANCELLED" ||
+    (items.length > 0 && items.every((i) => String(i.status || "").toUpperCase() === "CANCELLED"));
+
+  const articles = (items || []).map((item) => {
+    const eco = computeLotItemCustomsEconomics(item);
+    const articleMatch =
+      matchArticle &&
+      String(item.articleNumber || "")
+        .toUpperCase()
+        .includes(String(matchArticle).toUpperCase());
+    return {
+      _id: item._id,
+      customsLotItemId: item._id,
+      articleNumber: item.articleNumber || "",
+      partNumber: item.partNumber || "",
+      partName: item.partName || item.description || "",
+      description: item.description || "",
+      hsCode: item.hsCode || "",
+      countryOfOrigin: item.countryOfOrigin || "",
+      grnId: item.grnId || lot.grnId || null,
+      grnNo: item.grnNo || lot.grnNo || "",
+      location: item.location || item.remarks1 || "",
+      status: item.status || "",
+      currency: item.currency || lot.currency || "",
+      matchHighlight: Boolean(articleMatch),
+      ...eco,
+      valuationMethod: resolveValuationMethod(item.valuationMethod || valuationMethod),
+    };
+  });
+
+  const importedCustomsQty = roundCustomsQty(
+    articles.reduce((s, a) => s + (Number(a.customsQtyImported) || 0), 0),
+  );
+  const remainingCustomsQty = roundCustomsQty(
+    articles.reduce((s, a) => s + (Number(a.remainingCustomsQty) || 0), 0),
+  );
+  const exportedCustomsQty = roundCustomsQty(
+    Math.max(0, importedCustomsQty - remainingCustomsQty),
+  );
+  const consumedCustomsValue = roundCustomsMoney(
+    articles.reduce((s, a) => s + (Number(a.consumedCustomsValue) || 0), 0),
+  );
+  const remainingCustomsValue = roundCustomsMoney(
+    articles.reduce((s, a) => s + (Number(a.remainingCustomsValue) || 0), 0),
+  );
+
+  const declaredQty = isBoeAvg ? Number(lot.boeDeclaredQty) || 0 : null;
+  const declaredValue = isBoeAvg ? roundCustomsMoney(lot.boeDeclaredValue) : null;
+  const customsUnitValue = isBoeAvg
+    ? Number(lot.customsUnitValue) || Number(articles[0]?.customsUnitValue) || 0
+    : null;
+
+  let status = "OPEN";
+  if (lotCancelled) status = "CANCELLED";
+  else if (remainingCustomsQty <= 1e-9) status = "CLOSED";
+
+  const qtyInvariantOk =
+    !isBoeAvg ||
+    declaredQty == null ||
+    declaredQty <= 0 ||
+    Math.abs(roundCustomsQty(exportedCustomsQty + remainingCustomsQty) - roundCustomsQty(importedCustomsQty)) <=
+      1e-6;
+  const valueInvariantOk =
+    !isBoeAvg ||
+    declaredValue == null ||
+    Math.abs(
+      roundCustomsMoney(consumedCustomsValue + remainingCustomsValue) - roundCustomsMoney(declaredValue),
+    ) <= 0.02;
+
+  return {
+    srNo,
+    groupKey: String(lot._id || ""),
+    customsLotId: lot._id,
+    customsLotRef: lot.customsLotRef || "",
+    companyId: lot.companyId,
+    companyCode: lot.companyCode || "",
+    valuationMethod,
+    isBoeAverage: isBoeAvg,
+    boeNumber: lot.boeNumber || "",
+    boeDate: lot.boeDate || null,
+    blNumber: lot.blNumber || "",
+    awbNumber: lot.awbNumber || "",
+    supplier: lot.supplierName || "",
+    supplierInvoiceNumber: lot.supplierInvoiceNumber || "",
+    supplierInvoiceDate: lot.supplierInvoiceDate || null,
+    receivedDate: lot.receivedDate || null,
+    currency: lot.currency || articles[0]?.currency || "USD",
+    customsUom: lot.customsUom || (isBoeAvg ? "PCS" : ""),
+    grossWeightKg: Number(lot.grossWeightKg) || 0,
+    netWeightKg: Number(lot.netWeightKg) || 0,
+    grnId: lot.grnId || null,
+    grnNo: lot.grnNo || "",
+    status,
+    lotStatus: lot.status || "",
+    documents: {
+      blDocumentId: lot.documents?.blDocumentId || null,
+      supplierInvoiceDocumentId: lot.documents?.supplierInvoiceDocumentId || null,
+    },
+    boeSummary: {
+      declaredQty: isBoeAvg ? declaredQty : null,
+      exportedQty: exportedCustomsQty,
+      remainingQty: remainingCustomsQty,
+      importedQty: importedCustomsQty,
+      declaredValue: isBoeAvg ? declaredValue : null,
+      customsUnitValue: isBoeAvg ? customsUnitValue : null,
+      consumedValue: consumedCustomsValue,
+      remainingValue: remainingCustomsValue,
+      currency: lot.currency || "USD",
+      customsUom: lot.customsUom || "",
+      grossWeightKg: Number(lot.grossWeightKg) || 0,
+      netWeightKg: Number(lot.netWeightKg) || 0,
+    },
+    reconciliation: {
+      qtyInvariantOk,
+      valueInvariantOk,
+      warning:
+        isBoeAvg && (!qtyInvariantOk || !valueInvariantOk)
+          ? "BOE qty/value reconciliation mismatch — review Customs Ledger / Reconciliation."
+          : "",
+    },
+    articleCount: articles.length,
+    articles,
+    hasArticleMatch: articles.some((a) => a.matchHighlight),
+  };
+}

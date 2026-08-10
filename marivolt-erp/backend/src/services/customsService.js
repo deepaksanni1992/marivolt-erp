@@ -19,6 +19,9 @@ import {
   CUSTOMS_VALUATION_BOE_AVERAGE,
   roundCustomsMoney,
   roundCustomsQty,
+  buildCustomsLotStockGroup,
+  computeLotItemCustomsEconomics,
+  resolveValuationMethod,
 } from "../utils/customsBoeAverage.js";
 import {
   compareCustomsFifoOrder,
@@ -871,22 +874,9 @@ async function buildCustomsStockItemQuery(companyId, filters = {}) {
 }
 
 export function mapCustomsStockRow(item, lot, srNo) {
-  const qtyImported = Number(item.qtyImported) || 0;
-  const qtyAvailable = Number(item.qtyAvailable) || 0;
-  const qtyConsumed = Number(item.qtyConsumed) || 0;
-  const unitPrice = Number(item.customsUnitValue ?? item.unitPrice) || 0;
-  const totalValue = Number(item.totalValue) || qtyImported * unitPrice;
-  const valuationMethod = item.valuationMethod || lot?.valuationMethod || "LEGACY_LINE_VALUE";
-  const customsQtyImported = Number(item.customsQtyImported) || qtyImported;
-  const remainingCustomsQty =
-    qtyImported > 0
-      ? Math.max(0, customsQtyImported * (qtyAvailable / qtyImported))
-      : Math.max(0, customsQtyImported - qtyConsumed);
-  const consumedCustomsValue =
-    qtyImported > 0
-      ? Math.round((totalValue * (qtyConsumed / qtyImported) + Number.EPSILON) * 100) / 100
-      : Math.round((qtyConsumed * unitPrice + Number.EPSILON) * 100) / 100;
-  const remainingCustomsValue = Math.round((totalValue - consumedCustomsValue + Number.EPSILON) * 100) / 100;
+  const eco = computeLotItemCustomsEconomics(item);
+  const valuationMethod = resolveValuationMethod(item.valuationMethod || lot?.valuationMethod);
+  const unitPrice = eco.customsUnitValue;
 
   return {
     srNo,
@@ -895,6 +885,7 @@ export function mapCustomsStockRow(item, lot, srNo) {
     customsLotRef: item.customsLotRef || lot?.customsLotRef || "",
     companyCode: item.companyCode || lot?.companyCode || "",
     boeNumber: item.boeNumber || lot?.boeNumber || "",
+    boeDate: item.boeDate || lot?.boeDate || null,
     awbNumber: item.awbNumber || lot?.awbNumber || "",
     blNumber: item.blNumber || lot?.blNumber || "",
     date: item.supplierInvoiceDate || lot?.supplierInvoiceDate || null,
@@ -912,19 +903,23 @@ export function mapCustomsStockRow(item, lot, srNo) {
     boeDeclaredQty: Number(lot?.boeDeclaredQty) || 0,
     boeDeclaredValue: Number(lot?.boeDeclaredValue) || 0,
     customsUom: lot?.customsUom || "",
-    customsQtyImported,
-    remainingCustomsQty,
-    qtyImported,
-    qtyConsumed,
-    qtyAvailable,
-    exportedQty: qtyConsumed,
-    remainingQty: qtyAvailable,
-    consumedCustomsValue,
-    remainingCustomsValue,
+    grossWeightKg: Number(lot?.grossWeightKg) || 0,
+    netWeightKg: Number(lot?.netWeightKg) || 0,
+    customsQtyImported: eco.customsQtyImported,
+    remainingCustomsQty: eco.remainingCustomsQty,
+    exportedCustomsQty: eco.exportedCustomsQty,
+    qtyImported: eco.physicalQtyImported,
+    qtyConsumed: eco.physicalQtyExported,
+    qtyAvailable: eco.physicalQtyRemaining,
+    exportedQty: eco.physicalQtyExported,
+    remainingQty: eco.physicalQtyRemaining,
+    importedCustomsValue: eco.importedCustomsValue,
+    consumedCustomsValue: eco.consumedCustomsValue,
+    remainingCustomsValue: eco.remainingCustomsValue,
     weightKg: Number(item.weightKg) || 0,
-    totalValue,
-    customsStock: qtyImported,
-    customsStockBalance: qtyAvailable,
+    totalValue: eco.importedCustomsValue,
+    customsStock: eco.physicalQtyImported,
+    customsStockBalance: eco.physicalQtyRemaining,
     remarks1: item.remarks1 || "",
     remarks2: item.remarks2 || "",
     status: item.status || "IN_STOCK",
@@ -957,7 +952,7 @@ export async function listCustomsStockPage(companyId, filters = {}, paging = {})
   const lots = lotIds.length
     ? await CustomsLot.find({ _id: { $in: lotIds } })
         .select(
-          "supplierName supplierInvoiceNumber supplierInvoiceDate countryOfOrigin currency boeNumber blNumber awbNumber grnId grnNo customsLotRef companyCode documents valuationMethod boeDeclaredQty boeDeclaredValue customsUnitValue customsUom"
+          "supplierName supplierInvoiceNumber supplierInvoiceDate countryOfOrigin currency boeNumber boeDate blNumber awbNumber grnId grnNo customsLotRef companyCode documents valuationMethod boeDeclaredQty boeDeclaredValue customsUnitValue customsUom grossWeightKg netWeightKg status receivedDate"
         )
         .lean()
     : [];
@@ -968,6 +963,143 @@ export async function listCustomsStockPage(companyId, filters = {}, paging = {})
     total,
     page,
     limit,
+    view: "article",
+  };
+}
+
+/**
+ * Paginated Customs Stock grouped by CustomsLot (authoritative BOE economics container).
+ * Never merges lots that share only a BOE number string.
+ */
+export async function listCustomsStockGroupedPage(companyId, filters = {}, paging = {}) {
+  const page = Math.max(1, Number(paging.page) || 1);
+  const limit = Math.min(Number(paging.limit) || 50, Number(paging.maxLimit) || 200);
+  const skip = (page - 1) * limit;
+
+  const itemQuery = await buildCustomsStockItemQuery(companyId, {
+    ...filters,
+    // Group status OPEN/CLOSED/CANCELLED applied after build; item status filters still use item fields.
+    status:
+      ["OPEN", "CLOSED"].includes(String(filters.status || "").toUpperCase())
+        ? undefined
+        : filters.status,
+  });
+
+  const matchingLotIds = await CustomsLotItem.distinct("customsLotId", itemQuery);
+  if (!matchingLotIds.length) {
+    return { groups: [], items: [], total: 0, page, limit, view: "boe" };
+  }
+
+  const lotFilter = withCompanyId(companyId, { _id: { $in: matchingLotIds } });
+  if (filters.companyCode) lotFilter.companyCode = upper(filters.companyCode);
+
+  // Fetch candidate lots then filter by derived OPEN/CLOSED after grouping when needed.
+  const groupStatus = String(filters.status || "").toUpperCase();
+  const needsDerivedStatus = groupStatus === "OPEN" || groupStatus === "CLOSED";
+
+  let lots;
+  let total;
+  if (needsDerivedStatus || groupStatus === "CANCELLED") {
+    const allLots = await CustomsLot.find(lotFilter)
+      .sort({ boeDate: -1, supplierInvoiceDate: -1, createdAt: -1 })
+      .lean();
+    const allLotIds = allLots.map((l) => l._id);
+    const allItems = allLotIds.length
+      ? await CustomsLotItem.find(withCompanyId(companyId, { customsLotId: { $in: allLotIds } })).lean()
+      : [];
+    const byLot = new Map();
+    for (const it of allItems) {
+      const k = String(it.customsLotId);
+      if (!byLot.has(k)) byLot.set(k, []);
+      byLot.get(k).push(it);
+    }
+    const matchHint = t(filters.articleNumber || filters.search);
+    let groups = allLots.map((lot, idx) =>
+      buildCustomsLotStockGroup(lot, byLot.get(String(lot._id)) || [], {
+        srNo: idx + 1,
+        matchArticle: matchHint,
+      }),
+    );
+    if (groupStatus === "CANCELLED") {
+      groups = groups.filter((g) => g.status === "CANCELLED");
+    } else if (groupStatus === "OPEN") {
+      groups = groups.filter((g) => g.status === "OPEN");
+    } else if (groupStatus === "CLOSED") {
+      groups = groups.filter((g) => g.status === "CLOSED");
+    }
+    total = groups.length;
+    const pageGroups = groups.slice(skip, skip + limit).map((g, i) => ({ ...g, srNo: skip + i + 1 }));
+    return {
+      groups: pageGroups,
+      items: pageGroups.flatMap((g) =>
+        (g.articles || []).map((a, ai) => ({
+          ...a,
+          customsLotId: g.customsLotId,
+          boeNumber: g.boeNumber,
+          supplier: g.supplier,
+          valuationMethod: g.valuationMethod,
+          currency: g.currency,
+          boeDeclaredQty: g.boeSummary?.declaredQty,
+          boeDeclaredValue: g.boeSummary?.declaredValue,
+          customsUnitValue: a.customsUnitValue ?? g.boeSummary?.customsUnitValue,
+        })),
+      ),
+      total,
+      page,
+      limit,
+      view: "boe",
+    };
+  }
+
+  [lots, total] = await Promise.all([
+    CustomsLot.find(lotFilter)
+      .sort({ boeDate: -1, supplierInvoiceDate: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    CustomsLot.countDocuments(lotFilter),
+  ]);
+
+  const pageLotIds = lots.map((l) => l._id);
+  const items = pageLotIds.length
+    ? await CustomsLotItem.find(withCompanyId(companyId, { customsLotId: { $in: pageLotIds } })).lean()
+    : [];
+  const byLot = new Map();
+  for (const it of items) {
+    const k = String(it.customsLotId);
+    if (!byLot.has(k)) byLot.set(k, []);
+    byLot.get(k).push(it);
+  }
+
+  const matchHint = t(filters.articleNumber || filters.search);
+  const groups = lots.map((lot, index) =>
+    buildCustomsLotStockGroup(lot, byLot.get(String(lot._id)) || [], {
+      srNo: skip + index + 1,
+      matchArticle: matchHint,
+    }),
+  );
+
+  return {
+    groups,
+    // Additive flat projection for clients that still read items
+    items: groups.flatMap((g) =>
+      (g.articles || []).map((a) => ({
+        ...a,
+        customsLotId: g.customsLotId,
+        boeNumber: g.boeNumber,
+        supplier: g.supplier,
+        valuationMethod: g.valuationMethod,
+        currency: g.currency,
+        boeDeclaredQty: g.boeSummary?.declaredQty,
+        boeDeclaredValue: g.boeSummary?.declaredValue,
+        customsUnitValue: a.customsUnitValue ?? g.boeSummary?.customsUnitValue,
+        documents: g.documents,
+      })),
+    ),
+    total,
+    page,
+    limit,
+    view: "boe",
   };
 }
 

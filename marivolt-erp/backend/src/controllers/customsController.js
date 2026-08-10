@@ -6,6 +6,7 @@ import {
   customsWithCompanyId,
   listCustomsLedgerPage,
   listCustomsStockPage,
+  listCustomsStockGroupedPage,
 } from "../services/customsService.js";
 import {
   getCustomsReconciliationDetail,
@@ -79,7 +80,13 @@ export async function getCustomsStock(req, res) {
   try {
     if (!isCustomsEnabled()) return disabled(res);
     const paging = parsePaging(req);
-    const result = await listCustomsStockPage(req.companyId, stockFilters(req), paging);
+    const filters = stockFilters(req);
+    const view = String(req.query.view || "boe").toLowerCase();
+    // CSV / article flat list: view=article. Primary UI: view=boe (CustomsLot groups).
+    const result =
+      view === "article"
+        ? await listCustomsStockPage(req.companyId, filters, paging)
+        : await listCustomsStockGroupedPage(req.companyId, filters, paging);
     res.json({
       enabled: true,
       companyCode: req.companyCode || "",
