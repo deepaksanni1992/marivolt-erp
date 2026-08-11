@@ -155,7 +155,7 @@ export function resolveLineCustomsQuantities({
       return {
         ok: false,
         lines: mapped,
-        message: `Sum of line customsQty (${sum}) must equal BOE Declared Customs Qty (${declared}).`,
+        message: `Customs Qty total ${sum} does not match BOE Declared Qty ${declared}.`,
       };
     }
     return { ok: true, lines: mapped, mode: "EXPLICIT" };

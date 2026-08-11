@@ -37,7 +37,6 @@ function trim(v) {
 
 function hasLineCustomsFields(ed = {}) {
   return [
-    ed.customsReceivedDate,
     ed.customsBoeNumber,
     ed.customsBoeDate,
     ed.customsBlNumber,
@@ -55,38 +54,96 @@ function hasLineCustomsFields(ed = {}) {
   ].some((f) => trim(f));
 }
 
-/** True when user entered any customs field or uploaded a document. */
-export function hasGrnCustomsInput(customs) {
-  if (!customs || typeof customs !== "object") return false;
-  const headerFields = [
-    customs.receivedDate,
-    customs.boeNumber,
-    customs.boeDate,
-    customs.blNumber,
-    customs.awbNumber,
-    customs.supplierInvoiceNumber,
-    customs.supplierInvoiceDate,
-    customs.countryOfOrigin,
-    customs.hsCode,
-    customs.customsCurrency,
-    customs.currency,
-    customs.unitWeightKg,
-    customs.weightKg,
-    customs.exchangeRateToAED,
-    customs.customsRemarks,
-    customs.remarks,
-    customs.boeDeclaredQty,
-    customs.boeDeclaredValue,
-    customs.customsUom,
-    customs.grossWeightKg,
-    customs.netWeightKg,
+/**
+ * Customs capture is active only when the user entered meaningful Customs data.
+ * Auto-filled Received Date and default Customs UOM PCS do not activate capture.
+ */
+export function isCustomsCaptureActive({ header = {}, lineOverrides = [], documents = null } = {}) {
+  const h = header && typeof header === "object" ? header : {};
+  const headerKeys = [
+    "boeNumber",
+    "boeDate",
+    "blNumber",
+    "awbNumber",
+    "supplierInvoiceNumber",
+    "supplierInvoiceDate",
+    "countryOfOrigin",
+    "hsCode",
+    "customsCurrency",
+    "currency",
+    "exchangeRateToAED",
+    "boeDeclaredQty",
+    "boeDeclaredValue",
+    "grossWeightKg",
+    "netWeightKg",
+    "unitWeightKg",
+    "weightKg",
+    "customsRemarks",
+    "remarks",
   ];
-  if (headerFields.some((f) => trim(f))) return true;
+  for (const key of headerKeys) {
+    if (trim(h[key])) return true;
+  }
+  const uom = trim(h.customsUom).toUpperCase();
+  if (uom && uom !== "PCS") return true;
 
-  const docs = customs.documents || {};
-  if (docs.blCopy?._id || docs.supplierInvoiceCopy?._id || docs.packingListCopy?._id) return true;
-  if (Array.isArray(docs.otherDocuments) && docs.otherDocuments.some((d) => d?._id)) return true;
+  const docs = documents || h.documents || {};
+  if (docs.blCopy?._id || docs.blDocumentId || docs.supplierInvoiceCopy?._id || docs.supplierInvoiceDocumentId) {
+    return true;
+  }
+  if (docs.packingListCopy?._id || docs.packingListDocumentId) return true;
+  const others = docs.otherDocuments || docs.otherDocumentIds || [];
+  if (Array.isArray(others) && others.some((d) => d && (d._id || d))) return true;
+
+  const rows = Array.isArray(lineOverrides)
+    ? lineOverrides
+    : lineOverrides instanceof Map
+      ? [...lineOverrides.values()]
+      : [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    if (hasLineCustomsFields(row)) return true;
+    if (
+      [
+        row.hsCode,
+        row.countryOfOrigin,
+        row.customsQty,
+        row.boeNumber,
+        row.customsCurrency,
+        row.exchangeRateToAED,
+      ].some((f) => trim(f))
+    ) {
+      return true;
+    }
+  }
   return false;
+}
+
+/** True when user entered meaningful customs fields or uploaded a document. */
+export function hasGrnCustomsInput(customs, lineEdits = null, selectedLines = null) {
+  if (!customs || typeof customs !== "object") return false;
+  const lineOverrides = [];
+  if (lineEdits && selectedLines) {
+    for (const ln of selectedLines) {
+      const id = ln.poLineId != null ? String(ln.poLineId) : "";
+      if (id) lineOverrides.push(lineEdits[id] || {});
+    }
+  }
+  return isCustomsCaptureActive({ header: customs, lineOverrides, documents: customs.documents });
+}
+
+export function formatGrnCustomsValidationDisplay({ headerErrors = [], lineErrors = [] } = {}) {
+  const parts = [];
+  if (headerErrors.length) {
+    parts.push("CUSTOMS INFORMATION INCOMPLETE");
+    parts.push(...headerErrors.map((m) => `• ${m}`));
+  }
+  if (lineErrors.length) {
+    if (parts.length) parts.push("");
+    parts.push("ARTICLE ISSUES");
+    parts.push(...lineErrors.map((m) => `• ${m}`));
+  }
+  return parts.join("\n");
 }
 
 /** Preview BOE customs unit value (UI only — backend recalculates). */
@@ -102,12 +159,8 @@ export function previewBoeCustomsUnitValue(declaredValue, declaredQty) {
  * Does NOT send customsUnitPrice / customsUnitValue as source of truth.
  */
 export function buildGrnCustomsPayload(customs, lineEdits, selectedLines, defaultCurrency = "USD") {
-  if (!hasGrnCustomsInput(customs)) {
-    const anyLineCustoms = (selectedLines || []).some((ln) => {
-      const id = ln.poLineId != null ? String(ln.poLineId) : "";
-      return hasLineCustomsFields(lineEdits[id]);
-    });
-    if (!anyLineCustoms) return null;
+  if (!hasGrnCustomsInput(customs, lineEdits, selectedLines)) {
+    return null;
   }
 
   const headerCurrency =

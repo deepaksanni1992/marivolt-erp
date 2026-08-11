@@ -1,11 +1,11 @@
 /**
- * Customs GRN CSV — single supported template / parser (Phase 2).
+ * Customs GRN CSV — download template + import parser.
  * Preview/mapping only; does not post GRN or create customs lots.
  */
 
 export const INVALID_GRN_TEMPLATE = "INVALID_GRN_TEMPLATE";
 
-/** Official export/import header labels — exact order required. */
+/** Official generated export/import header labels. */
 export const GRN_CSV_HEADERS = Object.freeze([
   "PO Line ID",
   "Article",
@@ -17,20 +17,95 @@ export const GRN_CSV_HEADERS = Object.freeze([
   "Remarks",
   "BOE Number",
   "BOE Date",
-  "AWB No. / BL No.",
+  "BL Number",
+  "AWB Number",
   "Received Date",
-  "Supplier Invoice No.",
+  "Supplier Invoice Number",
   "Supplier Invoice Date",
-  "Country Of Origin",
-  "HS Code",
-  "Unit Weight",
-  "Weight",
   "BOE Declared Qty",
   "Customs UOM",
   "BOE Declared Value",
-  "Currency",
-  "Exchange Rate",
+  "Customs Currency",
+  "Exchange Rate to AED",
+  "Gross Weight KG",
+  "Net Weight KG",
+  "Country of Origin",
+  "HS Code",
+  "Unit Weight KG",
+  "Customs Qty",
+  "Customs Remarks",
 ]);
+
+/** Shipment/BOE fields: first nonblank wins; later blanks inherit; conflicts reject. */
+export const GRN_CSV_SHIPMENT_FIELDS = Object.freeze([
+  "boeNumber",
+  "boeDate",
+  "blNumber",
+  "awbNumber",
+  "receivedDate",
+  "supplierInvoiceNumber",
+  "supplierInvoiceDate",
+  "boeDeclaredQty",
+  "customsUom",
+  "boeDeclaredValue",
+  "customsCurrency",
+  "exchangeRateToAED",
+  "grossWeightKg",
+  "netWeightKg",
+]);
+
+const CSV_FIELD_ALIASES = Object.freeze({
+  polineid: "poLineId",
+  article: "article",
+  description: "description",
+  spn: "spn",
+  uom: "uom",
+  grnqty: "grnQty",
+  location: "location",
+  remarks: "remarks",
+  boenumber: "boeNumber",
+  boedate: "boeDate",
+  awbnoblno: "awbBlCombined",
+  blnumber: "blNumber",
+  awbnumber: "awbNumber",
+  receiveddate: "receivedDate",
+  supplierinvoiceno: "supplierInvoiceNumber",
+  supplierinvoicenumber: "supplierInvoiceNumber",
+  supplierinvoicedate: "supplierInvoiceDate",
+  countryoforigin: "countryOfOrigin",
+  hscode: "hsCode",
+  unitweight: "unitWeightKg",
+  unitweightkg: "unitWeightKg",
+  weight: "deprecatedWeight",
+  boedeclaredqty: "boeDeclaredQty",
+  customsuom: "customsUom",
+  boedeclaredvalue: "boeDeclaredValue",
+  currency: "customsCurrency",
+  customscurrency: "customsCurrency",
+  exchangerate: "exchangeRateToAED",
+  exchangeratetoaed: "exchangeRateToAED",
+  grossweightkg: "grossWeightKg",
+  netweightkg: "netWeightKg",
+  customsqty: "customsQty",
+  customsremarks: "customsRemarks",
+});
+
+const SHIPMENT_LABELS = {
+  boeNumber: "BOE Number",
+  boeDate: "BOE Date",
+  blNumber: "BL Number",
+  awbNumber: "AWB Number",
+  receivedDate: "Received Date",
+  supplierInvoiceNumber: "Supplier Invoice Number",
+  supplierInvoiceDate: "Supplier Invoice Date",
+  boeDeclaredQty: "BOE Declared Qty",
+  customsUom: "Customs UOM",
+  boeDeclaredValue: "BOE Declared Value",
+  customsCurrency: "Customs Currency",
+  exchangeRateToAED: "Exchange Rate to AED",
+  grossWeightKg: "Gross Weight KG",
+  netWeightKg: "Net Weight KG",
+};
 
 export function normalizeCsvHeaderKey(h) {
   return String(h ?? "")
@@ -39,21 +114,30 @@ export function normalizeCsvHeaderKey(h) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
-/** Normalized keys corresponding 1:1 with GRN_CSV_HEADERS. */
+/** Normalized keys corresponding 1:1 with GRN_CSV_HEADERS (generated template). */
 export const GRN_CSV_HEADER_KEYS = Object.freeze(GRN_CSV_HEADERS.map(normalizeCsvHeaderKey));
+
+export function resolveCsvCanonicalField(headerLabel) {
+  return CSV_FIELD_ALIASES[normalizeCsvHeaderKey(headerLabel)] || null;
+}
 
 export function grnCsvTemplateHeaderLine() {
   return `${GRN_CSV_HEADERS.join(",")}\n`;
 }
 
+export function isDateLikeWeightString(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return false;
+  return /^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}(?:\s|$)/.test(s);
+}
+
 /**
- * Strict header validation: exact labels, order, no missing/extra/duplicates.
- * @returns {{ ok: true } | { ok: false, code: string, message: string, details: string[] }}
+ * Accept the generated template or a known-alias header row (legacy names / reorder).
+ * Unknown columns are rejected.
  */
 export function validateGrnCsvHeaders(rawHeaders) {
   const details = [];
-  const headers = (rawHeaders || []).map((h) => String(h ?? "").trim());
-  const expected = [...GRN_CSV_HEADERS];
+  const headers = (rawHeaders || []).map((h) => String(h ?? "").replace(/^\uFEFF/, "").trim());
 
   if (!headers.length) {
     return {
@@ -64,39 +148,33 @@ export function validateGrnCsvHeaders(rawHeaders) {
     };
   }
 
-  const seen = new Map();
+  const seenCanon = new Map();
+  const columnMap = [];
   headers.forEach((h, i) => {
-    const key = normalizeCsvHeaderKey(h);
-    if (!key) {
+    if (!h) {
       details.push(`Column ${i + 1} has an empty header.`);
+      columnMap.push(null);
       return;
     }
-    if (seen.has(key)) {
-      details.push(`Duplicate column "${h}" (also at column ${seen.get(key)}).`);
-    } else {
-      seen.set(key, i + 1);
+    const canon = resolveCsvCanonicalField(h);
+    if (!canon) {
+      details.push(`Unexpected extra column ${i + 1}: "${h}".`);
+      columnMap.push(null);
+      return;
     }
+    if (seenCanon.has(canon) && canon !== "awbBlCombined") {
+      details.push(`Duplicate column "${h}" (also at column ${seenCanon.get(canon)}).`);
+    } else {
+      seenCanon.set(canon, i + 1);
+    }
+    columnMap.push(canon);
   });
 
-  if (headers.length !== expected.length) {
-    details.push(`Expected ${expected.length} columns, found ${headers.length}.`);
+  if (!seenCanon.has("article") && !seenCanon.has("poLineId")) {
+    details.push('Missing required column "Article" or "PO Line ID".');
   }
-
-  const max = Math.max(headers.length, expected.length);
-  for (let i = 0; i < max; i++) {
-    const got = headers[i] ?? "";
-    const want = expected[i] ?? "";
-    if (!want) {
-      details.push(`Unexpected extra column ${i + 1}: "${got}".`);
-      continue;
-    }
-    if (!got) {
-      details.push(`Missing column ${i + 1}: expected "${want}".`);
-      continue;
-    }
-    if (got !== want) {
-      details.push(`Column ${i + 1}: expected "${want}", found "${got}".`);
-    }
+  if (!seenCanon.has("grnQty")) {
+    details.push('Missing required column "GRN Qty".');
   }
 
   const uniq = [...new Set(details)];
@@ -108,12 +186,12 @@ export function validateGrnCsvHeaders(rawHeaders) {
       details: uniq,
     };
   }
-  return { ok: true };
+  return { ok: true, columnMap };
 }
 
 function cell(row, headerLabel) {
-  const key = normalizeCsvHeaderKey(headerLabel);
-  const v = row?.[key];
+  const canon = resolveCsvCanonicalField(headerLabel) || normalizeCsvHeaderKey(headerLabel);
+  const v = row?.[canon] ?? row?.[normalizeCsvHeaderKey(headerLabel)];
   return v == null ? "" : String(v).trim();
 }
 
@@ -131,24 +209,39 @@ function cellNum(row, headerLabel) {
  */
 export function mapCsvRowToCustomsOverride(row, grnQty) {
   const qty = Math.max(0, Number(grnQty) || 0);
-  const unitWeight = cellNum(row, "Unit Weight");
-  let weight = cellNum(row, "Weight");
-  if (weight == null && unitWeight != null && !Number.isNaN(unitWeight) && qty > 0) {
-    weight = qty * unitWeight;
+  const unitWeightRaw = cell(row, "Unit Weight KG") || cell(row, "Unit Weight");
+  const deprecatedWeightRaw = cell(row, "Weight");
+  const weightErrors = [];
+  if (unitWeightRaw && isDateLikeWeightString(unitWeightRaw)) {
+    weightErrors.push(`Unit Weight KG "${unitWeightRaw}" looks like a date. Enter a numeric KG value such as 0.5.`);
+  }
+  if (deprecatedWeightRaw && isDateLikeWeightString(deprecatedWeightRaw)) {
+    weightErrors.push(`Weight "${deprecatedWeightRaw}" looks like a date. Use Unit Weight KG / Gross Weight KG / Net Weight KG.`);
+  }
+
+  const unitWeight = unitWeightRaw && !isDateLikeWeightString(unitWeightRaw) ? Number(unitWeightRaw) : null;
+  const unitWeightNum = unitWeight != null && Number.isFinite(unitWeight) ? unitWeight : null;
+  const deprecatedWeight =
+    deprecatedWeightRaw && !isDateLikeWeightString(deprecatedWeightRaw) ? Number(deprecatedWeightRaw) : null;
+  let totalWeight =
+    deprecatedWeight != null && Number.isFinite(deprecatedWeight) ? deprecatedWeight : null;
+  if (totalWeight == null && unitWeightNum != null && qty > 0) {
+    totalWeight = qty * unitWeightNum;
   }
 
   const boeDeclaredQty = cellNum(row, "BOE Declared Qty");
   const boeDeclaredValue = cellNum(row, "BOE Declared Value");
   const customsUom = cell(row, "Customs UOM");
-  const exchangeRate = cellNum(row, "Exchange Rate");
+  const exchangeRate = cellNum(row, "Exchange Rate to AED");
   const awbBl = cell(row, "AWB No. / BL No.");
-  const currency = cell(row, "Currency");
+  const blNumber = cell(row, "BL Number");
+  const awbNumber = cell(row, "AWB Number");
+  const currency = cell(row, "Customs Currency") || cell(row, "Currency");
+  const customsQty = cellNum(row, "Customs Qty");
+  const grossWeightKg = cellNum(row, "Gross Weight KG");
+  const netWeightKg = cellNum(row, "Net Weight KG");
 
-  // Reject legacy column if present under old aliases in row bag
   const legacyUnitPrice = cellNum(row, "Customs Unit Price");
-  if (legacyUnitPrice != null && !Number.isNaN(legacyUnitPrice) && legacyUnitPrice > 0) {
-    // Stash for headerDefaults detection — post will reject unit-price-only without BOE fields
-  }
 
   const override = {};
   const setStr = (key, val) => {
@@ -162,37 +255,53 @@ export function mapCsvRowToCustomsOverride(row, grnQty) {
 
   setStr("boeNumber", cell(row, "BOE Number"));
   setStr("boeDate", cell(row, "BOE Date"));
-  if (awbBl) {
-    override.blNumber = awbBl;
-    override.awbNumber = awbBl;
-  }
+  setStr("blNumber", blNumber || awbBl);
+  setStr("awbNumber", awbNumber || awbBl);
   setStr("receivedDate", cell(row, "Received Date"));
-  setStr("supplierInvoiceNumber", cell(row, "Supplier Invoice No."));
+  setStr("supplierInvoiceNumber", cell(row, "Supplier Invoice Number") || cell(row, "Supplier Invoice No."));
   setStr("supplierInvoiceDate", cell(row, "Supplier Invoice Date"));
-  setStr("countryOfOrigin", cell(row, "Country Of Origin"));
+  setStr("countryOfOrigin", cell(row, "Country of Origin") || cell(row, "Country Of Origin"));
   setStr("hsCode", cell(row, "HS Code"));
-  setNum("unitWeightKg", unitWeight != null && !Number.isNaN(unitWeight) ? unitWeight : null);
-  setNum("totalWeightKg", weight != null && !Number.isNaN(weight) ? weight : null);
+  setNum("unitWeightKg", unitWeightNum);
+  setNum("totalWeightKg", totalWeight);
+  setNum("grossWeightKg", grossWeightKg != null && !Number.isNaN(grossWeightKg) ? grossWeightKg : null);
+  setNum("netWeightKg", netWeightKg != null && !Number.isNaN(netWeightKg) ? netWeightKg : null);
   setStr("customsCurrency", currency ? currency.toUpperCase() : "");
   setNum("exchangeRateToAED", exchangeRate != null && !Number.isNaN(exchangeRate) ? exchangeRate : null);
   setNum("boeDeclaredQty", boeDeclaredQty != null && !Number.isNaN(boeDeclaredQty) ? boeDeclaredQty : null);
   setNum("boeDeclaredValue", boeDeclaredValue != null && !Number.isNaN(boeDeclaredValue) ? boeDeclaredValue : null);
   setStr("customsUom", customsUom ? customsUom.toUpperCase() : "");
-  // Never set customsUnitPrice from CSV for BOE_AVERAGE
+  setNum("customsQty", customsQty != null && !Number.isNaN(customsQty) ? customsQty : null);
+  setStr("customsRemarks", cell(row, "Customs Remarks"));
 
   return {
     override,
+    weightErrors,
     computed: {
-      weight: weight != null && !Number.isNaN(weight) ? weight : null,
-      unitWeight: unitWeight != null && !Number.isNaN(unitWeight) ? unitWeight : null,
+      weight: totalWeight,
+      unitWeight: unitWeightNum,
       boeDeclaredQty: boeDeclaredQty != null && !Number.isNaN(boeDeclaredQty) ? boeDeclaredQty : null,
       boeDeclaredValue: boeDeclaredValue != null && !Number.isNaN(boeDeclaredValue) ? boeDeclaredValue : null,
       customsUom: customsUom || null,
       exchangeRate: exchangeRate != null && !Number.isNaN(exchangeRate) ? exchangeRate : null,
+      customsQty: customsQty != null && !Number.isNaN(customsQty) ? customsQty : null,
       legacyCustomsUnitPriceIgnored:
         legacyUnitPrice != null && !Number.isNaN(legacyUnitPrice) ? legacyUnitPrice : null,
     },
   };
+}
+
+/** Keep only defaultable / line-specific customs fields on article rows. */
+export function stripShipmentFieldsFromLineOverride(override = {}) {
+  const o = override || {};
+  const out = {};
+  if (o.countryOfOrigin) out.countryOfOrigin = o.countryOfOrigin;
+  if (o.hsCode) out.hsCode = o.hsCode;
+  if (o.unitWeightKg != null && o.unitWeightKg !== "") out.unitWeightKg = o.unitWeightKg;
+  if (o.totalWeightKg != null && o.totalWeightKg !== "") out.totalWeightKg = o.totalWeightKg;
+  if (o.customsQty != null && o.customsQty !== "") out.customsQty = o.customsQty;
+  if (o.customsRemarks) out.customsRemarks = o.customsRemarks;
+  return out;
 }
 
 export function customsOverrideToLineEditFields(override = {}) {
@@ -242,6 +351,8 @@ export function suggestHeaderDefaultsFromOverrides(overrides = []) {
       boeDeclaredQty: o.boeDeclaredQty != null ? o.boeDeclaredQty : "",
       customsUom: o.customsUom || "",
       boeDeclaredValue: o.boeDeclaredValue != null ? o.boeDeclaredValue : "",
+      grossWeightKg: o.grossWeightKg != null ? o.grossWeightKg : "",
+      netWeightKg: o.netWeightKg != null ? o.netWeightKg : "",
     };
   }
   return null;
@@ -274,6 +385,7 @@ function splitCsvLine(line) {
  */
 export function parseGrnCsvText(text) {
   const lines = String(text || "")
+    .replace(/^\uFEFF/, "")
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
@@ -286,20 +398,30 @@ export function parseGrnCsvText(text) {
     };
   }
 
-  const rawHeaders = splitCsvLine(lines[0]);
+  const rawHeaders = splitCsvLine(lines[0]).map((h) => String(h ?? "").replace(/^\uFEFF/, "").trim());
   const headerCheck = validateGrnCsvHeaders(rawHeaders);
   if (!headerCheck.ok) return headerCheck;
 
+  const columnMap = headerCheck.columnMap || rawHeaders.map((h) => resolveCsvCanonicalField(h));
   const rows = [];
   for (let li = 1; li < lines.length; li++) {
     const parts = splitCsvLine(lines[li]);
     const o = {};
-    GRN_CSV_HEADER_KEYS.forEach((h, idx) => {
-      o[h] = parts[idx] ?? "";
+    columnMap.forEach((canon, idx) => {
+      if (!canon) return;
+      const val = parts[idx] ?? "";
+      if (canon === "awbBlCombined") {
+        if (val) {
+          if (!o.blNumber) o.blNumber = val;
+          if (!o.awbNumber) o.awbNumber = val;
+        }
+        return;
+      }
+      o[canon] = val;
     });
     rows.push(o);
   }
-  return { ok: true, rows, rawHeaders };
+  return { ok: true, rows, rawHeaders, columnMap };
 }
 
 export function readPoLineIdFromCsvRow(row) {
@@ -520,19 +642,23 @@ export function buildGrnCsvTemplateCsv(lines = []) {
       Remarks: "",
       "BOE Number": "",
       "BOE Date": "",
-      "AWB No. / BL No.": "",
+      "BL Number": "",
+      "AWB Number": "",
       "Received Date": "",
-      "Supplier Invoice No.": "",
+      "Supplier Invoice Number": "",
       "Supplier Invoice Date": "",
-      "Country Of Origin": "",
-      "HS Code": "",
-      "Unit Weight": "",
-      Weight: "",
       "BOE Declared Qty": "",
       "Customs UOM": "",
       "BOE Declared Value": "",
-      Currency: "",
-      "Exchange Rate": "",
+      "Customs Currency": "",
+      "Exchange Rate to AED": "",
+      "Gross Weight KG": "",
+      "Net Weight KG": "",
+      "Country of Origin": "",
+      "HS Code": "",
+      "Unit Weight KG": "",
+      "Customs Qty": "",
+      "Customs Remarks": "",
     };
     return buildGrnCsvRow(values);
   });
@@ -541,8 +667,8 @@ export function buildGrnCsvTemplateCsv(lines = []) {
 }
 
 /**
- * Row-level required field checks for Customs GRN CSV import.
- * @returns {string[]} error messages (without row prefix)
+ * Row-level required field checks for commercial identity only.
+ * Shipment/BOE fields are validated once after header inheritance.
  */
 export function validateGrnCsvRowRequiredFields(row) {
   const messages = [];
@@ -561,29 +687,18 @@ export function validateGrnCsvRowRequiredFields(row) {
   }
 
   if (!readLocationFromCsvRow(row)) messages.push("Location is required.");
-  if (!cell(row, "BOE Number")) messages.push("BOE Number is required.");
-  if (!cell(row, "BOE Date")) messages.push("BOE Date is required.");
-  if (!cell(row, "Supplier Invoice No.")) messages.push("Supplier Invoice No. is required.");
-  if (!cell(row, "Supplier Invoice Date")) messages.push("Supplier Invoice Date is required.");
-  if (!cell(row, "Currency")) messages.push("Currency is required.");
 
-  const fx = cellNum(row, "Exchange Rate");
-  if (fx == null) messages.push("Exchange Rate is required.");
-  else if (Number.isNaN(fx) || !(fx > 0)) messages.push("Exchange Rate must be greater than zero.");
-
-  const boeQty = cellNum(row, "BOE Declared Qty");
-  if (boeQty == null) messages.push("BOE Declared Qty is required.");
-  else if (Number.isNaN(boeQty) || !(boeQty > 0)) {
-    messages.push("BOE Declared Qty must be greater than zero.");
+  const unitWeightRaw = cell(row, "Unit Weight KG") || cell(row, "Unit Weight");
+  if (unitWeightRaw && isDateLikeWeightString(unitWeightRaw)) {
+    messages.push(`Unit Weight KG "${unitWeightRaw}" looks like a date. Enter a numeric KG value such as 0.5.`);
+  }
+  const deprecatedWeightRaw = cell(row, "Weight");
+  if (deprecatedWeightRaw && isDateLikeWeightString(deprecatedWeightRaw)) {
+    messages.push(
+      `Weight "${deprecatedWeightRaw}" looks like a date. Use Unit Weight KG / Gross Weight KG / Net Weight KG.`
+    );
   }
 
-  const boeValue = cellNum(row, "BOE Declared Value");
-  if (boeValue == null) messages.push("BOE Declared Value is required.");
-  else if (Number.isNaN(boeValue) || boeValue < 0) {
-    messages.push("BOE Declared Value must be a non-negative number.");
-  }
-
-  // Legacy column must not be trusted if somehow present in a non-strict parse path
   const legacyPrice = cellNum(row, "Customs Unit Price");
   if (legacyPrice != null && !Number.isNaN(legacyPrice) && legacyPrice > 0) {
     messages.push(
@@ -591,9 +706,127 @@ export function validateGrnCsvRowRequiredFields(row) {
     );
   }
 
-  if (!cell(row, "Country Of Origin")) messages.push("Country Of Origin is required.");
-  if (!cell(row, "HS Code")) messages.push("HS Code is required.");
+  return messages;
+}
 
+function normalizeComparable(field, raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  if (
+    field === "customsCurrency" ||
+    field === "customsUom" ||
+    field === "boeNumber" ||
+    field === "supplierInvoiceNumber"
+  ) {
+    return s.toUpperCase();
+  }
+  if (
+    field === "boeDeclaredQty" ||
+    field === "boeDeclaredValue" ||
+    field === "exchangeRateToAED" ||
+    field === "grossWeightKg" ||
+    field === "netWeightKg"
+  ) {
+    const n = Number(s);
+    return Number.isFinite(n) ? String(n) : s;
+  }
+  return s;
+}
+
+/**
+ * Collapse flat CSV shipment cells into one header.
+ * Blank = inherit. Identical repeats accepted. Conflicts rejected.
+ */
+export function extractShipmentHeaderFromCsvRows(rows = []) {
+  const header = {};
+  const conflicts = [];
+  for (const field of GRN_CSV_SHIPMENT_FIELDS) {
+    let chosen = "";
+    let chosenRow = null;
+    (rows || []).forEach((row, idx) => {
+      const raw = row?.[field];
+      const val = raw == null ? "" : String(raw).trim();
+      if (!val) return;
+      if (!chosen) {
+        chosen = val;
+        chosenRow = idx + 2;
+        return;
+      }
+      if (normalizeComparable(field, val) !== normalizeComparable(field, chosen)) {
+        conflicts.push({
+          field,
+          line: idx + 2,
+          message: `Conflicting ${SHIPMENT_LABELS[field] || field} in row ${idx + 2}. Shipment ${SHIPMENT_LABELS[field] || field} is ${chosen}.`,
+        });
+      }
+    });
+    if (chosen) header[field] = chosen;
+  }
+  return { header, conflicts, firstDataRow: chosenRowOf(rows, "boeNumber") };
+}
+
+function chosenRowOf(rows, field) {
+  const i = (rows || []).findIndex((r) => String(r?.[field] ?? "").trim());
+  return i >= 0 ? i + 2 : null;
+}
+
+export function csvHasMeaningfulCustoms(header = {}, overrides = []) {
+  const keys = [
+    "boeNumber",
+    "boeDate",
+    "blNumber",
+    "awbNumber",
+    "supplierInvoiceNumber",
+    "supplierInvoiceDate",
+    "boeDeclaredQty",
+    "boeDeclaredValue",
+    "customsCurrency",
+    "exchangeRateToAED",
+    "countryOfOrigin",
+    "hsCode",
+    "grossWeightKg",
+    "netWeightKg",
+    "unitWeightKg",
+    "customsQty",
+    "customsRemarks",
+  ];
+  if (keys.some((k) => String(header[k] ?? "").trim())) return true;
+  return (overrides || []).some((o) => keys.some((k) => o?.[k] != null && String(o[k]).trim()));
+}
+
+export function validateInheritedCsvShipmentHeader(header = {}) {
+  const messages = [];
+  if (!String(header.boeNumber || "").trim()) messages.push("BOE Number is required");
+  if (!String(header.boeDate || "").trim()) messages.push("BOE Date is required");
+  if (!String(header.supplierInvoiceNumber || "").trim()) messages.push("Supplier Invoice Number is required");
+  if (!String(header.supplierInvoiceDate || "").trim()) messages.push("Supplier Invoice Date is required");
+  const qty = Number(header.boeDeclaredQty);
+  if (!String(header.boeDeclaredQty ?? "").trim() || !Number.isFinite(qty) || !(qty > 0)) {
+    messages.push("BOE Declared Qty is required");
+  }
+  const val = Number(header.boeDeclaredValue);
+  if (!String(header.boeDeclaredValue ?? "").trim() || !Number.isFinite(val) || val < 0) {
+    messages.push("BOE Declared Value is required");
+  }
+  if (!String(header.customsCurrency || "").trim()) messages.push("Customs Currency is required");
+  const cur = String(header.customsCurrency || "").trim().toUpperCase();
+  const fx = Number(header.exchangeRateToAED);
+  if (cur === "AED") {
+    if (String(header.exchangeRateToAED ?? "").trim() && fx !== 1) {
+      messages.push("When Customs Currency is AED, Exchange Rate to AED must be 1");
+    }
+  } else if (!String(header.exchangeRateToAED ?? "").trim() || !Number.isFinite(fx) || !(fx > 0)) {
+    messages.push("Exchange Rate to AED is required");
+  }
+  return messages;
+}
+
+export function validateCsvLineAfterInheritance(override = {}, header = {}) {
+  const messages = [];
+  const coo = String(override.countryOfOrigin || header.countryOfOrigin || "").trim();
+  const hs = String(override.hsCode || header.hsCode || "").trim();
+  if (!coo) messages.push("Country of Origin is required");
+  if (!hs) messages.push("HS Code is required");
   return messages;
 }
 

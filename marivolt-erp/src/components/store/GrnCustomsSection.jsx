@@ -88,6 +88,7 @@ export default function GrnCustomsSection({
   onError,
   /** Optional default for BOE Declared Qty when UOM-compatible (sum of accepted GRN qty). */
   suggestedBoeQty = null,
+  validationText = "",
 }) {
   const fileRefs = useRef({});
   const [uploading, setUploading] = useState("");
@@ -147,12 +148,18 @@ export default function GrnCustomsSection({
         <div>
           <h4 className="text-sm font-semibold text-slate-800">Customs Information</h4>
           <p className="text-[11px] text-slate-500">
-            Enter BOE declared qty and value — customs unit value is calculated automatically. Commercial GRN
-            cost is unchanged. Leave blank to post without customs stock. When any customs field is entered,
-            mandatory fields (*) and date rules are enforced. BL and AWB are optional.
+            Enter BOE declared qty and value once — customs unit value is calculated automatically. Commercial
+            GRN cost is unchanged. Auto-filled Received Date alone does not start Customs capture. When BOE
+            or article customs fields are entered, mandatory fields (*) are enforced once at header level.
           </p>
         </div>
       </div>
+
+      {validationText ? (
+        <div className="mb-3 whitespace-pre-line rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">
+          {validationText}
+        </div>
+      ) : null}
 
       <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
         Shipment information

@@ -9,6 +9,7 @@ import { writeAudit } from "./auditService.js";
 import {
   CustomsGrnValidationError,
   buildLineOverrideMap,
+  isCustomsCaptureActive,
   normalizeCustomsHeaderDefaults,
   resolveCustomsAllowances,
   resolveCustomsLineEffective,
@@ -103,70 +104,26 @@ function hasCustomsDocuments(customs = {}) {
 
 /**
  * True when optional customs payload contains at least one identifying field.
+ * Auto-filled Received Date and default Customs UOM PCS do not activate capture.
  */
 export function hasCustomsPayload(body = {}) {
   const customs = body?.customs && typeof body.customs === "object" ? body.customs : body;
-  const fields = [
-    customs?.receivedDate,
-    customs?.boeNumber,
-    customs?.boeDate,
-    customs?.blNumber,
-    customs?.awbNumber,
-    customs?.blAwbNo,
-    customs?.customsDocRef,
-    customs?.supplierInvoiceNumber,
-    customs?.supplierInvoiceDate,
-    customs?.supplierInvoiceNo,
-    customs?.countryOfOrigin,
-    customs?.hsCode,
-    customs?.currency,
-    customs?.customsCurrency,
-    customs?.unitPrice,
-    customs?.customsUnitPrice,
-    customs?.boeDeclaredQty,
-    customs?.boeDeclaredValue,
-    customs?.customsUom,
-    customs?.grossWeightKg,
-    customs?.netWeightKg,
-    customs?.weightKg,
-    customs?.unitWeightKg,
-    customs?.exchangeRateToAED,
-    customs?.remarks,
-    customs?.customsRemarks,
-    body?.boeNumber,
-    body?.blNumber,
-    body?.awbNumber,
-    body?.blAwbNo,
-    body?.customsDocRef,
-    body?.supplierInvoiceNo,
-    body?.supplierInvoiceNumber,
-  ];
-  if (fields.some((f) => t(f))) return true;
+  const header = {
+    ...customs,
+    boeNumber: customs?.boeNumber || customs?.customsDocRef || body?.boeNumber || body?.customsDocRef,
+    blNumber: customs?.blNumber || body?.blNumber || body?.blAwbNo,
+    awbNumber: customs?.awbNumber || body?.awbNumber,
+    supplierInvoiceNumber:
+      customs?.supplierInvoiceNumber || customs?.supplierInvoiceNo || body?.supplierInvoiceNumber || body?.supplierInvoiceNo,
+    customsCurrency: customs?.customsCurrency || customs?.currency,
+    customsRemarks: customs?.customsRemarks || customs?.remarks,
+  };
   if (hasCustomsDocuments(customs)) return true;
-
-  for (const row of customs?.lineOverrides || []) {
-    if (
-      [
-        row?.hsCode,
-        row?.countryOfOrigin,
-        row?.unitPrice,
-        row?.customsUnitPrice,
-        row?.customsQty,
-        row?.weightKg,
-        row?.unitWeightKg,
-        row?.currency,
-        row?.customsCurrency,
-        row?.exchangeRateToAED,
-        row?.boeNumber,
-        row?.receivedDate,
-        row?.remarks,
-        row?.customsRemarks,
-      ].some((f) => t(f))
-    ) {
-      return true;
-    }
-  }
-  return false;
+  return isCustomsCaptureActive({
+    header,
+    lineOverrides: customs?.lineOverrides || [],
+    documents: customs?.documents,
+  });
 }
 
 export function normalizeCustomsPayload(body = {}, grn = {}) {

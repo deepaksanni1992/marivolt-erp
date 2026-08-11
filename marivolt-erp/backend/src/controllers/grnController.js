@@ -44,7 +44,12 @@ import {
   readLocationFromCsvRow,
   readRemarksFromCsvRow,
   suggestHeaderDefaultsFromOverrides,
+  extractShipmentHeaderFromCsvRows,
   validateGrnCsvRowRequiredFields,
+  validateInheritedCsvShipmentHeader,
+  validateCsvLineAfterInheritance,
+  csvHasMeaningfulCustoms,
+  stripShipmentFieldsFromLineOverride,
 } from "../utils/grnCsvImport.js";
 
 function withCompany(req, filter = {}) {
@@ -717,9 +722,12 @@ export async function importGrnCsvPreview(req, res) {
     const rawRows = extractRawPoLinesFromPo(po);
     const { rows } = parsed;
     const errors = [];
+    const headerErrors = [];
+    const lineErrors = [];
     const updates = [];
     const seenPoLineIds = new Set();
     const overrideList = [];
+    const mappedRows = [];
 
     const matchLog = (payload) => {
       try {
@@ -736,6 +744,7 @@ export async function importGrnCsvPreview(req, res) {
       const fieldMsgs = validateGrnCsvRowRequiredFields(row);
       for (const message of fieldMsgs) {
         errors.push({ line: lineNo, message });
+        lineErrors.push(`Row ${lineNo}: ${message}`);
       }
       if (fieldMsgs.length) continue;
 
@@ -743,10 +752,9 @@ export async function importGrnCsvPreview(req, res) {
       if (!match.ok) {
         const msg = formatPoLineMatchError(match, { rowLineNo: lineNo, poNo });
         // formatPoLineMatchError already includes "Row N: " — strip for {line,message} shape
-        errors.push({
-          line: lineNo,
-          message: msg.replace(new RegExp(`^Row ${lineNo}:\\s*`), ""),
-        });
+        const clean = msg.replace(new RegExp(`^Row ${lineNo}:\\s*`), "");
+        errors.push({ line: lineNo, message: clean });
+        lineErrors.push(`Row ${lineNo}: ${clean}`);
         continue;
       }
       const src = match.line;
@@ -761,15 +769,15 @@ export async function importGrnCsvPreview(req, res) {
           csvArticle &&
           normalizeArticleKey(csvArticle) !== normalizeArticleKey(poArticle)
         ) {
-          errors.push({
-            line: lineNo,
-            message: `Article "${csvArticle}" does not match PO line article "${poArticle}".`,
-          });
+          const message = `Article "${csvArticle}" does not match PO line article "${poArticle}".`;
+          errors.push({ line: lineNo, message });
+          lineErrors.push(`Row ${lineNo}: ${message}`);
           continue;
         }
       }
       if (seenPoLineIds.has(lid)) {
         errors.push({ line: lineNo, message: "Duplicate CSV row for the same PO line." });
+        lineErrors.push(`Row ${lineNo}: Duplicate CSV row for the same PO line.`);
         continue;
       }
       seenPoLineIds.add(lid);
@@ -780,17 +788,22 @@ export async function importGrnCsvPreview(req, res) {
       const pending = Math.max(0, ordered - posted - cancelled);
       const grnQty = readGrnQtyFromCsvRow(row);
       if (grnQty > pending + 1e-6) {
-        errors.push({
-          line: lineNo,
-          message: `GRN Qty (${grnQty}) exceeds pending (${pending}) for this line.`,
-        });
+        const message = `GRN Qty (${grnQty}) exceeds pending (${pending}) for this line.`;
+        errors.push({ line: lineNo, message });
+        lineErrors.push(`Row ${lineNo}: ${message}`);
         continue;
       }
 
       const warehouse = resolveGrnWarehouseCode(row.warehouse || "");
       const location = readLocationFromCsvRow(row);
-      const { override } = mapCsvRowToCustomsOverride(row, grnQty);
+      const { override, weightErrors } = mapCsvRowToCustomsOverride(row, grnQty);
+      for (const message of weightErrors || []) {
+        errors.push({ line: lineNo, message });
+        lineErrors.push(`Row ${lineNo}: ${message}`);
+      }
+      if (weightErrors?.length) continue;
 
+      const lineOverride = stripShipmentFieldsFromLineOverride(override);
       const update = {
         poLineId: lid,
         grnQty,
@@ -798,15 +811,69 @@ export async function importGrnCsvPreview(req, res) {
         location,
         remarks: readRemarksFromCsvRow(row),
         matchedBy: match.by,
-        customsOverride: override,
-        customsLineEdits: customsOverrideToLineEditFields(override),
+        customsOverride: lineOverride,
+        customsLineEdits: customsOverrideToLineEditFields(lineOverride),
       };
       overrideList.push(override);
+      mappedRows.push({ lineNo, override, grnQty });
       updates.push(update);
     }
 
-    const headerDefaults = suggestHeaderDefaultsFromOverrides(overrideList);
-    res.json({ updates, errors, headerDefaults });
+    const { header: shipmentHeader, conflicts } = extractShipmentHeaderFromCsvRows(rows);
+    for (const c of conflicts) {
+      headerErrors.push(c.message);
+      errors.push({ line: c.line, message: c.message });
+    }
+
+    const mergedHeader = {
+      ...(suggestHeaderDefaultsFromOverrides(overrideList) || {}),
+      ...shipmentHeader,
+    };
+    if (csvHasMeaningfulCustoms(mergedHeader, overrideList) && !conflicts.length) {
+      for (const message of validateInheritedCsvShipmentHeader(mergedHeader)) {
+        headerErrors.push(message);
+        errors.push({ line: "HEADER", message });
+      }
+      for (const mapped of mappedRows) {
+        const lineMsgs = validateCsvLineAfterInheritance(mapped.override, mergedHeader);
+        for (const message of lineMsgs) {
+          lineErrors.push(`Row ${mapped.lineNo}: ${message}`);
+          errors.push({ line: mapped.lineNo, message });
+        }
+      }
+      const declared = Number(mergedHeader.boeDeclaredQty);
+      const qtyParts = mappedRows
+        .map((m) => Number(m.override.customsQty))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      if (qtyParts.length && Number.isFinite(declared) && declared > 0) {
+        if (qtyParts.length !== mappedRows.length) {
+          headerErrors.push(
+            "When Customs Qty differs from physical qty, every accepted line must include an explicit customsQty allocation."
+          );
+          errors.push({
+            line: "HEADER",
+            message:
+              "When Customs Qty differs from physical qty, every accepted line must include an explicit customsQty allocation.",
+          });
+        } else {
+          const sum = qtyParts.reduce((s, n) => s + n, 0);
+          if (Math.abs(sum - declared) > 1e-6) {
+            const message = `Customs Qty total ${sum} does not match BOE Declared Qty ${declared}.`;
+            headerErrors.push(message);
+            errors.push({ line: "HEADER", message });
+          }
+        }
+      }
+    }
+
+    const headerDefaults = Object.keys(mergedHeader).length ? mergedHeader : suggestHeaderDefaultsFromOverrides(overrideList);
+    res.json({
+      updates,
+      errors,
+      headerErrors,
+      lineErrors,
+      headerDefaults,
+    });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }

@@ -61,10 +61,62 @@ export const CUSTOMS_GRN_MANDATORY_EFFECTIVE = [
   "hsCode",
 ];
 
+/** Shipment/BOE fields validated once at header (not per article row). */
+export const CUSTOMS_HEADER_REQUIRED_ONCE = [
+  "receivedDate",
+  "boeNumber",
+  "boeDate",
+  "supplierInvoiceNumber",
+  "supplierInvoiceDate",
+  "customsCurrency",
+  "exchangeRateToAED",
+  "boeDeclaredQty",
+  "boeDeclaredValue",
+];
+
+/** Defaultable article fields — validated on effective (header fallback) values only. */
+export const CUSTOMS_LINE_REQUIRED_EFFECTIVE = ["countryOfOrigin", "hsCode"];
+
 export const CUSTOMS_BOE_MANDATORY_HEADER = [
   "boeDeclaredQty",
   "boeDeclaredValue",
   "customsCurrency",
+];
+
+/** Fields that mean the user intentionally started Customs capture. receivedDate alone does not. */
+const CUSTOMS_ACTIVATION_HEADER_KEYS = [
+  "boeNumber",
+  "boeDate",
+  "blNumber",
+  "awbNumber",
+  "supplierInvoiceNumber",
+  "supplierInvoiceDate",
+  "countryOfOrigin",
+  "hsCode",
+  "customsCurrency",
+  "exchangeRateToAED",
+  "boeDeclaredQty",
+  "boeDeclaredValue",
+  "grossWeightKg",
+  "netWeightKg",
+  "unitWeightKg",
+  "customsRemarks",
+];
+
+const CUSTOMS_ACTIVATION_LINE_KEYS = [
+  "boeNumber",
+  "boeDate",
+  "blNumber",
+  "awbNumber",
+  "supplierInvoiceNumber",
+  "supplierInvoiceDate",
+  "countryOfOrigin",
+  "hsCode",
+  "customsCurrency",
+  "exchangeRateToAED",
+  "customsQty",
+  "unitWeightKg",
+  "customsRemarks",
 ];
 
 function t(v) {
@@ -123,6 +175,83 @@ function pickNum(v) {
   if (v == null || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+function isMeaningfulCustomsUom(raw) {
+  const u = upper(raw);
+  return Boolean(u) && u !== "PCS";
+}
+
+/**
+ * Customs capture is active only when the user entered meaningful Customs data.
+ * Auto-filled Received Date and default Customs UOM PCS do not activate capture.
+ */
+export function isCustomsCaptureActive({ header = {}, lineOverrides = [], documents = null } = {}) {
+  const h = header && typeof header === "object" ? header : {};
+  for (const key of CUSTOMS_ACTIVATION_HEADER_KEYS) {
+    const v = h[key];
+    if (v == null || v === "") continue;
+    if (typeof v === "number" && Number.isFinite(v)) return true;
+    if (t(v)) return true;
+  }
+  if (isMeaningfulCustomsUom(h.customsUom)) return true;
+
+  const docs = documents || h.documents;
+  if (docs && typeof docs === "object") {
+    if (docs.blCopy?._id || docs.blDocumentId || docs.supplierInvoiceCopy?._id || docs.supplierInvoiceDocumentId) {
+      return true;
+    }
+    if (docs.packingListCopy?._id || docs.packingListDocumentId) return true;
+    const others = docs.otherDocuments || docs.otherDocumentIds || [];
+    if (Array.isArray(others) && others.some((d) => d && (d._id || d))) return true;
+  }
+
+  const rows = Array.isArray(lineOverrides)
+    ? lineOverrides
+    : lineOverrides instanceof Map
+      ? [...lineOverrides.values()]
+      : [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    for (const key of CUSTOMS_ACTIVATION_LINE_KEYS) {
+      const v = row[key];
+      if (v == null || v === "") continue;
+      if (typeof v === "number" && Number.isFinite(v)) return true;
+      if (t(v)) return true;
+    }
+  }
+  return false;
+}
+
+export function formatCustomsCaptureErrorGroups(errors = []) {
+  const header = [];
+  const articles = [];
+  for (const e of errors || []) {
+    const msgs = e.messages || [];
+    if (!msgs.length) continue;
+    if (e.line === "HEADER" || e.group === "header") {
+      header.push(...msgs);
+      continue;
+    }
+    const label = e.article ? String(e.article) : e.line != null ? `Row ${e.line}` : "Line";
+    for (const m of msgs) articles.push(`${label}: ${m}`);
+  }
+  return { header, articles };
+}
+
+export function formatCustomsCaptureErrorText(errors = []) {
+  const { header, articles } = formatCustomsCaptureErrorGroups(errors);
+  const parts = [];
+  if (header.length) {
+    parts.push("CUSTOMS INFORMATION INCOMPLETE");
+    parts.push(...header.map((m) => `• ${m}`));
+  }
+  if (articles.length) {
+    if (parts.length) parts.push("");
+    parts.push("ARTICLE ISSUES");
+    parts.push(...articles.map((m) => `• ${m}`));
+  }
+  return parts.join("\n");
 }
 
 /**
@@ -277,6 +406,45 @@ export function validateCustomsMandatoryEffective(effective, { location = "" } =
   return errors;
 }
 
+/** Header-level required fields — one error per missing BOE/shipment value. */
+export function validateCustomsHeaderRequired(header = {}) {
+  const errors = [];
+  const received = parseCustomsDate(header.receivedDate);
+  if (!received) errors.push("Received Date is required");
+  if (!t(header.boeNumber)) errors.push("BOE Number is required");
+  if (!parseCustomsDate(header.boeDate)) errors.push("BOE Date is required");
+  if (!t(header.supplierInvoiceNumber)) errors.push("Supplier Invoice Number is required");
+  if (!parseCustomsDate(header.supplierInvoiceDate)) errors.push("Supplier Invoice Date is required");
+  const declaredQty = pickNum(header.boeDeclaredQty);
+  if (declaredQty == null || !(declaredQty > 0)) {
+    errors.push("BOE Declared Qty is required");
+  }
+  const declaredValue = pickNum(header.boeDeclaredValue);
+  if (declaredValue == null || declaredValue < 0) {
+    errors.push("BOE Declared Value is required");
+  }
+  if (!t(header.customsCurrency)) errors.push("Customs Currency is required");
+  const fx = pickNum(header.exchangeRateToAED);
+  const currency = upper(header.customsCurrency);
+  if (currency === "AED") {
+    if (fx != null && fx !== 1) {
+      errors.push("When Customs Currency is AED, Exchange Rate to AED must be 1");
+    }
+  } else if (fx == null || !(fx > 0)) {
+    errors.push("Exchange Rate to AED is required");
+  }
+  return errors;
+}
+
+export function validateCustomsLineEffectiveOnly(effective, { location = "" } = {}) {
+  const errors = [];
+  if (!t(effective?.countryOfOrigin)) errors.push("Country of Origin is required");
+  if (!t(effective?.hsCode)) errors.push("HS Code is required");
+  if (!t(location)) errors.push("Location is required");
+  if (!(Number(effective?.quantity) > 0)) errors.push("Quantity is required and must be greater than zero");
+  return errors;
+}
+
 export function resolveCustomsAllowances({ requested = {}, permissionGranted = false } = {}) {
   const grant = Boolean(permissionGranted);
   return {
@@ -426,26 +594,9 @@ export function validateCustomsCaptureForGrn({
 
   const declaredQty = pickNum(headerNorm.boeDeclaredQty);
   const declaredValue = pickNum(headerNorm.boeDeclaredValue);
-  if (declaredQty == null || !(declaredQty > 0)) {
-    errors.push({
-      line: "HEADER",
-      article: "",
-      messages: ["BOE Declared Customs Qty is required and must be greater than zero"],
-    });
-  }
-  if (declaredValue == null || declaredValue < 0) {
-    errors.push({
-      line: "HEADER",
-      article: "",
-      messages: ["BOE Declared Value is required and must be a non-negative number"],
-    });
-  }
-  if (!t(headerNorm.customsCurrency)) {
-    errors.push({
-      line: "HEADER",
-      article: "",
-      messages: ["Customs Currency is required"],
-    });
+  const headerMsgs = validateCustomsHeaderRequired(headerNorm);
+  if (headerMsgs.length) {
+    errors.push({ line: "HEADER", article: "", group: "header", messages: headerMsgs });
   }
 
   // Reject client spoof of unit value — we always recompute
@@ -478,7 +629,20 @@ export function validateCustomsCaptureForGrn({
     customsUom: headerNorm.customsUom || "PCS",
   });
   if (!qtyResolve.ok) {
-    errors.push({ line: "HEADER", article: "", messages: [qtyResolve.message] });
+    errors.push({ line: "HEADER", article: "", group: "header", messages: [qtyResolve.message] });
+  }
+
+  const headerDateProbe = resolveCustomsLineEffective({
+    header: headerNorm,
+    override: {},
+    quantity: 1,
+    allowances,
+    customsUnitValue: unitCalc.ok ? unitCalc.customsUnitValue : 0,
+    valuationMethod: CUSTOMS_VALUATION_BOE_AVERAGE,
+  });
+  const headerDateMsgs = validateCustomsDates(headerDateProbe, { poDate, allowances });
+  if (headerDateMsgs.length) {
+    errors.push({ line: "HEADER", article: "", group: "header", messages: headerDateMsgs });
   }
 
   const customsUnitValue = unitCalc.ok ? unitCalc.customsUnitValue : 0;
@@ -509,10 +673,7 @@ export function validateCustomsCaptureForGrn({
       effective.customsValueAED =
         rate != null ? roundCustomsMoney(effective.customsTotalPrice * rate) : 0;
     }
-    const msgs = [
-      ...validateCustomsMandatoryEffective(effective, { location: line.location }),
-      ...validateCustomsDates(effective, { poDate, allowances }),
-    ];
+    const msgs = [...validateCustomsLineEffectiveOnly(effective, { location: line.location })];
     if (!(Number(effective.customsUnitValue) >= 0) || !Number.isFinite(Number(effective.customsUnitValue))) {
       msgs.push("BOE Customs Unit Value is invalid");
     }
@@ -568,9 +729,12 @@ export function toPersistedGrnLineCustoms(effective) {
 
 export class CustomsGrnValidationError extends Error {
   constructor(errors = []) {
-    const flat = errors
-      .flatMap((e) => (e.messages || []).map((m) => `${e.article || e.line}: ${m}`))
-      .join("; ");
+    const grouped = formatCustomsCaptureErrorText(errors);
+    const flat =
+      grouped ||
+      errors
+        .flatMap((e) => (e.messages || []).map((m) => `${e.article || e.line}: ${m}`))
+        .join("; ");
     super(flat || "Customs validation failed");
     this.name = "CustomsGrnValidationError";
     this.code = "CUSTOMS_GRN_VALIDATION";

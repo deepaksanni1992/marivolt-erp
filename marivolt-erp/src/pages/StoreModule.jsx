@@ -26,6 +26,7 @@ import {
   buildGrnCustomsPayload,
   defaultGrnLineCustomsFields,
   emptyGrnCustomsState,
+  formatGrnCustomsValidationDisplay,
 } from "../lib/grnCustomsPayload.js";
 import {
   LABEL_TEMPLATE_NAME,
@@ -813,8 +814,12 @@ export default function StoreModule() {
       const csvText = await file.text();
       const data = await apiPost("/grn/import-preview", { poId, csvText });
       const errs = data.errors || [];
-      if (errs.length) {
-        setGrnUiErr(errs.map((x) => `Row ${x.line}: ${x.message}`).join(" · "));
+      const headerErrs = data.headerErrors || [];
+      const articleErrs = data.lineErrors || [];
+      if (headerErrs.length || articleErrs.length) {
+        setGrnUiErr(formatGrnCustomsValidationDisplay({ headerErrors: headerErrs, lineErrors: articleErrs }));
+      } else if (errs.length) {
+        setGrnUiErr(errs.map((x) => `${x.line === "HEADER" ? "HEADER" : `Row ${x.line}`}: ${x.message}`).join("\n"));
       } else {
         setGrnUiErr("");
       }
@@ -845,7 +850,6 @@ export default function StoreModule() {
           const merge = (key, raw) => {
             const v = raw == null || raw === "" ? "" : String(raw);
             if (!v) return prev[key];
-            if (String(prev[key] ?? "").trim()) return prev[key];
             return v;
           };
           return {
@@ -1894,13 +1898,13 @@ export default function StoreModule() {
               </button>
             </div>
             {grnUiErr ? (
-              <p
-                className={`mt-2 text-xs ${
+              <div
+                className={`mt-2 whitespace-pre-line text-xs ${
                   String(grnUiErr).startsWith("Posted ") ? "text-emerald-700" : "text-rose-600"
                 }`}
               >
                 {grnUiErr}
-              </p>
+              </div>
             ) : null}
             {loadGrnPoMut.isPending ? <p className="mt-2 text-xs text-slate-500">Loading PO…</p> : null}
 
@@ -2384,6 +2388,12 @@ export default function StoreModule() {
                   poNo={grnPoSnapshot?.header?.poNo || grnPoSnapshot?.header?.poNumber}
                   supplierName={grnPoSnapshot?.header?.supplierName}
                   defaultCurrency={grnPoSnapshot?.header?.currency || "USD"}
+                  validationText={
+                    String(grnUiErr || "").includes("CUSTOMS INFORMATION") ||
+                    String(grnUiErr || "").includes("ARTICLE ISSUES")
+                      ? grnUiErr
+                      : ""
+                  }
                   suggestedBoeQty={
                     (grnLinesForUi || []).reduce((sum, ln) => {
                       const id = ln.poLineId != null ? String(ln.poLineId) : "";

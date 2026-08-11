@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CUSTOMS_GRN_MANDATORY_EFFECTIVE,
+  isCustomsCaptureActive,
   resolveCustomsAllowances,
   resolveCustomsLineEffective,
   validateCustomsDates,
@@ -232,6 +233,40 @@ run("Dates are not silently mutated (parse preserves calendar day)", () => {
   assert.equal(eff.boeDate.getFullYear(), 2026);
   assert.equal(eff.boeDate.getMonth(), 6);
   assert.equal(eff.boeDate.getDate(), 28);
+});
+
+run("Received Date alone does not activate capture", () => {
+  assert.equal(isCustomsCaptureActive({ header: { receivedDate: todayStr, customsUom: "PCS" } }), false);
+  assert.equal(isCustomsCaptureActive({ header: { receivedDate: todayStr, boeNumber: "511685" } }), true);
+});
+
+run("Header missing declared value is one HEADER error not per line", () => {
+  const header = normalizeCustomsHeaderDefaults({
+    receivedDate: todayStr,
+    boeNumber: "BOE",
+    boeDate: yStr,
+    supplierInvoiceNumber: "SI",
+    supplierInvoiceDate: yStr,
+    countryOfOrigin: "IN",
+    hsCode: "1",
+    customsCurrency: "USD",
+    exchangeRateToAED: 3.67,
+    boeDeclaredQty: 2,
+    customsUom: "PCS",
+  });
+  const r = validateCustomsCaptureForGrn({
+    header,
+    lines: [
+      { poLineId: "a", article: "ART-1", acceptedQty: 1, location: "BIN-1", uom: "PCS" },
+      { poLineId: "b", article: "ART-2", acceptedQty: 1, location: "BIN-1", uom: "PCS" },
+    ],
+    poDate: yStr,
+  });
+  assert.equal(r.ok, false);
+  const headerHits = r.errors.filter((e) => e.line === "HEADER");
+  const lineValueHits = r.errors.filter((e) => e.line !== "HEADER" && e.messages.some((m) => /Declared Value/.test(m)));
+  assert.ok(headerHits.some((e) => e.messages.some((m) => /BOE Declared Value is required/.test(m))));
+  assert.equal(lineValueHits.length, 0);
 });
 
 run("Capture validation aggregates per line", () => {
