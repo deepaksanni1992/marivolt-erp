@@ -38,12 +38,14 @@ import {
   buildInitialGrnLabelIdempotencyKey,
   defaultLabelLineFields,
   formatLabelDistribution,
+  formatLabelDistributionCompact,
   formatLabelsQueuedMessage,
   getLineLabelDistribution,
   newGrnDraftRef,
   resolveCompletedGrnLabelPrint,
   resolvePostGrnLabelMode,
   sumPhysicalLabelQty,
+  syncLabelFieldsFromCustomDistribution,
   syncLabelFieldsFromLabelCount,
   syncLabelFieldsFromQtyPerLabel,
   validateInitialLabelLines,
@@ -2313,7 +2315,7 @@ export default function StoreModule() {
                                 />
                                 {ed.printLabel !== false && Number(ed.grnQty) > 0 ? (
                                   <span className="max-w-[88px] truncate text-[9px] leading-tight text-slate-500" title={`Distribution: ${formatLabelDistribution(getLineLabelDistribution(ed))}`}>
-                                    {formatLabelDistribution(getLineLabelDistribution(ed))}
+                                    {formatLabelDistributionCompact(getLineLabelDistribution(ed))}
                                   </span>
                                 ) : null}
                               </div>
@@ -5525,12 +5527,39 @@ export default function StoreModule() {
         poNo={grnPoSnapshot?.header?.poNo || grnPoSnapshot?.header?.poNumber || ""}
         lines={grnLabelPreview?.previewRows || []}
         totalLabels={grnLabelPreview?.totalLabels || 0}
+        copies={labelCopies}
         isPrinting={queueGrnPrepostLabelsMut.isPending}
         staleWarning={
           grnStaleLabelWarnings.length
             ? grnStaleLabelWarnings.map((w) => w.message).join(" ")
             : ""
         }
+        onLineConfigChange={(poLineId, patch) => {
+          const id = poLineId != null ? String(poLineId) : "";
+          if (!id) return;
+          setGrnLineEdits((prev) => {
+            const ed = prev[id] || {};
+            const nextEd =
+              patch?.labelEditMode === "custom"
+                ? syncLabelFieldsFromCustomDistribution(ed, patch.labelDistribution)
+                : syncLabelFieldsFromLabelCount(ed, patch.labelCount);
+            setGrnLabelPreview((p) => {
+              if (!p) return p;
+              const lines = (p.lines || []).map((ln) => {
+                const lineId = ln.poLineId != null ? String(ln.poLineId) : "";
+                if (lineId !== id) return ln;
+                return buildLabelLinesFromEdits([ln], { [id]: nextEd })[0] || ln;
+              });
+              return {
+                ...p,
+                lines,
+                previewRows: buildGrnLabelPreviewRows(lines),
+                totalLabels: sumPhysicalLabelQty(lines),
+              };
+            });
+            return { ...prev, [id]: nextEd };
+          });
+        }}
         onCancel={() => {
           if (!queueGrnPrepostLabelsMut.isPending) setGrnLabelPreview(null);
         }}

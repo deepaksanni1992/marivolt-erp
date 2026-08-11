@@ -124,8 +124,31 @@ export function formatLabelDistribution(dist = []) {
 }
 
 /**
+ * Parse user-entered distribution: "50 + 50 + 18" or "50,50,18" or "50 50 18".
+ */
+export function parseDistributionInput(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return [];
+  return text
+    .split(/[,+\s]+/)
+    .map((p) => toFiniteNumber(p))
+    .filter((n) => Number.isFinite(n));
+}
+
+/** Compact summary when a + b + c would be too long. */
+export function formatLabelDistributionCompact(dist = [], { maxParts = 8 } = {}) {
+  const parts = dist || [];
+  if (parts.length === 0) return "—";
+  if (parts.length <= maxParts) return formatLabelDistribution(parts);
+  const total = sumDistribution(parts);
+  const totalText = isWholeQty(total) ? String(Math.round(total)) : String(total);
+  return `${parts.length} labels · Total Qty ${totalText}`;
+}
+
+/**
  * Resolve distribution for a print-enabled GRN line.
- * Prefer explicit labelDistribution when valid; else qtyPerLabel; else labelCount; else unit stickers.
+ * Prefer explicit labelDistribution when valid; else No. Labels (labelCount);
+ * else qtyPerLabel; else a single label of the full GRN qty.
  */
 export function resolveLabelDistribution({
   grnQty,
@@ -139,13 +162,39 @@ export function resolveLabelDistribution({
   }
 
   if (Array.isArray(labelDistribution) && labelDistribution.length > 0) {
-    const dist = labelDistribution.map((q) => toFiniteNumber(q)).filter((q) => Number.isFinite(q) && q > 0);
+    const dist = [];
+    for (const q of labelDistribution) {
+      const n = toFiniteNumber(q);
+      if (!Number.isFinite(n) || n <= 0) {
+        return {
+          ok: false,
+          distribution: labelDistribution.map((x) => toFiniteNumber(x)),
+          message: "Each label quantity must be a number greater than 0.",
+        };
+      }
+      dist.push(n);
+    }
+    if (isWholeQty(total) && dist.some((q) => !isWholeQty(q))) {
+      return {
+        ok: false,
+        distribution: dist,
+        message: "Label quantities must be whole numbers when GRN Qty is a whole number.",
+      };
+    }
     const sum = sumDistribution(dist);
     if (Math.abs(sum - total) > 1e-6) {
       return {
         ok: false,
         distribution: dist,
-        message: `Label distribution sum (${sum}) must equal GRN Qty (${total}).`,
+        message: `Distribution total ${sum} does not match GRN Qty ${total}.`,
+      };
+    }
+    const count = toFiniteNumber(labelCount);
+    if (Number.isFinite(count) && count > 0 && Math.round(count) !== dist.length) {
+      return {
+        ok: false,
+        distribution: dist,
+        message: `No. Labels (${Math.round(count)}) must match distribution length (${dist.length}).`,
       };
     }
     return { ok: true, distribution: dist, message: "" };
@@ -153,30 +202,28 @@ export function resolveLabelDistribution({
 
   const per = toFiniteNumber(qtyPerLabel);
   const count = toFiniteNumber(labelCount);
+  const hasCount = Number.isFinite(count) && count > 0 && labelCount != null && labelCount !== "";
+  const hasPer = Number.isFinite(per) && per > 0;
 
-  if (Number.isFinite(per) && per > 0 && !(Number.isFinite(count) && count > 0 && labelCount != null && labelCount !== "")) {
-    const dist = distributeByQtyPerLabel(total, per);
-    return { ok: true, distribution: dist, message: "" };
-  }
-
-  if (Number.isFinite(count) && count > 0 && !(Number.isFinite(per) && per > 0)) {
+  if (hasCount) {
+    if (isWholeQty(total) && Math.floor(count) > Math.round(total)) {
+      return {
+        ok: false,
+        distribution: [],
+        message: `No. Labels (${Math.floor(count)}) cannot exceed GRN Qty (${Math.round(total)}) for integer quantities.`,
+      };
+    }
     const dist = distributeByLabelCount(total, count);
     return { ok: true, distribution: dist, message: "" };
   }
 
-  // Both provided: prefer qty-per-label primary rule, then verify count matches length (or recompute count).
-  if (Number.isFinite(per) && per > 0) {
+  if (hasPer) {
     const dist = distributeByQtyPerLabel(total, per);
     return { ok: true, distribution: dist, message: "" };
   }
 
-  if (Number.isFinite(count) && count > 0) {
-    const dist = distributeByLabelCount(total, count);
-    return { ok: true, distribution: dist, message: "" };
-  }
-
-  // Legacy default: one unit per label
-  const dist = distributeByQtyPerLabel(total, 1);
+  // Default: one physical label carrying the full GRN qty (not one sticker per piece).
+  const dist = distributeByLabelCount(total, 1);
   return { ok: true, distribution: dist, message: "" };
 }
 
@@ -189,22 +236,25 @@ export function validateGrnLabelLinePrintConfig(line = {}, { allowExceed = false
 
   const grnQty = toFiniteNumber(line.receivedQty ?? line.grnQty);
   const qtyPerLabel = toFiniteNumber(line.qtyPerLabel ?? line.labelQtyPerLabel);
-  const labelCount = toFiniteNumber(line.labelCount ?? line.noOfLabels);
+  const labelCount = toFiniteNumber(line.labelCount ?? line.noOfLabels ?? line.labelQty);
+  const hasDist = Array.isArray(line.labelDistribution) && line.labelDistribution.length > 0;
+  const hasCount = Number.isFinite(labelCount) && labelCount > 0;
+  const hasPer = Number.isFinite(qtyPerLabel) && qtyPerLabel > 0;
 
   if (!Number.isFinite(grnQty) || grnQty <= 0) {
     return { ok: false, distribution: [], message: "GRN Qty must be greater than 0 for print-enabled lines." };
   }
-  if (!Number.isFinite(qtyPerLabel) || qtyPerLabel <= 0) {
-    return { ok: false, distribution: [], message: "Qty / Label must be greater than 0 for print-enabled lines." };
-  }
-  if (!Number.isFinite(labelCount) || labelCount <= 0) {
+  if (hasCount && labelCount <= 0) {
     return { ok: false, distribution: [], message: "No. Labels must be greater than 0 for print-enabled lines." };
+  }
+  if (hasPer && qtyPerLabel <= 0) {
+    return { ok: false, distribution: [], message: "Qty / Label must be greater than 0 for print-enabled lines." };
   }
 
   const resolved = resolveLabelDistribution({
     grnQty,
-    qtyPerLabel,
-    labelCount,
+    qtyPerLabel: hasPer ? qtyPerLabel : undefined,
+    labelCount: hasCount ? labelCount : undefined,
     labelDistribution: line.labelDistribution,
   });
   if (!resolved.ok) return resolved;
@@ -236,7 +286,7 @@ export function validateGrnLabelLinePrintConfig(line = {}, { allowExceed = false
   return {
     ok: true,
     distribution: dist,
-    qtyPerLabel,
+    qtyPerLabel: hasPer ? qtyPerLabel : dist[0],
     labelCount: dist.length,
     message: "",
   };
@@ -274,11 +324,24 @@ export function isSuccessfulLabelJobStatus(status) {
 export function formatGrnLabelPreviewSummaryLine(ln = {}) {
   const article = String(ln.article || "—").trim() || "—";
   const grnQty = ln.grnQty ?? ln.receivedQty ?? "";
-  const count = ln.labelCount ?? (Array.isArray(ln.labelDistribution) ? ln.labelDistribution.length : "");
-  const distText =
-    ln.distributionText ||
-    formatLabelDistribution(ln.labelDistribution || []);
-  return `${article} — GRN ${grnQty} — ${count} label${Number(count) === 1 ? "" : "s"} — ${distText || "—"}`;
+  const dist = Array.isArray(ln.labelDistribution) ? ln.labelDistribution : [];
+  const count = ln.labelCount ?? (dist.length || "");
+  const labelWord = Number(count) === 1 ? "label" : "labels";
+  const distText = dist.length
+    ? formatLabelDistributionCompact(dist)
+    : ln.distributionText || "—";
+  return `${article} — GRN Qty ${grnQty} — ${count} ${labelWord} — Distribution ${distText}`;
+}
+
+/** Print button: physical definitions vs printer copies. */
+export function formatGrnLabelPrintButtonText(physicalLabels, copies = 1) {
+  const n = Math.max(0, Math.floor(Number(physicalLabels) || 0));
+  const c = Math.max(1, Math.floor(Number(copies) || 1));
+  const output = n * c;
+  if (c > 1) {
+    return output === 1 ? "Print 1 Copy/Label" : `Print ${output} Copies/Labels`;
+  }
+  return n === 1 ? "Print 1 Label" : `Print ${n} Labels`;
 }
 
 /** New draft reference for pre-GRN printing (no fake GRN number). */

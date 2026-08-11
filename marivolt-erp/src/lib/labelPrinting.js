@@ -4,6 +4,8 @@ import {
   distributeByQtyPerLabel,
   distributeByLabelCount,
   formatLabelDistribution,
+  formatLabelDistributionCompact,
+  formatGrnLabelPrintButtonText,
   validateGrnLabelLinePrintConfig,
   buildGrnLabelConfigFingerprint,
   newGrnDraftRef,
@@ -29,26 +31,28 @@ export {
   distributeByQtyPerLabel,
   distributeByLabelCount,
   formatLabelDistribution,
+  formatLabelDistributionCompact,
+  formatGrnLabelPrintButtonText,
   buildGrnLabelConfigFingerprint,
   newGrnDraftRef,
   isSuccessfulLabelJobStatus,
   formatGrnLabelPreviewSummaryLine,
 };
 
-/** Default: Qty/Label = 1, No. Labels derived from GRN Qty (decimal-safe). */
+/** Default: one physical label carrying the full GRN qty (not one sticker per piece). */
 export function defaultLabelLineFields(grnQty) {
   const q = Math.max(0, Number(grnQty) || 0);
-  const dist = q > 0 ? distributeByQtyPerLabel(q, 1) : [];
-  const count = dist.length;
+  const dist = q > 0 ? distributeByLabelCount(q, 1) : [];
   return {
     printLabel: true,
-    labelQtyPerLabel: "1",
-    labelCount: String(count),
+    labelQtyPerLabel: q > 0 ? String(dist[0] ?? q) : "0",
+    labelCount: q > 0 ? "1" : "0",
     /** @deprecated kept in sync as physical label count for older callers */
-    labelQty: String(count),
+    labelQty: q > 0 ? "1" : "0",
+    labelDistribution: dist,
     labelConfigCustomized: false,
-    /** 'perLabel' | 'count' — which field last drove distribution */
-    labelEditMode: "perLabel",
+    /** 'perLabel' | 'count' | 'custom' — which field last drove distribution */
+    labelEditMode: "count",
   };
 }
 
@@ -57,8 +61,11 @@ export function applyGrnQtyToLabelFields(ed, grnQty, { forceDefault = false } = 
   const q = Math.max(0, Number(grnQty) || 0);
   const qStr = String(grnQty);
   if (!forceDefault && ed?.labelConfigCustomized) {
-    if (ed.labelEditMode === "count") {
-      const count = Math.max(0, Math.floor(Number(ed.labelCount) || 0));
+    if (ed.labelEditMode === "custom" || ed.labelEditMode === "count") {
+      const count = Math.max(
+        0,
+        Math.floor(Number(ed.labelCount) || (Array.isArray(ed.labelDistribution) ? ed.labelDistribution.length : 0) || 0)
+      );
       if (count > 0) {
         const dist = distributeByLabelCount(q, count);
         return {
@@ -67,6 +74,7 @@ export function applyGrnQtyToLabelFields(ed, grnQty, { forceDefault = false } = 
           labelCount: String(dist.length),
           labelQty: String(dist.length),
           labelQtyPerLabel: dist[0] != null ? String(dist[0]) : ed.labelQtyPerLabel,
+          labelDistribution: dist,
           labelEditMode: "count",
         };
       }
@@ -80,6 +88,7 @@ export function applyGrnQtyToLabelFields(ed, grnQty, { forceDefault = false } = 
         labelQtyPerLabel: String(ed.labelQtyPerLabel),
         labelCount: String(dist.length),
         labelQty: String(dist.length),
+        labelDistribution: dist,
         labelEditMode: "perLabel",
       };
     }
@@ -110,6 +119,7 @@ export function syncLabelFieldsFromQtyPerLabel(ed, qtyPerLabelRaw) {
     labelQtyPerLabel: String(qtyPerLabelRaw),
     labelCount: String(dist.length),
     labelQty: String(dist.length),
+    labelDistribution: dist,
     labelConfigCustomized: true,
     labelEditMode: "perLabel",
   };
@@ -133,15 +143,35 @@ export function syncLabelFieldsFromLabelCount(ed, labelCountRaw) {
     labelCount: String(Math.floor(count)),
     labelQty: String(dist.length),
     labelQtyPerLabel: String(primary),
+    labelDistribution: dist,
     labelConfigCustomized: true,
     labelEditMode: "count",
   };
 }
 
+export function syncLabelFieldsFromCustomDistribution(ed, distRaw) {
+  const dist = (Array.isArray(distRaw) ? distRaw : [])
+    .map((q) => Number(q))
+    .filter((q) => Number.isFinite(q) && q > 0);
+  const primary = dist[0] != null ? dist[0] : ed?.labelQtyPerLabel;
+  return {
+    ...ed,
+    labelDistribution: dist,
+    labelCount: String(dist.length),
+    labelQty: String(dist.length),
+    labelQtyPerLabel: primary != null ? String(primary) : ed?.labelQtyPerLabel,
+    labelConfigCustomized: true,
+    labelEditMode: "custom",
+  };
+}
+
 export function getLineLabelDistribution(ed) {
   const grnQty = Number(ed?.grnQty) || 0;
+  if (ed?.labelEditMode === "custom" && Array.isArray(ed.labelDistribution) && ed.labelDistribution.length) {
+    return ed.labelDistribution.map(Number).filter((q) => Number.isFinite(q) && q > 0);
+  }
   const per = Number(ed?.labelQtyPerLabel);
-  const count = Number(ed?.labelCount);
+  const count = Number(ed?.labelCount ?? ed?.labelQty);
   if (ed?.labelEditMode === "count" && Number.isFinite(count) && count > 0) {
     return distributeByLabelCount(grnQty, Math.floor(count));
   }
@@ -151,7 +181,7 @@ export function getLineLabelDistribution(ed) {
   if (Number.isFinite(count) && count > 0) {
     return distributeByLabelCount(grnQty, Math.floor(count));
   }
-  return distributeByQtyPerLabel(grnQty, 1);
+  return distributeByLabelCount(grnQty, 1);
 }
 
 export function buildLabelLinesFromEdits(selectedLines, lineEdits) {
@@ -309,7 +339,7 @@ export function validateInitialLabelLines(labelLines) {
       article: ln.article,
       receivedQty: ln.receivedQty ?? ln.grnQty,
       qtyPerLabel: ln.qtyPerLabel ?? ln.labelQtyPerLabel,
-      labelCount: ln.labelCount,
+      labelCount: ln.labelCount ?? ln.noOfLabels ?? ln.labelQty,
       labelDistribution: ln.labelDistribution,
     });
     if (!v.ok) return { ok: false, message: v.message };
@@ -330,11 +360,13 @@ export function buildGrnLabelPreviewRows(labelLines) {
           });
       return {
         article: ln.article,
+        description: ln.description || "",
         poLineId: ln.poLineId,
         grnQty: Number(ln.receivedQty ?? ln.grnQty) || 0,
+        uom: ln.uom || "",
         labelCount: dist.length,
         labelDistribution: dist,
-        distributionText: formatLabelDistribution(dist),
+        distributionText: formatLabelDistributionCompact(dist),
         labels: dist.map((qty, index) => ({ index: index + 1, qty })),
       };
     });

@@ -5,6 +5,7 @@ import assert from "assert";
 import {
   buildInitialGrnLabelIdempotencyKey,
   buildLabelLinesFromEdits,
+  defaultLabelLineFields,
   formatLabelsQueuedMessage,
   resolvePostGrnLabelMode,
   sumPhysicalLabelQty,
@@ -70,6 +71,16 @@ run("validateInitialLabelLines rejects over-received", () => {
   assert.equal(bad.ok, false);
   const good = validateInitialLabelLines([{ print: true, labelQty: 2, receivedQty: 2, article: "X" }]);
   assert.equal(good.ok, true);
+});
+
+run("default preview for 118 is one label of 118", () => {
+  const selected = [{ poLineId: "p1", article: "260811" }];
+  const edits = {
+    p1: { selected: true, grnQty: "118", printLabel: true, ...defaultLabelLineFields(118) },
+  };
+  const lines = buildLabelLinesFromEdits(selected, edits);
+  assert.deepEqual(lines[0].labelDistribution, [118]);
+  assert.equal(sumPhysicalLabelQty(lines), 1);
 });
 
 run("idempotency key is stable per GRN", () => {

@@ -36,7 +36,7 @@ import LabelPrintJob from "../../models/LabelPrintJob.js";
 import { encodeBarcodeValue } from "./barcodeGenerator.js";
 import { buildJobTspl, buildTestLabelTspl } from "./tsplGenerator.js";
 import {
-  distributeByQtyPerLabel,
+  distributeByLabelCount,
   validateGrnLabelLinePrintConfig,
   buildGrnLabelConfigFingerprint,
 } from "../../utils/grnLabelDistribution.js";
@@ -145,20 +145,20 @@ function buildGrnJobLineFromSelection({
         ? Number(sel.qtyPerLabel)
         : sel.labelQtyPerLabel != null && sel.labelQtyPerLabel !== ""
           ? Number(sel.labelQtyPerLabel)
-          : 1;
+          : undefined;
     const countRaw =
       sel.labelCount != null && sel.labelCount !== ""
         ? Number(sel.labelCount)
         : sel.noOfLabels != null && sel.noOfLabels !== ""
           ? Number(sel.noOfLabels)
-          : null;
+          : undefined;
 
     const validated = validateGrnLabelLinePrintConfig({
       print: true,
       article,
       receivedQty,
-      qtyPerLabel: qtyPer,
-      labelCount: countRaw != null && Number.isFinite(countRaw) ? countRaw : distributeByQtyPerLabel(receivedQty, qtyPer).length,
+      qtyPerLabel: Number.isFinite(qtyPer) && qtyPer > 0 ? qtyPer : undefined,
+      labelCount: Number.isFinite(countRaw) && countRaw > 0 ? countRaw : undefined,
       labelDistribution: Array.isArray(sel.labelDistribution) ? sel.labelDistribution : undefined,
     });
     if (!validated.ok) {
@@ -194,9 +194,9 @@ function buildGrnJobLineFromSelection({
       throw err;
     }
     if (!allowLegacyUnitStickers) {
-      // Convert legacy count into unit distribution for pre-post default
-      labelDistribution = distributeByQtyPerLabel(legacyQty, 1);
-      qtyPerLabel = 1;
+      // Compact default: one physical label of the received qty (not one sticker per piece).
+      labelDistribution = distributeByLabelCount(receivedQty > 0 ? receivedQty : legacyQty, 1);
+      qtyPerLabel = labelDistribution[0] || receivedQty || legacyQty;
       labelCount = labelDistribution.length;
       labelQty = labelCount;
     } else {
@@ -498,7 +498,7 @@ export async function createJobsFromGrnPrepost(req, body = {}) {
         ...sel,
         print: true,
         // Force distribution mode for pre-post (no silent legacy unit-only ambiguity when new fields sent)
-        qtyPerLabel: sel.qtyPerLabel ?? sel.labelQtyPerLabel ?? (sel.labelDistribution ? undefined : 1),
+        qtyPerLabel: sel.qtyPerLabel ?? sel.labelQtyPerLabel,
         labelCount: sel.labelCount ?? sel.noOfLabels,
         labelDistribution: sel.labelDistribution,
         labelQty: sel.labelQty,
