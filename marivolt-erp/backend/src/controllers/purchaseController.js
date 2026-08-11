@@ -15,7 +15,17 @@ import { writeAudit, writeStatusChange } from "../services/auditService.js";
 import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentController.js";
 import { nextGrnNo } from "../services/grnNumberService.js";
 import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js";
-import { calcPoDiscountTotal, calcPoGrandTotal, poHeaderCost } from "../utils/poTotals.js";
+import {
+  calcPoDiscountTotal,
+  calcPoGrandTotal,
+  calcPoGrandTotalFromAdjustments,
+  hasPersistedPoAdjustments,
+  legacyCostsFromAdjustments,
+  poHeaderCost,
+  preparePoAdjustmentsForSave,
+  validatePoAdjustments,
+  withDerivedDiscountAmounts,
+} from "../utils/poTotals.js";
 import {
   mergePoLineBases,
   poLineToPlain,
@@ -107,6 +117,21 @@ function fillBlankBuyerSnapshot(doc, company) {
   }
 }
 
+function applyIncomingPoAdjustments(target, incoming) {
+  if (!Array.isArray(incoming)) return null;
+  const errors = validatePoAdjustments(incoming);
+  if (errors.length) {
+    const err = new Error(errors[0]);
+    err.statusCode = 400;
+    err.details = errors;
+    throw err;
+  }
+  const prepared = preparePoAdjustmentsForSave(incoming);
+  target.adjustments = prepared;
+  Object.assign(target, legacyCostsFromAdjustments(prepared, 0));
+  return prepared;
+}
+
 function recalcPoTotals(doc) {
   let sub = 0;
   const cur = doc.currency || "USD";
@@ -123,6 +148,13 @@ function recalcPoTotals(doc) {
     sub += line.lineTotal;
   }
   doc.subTotal = sub;
+  if (hasPersistedPoAdjustments(doc)) {
+    const prepared = preparePoAdjustmentsForSave(doc.adjustments);
+    doc.adjustments = withDerivedDiscountAmounts(prepared, sub);
+    Object.assign(doc, legacyCostsFromAdjustments(prepared, sub));
+    doc.grandTotal = calcPoGrandTotalFromAdjustments(sub, prepared);
+    return;
+  }
   const discountType = String(doc.discountType || "NONE").toUpperCase();
   const discountValue = Math.max(0, Number(doc.discountValue) || 0);
   doc.discountType = ["PERCENT", "FLAT"].includes(discountType) ? discountType : "NONE";
@@ -277,6 +309,11 @@ export async function createPurchaseOrder(req, res) {
         supplierSnapshot.supplierPaymentTerms
       )
     );
+    try {
+      applyIncomingPoAdjustments(body, body.adjustments);
+    } catch (adjErr) {
+      return res.status(400).json({ message: adjErr.message, details: adjErr.details });
+    }
     body.currency = supplierSnapshot.currency;
     body.exchangeRate = Number(body.exchangeRate) || 1;
     body.approvalStatus = "NOT_REQUIRED";
@@ -559,6 +596,7 @@ export async function updatePurchaseOrder(req, res) {
       "miscellaneousCost",
       "discountType",
       "discountValue",
+      "adjustments",
       "showMaterialCodeOnPrint",
       "showMachineDetailsOnPrint",
     ];
@@ -627,6 +665,13 @@ export async function updatePurchaseOrder(req, res) {
       ).trim();
       doc.payment = v;
       doc.paymentTerms = v;
+    }
+    if (patch.adjustments !== undefined) {
+      try {
+        applyIncomingPoAdjustments(doc, patch.adjustments);
+      } catch (adjErr) {
+        return res.status(400).json({ message: adjErr.message, details: adjErr.details });
+      }
     }
     fillBlankBuyerSnapshot(doc, company);
     if (doc.poNo && !doc.poNumber) doc.poNumber = doc.poNo;

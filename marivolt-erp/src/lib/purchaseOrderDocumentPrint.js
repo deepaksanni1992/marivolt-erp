@@ -1,6 +1,6 @@
 import { getReportBranding } from "./reportBranding.js";
 import { downloadSearchableReportPdf } from "./reportPdfClient.js";
-import { calcPoTotalsFromDoc } from "./poTotals.js";
+import { buildPoDocumentTotalsRowsHtml } from "./poTotals.js";
 import { PDF_OPTS_ITEM_LINES, PO_LINE_COLGROUP, PO_LINE_TABLE_HEAD } from "./reportTableLayout.js";
 import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 import { notify } from "./notifications.js";
@@ -47,8 +47,6 @@ function formatPoDateLocale(val) {
  */
 export function buildPurchaseOrderDocumentHtml(doc, company = null) {
   const lines = Array.isArray(doc?.lines) ? doc.lines : [];
-  const { subTotal, discountTotal, packingCost, handlingCost, miscellaneousCost, grandTotal: grand } =
-    calcPoTotalsFromDoc(doc);
   const cur = escapeHtml(doc.currency || "USD");
 
   const buyer = {
@@ -297,12 +295,7 @@ ${SALES_QUOTATION_STYLE_PRINT_CSS}
 
   <div class="print-totals po-totals totals-section" style="display:flex;justify-content:flex-end;border-top:1px solid #e5e7eb;padding-top:16px">
     <div style="width:280px;font-size:13px">
-      <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Line items subtotal</span><span style="font-weight:600;color:#111">${cur} ${subTotal.toFixed(2)}</span></div>
-      <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Packing cost</span><span style="font-weight:600;color:#111">${cur} ${packingCost.toFixed(2)}</span></div>
-      <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Handling cost</span><span style="font-weight:600;color:#111">${cur} ${handlingCost.toFixed(2)}</span></div>
-      <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Miscellaneous cost</span><span style="font-weight:600;color:#111">${cur} ${miscellaneousCost.toFixed(2)}</span></div>
-      <div style="display:flex;justify-content:space-between;color:#4b5563;margin-bottom:6px"><span>Discount</span><span style="font-weight:600;color:#111">${cur} ${discountTotal.toFixed(2)}</span></div>
-      <div style="display:flex;justify-content:space-between;padding-top:8px;border-top:1px solid #e5e7eb;font-size:16px;font-weight:700;color:#1f3a5f"><span>Grand total</span><span>${cur} ${grand.toFixed(2)}</span></div>
+      ${buildPoDocumentTotalsRowsHtml(doc, cur)}
     </div>
   </div>
 

@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Papa from "papaparse";
 import Modal from "../components/erp/Modal.jsx";
 import PoAccountsPanel from "../components/purchase/PoAccountsPanel.jsx";
+import PoAdjustmentsEditor, { newPoAdjustmentRow } from "../components/purchase/PoAdjustmentsEditor.jsx";
 import PoSupplierDocUploadModal from "../components/purchase/PoSupplierDocUploadModal.jsx";
 import { FormField, TextInput } from "../components/erp/FormField.jsx";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
@@ -13,7 +14,17 @@ import {
   supplierPartNumberForPrint,
   materialCodeForPrint,
 } from "../lib/purchaseOrderDocumentPrint.js";
-import { calcPoTotalsFromDoc, calcPoTotalsPreview, poHeaderCost, supplierPartNumberDisplay } from "../lib/poTotals.js";
+import {
+  calcPoTotalsFromDoc,
+  calcPoTotalsPreview,
+  legacyCostsFromAdjustments,
+  listVisiblePoTotalRows,
+  poHeaderCost,
+  preparePoAdjustmentsForSave,
+  resolvePoAdjustments,
+  supplierPartNumberDisplay,
+  validatePoAdjustments,
+} from "../lib/poTotals.js";
 import {
   clearPoFromAllocationSession,
   readPoFromAllocationSession,
@@ -97,6 +108,7 @@ function initialPoForm(company) {
     miscellaneousCost: 0,
     discountType: "NONE",
     discountValue: 0,
+    adjustments: [],
     showMaterialCodeOnPrint: false,
     showMachineDetailsOnPrint: false,
     sourceType: "",
@@ -221,6 +233,10 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
     })
     .filter((l) => includeIncompleteLines || (l.itemCode && l.qty > 0));
 
+  const preparedAdjustments = preparePoAdjustmentsForSave(form.adjustments);
+  const lineSubTotal = lines.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0), 0);
+  const syncedCosts = legacyCostsFromAdjustments(preparedAdjustments, lineSubTotal);
+
   const orderDate =
     form.orderDate && String(form.orderDate).trim()
       ? new Date(`${form.orderDate}T12:00:00`).toISOString()
@@ -261,11 +277,12 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
     specialRemarks: form.specialRemarks ?? "",
     termsAndConditions: form.termsAndConditions ?? "",
     closingNote: form.closingNote ?? "",
-    packingCost: poHeaderCost(form.packingCost),
-    handlingCost: poHeaderCost(form.handlingCost),
-    miscellaneousCost: poHeaderCost(form.miscellaneousCost),
-    discountType: form.discountType || "NONE",
-    discountValue: Math.max(0, Number(form.discountValue) || 0),
+    packingCost: syncedCosts.packingCost,
+    handlingCost: syncedCosts.handlingCost,
+    miscellaneousCost: syncedCosts.miscellaneousCost,
+    discountType: syncedCosts.discountType,
+    discountValue: syncedCosts.discountValue,
+    adjustments: preparedAdjustments,
     showMaterialCodeOnPrint: !!form.showMaterialCodeOnPrint,
     showMachineDetailsOnPrint: !!form.showMachineDetailsOnPrint,
     sourceType: form.sourceOrderAllocationId ? form.sourceType || "ORDER_ALLOCATION" : "",
@@ -372,6 +389,22 @@ function purchaseOrderApiToForm(po) {
     miscellaneousCost: poHeaderCost(po.miscellaneousCost),
     discountType: po.discountType || "NONE",
     discountValue: Math.max(0, Number(po.discountValue) || 0),
+    adjustments: resolvePoAdjustments(po).map((row, i) => ({
+      ...newPoAdjustmentRow(row.type),
+      key: `loaded-${i}-${row.type}`,
+      type: row.type,
+      label: row.label || "",
+      amount: row.amount != null && row.amount !== "" ? String(row.amount) : "",
+      discountMode: row.type === "DISCOUNT" ? row.discountMode || "FLAT" : undefined,
+      discountValue:
+        row.type === "DISCOUNT" && row.discountValue != null && row.discountValue !== ""
+          ? String(row.discountValue)
+          : row.type === "DISCOUNT" && row.amount != null && row.amount !== ""
+            ? String(row.amount)
+            : row.type === "DISCOUNT"
+              ? ""
+              : undefined,
+    })),
     showMaterialCodeOnPrint: !!po.showMaterialCodeOnPrint,
     showMachineDetailsOnPrint: !!po.showMachineDetailsOnPrint,
     sourceType: po.sourceType || "",
@@ -579,8 +612,7 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
   const lines = doc.lines || [];
   const showMaterialCode = supplierFacing ? !!doc.showMaterialCodeOnPrint : true;
   const showMachineDetails = supplierFacing ? !!doc.showMachineDetailsOnPrint : true;
-  const { subTotal, discountTotal, packingCost, handlingCost, miscellaneousCost, grandTotal: grand } =
-    calcPoTotalsFromDoc(doc);
+  const { subTotal, grandTotal: grand, rows: totalRows } = listVisiblePoTotalRows(doc);
   const cur = doc.currency || "USD";
   const buyer = {
     name: doc.buyerLegalName || "—",
@@ -897,22 +929,14 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
                 {cur} {subTotal.toFixed(2)}
               </span>
             </div>
-            <div className="flex justify-between text-[#4b5563]">
-              <span>Packing cost</span>
-              <span className="font-semibold text-[#111827]">{cur} {packingCost.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between text-[#4b5563]">
-              <span>Handling cost</span>
-              <span className="font-semibold text-[#111827]">{cur} {handlingCost.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between text-[#4b5563]">
-              <span>Miscellaneous cost</span>
-              <span className="font-semibold text-[#111827]">{cur} {miscellaneousCost.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between text-[#4b5563]">
-              <span>Discount</span>
-              <span className="font-semibold text-[#111827]">{cur} {discountTotal.toFixed(2)}</span>
-            </div>
+            {totalRows.map((row, idx) => (
+              <div key={`${row.type}-${row.label}-${idx}`} className="flex justify-between text-[#4b5563]">
+                <span>{row.label}</span>
+                <span className="font-semibold text-[#111827]">
+                  {cur} {row.amount.toFixed(2)}
+                </span>
+              </div>
+            ))}
             <div className="flex justify-between border-t border-[#e5e7eb] pt-1 text-base font-bold text-[#1f3a5f]">
               <span>Grand total</span>
               <span>
@@ -1279,6 +1303,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
 
   const poPreviewTotals = useMemo(() => calcPoTotalsPreview(form), [
     form.lines,
+    form.adjustments,
     form.packingCost,
     form.handlingCost,
     form.miscellaneousCost,
@@ -1506,12 +1531,13 @@ export default function Purchase({ procurementEmbed = false } = {}) {
       orderDate: form.orderDate,
       lines: form.lines,
       subTotal: poPreviewTotals.subTotal,
-      discountType: form.discountType || "NONE",
-      discountValue: form.discountValue ?? 0,
+      discountType: poPreviewTotals.discountType || form.discountType || "NONE",
+      discountValue: poPreviewTotals.discountValue ?? form.discountValue ?? 0,
       discountTotal: poPreviewTotals.discountTotal,
       packingCost: poPreviewTotals.packingCost,
       handlingCost: poPreviewTotals.handlingCost,
       miscellaneousCost: poPreviewTotals.miscellaneousCost,
+      adjustments: Array.isArray(form.adjustments) ? form.adjustments : [],
       grandTotal: poPreviewTotals.grandTotal,
       status: form.status || "DRAFT",
       __unsavedDraft: isNewDraft,
@@ -2606,22 +2632,17 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                       <span className="text-gray-500">Line items subtotal</span>
                       <span className="font-medium">{detail.currency} {t.subTotal.toFixed(2)}</span>
                     </div>
-                    <div className="flex w-full max-w-xs justify-between tabular-nums text-gray-600">
-                      <span>Packing cost</span>
-                      <span>{detail.currency} {t.packingCost.toFixed(2)}</span>
-                    </div>
-                    <div className="flex w-full max-w-xs justify-between tabular-nums text-gray-600">
-                      <span>Handling cost</span>
-                      <span>{detail.currency} {t.handlingCost.toFixed(2)}</span>
-                    </div>
-                    <div className="flex w-full max-w-xs justify-between tabular-nums text-gray-600">
-                      <span>Miscellaneous cost</span>
-                      <span>{detail.currency} {t.miscellaneousCost.toFixed(2)}</span>
-                    </div>
-                    <div className="flex w-full max-w-xs justify-between tabular-nums text-gray-600">
-                      <span>Discount</span>
-                      <span>{detail.currency} {t.discountTotal.toFixed(2)}</span>
-                    </div>
+                    {listVisiblePoTotalRows(detail).rows.map((row, idx) => (
+                      <div
+                        key={`${row.type}-${row.label}-${idx}`}
+                        className="flex w-full max-w-xs justify-between tabular-nums text-gray-600"
+                      >
+                        <span>{row.label}</span>
+                        <span>
+                          {detail.currency} {row.amount.toFixed(2)}
+                        </span>
+                      </div>
+                    ))}
                     <div className="flex w-full max-w-xs justify-between border-t border-gray-200 pt-1 text-base font-bold tabular-nums">
                       <span>Grand total</span>
                       <span>{detail.currency} {t.grandTotal.toFixed(2)}</span>
@@ -3305,41 +3326,12 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                 {form.currency} {poPreviewTotals.subTotal.toFixed(2)}
               </span>
             </div>
-            <div className="grid w-full max-w-2xl gap-2 sm:grid-cols-2 lg:grid-cols-5">
-              <FormField label="Packing cost">
-                <TextInput type="number" min={0} step="0.01" value={form.packingCost ?? 0} onChange={(e) => setForm((f) => ({ ...f, packingCost: Number(e.target.value) || 0 }))} />
-              </FormField>
-              <FormField label="Handling cost">
-                <TextInput type="number" min={0} step="0.01" value={form.handlingCost ?? 0} onChange={(e) => setForm((f) => ({ ...f, handlingCost: Number(e.target.value) || 0 }))} />
-              </FormField>
-              <FormField label="Miscellaneous cost">
-                <TextInput type="number" min={0} step="0.01" value={form.miscellaneousCost ?? 0} onChange={(e) => setForm((f) => ({ ...f, miscellaneousCost: Number(e.target.value) || 0 }))} />
-              </FormField>
-              <FormField label="Discount Type">
-                <select
-                  className="w-full rounded-xl border px-3 py-2 text-sm"
-                  value={form.discountType || "NONE"}
-                  onChange={(e) => setForm((f) => ({ ...f, discountType: e.target.value }))}
-                >
-                  <option value="NONE">None</option>
-                  <option value="PERCENT">Percentage (%)</option>
-                  <option value="FLAT">Flat amount</option>
-                </select>
-              </FormField>
-              <FormField label={form.discountType === "PERCENT" ? "Discount %" : "Discount Amount"}>
-                <TextInput
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={form.discountValue ?? 0}
-                  onChange={(e) => setForm((f) => ({ ...f, discountValue: Number(e.target.value) || 0 }))}
-                />
-              </FormField>
-            </div>
-            <div className="flex w-full max-w-xs justify-between tabular-nums text-gray-600">
-              <span>Discount</span>
-              <span>{form.currency} {poPreviewTotals.discountTotal.toFixed(2)}</span>
-            </div>
+            <PoAdjustmentsEditor
+              adjustments={form.adjustments || []}
+              currency={form.currency}
+              subTotal={poPreviewTotals.subTotal}
+              onChange={(adjustments) => setForm((f) => ({ ...f, adjustments }))}
+            />
             <div className="flex w-full max-w-xs justify-between border-t border-gray-200 pt-1 text-base font-bold tabular-nums">
               <span>Grand total</span>
               <span>{form.currency} {poPreviewTotals.grandTotal.toFixed(2)}</span>
@@ -3387,6 +3379,11 @@ export default function Purchase({ procurementEmbed = false } = {}) {
             onClick={async () => {
               setErr("");
               setNotice("");
+              const adjustmentErrors = validatePoAdjustments(form.adjustments || []);
+              if (adjustmentErrors.length) {
+                setErr(adjustmentErrors[0]);
+                return;
+              }
               const body = buildPoPayload(form, { includeIncompleteLines: Boolean(editPoId) });
               if (!body.supplierName) {
                 setErr("Supplier name is required.");

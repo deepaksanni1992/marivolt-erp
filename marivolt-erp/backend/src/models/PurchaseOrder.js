@@ -41,6 +41,31 @@ const poLineSchema = new mongoose.Schema(
   { _id: true }
 );
 
+const poAdjustmentSchema = new mongoose.Schema(
+  {
+    type: {
+      type: String,
+      enum: [
+        "PACKING",
+        "HANDLING",
+        "FREIGHT",
+        "INSURANCE",
+        "DOCUMENTATION",
+        "BANK",
+        "CUSTOM",
+        "DISCOUNT",
+      ],
+      required: true,
+    },
+    label: { type: String, default: "", trim: true },
+    amount: { type: Number, default: 0, min: 0 },
+    /** DISCOUNT only. PERCENT keeps the user-entered rate; amount is derived. */
+    discountMode: { type: String, enum: ["FLAT", "PERCENT"], default: undefined },
+    discountValue: { type: Number, default: undefined, min: 0 },
+  },
+  { _id: true }
+);
+
 const purchaseOrderSchema = new mongoose.Schema(
   {
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
@@ -104,6 +129,11 @@ const purchaseOrderSchema = new mongoose.Schema(
     packingCost: { type: Number, default: 0, min: 0 },
     handlingCost: { type: Number, default: 0, min: 0 },
     miscellaneousCost: { type: Number, default: 0, min: 0 },
+    /**
+     * Optional extra costs / discount rows. Empty or missing falls back to
+     * legacy packingCost / handlingCost / miscellaneousCost / discount* fields.
+     */
+    adjustments: { type: [poAdjustmentSchema], default: undefined },
     grandTotal: { type: Number, default: 0 },
     /** When true, material code column appears on supplier-facing PO print/PDF. */
     showMaterialCodeOnPrint: { type: Boolean, default: false },
