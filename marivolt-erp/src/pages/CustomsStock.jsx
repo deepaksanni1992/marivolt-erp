@@ -404,7 +404,10 @@ export default function CustomsStock() {
                             {open ? "▾" : "▸"}
                           </button>
                         </td>
-                        <td className="px-2 py-1.5 font-mono font-semibold">{g.boeNumber || "—"}</td>
+                        <td className="px-2 py-1.5 font-mono font-semibold">
+                          <div>{g.customsBoeRef || g.customsLotRef || "—"}</div>
+                          <div className="text-[10px] font-normal text-slate-500">{g.boeNumber || "—"}</div>
+                        </td>
                         <td className="px-2 py-1.5 whitespace-nowrap">{fmtDate(g.boeDate)}</td>
                         <td className="px-2 py-1.5 font-mono">
                           {[g.blNumber, g.awbNumber].filter(Boolean).join(" / ") || "—"}
@@ -496,9 +499,48 @@ export default function CustomsStock() {
                         <tr className="bg-slate-50/90">
                           <td colSpan={19} className="px-4 py-3">
                             <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                              Articles in lot {g.customsLotRef || key}
+                              {g.groupKind === "CUSTOMS_BOE"
+                                ? `BOE ${g.customsBoeRef || key}`
+                                : `Articles in lot ${g.customsLotRef || key}`}
+                              {g.groupKind === "CUSTOMS_BOE" && g.boeSummary ? (
+                                <span className="ml-2 font-normal normal-case text-slate-600">
+                                  Inbound linked {g.boeSummary.linkedQty ?? "—"} / {g.boeSummary.declaredQty ?? "—"}
+                                  {" · "}
+                                  Remaining stock {g.boeSummary.remainingQty ?? "—"}
+                                  {" · "}
+                                  Remaining to link {g.boeSummary.remainingToLink ?? "—"}
+                                </span>
+                              ) : null}
                               {isLegacy ? " · Valuation: Legacy Line Value (no BOE-average economics)" : ""}
                             </div>
+                            {Array.isArray(g.receipts) && g.receipts.length ? (
+                              <div className="mb-3 overflow-auto rounded border border-slate-200 bg-white">
+                                <table className="w-full text-xs">
+                                  <thead className="bg-slate-50 text-left text-[10px] uppercase text-slate-500">
+                                    <tr>
+                                      <th className="px-2 py-1">GRN</th>
+                                      <th className="px-2 py-1">PO</th>
+                                      <th className="px-2 py-1">Supplier Invoice</th>
+                                      <th className="px-2 py-1">Lot</th>
+                                      <th className="px-2 py-1 text-right">Linked Qty</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {g.receipts.map((r) => (
+                                      <tr key={`${r.grnNo}-${r.customsLotRef}`} className="border-t border-slate-100">
+                                        <td className="px-2 py-1 font-mono">{r.grnNo || "—"}</td>
+                                        <td className="px-2 py-1 font-mono">{r.poNo || "—"}</td>
+                                        <td className="px-2 py-1 font-mono">{r.supplierInvoiceNumber || "—"}</td>
+                                        <td className="px-2 py-1 font-mono">{r.customsLotRef || "—"}</td>
+                                        <td className="px-2 py-1 text-right tabular-nums">
+                                          {optionalNum(r.linkedCustomsQty, 4)}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            ) : null}
                             <table className="w-full min-w-[1280px] text-xs">
                               <thead className="text-left text-[10px] uppercase text-slate-500">
                                 <tr>

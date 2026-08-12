@@ -37,6 +37,9 @@ export const CUSTOMS_GRN_HEADER_FIELDS = [
   "grossWeightKg",
   "netWeightKg",
   "valuationMethod",
+  "customsBoeId",
+  "customsBoeRef",
+  "boeMode",
 ];
 
 /** Line may override metadata; customsQty used for non-1:1 UOM mapping. */
@@ -101,6 +104,8 @@ const CUSTOMS_ACTIVATION_HEADER_KEYS = [
   "netWeightKg",
   "unitWeightKg",
   "customsRemarks",
+  "customsBoeId",
+  "customsBoeRef",
 ];
 
 const CUSTOMS_ACTIVATION_LINE_KEYS = [
@@ -407,7 +412,7 @@ export function validateCustomsMandatoryEffective(effective, { location = "" } =
 }
 
 /** Header-level required fields — one error per missing BOE/shipment value. */
-export function validateCustomsHeaderRequired(header = {}) {
+export function validateCustomsHeaderRequired(header = {}, { existingBoe = false } = {}) {
   const errors = [];
   const received = parseCustomsDate(header.receivedDate);
   if (!received) errors.push("Received Date is required");
@@ -415,13 +420,15 @@ export function validateCustomsHeaderRequired(header = {}) {
   if (!parseCustomsDate(header.boeDate)) errors.push("BOE Date is required");
   if (!t(header.supplierInvoiceNumber)) errors.push("Supplier Invoice Number is required");
   if (!parseCustomsDate(header.supplierInvoiceDate)) errors.push("Supplier Invoice Date is required");
-  const declaredQty = pickNum(header.boeDeclaredQty);
-  if (declaredQty == null || !(declaredQty > 0)) {
-    errors.push("BOE Declared Qty is required");
-  }
-  const declaredValue = pickNum(header.boeDeclaredValue);
-  if (declaredValue == null || declaredValue < 0) {
-    errors.push("BOE Declared Value is required");
+  if (!existingBoe) {
+    const declaredQty = pickNum(header.boeDeclaredQty);
+    if (declaredQty == null || !(declaredQty > 0)) {
+      errors.push("BOE Declared Qty is required");
+    }
+    const declaredValue = pickNum(header.boeDeclaredValue);
+    if (declaredValue == null || declaredValue < 0) {
+      errors.push("BOE Declared Value is required");
+    }
   }
   if (!t(header.customsCurrency)) errors.push("Customs Currency is required");
   const fx = pickNum(header.exchangeRateToAED);
@@ -514,6 +521,9 @@ export function normalizeCustomsHeaderDefaults(raw = {}) {
     grossWeightKg: c.grossWeightKg ?? c.GrossWeightKg ?? "",
     netWeightKg: c.netWeightKg ?? c.NetWeightKg ?? "",
     valuationMethod: t(c.valuationMethod ?? c.ValuationMethod),
+    customsBoeId: t(c.customsBoeId ?? c.CustomsBoeId),
+    customsBoeRef: t(c.customsBoeRef ?? c.CustomsBoeRef),
+    boeMode: t(c.boeMode ?? c.BoeMode),
     // Spoof attempts — never used as source of truth
     customsUnitValue: c.customsUnitValue ?? c.CustomsUnitValue ?? "",
   };
@@ -564,6 +574,9 @@ export function buildLineOverrideMap(customs = {}) {
 
 /**
  * Validate customs capture for GRN (BOE_AVERAGE authoritative for new posts).
+ * @param {{ parentBoe?: object|null, maxLinkQty?: number|null }} [opts]
+ *   parentBoe — when selecting existing BOE, server-loaded economics (client values ignored)
+ *   maxLinkQty — remaining qty allowed for this GRN (defaults to declared qty)
  */
 export function validateCustomsCaptureForGrn({
   header = {},
@@ -571,9 +584,74 @@ export function validateCustomsCaptureForGrn({
   lines = [],
   poDate = null,
   allowances = {},
+  parentBoe = null,
+  maxLinkQty = null,
 } = {}) {
-  const headerNorm = normalizeCustomsHeaderDefaults(header);
+  let headerNorm = normalizeCustomsHeaderDefaults(header);
   const errors = [];
+  const existingBoe = Boolean(parentBoe);
+
+  if (parentBoe) {
+    // Never trust client BOE economics when linking to an existing parent.
+    const clientDeclaredQty = pickNum(headerNorm.boeDeclaredQty);
+    const clientDeclaredValue = pickNum(headerNorm.boeDeclaredValue);
+    const clientUnit = pickNum(headerNorm.customsUnitValue);
+    const parentUnit = Number(parentBoe.customsUnitValue) || 0;
+    const parentQty = Number(parentBoe.boeDeclaredQty) || 0;
+    const parentValue = Number(parentBoe.boeDeclaredValue) || 0;
+    if (
+      clientDeclaredQty != null &&
+      Math.abs(clientDeclaredQty - parentQty) > 1e-6
+    ) {
+      errors.push({
+        line: "HEADER",
+        article: "",
+        group: "header",
+        messages: [
+          `Cannot override BOE Declared Qty for existing BOE ${parentBoe.customsBoeRef || ""}. Parent has ${parentQty}.`,
+        ],
+      });
+    }
+    if (
+      clientDeclaredValue != null &&
+      Math.abs(clientDeclaredValue - parentValue) > 1e-6
+    ) {
+      errors.push({
+        line: "HEADER",
+        article: "",
+        group: "header",
+        messages: [
+          `Cannot override BOE Declared Value for existing BOE ${parentBoe.customsBoeRef || ""}. Parent has ${parentValue}.`,
+        ],
+      });
+    }
+    if (clientUnit != null && Math.abs(clientUnit - parentUnit) > 1e-6) {
+      errors.push({
+        line: "HEADER",
+        article: "",
+        group: "header",
+        messages: [`Cannot override frozen Customs Unit Value for existing BOE (${parentUnit}).`],
+      });
+    }
+    headerNorm = {
+      ...headerNorm,
+      boeNumber: parentBoe.boeNumber || headerNorm.boeNumber,
+      boeDate: parentBoe.boeDate || headerNorm.boeDate,
+      blNumber: parentBoe.blNumber || headerNorm.blNumber,
+      awbNumber: parentBoe.awbNumber || headerNorm.awbNumber,
+      boeDeclaredQty: parentBoe.boeDeclaredQty,
+      boeDeclaredValue: parentBoe.boeDeclaredValue,
+      customsUom: parentBoe.customsUom || headerNorm.customsUom || "PCS",
+      customsCurrency: parentBoe.customsCurrency || headerNorm.customsCurrency,
+      exchangeRateToAED: parentBoe.exchangeRateToAED,
+      grossWeightKg: parentBoe.grossWeightKg,
+      netWeightKg: parentBoe.netWeightKg,
+      valuationMethod: CUSTOMS_VALUATION_BOE_AVERAGE,
+      customsBoeId: String(parentBoe._id || headerNorm.customsBoeId || ""),
+      customsBoeRef: parentBoe.customsBoeRef || headerNorm.customsBoeRef,
+    };
+  }
+
   const mode = detectCustomsValuationMode(headerNorm);
 
   if (mode === "LEGACY_REJECTED") {
@@ -594,13 +672,17 @@ export function validateCustomsCaptureForGrn({
 
   const declaredQty = pickNum(headerNorm.boeDeclaredQty);
   const declaredValue = pickNum(headerNorm.boeDeclaredValue);
-  const headerMsgs = validateCustomsHeaderRequired(headerNorm);
+  const headerMsgs = validateCustomsHeaderRequired(headerNorm, { existingBoe });
   if (headerMsgs.length) {
     errors.push({ line: "HEADER", article: "", group: "header", messages: headerMsgs });
   }
 
-  // Reject client spoof of unit value — we always recompute
-  const unitCalc = computeBoeCustomsUnitValue(declaredValue ?? 0, declaredQty ?? 0);
+  const unitCalc = existingBoe
+    ? {
+        ok: true,
+        customsUnitValue: Number(parentBoe.customsUnitValue) || 0,
+      }
+    : computeBoeCustomsUnitValue(declaredValue ?? 0, declaredQty ?? 0);
   if (!unitCalc.ok && declaredQty > 0 && declaredValue != null) {
     errors.push({ line: "HEADER", article: "", messages: [unitCalc.message] });
   }
@@ -623,10 +705,20 @@ export function validateCustomsCaptureForGrn({
     };
   });
 
+  const linkCap =
+    maxLinkQty != null
+      ? maxLinkQty
+      : existingBoe
+        ? roundCustomsQty(
+            Math.max(0, Number(parentBoe.boeDeclaredQty) - Number(parentBoe.linkedCustomsQty || 0)),
+          )
+        : declaredQty;
+
   const qtyResolve = resolveLineCustomsQuantities({
     lines: qtyLines,
     boeDeclaredQty: declaredQty,
     customsUom: headerNorm.customsUom || "PCS",
+    maxLinkQty: linkCap,
   });
   if (!qtyResolve.ok) {
     errors.push({ line: "HEADER", article: "", group: "header", messages: [qtyResolve.message] });
@@ -649,6 +741,7 @@ export function validateCustomsCaptureForGrn({
   const valueLines = allocateBoeLineValues({
     lines: (qtyResolve.lines || []).map((r) => ({ ...r, customsQty: r.customsQty })),
     boeDeclaredValue: declaredValue,
+    boeDeclaredQty: declaredQty,
     customsUnitValue,
   });
   const valueByKey = new Map(valueLines.map((r) => [String(r.key || r.poLineId || r.article), r]));
@@ -694,7 +787,10 @@ export function validateCustomsCaptureForGrn({
     customsUnitValue,
     boeDeclaredQty: declaredQty,
     boeDeclaredValue: declaredValue,
+    thisGrnCustomsQty: qtyResolve.thisGrnCustomsQty || 0,
     lineCustomsQty: valueByKey,
+    customsBoeId: headerNorm.customsBoeId || (parentBoe?._id ? String(parentBoe._id) : ""),
+    customsBoeRef: headerNorm.customsBoeRef || parentBoe?.customsBoeRef || "",
   };
 }
 

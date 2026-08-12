@@ -9,6 +9,13 @@ import {
   listCustomsStockGroupedPage,
 } from "../services/customsService.js";
 import {
+  searchCustomsBoes,
+  getCustomsBoeByIdOrRef,
+  findProbableDuplicateBoes,
+  remainingToLinkQty,
+  deriveCustomsBoeStatus,
+} from "../services/customsBoeService.js";
+import {
   getCustomsReconciliationDetail,
   listCustomsReconciliationPage,
 } from "../services/customsReconciliationService.js";
@@ -82,7 +89,7 @@ export async function getCustomsStock(req, res) {
     const paging = parsePaging(req);
     const filters = stockFilters(req);
     const view = String(req.query.view || "boe").toLowerCase();
-    // CSV / article flat list: view=article. Primary UI: view=boe (CustomsLot groups).
+    // CSV / article flat list: view=article. Primary UI: view=boe (CustomsBoe / legacy lot groups).
     const result =
       view === "article"
         ? await listCustomsStockPage(req.companyId, filters, paging)
@@ -94,6 +101,56 @@ export async function getCustomsStock(req, res) {
     });
   } catch (err) {
     res.status(400).json({ message: err.message || "Failed to load customs stock" });
+  }
+}
+
+export async function searchCustomsBoesHandler(req, res) {
+  try {
+    if (!isCustomsEnabled()) return disabled(res);
+    const items = await searchCustomsBoes({
+      companyId: req.companyId,
+      q: req.query.q || req.query.search || "",
+      limit: Number(req.query.limit) || 20,
+    });
+    res.json({ enabled: true, companyCode: req.companyCode || "", items });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to search Customs BOEs" });
+  }
+}
+
+export async function getCustomsBoe(req, res) {
+  try {
+    if (!isCustomsEnabled()) return disabled(res);
+    const boe = await getCustomsBoeByIdOrRef({
+      companyId: req.companyId,
+      idOrRef: req.params.idOrRef,
+    });
+    if (!boe) return res.status(404).json({ message: "Customs BOE not found" });
+    const row = boe.toObject ? boe.toObject() : boe;
+    res.json({
+      enabled: true,
+      item: {
+        ...row,
+        remainingToLink: remainingToLinkQty(row),
+        inboundStatus: deriveCustomsBoeStatus(row),
+      },
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to load Customs BOE" });
+  }
+}
+
+export async function checkCustomsBoeDuplicates(req, res) {
+  try {
+    if (!isCustomsEnabled()) return disabled(res);
+    const items = await findProbableDuplicateBoes({
+      companyId: req.companyId,
+      boeNumber: req.body?.boeNumber,
+      blNumber: req.body?.blNumber,
+    });
+    res.json({ enabled: true, items, hasDuplicates: items.length > 0 });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to check duplicate BOEs" });
   }
 }
 

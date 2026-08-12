@@ -15,6 +15,14 @@ const customsLotSchema = new mongoose.Schema(
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
     companyCode: { type: String, default: "", trim: true, uppercase: true, index: true },
     customsLotRef: { type: String, required: true, trim: true, uppercase: true },
+    /** Parent CustomsBoe (null/absent = legacy self-contained lot). */
+    customsBoeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "CustomsBoe",
+      default: null,
+      index: true,
+    },
+    customsBoeRef: { type: String, default: "", trim: true, uppercase: true, index: true },
     grnId: { type: mongoose.Schema.Types.ObjectId, ref: "GRN", required: true, index: true },
     grnNo: { type: String, required: true, trim: true, uppercase: true, index: true },
     poId: { type: mongoose.Schema.Types.ObjectId, ref: "PurchaseOrder", default: null, index: true },
@@ -65,5 +73,6 @@ const customsLotSchema = new mongoose.Schema(
 
 customsLotSchema.index({ companyId: 1, customsLotRef: 1 }, { unique: true });
 customsLotSchema.index({ companyId: 1, grnId: 1 }, { unique: true });
+customsLotSchema.index({ companyId: 1, customsBoeId: 1 });
 
 export default mongoose.model("CustomsLot", customsLotSchema);

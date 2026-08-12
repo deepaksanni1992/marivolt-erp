@@ -1,6 +1,9 @@
 /** Default empty customs capture state for GRN posting (BOE_AVERAGE). */
 export function emptyGrnCustomsState() {
   return {
+    boeMode: "CREATE",
+    customsBoeId: "",
+    customsBoeRef: "",
     receivedDate: new Date().toISOString().slice(0, 10),
     boeNumber: "",
     boeDate: "",
@@ -61,6 +64,8 @@ function hasLineCustomsFields(ed = {}) {
 export function isCustomsCaptureActive({ header = {}, lineOverrides = [], documents = null } = {}) {
   const h = header && typeof header === "object" ? header : {};
   const headerKeys = [
+    "customsBoeId",
+    "customsBoeRef",
     "boeNumber",
     "boeDate",
     "blNumber",
@@ -200,6 +205,11 @@ export function buildGrnCustomsPayload(customs, lineEdits, selectedLines, defaul
 
   const docs = customs.documents || {};
   const payload = {
+    boeMode: trim(customs.boeMode) === "SELECT" || trim(customs.customsBoeId) || trim(customs.customsBoeRef)
+      ? "SELECT"
+      : "CREATE",
+    customsBoeId: trim(customs.customsBoeId) || undefined,
+    customsBoeRef: trim(customs.customsBoeRef) || undefined,
     receivedDate: trim(customs.receivedDate) || undefined,
     boeNumber: trim(customs.boeNumber),
     boeDate: trim(customs.boeDate) || undefined,

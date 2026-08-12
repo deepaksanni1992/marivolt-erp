@@ -2403,6 +2403,17 @@ export default function StoreModule() {
                       return sum + (Number.isFinite(q) && q > 0 ? q : 0);
                     }, 0) || null
                   }
+                  thisGrnCustomsQty={
+                    (grnLinesForUi || []).reduce((sum, ln) => {
+                      const id = ln.poLineId != null ? String(ln.poLineId) : "";
+                      const ed = grnLineEdits[id] || {};
+                      if (!ed.selected) return sum;
+                      const cq = Number(ed.customsQty);
+                      if (Number.isFinite(cq) && cq > 0) return sum + cq;
+                      const q = Number(ed.grnQty);
+                      return sum + (Number.isFinite(q) && q > 0 ? q : 0);
+                    }, 0) || null
+                  }
                   disabled={
                     postGrnFromPoMut.isPending ||
                     postGrnAndPrintMut.isPending ||

@@ -34,6 +34,7 @@ import {
   emptyGrnCustomsState,
   hasGrnCustomsInput,
 } from "../../src/lib/grnCustomsPayload.js";
+import { roundCustomsMoney } from "../src/utils/customsBoeAverage.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -107,6 +108,7 @@ run("template columns and order", () => {
     "GRN Qty",
     "Location",
     "Remarks",
+    "Customs BOE Ref",
     "BOE Number",
     "BOE Date",
     "BL Number",
@@ -622,7 +624,7 @@ run("TEST 10: qty reconciliation valid", () => {
   assert.strictEqual(r.ok, true, JSON.stringify(r.errors));
 });
 
-run("TEST 11: qty reconciliation invalid is one error", () => {
+run("TEST 11: partial GRN contribution below declared qty is allowed", () => {
   const r = validateCustomsCaptureForGrn({
     header: {
       receivedDate: "2026-08-11",
@@ -648,9 +650,33 @@ run("TEST 11: qty reconciliation invalid is one error", () => {
     ]),
     poDate: "2026-01-01",
   });
+  assert.strictEqual(r.ok, true, JSON.stringify(r.errors));
+  assert.strictEqual(r.thisGrnCustomsQty, 595);
+  assert.strictEqual(r.customsUnitValue, roundCustomsMoney(50000 / 596));
+});
+
+run("TEST 11b: over-link above declared qty rejected", () => {
+  const r = validateCustomsCaptureForGrn({
+    header: {
+      receivedDate: "2026-08-11",
+      boeNumber: "511685",
+      boeDate: "2026-08-11",
+      supplierInvoiceNumber: "22253",
+      supplierInvoiceDate: "2026-08-02",
+      countryOfOrigin: "DE",
+      hsCode: "8409",
+      customsCurrency: "EUR",
+      exchangeRateToAED: 4.25,
+      boeDeclaredQty: 596,
+      boeDeclaredValue: 50000,
+      customsUom: "PCS",
+    },
+    lines: [{ poLineId: "L1", article: "A", acceptedQty: 600, location: "A1", uom: "PCS" }],
+    poDate: "2026-01-01",
+  });
   assert.strictEqual(r.ok, false);
   const headerMsgs = (r.errors || []).filter((e) => e.line === "HEADER").flatMap((e) => e.messages);
-  assert.ok(headerMsgs.some((m) => /Customs Qty total 595 does not match BOE Declared Qty 596/.test(m)));
+  assert.ok(headerMsgs.some((m) => /exceeds remaining BOE qty/i.test(m)));
 });
 
 run("TEST 12: EUR FX supplied once is inherited", () => {

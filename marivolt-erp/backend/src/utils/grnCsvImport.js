@@ -15,6 +15,7 @@ export const GRN_CSV_HEADERS = Object.freeze([
   "GRN Qty",
   "Location",
   "Remarks",
+  "Customs BOE Ref",
   "BOE Number",
   "BOE Date",
   "BL Number",
@@ -38,6 +39,7 @@ export const GRN_CSV_HEADERS = Object.freeze([
 
 /** Shipment/BOE fields: first nonblank wins; later blanks inherit; conflicts reject. */
 export const GRN_CSV_SHIPMENT_FIELDS = Object.freeze([
+  "customsBoeRef",
   "boeNumber",
   "boeDate",
   "blNumber",
@@ -63,6 +65,7 @@ const CSV_FIELD_ALIASES = Object.freeze({
   grnqty: "grnQty",
   location: "location",
   remarks: "remarks",
+  customsboeref: "customsBoeRef",
   boenumber: "boeNumber",
   boedate: "boeDate",
   awbnoblno: "awbBlCombined",
@@ -91,6 +94,7 @@ const CSV_FIELD_ALIASES = Object.freeze({
 });
 
 const SHIPMENT_LABELS = {
+  customsBoeRef: "Customs BOE Ref",
   boeNumber: "BOE Number",
   boeDate: "BOE Date",
   blNumber: "BL Number",
@@ -253,6 +257,7 @@ export function mapCsvRowToCustomsOverride(row, grnQty) {
     }
   };
 
+  setStr("customsBoeRef", cell(row, "Customs BOE Ref"));
   setStr("boeNumber", cell(row, "BOE Number"));
   setStr("boeDate", cell(row, "BOE Date"));
   setStr("blNumber", blNumber || awbBl);
@@ -336,6 +341,7 @@ export function suggestHeaderDefaultsFromOverrides(overrides = []) {
     if (!Object.keys(o).length) continue;
     return {
       receivedDate: o.receivedDate || "",
+      customsBoeRef: o.customsBoeRef || "",
       boeNumber: o.boeNumber || "",
       boeDate: o.boeDate || "",
       blNumber: o.blNumber || "",
@@ -353,6 +359,7 @@ export function suggestHeaderDefaultsFromOverrides(overrides = []) {
       boeDeclaredValue: o.boeDeclaredValue != null ? o.boeDeclaredValue : "",
       grossWeightKg: o.grossWeightKg != null ? o.grossWeightKg : "",
       netWeightKg: o.netWeightKg != null ? o.netWeightKg : "",
+      boeMode: o.customsBoeRef ? "SELECT" : "CREATE",
     };
   }
   return null;
@@ -772,6 +779,7 @@ function chosenRowOf(rows, field) {
 
 export function csvHasMeaningfulCustoms(header = {}, overrides = []) {
   const keys = [
+    "customsBoeRef",
     "boeNumber",
     "boeDate",
     "blNumber",
@@ -794,29 +802,88 @@ export function csvHasMeaningfulCustoms(header = {}, overrides = []) {
   return (overrides || []).some((o) => keys.some((k) => o?.[k] != null && String(o[k]).trim()));
 }
 
-export function validateInheritedCsvShipmentHeader(header = {}) {
+/**
+ * When CSV provides Customs BOE Ref, declared economics are optional.
+ * If present they must match the parent (caller supplies parent) — never silently overwrite.
+ */
+export function validateInheritedCsvShipmentHeader(header = {}, { existingBoe = false } = {}) {
   const messages = [];
-  if (!String(header.boeNumber || "").trim()) messages.push("BOE Number is required");
-  if (!String(header.boeDate || "").trim()) messages.push("BOE Date is required");
+  const hasBoeRef = Boolean(String(header.customsBoeRef || "").trim());
+  const linkExisting = existingBoe || hasBoeRef;
+
+  if (!linkExisting && !String(header.boeNumber || "").trim()) messages.push("BOE Number is required");
+  if (!linkExisting && !String(header.boeDate || "").trim()) messages.push("BOE Date is required");
   if (!String(header.supplierInvoiceNumber || "").trim()) messages.push("Supplier Invoice Number is required");
   if (!String(header.supplierInvoiceDate || "").trim()) messages.push("Supplier Invoice Date is required");
-  const qty = Number(header.boeDeclaredQty);
-  if (!String(header.boeDeclaredQty ?? "").trim() || !Number.isFinite(qty) || !(qty > 0)) {
-    messages.push("BOE Declared Qty is required");
-  }
-  const val = Number(header.boeDeclaredValue);
-  if (!String(header.boeDeclaredValue ?? "").trim() || !Number.isFinite(val) || val < 0) {
-    messages.push("BOE Declared Value is required");
-  }
-  if (!String(header.customsCurrency || "").trim()) messages.push("Customs Currency is required");
-  const cur = String(header.customsCurrency || "").trim().toUpperCase();
-  const fx = Number(header.exchangeRateToAED);
-  if (cur === "AED") {
-    if (String(header.exchangeRateToAED ?? "").trim() && fx !== 1) {
-      messages.push("When Customs Currency is AED, Exchange Rate to AED must be 1");
+
+  if (!linkExisting) {
+    const qty = Number(header.boeDeclaredQty);
+    if (!String(header.boeDeclaredQty ?? "").trim() || !Number.isFinite(qty) || !(qty > 0)) {
+      messages.push("BOE Declared Qty is required");
     }
-  } else if (!String(header.exchangeRateToAED ?? "").trim() || !Number.isFinite(fx) || !(fx > 0)) {
-    messages.push("Exchange Rate to AED is required");
+    const val = Number(header.boeDeclaredValue);
+    if (!String(header.boeDeclaredValue ?? "").trim() || !Number.isFinite(val) || val < 0) {
+      messages.push("BOE Declared Value is required");
+    }
+    if (!String(header.customsCurrency || "").trim()) messages.push("Customs Currency is required");
+    const cur = String(header.customsCurrency || "").trim().toUpperCase();
+    const fx = Number(header.exchangeRateToAED);
+    if (cur === "AED") {
+      if (String(header.exchangeRateToAED ?? "").trim() && fx !== 1) {
+        messages.push("When Customs Currency is AED, Exchange Rate to AED must be 1");
+      }
+    } else if (!String(header.exchangeRateToAED ?? "").trim() || !Number.isFinite(fx) || !(fx > 0)) {
+      messages.push("Exchange Rate to AED is required");
+    }
+  }
+  return messages;
+}
+
+/**
+ * Reject CSV rows that attempt to override frozen parent BOE economics.
+ */
+export function validateCsvAgainstExistingBoe(header = {}, parentBoe = null) {
+  const messages = [];
+  if (!parentBoe) return messages;
+  const num = (v) => {
+    if (v == null || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const str = (v) => String(v ?? "").trim();
+  const qty = num(header.boeDeclaredQty);
+  const val = num(header.boeDeclaredValue);
+  const fx = num(header.exchangeRateToAED);
+  const unit = num(header.customsUnitValue);
+  if (qty != null && Math.abs(qty - Number(parentBoe.boeDeclaredQty)) > 1e-6) {
+    messages.push(
+      `CSV BOE Declared Qty ${qty} conflicts with existing BOE ${parentBoe.customsBoeRef} declared qty ${parentBoe.boeDeclaredQty}.`,
+    );
+  }
+  if (val != null && Math.abs(val - Number(parentBoe.boeDeclaredValue)) > 1e-6) {
+    messages.push(
+      `CSV BOE Declared Value ${val} conflicts with existing BOE ${parentBoe.customsBoeRef} declared value ${parentBoe.boeDeclaredValue}.`,
+    );
+  }
+  if (fx != null && Math.abs(fx - Number(parentBoe.exchangeRateToAED)) > 1e-6) {
+    messages.push(
+      `CSV Exchange Rate conflicts with existing BOE ${parentBoe.customsBoeRef}.`,
+    );
+  }
+  if (unit != null && Math.abs(unit - Number(parentBoe.customsUnitValue)) > 1e-6) {
+    messages.push(`CSV Customs Unit Value conflicts with frozen unit on ${parentBoe.customsBoeRef}.`);
+  }
+  const cur = str(header.customsCurrency).toUpperCase();
+  if (cur && cur !== String(parentBoe.customsCurrency || "").toUpperCase()) {
+    messages.push(`CSV Customs Currency conflicts with existing BOE ${parentBoe.customsBoeRef}.`);
+  }
+  const gw = num(header.grossWeightKg);
+  const nw = num(header.netWeightKg);
+  if (gw != null && Math.abs(gw - Number(parentBoe.grossWeightKg || 0)) > 1e-6) {
+    messages.push(`CSV Gross Weight conflicts with existing BOE ${parentBoe.customsBoeRef}.`);
+  }
+  if (nw != null && Math.abs(nw - Number(parentBoe.netWeightKg || 0)) > 1e-6) {
+    messages.push(`CSV Net Weight conflicts with existing BOE ${parentBoe.customsBoeRef}.`);
   }
   return messages;
 }

@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { apiGet, apiPostFormData } from "../../lib/api.js";
+import { useEffect, useRef, useState } from "react";
+import { apiGet, apiPost, apiPostFormData } from "../../lib/api.js";
 import { previewBoeCustomsUnitValue } from "../../lib/grnCustomsPayload.js";
 
 const DOC_SLOTS = [
@@ -74,8 +74,8 @@ function Field({ label, required, children }) {
 }
 
 /**
- * Customs capture on GRN — header defaults apply to all lines unless overridden.
- * When any field is filled, backend enforces mandatory customs fields + date rules.
+ * Customs capture on GRN — Create New BOE or Select Existing BOE.
+ * Supplier Invoice remains GRN-level. BOE economics freeze on parent CustomsBoe.
  */
 export default function GrnCustomsSection({
   value,
@@ -86,16 +86,112 @@ export default function GrnCustomsSection({
   defaultCurrency = "USD",
   disabled = false,
   onError,
-  /** Optional default for BOE Declared Qty when UOM-compatible (sum of accepted GRN qty). */
+  /** Optional hint for THIS GRN customs qty (sum of accepted GRN qty when UOM-compatible). */
   suggestedBoeQty = null,
+  thisGrnCustomsQty = null,
   validationText = "",
 }) {
   const fileRefs = useRef({});
   const [uploading, setUploading] = useState("");
+  const [boeSearch, setBoeSearch] = useState("");
+  const [boeResults, setBoeResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [duplicates, setDuplicates] = useState([]);
 
   const setField = (field, next) => onChange({ ...value, [field]: next });
+  const boeMode = String(value.boeMode || "CREATE").toUpperCase() === "SELECT" ? "SELECT" : "CREATE";
+  const isSelect = boeMode === "SELECT";
   const previewUnit = previewBoeCustomsUnitValue(value.boeDeclaredValue, value.boeDeclaredQty);
   const trimLocal = (v) => String(v ?? "").trim();
+  const thisQty = Number(thisGrnCustomsQty ?? suggestedBoeQty) || 0;
+  const alreadyLinked = Number(value.linkedCustomsQty) || 0;
+  const declared = Number(value.boeDeclaredQty) || 0;
+  const remainingAfter =
+    declared > 0 ? Math.max(0, Math.round((declared - alreadyLinked - thisQty) * 1e6) / 1e6) : null;
+
+  const setMode = (mode) => {
+    if (mode === "CREATE") {
+      onChange({
+        ...value,
+        boeMode: "CREATE",
+        customsBoeId: "",
+        customsBoeRef: "",
+        linkedCustomsQty: "",
+      });
+      setBoeResults([]);
+      setDuplicates([]);
+    } else {
+      onChange({
+        ...value,
+        boeMode: "SELECT",
+      });
+    }
+  };
+
+  const applySelectedBoe = (boe) => {
+    if (!boe) return;
+    onChange({
+      ...value,
+      boeMode: "SELECT",
+      customsBoeId: String(boe._id || ""),
+      customsBoeRef: boe.customsBoeRef || "",
+      boeNumber: boe.boeNumber || "",
+      boeDate: boe.boeDate ? String(boe.boeDate).slice(0, 10) : value.boeDate || "",
+      blNumber: boe.blNumber || "",
+      awbNumber: boe.awbNumber || "",
+      boeDeclaredQty: boe.boeDeclaredQty ?? "",
+      boeDeclaredValue: boe.boeDeclaredValue ?? "",
+      customsUom: boe.customsUom || "PCS",
+      customsCurrency: boe.customsCurrency || "",
+      exchangeRateToAED: boe.exchangeRateToAED ?? "",
+      grossWeightKg: boe.grossWeightKg ?? "",
+      netWeightKg: boe.netWeightKg ?? "",
+      linkedCustomsQty: boe.linkedCustomsQty ?? 0,
+    });
+    setBoeResults([]);
+    setDuplicates([]);
+  };
+
+  useEffect(() => {
+    if (!isSelect || disabled) return undefined;
+    const q = trimLocal(boeSearch);
+    if (q.length < 2) {
+      setBoeResults([]);
+      return undefined;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const res = await apiGet(`/customs/boes?q=${encodeURIComponent(q)}&limit=15`);
+        if (!cancelled) setBoeResults(res.items || []);
+      } catch (e) {
+        if (!cancelled) onError?.(e.message || String(e));
+      } finally {
+        if (!cancelled) setSearching(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [boeSearch, isSelect, disabled]);
+
+  const checkDuplicates = async () => {
+    if (isSelect || disabled) return;
+    const boeNumber = trimLocal(value.boeNumber);
+    const blNumber = trimLocal(value.blNumber);
+    if (!boeNumber && !blNumber) {
+      setDuplicates([]);
+      return;
+    }
+    try {
+      const res = await apiPost("/customs/boes/check-duplicates", { boeNumber, blNumber });
+      setDuplicates(res.items || []);
+    } catch {
+      setDuplicates([]);
+    }
+  };
 
   const uploadFile = async (file, slot) => {
     if (!file) return;
@@ -141,6 +237,7 @@ export default function GrnCustomsSection({
   };
 
   const inputCls = "w-full rounded border px-2 py-1.5 text-sm disabled:bg-slate-50";
+  const readOnlyCls = `${inputCls} bg-slate-100`;
 
   return (
     <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/80 p-4">
@@ -148,9 +245,8 @@ export default function GrnCustomsSection({
         <div>
           <h4 className="text-sm font-semibold text-slate-800">Customs Information</h4>
           <p className="text-[11px] text-slate-500">
-            Enter BOE declared qty and value once — customs unit value is calculated automatically. Commercial
-            GRN cost is unchanged. Auto-filled Received Date alone does not start Customs capture. When BOE
-            or article customs fields are entered, mandatory fields (*) are enforced once at header level.
+            One Customs BOE can span many PO-based GRNs. Create a new BOE or select an existing one. Supplier
+            Invoice stays on this GRN. Customs unit value is frozen on the BOE parent.
           </p>
         </div>
       </div>
@@ -161,8 +257,120 @@ export default function GrnCustomsSection({
         </div>
       ) : null}
 
+      <div className="mb-4 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={disabled}
+          className={`rounded border px-3 py-1.5 text-xs font-semibold ${
+            !isSelect ? "border-sky-600 bg-sky-50 text-sky-900" : "border-slate-300 bg-white text-slate-700"
+          }`}
+          onClick={() => setMode("CREATE")}
+        >
+          Create New BOE
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          className={`rounded border px-3 py-1.5 text-xs font-semibold ${
+            isSelect ? "border-sky-600 bg-sky-50 text-sky-900" : "border-slate-300 bg-white text-slate-700"
+          }`}
+          onClick={() => setMode("SELECT")}
+        >
+          Select Existing BOE
+        </button>
+      </div>
+
+      {isSelect ? (
+        <div className="mb-4 rounded-lg border border-slate-200 bg-white p-3">
+          <Field label="Search Customs BOE (Ref / BOE No / BL)">
+            <input
+              className={inputCls}
+              disabled={disabled}
+              value={boeSearch}
+              placeholder="MAR-BOE-0001 or 511685"
+              onChange={(e) => setBoeSearch(e.target.value)}
+            />
+          </Field>
+          {searching ? <p className="mt-1 text-[11px] text-slate-500">Searching…</p> : null}
+          {boeResults.length ? (
+            <ul className="mt-2 max-h-40 overflow-auto rounded border border-slate-100 text-xs">
+              {boeResults.map((b) => (
+                <li key={String(b._id)}>
+                  <button
+                    type="button"
+                    className="flex w-full flex-col items-start gap-0.5 border-b border-slate-50 px-2 py-1.5 text-left hover:bg-sky-50"
+                    onClick={() => applySelectedBoe(b)}
+                  >
+                    <span className="font-semibold text-slate-800">
+                      {b.customsBoeRef} · BOE {b.boeNumber || "—"}
+                    </span>
+                    <span className="text-[11px] text-slate-500">
+                      BL {b.blNumber || "—"} · Declared {b.boeDeclaredQty} {b.customsUom || "PCS"} · Unit{" "}
+                      {b.customsUnitValue} {b.customsCurrency} · Linked {b.linkedCustomsQty ?? 0} · Remaining{" "}
+                      {b.remainingToLink ?? "—"}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {value.customsBoeRef ? (
+            <div className="mt-3 grid gap-2 rounded border border-emerald-100 bg-emerald-50/60 p-2 text-xs text-emerald-950 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <div className="text-[10px] uppercase text-emerald-700">BOE Ref</div>
+                <div className="font-semibold">{value.customsBoeRef}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase text-emerald-700">Declared</div>
+                <div className="font-semibold">
+                  {value.boeDeclaredQty} {value.customsUom || "PCS"} / {value.boeDeclaredValue}{" "}
+                  {value.customsCurrency}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase text-emerald-700">Unit Value</div>
+                <div className="font-semibold">
+                  {previewUnit != null ? `${previewUnit} ${value.customsCurrency || ""}` : "—"}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase text-emerald-700">Linking</div>
+                <div className="font-semibold">
+                  Already {alreadyLinked} · This GRN {thisQty || "—"} · Remaining{" "}
+                  {remainingAfter != null ? remainingAfter : "—"}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className="mt-2 text-[11px] text-amber-700">Select an existing Customs BOE to continue.</p>
+          )}
+        </div>
+      ) : null}
+
+      {!isSelect && duplicates.length ? (
+        <div className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <div className="font-semibold">Possible existing BOE found</div>
+          <ul className="mt-1 space-y-1">
+            {duplicates.map((d) => (
+              <li key={String(d._id)} className="flex flex-wrap items-center gap-2">
+                <span>
+                  {d.customsBoeRef} · BOE {d.boeNumber} · BL {d.blNumber || "—"}
+                </span>
+                <button
+                  type="button"
+                  className="rounded border border-amber-400 px-2 py-0.5 text-[11px] font-semibold"
+                  onClick={() => applySelectedBoe(d)}
+                >
+                  Use Existing BOE
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-        Shipment information
+        GRN receipt (Supplier Invoice)
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <Field label="Received Date" required>
@@ -172,39 +380,6 @@ export default function GrnCustomsSection({
             disabled={disabled}
             value={value.receivedDate || ""}
             onChange={(e) => setField("receivedDate", e.target.value)}
-          />
-        </Field>
-        <Field label="BOE Number" required>
-          <input
-            className={inputCls}
-            disabled={disabled}
-            value={value.boeNumber}
-            onChange={(e) => setField("boeNumber", e.target.value)}
-          />
-        </Field>
-        <Field label="BOE Date" required>
-          <input
-            type="date"
-            className={inputCls}
-            disabled={disabled}
-            value={value.boeDate || ""}
-            onChange={(e) => setField("boeDate", e.target.value)}
-          />
-        </Field>
-        <Field label="BL Number">
-          <input
-            className={inputCls}
-            disabled={disabled}
-            value={value.blNumber}
-            onChange={(e) => setField("blNumber", e.target.value)}
-          />
-        </Field>
-        <Field label="AWB Number">
-          <input
-            className={inputCls}
-            disabled={disabled}
-            value={value.awbNumber}
-            onChange={(e) => setField("awbNumber", e.target.value)}
           />
         </Field>
         <Field label="Supplier Invoice Number" required>
@@ -227,41 +402,89 @@ export default function GrnCustomsSection({
       </div>
 
       <div className="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-        BOE valuation
+        {isSelect ? "BOE identity (read-only from parent)" : "BOE identity"}
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <Field label="BOE Declared Customs Qty" required>
+        <Field label="BOE Number" required={!isSelect}>
+          <input
+            className={isSelect ? readOnlyCls : inputCls}
+            disabled={disabled || isSelect}
+            readOnly={isSelect}
+            value={value.boeNumber}
+            onChange={(e) => setField("boeNumber", e.target.value)}
+            onBlur={checkDuplicates}
+          />
+        </Field>
+        <Field label="BOE Date" required={!isSelect}>
+          <input
+            type="date"
+            className={isSelect ? readOnlyCls : inputCls}
+            disabled={disabled || isSelect}
+            readOnly={isSelect}
+            value={value.boeDate || ""}
+            onChange={(e) => setField("boeDate", e.target.value)}
+          />
+        </Field>
+        <Field label="BL Number">
+          <input
+            className={isSelect ? readOnlyCls : inputCls}
+            disabled={disabled || isSelect}
+            readOnly={isSelect}
+            value={value.blNumber}
+            onChange={(e) => setField("blNumber", e.target.value)}
+            onBlur={checkDuplicates}
+          />
+        </Field>
+        <Field label="AWB Number">
+          <input
+            className={isSelect ? readOnlyCls : inputCls}
+            disabled={disabled || isSelect}
+            readOnly={isSelect}
+            value={value.awbNumber}
+            onChange={(e) => setField("awbNumber", e.target.value)}
+          />
+        </Field>
+      </div>
+
+      <div className="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        BOE valuation {isSelect ? "(frozen)" : ""}
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <Field label="BOE Declared Customs Qty" required={!isSelect}>
           <input
             type="number"
             min="0"
             step="any"
-            className={inputCls}
-            disabled={disabled}
-            placeholder={suggestedBoeQty > 0 ? String(suggestedBoeQty) : ""}
+            className={isSelect ? readOnlyCls : inputCls}
+            disabled={disabled || isSelect}
+            readOnly={isSelect}
+            placeholder={!isSelect && suggestedBoeQty > 0 ? String(suggestedBoeQty) : ""}
             value={value.boeDeclaredQty ?? ""}
             onChange={(e) => setField("boeDeclaredQty", e.target.value)}
             onBlur={() => {
-              if (!trimLocal(value.boeDeclaredQty) && suggestedBoeQty > 0) {
+              if (!isSelect && !trimLocal(value.boeDeclaredQty) && suggestedBoeQty > 0) {
                 setField("boeDeclaredQty", String(suggestedBoeQty));
               }
             }}
           />
         </Field>
-        <Field label="Customs UOM" required>
+        <Field label="Customs UOM" required={!isSelect}>
           <input
-            className={inputCls}
-            disabled={disabled}
+            className={isSelect ? readOnlyCls : inputCls}
+            disabled={disabled || isSelect}
+            readOnly={isSelect}
             value={value.customsUom || "PCS"}
             onChange={(e) => setField("customsUom", e.target.value.toUpperCase())}
           />
         </Field>
-        <Field label="BOE Declared Value" required>
+        <Field label="BOE Declared Value" required={!isSelect}>
           <input
             type="number"
             min="0"
             step="any"
-            className={inputCls}
-            disabled={disabled}
+            className={isSelect ? readOnlyCls : inputCls}
+            disabled={disabled || isSelect}
+            readOnly={isSelect}
             value={value.boeDeclaredValue ?? ""}
             onChange={(e) => setField("boeDeclaredValue", e.target.value)}
           />
@@ -269,7 +492,7 @@ export default function GrnCustomsSection({
         <Field label="BOE Customs Unit Value">
           <input
             type="text"
-            className={`${inputCls} bg-slate-100`}
+            className={readOnlyCls}
             disabled
             readOnly
             value={
@@ -279,7 +502,7 @@ export default function GrnCustomsSection({
             }
           />
           <span className="mt-0.5 block text-[10px] text-slate-500">
-            Calculated as Declared Value ÷ Declared Qty (server is authoritative)
+            Calculated once on the Customs BOE parent (server authoritative)
           </span>
         </Field>
         <Field label="Gross Weight (KG)">
@@ -287,8 +510,9 @@ export default function GrnCustomsSection({
             type="number"
             min="0"
             step="any"
-            className={inputCls}
-            disabled={disabled}
+            className={isSelect ? readOnlyCls : inputCls}
+            disabled={disabled || isSelect}
+            readOnly={isSelect}
             value={value.grossWeightKg ?? ""}
             onChange={(e) => setField("grossWeightKg", e.target.value)}
           />
@@ -298,16 +522,39 @@ export default function GrnCustomsSection({
             type="number"
             min="0"
             step="any"
-            className={inputCls}
-            disabled={disabled}
+            className={isSelect ? readOnlyCls : inputCls}
+            disabled={disabled || isSelect}
+            readOnly={isSelect}
             value={value.netWeightKg ?? ""}
             onChange={(e) => setField("netWeightKg", e.target.value)}
+          />
+        </Field>
+        <Field label="Customs Currency" required={!isSelect}>
+          <input
+            className={isSelect ? readOnlyCls : inputCls}
+            disabled={disabled || isSelect}
+            readOnly={isSelect}
+            placeholder={defaultCurrency}
+            value={value.customsCurrency || value.currency || ""}
+            onChange={(e) => setField("customsCurrency", e.target.value.toUpperCase())}
+          />
+        </Field>
+        <Field label="Exchange Rate to AED" required={!isSelect}>
+          <input
+            type="number"
+            min="0"
+            step="any"
+            className={isSelect ? readOnlyCls : inputCls}
+            disabled={disabled || isSelect}
+            readOnly={isSelect}
+            value={value.exchangeRateToAED || ""}
+            onChange={(e) => setField("exchangeRateToAED", e.target.value)}
           />
         </Field>
       </div>
 
       <div className="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-        Customs defaults
+        Article defaults
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <Field label="Country of Origin" required>
@@ -335,26 +582,6 @@ export default function GrnCustomsSection({
             disabled={disabled}
             value={value.unitWeightKg ?? value.weightKg ?? ""}
             onChange={(e) => setField("unitWeightKg", e.target.value)}
-          />
-        </Field>
-        <Field label="Customs Currency" required>
-          <input
-            className={inputCls}
-            disabled={disabled}
-            placeholder={defaultCurrency}
-            value={value.customsCurrency || value.currency || ""}
-            onChange={(e) => setField("customsCurrency", e.target.value.toUpperCase())}
-          />
-        </Field>
-        <Field label="Exchange Rate to AED" required>
-          <input
-            type="number"
-            min="0"
-            step="any"
-            className={inputCls}
-            disabled={disabled}
-            value={value.exchangeRateToAED || ""}
-            onChange={(e) => setField("exchangeRateToAED", e.target.value)}
           />
         </Field>
         <Field label="Customs Remarks">

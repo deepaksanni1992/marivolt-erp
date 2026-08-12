@@ -362,10 +362,13 @@ run("Frontend header includes BOE Declared Qty/Value and FX", () => {
   assert.match(ui, /BOE Declared Customs Qty/);
   assert.match(ui, /BOE Declared Value/);
   assert.match(ui, /Exchange Rate to AED/);
+  assert.match(ui, /Create New BOE/);
+  assert.match(ui, /Select Existing BOE/);
   assert.match(ui, /STORE approve permission/);
   assert.match(payload, /exchangeRateToAED/);
   assert.match(payload, /boeDeclaredQty/);
   assert.match(payload, /boeDeclaredValue/);
+  assert.match(payload, /customsBoeRef/);
   assert.doesNotMatch(payload, /customsUnitPrice:\s*trim/);
 });
 

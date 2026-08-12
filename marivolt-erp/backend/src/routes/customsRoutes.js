@@ -18,6 +18,9 @@ const customsReconciliationView = requireAnyPermission(
 router.get("/status", customsView, c.getCustomsStatus);
 router.get("/dashboard", customsView, c.getCustomsDashboard);
 router.post("/dashboard/export-log", customsView, c.logCustomsDashboardExport);
+router.get("/boes", customsView, c.searchCustomsBoesHandler);
+router.get("/boes/:idOrRef", customsView, c.getCustomsBoe);
+router.post("/boes/check-duplicates", customsCreate, c.checkCustomsBoeDuplicates);
 router.get("/stock", customsView, c.getCustomsStock);
 router.get("/ledger", customsView, c.getCustomsLedger);
 router.get("/available-lots", customsView, ci.listAvailableLots);

@@ -21,6 +21,7 @@ import {
   roundCustomsMoney,
   roundCustomsQty,
   buildCustomsLotStockGroup,
+  buildCustomsBoeStockGroup,
   computeLotItemCustomsEconomics,
   resolveValuationMethod,
   resolveCustomsLotItemProvenance,
@@ -33,6 +34,14 @@ import {
 } from "../utils/customsFifo.js";
 import { hasPermission } from "./roleService.js";
 import GRN from "../models/GRN.js";
+import {
+  createCustomsBoe,
+  getCustomsBoeByIdOrRef,
+  reserveLinkedCustomsQty,
+  releaseLinkedCustomsQty,
+  mapBoeEconomicsToLotSnapshot,
+} from "./customsBoeService.js";
+import CustomsBoe from "../models/CustomsBoe.js";
 
 export { isCustomsEnabled };
 export { CustomsGrnValidationError };
@@ -212,7 +221,13 @@ export function normalizeCustomsPayload(body = {}, grn = {}) {
  * Call inside the GRN post transaction before/while creating the customs lot.
  * Date/weight overrides require STORE approve permission — client checkboxes alone are ignored.
  */
-export async function applyResolvedCustomsToGrnLines({ grn, body = {}, poDate = null, req = null }) {
+export async function applyResolvedCustomsToGrnLines({
+  grn,
+  body = {},
+  poDate = null,
+  req = null,
+  session = null,
+} = {}) {
   const payload = normalizeCustomsPayload(body, grn);
   if (!payload) return null;
 
@@ -223,6 +238,27 @@ export async function applyResolvedCustomsToGrnLines({ grn, body = {}, poDate = 
   });
   payload.allowances = allowances;
 
+  // Resolve existing parent BOE when selecting by id/ref (company-scoped).
+  let parentBoe = null;
+  const boeMode = String(payload.header.boeMode || "").toUpperCase();
+  const selectRef = payload.header.customsBoeId || payload.header.customsBoeRef;
+  if (selectRef && boeMode !== "CREATE") {
+    parentBoe = await getCustomsBoeByIdOrRef({
+      companyId: req?.companyId,
+      idOrRef: selectRef,
+      session,
+    });
+    if (!parentBoe) {
+      throw new CustomsGrnValidationError([
+        {
+          line: "HEADER",
+          article: "",
+          messages: [`Customs BOE not found for this company: ${selectRef}`],
+        },
+      ]);
+    }
+  }
+
   const lines = (grn.items || []).filter((ln) => (Number(ln.acceptedQty ?? ln.receivedQty) || 0) > 0);
   const result = validateCustomsCaptureForGrn({
     header: payload.header,
@@ -230,6 +266,7 @@ export async function applyResolvedCustomsToGrnLines({ grn, body = {}, poDate = 
     lines,
     poDate,
     allowances,
+    parentBoe: parentBoe ? parentBoe.toObject?.() || parentBoe : null,
   });
   if (!result.ok) throw new CustomsGrnValidationError(result.errors);
 
@@ -238,6 +275,28 @@ export async function applyResolvedCustomsToGrnLines({ grn, body = {}, poDate = 
   payload.boeDeclaredQty = result.boeDeclaredQty;
   payload.boeDeclaredValue = result.boeDeclaredValue;
   payload.lineCustomsQty = result.lineCustomsQty;
+  payload.thisGrnCustomsQty = result.thisGrnCustomsQty || 0;
+  payload.parentBoe = parentBoe;
+  payload.boeMode = parentBoe ? "SELECT" : "CREATE";
+  // Stamp frozen parent economics onto header for lot persistence
+  if (parentBoe) {
+    payload.header = {
+      ...payload.header,
+      boeNumber: parentBoe.boeNumber,
+      boeDate: parentBoe.boeDate,
+      blNumber: parentBoe.blNumber,
+      awbNumber: parentBoe.awbNumber,
+      boeDeclaredQty: parentBoe.boeDeclaredQty,
+      boeDeclaredValue: parentBoe.boeDeclaredValue,
+      customsUom: parentBoe.customsUom,
+      customsCurrency: parentBoe.customsCurrency,
+      exchangeRateToAED: parentBoe.exchangeRateToAED,
+      grossWeightKg: parentBoe.grossWeightKg,
+      netWeightKg: parentBoe.netWeightKg,
+      customsBoeId: String(parentBoe._id),
+      customsBoeRef: parentBoe.customsBoeRef,
+    };
+  }
 
   for (const line of grn.items || []) {
     const qty = Number(line.acceptedQty ?? line.receivedQty) || 0;
@@ -288,12 +347,13 @@ function deriveLotStatus(items = []) {
 /**
  * Create customs lot, items, and inbound movements from a posted GRN.
  * Expects GRN lines to already carry `customsCapture` effective snapshots when capture is active.
+ * Creates or links a parent CustomsBoe and freezes unit value from the parent.
  */
 export async function createCustomsLotFromGrn({ session, req, grn, body = {}, poDate = null }) {
   if (!isCustomsEnabled()) return null;
   if (!grn?._id) throw new Error("GRN is required for customs lot creation");
 
-  const payload = await applyResolvedCustomsToGrnLines({ grn, body, poDate, req });
+  const payload = await applyResolvedCustomsToGrnLines({ grn, body, poDate, req, session });
   if (!payload) return null;
 
   const existing = await CustomsLot.findOne(
@@ -301,21 +361,47 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {}, po
   ).session(session);
   if (existing) return existing;
 
+  const thisGrnCustomsQty = roundCustomsQty(
+    payload.thisGrnCustomsQty ||
+      [...(payload.lineCustomsQty?.values?.() || [])].reduce(
+        (s, r) => s + (Number(r.customsQty) || 0),
+        0,
+      ),
+  );
+  if (!(thisGrnCustomsQty > 0)) {
+    throw new Error("This GRN customs qty must be greater than zero");
+  }
+
+  let parentBoe = payload.parentBoe;
+  if (!parentBoe) {
+    const created = await createCustomsBoe({
+      session,
+      req,
+      header: payload.header,
+      warnDuplicates: false,
+    });
+    parentBoe = created.boe;
+  }
+
+  // Atomic over-link protection (idempotent with unique grnId lot — only reached once per GRN).
+  parentBoe = await reserveLinkedCustomsQty({
+    session,
+    companyId: req.companyId,
+    customsBoeId: parentBoe._id,
+    delta: thisGrnCustomsQty,
+    updatedBy: req.user?.email || "",
+  });
+
   const customsLotRef = await nextCustomsLotRef({
     companyId: req.companyId,
     companyCode: req.companyCode,
   });
 
-  // Lot header stores BOE economics (authoritative for BOE_AVERAGE) + first-line identity for search.
+  const boeSnap = mapBoeEconomicsToLotSnapshot(parentBoe);
   const firstCapture = (grn.items || []).find((ln) => ln.customsCapture)?.customsCapture || {};
-  const valuationMethod = payload.valuationMethod || CUSTOMS_VALUATION_BOE_AVERAGE;
-  const customsUnitValue = Number(payload.customsUnitValue ?? firstCapture.customsUnitValue) || 0;
-  const boeDeclaredQty = Number(payload.boeDeclaredQty ?? firstCapture.boeDeclaredQty) || 0;
-  const boeDeclaredValue = Number(payload.boeDeclaredValue ?? firstCapture.boeDeclaredValue) || 0;
-  const customsUom = upper(payload.header.customsUom || firstCapture.customsUom || "PCS") || "PCS";
-  const grossWeightKg = Number(payload.header.grossWeightKg) || 0;
-  const netWeightKg = Number(payload.header.netWeightKg) || 0;
-  const lockedAt = new Date();
+  const valuationMethod = boeSnap.valuationMethod || CUSTOMS_VALUATION_BOE_AVERAGE;
+  const customsUnitValue = Number(boeSnap.customsUnitValue) || 0;
+  const lockedAt = boeSnap.valuationLockedAt || new Date();
 
   const lotRows = await CustomsLot.create(
     [
@@ -323,16 +409,18 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {}, po
         companyId: req.companyId,
         companyCode: upper(req.companyCode || "CMP"),
         customsLotRef,
+        customsBoeId: boeSnap.customsBoeId,
+        customsBoeRef: boeSnap.customsBoeRef,
         grnId: grn._id,
         grnNo: grn.grnNo,
         poId: grn.poId || null,
         poNo: grn.poNo || "",
         supplierId: grn.supplierId || null,
         supplierName: grn.supplierName || "",
-        boeNumber: firstCapture.boeNumber || payload.header.boeNumber,
-        boeDate: firstCapture.boeDate || null,
-        blNumber: firstCapture.blNumber || payload.header.blNumber,
-        awbNumber: firstCapture.awbNumber || payload.header.awbNumber,
+        boeNumber: boeSnap.boeNumber,
+        boeDate: boeSnap.boeDate,
+        blNumber: boeSnap.blNumber,
+        awbNumber: boeSnap.awbNumber,
         supplierInvoiceNumber: firstCapture.supplierInvoiceNumber || payload.header.supplierInvoiceNumber,
         supplierInvoiceDate: firstCapture.supplierInvoiceDate || null,
         receivedDate: firstCapture.receivedDate || null,
@@ -340,15 +428,15 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {}, po
         hsCode: firstCapture.hsCode || upper(payload.header.hsCode),
         unitWeightKg: Number(firstCapture.unitWeightKg) || 0,
         customsUnitPrice: customsUnitValue,
-        currency: firstCapture.customsCurrency || upper(payload.header.customsCurrency || "USD"),
-        exchangeRateToAED: Number(firstCapture.exchangeRateToAED) || 0,
+        currency: boeSnap.currency,
+        exchangeRateToAED: boeSnap.exchangeRateToAED,
         valuationMethod,
-        boeDeclaredQty,
-        customsUom,
-        boeDeclaredValue,
+        boeDeclaredQty: boeSnap.boeDeclaredQty,
+        customsUom: boeSnap.customsUom,
+        boeDeclaredValue: boeSnap.boeDeclaredValue,
         customsUnitValue,
-        grossWeightKg,
-        netWeightKg,
+        grossWeightKg: boeSnap.grossWeightKg,
+        netWeightKg: boeSnap.netWeightKg,
         valuationLockedAt: lockedAt,
         status: "OPEN",
         remarks: firstCapture.customsRemarks || payload.header.customsRemarks,
@@ -382,7 +470,7 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {}, po
         }),
       );
 
-    const unitValue = Number(cap.customsUnitValue ?? cap.customsUnitPrice) || customsUnitValue;
+    const unitValue = customsUnitValue;
     const customsQtyImported = roundCustomsQty(cap.customsQty || mapped?.customsQty || qty);
     const lineTotal =
       mapped?.customsTotalPrice != null
@@ -404,7 +492,7 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {}, po
           partName: line.description || "",
           description: line.description || "",
           hsCode: upper(cap.hsCode || ""),
-          currency: upper(cap.customsCurrency || "USD"),
+          currency: boeSnap.currency,
           unitPrice: unitValue,
           customsUnitValue: unitValue,
           customsQtyImported,
@@ -416,17 +504,17 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {}, po
           unitWeightKg: Number(cap.unitWeightKg) || 0,
           totalWeightKg: Number(cap.totalWeightKg) || 0,
           totalValue: lineTotal,
-          exchangeRateToAED: Number(cap.exchangeRateToAED) || 0,
-          customsValueAED: Number(cap.customsValueAED) || 0,
+          exchangeRateToAED: boeSnap.exchangeRateToAED,
+          customsValueAED: Number(cap.customsValueAED) || roundCustomsMoney(lineTotal * (boeSnap.exchangeRateToAED || 0)),
           customStock: qty,
           customStockBalance: qty,
           supplierInvoiceNumber: cap.supplierInvoiceNumber || "",
           supplierInvoiceDate: cap.supplierInvoiceDate || null,
           receivedDate: cap.receivedDate || null,
-          boeNumber: cap.boeNumber || "",
-          boeDate: cap.boeDate || null,
-          blNumber: cap.blNumber || "",
-          awbNumber: cap.awbNumber || "",
+          boeNumber: boeSnap.boeNumber,
+          boeDate: boeSnap.boeDate,
+          blNumber: boeSnap.blNumber,
+          awbNumber: boeSnap.awbNumber,
           countryOfOrigin: upper(cap.countryOfOrigin || ""),
           status: "IN_STOCK",
           remarks1: t(line.remarks),
@@ -460,7 +548,6 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {}, po
     });
   }
 
-  // Persist customsCapture snapshots on GRN lines (already stamped in memory).
   grn.markModified?.("items");
   await grn.save({ session });
 
@@ -474,13 +561,17 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {}, po
     entityType: "CUSTOMS_LOT",
     entityId: lot._id,
     documentNo: lot.customsLotRef,
-    description: `Customs lot ${lot.customsLotRef} created from GRN ${grn.grnNo}`,
+    description: `Customs lot ${lot.customsLotRef} created from GRN ${grn.grnNo} under ${lot.customsBoeRef}`,
     metadata: {
       grnNo: grn.grnNo,
+      customsBoeId: lot.customsBoeId,
+      customsBoeRef: lot.customsBoeRef,
       boeNumber: lot.boeNumber,
       blNumber: lot.blNumber,
       awbNumber: lot.awbNumber,
       supplierInvoiceNumber: lot.supplierInvoiceNumber,
+      thisGrnCustomsQty,
+      linkedCustomsQty: parentBoe.linkedCustomsQty,
     },
   });
 
@@ -533,6 +624,10 @@ export async function reverseCustomsLotForCancelledGrn({ session, req, grn }) {
     withCompanyId(req.companyId, { customsLotId: lot._id, status: { $ne: "CANCELLED" } }),
   ).session(session);
 
+  const linkedReleaseQty = roundCustomsQty(
+    items.reduce((s, it) => s + (Number(it.customsQtyImported) || Number(it.qtyImported) || 0), 0),
+  );
+
   for (const item of items) {
     const qty = Number(item.qtyAvailable) || 0;
     if (qty > 0) {
@@ -578,6 +673,16 @@ export async function reverseCustomsLotForCancelledGrn({ session, req, grn }) {
   lot.updatedBy = req.user?.email || "";
   await lot.save({ session });
 
+  if (lot.customsBoeId && linkedReleaseQty > 0) {
+    await releaseLinkedCustomsQty({
+      session,
+      companyId: req.companyId,
+      customsBoeId: lot.customsBoeId,
+      delta: linkedReleaseQty,
+      updatedBy: req.user?.email || "",
+    });
+  }
+
   await writeAudit(req, {
     action: "REVERSAL",
     module: "CUSTOMS",
@@ -585,7 +690,12 @@ export async function reverseCustomsLotForCancelledGrn({ session, req, grn }) {
     entityId: lot._id,
     documentNo: lot.customsLotRef,
     description: `Customs lot ${lot.customsLotRef} reversed for cancelled GRN ${grn.grnNo}`,
-    metadata: { grnNo: grn.grnNo },
+    metadata: {
+      grnNo: grn.grnNo,
+      customsBoeId: lot.customsBoeId,
+      customsBoeRef: lot.customsBoeRef,
+      linkedReleaseQty,
+    },
   });
 
   return lot;
@@ -927,8 +1037,8 @@ export async function listCustomsStockPage(companyId, filters = {}, paging = {})
 }
 
 /**
- * Paginated Customs Stock grouped by CustomsLot (authoritative BOE economics container).
- * Never merges lots that share only a BOE number string.
+ * Paginated Customs Stock grouped by CustomsBoe (new) or CustomsLot (legacy).
+ * Never merges solely by external BOE number string.
  */
 export async function listCustomsStockGroupedPage(companyId, filters = {}, paging = {}) {
   const page = Math.max(1, Number(paging.page) || 1);
@@ -937,9 +1047,8 @@ export async function listCustomsStockGroupedPage(companyId, filters = {}, pagin
 
   const itemQuery = await buildCustomsStockItemQuery(companyId, {
     ...filters,
-    // Group status OPEN/CLOSED/CANCELLED applied after build; item status filters still use item fields.
     status:
-      ["OPEN", "CLOSED"].includes(String(filters.status || "").toUpperCase())
+      ["OPEN", "CLOSED", "RECONCILED"].includes(String(filters.status || "").toUpperCase())
         ? undefined
         : filters.status,
   });
@@ -952,99 +1061,87 @@ export async function listCustomsStockGroupedPage(companyId, filters = {}, pagin
   const lotFilter = withCompanyId(companyId, { _id: { $in: matchingLotIds } });
   if (filters.companyCode) lotFilter.companyCode = upper(filters.companyCode);
 
-  // Fetch candidate lots then filter by derived OPEN/CLOSED after grouping when needed.
   const groupStatus = String(filters.status || "").toUpperCase();
-  const needsDerivedStatus = groupStatus === "OPEN" || groupStatus === "CLOSED";
-
-  let lots;
-  let total;
-  if (needsDerivedStatus || groupStatus === "CANCELLED") {
-    const allLots = await CustomsLot.find(lotFilter)
-      .sort({ boeDate: -1, supplierInvoiceDate: -1, createdAt: -1 })
-      .lean();
-    const allLotIds = allLots.map((l) => l._id);
-    const allItems = allLotIds.length
-      ? await CustomsLotItem.find(withCompanyId(companyId, { customsLotId: { $in: allLotIds } })).lean()
-      : [];
-    const byLot = new Map();
-    for (const it of allItems) {
-      const k = String(it.customsLotId);
-      if (!byLot.has(k)) byLot.set(k, []);
-      byLot.get(k).push(it);
-    }
-    const matchHint = t(filters.articleNumber || filters.search);
-    let groups = allLots.map((lot, idx) =>
-      buildCustomsLotStockGroup(lot, byLot.get(String(lot._id)) || [], {
-        srNo: idx + 1,
-        matchArticle: matchHint,
-      }),
-    );
-    if (groupStatus === "CANCELLED") {
-      groups = groups.filter((g) => g.status === "CANCELLED");
-    } else if (groupStatus === "OPEN") {
-      groups = groups.filter((g) => g.status === "OPEN");
-    } else if (groupStatus === "CLOSED") {
-      groups = groups.filter((g) => g.status === "CLOSED");
-    }
-    total = groups.length;
-    const pageGroups = groups.slice(skip, skip + limit).map((g, i) => ({ ...g, srNo: skip + i + 1 }));
-    return {
-      groups: pageGroups,
-      items: pageGroups.flatMap((g) =>
-        (g.articles || []).map((a, ai) => ({
-          ...a,
-          customsLotId: g.customsLotId,
-          boeNumber: g.boeNumber,
-          supplier: g.supplier,
-          valuationMethod: g.valuationMethod,
-          currency: g.currency,
-          boeDeclaredQty: g.boeSummary?.declaredQty,
-          boeDeclaredValue: g.boeSummary?.declaredValue,
-          customsUnitValue: a.customsUnitValue ?? g.boeSummary?.customsUnitValue,
-        })),
-      ),
-      total,
-      page,
-      limit,
-      view: "boe",
-    };
-  }
-
-  [lots, total] = await Promise.all([
-    CustomsLot.find(lotFilter)
-      .sort({ boeDate: -1, supplierInvoiceDate: -1, createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
-    CustomsLot.countDocuments(lotFilter),
-  ]);
-
-  const pageLotIds = lots.map((l) => l._id);
-  const items = pageLotIds.length
-    ? await CustomsLotItem.find(withCompanyId(companyId, { customsLotId: { $in: pageLotIds } })).lean()
+  const allLots = await CustomsLot.find(lotFilter)
+    .sort({ boeDate: -1, supplierInvoiceDate: -1, createdAt: -1 })
+    .lean();
+  const allLotIds = allLots.map((l) => l._id);
+  const allItems = allLotIds.length
+    ? await CustomsLotItem.find(withCompanyId(companyId, { customsLotId: { $in: allLotIds } })).lean()
     : [];
   const byLot = new Map();
-  for (const it of items) {
+  for (const it of allItems) {
     const k = String(it.customsLotId);
     if (!byLot.has(k)) byLot.set(k, []);
     byLot.get(k).push(it);
   }
 
   const matchHint = t(filters.articleNumber || filters.search);
-  const groups = lots.map((lot, index) =>
+  const lotGroups = allLots.map((lot, idx) =>
     buildCustomsLotStockGroup(lot, byLot.get(String(lot._id)) || [], {
-      srNo: skip + index + 1,
+      srNo: idx + 1,
       matchArticle: matchHint,
     }),
   );
 
+  // Parent BOE merge
+  const boeIds = [
+    ...new Set(allLots.map((l) => (l.customsBoeId ? String(l.customsBoeId) : "")).filter(Boolean)),
+  ];
+  const boeDocs = boeIds.length
+    ? await CustomsBoe.find(withCompanyId(companyId, { _id: { $in: boeIds } })).lean()
+    : [];
+  const boeMap = new Map(boeDocs.map((b) => [String(b._id), b]));
+
+  const parentBuckets = new Map(); // boeId -> lot groups
+  const legacyGroups = [];
+  for (const g of lotGroups) {
+    const bid = g.customsBoeId ? String(g.customsBoeId) : "";
+    if (bid) {
+      if (!parentBuckets.has(bid)) parentBuckets.set(bid, []);
+      parentBuckets.get(bid).push(g);
+    } else {
+      legacyGroups.push(g);
+    }
+  }
+
+  let groups = [
+    ...[...parentBuckets.entries()].map(([bid, lots]) =>
+      buildCustomsBoeStockGroup(boeMap.get(bid) || { _id: bid }, lots, { srNo: 1 }),
+    ),
+    ...legacyGroups,
+  ];
+
+  // Stable sort: boeDate desc then ref
+  groups.sort((a, b) => {
+    const da = a.boeDate ? new Date(a.boeDate).getTime() : 0;
+    const db = b.boeDate ? new Date(b.boeDate).getTime() : 0;
+    if (db !== da) return db - da;
+    return String(b.customsBoeRef || b.customsLotRef || "").localeCompare(
+      String(a.customsBoeRef || a.customsLotRef || ""),
+    );
+  });
+
+  if (groupStatus === "CANCELLED") {
+    groups = groups.filter((g) => g.status === "CANCELLED");
+  } else if (groupStatus === "OPEN") {
+    groups = groups.filter((g) => g.status === "OPEN");
+  } else if (groupStatus === "CLOSED") {
+    groups = groups.filter((g) => g.status === "CLOSED");
+  } else if (groupStatus === "RECONCILED") {
+    groups = groups.filter((g) => g.status === "RECONCILED");
+  }
+
+  const total = groups.length;
+  const pageGroups = groups.slice(skip, skip + limit).map((g, i) => ({ ...g, srNo: skip + i + 1 }));
   return {
-    groups,
-    // Additive flat projection for clients that still read items
-    items: groups.flatMap((g) =>
+    groups: pageGroups,
+    items: pageGroups.flatMap((g) =>
       (g.articles || []).map((a) => ({
         ...a,
-        customsLotId: g.customsLotId,
+        customsLotId: a.customsLotId || g.customsLotId,
+        customsBoeId: g.customsBoeId,
+        customsBoeRef: g.customsBoeRef,
         boeNumber: g.boeNumber,
         supplier: g.supplier,
         valuationMethod: g.valuationMethod,

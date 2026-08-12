@@ -54,16 +54,34 @@ export function computeBoeCustomsUnitValue(boeDeclaredValue, boeDeclaredQty) {
 }
 
 /**
- * Distribute BOE declared value across line customs qtys with residual on last positive line.
- * Ensures sum(lineValues) === roundMoney(boeDeclaredValue) within 2 dp.
+ * Distribute BOE declared / contribution value across line customs qtys with residual on last positive line.
+ * When this GRN is a partial link, pass contributionValue = roundMoney(sumQty * unit)
+ * or leave unset — auto-detects full-BOE vs partial contribution.
  */
 export function allocateBoeLineValues({
   lines = [],
   boeDeclaredValue,
+  boeDeclaredQty,
   customsUnitValue,
+  contributionValue = null,
 } = {}) {
-  const declared = roundCustomsMoney(boeDeclaredValue);
   const unit = Number(customsUnitValue) || 0;
+  const sumQty = roundCustomsQty(
+    lines.reduce((s, ln) => s + roundCustomsQty(ln.customsQty), 0),
+  );
+  const declaredQty = roundCustomsQty(boeDeclaredQty);
+  let target;
+  if (contributionValue != null && Number.isFinite(Number(contributionValue))) {
+    target = roundCustomsMoney(contributionValue);
+  } else if (declaredQty > 0 && Math.abs(sumQty - declaredQty) <= 1e-6) {
+    target = roundCustomsMoney(boeDeclaredValue);
+  } else if (!(declaredQty > 0) && boeDeclaredValue != null && Number.isFinite(Number(boeDeclaredValue))) {
+    // Legacy callers that omit boeDeclaredQty still distribute full declared value.
+    target = roundCustomsMoney(boeDeclaredValue);
+  } else {
+    target = roundCustomsMoney(sumQty * unit);
+  }
+
   const out = [];
   let allocated = 0;
   const positiveIdx = lines
@@ -79,7 +97,7 @@ export function allocateBoeLineValues({
     const isLast = positiveIdx.length && i === positiveIdx[positiveIdx.length - 1].i;
     let total;
     if (isLast) {
-      total = roundCustomsMoney(declared - allocated);
+      total = roundCustomsMoney(target - allocated);
     } else {
       total = roundCustomsMoney(qty * unit);
       allocated = roundCustomsMoney(allocated + total);
@@ -110,15 +128,21 @@ export function canDefaultBoeQtyFromPhysical({ customsUom, lineUoms = [] } = {})
 }
 
 /**
- * Build per-line customs qty map.
- * - If every line has customsQty → use those (must sum to boeDeclaredQty).
- * - Else if 1:1 compatible → customsQty = physical qty.
+ * Build per-line customs qty map for THIS GRN contribution.
+ *
+ * Multi-GRN BOE: THIS GRN customs qty need NOT equal full boeDeclaredQty.
+ * - Explicit customsQty on every accepted line → use those (sum = this GRN contribution).
+ * - Else if 1:1 UOM-compatible → customsQty = physical qty.
  * - Else error: explicit mapping required.
+ *
+ * Over-link vs remaining is enforced at CustomsBoe reserve time, not here.
+ * Optional maxLinkQty: when set, reject if this GRN contribution exceeds it.
  */
 export function resolveLineCustomsQuantities({
   lines = [],
   boeDeclaredQty,
   customsUom,
+  maxLinkQty = null,
 } = {}) {
   const declared = roundCustomsQty(boeDeclaredValueSafe(boeDeclaredQty));
   const physical = lines.map((ln) => ({
@@ -137,62 +161,73 @@ export function resolveLineCustomsQuantities({
     return {
       ok: false,
       lines: [],
+      thisGrnCustomsQty: 0,
       message:
         "When Customs Qty differs from physical qty, every accepted line must include an explicit customsQty allocation.",
     };
   }
 
+  let mapped;
+  let mode;
+
   if (hasAllOverrides) {
-    const mapped = active.map((p) => ({
+    mapped = active.map((p) => ({
       key: p.key,
       article: p.article,
       physicalQty: p.physicalQty,
       uom: p.uom,
       customsQty: p.customsQtyOverride,
     }));
-    const sum = roundCustomsQty(mapped.reduce((s, r) => s + r.customsQty, 0));
-    if (Math.abs(sum - declared) > 1e-6) {
+    mode = "EXPLICIT";
+  } else {
+    const uoms = active.map((p) => p.uom);
+    const oneToOne = canDefaultBoeQtyFromPhysical({ customsUom, lineUoms: uoms });
+    if (!oneToOne) {
       return {
         ok: false,
-        lines: mapped,
-        message: `Customs Qty total ${sum} does not match BOE Declared Qty ${declared}.`,
+        lines: [],
+        thisGrnCustomsQty: 0,
+        message:
+          "Customs UOM differs from inventory UOM (or qty mismatch). Provide explicit customsQty per accepted GRN line.",
       };
     }
-    return { ok: true, lines: mapped, mode: "EXPLICIT" };
+    mapped = active.map((p) => ({
+      key: p.key,
+      article: p.article,
+      physicalQty: p.physicalQty,
+      uom: p.uom,
+      customsQty: p.physicalQty,
+    }));
+    mode = "ONE_TO_ONE";
   }
 
-  const uoms = active.map((p) => p.uom);
-  const oneToOne = canDefaultBoeQtyFromPhysical({ customsUom, lineUoms: uoms });
-  const physicalSum = roundCustomsQty(active.reduce((s, p) => s + p.physicalQty, 0));
-
-  if (oneToOne && Math.abs(physicalSum - declared) <= 1e-6) {
-    return {
-      ok: true,
-      mode: "ONE_TO_ONE",
-      lines: active.map((p) => ({
-        key: p.key,
-        article: p.article,
-        physicalQty: p.physicalQty,
-        uom: p.uom,
-        customsQty: p.physicalQty,
-      })),
-    };
-  }
-
-  if (oneToOne && Math.abs(physicalSum - declared) > 1e-6) {
+  const thisGrnCustomsQty = roundCustomsQty(mapped.reduce((s, r) => s + r.customsQty, 0));
+  if (!(thisGrnCustomsQty > 0)) {
     return {
       ok: false,
-      lines: [],
-      message: `BOE Declared Customs Qty (${declared}) must equal sum of accepted GRN qty (${physicalSum}) when Customs UOM matches inventory UOM, or provide explicit customsQty per line.`,
+      lines: mapped,
+      thisGrnCustomsQty: 0,
+      message: "This GRN customs qty must be greater than zero.",
     };
   }
 
-  return {
-    ok: false,
-    lines: [],
-    message:
-      "Customs UOM differs from inventory UOM (or qty mismatch). Provide explicit customsQty per accepted GRN line so allocations sum to BOE Declared Customs Qty.",
-  };
+  const linkCap =
+    maxLinkQty != null && Number.isFinite(Number(maxLinkQty))
+      ? roundCustomsQty(maxLinkQty)
+      : declared > 0
+        ? declared
+        : null;
+
+  if (linkCap != null && thisGrnCustomsQty > linkCap + 1e-9) {
+    return {
+      ok: false,
+      lines: mapped,
+      thisGrnCustomsQty,
+      message: `This GRN customs qty ${thisGrnCustomsQty} exceeds remaining BOE qty to link (${linkCap}).`,
+    };
+  }
+
+  return { ok: true, lines: mapped, mode, thisGrnCustomsQty };
 }
 
 function boeDeclaredValueSafe(v) {
@@ -570,6 +605,7 @@ export function computeConversionCustomsTransfer({
 
 /**
  * Build one Customs Stock BOE/lot group. Group key is always customsLotId (never BOE number alone).
+ * Used for legacy lots (no customsBoeId) and as a building block for parent BOE groups.
  */
 export function buildCustomsLotStockGroup(lot = {}, items = [], { srNo = 1, matchArticle = "" } = {}) {
   const valuationMethod = resolveValuationMethod(lot.valuationMethod || items[0]?.valuationMethod);
@@ -601,7 +637,6 @@ export function buildCustomsLotStockGroup(lot = {}, items = [], { srNo = 1, matc
       hsCode: item.hsCode || "",
       countryOfOrigin: item.countryOfOrigin || "",
       grnId: item.grnId || lot.grnId || null,
-      // Retain grnNo for legacy consumers / Original GRN drill-down; primary source is sourceRef.
       grnNo: item.grnNo || lot.grnNo || "",
       location: item.location || item.remarks1 || "",
       status: item.status || "",
@@ -633,6 +668,9 @@ export function buildCustomsLotStockGroup(lot = {}, items = [], { srNo = 1, matc
   const remainingCustomsValue = roundCustomsMoney(
     articles.reduce((s, a) => s + (Number(a.remainingCustomsValue) || 0), 0),
   );
+  const importedCustomsValue = roundCustomsMoney(
+    articles.reduce((s, a) => s + (Number(a.importedCustomsValue) || 0), 0),
+  );
 
   const declaredQty = isBoeAvg ? Number(lot.boeDeclaredQty) || 0 : null;
   const declaredValue = isBoeAvg ? roundCustomsMoney(lot.boeDeclaredValue) : null;
@@ -644,24 +682,42 @@ export function buildCustomsLotStockGroup(lot = {}, items = [], { srNo = 1, matc
   if (lotCancelled) status = "CANCELLED";
   else if (remainingCustomsQty <= 1e-9) status = "CLOSED";
 
+  // Outbound stock reconciliation vs imported layer value (not remaining-to-link).
   const qtyInvariantOk =
     !isBoeAvg ||
-    declaredQty == null ||
-    declaredQty <= 0 ||
     Math.abs(roundCustomsQty(exportedCustomsQty + remainingCustomsQty) - roundCustomsQty(importedCustomsQty)) <=
       1e-6;
+  // Value invariant vs linked imported value when lot is a partial parent contribution;
+  // when fully matching declared qty use declared value.
+  const valueBasis =
+    declaredQty != null &&
+    declaredQty > 0 &&
+    Math.abs(roundCustomsQty(importedCustomsQty) - roundCustomsQty(declaredQty)) <= 1e-6
+      ? declaredValue
+      : importedCustomsValue;
   const valueInvariantOk =
     !isBoeAvg ||
-    declaredValue == null ||
+    valueBasis == null ||
     Math.abs(
-      roundCustomsMoney(consumedCustomsValue + remainingCustomsValue) - roundCustomsMoney(declaredValue),
+      roundCustomsMoney(consumedCustomsValue + remainingCustomsValue) - roundCustomsMoney(valueBasis),
     ) <= 0.02;
+
+  const linkedCustomsQty = lot.customsBoeId
+    ? null
+    : importedCustomsQty;
+  const remainingToLink =
+    declaredQty != null && !lot.customsBoeId
+      ? roundCustomsQty(Math.max(0, declaredQty - importedCustomsQty))
+      : null;
 
   return {
     srNo,
     groupKey: String(lot._id || ""),
+    groupKind: lot.customsBoeId ? "LOT_UNDER_BOE" : "LEGACY_LOT",
     customsLotId: lot._id,
     customsLotRef: lot.customsLotRef || "",
+    customsBoeId: lot.customsBoeId || null,
+    customsBoeRef: lot.customsBoeRef || "",
     companyId: lot.companyId,
     companyCode: lot.companyCode || "",
     valuationMethod,
@@ -680,6 +736,7 @@ export function buildCustomsLotStockGroup(lot = {}, items = [], { srNo = 1, matc
     netWeightKg: Number(lot.netWeightKg) || 0,
     grnId: lot.grnId || null,
     grnNo: lot.grnNo || "",
+    poNo: lot.poNo || "",
     status,
     lotStatus: lot.status || "",
     documents: {
@@ -691,6 +748,8 @@ export function buildCustomsLotStockGroup(lot = {}, items = [], { srNo = 1, matc
       exportedQty: exportedCustomsQty,
       remainingQty: remainingCustomsQty,
       importedQty: importedCustomsQty,
+      linkedQty: linkedCustomsQty,
+      remainingToLink,
       declaredValue: isBoeAvg ? declaredValue : null,
       customsUnitValue: isBoeAvg ? customsUnitValue : null,
       consumedValue: consumedCustomsValue,
@@ -699,6 +758,16 @@ export function buildCustomsLotStockGroup(lot = {}, items = [], { srNo = 1, matc
       customsUom: lot.customsUom || "",
       grossWeightKg: Number(lot.grossWeightKg) || 0,
       netWeightKg: Number(lot.netWeightKg) || 0,
+    },
+    inboundReconciliation: {
+      declaredQty: isBoeAvg ? declaredQty : null,
+      linkedQty: linkedCustomsQty,
+      remainingToLink,
+    },
+    outboundReconciliation: {
+      importedQty: importedCustomsQty,
+      exportedQty: exportedCustomsQty,
+      remainingQty: remainingCustomsQty,
     },
     reconciliation: {
       qtyInvariantOk,
@@ -711,5 +780,146 @@ export function buildCustomsLotStockGroup(lot = {}, items = [], { srNo = 1, matc
     articleCount: articles.length,
     articles,
     hasArticleMatch: articles.some((a) => a.matchHighlight),
+    receipts: [
+      {
+        grnId: lot.grnId || null,
+        grnNo: lot.grnNo || "",
+        poNo: lot.poNo || "",
+        supplierInvoiceNumber: lot.supplierInvoiceNumber || "",
+        customsLotId: lot._id,
+        customsLotRef: lot.customsLotRef || "",
+        linkedCustomsQty: importedCustomsQty,
+      },
+    ],
+  };
+}
+
+/**
+ * Merge multiple CustomsLot groups that share the same parent CustomsBoe.
+ * groupKey = customsBoeId (never external boeNumber alone).
+ */
+export function buildCustomsBoeStockGroup(boe = {}, lotGroups = [], { srNo = 1 } = {}) {
+  const lots = lotGroups || [];
+  const articles = lots.flatMap((g) => g.articles || []);
+  const receipts = lots.flatMap((g) => g.receipts || []);
+  const valuationMethod = resolveValuationMethod(boe.valuationMethod || lots[0]?.valuationMethod);
+  const isBoeAvg = isBoeAverageValuation(valuationMethod);
+
+  const importedCustomsQty = roundCustomsQty(
+    articles.reduce((s, a) => s + (Number(a.customsQtyImported) || 0), 0),
+  );
+  const remainingCustomsQty = roundCustomsQty(
+    articles.reduce((s, a) => s + (Number(a.remainingCustomsQty) || 0), 0),
+  );
+  const exportedCustomsQty = roundCustomsQty(Math.max(0, importedCustomsQty - remainingCustomsQty));
+  const consumedCustomsValue = roundCustomsMoney(
+    articles.reduce((s, a) => s + (Number(a.consumedCustomsValue) || 0), 0),
+  );
+  const remainingCustomsValue = roundCustomsMoney(
+    articles.reduce((s, a) => s + (Number(a.remainingCustomsValue) || 0), 0),
+  );
+  const importedCustomsValue = roundCustomsMoney(
+    articles.reduce((s, a) => s + (Number(a.importedCustomsValue) || 0), 0),
+  );
+
+  const declaredQty = Number(boe.boeDeclaredQty) || Number(lots[0]?.boeSummary?.declaredQty) || 0;
+  const declaredValue = roundCustomsMoney(
+    boe.boeDeclaredValue != null ? boe.boeDeclaredValue : lots[0]?.boeSummary?.declaredValue,
+  );
+  const customsUnitValue =
+    Number(boe.customsUnitValue) || Number(lots[0]?.boeSummary?.customsUnitValue) || 0;
+  const linkedCustomsQty =
+    boe.linkedCustomsQty != null ? roundCustomsQty(boe.linkedCustomsQty) : importedCustomsQty;
+  const remainingToLink = roundCustomsQty(Math.max(0, declaredQty - linkedCustomsQty));
+
+  const allCancelled =
+    lots.length > 0 && lots.every((g) => String(g.status || "").toUpperCase() === "CANCELLED");
+  let status = "OPEN";
+  if (allCancelled || String(boe.status || "").toUpperCase() === "CANCELLED") status = "CANCELLED";
+  else if (remainingCustomsQty <= 1e-9 && Math.abs(linkedCustomsQty - declaredQty) <= 1e-6) {
+    status = "CLOSED";
+  } else if (Math.abs(linkedCustomsQty - declaredQty) <= 1e-6) {
+    status = "RECONCILED";
+  }
+
+  const qtyInvariantOk =
+    Math.abs(roundCustomsQty(exportedCustomsQty + remainingCustomsQty) - roundCustomsQty(importedCustomsQty)) <=
+    1e-6;
+  const valueBasis =
+    Math.abs(roundCustomsQty(importedCustomsQty) - roundCustomsQty(declaredQty)) <= 1e-6
+      ? declaredValue
+      : importedCustomsValue;
+  const valueInvariantOk =
+    Math.abs(roundCustomsMoney(consumedCustomsValue + remainingCustomsValue) - roundCustomsMoney(valueBasis)) <=
+    0.02;
+
+  return {
+    srNo,
+    groupKey: String(boe._id || lots[0]?.customsBoeId || ""),
+    groupKind: "CUSTOMS_BOE",
+    customsBoeId: boe._id || lots[0]?.customsBoeId || null,
+    customsBoeRef: boe.customsBoeRef || lots[0]?.customsBoeRef || "",
+    customsLotId: null,
+    customsLotRef: "",
+    companyId: boe.companyId || lots[0]?.companyId,
+    companyCode: boe.companyCode || lots[0]?.companyCode || "",
+    valuationMethod,
+    isBoeAverage: isBoeAvg,
+    boeNumber: boe.boeNumber || lots[0]?.boeNumber || "",
+    boeDate: boe.boeDate || lots[0]?.boeDate || null,
+    blNumber: boe.blNumber || lots[0]?.blNumber || "",
+    awbNumber: boe.awbNumber || lots[0]?.awbNumber || "",
+    supplier: [...new Set(lots.map((g) => g.supplier).filter(Boolean))].join(", "),
+    supplierInvoiceNumber: "",
+    supplierInvoiceDate: null,
+    receivedDate: null,
+    currency: boe.customsCurrency || lots[0]?.currency || "USD",
+    customsUom: boe.customsUom || lots[0]?.customsUom || "PCS",
+    grossWeightKg: Number(boe.grossWeightKg ?? lots[0]?.grossWeightKg) || 0,
+    netWeightKg: Number(boe.netWeightKg ?? lots[0]?.netWeightKg) || 0,
+    grnId: null,
+    grnNo: "",
+    status,
+    lotStatus: boe.status || "",
+    documents: lots[0]?.documents || {},
+    boeSummary: {
+      declaredQty,
+      exportedQty: exportedCustomsQty,
+      remainingQty: remainingCustomsQty,
+      importedQty: importedCustomsQty,
+      linkedQty: linkedCustomsQty,
+      remainingToLink,
+      declaredValue,
+      customsUnitValue,
+      consumedValue: consumedCustomsValue,
+      remainingValue: remainingCustomsValue,
+      currency: boe.customsCurrency || lots[0]?.currency || "USD",
+      customsUom: boe.customsUom || lots[0]?.customsUom || "",
+      grossWeightKg: Number(boe.grossWeightKg ?? lots[0]?.grossWeightKg) || 0,
+      netWeightKg: Number(boe.netWeightKg ?? lots[0]?.netWeightKg) || 0,
+    },
+    inboundReconciliation: {
+      declaredQty,
+      linkedQty: linkedCustomsQty,
+      remainingToLink,
+    },
+    outboundReconciliation: {
+      importedQty: importedCustomsQty,
+      exportedQty: exportedCustomsQty,
+      remainingQty: remainingCustomsQty,
+    },
+    reconciliation: {
+      qtyInvariantOk,
+      valueInvariantOk,
+      warning:
+        !qtyInvariantOk || !valueInvariantOk
+          ? "BOE qty/value reconciliation mismatch — review Customs Ledger / Reconciliation."
+          : "",
+    },
+    articleCount: articles.length,
+    articles,
+    hasArticleMatch: articles.some((a) => a.matchHighlight),
+    receipts,
+    lotCount: lots.length,
   };
 }
