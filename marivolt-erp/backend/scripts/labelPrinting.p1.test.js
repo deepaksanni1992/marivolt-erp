@@ -274,6 +274,7 @@ run("LabelPrintJob has idempotency unique index", () => {
 
 run("Generate and save sample TSPL fixtures", () => {
   fs.mkdirSync(sampleDir, { recursive: true });
+  const brand = { companyName: "MARIVOLT FZE" };
   const samples = {
     "01-normal-short.txt": buildSingleLabelTspl({
       article: "MV-1001",
@@ -286,20 +287,20 @@ run("Generate and save sample TSPL fixtures", () => {
       grnNo: "GRN-1",
       receivedDate: "2026-08-01",
       location: "A1",
-    }),
+    }, brand),
     "02-long-description.txt": buildSingleLabelTspl({
       article: "MV-LONG",
       description:
         "This is an extremely long product description that must wrap to at most two lines and truncate gracefully without overlapping the barcode or other fields on the label",
       uom: "PCS",
       grnNo: "GRN-2",
-    }),
-    "03-numeric-article.txt": buildSingleLabelTspl({ article: "1234567890", description: "Numeric", uom: "PCS", grnNo: "G3" }),
-    "04-alphanumeric-article.txt": buildSingleLabelTspl({ article: "AB-99/X", description: "Alpha", uom: "PCS", grnNo: "G4" }),
-    "05-missing-po.txt": buildSingleLabelTspl({ article: "NO-PO", description: "No PO", uom: "PCS", grnNo: "G5", poNo: "" }),
+    }, brand),
+    "03-numeric-article.txt": buildSingleLabelTspl({ article: "1234567890", description: "Numeric", uom: "PCS", grnNo: "G3" }, brand),
+    "04-alphanumeric-article.txt": buildSingleLabelTspl({ article: "AB-99/X", description: "Alpha", uom: "PCS", grnNo: "G4" }, brand),
+    "05-missing-po.txt": buildSingleLabelTspl({ article: "NO-PO", description: "No PO", uom: "PCS", grnNo: "G5", poNo: "" }, brand),
     "06-qty-gt-999.txt": buildJobTspl(
       [{ article: "BULK", description: "Bulk", uom: "PCS", qty: 1500, labelQty: 2, grnNo: "G6", poNo: "PO-B" }],
-      { copies: 1 }
+      { copies: 1, ...brand }
     ),
   };
   for (const [name, body] of Object.entries(samples)) {
@@ -363,6 +364,7 @@ run("Test label TSPL generator", () => {
     printerName: "Receiving Printer",
     windowsPrinterName: "Rongta RP420",
     connectionStatus: "ONLINE",
+    title: "MARIVOLT TEST LABEL",
   });
   assert.ok(tspl.includes("MARIVOLT TEST LABEL"));
   assert.ok(tspl.includes("SIZE 100 mm,50 mm"));

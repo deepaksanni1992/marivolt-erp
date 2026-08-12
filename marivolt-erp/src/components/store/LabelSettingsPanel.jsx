@@ -542,7 +542,9 @@ export default function LabelSettingsPanel() {
               {!(agents?.items || []).length && (
                 <tr>
                   <td colSpan={12} className="px-2 py-6 text-center text-slate-500">
-                    No print agents registered
+                    No print agents registered for this company. Register via bootstrap
+                    (Settings → bootstrap token) or Add Agent — do not copy another company&apos;s
+                    agentId/secret.
                   </td>
                 </tr>
               )}

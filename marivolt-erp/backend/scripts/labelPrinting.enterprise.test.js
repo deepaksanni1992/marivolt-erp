@@ -299,7 +299,11 @@ run("Test connection vs test print separated", () => {
 });
 
 run("Test label remains 100x50", () => {
-  const tspl = buildTestLabelTspl({ agentName: "STORE", printerName: "Rongta & Co (USB)" });
+  const tspl = buildTestLabelTspl({
+    agentName: "STORE",
+    printerName: "Rongta & Co (USB)",
+    title: "MARIVOLT TEST LABEL",
+  });
   assert.ok(tspl.includes("SIZE 100 mm,50 mm"));
   assert.ok(tspl.includes("MARIVOLT TEST LABEL"));
 });

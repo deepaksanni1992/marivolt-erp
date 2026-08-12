@@ -27,6 +27,7 @@ import {
 import PrinterConfig from "../../models/PrinterConfig.js";
 import Warehouse from "../../models/Warehouse.js";
 import Branch from "../../models/Branch.js";
+import Company from "../../models/Company.js";
 import crypto from "crypto";
 import bcrypt from "bcrypt";
 import mongoose from "mongoose";
@@ -35,6 +36,10 @@ import PrintAgent from "../../models/PrintAgent.js";
 import LabelPrintJob from "../../models/LabelPrintJob.js";
 import { encodeBarcodeValue } from "./barcodeGenerator.js";
 import { buildJobTspl, buildTestLabelTspl } from "./tsplGenerator.js";
+import {
+  resolveLabelCompanyBranding,
+  resolveLabelTestTitle,
+} from "./labelCompanyBranding.js";
 import {
   distributeByLabelCount,
   validateGrnLabelLinePrintConfig,
@@ -96,6 +101,15 @@ function formatReceivedDate(d) {
   if (Number.isNaN(dt.getTime())) return t(d).slice(0, 10);
   const p = (n) => String(n).padStart(2, "0");
   return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}`;
+}
+
+async function loadLabelCompanyBranding(companyId) {
+  const company = await Company.findById(companyId).select("code name shortName").lean();
+  return {
+    company,
+    companyName: resolveLabelCompanyBranding(company),
+    testTitle: resolveLabelTestTitle(company),
+  };
 }
 
 function countRequestedPhysicalLabels(jobLines, copies = 1) {
@@ -358,9 +372,10 @@ export async function createJobsFromGrn(req, body = {}) {
       }))
     );
 
+  const { companyName } = await loadLabelCompanyBranding(companyId);
   const tsplPayload = buildJobTspl(jobLines, {
     copies,
-    companyName: "MARIVOLT FZE",
+    companyName,
     barcodeMode: template?.barcodeMode || "ARTICLE",
   });
 
@@ -542,9 +557,10 @@ export async function createJobsFromGrnPrepost(req, body = {}) {
       }))
     );
 
+  const { companyName } = await loadLabelCompanyBranding(companyId);
   const tsplPayload = buildJobTspl(jobLines, {
     copies,
-    companyName: "MARIVOLT FZE",
+    companyName,
     barcodeMode: template?.barcodeMode || "ARTICLE",
   });
 
@@ -1114,12 +1130,14 @@ export async function createTestPrintJob(req, { agentId, printerCode } = {}) {
     err.statusCode = 400;
     throw err;
   }
+  const { companyName, testTitle } = await loadLabelCompanyBranding(req.companyId);
   const tsplPayload = buildTestLabelTspl({
     agentId: printer.agentId,
     agentName: agent?.name || printer.agentId,
     printerName: printer.displayName || printer.code,
     windowsPrinterName: printer.windowsPrinterName,
     connectionStatus: effectiveAgentStatus(agent || { isActive: true, status: "OFFLINE" }),
+    title: testTitle,
   });
   const job = await LabelPrintJob.create({
     companyId: req.companyId,
@@ -1139,7 +1157,7 @@ export async function createTestPrintJob(req, { agentId, printerCode } = {}) {
     lines: [
       {
         article: "TEST",
-        description: "MARIVOLT TEST LABEL",
+        description: testTitle,
         qty: 1,
         uom: "PCS",
         labelQty: 1,
@@ -1198,9 +1216,10 @@ export async function retryJob(req, jobId) {
     job.remainingLabels = Number(job.requestedLabels) || 0;
   }
   const linesForPrint = scaleLinesToRemaining(job.lines, job.remainingLabels, job.copies);
+  const { companyName } = await loadLabelCompanyBranding(req.companyId);
   job.tsplPayload = buildJobTspl(linesForPrint, {
     copies: 1,
-    companyName: "MARIVOLT FZE",
+    companyName,
     barcodeMode: "ARTICLE",
   });
   job.retryCount = (Number(job.retryCount) || 0) + 1;
@@ -1374,6 +1393,7 @@ export async function reprintJob(req, jobId, body = {}) {
     String(parent.templateCode || "").includes("PACKING");
   const { buildPackingJobTspl } = await import("./tsplGenerator.js");
   const { PACKING_STANDARD_TEMPLATE_CODE } = await import("./labelTemplateService.js");
+  const { companyName } = await loadLabelCompanyBranding(req.companyId);
   const tsplPayload = isPacking
     ? buildPackingJobTspl(
         lines.map((ln) => ({
@@ -1382,7 +1402,7 @@ export async function reprintJob(req, jobId, body = {}) {
         })),
         {}
       )
-    : buildJobTspl(lines, { copies, companyName: "MARIVOLT FZE", barcodeMode: "ARTICLE" });
+    : buildJobTspl(lines, { copies, companyName, barcodeMode: "ARTICLE" });
   const job = await LabelPrintJob.create({
     companyId: req.companyId,
     jobNo: jobNo(),
@@ -1474,6 +1494,7 @@ export async function createStockReprint(req, body = {}) {
     labelQty,
   };
   const requestedLabels = labelQty * copies;
+  const { companyName } = await loadLabelCompanyBranding(req.companyId);
   const job = await LabelPrintJob.create({
     companyId: req.companyId,
     jobNo: jobNo(),
@@ -1490,7 +1511,7 @@ export async function createStockReprint(req, body = {}) {
     printedLabels: 0,
     remainingLabels: requestedLabels,
     lines: [line],
-    tsplPayload: buildJobTspl([line], { copies, companyName: "MARIVOLT FZE" }),
+    tsplPayload: buildJobTspl([line], { copies, companyName }),
     status: "PENDING",
     isReprint: true,
     reprintReason: reason,

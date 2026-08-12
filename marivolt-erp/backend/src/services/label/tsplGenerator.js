@@ -78,7 +78,7 @@ export function buildSingleLabelTspl(line = {}, opts = {}) {
   const dpm = dotsPerMm(dpi);
   const scale = (dotsAt203) => Math.round(dotsAt203 * (dpm / 8));
 
-  const companyName = escapeTspl(opts.companyName || "MARIVOLT FZE");
+  const companyName = escapeTspl(opts.companyName || "COMPANY");
   // Article for barcode/human must not be mutated beyond trim+uppercase for Code128 safety
   const articleRaw = t(line.article).toUpperCase();
   const article = escapeTspl(articleRaw);
@@ -576,6 +576,7 @@ export function buildTestLabelTspl(info = {}, opts = {}) {
   const agent = escapeTspl(info.agentName || info.agentId || "—");
   const printer = escapeTspl(info.printerName || info.windowsPrinterName || "—");
   const conn = escapeTspl(info.connectionStatus || "OK");
+  const title = escapeTspl(info.title || opts.companyName || "TEST LABEL");
   const w = LABEL_WIDTH_MM;
   const h = LABEL_HEIGHT_MM;
   return [
@@ -584,7 +585,7 @@ export function buildTestLabelTspl(info = {}, opts = {}) {
     "DIRECTION 1",
     "REFERENCE 0,0",
     "CLS",
-    `TEXT ${scale(20)},${scale(20)},"0",0,2,2,"MARIVOLT TEST LABEL"`,
+    `TEXT ${scale(20)},${scale(20)},"0",0,2,2,"${title}"`,
     `TEXT ${scale(20)},${scale(70)},"0",0,1,1,"Date: ${dateStr}"`,
     `TEXT ${scale(20)},${scale(100)},"0",0,1,1,"Time: ${timeStr}"`,
     `TEXT ${scale(20)},${scale(130)},"0",0,1,1,"Agent: ${agent}"`,
