@@ -12,6 +12,7 @@ const emptyItem = {
   itemName: "",
   description: "",
   vertical: "",
+  brand: "",
   engine: "",
   model: "",
   config: "",
@@ -229,8 +230,13 @@ export default function ItemMaster() {
   });
 
   const { data: facets } = useQuery({
-    queryKey: ["item-facets"],
-    queryFn: () => apiGet("/items/facets"),
+    queryKey: ["item-facets", vertical, engine, engineModel],
+    queryFn: () =>
+      apiGetWithQuery("/items/facets", {
+        vertical: vertical || undefined,
+        engineBrand: engine || undefined,
+        engineModel: engineModel || undefined,
+      }),
   });
 
   const { data: details } = useQuery({
@@ -246,7 +252,14 @@ export default function ItemMaster() {
   });
 
   const saveItem = useMutation({
-    mutationFn: () => (selectedArticle ? apiPut(`/items/${selectedArticle}`, item) : apiPost("/items", item)),
+    mutationFn: () => {
+      const payload = {
+        ...item,
+        brand: item.brand || item.engine,
+        engine: item.engine || item.brand,
+      };
+      return selectedArticle ? apiPut(`/items/${selectedArticle}`, payload) : apiPost("/items", payload);
+    },
     onSuccess: async (row) => {
       const article = row.article || item.article;
       setSelectedArticle(article);
@@ -399,7 +412,8 @@ export default function ItemMaster() {
       itemName: row.itemName || "",
       description: row.description || "",
       vertical: row.vertical || "",
-      engine: row.engine || "",
+      brand: row.brand || row.engine || "",
+      engine: row.engine || row.brand || "",
       model: row.model || "",
       config: row.config || "",
       uom: row.uom || "PCS",
@@ -602,17 +616,53 @@ export default function ItemMaster() {
       </div>
 
       <div className="rounded-2xl border bg-white p-4">
-        <div className="grid gap-3 md:grid-cols-5">
+        <div className="grid gap-3 md:grid-cols-5 lg:grid-cols-7">
           <Field label="Vertical">
-            <select className="rounded-lg border px-3 py-2" value={vertical} onChange={(e) => setVertical(e.target.value)}>
+            <select
+              className="rounded-lg border px-3 py-2"
+              value={vertical}
+              onChange={(e) => {
+                setVertical(e.target.value);
+                setEngine("");
+                setEngineModel("");
+                setConfiguration("");
+              }}
+            >
               <option value="">All</option>
               {(facets?.verticals || []).map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
           </Field>
           <Field label="Brand">
-            <select className="rounded-lg border px-3 py-2" value={engine} onChange={(e) => setEngine(e.target.value)}>
+            <select
+              className="rounded-lg border px-3 py-2"
+              value={engine}
+              onChange={(e) => {
+                setEngine(e.target.value);
+                setEngineModel("");
+                setConfiguration("");
+              }}
+            >
               <option value="">All</option>
-              {(facets?.engines || []).map((v) => <option key={v} value={v}>{v}</option>)}
+              {(facets?.brands || facets?.engines || []).map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </Field>
+          <Field label="Model">
+            <select
+              className="rounded-lg border px-3 py-2"
+              value={engineModel}
+              onChange={(e) => {
+                setEngineModel(e.target.value);
+                setConfiguration("");
+              }}
+            >
+              <option value="">All</option>
+              {(facets?.models || []).map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </Field>
+          <Field label="Config">
+            <select className="rounded-lg border px-3 py-2" value={configuration} onChange={(e) => setConfiguration(e.target.value)}>
+              <option value="">All</option>
+              {(facets?.configs || []).map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
           </Field>
           <Field label="Global Search">
@@ -636,8 +686,6 @@ export default function ItemMaster() {
         {advancedSearchOpen ? (
           <div className="mt-3 grid gap-3 rounded-xl border bg-slate-50 p-3 md:grid-cols-5">
             <Field label="SPN"><input className="rounded-lg border px-3 py-2" value={spnFilter} onChange={(e) => setSpnFilter(e.target.value)} /></Field>
-            <Field label="Engine Model"><input className="rounded-lg border px-3 py-2" value={engineModel} onChange={(e) => setEngineModel(e.target.value)} /></Field>
-            <Field label="Configuration"><input className="rounded-lg border px-3 py-2" value={configuration} onChange={(e) => setConfiguration(e.target.value)} /></Field>
             <Field label="Cylinder Count"><input className="rounded-lg border px-3 py-2" type="number" value={cylinderCount} onChange={(e) => setCylinderCount(e.target.value)} /></Field>
             <Field label="OEM Reference"><input className="rounded-lg border px-3 py-2" value={oemReference} onChange={(e) => setOemReference(e.target.value)} /></Field>
             <Field label="Supplier Reference"><input className="rounded-lg border px-3 py-2" value={supplierReference} onChange={(e) => setSupplierReference(e.target.value)} /></Field>
@@ -686,7 +734,7 @@ export default function ItemMaster() {
               {isLoading ? <tr><td className="px-3 py-8" colSpan={26}>Loading...</td></tr> : list.map((row) => (
                 <tr key={row._id} className="border-t">
                   <td className="px-3 py-2">{row.vertical || "-"}</td>
-                  <td className="px-3 py-2">{row.engine || "-"}</td>
+                  <td className="px-3 py-2">{row.brand || row.engine || "-"}</td>
                   <td className="px-3 py-2">{row.model || "-"}</td>
                   <td className="px-3 py-2">{row.config || "-"}</td>
                   <td className="px-3 py-2 font-mono">{row.article}</td>
@@ -809,7 +857,7 @@ export default function ItemMaster() {
               <div className="space-y-4">
                 <div className="grid gap-3 md:grid-cols-2">
                   <Field label="Vertical"><input className="rounded-lg border px-3 py-2" value={item.vertical} onChange={(e) => setItem((v) => ({ ...v, vertical: e.target.value }))} /></Field>
-                  <Field label="Brand"><input className="rounded-lg border px-3 py-2" value={item.engine} onChange={(e) => setItem((v) => ({ ...v, engine: e.target.value }))} /></Field>
+                  <Field label="Brand"><input className="rounded-lg border px-3 py-2" value={item.brand || item.engine} onChange={(e) => setItem((v) => ({ ...v, brand: e.target.value, engine: e.target.value }))} /></Field>
                   <Field label="Model"><input className="rounded-lg border px-3 py-2" value={item.model} onChange={(e) => setItem((v) => ({ ...v, model: e.target.value }))} /></Field>
                   <Field label="Config"><input className="rounded-lg border px-3 py-2" value={item.config} onChange={(e) => setItem((v) => ({ ...v, config: e.target.value }))} /></Field>
                   <Field label="Article"><input disabled={Boolean(selectedArticle)} className="rounded-lg border px-3 py-2 disabled:bg-slate-100" value={item.article} onChange={(e) => setItem((v) => ({ ...v, article: e.target.value.toUpperCase() }))} /></Field>

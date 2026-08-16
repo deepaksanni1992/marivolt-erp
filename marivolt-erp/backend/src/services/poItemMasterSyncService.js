@@ -1,4 +1,5 @@
 import ItemMaster, { UOM_VALUES } from "../models/itemMasterModel.js";
+import { sanitizeIncomingTaxonomy } from "../utils/itemMasterTaxonomy.js";
 
 const VALID_ITEM_UOMS = new Set(UOM_VALUES);
 
@@ -61,16 +62,23 @@ export function normalizePoItemIdentity(line = {}) {
 function buildSyncPayload({ line = {}, header = {}, supplierName = "" }) {
   const identity = normalizePoItemIdentity(line);
   const brand = firstText(line.brand, line.engine, header.brand, header.engine);
-  const description = firstText(line.description, line.itemName);
-  return {
-    ...identity,
-    itemName: description || identity.partNumber || identity.article,
-    description,
+  const taxonomy = sanitizeIncomingTaxonomy({
     vertical: firstText(line.vertical, header.vertical),
     brand,
     engine: brand,
     model: firstText(line.model, header.model),
     config: firstText(line.config, header.config),
+  });
+  const description = firstText(line.description, line.itemName);
+  return {
+    ...identity,
+    itemName: description || identity.partNumber || identity.article,
+    description,
+    vertical: taxonomy.vertical,
+    brand: taxonomy.brand,
+    engine: taxonomy.engine,
+    model: taxonomy.model,
+    config: taxonomy.config,
     esn: firstText(line.esn, header.esn),
     spn: firstUpper(line.spn, line.SPN, line.partNo),
     supplierPartNumber: firstText(line.supplierPartNumber),

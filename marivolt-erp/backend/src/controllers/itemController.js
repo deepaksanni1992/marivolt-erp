@@ -6,6 +6,12 @@ import ItemSupplier from "../models/itemSupplierModel.js";
 import StockBalance from "../models/StockBalance.js";
 import { writeAudit } from "../services/auditService.js";
 import { resolveLookup, resolveLookupBatch } from "../services/itemResolutionService.js";
+import {
+  assertValidTaxonomy,
+  buildCascadingFacets,
+  mapImportTaxonomyColumns,
+  resolveBrandValue,
+} from "../utils/itemMasterTaxonomy.js";
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -201,15 +207,14 @@ async function resolveItemByLookupInput(req, input = {}) {
 
 export async function listItemFacets(req, res) {
   try {
-    const [verticals, engines] = await Promise.all([
-      ItemMaster.distinct("vertical", withCompany(req, { vertical: { $nin: [null, ""] } })),
-      ItemMaster.distinct("engine", withCompany(req, { engine: { $nin: [null, ""] } })),
-    ]);
-    const norm = (arr) => [...new Set(arr.map((x) => trim(x)).filter(Boolean))].sort();
-    res.json({
-      verticals: norm(verticals),
-      engines: norm(engines),
-    });
+    const vertical = trim(req.query.vertical);
+    const brand = trim(req.query.engineBrand || req.query.brand || req.query.engine);
+    const model = trim(req.query.engineModel || req.query.model);
+    const rows = await ItemMaster.find(withCompany(req))
+      .select("vertical brand engine model config")
+      .lean();
+    const facets = buildCascadingFacets(rows, { vertical, brand, model });
+    res.json(facets);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -230,8 +235,11 @@ export async function listItems(req, res) {
     if (status && ["Active", "Inactive"].includes(status)) filter.status = status;
     const vertical = trim(req.query.vertical);
     if (vertical) filter.vertical = new RegExp(`^${escRe(vertical)}$`, "i");
-    const engine = trim(req.query.engineBrand || req.query.engine);
-    if (engine) filter.engine = new RegExp(`^${escRe(engine)}$`, "i");
+    const engine = trim(req.query.engineBrand || req.query.brand || req.query.engine);
+    if (engine) {
+      const engineRe = new RegExp(`^${escRe(engine)}$`, "i");
+      filter.$and = [...(filter.$and || []), { $or: [{ engine: engineRe }, { brand: engineRe }] }];
+    }
     const model = trim(req.query.engineModel || req.query.model);
     if (model) filter.model = new RegExp(`^${escRe(model)}$`, "i");
     const config = trim(req.query.configuration || req.query.config);
@@ -282,6 +290,8 @@ export async function listItems(req, res) {
         { itemName: re },
         { description: re },
         { engine: re },
+        { brand: re },
+        { vertical: re },
         { model: re },
         { config: re },
         ...(articleHits.length ? [{ article: { $in: articleHits } }] : []),
@@ -411,15 +421,19 @@ export async function getItem(req, res) {
 export async function createItem(req, res) {
   try {
     const article = trim(req.body.article).toUpperCase();
+    const taxonomy = assertValidTaxonomy({
+      vertical: req.body.vertical,
+      brand: req.body.brand,
+      engine: req.body.engine,
+      model: req.body.model,
+      config: req.body.config,
+    });
     const payload = {
       companyId: req.companyId,
       article,
       itemName: trim(req.body.itemName),
       description: trim(req.body.description),
-      vertical: trim(req.body.vertical),
-      engine: trim(req.body.engine),
-      model: trim(req.body.model),
-      config: trim(req.body.config),
+      ...taxonomy,
       uom: normalizeUom(req.body.uom),
       status: trim(req.body.status) === "Inactive" ? "Inactive" : "Active",
     };
@@ -433,13 +447,17 @@ export async function createItem(req, res) {
 export async function updateItem(req, res) {
   try {
     const article = trim(req.params.article).toUpperCase();
+    const taxonomy = assertValidTaxonomy({
+      vertical: req.body.vertical,
+      brand: req.body.brand,
+      engine: req.body.engine,
+      model: req.body.model,
+      config: req.body.config,
+    });
     const payload = {
       itemName: trim(req.body.itemName),
       description: trim(req.body.description),
-      vertical: trim(req.body.vertical),
-      engine: trim(req.body.engine),
-      model: trim(req.body.model),
-      config: trim(req.body.config),
+      ...taxonomy,
       uom: normalizeUom(req.body.uom),
       status: trim(req.body.status) === "Inactive" ? "Inactive" : "Active",
     };
@@ -626,6 +644,8 @@ export async function importItems(req, res) {
         const uom = normalizeUom(pick(row, "UOM", "Uom", "uom"));
         const dimension = normalizeDimension(pick(row, "Dimension", "DIMENSION"));
 
+        const taxonomy = assertValidTaxonomy(mapImportTaxonomyColumns(row));
+
         await ItemMaster.findOneAndUpdate(
           withCompany(req, { article }),
           {
@@ -633,10 +653,7 @@ export async function importItems(req, res) {
             article,
             itemName: pick(row, "ITEM NAME", "Item Name", "itemName"),
             description: pick(row, "Description", "DESCRIPTION"),
-            vertical: pick(row, "Vertical", "VERTICLE"),
-            engine: pick(row, "Brand", "BRAND", "Eng no", "Engine", "ENG NO"),
-            model: pick(row, "Model", "MODEL"),
-            config: pick(row, "Config", "CONFIG"),
+            ...taxonomy,
             uom,
             status: "Active",
           },
@@ -786,7 +803,7 @@ export async function exportItems(req, res) {
         "ITEM NAME": item.itemName,
         Description: item.description,
         Vertical: item.vertical,
-        Brand: item.engine,
+        Brand: resolveBrandValue(item),
         Model: item.model,
         Config: item.config,
         SPN: tech?.spn || "",
@@ -918,7 +935,7 @@ export async function bulkResolveItemLookup(req, res) {
         drawingNumber: pick(row, "Drawing Number", "DRAWING NUMBER"),
         oemReference: pick(row, "OEM Ref", "OEM Reference", "OEM"),
         supplierReference: pick(row, "Supplier Ref", "Supplier Reference"),
-        engineModel: pick(row, "Engine Model", "Model"),
+        engineModel: pick(row, "Engine Model"),
         configuration: pick(row, "Configuration", "Config"),
       };
     });
