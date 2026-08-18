@@ -18,6 +18,10 @@ const asnLineSchema = new mongoose.Schema(
     asnQty: { type: Number, required: true, min: 0 },
     unitPrice: { type: Number, default: 0, min: 0 },
     currency: { type: String, default: "", trim: true, uppercase: true },
+    /** Atomic label-plan revision. Incremented on each accepted plan/replan. */
+    ruPlanVersion: { type: Number, default: 0, min: 0 },
+    /** Current authoritative Receiving Unit plan batch for this line. */
+    ruActivePlanBatchId: { type: mongoose.Schema.Types.ObjectId, default: null },
   },
   { _id: true }
 );

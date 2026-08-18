@@ -1,7 +1,6 @@
 import {
   addAsnAttachment,
   arriveAsn,
-  cancelAsn,
   createAsn,
   getAsn,
   getPoAsnAvailability,
@@ -10,14 +9,16 @@ import {
   shipAsn,
   updateAsn,
 } from "../services/asnService.js";
+import { cancelAsn } from "../services/receivingUnitService.js";
 import { AsnError } from "../utils/asnRules.js";
+import { ReceivingUnitError } from "../utils/receivingUnitRules.js";
 
 function sendError(res, err) {
-  if (err instanceof AsnError) {
-    return res.status(err.status).json({ message: err.message, code: err.code });
+  if (err instanceof AsnError || err instanceof ReceivingUnitError) {
+    return res.status(err.status || err.statusCode || 400).json({ message: err.message, code: err.code });
   }
-  const status = Number(err?.status) || 500;
-  return res.status(status).json({ message: err.message || "ASN request failed" });
+  const status = Number(err?.statusCode || err?.status) || 500;
+  return res.status(status).json({ message: err.message || "ASN request failed", code: err.code });
 }
 
 export async function create(req, res) {

@@ -665,7 +665,10 @@ async function releaseCancelledLines(po, lines, session) {
   }
 }
 
-export async function cancelAsn(req, id, body = {}) {
+export async function cancelAsn(req, id, body = {}, opts = {}) {
+  if (opts.guard !== "ASN_CANCEL_POLICY") {
+    throw new AsnError("ASN cancel must use the logistics cancel policy", 500, "ASN_CANCEL_GUARD_REQUIRED");
+  }
   const companyId = req.companyId;
   const reason = String(body.reason || body.cancellationReason || "").trim();
   if (!reason) throw new AsnError("Cancellation reason is required", 400, "ASN_CANCEL_REASON");
@@ -693,7 +696,11 @@ export async function cancelAsn(req, id, body = {}) {
       ...sessionOpts(session),
     });
     if (!previous) {
-      const existing = await AdvanceShipmentNotice.findOne(companyScope(companyId, { _id: oid })).lean();
+      const existing = await AdvanceShipmentNotice.findOne(
+        companyScope(companyId, { _id: oid }),
+        null,
+        sessionOpts(session)
+      ).lean();
       if (!existing) throw new AsnError("ASN not found", 404, "ASN_NOT_FOUND");
       if (existing.status === "CANCELLED") {
         return { doc: existing, alreadyCancelled: true, fromStatus: "CANCELLED" };
@@ -704,7 +711,11 @@ export async function cancelAsn(req, id, body = {}) {
         "ASN_INVALID_TRANSITION"
       );
     }
-    const po = await PurchaseOrder.findOne(companyScope(companyId, { _id: previous.sourcePoId }));
+    const po = await PurchaseOrder.findOne(
+      companyScope(companyId, { _id: previous.sourcePoId }),
+      null,
+      sessionOpts(session)
+    );
     if (po) await releaseCancelledLines(po, previous.lines, session);
     const cancelled = previous.toObject ? previous.toObject() : { ...previous };
     cancelled.status = "CANCELLED";
@@ -715,20 +726,24 @@ export async function cancelAsn(req, id, body = {}) {
   }
 
   let result;
-  const session = await mongoose.startSession();
-  try {
-    await session.withTransaction(async () => {
-      result = await cancelOnce(session);
-    });
-  } catch (err) {
-    if (err instanceof AsnError) throw err;
-    if (isTransactionUnsupported(err)) {
-      result = await cancelOnce(null);
-    } else {
-      throw err;
+  if (opts.session) {
+    result = await cancelOnce(opts.session);
+  } else {
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        result = await cancelOnce(session);
+      });
+    } catch (err) {
+      if (err instanceof AsnError) throw err;
+      if (isTransactionUnsupported(err)) {
+        result = await cancelOnce(null);
+      } else {
+        throw err;
+      }
+    } finally {
+      await session.endSession();
     }
-  } finally {
-    await session.endSession();
   }
 
   if (!result.alreadyCancelled) {

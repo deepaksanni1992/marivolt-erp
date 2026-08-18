@@ -93,6 +93,13 @@ run("STORE_OPERATOR matrix — allowed Store/Label ops", () => {
   assert.deepEqual(m.ASN, ["view"]);
 });
 
+run("STORE_OPERATOR can prepare ASN receiving labels without ASN.edit", () => {
+  const asnRoutes = fs.readFileSync(path.join(srcRoot, "routes", "asnRoutes.js"), "utf8");
+  assert.ok(asnRoutes.includes("receiving-units/plan"));
+  assert.ok(asnRoutes.includes("requireAllPermissions"));
+  assert.ok(!asnRoutes.includes('requirePermission("ASN", "edit"), ru.plan'));
+});
+
 run("STORE_OPERATOR cannot mutate ASN attachments; downloads stay company-scoped", () => {
   const asnRoutes = fs.readFileSync(path.join(srcRoot, "routes", "asnRoutes.js"), "utf8");
   const docCtrl = fs.readFileSync(path.join(srcRoot, "controllers", "documentController.js"), "utf8");
@@ -171,8 +178,10 @@ run("Label admin remains gated; print/reprint routes present", () => {
   assert.ok(labelRoutes.includes("/jobs/from-grn"));
   assert.ok(labelRoutes.includes("/jobs/from-packing"));
   assert.ok(labelRoutes.includes("/jobs/from-custom-packing"));
+  assert.ok(labelRoutes.includes("/jobs/from-asn"));
   // Settings write must NOT be available via LABELS.print alone
-  assert.ok(!labelRoutes.includes('["LABELS", "print"]'));
+  assert.ok(labelRoutes.includes("labelsSettingsWrite"));
+  assert.ok(!labelRoutes.includes('router.put("/settings", labelsPrint'));
   assert.ok(labelRoutes.includes('["LABELS", "admin"]'));
   assert.ok(labelRoutes.includes('["SETTINGS", "edit"]'));
 });

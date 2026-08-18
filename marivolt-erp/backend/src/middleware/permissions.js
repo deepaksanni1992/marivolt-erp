@@ -66,6 +66,31 @@ export function requireAnyPermission(...checks) {
   };
 }
 
+export function requireAllPermissions(...checks) {
+  const pairs = checks.map(([moduleName, action]) => [moduleName, action]);
+  return async function allPermissionGuard(req, res, next) {
+    try {
+      const role = normaliseRoleCode(req.user?.role || "");
+      if (ALWAYS_ALLOW.has(role)) return next();
+      for (const [moduleName, action] of pairs) {
+        if (!(await hasPermission(req, moduleName, action))) {
+          const label = pairs.map(([m, a]) => `${m}.${a}`).join(" + ");
+          return res.status(403).json({
+            message: `Permission denied: requires ${label}`,
+            code: "PERMISSION_DENIED",
+          });
+        }
+      }
+      return next();
+    } catch {
+      return res.status(403).json({
+        message: "Permission check failed",
+        code: "PERMISSION_DENIED",
+      });
+    }
+  };
+}
+
 /**
  * Explicitly deny listed roles even if a coarser permission would otherwise pass.
  * Used to keep STORE_OPERATOR off stock adjustment / dispatch / repair surfaces
@@ -90,4 +115,4 @@ export function denyRoles(...roleCodes) {
   };
 }
 
-export default { requirePermission, requireAnyPermission, denyRoles };
+export default { requirePermission, requireAnyPermission, requireAllPermissions, denyRoles };

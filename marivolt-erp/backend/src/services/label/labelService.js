@@ -84,6 +84,8 @@ function mapJobStatusToGrnLabelStatus(status) {
 
 export async function syncGrnLabelStatus(grnId, job) {
   if (!grnId || !job) return;
+  const sourceType = String(job.sourceType || "").toUpperCase();
+  if (sourceType && sourceType !== "GRN") return;
   await GRN.updateOne(
     { _id: grnId },
     {
@@ -120,6 +122,38 @@ function countRequestedPhysicalLabels(jobLines, copies = 1) {
     }
     return s + Math.max(0, Number(ln.labelQty) || 0) * c;
   }, 0);
+}
+
+function isAsnLabelJob(job) {
+  return String(job?.sourceType || "").toUpperCase() === "ASN";
+}
+
+async function assertAsnViewForAsnLabelJob(req, job) {
+  if (!isAsnLabelJob(job)) return;
+  const { hasPermission, normaliseRoleCode } = await import("../roleService.js");
+  const role = normaliseRoleCode(req.user?.role || "");
+  if (role === "SUPER_ADMIN") return;
+  if (await hasPermission(req, "ASN", "view")) return;
+  const err = new Error("Permission denied: ASN.view is required for ASN label jobs");
+  err.statusCode = 403;
+  err.code = "PERMISSION_DENIED";
+  throw err;
+}
+
+function tsplOptsForJob(job, { copies, companyName } = {}) {
+  if (isAsnLabelJob(job)) {
+    return {
+      copies: copies ?? job.copies ?? 1,
+      companyName,
+      barcodeMode: "LABEL_ID",
+      faceVariant: "ASN_RU",
+    };
+  }
+  return {
+    copies: copies ?? job.copies ?? 1,
+    companyName,
+    barcodeMode: "ARTICLE",
+  };
 }
 
 /**
@@ -1199,6 +1233,7 @@ export async function retryJob(req, jobId) {
     err.statusCode = 404;
     throw err;
   }
+  await assertAsnViewForAsnLabelJob(req, job);
   if (job.status === "UNCERTAIN") {
     const err = new Error("Resolve UNCERTAIN job by confirming printed quantity before retry");
     err.code = "LABEL_UNCERTAIN_CONFIRM_REQUIRED";
@@ -1217,11 +1252,7 @@ export async function retryJob(req, jobId) {
   }
   const linesForPrint = scaleLinesToRemaining(job.lines, job.remainingLabels, job.copies);
   const { companyName } = await loadLabelCompanyBranding(req.companyId);
-  job.tsplPayload = buildJobTspl(linesForPrint, {
-    copies: 1,
-    companyName,
-    barcodeMode: "ARTICLE",
-  });
+  job.tsplPayload = buildJobTspl(linesForPrint, tsplOptsForJob(job, { copies: 1, companyName }));
   job.retryCount = (Number(job.retryCount) || 0) + 1;
   await requeueJob(job);
   await syncGrnLabelStatus(job.sourceId, job);
@@ -1286,6 +1317,10 @@ export async function confirmPartial(req, jobId, printedQty) {
   job.leaseExpiresAt = null;
   await job.save();
   await syncGrnLabelStatus(job.sourceId, job);
+  if (isAsnLabelJob(job)) {
+    const { applyReceivingUnitPrintResult } = await import("./asnLabelService.js");
+    await applyReceivingUnitPrintResult(job);
+  }
   await recordLabelHistory({
     jobId: job._id,
     companyId: job.companyId,
@@ -1355,6 +1390,7 @@ export async function reprintJob(req, jobId, body = {}) {
     err.statusCode = 404;
     throw err;
   }
+  await assertAsnViewForAsnLabelJob(req, parent);
   const reason = t(body.reason);
   if (!reason) {
     const err = new Error("Reprint reason is required");
@@ -1363,7 +1399,7 @@ export async function reprintJob(req, jobId, body = {}) {
   }
   const copies = Math.max(1, Number(body.copies) || parent.copies || 1);
   let lines = parent.lines.map((ln) => ({ ...(ln.toObject?.() ?? ln) }));
-  if (Array.isArray(body.lines) && body.lines.length) {
+  if (!isAsnLabelJob(parent) && Array.isArray(body.lines) && body.lines.length) {
     lines = body.lines.map((ln) => ({
       ...ln,
       article: upper(ln.article),
@@ -1402,7 +1438,7 @@ export async function reprintJob(req, jobId, body = {}) {
         })),
         {}
       )
-    : buildJobTspl(lines, { copies, companyName, barcodeMode: "ARTICLE" });
+    : buildJobTspl(lines, tsplOptsForJob(parent, { copies, companyName }));
   const job = await LabelPrintJob.create({
     companyId: req.companyId,
     jobNo: jobNo(),

@@ -464,6 +464,26 @@ export async function previewFromCustomPacking(req, res) {
   }
 }
 
+export async function createFromAsn(req, res) {
+  try {
+    const { createJobsFromAsn } = await import("../services/label/asnLabelService.js");
+    const result = await createJobsFromAsn(req, req.body || {});
+    res.status(201).json({ success: true, ...result });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function previewFromAsn(req, res) {
+  try {
+    const { previewJobsFromAsn } = await import("../services/label/asnLabelService.js");
+    const preview = await previewJobsFromAsn(req, req.body || {});
+    res.json({ success: true, ...preview });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
 export async function listJobs(req, res) {
   try {
     const filter = { companyId: req.companyId };

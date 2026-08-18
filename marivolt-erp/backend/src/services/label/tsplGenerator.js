@@ -95,10 +95,25 @@ export function buildSingleLabelTspl(line = {}, opts = {}) {
   const encoded = encodeBarcodeValue({
     mode: opts.barcodeMode || "ARTICLE",
     article: articleRaw,
-    labelId: line.labelId,
+    labelId: line.labelId || line.barcodeValue || line.ruNo,
   });
   const barcode = escapeTspl(encoded.value || articleRaw);
   const human = escapeTspl(encoded.humanReadable || articleRaw);
+
+  if (opts.faceVariant === "ASN_RU") {
+    return buildAsnReceivingUnitFace(line, opts, {
+      dpi,
+      dpm,
+      scale,
+      companyName,
+      article,
+      descLines,
+      qtyDisplay,
+      uom,
+      barcode,
+      human,
+    });
+  }
 
   const w = LABEL_WIDTH_MM;
   const h = LABEL_HEIGHT_MM;
@@ -139,6 +154,58 @@ export function buildSingleLabelTspl(line = {}, opts = {}) {
   if (barcode) {
     cmds.push(`BARCODE ${barX},${barY},"128",${barHeight},0,0,2,4,"${barcode}"`);
     cmds.push(`TEXT ${barX},${barY + barHeight + scale(8)},"0",0,1,1,"${human}"`);
+  }
+
+  cmds.push("PRINT 1,1");
+  return cmds.join("\r\n") + "\r\n";
+}
+
+/**
+ * ASN Receiving Unit face — same 100×50 TSPL engine, LABEL_ID barcode.
+ * Does not change GRN ARTICLE layout. Called only when opts.faceVariant === "ASN_RU".
+ */
+function buildAsnReceivingUnitFace(line, opts, ctx) {
+  const { scale, companyName, article, descLines, qtyDisplay, uom, barcode, human } = ctx;
+  const articleFit = String(article || "").slice(0, 32) || "—";
+  const partNo = escapeTspl(line.partNo || line.spn || "").slice(0, 42) || "—";
+  const asnNo = escapeTspl(line.asnNo || line.grnNo || "") || "—";
+  const ruNo = escapeTspl(line.ruNo || line.labelId || line.barcodeValue || "") || "—";
+  const w = LABEL_WIDTH_MM;
+  const h = LABEL_HEIGHT_MM;
+  const dpm = ctx.dpm;
+  const widthDots = Math.round(w * dpm);
+  const barWidthDots = Math.round(widthDots * 0.7);
+  const barX = Math.round((widthDots - barWidthDots) / 2);
+  const barY = scale(255);
+  const barHeight = scale(72);
+
+  const cmds = [
+    `SIZE ${w} mm,${h} mm`,
+    "GAP 3 mm,0",
+    "DIRECTION 1",
+    "REFERENCE 0,0",
+    "CLS",
+    `TEXT ${scale(20)},${scale(8)},"0",0,1,1,"${companyName}"`,
+    `TEXT ${scale(20)},${scale(32)},"0",0,2,2,"${articleFit}"`,
+    `TEXT ${scale(20)},${scale(78)},"0",0,2,1,"${partNo}"`,
+  ];
+
+  let y = scale(108);
+  const lineH = scale(20);
+  for (const dl of descLines) {
+    cmds.push(`TEXT ${scale(20)},${y},"0",0,1,1,"${escapeTspl(dl)}"`);
+    y += lineH;
+  }
+  y = Math.max(y, scale(148));
+  cmds.push(`TEXT ${scale(20)},${y},"0",0,2,1,"Qty: ${qtyDisplay} ${uom}"`);
+  y += scale(28);
+  cmds.push(`TEXT ${scale(20)},${y},"0",0,1,1,"ASN: ${asnNo}"`);
+  y += scale(20);
+  cmds.push(`TEXT ${scale(20)},${y},"0",0,1,1,"RU: ${ruNo}"`);
+
+  if (barcode) {
+    cmds.push(`BARCODE ${barX},${barY},"128",${barHeight},0,0,2,4,"${barcode}"`);
+    cmds.push(`TEXT ${barX},${barY + barHeight + scale(6)},"0",0,1,1,"${human}"`);
   }
 
   cmds.push("PRINT 1,1");

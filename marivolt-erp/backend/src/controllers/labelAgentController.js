@@ -99,6 +99,10 @@ export async function result(req, res) {
   try {
     const job = await applyAgentResult(req.params.id, req.printAgent, req.body || {});
     await syncGrnLabelStatus(job.sourceId, job);
+    if (String(job.sourceType || "").toUpperCase() === "ASN") {
+      const { applyReceivingUnitPrintResult } = await import("../services/label/asnLabelService.js");
+      await applyReceivingUnitPrintResult(job);
+    }
     await recordLabelHistory({
       jobId: job._id,
       companyId: job.companyId,

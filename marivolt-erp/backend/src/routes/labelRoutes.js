@@ -1,6 +1,6 @@
 import express from "express";
 import { requireErpAccess } from "../middleware/erpAccess.js";
-import { requirePermission, requireAnyPermission } from "../middleware/permissions.js";
+import { requirePermission, requireAnyPermission, requireAllPermissions } from "../middleware/permissions.js";
 import { requirePrintAgent } from "../middleware/printAgentAuth.js";
 import { createRateLimiter } from "../middleware/rateLimit.js";
 import * as c from "../controllers/labelController.js";
@@ -12,6 +12,8 @@ const labelsView = requirePermission("LABELS", "view");
 const labelsPrint = requirePermission("LABELS", "print");
 const labelsReprint = requirePermission("LABELS", "reprint");
 const labelsAdmin = requirePermission("LABELS", "admin");
+const asnLabelPrint = requireAllPermissions(["ASN", "view"], ["LABELS", "print"]);
+const asnLabelView = requireAllPermissions(["ASN", "view"], ["LABELS", "view"]);
 const labelsSettingsWrite = requireAnyPermission(
   ["LABELS", "admin"],
   ["SETTINGS", "edit"]
@@ -83,6 +85,8 @@ router.post("/jobs/from-packing", labelsPrint, c.createFromPacking);
 router.post("/jobs/from-packing/preview", labelsView, c.previewFromPacking);
 router.post("/jobs/from-custom-packing", labelsPrint, c.createFromCustomPacking);
 router.post("/jobs/from-custom-packing/preview", labelsView, c.previewFromCustomPacking);
+router.post("/jobs/from-asn", asnLabelPrint, c.createFromAsn);
+router.post("/jobs/from-asn/preview", asnLabelView, c.previewFromAsn);
 router.post("/jobs/stock-reprint", labelsReprint, c.stockReprint);
 router.get("/jobs", labelsView, c.listJobs);
 router.get("/jobs/:id", labelsView, c.getJob);

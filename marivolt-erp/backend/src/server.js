@@ -44,6 +44,7 @@ import searchRoutes from "./routes/searchRoutes.js";
 import traceabilityRoutes from "./routes/traceabilityRoutes.js";
 import dataHealthRoutes from "./routes/dataHealthRoutes.js";
 import asnRoutes from "./routes/asnRoutes.js";
+import receivingUnitRoutes from "./routes/receivingUnitRoutes.js";
 import { isCustomsEnabled } from "./config/customsConfig.js";
 import { ensureSearchIndexes } from "./config/searchIndexes.js";
 import { isS3Configured } from "./config/s3.js";
@@ -108,6 +109,7 @@ async function startServer() {
     app.use("/api/inventory", inventoryRoutes);
     app.use("/api/grn", grnRoutes);
     app.use("/api/asn", asnRoutes);
+    app.use("/api/receiving-units", receivingUnitRoutes);
     app.use("/api/stock", stockRoutes);
     app.use("/api/store", storeRoutes);
     app.use("/api/shipments", logisticsRoutes);

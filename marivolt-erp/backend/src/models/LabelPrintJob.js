@@ -46,6 +46,11 @@ const labelJobLineSchema = new mongoose.Schema(
     allocationLineId: { type: String, default: "" },
     packageId: { type: String, default: "" },
     descriptionTruncated: { type: Boolean, default: false },
+    /** ASN Receiving Unit identity (additive; unused by GRN). */
+    receivingUnitId: { type: mongoose.Schema.Types.ObjectId, ref: "ReceivingUnit", default: null },
+    ruNo: { type: String, default: "", trim: true, uppercase: true },
+    asnLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    labelId: { type: String, default: "", trim: true, uppercase: true },
   },
   { _id: false }
 );
@@ -61,7 +66,7 @@ const labelPrintJobSchema = new mongoose.Schema(
     jobNo: { type: String, required: true, trim: true, uppercase: true },
     sourceType: {
       type: String,
-      enum: ["GRN", "GRN_PREPOST", "STOCK", "MANUAL", "PACKING", "CUSTOM_PACKING"],
+      enum: ["GRN", "GRN_PREPOST", "STOCK", "MANUAL", "PACKING", "CUSTOM_PACKING", "ASN"],
       default: "GRN",
     },
     sourceId: { type: mongoose.Schema.Types.ObjectId, default: null },
@@ -115,6 +120,7 @@ const labelPrintJobSchema = new mongoose.Schema(
 labelPrintJobSchema.index({ companyId: 1, jobNo: 1 }, { unique: true });
 labelPrintJobSchema.index({ companyId: 1, status: 1, agentId: 1 });
 labelPrintJobSchema.index({ companyId: 1, sourceNo: 1, createdAt: -1 });
+labelPrintJobSchema.index({ companyId: 1, sourceType: 1, "lines.receivingUnitId": 1, status: 1 });
 labelPrintJobSchema.index(
   { companyId: 1, idempotencyKey: 1 },
   {
