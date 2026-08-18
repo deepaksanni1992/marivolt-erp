@@ -24,6 +24,7 @@ const inventoryGroup = {
 const flatLinks = [
   { to: "/items", label: "Item Master" },
   { to: "/purchase", label: "Purchase" },
+  { to: "/asn", label: "ASN" },
   { to: "/sales", label: "Sales" },
   { to: "/store", label: "Store" },
   { to: "/logistics", label: "Logistics" },

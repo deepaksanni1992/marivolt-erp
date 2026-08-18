@@ -90,6 +90,21 @@ run("STORE_OPERATOR matrix — allowed Store/Label ops", () => {
   }
   assert.ok(m.ITEM_MASTER.includes("view"));
   assert.ok(m.PURCHASE.includes("view"));
+  assert.deepEqual(m.ASN, ["view"]);
+});
+
+run("STORE_OPERATOR cannot mutate ASN attachments; downloads stay company-scoped", () => {
+  const asnRoutes = fs.readFileSync(path.join(srcRoot, "routes", "asnRoutes.js"), "utf8");
+  const docCtrl = fs.readFileSync(path.join(srcRoot, "controllers", "documentController.js"), "utf8");
+  const docRoutes = fs.readFileSync(path.join(srcRoot, "routes", "documentRoutes.js"), "utf8");
+  assert.ok(asnRoutes.includes('requirePermission("ASN", "edit")'));
+  assert.ok(asnRoutes.includes("/:id/attachments"));
+  assert.ok(docCtrl.includes("isAsnDocumentRequest"));
+  assert.ok(docCtrl.includes("assertAsnAttachmentMutatePermission"));
+  assert.ok(docCtrl.includes('hasPermission(req, "ASN", "edit")'));
+  assert.ok(docCtrl.includes("scopeToCompany(req, { _id: id })"));
+  assert.ok(docRoutes.includes('["ASN", "view"]'));
+  assert.ok(docRoutes.includes('["ASN", "edit"]'));
 });
 
 run("STORE_OPERATOR matrix — destructive / commercial blocked", () => {
@@ -105,6 +120,8 @@ run("STORE_OPERATOR matrix — destructive / commercial blocked", () => {
   assert.ok(!m.LABELS.includes("admin"));
   assert.ok(!(m.ITEM_MASTER || []).includes("create"));
   assert.ok(!(m.PURCHASE || []).includes("create"));
+  assert.ok(!(m.ASN || []).includes("create"));
+  assert.ok(!(m.ASN || []).includes("cancel"));
 });
 
 await runAsync("hasPermission reflects matrix for mock req", async () => {
@@ -123,6 +140,9 @@ await runAsync("hasPermission reflects matrix for mock req", async () => {
   assert.equal(await hasPermission(req, "CUSTOMS", "view"), false);
   assert.equal(await hasPermission(req, "SETTINGS", "view"), false);
   assert.equal(await hasPermission(req, "ITEM_MASTER", "edit"), false);
+  assert.equal(await hasPermission(req, "ASN", "view"), true);
+  assert.equal(await hasPermission(req, "ASN", "edit"), false);
+  assert.equal(await hasPermission(req, "ASN", "create"), false);
 });
 
 run("erpAccess includes Phase-10 + store_operator via USER_ROLES", () => {

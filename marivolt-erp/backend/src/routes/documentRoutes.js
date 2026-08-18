@@ -35,7 +35,13 @@ function uploadSingleFile(req, res, next) {
 
 router.post(
   "/upload",
-  requireAnyPermission(["REPORTS", "create"], ["CUSTOMS", "create"], ["STORE", "create"]),
+  requireAnyPermission(
+    ["REPORTS", "create"],
+    ["CUSTOMS", "create"],
+    ["STORE", "create"],
+    ["ASN", "create"],
+    ["ASN", "edit"]
+  ),
   uploadSingleFile,
   doc.uploadDocument,
 );
@@ -48,7 +54,7 @@ router.get("/s3-status", reportsView, (req, res) => {
 });
 router.get(
   "/:id/download",
-  requireAnyPermission(["REPORTS", "export"], ["CUSTOMS", "view"], ["STORE", "export"]),
+  requireAnyPermission(["REPORTS", "export"], ["CUSTOMS", "view"], ["STORE", "export"], ["ASN", "view"]),
   doc.downloadDocument,
 );
 router.get("/:id", reportsView, doc.getDocument);

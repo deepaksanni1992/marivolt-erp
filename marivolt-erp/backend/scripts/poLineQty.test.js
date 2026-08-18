@@ -142,6 +142,13 @@ run("received and cancelled quantities always come from the stored line", () => 
   assert.equal(merged[0].rejectedQty, 2);
 });
 
+run("ASN reservation counter is preserved on PO line merge", () => {
+  const stored = [storedLine({ asnActiveQty: 80 })];
+  const merged = mergePoLineBases(stored, [{ _id: "line-1", qty: 90, asnActiveQty: 0 }]);
+  assert.equal(merged[0].asnActiveQty, 80);
+  assert.equal(merged[0].qty, 90);
+});
+
 run("empty payload keeps the stored lines untouched", () => {
   const merged = mergePoLineBases([storedLine()], []);
   assert.equal(merged.length, 1);

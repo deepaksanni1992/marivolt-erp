@@ -14,7 +14,8 @@ import { approvalRequiredPayload, ensureApproval } from "../services/approvalSer
 import { writeAudit, writeStatusChange } from "../services/auditService.js";
 import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentController.js";
 import { nextGrnNo } from "../services/grnNumberService.js";
-import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js";
+import { listAsnsForPurchaseOrder, getActiveAsnQtyByPoLine, assertPoHasNoActiveAsns } from "../services/asnService.js";
+import { AsnError, validatePoLinesAgainstActiveAsn } from "../utils/asnRules.js";
 import {
   calcPoDiscountTotal,
   calcPoGrandTotal,
@@ -257,6 +258,23 @@ export async function getPurchaseOrder(req, res) {
       }
     }
     row._grnLineHistory = lineHistory;
+    const asns = await listAsnsForPurchaseOrder(req.companyId, row._id);
+    row._asns = (asns || []).map((a) => ({
+      _id: a._id,
+      asnNo: a.asnNo,
+      status: a.status,
+      shipmentMode: a.shipmentMode,
+      expectedArrivalDate: a.expectedArrivalDate,
+      createdBy: a.createdBy,
+      createdAt: a.createdAt,
+      qty: (a.lines || []).reduce((s, l) => s + (Number(l.asnQty) || 0), 0),
+      uom: (a.lines || [])[0]?.uom || "PCS",
+      lines: (a.lines || []).map((l) => ({
+        poLineId: l.poLineId,
+        asnQty: Number(l.asnQty) || 0,
+        uom: l.uom,
+      })),
+    }));
     res.json(row);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -618,6 +636,11 @@ export async function updatePurchaseOrder(req, res) {
       if (receiptErrors.length) {
         return res.status(400).json({ message: receiptErrors[0], details: receiptErrors });
       }
+      const asnQtyMap = await getActiveAsnQtyByPoLine(req.companyId, doc._id);
+      const asnErrors = validatePoLinesAgainstActiveAsn(doc.lines, asnQtyMap);
+      if (asnErrors.length) {
+        return res.status(409).json({ message: asnErrors[0], details: asnErrors, code: "ASN_QTY_EXCEEDED" });
+      }
     } else {
       doc.lines = normalizePoLines(doc.lines);
       if (!doc.lines.length) {
@@ -892,6 +915,7 @@ export async function deletePurchaseOrder(req, res) {
     if (!["DRAFT", "SAVED", "REJECTED"].includes(row.status)) {
       return res.status(400).json({ message: "Only draft or saved purchase orders can be deleted." });
     }
+    await assertPoHasNoActiveAsns(req.companyId, row._id);
     await PurchaseOrder.deleteOne(withCompany(req, { _id: id }));
     await writeAudit(req, {
       action: "DELETE",
@@ -907,6 +931,9 @@ export async function deletePurchaseOrder(req, res) {
     });
     res.json({ success: true });
   } catch (err) {
+    if (err instanceof AsnError) {
+      return res.status(err.status).json({ message: err.message, code: err.code });
+    }
     res.status(400).json({ message: err.message });
   }
 }
@@ -977,6 +1004,7 @@ export async function cancelPurchaseOrder(req, res) {
     if (["RECEIVED", "PARTIAL_RECEIVED", "CLOSED", "CANCELLED"].includes(doc.status)) {
       return res.status(409).json({ message: "PO cannot be cancelled in current status." });
     }
+    await assertPoHasNoActiveAsns(req.companyId, doc._id);
     const prev = doc.status;
     doc.status = "CANCELLED";
     await doc.save();
@@ -1002,6 +1030,9 @@ export async function cancelPurchaseOrder(req, res) {
     });
     res.json(doc);
   } catch (err) {
+    if (err instanceof AsnError) {
+      return res.status(err.status).json({ message: err.message, code: err.code });
+    }
     res.status(400).json({ message: err.message });
   }
 }

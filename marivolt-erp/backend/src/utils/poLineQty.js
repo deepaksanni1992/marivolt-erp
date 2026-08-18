@@ -34,6 +34,7 @@ function keepReceiptQtysFromStored(merged, storedLine) {
     receivedQty: Number(stored.receivedQty) || 0,
     rejectedQty: Number(stored.rejectedQty) || 0,
     cancelledQty: Number(stored.cancelledQty) || 0,
+    asnActiveQty: Number(stored.asnActiveQty) || 0,
   };
 }
 

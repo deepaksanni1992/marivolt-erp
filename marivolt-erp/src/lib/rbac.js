@@ -41,6 +41,7 @@ export function canFromMatrix(matrix, moduleName, action) {
 /** Store module tabs visible to STORE_OPERATOR. */
 export const STORE_OPERATOR_TABS = Object.freeze([
   "GRN",
+  "Incoming Shipments",
   "Label Queue",
   "Stock View",
   "Stock Ledger",

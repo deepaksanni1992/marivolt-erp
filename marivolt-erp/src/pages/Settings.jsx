@@ -1047,6 +1047,7 @@ const DOC_KEYS = [
   "CIPL",
   "PAYMENT_RECEIPT",
   "GRN",
+  "ASN",
   "STOCK_ADJUSTMENT",
   "STOCK_TRANSFER",
 ];

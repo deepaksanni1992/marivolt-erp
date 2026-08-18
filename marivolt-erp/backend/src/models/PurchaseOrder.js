@@ -28,6 +28,8 @@ const poLineSchema = new mongoose.Schema(
     lineTotal: { type: Number, default: 0, min: 0 },
     expectedDeliveryDate: { type: Date },
     receivedQty: { type: Number, default: 0, min: 0 },
+    /** Reservation counter for active ASN qty. Not ordered qty; not stock. */
+    asnActiveQty: { type: Number, default: 0, min: 0 },
     remarks: { type: String, default: "" },
     leadTime: { type: String, default: "", trim: true },
     /** Supplier-facing part reference on PO print; internal mapping uses partNumber/spn. */

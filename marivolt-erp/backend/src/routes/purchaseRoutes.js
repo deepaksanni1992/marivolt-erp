@@ -6,6 +6,7 @@ import * as pr from "../controllers/purchaseRequisitionController.js";
 import * as pod from "../controllers/purchasePoDocumentController.js";
 import * as allocationPo from "../controllers/orderAllocationPoController.js";
 import * as spf from "../controllers/supplierProformaController.js";
+import * as asn from "../controllers/asnController.js";
 
 const router = express.Router();
 
@@ -19,6 +20,7 @@ const purchaseDelete = requirePermission("PURCHASE", "delete");
 const purchaseExport = requirePermission("PURCHASE", "export");
 const purchaseCreateFromAllocation = requirePermission("PURCHASE", "createFromAllocation");
 const reportsView = requirePermission("REPORTS", "view");
+const asnView = requirePermission("ASN", "view");
 
 router.get("/reports/summary", reportsView, c.purchaseSummaryReport);
 router.get("/reports/pending", reportsView, c.pendingPurchaseReport);
@@ -44,6 +46,7 @@ router.post("/:id/documents", purchaseCreate, pod.createPoDocument);
 router.delete("/:id/documents/:documentId", purchaseEdit, pod.deletePoDocument);
 router.get("/:id/ap-summary", purchaseView, pod.getPoApSummary);
 router.get("/:id/supplier-proformas", purchaseView, spf.listSupplierProformasForPo);
+router.get("/:id/asn-availability", asnView, asn.poAvailability);
 router.get("/:id", purchaseView, c.getPurchaseOrder);
 router.post("/", purchaseCreate, c.createPurchaseOrder);
 router.post("/:id/duplicate", purchaseCreate, c.duplicatePurchaseOrder);

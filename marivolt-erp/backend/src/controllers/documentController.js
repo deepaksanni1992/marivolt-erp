@@ -5,6 +5,7 @@ import Document, { DOCUMENT_TYPES } from "../models/Document.js";
 import { getS3Client, getS3Bucket, buildS3ObjectPublicUrl, isS3Configured } from "../config/s3.js";
 import { scopeToCompany } from "../middleware/auth.js";
 import { writeAudit } from "../services/auditService.js";
+import { hasPermission } from "../services/roleService.js";
 import {
   buildTenantDocumentObjectKey,
   uploadFileToS3,
@@ -31,6 +32,9 @@ const DOCUMENT_TYPE_TO_FOLDER = {
   "SWIFT Copy": "swift-copies",
   "Shipping Document": "shipping-documents",
   "GRN Document": "grn-documents",
+  "Certificate of Origin": "certificates-of-origin",
+  "Test Certificate": "test-certificates",
+  "ASN Document": "asn-documents",
   "Remittance Advice": "customer-payments",
   Other: "others",
 };
@@ -77,6 +81,24 @@ function sanitizeStoredBaseName(originalName) {
   return base || "document";
 }
 
+function isAsnDocumentRequest({ moduleName, documentType, referenceType } = {}) {
+  const mod = String(moduleName || "").trim().toUpperCase();
+  const type = String(documentType || "").trim();
+  const ref = String(referenceType || "").trim().toUpperCase();
+  return mod === "ASN" || type === "ASN Document" || ref === "ASN";
+}
+
+async function assertAsnAttachmentMutatePermission(req) {
+  const can =
+    (await hasPermission(req, "ASN", "edit")) || (await hasPermission(req, "ASN", "create"));
+  if (!can) {
+    const err = new Error("Permission denied: ASN attachment mutation requires ASN.edit");
+    err.status = 403;
+    err.code = "PERMISSION_DENIED";
+    throw err;
+  }
+}
+
 function resolveDocumentBucket(doc) {
   const b = String(doc?.s3Bucket || "").trim();
   return b || getS3Bucket();
@@ -105,6 +127,13 @@ export async function uploadDocument(req, res) {
     const referenceType = String(req.body?.referenceType || "").trim();
     const referenceId = String(req.body?.referenceId || "").trim();
     const remarks = String(req.body?.remarks || "").trim();
+    if (isAsnDocumentRequest({ moduleName, documentType, referenceType })) {
+      try {
+        await assertAsnAttachmentMutatePermission(req);
+      } catch (permErr) {
+        return res.status(403).json({ message: permErr.message, code: permErr.code || "PERMISSION_DENIED" });
+      }
+    }
     let branchId = null;
     const br = String(req.body?.branchId || "").trim();
     if (mongoose.Types.ObjectId.isValid(br)) {
@@ -240,6 +269,17 @@ export async function deleteDocument(req, res) {
     }
     const doc = await Document.findOne(scopeToCompany(req, { _id: id }));
     if (!doc) return res.status(404).json({ message: "Document not found" });
+    if (isAsnDocumentRequest({
+      moduleName: doc.moduleName,
+      documentType: doc.documentType,
+      referenceType: doc.referenceType,
+    })) {
+      try {
+        await assertAsnAttachmentMutatePermission(req);
+      } catch (permErr) {
+        return res.status(403).json({ message: permErr.message, code: permErr.code || "PERMISSION_DENIED" });
+      }
+    }
 
     const bucket = resolveDocumentBucket(doc);
     const client = getS3Client();

@@ -55,9 +55,11 @@ import { notify, confirmDialog } from "../lib/notifications.js";
 import ArticleStockConversionPanel from "../components/store/ArticleStockConversionPanel.jsx";
 import LoadingButton from "../components/erp/LoadingButton.jsx";
 import { filterStoreTabsForRole, isStoreOperatorRole } from "../lib/rbac.js";
+import IncomingShipmentsPanel from "../components/store/IncomingShipmentsPanel.jsx";
 
 const TABS = [
   "GRN",
+  "Incoming Shipments",
   "Label Queue",
   "Landed Cost Allocation",
   "Stock View",
@@ -1846,6 +1848,7 @@ export default function StoreModule() {
         ))}
       </div>
 
+      {tab === "Incoming Shipments" ? <IncomingShipmentsPanel /> : null}
       {tab === "GRN" ? (
         <div className="space-y-4">
           <div className="rounded-2xl border bg-white p-4">

@@ -56,6 +56,7 @@ const SYSTEM_DEFAULTS = {
     TRACEABILITY: ["article_view"],
     REPORTS: READ_ONLY_ACTIONS,
     STORE: ["view"],
+    ASN: ["view", "create", "edit", "post", "cancel"],
   }),
   STORE: buildMatrix({
     STORE: ["view", "create", "edit", "approve", "cancel", "export"],
@@ -66,6 +67,7 @@ const SYSTEM_DEFAULTS = {
     PURCHASE: ["view"],
     LABELS: ["view", "print", "reprint"],
     ARTICLE_CONVERSION: ["view", "create", "post", "delete", "reverse", "approve"],
+    ASN: ["view"],
   }),
   /**
    * Basic warehouse floor operator (planned Store1).
@@ -79,6 +81,7 @@ const SYSTEM_DEFAULTS = {
     ITEM_MASTER: ["view"],
     PURCHASE: ["view"],
     TRACEABILITY: ["article_view"],
+    ASN: ["view"],
   }),
   LOGISTICS: buildMatrix({
     LOGISTICS: ["view", "create", "edit", "approve", "cancel", "export"],
@@ -86,6 +89,7 @@ const SYSTEM_DEFAULTS = {
     REPORTS: READ_ONLY_ACTIONS,
     SALES: ["view"],
     STORE: ["view"],
+    ASN: ["view", "edit", "post"],
   }),
   ACCOUNTS: buildMatrix({
     ACCOUNTS: ["view", "create", "edit", "approve", "cancel", "export"],

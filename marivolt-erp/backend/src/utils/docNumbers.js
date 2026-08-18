@@ -3,6 +3,7 @@ import { nextNumber } from "../services/numberSeriesService.js";
 
 function inferDocKey(prefix = "") {
   const value = String(prefix || "").trim().toUpperCase();
+  if (value.endsWith("-ASN")) return "ASN";
   if (value.endsWith("-PO")) return "PURCHASE_ORDER";
   if (value.endsWith("-SPF")) return "SUPPLIER_PROFORMA";
   if (value.endsWith("-PI")) return "PURCHASE_INVOICE";

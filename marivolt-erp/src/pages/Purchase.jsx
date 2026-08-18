@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Papa from "papaparse";
 import Modal from "../components/erp/Modal.jsx";
@@ -48,6 +48,7 @@ import {
 } from "../lib/api.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import { notify, confirmDialog } from "../lib/notifications.js";
+import { AsnStatusBadge } from "../lib/asnUi.js";
 
 const TABS = [
   { id: "orders", label: "Purchase order" },
@@ -1012,7 +1013,8 @@ function csvRowsToPurchaseOrders(rows) {
 }
 
 export default function Purchase({ procurementEmbed = false } = {}) {
-  const { auth } = useAuth();
+  const { auth, can } = useAuth();
+  const nav = useNavigate();
   const qc = useQueryClient();
   const [tab, setTab] = useState("orders");
   const [page, setPage] = useState(1);
@@ -2675,6 +2677,80 @@ export default function Purchase({ procurementEmbed = false } = {}) {
             </div>
 
             <PoAccountsPanel detail={detail} detailId={detailId} qc={qc} setErr={setErr} />
+
+            <div className="rounded-xl border border-gray-200 bg-white p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                    Advance Shipment Notifications
+                  </div>
+                  <div className="text-xs text-gray-500">Logistics documents only — ASN does not post stock.</div>
+                </div>
+                {can("ASN", "create") && !["CANCELLED", "REJECTED"].includes(String(detail.status || "").toUpperCase()) ? (
+                  <button
+                    type="button"
+                    className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
+                    onClick={() => nav(`/asn/new?poId=${detail._id}`)}
+                  >
+                    Create ASN
+                  </button>
+                ) : null}
+              </div>
+              {(detail._asns || []).length ? (
+                <ul className="space-y-2 text-sm">
+                  {(detail._asns || []).map((asn) => (
+                    <li key={asn._id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-100 px-3 py-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button type="button" className="font-mono font-semibold text-sky-800" onClick={() => nav(`/asn/${asn._id}`)}>
+                          {asn.asnNo}
+                        </button>
+                        <AsnStatusBadge status={asn.status} />
+                        <span className="tabular-nums">{asn.qty} {asn.uom || "PCS"}</span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-gray-500">No ASNs for this purchase order yet.</p>
+              )}
+              {detail.lines?.length ? (
+                <div className="mt-3 overflow-x-auto">
+                  <table className="min-w-[520px] w-full text-xs">
+                    <thead className="bg-gray-50 text-left text-gray-500">
+                      <tr>
+                        <th className="px-2 py-1">Article</th>
+                        <th className="px-2 py-1">PO qty</th>
+                        <th className="px-2 py-1">ASN active qty</th>
+                        <th className="px-2 py-1">Remaining to ASN</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detail.lines.map((line) => {
+                        const poQty = Number(line.qty || line.orderedQty || 0);
+                        const active = (detail._asns || [])
+                          .filter((a) => String(a.status || "").toUpperCase() !== "CANCELLED")
+                          .reduce(
+                            (sum, a) =>
+                              sum +
+                              (a.lines || [])
+                                .filter((l) => String(l.poLineId) === String(line._id))
+                                .reduce((s, l) => s + (Number(l.asnQty) || 0), 0),
+                            0
+                          );
+                        return (
+                          <tr key={String(line._id)} className="border-t border-gray-100">
+                            <td className="px-2 py-1 font-mono">{line.article || line.itemCode}</td>
+                            <td className="px-2 py-1 tabular-nums">{poQty}</td>
+                            <td className="px-2 py-1 tabular-nums">{active}</td>
+                            <td className="px-2 py-1 tabular-nums">{Math.max(0, poQty - active)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </div>
 
             <div className="flex flex-wrap gap-2 border-t border-gray-100 pt-4">
               {detail && canModifyPoStatus(detail.status) ? (

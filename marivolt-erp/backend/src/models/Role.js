@@ -32,6 +32,7 @@ export const PERMISSION_MODULES = [
   "TRACEABILITY",
   "LABELS",
   "ARTICLE_CONVERSION",
+  "ASN",
 ];
 
 export const PERMISSION_ACTIONS = [

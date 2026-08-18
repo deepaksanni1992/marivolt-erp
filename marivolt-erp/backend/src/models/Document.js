@@ -22,6 +22,9 @@ export const DOCUMENT_TYPES = [
   "Shipping Document",
   "GRN Document",
   "Remittance Advice",
+  "Certificate of Origin",
+  "Test Certificate",
+  "ASN Document",
   "Other",
 ];
 

@@ -77,6 +77,8 @@ function defaultFormatFor(docKey) {
       return "{COMPANY}/{YYMMDD}.{SEQ}";
     case "GRN":
       return "{COMPANY}-GRN-{SEQ}";
+    case "ASN":
+      return "{COMPANY}-ASN-{SEQ}";
     case "STOCK_ADJUSTMENT":
       return "ADJ-{YYYYMMDD}-{SEQ}";
     case "STOCK_TRANSFER":
