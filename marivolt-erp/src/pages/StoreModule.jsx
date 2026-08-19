@@ -920,7 +920,19 @@ export default function StoreModule() {
     if (!grnNo) return;
     setTab("GRN");
     const found = (grns?.items || []).find((g) => String(g.grnNo || "").toUpperCase() === grnNo);
-    if (found) setGrnRegisterDetail(found);
+    if (found) {
+      setGrnRegisterDetail(found);
+      return;
+    }
+    let cancelled = false;
+    apiGet(`/grn/${encodeURIComponent(grnNo)}`)
+      .then((row) => {
+        if (!cancelled && row?.grnNo) setGrnRegisterDetail(row);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [searchParams, grns?.items]);
 
   const searchEligibleAllocationsForPacking = useCallback(
@@ -2918,6 +2930,45 @@ export default function StoreModule() {
                     <span className="text-slate-500">Status</span>{" "}
                     <span className="font-medium">{grnRegisterDetail.status}</span>
                   </div>
+                      {String(grnRegisterDetail.sourceType || "").toUpperCase() === "ASN_RECEIVING" ? (
+                    <div className="col-span-2 rounded-xl border border-sky-200 bg-sky-50 p-2 text-xs text-sky-950">
+                      <div className="font-semibold">Draft GRN — ASN Receiving</div>
+                      <div>
+                        Source: <span className="font-semibold">ASN → PO</span>
+                      </div>
+                      <div>
+                        ASN: <span className="font-mono font-semibold">{grnRegisterDetail.asnNo || "—"}</span>
+                      </div>
+                      <div>
+                        Receiving:{" "}
+                        <span className="font-mono font-semibold">{grnRegisterDetail.receivingSessionNo || "—"}</span>
+                      </div>
+                      <p className="mt-2 text-slate-700">
+                        Posting will be available after ASN receiving posting integration.
+                      </p>
+                      {grnRegisterDetail.entitlementReview?.entitlementValid === false ? (
+                        <p className="mt-2 rounded bg-amber-50 p-2 text-amber-950">
+                          PO entitlement changed since this draft was created (shortfall{" "}
+                          {grnRegisterDetail.entitlementReview.entitlementShortfall}). The draft quantity was not
+                          changed.
+                        </p>
+                      ) : null}
+                      {grnRegisterDetail.asnId ? (
+                        <button
+                          type="button"
+                          className="mt-2 min-h-11 rounded-lg border border-sky-300 bg-white px-3 font-semibold text-sky-900"
+                          onClick={() => {
+                            setGrnRegisterDetail(null);
+                            nav(
+                              `/store?tab=${encodeURIComponent("Incoming Shipments")}&asnId=${encodeURIComponent(String(grnRegisterDetail.asnId))}`
+                            );
+                          }}
+                        >
+                          View Receiving Evidence
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <div className="col-span-2 flex flex-wrap items-center gap-2">
                     <span className="text-slate-500">Labels</span>
                     <span className="font-medium">{grnRegisterDetail.labelStatus || "NOT_REQUESTED"}</span>

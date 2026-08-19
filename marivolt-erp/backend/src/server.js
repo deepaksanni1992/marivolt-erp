@@ -96,6 +96,22 @@ async function startServer() {
       .catch((err) => {
         console.warn("Receiving inspection index ensure skipped:", err?.message || err);
       });
+    import("./utils/receivingDraftGrnIndexes.js")
+      .then(({ ensureAsnReceivingGrnIndexes }) =>
+        ensureAsnReceivingGrnIndexes(mongoose.connection.db, { create: true })
+      )
+      .then((report) => {
+        const created = (report || []).filter((r) => r.action === "created");
+        if (created.length) {
+          console.log(
+            "ASN receiving GRN indexes created:",
+            created.map((r) => r.name).join(", ")
+          );
+        }
+      })
+      .catch((err) => {
+        console.warn("ASN receiving GRN index ensure skipped:", err?.message || err);
+      });
 
     const app = express();
 

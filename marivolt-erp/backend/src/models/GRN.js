@@ -76,6 +76,20 @@ const grnItemSchema = new mongoose.Schema(
     expiryDate: { type: Date, default: null },
     poId: { type: mongoose.Schema.Types.ObjectId, ref: "PurchaseOrder", default: null },
     poLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    asnLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    receivingSources: {
+      type: [
+        {
+          receivingUnitId: { type: mongoose.Schema.Types.ObjectId, required: true },
+          receivingSessionUnitId: { type: mongoose.Schema.Types.ObjectId, required: true },
+          ruNo: { type: String, default: "", trim: true, uppercase: true },
+          acceptedQty: { type: Number, default: 0, min: 0 },
+          grnAcceptedQty: { type: Number, default: 0, min: 0 },
+          excessPendingQty: { type: Number, default: 0, min: 0 },
+        },
+      ],
+      default: [],
+    },
     poNo: String,
     remarks: { type: String, default: "", trim: true },
     recoveryInfo: { type: [String], default: [] },
@@ -92,6 +106,17 @@ const grnSchema = new mongoose.Schema(
     warehouseId: { type: mongoose.Schema.Types.ObjectId, ref: "Warehouse", default: null, index: true },
     grnNo: { type: String, required: true },
     poId: { type: mongoose.Schema.Types.ObjectId, ref: "PurchaseOrder", default: null, index: true },
+    /** Discriminator. Legacy GRNs stay empty; do not backfill MANUAL_PO. */
+    sourceType: { type: String, default: "", trim: true, uppercase: true },
+    receivingSessionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ReceivingSession",
+      default: null,
+      index: true,
+    },
+    receivingSessionNo: { type: String, default: "", trim: true, uppercase: true },
+    asnId: { type: mongoose.Schema.Types.ObjectId, ref: "AdvanceShipmentNotice", default: null, index: true },
+    asnNo: { type: String, default: "", trim: true, uppercase: true },
     grnDate: { type: Date, required: true },
     supplierId: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", default: null, index: true },
     supplierName: { type: String, default: "", trim: true },
@@ -146,5 +171,17 @@ const grnSchema = new mongoose.Schema(
 
 grnSchema.index({ grnNo: 1 }, { unique: true });
 grnSchema.index({ companyId: 1, grnNo: 1 }, { unique: true });
+/** Canonical one-active-GRN-per-receiving-session. Created on Atlas via migrate script, not autoIndex. */
+grnSchema.index(
+  { companyId: 1, receivingSessionId: 1 },
+  {
+    unique: true,
+    name: "grns_one_active_asn_receiving_session",
+    partialFilterExpression: {
+      receivingSessionId: { $type: "objectId" },
+      status: { $in: ["DRAFT", "RECEIVED", "PARTIAL_RECEIVED", "POSTED", "CLOSED"] },
+    },
+  }
+);
 
 export default mongoose.model("GRN", grnSchema);

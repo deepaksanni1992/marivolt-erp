@@ -18,6 +18,17 @@ import {
   isCustomsEnabled,
 } from "../services/customsService.js";
 import {
+  GRN_POSTED_FOR_RECEIPT_QTY as GRN_POSTED_FOR_RECEIPT_QTY_SHARED,
+  getPostedAcceptedQtyByPoLineMap as loadPostedAcceptedQtyByPoLineMap,
+} from "../utils/grnReceiptQty.js";
+import {
+  ReceivingDraftGrnError,
+  applyAsnReceivingDraftEdit,
+  assertAsnReceivingGrnPostBlocked,
+  isAsnReceivingGrn,
+} from "../utils/receivingDraftGrnRules.js";
+import { reviewAsnReceivingDraftGrn } from "../services/asnReceivingDraftService.js";
+import {
   CANDIDATE_CAP,
   buildEligiblePoMongoFilter,
   escapeRegex,
@@ -68,36 +79,10 @@ function withCompany(req, filter = {}) {
 const PO_LINE_ARRAY_KEYS = ["lines", "orderLines", "poItems", "items", "products"];
 
 /** GRN documents that count toward PO received / pending (excludes DRAFT and CANCELLED). */
-const GRN_POSTED_FOR_RECEIPT_QTY = ["POSTED", "RECEIVED", "PARTIAL_RECEIVED", "CLOSED"];
+const GRN_POSTED_FOR_RECEIPT_QTY = GRN_POSTED_FOR_RECEIPT_QTY_SHARED;
 
 async function getPostedAcceptedQtyByPoLineMap(req, poId, session = null) {
-  if (!mongoose.Types.ObjectId.isValid(String(poId))) return new Map();
-  const oid = new mongoose.Types.ObjectId(String(poId));
-  const pipeline = [
-    { $match: withCompany(req, { poId: oid, status: { $in: GRN_POSTED_FOR_RECEIPT_QTY } }) },
-    { $unwind: "$items" },
-    {
-      $match: {
-        "items.poLineId": { $exists: true, $ne: null },
-      },
-    },
-    {
-      $group: {
-        _id: "$items.poLineId",
-        qty: {
-          $sum: {
-            $toDouble: {
-              $ifNull: ["$items.acceptedQty", { $ifNull: ["$items.receivedQty", 0] }],
-            },
-          },
-        },
-      },
-    },
-  ];
-  const agg = GRN.aggregate(pipeline);
-  if (session) agg.session(session);
-  const rows = await agg;
-  return new Map(rows.map((r) => [String(r._id), Math.max(0, Number(r.qty) || 0)]));
+  return loadPostedAcceptedQtyByPoLineMap(GRN, { companyId: req.companyId, poId, session });
 }
 
 /** Prefer canonical `lines`, then legacy/alternate array keys used by older imports. */
@@ -566,8 +551,15 @@ export async function getGrn(req, res) {
     if (row._id) {
       row.attachments = row.attachments || [];
     }
+    if (isAsnReceivingGrn(row)) {
+      const { review } = await reviewAsnReceivingDraftGrn(req, row);
+      row.entitlementReview = review;
+    }
     res.json(row);
   } catch (err) {
+    if (err instanceof ReceivingDraftGrnError) {
+      return res.status(err.status || 409).json({ message: err.message, code: err.code });
+    }
     res.status(500).json({ message: err.message });
   }
 }
@@ -578,6 +570,20 @@ export async function updateGrn(req, res) {
     const grn = await GRN.findOne(withCompany(req, { grnNo }));
     if (!grn) return res.status(404).json({ message: "GRN not found" });
     if (grn.status !== "DRAFT") return res.status(400).json({ message: "Only DRAFT GRN can be edited" });
+    if (isAsnReceivingGrn(grn)) {
+      applyAsnReceivingDraftEdit(grn, req.body || {});
+      grn.updatedBy = req.user?.email || "";
+      await grn.save();
+      await writeAudit(req, {
+        action: "UPDATE",
+        module: "STORE",
+        entityType: "GRN",
+        entityId: grn._id,
+        documentNo: grn.grnNo,
+        description: `ASN receiving Draft GRN ${grn.grnNo} review fields updated`,
+      });
+      return res.json(grn);
+    }
     grn.branchId = req.body.branchId ?? grn.branchId;
     grn.warehouseId = req.body.warehouseId ?? grn.warehouseId;
     grn.grnDate = req.body.grnDate || grn.grnDate;
@@ -630,6 +636,9 @@ export async function updateGrn(req, res) {
     });
     res.json(grn);
   } catch (err) {
+    if (err instanceof ReceivingDraftGrnError) {
+      return res.status(err.status || 409).json({ message: err.message, code: err.code });
+    }
     res.status(400).json({ message: err.message });
   }
 }
@@ -889,6 +898,16 @@ export async function deleteGrnDraft(req, res) {
     if (String(grn.status || "").toUpperCase() !== "DRAFT") {
       return res.status(400).json({ message: "Only draft GRNs can be deleted" });
     }
+    const asnReceiving = isAsnReceivingGrn(grn);
+    const snapshot = {
+      receivingSessionId: grn.receivingSessionId ? String(grn.receivingSessionId) : "",
+      receivingSessionNo: grn.receivingSessionNo || "",
+      asnId: grn.asnId ? String(grn.asnId) : "",
+      asnNo: grn.asnNo || "",
+      poId: grn.poId ? String(grn.poId) : "",
+      poNo: grn.poNo || "",
+      sourceType: grn.sourceType || "",
+    };
     await GRN.deleteOne(withCompany(req, { _id: grn._id }));
     await writeAudit(req, {
       action: "DELETE",
@@ -897,7 +916,19 @@ export async function deleteGrnDraft(req, res) {
       entityId: grn._id,
       documentNo: grn.grnNo,
       description: `Draft GRN ${grn.grnNo} deleted`,
+      metadata: asnReceiving ? snapshot : undefined,
     });
+    if (asnReceiving) {
+      await writeAudit(req, {
+        action: "ASN_RECEIVING_GRN_DRAFT_DELETED",
+        module: "STORE",
+        entityType: "GRN",
+        entityId: grn._id,
+        documentNo: grn.grnNo,
+        description: `ASN receiving Draft GRN ${grn.grnNo} deleted`,
+        metadata: snapshot,
+      });
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -1107,6 +1138,7 @@ export async function postGrn(req, res) {
       const grn = await GRN.findOne(withCompany(req, { grnNo })).session(session);
       if (!grn) throw new Error("GRN not found");
       if (grn.status !== "DRAFT") throw new Error("Only DRAFT GRN can be received");
+      assertAsnReceivingGrnPostBlocked(grn);
       grn.items = (grn.items || []).filter((x) => Number(x.acceptedQty) > 0.000001);
       if (!(grn.items || []).length) {
         throw new Error("Cannot post GRN with no lines having quantity greater than zero");
@@ -1267,6 +1299,9 @@ export async function postGrn(req, res) {
     res.json({ success: true });
   } catch (err) {
     if (err?._approval) return res.status(202).json(err._approval);
+    if (err instanceof ReceivingDraftGrnError) {
+      return res.status(err.status || 409).json({ message: err.message, code: err.code });
+    }
     res.status(400).json({ message: err.message });
   } finally {
     await session.endSession();
@@ -1541,8 +1576,15 @@ export async function getGrnByMongoId(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const row = await GRN.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "GRN not found" });
+    if (isAsnReceivingGrn(row)) {
+      const { review } = await reviewAsnReceivingDraftGrn(req, row);
+      row.entitlementReview = review;
+    }
     res.json(row);
   } catch (err) {
+    if (err instanceof ReceivingDraftGrnError) {
+      return res.status(err.status || 409).json({ message: err.message, code: err.code });
+    }
     res.status(500).json({ message: err.message });
   }
 }

@@ -1,5 +1,6 @@
 import multer from "multer";
 import { ReceivingInspectionError } from "../utils/receivingInspectionRules.js";
+import { ReceivingDraftGrnError } from "../utils/receivingDraftGrnRules.js";
 import { ReceivingUnitError } from "../utils/receivingUnitRules.js";
 import { AsnError } from "../utils/asnRules.js";
 import {
@@ -17,12 +18,17 @@ import {
   startOrResumeReceivingSession,
   uploadReceivingPhoto,
 } from "../services/receivingInspectionService.js";
+import {
+  generateDraftGrnFromReceivingSession,
+  getDraftGrnForReceivingSession,
+} from "../services/asnReceivingDraftService.js";
 
 function sendError(res, err) {
   if (
     err instanceof ReceivingInspectionError ||
     err instanceof ReceivingUnitError ||
-    err instanceof AsnError
+    err instanceof AsnError ||
+    err instanceof ReceivingDraftGrnError
   ) {
     return res.status(err.status || err.statusCode || 400).json({
       message: err.message,
@@ -169,6 +175,30 @@ export async function asnProgress(req, res) {
 export async function completeSession(req, res) {
   try {
     const data = await completeReceivingSession(req, req.params.sessionId);
+    res.json(data);
+  } catch (err) {
+    sendError(res, err);
+  }
+}
+
+export async function generateSessionGrn(req, res) {
+  try {
+    const data = await generateDraftGrnFromReceivingSession(req, req.params.sessionId);
+    res.status(data.created ? 201 : 200).json(data);
+  } catch (err) {
+    sendError(res, err);
+  }
+}
+
+export async function getSessionGrn(req, res) {
+  try {
+    const data = await getDraftGrnForReceivingSession(req, req.params.sessionId);
+    if (!data.grn) {
+      return res.status(404).json({
+        message: "No Draft GRN for this receiving session",
+        code: "RECEIVING_GRN_NOT_FOUND",
+      });
+    }
     res.json(data);
   } catch (err) {
     sendError(res, err);

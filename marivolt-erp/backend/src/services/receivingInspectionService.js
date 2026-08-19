@@ -43,6 +43,7 @@ import {
 import { getReceivingUnitByBarcode, getReceivingUnitById } from "./receivingUnitService.js";
 import { nextReceivingSessionNo } from "./receivingSessionNumberService.js";
 import { writeAudit } from "./auditService.js";
+import { assertReceivingNotFrozenByDraftGrn, attachDraftGrnToReceivingProgress } from "./asnReceivingDraftService.js";
 import {
   buildReceivingPhotoObjectKey,
   deleteFileFromS3,
@@ -453,6 +454,7 @@ async function loadAuthorizedRuForSession(req, session, ruId) {
 
 export async function saveReceivingDraft(req, sessionId, ruId, body = {}) {
   const session = await loadSession(req.companyId, sessionId);
+  await assertReceivingNotFrozenByDraftGrn(req.companyId, session._id);
   if (!isActiveReceivingSessionStatus(session.status)) {
     throw new ReceivingInspectionError("Receiving session is not active", 409, "RECEIVING_SESSION_NOT_ACTIVE");
   }
@@ -549,6 +551,7 @@ export async function saveReceivingDraft(req, sessionId, ruId, body = {}) {
 export async function completeReceivingUnit(req, sessionId, ruId, body = {}) {
   const settings = receivingPhotoSettingsFromEnv();
   const session = await loadSession(req.companyId, sessionId);
+  await assertReceivingNotFrozenByDraftGrn(req.companyId, session._id);
   if (!isActiveReceivingSessionStatus(session.status)) {
     throw new ReceivingInspectionError("Receiving session is not active", 409, "RECEIVING_SESSION_NOT_ACTIVE");
   }
@@ -706,6 +709,7 @@ export async function completeReceivingUnit(req, sessionId, ruId, body = {}) {
 export async function uploadReceivingPhoto(req, sessionId, ruId, file, body = {}) {
   const settings = receivingPhotoSettingsFromEnv();
   const session = await loadSession(req.companyId, sessionId);
+  await assertReceivingNotFrozenByDraftGrn(req.companyId, session._id);
   if (!isActiveReceivingSessionStatus(session.status)) {
     throw new ReceivingInspectionError("Receiving session is not active", 409, "RECEIVING_SESSION_NOT_ACTIVE");
   }
@@ -861,6 +865,7 @@ export async function uploadReceivingPhoto(req, sessionId, ruId, file, body = {}
 
 export async function deleteReceivingPhoto(req, sessionId, photoId) {
   const session = await loadSession(req.companyId, sessionId);
+  await assertReceivingNotFrozenByDraftGrn(req.companyId, session._id);
   const photo = await ReceivingUnitPhoto.findOne({
     _id: oid(photoId),
     companyId: req.companyId,
@@ -1072,13 +1077,14 @@ export async function getAsnReceivingProgress(req, asnId) {
   const use = session || completed;
   const rus = await buildProgressRows(req.companyId, asn, use);
   const progress = summarizeReceivingProgress(rus);
-  return {
+  const payload = {
     session: serializeSession(use),
     progress,
     receivingUnits: rus,
     dispositionReady: progress.dispositionReady === true,
     dispositionRequiredCount: Number(progress.dispositionRequiredCount) || 0,
   };
+  return attachDraftGrnToReceivingProgress(req.companyId, use, payload);
 }
 
 export async function completeReceivingSession(req, sessionId) {
