@@ -384,5 +384,37 @@ run("Print agent auto-detect + first-launch present", () => {
   assert.ok(ui.includes("Printer Dashboard"));
 });
 
+run("Agent READY gate, spool drain, unique doc name, release-to-PENDING", () => {
+  const safety = fs.readFileSync(path.join(repoRoot, "print-agent/src/printSafety.js"), "utf8");
+  assert.ok(safety.includes("isLeaseEligiblePrinterStatus"));
+  assert.ok(safety.includes("waitForQueueDrain"));
+  assert.ok(safety.includes("createPrinterFifo"));
+  assert.ok(safety.includes("acquireAgentProcessLock"));
+  const processor = fs.readFileSync(path.join(repoRoot, "print-agent/src/jobProcessor.js"), "utf8");
+  assert.ok(processor.includes("releaseLease"));
+  assert.ok(processor.includes("COMPLETED only after READY"));
+  const adapter = fs.readFileSync(path.join(repoRoot, "print-agent/src/adapters/windowsRawSpooler.js"), "utf8");
+  assert.ok(adapter.includes("documentName"));
+  assert.ok(!adapter.includes('di.pDocName = "Marivolt Label"'));
+  const index = fs.readFileSync(path.join(repoRoot, "print-agent/src/index.js"), "utf8");
+  assert.ok(index.includes("/agent/jobs/${job.id}/release") || index.includes("/agent/jobs/"));
+  assert.ok(index.includes("createJobProcessor"));
+  const routes = fs.readFileSync(path.join(backendRoot, "src/routes/labelRoutes.js"), "utf8");
+  assert.ok(routes.includes("/agent/jobs/:id/release"));
+  const queue = fs.readFileSync(path.join(backendRoot, "src/services/label/printQueue.js"), "utf8");
+  assert.ok(queue.includes("releaseLeaseToPending"));
+  assert.ok(queue.includes('status: "PENDING"'));
+  assert.ok(queue.includes("findOneAndUpdate"));
+  const ru = fs.readFileSync(path.join(backendRoot, "src/services/receivingUnitService.js"), "utf8");
+  assert.ok(ru.includes("isSuccessfulLabelJobStatus"));
+});
+
+run("Label queue UI distinguishes PENDING wait from errors", () => {
+  const panel = fs.readFileSync(path.join(repoRoot, "src/components/store/LabelQueuePanel.jsx"), "utf8");
+  assert.ok(panel.includes("Waiting for printer"));
+  assert.ok(panel.includes("not optical/physical paper confirmation"));
+  assert.ok(panel.includes("UNCERTAIN"));
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

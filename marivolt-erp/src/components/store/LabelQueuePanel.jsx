@@ -68,6 +68,18 @@ export default function LabelQueuePanel({ onMessage }) {
 
   const items = data?.items || [];
 
+  function pendingWaitNote(job) {
+    if (String(job.status || "").toUpperCase() !== "PENDING") return "";
+    if (job.lastError) return "";
+    const want = String(job.windowsPrinterName || "").trim().toLowerCase();
+    const p = printers.find((x) => String(x.windowsPrinterName || "").trim().toLowerCase() === want);
+    const st = String(p?.printerStatus || "").trim().toUpperCase();
+    if (p?.agentStatus === "ONLINE" && st && st !== "READY") {
+      return `Waiting for printer — ${st}`;
+    }
+    return "";
+  }
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -129,14 +141,19 @@ export default function LabelQueuePanel({ onMessage }) {
                   {formatLabelJobSource(j)}
                   {j.isReprint ? " · reprint" : ""}
                 </td>
-                <td className="px-2 py-1.5 font-semibold">{j.status}</td>
+                <td className="px-2 py-1.5 font-semibold" title={pendingWaitNote(j) || undefined}>
+                  {j.status}
+                </td>
                 <td className="px-2 py-1.5 text-right tabular-nums">{j.requestedLabels}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums">{j.printedLabels}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums">{j.remainingLabels}</td>
                 <td className="px-2 py-1.5">{j.windowsPrinterName}</td>
                 <td className="px-2 py-1.5 font-mono">{j.agentId}</td>
-                <td className="max-w-[180px] truncate px-2 py-1.5 text-rose-700" title={j.lastError}>
-                  {j.lastError || "—"}
+                <td
+                  className={`max-w-[180px] truncate px-2 py-1.5 ${j.lastError ? "text-rose-700" : "text-slate-600"}`}
+                  title={j.lastError || pendingWaitNote(j) || undefined}
+                >
+                  {j.lastError || pendingWaitNote(j) || "—"}
                 </td>
                 <td className="px-2 py-1.5">
                   <div className="flex flex-wrap gap-1">
@@ -194,6 +211,11 @@ export default function LabelQueuePanel({ onMessage }) {
           </tbody>
         </table>
       </div>
+      <p className="text-[11px] text-slate-500">
+        PENDING waits for a READY printer. COMPLETED means the agent submitted RAW while READY and the
+        Windows spool queue drained — not optical/physical paper confirmation. UNCERTAIN means the spool
+        outcome is ambiguous.
+      </p>
 
       {confirmJob && (
         <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs">

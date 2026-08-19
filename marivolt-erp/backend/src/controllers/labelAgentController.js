@@ -4,6 +4,7 @@ import {
   markJobPrinting,
   applyAgentResult,
   reclaimExpiredLeases,
+  releaseLeaseToPending,
 } from "../services/label/printQueue.js";
 import { recordLabelHistory } from "../services/label/labelAudit.js";
 import {
@@ -88,6 +89,27 @@ export async function printing(req, res) {
       status: "PRINTING",
       templateCode: job.templateCode,
       event: "PRINTING",
+    });
+    res.json({ ok: true, status: job.status });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function releaseLease(req, res) {
+  try {
+    const job = await releaseLeaseToPending(req.params.id, req.printAgent, req.body?.leaseToken);
+    await syncGrnLabelStatus(job.sourceId, job);
+    await recordLabelHistory({
+      jobId: job._id,
+      companyId: job.companyId,
+      agentId: req.printAgent.agentId,
+      computerName: req.printAgent.computerName,
+      windowsPrinterName: job.windowsPrinterName,
+      requestedQty: job.remainingLabels,
+      status: "PENDING",
+      templateCode: job.templateCode,
+      event: "LEASE_RELEASE",
     });
     res.json({ ok: true, status: job.status });
   } catch (err) {

@@ -1,12 +1,14 @@
-import { ensureConfigured, loadConfig, logLine } from "./config.js";
+import { ensureConfigured, getConfigDir, loadConfig, logLine } from "./config.js";
 import {
   collectHostProfile,
   probeWindowsPrinterHealth,
   resolveConfiguredPrinterHealth,
 } from "./detect.js";
 import { createTransport } from "./adapters/windowsRawSpooler.js";
+import { createJobProcessor } from "./jobProcessor.js";
+import { acquireAgentProcessLock } from "./printSafety.js";
 
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.4.0";
 
 /** Set by SIGINT/SIGTERM / Windows service stop — stop leasing new jobs. */
 let shuttingDown = false;
@@ -79,61 +81,71 @@ function toHeartbeatPrinterRow(h) {
   };
 }
 
-async function processOneJob(cfg, transport) {
-  if (shuttingDown) return false;
-  const leased = await api(cfg, "POST", "/api/labels/agent/lease", {});
-  const job = leased?.job;
-  if (!job) return false;
-
-  inJob = true;
-  logLine(`Leased job ${job.jobNo} (${job.id})`, { event: "job_leased" });
-  const printerName = job.windowsPrinterName || cfg.windowsPrinterName;
-  if (!printerName) {
-    await api(cfg, "POST", `/api/labels/agent/jobs/${job.id}/result`, {
-      status: "FAILED",
-      error: "No Windows printer name configured",
-      leaseToken: job.leaseToken,
-      printedQty: 0,
-    });
-    inJob = false;
-    return true;
-  }
-
-  try {
-    await api(cfg, "POST", `/api/labels/agent/jobs/${job.id}/printing`, {
-      leaseToken: job.leaseToken,
-    });
-    logLine(`Print submitted to spooler for ${job.jobNo} → ${printerName}`, {
-      event: "print_submitted",
-    });
-    const buf = Buffer.from(job.tsplPayload || "", "utf8");
-    if (!buf.length) throw new Error("Empty TSPL payload");
-    await transport.printRaw(buf, printerName);
-    await api(cfg, "POST", `/api/labels/agent/jobs/${job.id}/result`, {
-      status: "COMPLETED",
-      printedQty: job.requestedLabels,
-      leaseToken: job.leaseToken,
-    });
-    logLine(`Completed job ${job.jobNo}`, { event: "job_completed" });
-  } catch (e) {
-    logLine(`Job ${job.jobNo} failed: ${e.message}`, { level: "error", event: "job_failed" });
-    try {
-      await api(cfg, "POST", `/api/labels/agent/jobs/${job.id}/result`, {
-        status: "FAILED",
-        error: e.message,
+function createAgentJobProcessor(cfg, transport) {
+  return createJobProcessor({
+    log: logLine,
+    getPrinterHealth: async (printerName) => {
+      const name = String(printerName || cfg.windowsPrinterName || "").trim();
+      const probe = await probeWindowsPrinterHealth();
+      return resolveConfiguredPrinterHealth(name, probe.rows || [], {
+        queryFailed: !probe.ok,
+        queryError: probe.error,
+      });
+    },
+    leaseNext: async () => {
+      const leased = await api(cfg, "POST", "/api/labels/agent/lease", {});
+      const job = leased?.job;
+      if (job) logLine(`Leased job ${job.jobNo} (${job.id})`, { event: "job_leased" });
+      return job || null;
+    },
+    releaseLease: async (job) => {
+      await api(cfg, "POST", `/api/labels/agent/jobs/${job.id}/release`, {
         leaseToken: job.leaseToken,
-        printedQty: 0,
       });
-    } catch (reportErr) {
-      logLine(`Could not report failure (may become UNCERTAIN): ${reportErr.message}`, {
-        level: "error",
-        event: "job_uncertain",
+    },
+    markPrinting: async (job) => {
+      await api(cfg, "POST", `/api/labels/agent/jobs/${job.id}/printing`, {
+        leaseToken: job.leaseToken,
       });
-    }
+    },
+    reportResult: async (job, outcome) => {
+      await api(cfg, "POST", `/api/labels/agent/jobs/${job.id}/result`, {
+        status: outcome.status,
+        printedQty: outcome.printedQty,
+        error: outcome.error || "",
+        leaseToken: job.leaseToken,
+      });
+      const event =
+        outcome.status === "COMPLETED"
+          ? "job_completed"
+          : outcome.status === "UNCERTAIN"
+            ? "job_uncertain"
+            : "job_failed";
+      logLine(`${outcome.status} job ${job.jobNo}${outcome.error ? `: ${outcome.error}` : ""}`, {
+        event,
+        level: outcome.status === "COMPLETED" ? "info" : "error",
+      });
+    },
+    printRaw: async (buf, printerName, opts) => {
+      logLine(`Print submitted to spooler for ${opts?.documentName || printerName} → ${printerName}`, {
+        event: "print_submitted",
+      });
+      return transport.printRaw(buf, printerName, opts);
+    },
+  });
+}
+
+async function processOneJob(processor) {
+  if (shuttingDown) return false;
+  inJob = true;
+  try {
+    return await processor.processOne();
+  } catch (e) {
+    logLine(`Job cycle failed: ${e.message}`, { level: "error", event: "job_failed" });
+    return true;
   } finally {
     inJob = false;
   }
-  return true;
 }
 
 async function sendHeartbeat(cfg) {
@@ -262,9 +274,19 @@ async function loop() {
   }
 
   logLine(`Config loaded agent=${cfg.agentId} backend=${cfg.backendUrl}`, { event: "config_loaded" });
+
+  let processLock;
+  try {
+    processLock = acquireAgentProcessLock(getConfigDir(), cfg.agentId);
+  } catch (e) {
+    logLine(e.message || String(e), { level: "error", event: "agent_lock" });
+    process.exit(1);
+  }
+
   await checkConfiguredPrinter(cfg);
 
   const transport = createTransport(cfg.connectionType);
+  const processor = createAgentJobProcessor(cfg, transport);
   logLine(
     `Marivolt Print Agent ${APP_VERSION} starting. Backend=${cfg.backendUrl} agent=${cfg.agentId}`,
     { event: "service_started" }
@@ -275,7 +297,7 @@ async function loop() {
       await sendHeartbeat(cfg);
       let worked = true;
       while (worked && !shuttingDown) {
-        worked = await processOneJob(cfg, transport);
+        worked = await processOneJob(processor);
       }
     } catch (e) {
       if (shuttingDown) break;
@@ -305,6 +327,11 @@ async function loop() {
     logLine(`Final heartbeat skipped: ${e.message}`, { level: "error", event: "shutdown" });
   }
 
+  try {
+    processLock?.release();
+  } catch {
+    /* ignore */
+  }
   logLine("Graceful shutdown complete", { event: "service_stopped" });
   process.exit(0);
 }

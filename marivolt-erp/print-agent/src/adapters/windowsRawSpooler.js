@@ -3,24 +3,26 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { PrintTransportAdapter } from "./base.js";
+import { spoolDocumentName } from "../printSafety.js";
 
 /**
  * Send raw bytes to a Windows named printer via Win32 WritePrinter (PowerShell).
  * Isolated so TCP/9100 can be added later without changing the agent loop.
  */
 export class WindowsRawSpoolerAdapter extends PrintTransportAdapter {
-  async printRaw(buffer, printerName) {
+  async printRaw(buffer, printerName, opts = {}) {
+    const documentName = String(opts.documentName || "").trim() || spoolDocumentName(opts.jobNo);
     if (process.platform !== "win32") {
-      // Dev/mock: write payload to temp file and succeed
       const out = path.join(os.tmpdir(), `marivolt-label-${Date.now()}.tspl`);
       fs.writeFileSync(out, buffer);
-      return { ok: true, mocked: true, path: out };
+      return { ok: true, mocked: true, path: out, submitted: true, windowsJobName: documentName };
     }
     const name = String(printerName || "").trim();
     if (!name) throw new Error("windowsPrinterName is required");
 
     const tmp = path.join(os.tmpdir(), `marivolt-label-${Date.now()}-${Math.random().toString(16).slice(2)}.bin`);
     fs.writeFileSync(tmp, buffer);
+    const docEsc = String(documentName).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
     const ps = `
 $ErrorActionPreference = 'Stop'
@@ -48,11 +50,11 @@ public class RawPrinterHelper {
   public static extern bool EndPagePrinter(IntPtr hPrinter);
   [DllImport("winspool.Drv", EntryPoint="WritePrinter", SetLastError=true)]
   public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);
-  public static bool SendBytes(string printer, byte[] bytes) {
+  public static bool SendBytes(string printer, byte[] bytes, string docName) {
     IntPtr hPrinter;
     if (!OpenPrinter(printer, out hPrinter, IntPtr.Zero)) return false;
     var di = new DOCINFOA();
-    di.pDocName = "Marivolt Label";
+    di.pDocName = string.IsNullOrEmpty(docName) ? "Marivolt JOB" : docName;
     di.pDataType = "RAW";
     if (!StartDocPrinter(hPrinter, 1, di)) { ClosePrinter(hPrinter); return false; }
     StartPagePrinter(hPrinter);
@@ -70,14 +72,14 @@ public class RawPrinterHelper {
 "@
 $printer = '${name.replace(/'/g, "''")}'
 $bytes = [System.IO.File]::ReadAllBytes('${tmp.replace(/'/g, "''")}')
-$ok = [RawPrinterHelper]::SendBytes($printer, $bytes)
+$ok = [RawPrinterHelper]::SendBytes($printer, $bytes, "${docEsc}")
 if (-not $ok) { throw "WritePrinter failed for $printer (Win32 error $($([ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error()).Message)))" }
 Write-Output "OK"
 `;
 
     try {
       await runPowershell(ps);
-      return { ok: true };
+      return { ok: true, submitted: true, windowsJobName: documentName };
     } finally {
       try {
         fs.unlinkSync(tmp);

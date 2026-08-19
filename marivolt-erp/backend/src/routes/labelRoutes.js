@@ -46,6 +46,7 @@ router.post("/agent/bootstrap", bootstrapRateLimit, agent.bootstrap);
 router.post("/agent/heartbeat", agentRateLimit, requirePrintAgent, agent.heartbeat);
 router.post("/agent/lease", agentRateLimit, requirePrintAgent, agent.lease);
 router.post("/agent/jobs/:id/printing", agentRateLimit, requirePrintAgent, agent.printing);
+router.post("/agent/jobs/:id/release", agentRateLimit, requirePrintAgent, agent.releaseLease);
 router.post("/agent/jobs/:id/result", agentRateLimit, requirePrintAgent, agent.result);
 
 /** ERP routes */

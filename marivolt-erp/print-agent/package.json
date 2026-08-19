@@ -1,6 +1,6 @@
 {
   "name": "marivolt-print-agent",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "private": true,
   "type": "module",
   "description": "Marivolt warehouse Windows print agent for Rongta TSPL labels via Windows spooler",
@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node src/index.js",
     "test-print": "node src/testPrint.js",
-    "test": "node scripts/windowsService.test.js && node scripts/printerHealth.test.js",
+    "test": "node scripts/windowsService.test.js && node scripts/printerHealth.test.js && node scripts/printSafety.test.js",
     "service:download-winsw": "node service/download-winsw.mjs",
     "service:preflight": "node service/preflight-service.mjs",
     "service:install": "node service/install-service.mjs",

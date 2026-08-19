@@ -65,6 +65,47 @@ export async function leaseNextJob(agent) {
   return job;
 }
 
+export async function releaseLeaseToPending(jobId, agent, leaseToken) {
+  const token = String(leaseToken || "");
+  const job = await LabelPrintJob.findOne({
+    _id: jobId,
+    companyId: agent.companyId,
+    agentId: String(agent.agentId).toUpperCase(),
+    status: "LEASED",
+  });
+  if (!job || !timingSafeEqualString(job.leaseToken, token)) {
+    const err = new Error("Job not leased to this agent or invalid lease token");
+    err.code = "LABEL_LEASE_INVALID";
+    err.statusCode = 409;
+    throw err;
+  }
+  const updated = await LabelPrintJob.findOneAndUpdate(
+    {
+      _id: jobId,
+      companyId: agent.companyId,
+      agentId: String(agent.agentId).toUpperCase(),
+      status: "LEASED",
+      leaseToken: job.leaseToken,
+    },
+    {
+      $set: {
+        status: "PENDING",
+        leaseToken: "",
+        leasedToAgentId: "",
+        leaseExpiresAt: null,
+      },
+    },
+    { new: true }
+  );
+  if (!updated) {
+    const err = new Error("Lease already advanced; cannot return to PENDING");
+    err.code = "LABEL_TRANSITION_REJECTED";
+    err.statusCode = 409;
+    throw err;
+  }
+  return updated;
+}
+
 export async function markJobPrinting(jobId, agent, leaseToken) {
   const token = String(leaseToken || "");
   const job = await LabelPrintJob.findOne({
