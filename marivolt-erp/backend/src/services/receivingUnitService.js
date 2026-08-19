@@ -3,6 +3,7 @@ import AdvanceShipmentNotice from "../models/AdvanceShipmentNotice.js";
 import PurchaseOrder from "../models/PurchaseOrder.js";
 import ReceivingUnit from "../models/ReceivingUnit.js";
 import LabelPrintJob from "../models/LabelPrintJob.js";
+import GRN from "../models/GRN.js";
 import { actorName, sameCompanyId, AsnError } from "../utils/asnRules.js";
 import {
   RU_ACTIVE_STATUSES,
@@ -27,16 +28,49 @@ import {
   sumPlannedQty,
 } from "../utils/receivingUnitRules.js";
 import { nextRuNo } from "./receivingUnitNumberService.js";
+import { writeAudit } from "./auditService.js";
 import { cancelAsn as executeAsnCancel } from "./asnService.js";
 import { ReceivingInspectionError } from "../utils/receivingInspectionRules.js";
 import {
   assertAsnCancelNotBlockedByReceiving,
   assertReplanNotBlockedByReceiving,
+  inspectReplanReceivingBlockers,
+  invalidateEmptyDraftReceivingSession,
 } from "./receivingInspectionGuard.js";
 import {
   isSuccessfulLabelJobStatus,
   validateGrnLabelLinePrintConfig,
 } from "../utils/grnLabelDistribution.js";
+
+const BLOCKING_GRN_STATUSES = ["DRAFT", "RECEIVED", "PARTIAL_RECEIVED", "POSTED", "CLOSED"];
+
+async function inspectReplanGrnBlockers(companyId, asnId) {
+  if (!asnId) return { blocked: false, reason: "", source: "", grnNo: "" };
+  const grn = await GRN.findOne({
+    companyId,
+    asnId,
+    status: { $in: BLOCKING_GRN_STATUSES },
+  })
+    .select("grnNo status")
+    .lean();
+  if (!grn) return { blocked: false, reason: "", source: "", grnNo: "" };
+  return {
+    blocked: true,
+    source: "GRN",
+    grnNo: grn.grnNo || "",
+    reason: "A GRN already exists for this receiving. RU structure can no longer be changed.",
+  };
+}
+
+async function assertReplanNotBlockedByGrn(companyId, asnId) {
+  const blockers = await inspectReplanGrnBlockers(companyId, asnId);
+  if (blockers.blocked) {
+    throw new ReceivingUnitError(blockers.reason, 409, "RU_RECEIVING_STARTED", {
+      source: blockers.source,
+      grnNo: blockers.grnNo,
+    });
+  }
+}
 
 function t(v) {
   return String(v ?? "").trim();
@@ -178,11 +212,24 @@ export async function listReceivingUnitsForAsn(companyId, asnId) {
     };
   });
   const active = lines.flatMap((ln) => ln.receivingUnits);
+  const blockers = await inspectReplanReceivingBlockers(
+    companyId,
+    active.map((ru) => ru._id),
+    asn._id
+  );
+  const grnBlockers = await inspectReplanGrnBlockers(companyId, asn._id);
+  const blocked = blockers.blocked || grnBlockers.blocked;
+  const blockedReason = blockers.blocked ? blockers.reason : grnBlockers.reason;
+  const eligible = RU_PLAN_ELIGIBLE_ASN_STATUSES.includes(String(asn.status || "").toUpperCase());
   return {
     asnId: asn._id,
     asnNo: asn.asnNo,
     status: asn.status,
-    eligible: RU_PLAN_ELIGIBLE_ASN_STATUSES.includes(String(asn.status || "").toUpperCase()),
+    eligible,
+    replanAllowed: eligible && !blocked && active.length > 0,
+    replanBlockedReason: blocked ? blockedReason : "",
+    replanBlockCode: blocked ? "RU_RECEIVING_STARTED" : "",
+    replanBlockSource: blockers.blocked ? blockers.source : grnBlockers.source || "",
     lines,
     receivingUnits: active,
     fingerprint: buildReceivingUnitLabelFingerprint(active),
@@ -385,6 +432,12 @@ async function persistReplacementPlanReplicaSet({
     ruActivePlanBatchId: planBatchId,
   };
   assertCompletedPlanQtyInvariant(nextLine, inserted);
+  await invalidateEmptyDraftReceivingSession({
+    companyId,
+    asnId: asn._id,
+    actor,
+    mongoSession: session,
+  });
   return inserted;
 }
 
@@ -455,6 +508,11 @@ async function persistReplacementPlanStandalone({
     ruActivePlanBatchId: planBatchId,
   };
   assertCompletedPlanQtyInvariant(nextLine, inserted);
+  await invalidateEmptyDraftReceivingSession({
+    companyId,
+    asnId: asn._id,
+    actor,
+  });
   return inserted;
 }
 
@@ -495,6 +553,7 @@ export async function planReceivingUnits(req, asnId, body = {}) {
   }
 
   const replacePrinted = body.replacePrinted === true || body.supersedePrinted === true;
+  const forceReplan = body.forceReplan === true || body.reprepare === true;
   const actor = actorName(req);
   const created = [];
   const reused = [];
@@ -522,7 +581,7 @@ export async function planReceivingUnits(req, asnId, body = {}) {
       .lean();
     const existing = currentLineRus(line, lineRus);
 
-    if (distributionsMatch(plannedQtyList(existing), distribution)) {
+    if (!forceReplan && distributionsMatch(plannedQtyList(existing), distribution)) {
       reused.push(...existing);
       continue;
     }
@@ -550,6 +609,7 @@ export async function planReceivingUnits(req, asnId, body = {}) {
       existing.map((ru) => ru._id),
       asn._id
     );
+    await assertReplanNotBlockedByGrn(companyId, asn._id);
 
     const planBatchId = new mongoose.Types.ObjectId();
     const expectedVersion =
@@ -588,6 +648,28 @@ export async function planReceivingUnits(req, asnId, body = {}) {
     lastPlanBatchId = planBatchId;
     cancelled.push(...existing.map((ru) => ru.ruNo));
     created.push(...inserted.map((doc) => (doc.toObject ? doc.toObject() : doc)));
+    if (existing.length) {
+      await writeAudit(req, {
+        action: "UPDATE",
+        module: "STORE",
+        entityType: "RECEIVING_UNIT_PLAN",
+        entityId: asn._id,
+        documentNo: asn.asnNo,
+        description: `Re-prepared Receiving Units for ${asn.asnNo} ${line.article}`,
+        metadata: {
+          asnLineId: String(line._id),
+          article: line.article,
+          previousPlanBatchId: existing[0]?.planBatchId ? String(existing[0].planBatchId) : "",
+          newPlanBatchId: String(planBatchId),
+          previousRuPlanVersion: expectedVersion,
+          newRuPlanVersion: expectedVersion + 1,
+          previousRuNos: existing.map((ru) => ru.ruNo),
+          newRuNos: inserted.map((doc) => doc.ruNo),
+          reason,
+          forceReplan,
+        },
+      });
+    }
   }
 
   const listing = await listReceivingUnitsForAsn(companyId, asn._id);

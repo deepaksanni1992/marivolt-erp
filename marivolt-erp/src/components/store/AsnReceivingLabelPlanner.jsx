@@ -18,7 +18,7 @@ function qtyInputClass() {
   return "min-h-12 w-full rounded-xl border border-slate-300 bg-white px-3 text-lg font-semibold tabular-nums";
 }
 
-export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint, canReprint }) {
+export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint, canReprint, intent = "review" }) {
   const queryClient = useQueryClient();
   const [plans, setPlans] = useState({});
   const [previewIndex, setPreviewIndex] = useState(0);
@@ -70,6 +70,15 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
     onError: (err) => notify.fromError(err, { fallback: "Could not queue labels" }),
   });
 
+  const reprintAllMutation = useMutation({
+    mutationFn: (body) => apiPost(`/asn/${asn._id}/receiving-units/reprint-all`, body),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asn._id] });
+      notify.success(`Queued ${res.count || res.jobs?.length || 0} reprint job(s)`);
+    },
+    onError: (err) => notify.fromError(err, { fallback: "Could not reprint all labels" }),
+  });
+
   const reprintMutation = useMutation({
     mutationFn: ({ ruId, reason }) =>
       apiPost(`/asn/${asn._id}/receiving-units/${ruId}/reprint`, { reason, printerCode: printerCode || undefined }),
@@ -94,6 +103,9 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
     });
   }, [data?.eligible, canPrint, lines, plans]);
 
+  const hasActiveRus = previewFaces.length > 0;
+  const reprepareMode = intent === "reprepare";
+  const canSavePlan = canSave && (!hasActiveRus || (reprepareMode && data?.replanAllowed !== false));
   const currentFace = previewFaces[previewIndex] || null;
 
   if (!open) return null;
@@ -157,6 +169,7 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
         asnLineId: line.asnLineId,
         labelCount: validated.distribution.length,
         labelDistribution: validated.distribution,
+        expectedRuPlanVersion: line.ruPlanVersion,
       });
     }
     return { lines: payloadLines };
@@ -165,8 +178,13 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
   const savePlan = async ({ replacePrinted = false } = {}) => {
     const payload = await buildPlanPayload();
     if (!payload) return;
+    const printedActive = previewFaces.some((ru) => String(ru.status || "").toUpperCase() === "PRINTED");
     try {
-      await planMutation.mutateAsync({ ...payload, replacePrinted });
+      await planMutation.mutateAsync({
+        ...payload,
+        replacePrinted: replacePrinted || (reprepareMode && printedActive),
+        forceReplan: reprepareMode,
+      });
     } catch (err) {
       if (err?.code === "RU_PLAN_CONFLICT") {
         notify.fromError(err, { fallback: "Another user updated this label plan. Refresh and try again." });
@@ -176,15 +194,19 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
         notify.fromError(err, { fallback: "Finish or resolve the current print job before replacing this plan." });
         return;
       }
+      if (err?.code === "RU_RECEIVING_STARTED") {
+        notify.fromError(err, { fallback: "Receiving has started. RU structure can no longer be changed." });
+        return;
+      }
       if (err?.code === "RU_PRINTED_PLAN_LOCKED") {
         const ok = await confirmDialog({
           title: "Replace printed labels?",
           message:
-            "Some Receiving Units were already printed. Replacing will supersede those barcodes and create new RU numbers. Continue?",
+            "Some RU labels have already been printed. Re-preparing will permanently supersede those RU numbers. Any old physical labels must be discarded and will no longer scan. Continue?",
         });
         if (ok) {
           try {
-            await planMutation.mutateAsync({ ...payload, replacePrinted: true });
+            await planMutation.mutateAsync({ ...payload, replacePrinted: true, forceReplan: true });
           } catch (err2) {
             notify.fromError(err2, { fallback: "Could not replace printed plan" });
           }
@@ -195,13 +217,25 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
     }
   };
 
+  const reprintAll = async () => {
+    const printed = previewFaces.filter((ru) => String(ru.status || "").toUpperCase() === "PRINTED").length;
+    const ok = await confirmDialog({
+      title: "Reprint All RU Labels",
+      message: `Reprint all ${printed} active RU labels? This will print the same RU numbers again. Receiving quantities and RU identities will not change.`,
+    });
+    if (!ok) return;
+    reprintAllMutation.mutate({ reason: reprintReason || "Replacement", printerCode: printerCode || undefined });
+  };
+
   const printers = printersQ.data?.items || [];
 
   return (
     <div className="fixed inset-0 z-[80] flex flex-col bg-slate-100">
       <header className="flex items-center justify-between gap-3 border-b bg-white px-4 py-3">
         <div className="min-w-0">
-          <h2 className="text-lg font-semibold text-slate-900">Prepare Receiving Units</h2>
+          <h2 className="text-lg font-semibold text-slate-900">
+            {reprepareMode ? "Re-Prepare Receiving Units" : "Prepare Receiving Units"}
+          </h2>
           <p className="truncate font-mono text-sm text-slate-600">{asn?.asnNo}</p>
         </div>
         <button type="button" className="min-h-12 min-w-12 rounded-xl border px-4 text-base" onClick={onClose}>
@@ -213,6 +247,11 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
         {!data?.eligible ? (
           <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
             Labels can be prepared only when the ASN is Shipped or Arrived.
+          </p>
+        ) : null}
+        {data?.replanAllowed === false ? (
+          <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            {data.replanBlockedReason || "Receiving has started. RU structure can no longer be changed."}
           </p>
         ) : null}
 
@@ -374,10 +413,10 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
           <LoadingButton
             className="min-h-14 text-base"
             loading={planMutation.isPending}
-            disabled={!canSave}
+            disabled={!canSavePlan}
             onClick={() => savePlan()}
           >
-            Save Receiving Units
+            {reprepareMode ? "Save New RU Plan" : "Save Receiving Units"}
           </LoadingButton>
           <LoadingButton
             variant="success"
@@ -388,6 +427,16 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
           >
             Print RU Labels
           </LoadingButton>
+          {canReprint && previewFaces.some((ru) => ru.status === "PRINTED") ? (
+            <LoadingButton
+              variant="secondary"
+              className="min-h-14 text-base sm:col-span-2"
+              loading={reprintAllMutation.isPending}
+              onClick={reprintAll}
+            >
+              Reprint All RU Labels
+            </LoadingButton>
+          ) : null}
         </div>
       </footer>
     </div>

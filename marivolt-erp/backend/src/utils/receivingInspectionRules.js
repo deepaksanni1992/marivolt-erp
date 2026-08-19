@@ -661,10 +661,10 @@ export function evaluateReceivingScanEligibility(ru, { current = false } = {}) {
       code: "RU_SUPERSEDED",
       inactive: true,
       replacementRuNos: replacements,
-      message: "This label has been replaced. Please use the current label.",
+      message: "This Receiving Unit label has been superseded. Scan the current RU label.",
       userMessage: replacements.length
-        ? `This label has been replaced. Please use the current label: ${replacements.join(", ")}.`
-        : "This label has been replaced. Please use the current label.",
+        ? `This Receiving Unit label has been superseded. Scan the current RU label (${replacements.join(", ")}).`
+        : "This Receiving Unit label has been superseded. Scan the current RU label.",
     };
   }
 
@@ -1081,6 +1081,68 @@ export function canCompleteReceivingSession({ requiredRus, completedRuIds } = {}
   return { ok: missing.length === 0, missingRuIds: missing, requiredCount: required.length };
 }
 
+/**
+ * Empty DRAFT = opened by Start Receiving with no RU inspection evidence.
+ * Not a freeze. COMPLETED / IN_PROGRESS / any session unit / any photo freezes.
+ */
+export function isEmptyDraftReceivingSession({ session = null, unitCount = 0, photoCount = 0 } = {}) {
+  if (!session) return false;
+  if (String(session.status || "").toUpperCase() !== "DRAFT") return false;
+  if (session.completedAt) return false;
+  if (Number(unitCount) > 0) return false;
+  if (Number(photoCount) > 0) return false;
+  return true;
+}
+
+/**
+ * Freeze predicate for RU Re-Prepare. Session existence is not enough.
+ */
+export function classifyReplanReceivingFreeze({
+  session = null,
+  unitCount = 0,
+  photoCount = 0,
+} = {}) {
+  const status = String(session?.status || "").toUpperCase();
+  if (status === "COMPLETED") {
+    return {
+      blocked: true,
+      source: "RECEIVING_SESSION",
+      sessionStatus: status,
+      reason: "Receiving is complete. RU structure can no longer be changed.",
+    };
+  }
+  if (Number(unitCount) > 0) {
+    return {
+      blocked: true,
+      source: "RECEIVING_SESSION_UNIT",
+      sessionStatus: status,
+      reason: "Receiving has started. RU structure can no longer be changed.",
+    };
+  }
+  if (Number(photoCount) > 0) {
+    return {
+      blocked: true,
+      source: "RECEIVING_PHOTO",
+      sessionStatus: status,
+      reason: "Receiving has started. RU structure can no longer be changed.",
+    };
+  }
+  if (status === "IN_PROGRESS") {
+    return {
+      blocked: true,
+      source: "RECEIVING_SESSION",
+      sessionStatus: status,
+      reason: "Receiving has started. RU structure can no longer be changed.",
+    };
+  }
+  return {
+    blocked: false,
+    source: "",
+    sessionStatus: status,
+    reason: "",
+  };
+}
+
 export function hasReceivingActivity(units = [], photos = []) {
   if ((photos || []).length > 0) return true;
   return (units || []).some((u) => {
@@ -1097,12 +1159,17 @@ export function hasReceivingActivity(units = [], photos = []) {
 }
 
 export function assertReplanBlockedByReceiving(activity) {
-  if (activity) {
-    throw new ReceivingUnitError(
-      "Receiving has already started for this ASN. Replacing labels is blocked.",
-      409,
-      "RU_RECEIVING_STARTED"
-    );
+  const blocked = activity && typeof activity === "object" ? activity.blocked === true : Boolean(activity);
+  if (blocked) {
+    const reason =
+      activity && typeof activity === "object" && activity.reason
+        ? activity.reason
+        : "Receiving has started. RU structure can no longer be changed.";
+    throw new ReceivingUnitError(reason, 409, "RU_RECEIVING_STARTED", {
+      source: activity?.source || "",
+      sessionStatus: activity?.sessionStatus || "",
+      grnNo: activity?.grnNo || "",
+    });
   }
 }
 

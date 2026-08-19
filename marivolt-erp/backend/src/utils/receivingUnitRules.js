@@ -14,12 +14,13 @@ export const RU_PLAN_ELIGIBLE_ASN_STATUSES = Object.freeze(["SHIPPED", "ARRIVED"
 export const RU_NUMBER_WIDTH = 6;
 
 export class ReceivingUnitError extends Error {
-  constructor(message, status = 400, code = "RU_ERROR") {
+  constructor(message, status = 400, code = "RU_ERROR", details = null) {
     super(message);
     this.name = "ReceivingUnitError";
     this.status = status;
     this.statusCode = status;
     this.code = code;
+    if (details && typeof details === "object") this.details = details;
   }
 }
 

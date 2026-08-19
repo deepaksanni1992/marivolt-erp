@@ -297,4 +297,75 @@ export async function reprintReceivingUnit(req, asnId, ruId, body = {}) {
   return { job, receivingUnit: serializeRu(ru) };
 }
 
+export async function reprintAllReceivingUnits(req, asnId, body = {}) {
+  const settings = await getLabelSettings(req.companyId);
+  if (!settings.enabled) {
+    const err = new Error("Label printing is disabled. Enable it in Label Settings.");
+    err.code = "LABEL_DISABLED";
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!settings.allowManualReprint) {
+    const err = new Error("Manual reprint is disabled");
+    err.statusCode = 403;
+    throw err;
+  }
+  const reason = t(body.reason);
+  if (!reason) {
+    const err = new Error("Reprint reason is required");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const asn = await loadAsnForCompany(req.companyId, asnId);
+  const listing = await listReceivingUnitsForAsn(req.companyId, asn._id);
+  if (!listing.eligible) {
+    throw new ReceivingUnitError(
+      "Receiving Unit labels can only be reprinted when the ASN is SHIPPED or ARRIVED",
+      400,
+      "RU_ASN_STATUS"
+    );
+  }
+
+  const rus = (listing.receivingUnits || []).filter((ru) => String(ru.status || "").toUpperCase() === "PRINTED");
+  if (!rus.length) {
+    throw new ReceivingUnitError(
+      "No printed Receiving Units to reprint. Print RU Labels first.",
+      400,
+      "RU_REPRINT_NOT_PRINTED"
+    );
+  }
+
+  await ensureMarivoltStandardTemplate();
+  const printer = await resolvePrinterForJob(req.companyId, body.printerCode, {
+    warehouseCode: upper(body.warehouseCode),
+  });
+  const companyName = await loadCompanyName(req.companyId);
+  const jobs = [];
+  const identities = [];
+  for (const ru of rus) {
+    const before = { ruNo: ru.ruNo, barcodeValue: ru.barcodeValue, plannedQty: ru.plannedQty };
+    const job = await enqueueOneRuJob(req, {
+      asn,
+      ru,
+      printer,
+      companyName,
+      settings,
+      isReprint: true,
+      reason,
+      parentJobId: ru.lastLabelJobId || null,
+    });
+    jobs.push(job);
+    identities.push(before);
+  }
+  return {
+    jobs,
+    count: jobs.length,
+    asnNo: asn.asnNo,
+    isReprint: true,
+    receivingUnits: identities,
+    ruPlanVersionUnchanged: true,
+  };
+}
+
 export { applyReceivingUnitPrintResult, isSuccessfulLabelJobStatus };

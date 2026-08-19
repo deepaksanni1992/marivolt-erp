@@ -196,7 +196,7 @@ run("scan: SUPERSEDED RU returns replacements", () => {
   );
   assert.equal(e.canReceive, false);
   assert.equal(e.code, "RU_SUPERSEDED");
-  assert.match(e.userMessage, /replaced/i);
+  assert.match(e.userMessage, /superseded/i);
   assert.deepEqual(e.replacementRuNos, ["MAR-RU-000200"]);
 });
 
@@ -811,14 +811,20 @@ run("server sniffs image bytes instead of trusting client MIME", () => {
   assert.equal(checked.mimeType, "image/jpeg");
 });
 
-run("replan is blocked by draft/session activity, not only COMPLETED", () => {
+run("replan is blocked by session-unit activity, not by an empty DRAFT session", () => {
   assert.equal(hasReceivingActivity([{ status: "NOT_STARTED", startedAt: new Date() }]), true);
   assert.equal(hasReceivingActivity([{ status: "IN_PROGRESS", actualQty: 23 }]), true);
   assert.equal(hasReceivingActivity([], [{ status: "DELETED" }]), true);
   const guard = fs.readFileSync(path.join(srcRoot, "services", "receivingInspectionGuard.js"), "utf8");
-  assert.match(guard, /DRAFT", "IN_PROGRESS", "COMPLETED"/);
+  assert.match(guard, /classifyReplanReceivingFreeze/);
+  assert.match(guard, /isEmptyDraftReceivingSession/);
+  assert.match(guard, /invalidateEmptyDraftReceivingSession/);
   assert.match(guard, /ReceivingSessionUnit\.countDocuments/);
   assert.match(guard, /ReceivingUnitPhoto\.countDocuments/);
+  assert.doesNotMatch(
+    guard.slice(guard.indexOf("export async function inspectReplanReceivingBlockers")),
+    /if \(session\) \{\s*const completed/
+  );
 });
 
 run("ASN cancel remains blocked after a COMPLETED inspection session", () => {

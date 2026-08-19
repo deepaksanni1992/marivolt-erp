@@ -293,7 +293,8 @@ run("routes: plan/print require ASN.view + LABELS.print, not ASN.edit", () => {
   assert.match(asnRoutes, /receiving-units\/plan/);
   assert.match(asnRoutes, /receiving-units\/print/);
   assert.match(asnRoutes, /requireAllPermissions\(\["ASN", "view"\], \["LABELS", "print"\]\)/);
-  assert.match(asnRoutes, /requireAllPermissions\(\["ASN", "view"\], \["LABELS", "reprint"\]\)/);
+  assert.match(asnRoutes, /receiving-units\/reprint-all/);
+  assert.match(asnRoutes, /receiving-units\/:ruId\/reprint/);
   assert.ok(!asnRoutes.includes('requirePermission("ASN", "edit"), ru.plan'));
   const labelRoutes = fs.readFileSync(path.join(srcRoot, "routes", "labelRoutes.js"), "utf8");
   assert.match(labelRoutes, /\/jobs\/from-asn/);

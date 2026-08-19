@@ -89,7 +89,8 @@ run("Store Incoming Shipments owns receiving, labels, and ASN GRN", () => {
   assert.match(incoming, /ReceivingDispositionReview/);
   assert.match(incoming, /Generate Draft GRN/);
   assert.match(incoming, /Prepare Receiving Units/);
-  assert.match(incoming, /Print RU Labels/);
+  assert.match(incoming, /Re-Prepare Receiving Units/);
+  assert.match(incoming, /Reprint All RU Labels/);
 });
 
 run("RU=0 gates scan / start / enter RU", () => {
@@ -114,7 +115,8 @@ run("planner print vs reprint reuse existing label APIs", () => {
   assert.match(planner, /receiving-units\/print/);
   assert.match(planner, /\/reprint/);
   assert.match(planner, /Print RU Labels/);
-  assert.match(planner, /Reprint RU Label/);
+  assert.match(planner, /Reprint All RU Labels/);
+  assert.match(planner, /receiving-units\/reprint-all/);
   assert.doesNotMatch(planner, /createLabelEngine/);
 });
 

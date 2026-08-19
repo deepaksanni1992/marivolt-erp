@@ -7,6 +7,7 @@ import ReceivingBarcodeScanner from "./ReceivingBarcodeScanner.jsx";
 import ReceivingDispositionReview from "./ReceivingDispositionReview.jsx";
 import ReceivingUnitInspectScreen from "./ReceivingUnitInspectScreen.jsx";
 import { apiGet, apiGetWithQuery, apiPost } from "../../lib/api.js";
+import { confirmDialog, notify } from "../../lib/notifications.js";
 import { useAuth } from "../../context/AuthContext.jsx";
 import { AsnStatusBadge, formatAsnDate, incomingAsnListQuery, incomingShipmentsPath, trackingDisplay } from "../../lib/asnUi.js";
 import { isStoreOperatorRole } from "../../lib/rbac.js";
@@ -25,6 +26,7 @@ export default function IncomingShipmentsPanel() {
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState(null);
   const [plannerOpen, setPlannerOpen] = useState(false);
+  const [plannerIntent, setPlannerIntent] = useState("review");
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scanError, setScanError] = useState("");
   const [inspect, setInspect] = useState(null);
@@ -95,6 +97,50 @@ export default function IncomingShipmentsPanel() {
   const plannedCount = currentRus.filter((ru) => String(ru.status || "").toUpperCase() === "PLANNED").length;
   const eligibleReceiveStatus = ["SHIPPED", "ARRIVED"].includes(String(detail?.status || "").toUpperCase());
   const canScanNow = canReceive && printedCount > 0 && !receivingComplete && !draftGrn?.grnNo;
+  const receivingStarted =
+    receivingComplete ||
+    Boolean(draftGrn?.grnNo) ||
+    (ruCount > 0 && ruListQ.data?.replanAllowed === false);
+  const replanAllowed =
+    canPrepareLabels &&
+    eligibleReceiveStatus &&
+    ruCount > 0 &&
+    !receivingStarted &&
+    ruListQ.data?.replanAllowed !== false;
+  const reprintAllAllowed = canReprint && printedCount > 0 && eligibleReceiveStatus;
+
+  function openPlanner(intent = "review") {
+    setPlannerIntent(intent);
+    setPlannerOpen(true);
+  }
+
+  async function confirmRePrepare() {
+    const printed = printedCount > 0;
+    const ok = await confirmDialog({
+      title: "Re-Prepare Receiving Units",
+      message: printed
+        ? "Some RU labels have already been printed. Re-preparing will permanently supersede those RU numbers. Any old physical labels must be discarded and will no longer scan. Continue?"
+        : "Re-prepare Receiving Units? The current RU plan will be superseded and a new plan will be created.",
+    });
+    if (ok) openPlanner("reprepare");
+  }
+
+  async function confirmReprintAll() {
+    const ok = await confirmDialog({
+      title: "Reprint All RU Labels",
+      message: `Reprint all ${printedCount} active RU labels? This will print the same RU numbers again. Receiving quantities and RU identities will not change.`,
+    });
+    if (!ok || !detail?._id) return;
+    try {
+      const res = await apiPost(`/asn/${detail._id}/receiving-units/reprint-all`, {
+        reason: "Replacement",
+      });
+      notify.success(`Queued ${res.count || res.jobs?.length || 0} reprint job(s)`);
+      refreshReceiving();
+    } catch (err) {
+      notify.fromError(err, { fallback: "Could not reprint RU labels" });
+    }
+  }
   const canStartNow = canReceive && ruCount > 0 && eligibleReceiveStatus && !receivingComplete && !draftGrn?.grnNo;
   const canEnterRu = canReceive && ruCount > 0 && !receivingComplete && !draftGrn?.grnNo;
 
@@ -349,7 +395,7 @@ export default function IncomingShipmentsPanel() {
                       <button
                         type="button"
                         className="mt-3 min-h-14 w-full rounded-2xl bg-slate-900 px-4 text-base font-semibold text-white"
-                        onClick={() => setPlannerOpen(true)}
+                        onClick={() => openPlanner("prepare")}
                       >
                         Prepare Receiving Units
                       </button>
@@ -542,7 +588,7 @@ export default function IncomingShipmentsPanel() {
                 <button
                   type="button"
                   className="min-h-14 w-full rounded-2xl bg-slate-900 px-4 text-base font-semibold text-white"
-                  onClick={() => setPlannerOpen(true)}
+                  onClick={() => openPlanner(ruCount === 0 ? "prepare" : "review")}
                 >
                   {ruCount === 0 ? "Prepare Receiving Units" : "Review Receiving Units"}
                 </button>
@@ -550,9 +596,32 @@ export default function IncomingShipmentsPanel() {
                   <button
                     type="button"
                     className="min-h-14 w-full rounded-2xl bg-sky-800 px-4 text-base font-semibold text-white"
-                    onClick={() => setPlannerOpen(true)}
+                    onClick={() => openPlanner("print")}
                   >
                     Print RU Labels
+                  </button>
+                ) : null}
+                {replanAllowed ? (
+                  <button
+                    type="button"
+                    className="min-h-14 w-full rounded-2xl border border-amber-300 bg-amber-50 px-4 text-base font-semibold text-amber-950"
+                    onClick={confirmRePrepare}
+                  >
+                    Re-Prepare Receiving Units
+                  </button>
+                ) : null}
+                {ruCount > 0 && receivingStarted ? (
+                  <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
+                    Receiving has started. RU structure can no longer be changed.
+                  </p>
+                ) : null}
+                {reprintAllAllowed ? (
+                  <button
+                    type="button"
+                    className="min-h-14 w-full rounded-2xl border px-4 text-base font-semibold"
+                    onClick={confirmReprintAll}
+                  >
+                    Reprint All RU Labels
                   </button>
                 ) : null}
                 <button
@@ -678,7 +747,11 @@ export default function IncomingShipmentsPanel() {
       <AsnReceivingLabelPlanner
         asn={detail}
         open={plannerOpen && !!detail}
-        onClose={() => setPlannerOpen(false)}
+        intent={plannerIntent}
+        onClose={() => {
+          setPlannerOpen(false);
+          setPlannerIntent("review");
+        }}
         canPrint={canPrepareLabels}
         canReprint={canReprint}
       />

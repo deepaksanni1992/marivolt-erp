@@ -22,6 +22,7 @@ router.get("/:id/receiving-units", asnView, ru.listForAsn);
 router.post("/:id/receiving-units/plan", asnLabelPrint, ru.plan);
 router.post("/:id/receiving-units/preview", asnLabelView, ru.preview);
 router.post("/:id/receiving-units/print", asnLabelPrint, ru.print);
+router.post("/:id/receiving-units/reprint-all", asnLabelReprint, ru.reprintAll);
 router.post("/:id/receiving-units/:ruId/reprint", asnLabelReprint, ru.reprint);
 router.get("/:id", asnView, c.getById);
 router.patch("/:id", asnEdit, c.patch);

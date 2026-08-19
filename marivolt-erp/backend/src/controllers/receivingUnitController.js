@@ -7,6 +7,7 @@ import {
   createJobsFromAsn,
   previewJobsFromAsn,
   reprintReceivingUnit,
+  reprintAllReceivingUnits,
 } from "../services/label/asnLabelService.js";
 import { ReceivingUnitError } from "../utils/receivingUnitRules.js";
 import { AsnError } from "../utils/asnRules.js";
@@ -16,6 +17,7 @@ function sendError(res, err) {
     return res.status(err.status || err.statusCode || 400).json({
       message: err.message,
       code: err.code,
+      ...(err.details && typeof err.details === "object" ? { details: err.details } : {}),
     });
   }
   const status = Number(err?.statusCode || err?.status) || 500;
@@ -52,6 +54,15 @@ export async function preview(req, res) {
 export async function print(req, res) {
   try {
     const data = await createJobsFromAsn(req, { ...(req.body || {}), asnId: req.params.id });
+    res.status(201).json(data);
+  } catch (err) {
+    sendError(res, err);
+  }
+}
+
+export async function reprintAll(req, res) {
+  try {
+    const data = await reprintAllReceivingUnits(req, req.params.id, req.body || {});
     res.status(201).json(data);
   } catch (err) {
     sendError(res, err);
