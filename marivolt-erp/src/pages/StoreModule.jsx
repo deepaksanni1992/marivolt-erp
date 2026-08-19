@@ -2932,7 +2932,11 @@ export default function StoreModule() {
                   </div>
                       {String(grnRegisterDetail.sourceType || "").toUpperCase() === "ASN_RECEIVING" ? (
                     <div className="col-span-2 rounded-xl border border-sky-200 bg-sky-50 p-2 text-xs text-sky-950">
-                      <div className="font-semibold">Draft GRN — ASN Receiving</div>
+                      <div className="font-semibold">
+                        {["RECEIVED", "PARTIAL_RECEIVED", "POSTED", "CLOSED"].includes(String(grnRegisterDetail.status || "").toUpperCase())
+                          ? "Posted GRN — ASN Receiving"
+                          : "Draft GRN — ASN Receiving"}
+                      </div>
                       <div>
                         Source: <span className="font-semibold">ASN → PO</span>
                       </div>
@@ -2943,15 +2947,30 @@ export default function StoreModule() {
                         Receiving:{" "}
                         <span className="font-mono font-semibold">{grnRegisterDetail.receivingSessionNo || "—"}</span>
                       </div>
-                      <p className="mt-2 text-slate-700">
-                        Posting will be available after ASN receiving posting integration.
-                      </p>
                       {grnRegisterDetail.entitlementReview?.entitlementValid === false ? (
                         <p className="mt-2 rounded bg-amber-50 p-2 text-amber-950">
                           PO entitlement changed since this draft was created (shortfall{" "}
                           {grnRegisterDetail.entitlementReview.entitlementShortfall}). The draft quantity was not
-                          changed.
+                          changed. Posting is blocked.
                         </p>
+                      ) : String(grnRegisterDetail.status || "").toUpperCase() === "DRAFT" ? (
+                        <p className="mt-2 text-slate-700">
+                          Confirm POST GRN to receive accepted qty into stock. Damaged, rejected, short, and excess stay
+                          as receiving evidence.
+                        </p>
+                      ) : null}
+                      {String(grnRegisterDetail.status || "").toUpperCase() === "DRAFT" &&
+                      grnRegisterDetail.entitlementReview?.entitlementValid !== false ? (
+                        <button
+                          type="button"
+                          className="mt-2 min-h-11 w-full rounded-lg bg-emerald-700 px-3 font-semibold text-white"
+                          onClick={() => {
+                            if (!window.confirm(`POST GRN ${grnRegisterDetail.grnNo}? Accepted qty will go to stock. RU labels will not reprint.`)) return;
+                            postGrnMut.mutate(grnRegisterDetail.grnNo);
+                          }}
+                        >
+                          POST GRN
+                        </button>
                       ) : null}
                       {grnRegisterDetail.asnId ? (
                         <button

@@ -66,6 +66,19 @@ export function canUserSetAsnStatus(status) {
   return ASN_USER_STATUSES.includes(String(status || "").toUpperCase());
 }
 
+/** System-only: GRN posting/reversal. Users still cannot PATCH these statuses. */
+export function assertSystemAsnReceivingStatus(fromStatus, toStatus) {
+  const from = String(fromStatus || "").toUpperCase();
+  const to = String(toStatus || "").toUpperCase();
+  const postOk =
+    ["SHIPPED", "ARRIVED", "PARTIALLY_RECEIVED"].includes(from) && to === "COMPLETED";
+  const reverseOk = from === "COMPLETED" && (to === "ARRIVED" || to === "PARTIALLY_RECEIVED");
+  if (!postOk && !reverseOk) {
+    throw new AsnError(`Cannot apply system ASN status ${from} → ${to}`, 409, "ASN_SYSTEM_STATUS");
+  }
+  return true;
+}
+
 export function assertValidTransition(fromStatus, toStatus) {
   const from = String(fromStatus || "").toUpperCase();
   const to = String(toStatus || "").toUpperCase();
@@ -200,19 +213,85 @@ export function assertPositiveAsnQty(qty, article = "") {
 }
 
 /**
- * remaining = PO ordered - active ASN qty (excluding current ASN).
- * GRN received qty is intentionally not used in Phase 1.
+ * remaining ASN claim capacity for a PO line:
+ * ordered - cancelled - commercially received - existing asnActive.
  */
-export function remainingAsnQty(poQty, alreadyActiveQty) {
-  return roundAsnQty(Math.max(0, roundAsnQty(poQty) - roundAsnQty(alreadyActiveQty)));
+export function remainingAsnQty(poQty, alreadyActiveQty, receivedQty = 0, cancelledQty = 0) {
+  return roundAsnQty(
+    Math.max(
+      0,
+      roundAsnQty(poQty) - roundAsnQty(cancelledQty) - roundAsnQty(receivedQty) - roundAsnQty(alreadyActiveQty)
+    )
+  );
 }
 
-export function assertQtyWithinAvailable({ article, poQty, alreadyActive, requested }) {
+export function poLineReceivedQtyForAsn(line) {
+  return roundAsnQty(line?.receivedQty ?? line?.received ?? 0);
+}
+
+export function poLineCancelledQtyForAsn(line) {
+  return roundAsnQty(line?.cancelledQty ?? line?.cancelled ?? 0);
+}
+
+/**
+ * Restore of `restoreQty` is allowed iff after reversing `receivedReversalQty`
+ * the line still satisfies received + asnActive + restoreQty <= ordered - cancelled.
+ * Restore is all-or-nothing for the original ASN line qty (never a partial restore).
+ */
+export function canRestoreAsnReservation({
+  orderedQty,
+  cancelledQty = 0,
+  receivedQty = 0,
+  asnActiveQty = 0,
+  restoreQty = 0,
+  receivedReversalQty = 0,
+} = {}) {
+  return asnClaimFitsLine({
+    orderedQty,
+    cancelledQty,
+    receivedQty: Math.max(0, roundAsnQty(receivedQty) - roundAsnQty(receivedReversalQty)),
+    asnActiveQty,
+    additionalQty: restoreQty,
+  });
+}
+
+/** True if received + asnActive + additional <= ordered - cancelled. */
+export function asnClaimFitsLine({ orderedQty, cancelledQty = 0, receivedQty = 0, asnActiveQty = 0, additionalQty = 0 } = {}) {
+  const cap = roundAsnQty(orderedQty) - roundAsnQty(cancelledQty);
+  const used = roundAsnQty(receivedQty) + roundAsnQty(asnActiveQty) + roundAsnQty(additionalQty);
+  return !qtyGt(used, cap);
+}
+
+export function tryClaimAsnQtyInMemory(line, additionalQty) {
+  const q = roundAsnQty(additionalQty);
+  const nextActive = roundAsnQty((Number(line.asnActiveQty) || 0) + q);
+  if (
+    !asnClaimFitsLine({
+      orderedQty: line.orderedQty ?? line.qty,
+      cancelledQty: line.cancelledQty,
+      receivedQty: line.receivedQty,
+      asnActiveQty: line.asnActiveQty,
+      additionalQty: q,
+    })
+  ) {
+    return { ok: false, line };
+  }
+  return { ok: true, line: { ...line, asnActiveQty: nextActive } };
+}
+
+export function assertQtyWithinAvailable({
+  article,
+  poQty,
+  alreadyActive,
+  requested,
+  receivedQty = 0,
+  cancelledQty = 0,
+}) {
   const need = assertPositiveAsnQty(requested, article);
-  const remaining = remainingAsnQty(poQty, alreadyActive);
+  const remaining = remainingAsnQty(poQty, alreadyActive, receivedQty, cancelledQty);
   if (qtyGt(need, remaining)) {
     throw new AsnError(
-      `ASN quantity ${need} exceeds remaining ${remaining} for ${article || "PO line"} (PO qty ${roundAsnQty(poQty)}, already ASN ${roundAsnQty(alreadyActive)})`,
+      `ASN quantity ${need} exceeds remaining ${remaining} for ${article || "PO line"} (PO qty ${roundAsnQty(poQty)}, received ${roundAsnQty(receivedQty)}, already ASN ${roundAsnQty(alreadyActive)})`,
       409,
       "ASN_QTY_EXCEEDED"
     );
@@ -328,9 +407,11 @@ export function validatePoLinesAgainstActiveAsn(mergedLines = [], activeByLine =
     const id = String(line?._id || "");
     if (id) kept.add(id);
     const active = Number(activeByLine.get(id) || 0);
-    if (active > ASN_QTY_EPS && poOrderedQtyForAsn(line) + ASN_QTY_EPS < active) {
+    const received = poLineReceivedQtyForAsn(line);
+    const floor = roundAsnQty(received + active);
+    if (floor > ASN_QTY_EPS && poOrderedQtyForAsn(line) + ASN_QTY_EPS < floor) {
       errors.push(
-        `${poLineArticle(line) || id}: PO quantity cannot be less than the active ASN quantity of ${active}.`
+        `${poLineArticle(line) || id}: PO quantity cannot be less than received (${received}) plus the active ASN quantity of ${active}.`
       );
     }
   }

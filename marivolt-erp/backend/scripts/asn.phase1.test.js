@@ -26,6 +26,8 @@ import {
   remainingAsnQty,
   roundAsnQty,
   sameCompanyId,
+  tryClaimAsnQtyInMemory,
+  canRestoreAsnReservation,
   validatePoLinesAgainstActiveAsn,
 } from "../src/utils/asnRules.js";
 import { tryClaimLineQty } from "../src/utils/quantitySerialization.js";
@@ -99,6 +101,37 @@ run("reject ASN greater than remaining quantity", () => {
   assert.throws(
     () => assertQtyWithinAvailable({ article: "A", poQty: 100, alreadyActive: 70, requested: 40 }),
     (err) => err instanceof AsnError && err.code === "ASN_QTY_EXCEEDED" && err.status === 409
+  );
+});
+
+run("receivedQty reduces remaining ASN entitlement (50 ordered, 43 received → 7)", () => {
+  assert.equal(remainingAsnQty(50, 0, 43), 7);
+  assertQtyWithinAvailable({ article: "20834", poQty: 50, alreadyActive: 0, requested: 7, receivedQty: 43 });
+  assert.throws(
+    () => assertQtyWithinAvailable({ article: "20834", poQty: 50, alreadyActive: 0, requested: 8, receivedQty: 43 }),
+    (err) => err.code === "ASN_QTY_EXCEEDED"
+  );
+  assert.throws(
+    () => assertQtyWithinAvailable({ article: "20834", poQty: 50, alreadyActive: 0, requested: 50, receivedQty: 43 }),
+    (err) => err.code === "ASN_QTY_EXCEEDED"
+  );
+});
+
+run("concurrent replacement ASN of 7: only one succeeds", () => {
+  const line = { orderedQty: 50, receivedQty: 43, asnActiveQty: 0 };
+  const a = tryClaimAsnQtyInMemory(line, 7);
+  const b = tryClaimAsnQtyInMemory(a.line, 7);
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, false);
+  assert.equal(a.line.asnActiveQty, 7);
+});
+
+run("post-complete remaining: received 25 + active 20 → new ASN 55 ok / 56 blocked", () => {
+  assert.equal(remainingAsnQty(100, 20, 25), 55);
+  assertQtyWithinAvailable({ article: "A", poQty: 100, alreadyActive: 20, requested: 55, receivedQty: 25 });
+  assert.throws(
+    () => assertQtyWithinAvailable({ article: "A", poQty: 100, alreadyActive: 20, requested: 56, receivedQty: 25 }),
+    (err) => err.code === "ASN_QTY_EXCEEDED"
   );
 });
 
@@ -225,10 +258,23 @@ run("PO qty cannot drop below active ASN qty", () => {
     new Map([[lineA, 80]])
   );
   assert.ok(errors.length);
-  assert.match(errors[0], /cannot be less than the active ASN quantity of 80/);
+  assert.match(errors[0], /active ASN quantity of 80/);
   const ok = validatePoLinesAgainstActiveAsn(
     [{ _id: lineA, article: "915002722", qty: 80, orderedQty: 80 }],
     new Map([[lineA, 80]])
+  );
+  assert.equal(ok.length, 0);
+});
+
+run("PO qty cannot drop below receivedQty plus active ASN qty", () => {
+  const errors = validatePoLinesAgainstActiveAsn(
+    [{ _id: lineA, article: "915002722", qty: 49, orderedQty: 49, receivedQty: 43 }],
+    new Map([[lineA, 7]])
+  );
+  assert.ok(errors.length);
+  const ok = validatePoLinesAgainstActiveAsn(
+    [{ _id: lineA, article: "915002722", qty: 50, orderedQty: 50, receivedQty: 43 }],
+    new Map([[lineA, 7]])
   );
   assert.equal(ok.length, 0);
 });
@@ -326,11 +372,14 @@ run("stock/customs safety: ASN service has no inventory side effects", () => {
   assert.ok(service.includes("logistics document only"));
 });
 
-run("ASN reservation uses atomic $inc; no insert-then-delete fallback", () => {
+run("ASN reservation uses atomic pipeline predicate including receivedQty", () => {
   const service = fs.readFileSync(path.join(srcRoot, "services", "asnService.js"), "utf8");
-  assert.ok(service.includes("$inc"));
+  assert.ok(service.includes("$map"));
+  assert.ok(service.includes("receivedQty"));
   assert.ok(service.includes("asnActiveQty"));
   assert.ok(service.includes("claimPoLineAsnQty"));
+  assert.ok(service.includes("restorePoLineAsnQty"));
+  assert.ok(service.includes("ASN_RESERVATION_RESTORE_CONFLICT"));
   assert.equal(service.includes("deleteOne"), false);
   assert.equal(service.includes("recomputeAndGuard"), false);
   assert.equal(service.includes("orderedQty ="), false);

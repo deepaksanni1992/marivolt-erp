@@ -272,7 +272,7 @@ run("PO entitlement helper matches ordered - posted - cancelled - other drafts",
   assert.equal(poLineEntitlement({ orderedQty: 50, cancelledQty: 0, postedAcceptedQty: 10, otherDraftAcceptedQty: 5 }), 35);
 });
 
-run("ASN receiving GRN posting is blocked until Phase 4C", () => {
+run("legacy ASN post-block helper still no-ops for MANUAL_PO", () => {
   assert.throws(
     () => assertAsnReceivingGrnPostBlocked({ sourceType: "ASN_RECEIVING", status: "DRAFT" }),
     (err) => err.code === "ASN_GRN_POST_PHASE4C_REQUIRED"
@@ -378,7 +378,7 @@ run("source files: dedicated receiving GRN route, no generic draft re-enable", (
   assert.match(routes, /sessions\/:sessionId\/grn/);
   assert.match(grnRoutes, /router\.post\("\/draft"/);
   assert.match(ctrl, /Draft GRN creation is disabled/);
-  assert.match(ctrl, /ASN_GRN_POST_PHASE4C_REQUIRED|assertAsnReceivingGrnPostBlocked/);
+  assert.match(ctrl, /postAsnReceivingDraftGrn|isAsnReceivingGrn/);
   assert.match(ctrl, /ASN_RECEIVING_GRN_DRAFT_DELETED/);
 });
 
@@ -447,14 +447,15 @@ run("tablet UI Generate Draft GRN → Review Draft GRN", () => {
   assert.match(incoming, /Draft GRN Created/);
   assert.match(incoming, /Review Draft GRN/);
   assert.match(incoming, /\/receiving\/sessions\/\$\{session\._id\}\/grn/);
-  assert.match(incoming, /tab=GRN/);
+  assert.match(incoming, /POST GRN/);
+  assert.match(incoming, /Confirm POST GRN/);
   assert.match(store, /ASN Receiving/);
   assert.match(store, /View Receiving Evidence/);
-  assert.match(store, /Posting will be available after ASN receiving posting integration/);
+  assert.match(store, /POST GRN/);
   assert.match(store, /apiGet\(`\/grn\/\$\{encodeURIComponent\(grnNo\)\}`\)/);
   const proc = fs.readFileSync(path.join(feRoot, "pages", "ProcurementFoundation.jsx"), "utf8");
   assert.match(proc, /ASN_RECEIVING/);
-  assert.match(proc, /Posting will be available after ASN receiving posting integration/);
+  assert.match(proc, /POST GRN/);
 });
 
 run("generic store draft creation remains disabled", () => {
@@ -770,7 +771,7 @@ run("P. manual GRN path remains GRN → PO (create/post not forced through ASN)"
   const ctrl = fs.readFileSync(path.join(srcRoot, "controllers", "grnController.js"), "utf8");
   assert.match(ctrl, /export async function postGrnFromPo/);
   assert.match(ctrl, /isAsnReceivingGrn\(grn\)/);
-  assert.match(ctrl, /assertAsnReceivingGrnPostBlocked/);
+  assert.match(ctrl, /postAsnReceivingDraftGrn/);
   assert.match(ctrl, /applyAsnReceivingDraftEdit/);
   const resolver = fs.readFileSync(path.join(srcRoot, "services", "asnReceivingSourceResolver.js"), "utf8");
   assert.match(resolver, /GRN → ASN → PO/);

@@ -18,6 +18,7 @@ export default function IncomingShipmentsPanel() {
   const canPrepareLabels = can("ASN", "view") && can("LABELS", "print");
   const canReprint = can("LABELS", "reprint");
   const canReceive = can("ASN", "view") && can("STORE", "create");
+  const canPostGrn = can("STORE", "post") || can("STORE", "approve");
   const [status, setStatus] = useState("SHIPPED,ARRIVED");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState(null);
@@ -29,6 +30,8 @@ export default function IncomingShipmentsPanel() {
   const [manualRu, setManualRu] = useState("");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [grnBusy, setGrnBusy] = useState(false);
+  const [postConfirmOpen, setPostConfirmOpen] = useState(false);
+  const [postResult, setPostResult] = useState(null);
   const scanLockRef = useRef("");
 
   useEffect(() => {
@@ -72,6 +75,8 @@ export default function IncomingShipmentsPanel() {
   const session = progressQ.data?.session;
   const receivingUnits = progressQ.data?.receivingUnits || [];
   const draftGrn = progressQ.data?.draftGrn;
+  const draftStatus = String(draftGrn?.status || "").toUpperCase();
+  const draftIsPosted = ["RECEIVED", "PARTIAL_RECEIVED", "POSTED", "CLOSED"].includes(draftStatus);
   const receivingComplete = String(session?.status || "").toUpperCase() === "COMPLETED";
   const receivingTotals = receivingUnits.reduce(
     (acc, row) => ({
@@ -152,6 +157,24 @@ export default function IncomingShipmentsPanel() {
     const grnNo = String(draftGrn?.grnNo || "").trim();
     if (!grnNo) return;
     navigate(`/store?tab=GRN&grnNo=${encodeURIComponent(grnNo)}`);
+  }
+
+  async function confirmPostDraftGrn() {
+    const grnNo = String(draftGrn?.grnNo || "").trim();
+    if (!grnNo || grnBusy) return;
+    setGrnBusy(true);
+    setScanError("");
+    try {
+      const data = await apiPost(`/grn/${encodeURIComponent(grnNo)}/post`, {});
+      setPostResult(data);
+      setPostConfirmOpen(false);
+      refreshReceiving();
+      if (selectedId) qc.invalidateQueries({ queryKey: ["asn", selectedId] });
+    } catch (err) {
+      setScanError(err.message || "Could not post GRN");
+    } finally {
+      setGrnBusy(false);
+    }
   }
 
   async function confirmCompleteSession() {
@@ -287,7 +310,7 @@ export default function IncomingShipmentsPanel() {
               <span>{detail.supplierName}</span>
               <span className="font-mono">{detail.sourcePoNo}</span>
             </div>
-            {canReceive && ["SHIPPED", "ARRIVED"].includes(String(detail.status || "").toUpperCase()) && !receivingComplete ? (
+            {canReceive && ["SHIPPED", "ARRIVED"].includes(String(detail.status || "").toUpperCase()) && !receivingComplete && !draftGrn?.grnNo ? (
               <div className="grid gap-2">
                 <button
                   type="button"
@@ -326,12 +349,44 @@ export default function IncomingShipmentsPanel() {
                 </div>
                 {draftGrn?.grnNo ? (
                   <>
+                    {draftIsPosted || postResult ? (
+                      <div className="mt-3 rounded-xl bg-white p-3 text-emerald-950">
+                        <div className="text-lg font-bold">GRN Posted Successfully</div>
+                        <div className="mt-1 font-mono text-xl">{postResult?.grnNo || draftGrn.grnNo}</div>
+                        <div className="mt-2 text-base">
+                          Accepted to stock {postResult?.acceptedToStock ?? draftGrn.totals?.grnEligibleQty ?? "—"}
+                        </div>
+                        <div className="mt-1 text-sm">ASN {postResult?.asnStatus || detail.status}</div>
+                        <button
+                          type="button"
+                          className="mt-3 min-h-14 w-full rounded-2xl bg-sky-700 text-lg font-bold text-white"
+                          onClick={reviewDraftGrn}
+                        >
+                          View GRN
+                        </button>
+                        <button
+                          type="button"
+                          className="mt-2 min-h-12 w-full rounded-2xl border text-base font-semibold"
+                          onClick={() => setSelectedId(null)}
+                        >
+                          Back to Incoming Shipments
+                        </button>
+                      </div>
+                    ) : (
+                      <>
                     <div className="mt-4 text-xl font-bold text-slate-900">Draft GRN Created</div>
                     <div className="mt-1 font-mono text-2xl font-bold text-sky-800">{draftGrn.grnNo}</div>
                     {Number(draftGrn.totals?.excessPendingQty) > 0 ? (
                       <p className="mt-2 rounded-xl bg-amber-50 p-3 text-sm text-amber-950">
-                        GRN eligible {draftGrn.totals.grnEligibleQty}. Excess pending {draftGrn.totals.excessPendingQty}{" "}
-                        requires Purchase/Admin resolution. Store cannot approve over-receipt.
+                        GRN eligible {draftGrn.totals.grnEligibleQty}. Extra physical qty{" "}
+                        {draftGrn.totals.excessPendingQty} is receiving evidence only and is not commercially received
+                        on this GRN. A later commercial document would be required to admit it.
+                      </p>
+                    ) : null}
+                    {draftGrn.entitlementReview?.entitlementValid === false ? (
+                      <p className="mt-2 rounded-xl bg-amber-50 p-3 text-sm text-amber-950">
+                        PO entitlement changed (shortfall {draftGrn.entitlementReview.entitlementShortfall}). Posting is
+                        blocked until the draft is deleted and regenerated.
                       </p>
                     ) : null}
                     <button
@@ -341,6 +396,16 @@ export default function IncomingShipmentsPanel() {
                     >
                       Review Draft GRN
                     </button>
+                    {canPostGrn && draftGrn.entitlementReview?.entitlementValid !== false ? (
+                      <button
+                        type="button"
+                        className="mt-2 min-h-16 w-full rounded-2xl bg-emerald-700 text-xl font-bold text-white"
+                        onClick={() => setPostConfirmOpen(true)}
+                        disabled={grnBusy}
+                      >
+                        POST GRN
+                      </button>
+                    ) : null}
                     {canReceive ? (
                       <button
                         type="button"
@@ -351,6 +416,8 @@ export default function IncomingShipmentsPanel() {
                         Open existing Draft GRN
                       </button>
                     ) : null}
+                      </>
+                    )}
                   </>
                 ) : canReceive ? (
                   <button
@@ -453,10 +520,43 @@ export default function IncomingShipmentsPanel() {
               </ul>
             </div>
             <p className="text-xs text-slate-500">
-              Physical receiving does not post stock. Generate a Draft GRN after receiving is complete; posting is a later step.
+              Physical receiving does not post stock. After a Draft GRN is reviewed, POST GRN creates stock and closes the ASN shipment.
             </p>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={postConfirmOpen}
+        onClose={() => setPostConfirmOpen(false)}
+        title="Confirm POST GRN"
+      >
+        <div className="space-y-3 text-base">
+          <div>GRN <span className="font-mono font-bold">{draftGrn?.grnNo || "—"}</span></div>
+          <div>ASN <span className="font-mono font-bold">{detail?.asnNo || draftGrn?.asnNo || "—"}</span></div>
+          <div>PO <span className="font-mono font-bold">{detail?.sourcePoNo || draftGrn?.poNo || "—"}</span></div>
+          <div>Accepted to stock {draftGrn?.totals?.grnEligibleQty ?? receivingTotals.accepted}</div>
+          <div>Damaged {receivingTotals.damaged} · Rejected {receivingTotals.rejected} · Short {receivingTotals.short}</div>
+          <div>Extra physical qty (evidence only) {draftGrn?.totals?.excessPendingQty ?? receivingTotals.excess}</div>
+          <div>Warehouse {(draftGrn?.items || [])[0]?.warehouse || "MAIN"}</div>
+          <div>Location {(draftGrn?.items || [])[0]?.location || (draftGrn?.items || [])[0]?.warehouse || "MAIN"}</div>
+          <p className="text-sm text-slate-600">RU labels already printed will not be reprinted.</p>
+          <button
+            type="button"
+            className="min-h-16 w-full rounded-2xl bg-emerald-700 text-xl font-bold text-white"
+            onClick={confirmPostDraftGrn}
+            disabled={grnBusy}
+          >
+            {grnBusy ? "Posting…" : "Confirm POST GRN"}
+          </button>
+          <button
+            type="button"
+            className="min-h-12 w-full rounded-2xl border text-base font-semibold"
+            onClick={() => setPostConfirmOpen(false)}
+          >
+            Cancel
+          </button>
+        </div>
       </Modal>
 
       <Modal

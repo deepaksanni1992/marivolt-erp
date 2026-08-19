@@ -111,6 +111,11 @@ const stockLedgerSchema = new mongoose.Schema(
     sourcePackingLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
     sourceSalesInvoiceId: { type: mongoose.Schema.Types.ObjectId, default: null },
     sourceSalesInvoiceLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    /** ASN receiving provenance (nullable; MANUAL_PO leaves these empty). */
+    asnId: { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
+    asnNo: { type: String, default: "", trim: true, uppercase: true },
+    asnLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    receivingSessionId: { type: mongoose.Schema.Types.ObjectId, default: null },
     postingOperationId: { type: String, default: "", trim: true },
     cancellationOperationId: { type: String, default: "", trim: true },
     effectKey: { type: String, default: "", trim: true },

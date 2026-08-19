@@ -2,6 +2,11 @@
  * Phase 4B — Draft GRN from a completed ASN ReceivingSession.
  * Pure grouping, entitlement, excess allocation, and idempotency helpers.
  * Does not post stock.
+ *
+ * Excess contract (Option A): after capped commercial posting, extra physical qty
+ * is inspection evidence only. It is not pending Store/Purchase approval and is
+ * not commercially received on this ASN/GRN. Admitting it later requires a new
+ * explicit commercial document — not a mutation of this posted GRN.
  */
 import { roundAsnQty, receivingQtyEq, ReceivingInspectionError } from "./receivingInspectionRules.js";
 import { poLineEntitlement } from "./grnReceiptQty.js";
@@ -13,7 +18,8 @@ export const ASN_GRN_POST_PHASE4C_REQUIRED = "ASN_GRN_POST_PHASE4C_REQUIRED";
 export const RECEIVING_GRN_DRAFT_EXISTS = "RECEIVING_GRN_DRAFT_EXISTS";
 export const RECEIVING_NO_ACCEPTED_QTY = "RECEIVING_NO_ACCEPTED_QTY";
 export const RECEIVING_GRN_MULTI_PO = "RECEIVING_GRN_MULTI_PO";
-export const EXCESS_PENDING_APPROVAL = "EXCESS_PENDING_APPROVAL";
+export const EXCESS_PENDING_APPROVAL = "EXCESS_EVIDENCE_ONLY";
+export const EXCESS_EVIDENCE_ONLY = "EXCESS_EVIDENCE_ONLY";
 export const RECEIVING_PO_ENTITLEMENT_EXHAUSTED = "RECEIVING_PO_ENTITLEMENT_EXHAUSTED";
 export const ASN_GRN_SOURCE_MISMATCH = "ASN_GRN_SOURCE_MISMATCH";
 export const ASN_GRN_EDIT_FORBIDDEN = "ASN_GRN_EDIT_FORBIDDEN";
@@ -324,7 +330,7 @@ export function assertDraftGrnEligibleResult(built) {
   }
   if (!(eligible > 0) || !(built.items || []).length) {
     throw new ReceivingDraftGrnError(
-      "PO entitlement is already consumed by posted or other draft GRNs. Excess remains pending approval.",
+      "PO entitlement is already consumed by posted or other draft GRNs. Extra physical qty remains receiving evidence only.",
       409,
       RECEIVING_PO_ENTITLEMENT_EXHAUSTED
     );
@@ -334,7 +340,7 @@ export function assertDraftGrnEligibleResult(built) {
 
 export function freezeReceivingBecauseDraftGrnExists() {
   throw new ReceivingInspectionError(
-    "An ASN Draft GRN already exists for this receiving session. Delete the draft GRN before correcting quantities or disposition.",
+    "An ASN GRN already exists for this receiving session. Delete a Draft GRN before correcting receiving. Posted or reversed GRNs keep inspection frozen.",
     409,
     RECEIVING_GRN_DRAFT_EXISTS
   );

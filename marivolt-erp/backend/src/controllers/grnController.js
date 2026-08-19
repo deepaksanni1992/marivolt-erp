@@ -24,10 +24,11 @@ import {
 import {
   ReceivingDraftGrnError,
   applyAsnReceivingDraftEdit,
-  assertAsnReceivingGrnPostBlocked,
   isAsnReceivingGrn,
 } from "../utils/receivingDraftGrnRules.js";
 import { reviewAsnReceivingDraftGrn } from "../services/asnReceivingDraftService.js";
+import { postAsnReceivingDraftGrn, reverseAsnReceivingPostedGrn } from "../services/asnReceivingPostService.js";
+import { applyReceiveToPo, reverseReceiveOnPo } from "../services/grnPostingEffects.js";
 import {
   CANDIDATE_CAP,
   buildEligiblePoMongoFilter,
@@ -643,39 +644,6 @@ export async function updateGrn(req, res) {
   }
 }
 
-async function applyReceiveToPo({ session, req, grn }) {
-  if (!grn.poId) return;
-  const po = await PurchaseOrder.findOne(withCompany(req, { _id: grn.poId })).session(session);
-  if (!po) return;
-  const receiveByLineId = new Map();
-  for (const line of grn.items || []) {
-    if (!line.poLineId) continue;
-    const current = receiveByLineId.get(String(line.poLineId)) || { accepted: 0, rejected: 0 };
-    current.accepted += Number(line.acceptedQty) || 0;
-    current.rejected += Number(line.rejectedQty) || 0;
-    receiveByLineId.set(String(line.poLineId), current);
-  }
-  for (const [lineIdStr, rec] of receiveByLineId) {
-    const poLine = findPoLineSubdocument(po, lineIdStr);
-    if (!poLine) continue;
-    const ordered = Number(poLine.orderedQty ?? poLine.qty) || 0;
-    const nextReceived = Math.min(ordered, (Number(poLine.receivedQty) || 0) + rec.accepted);
-    poLine.receivedQty = nextReceived;
-    poLine.rejectedQty = (Number(poLine.rejectedQty) || 0) + rec.rejected;
-    poLine.pendingQty = Math.max(0, ordered - nextReceived - (Number(poLine.cancelledQty) || 0));
-    poLine.qty = ordered;
-    poLine.orderedQty = ordered;
-    poLine.lineAmount = ordered * (Number(poLine.unitPrice) || 0);
-    poLine.lineTotal = poLine.lineAmount;
-  }
-  const lineSnapshot = extractRawPoLinesFromPo(po);
-  const allReceived = lineSnapshot.length > 0 && lineSnapshot.every((l) => poLineQtyFromRaw(l).pending <= 0);
-  const anyReceived = lineSnapshot.some((l) => (Number(l.receivedQty ?? l.received) || 0) > 0);
-  if (allReceived) po.status = "RECEIVED";
-  else if (anyReceived) po.status = "PARTIAL_RECEIVED";
-  await po.save({ session });
-}
-
 /** GET /grn/csv-template — Customs GRN header, optionally pre-filled for a PO. */
 export async function getGrnCsvTemplate(req, res) {
   try {
@@ -908,7 +876,10 @@ export async function deleteGrnDraft(req, res) {
       poNo: grn.poNo || "",
       sourceType: grn.sourceType || "",
     };
-    await GRN.deleteOne(withCompany(req, { _id: grn._id }));
+    const deleted = await GRN.findOneAndDelete(withCompany(req, { _id: grn._id, status: "DRAFT" }));
+    if (!deleted) {
+      return res.status(409).json({ message: "Only draft GRNs can be deleted", code: "GRN_NOT_DRAFT" });
+    }
     await writeAudit(req, {
       action: "DELETE",
       module: "STORE",
@@ -1131,6 +1102,31 @@ export async function postGrnFromPo(req, res) {
 }
 
 export async function postGrn(req, res) {
+  try {
+    const grnNo = upper(req.params.grnNo);
+    const existing = await GRN.findOne(withCompany(req, { grnNo })).select("sourceType receivingSessionId status").lean();
+    if (existing && isAsnReceivingGrn(existing)) {
+      const data = await postAsnReceivingDraftGrn(req, grnNo);
+      if (data?.poNo || existing) {
+        const postedGrn = await GRN.findOne(withCompany(req, { grnNo })).select("poId").lean();
+        if (postedGrn?.poId) {
+          await syncPurchaseOrderApExtensionFields(req.companyId, postedGrn.poId);
+        }
+      }
+      return res.json(data);
+    }
+  } catch (err) {
+    if (err instanceof ReceivingDraftGrnError) {
+      return res.status(err.status || 409).json({
+        message: err.message,
+        code: err.code,
+        entitlementReview: err.entitlementReview,
+      });
+    }
+    if (err?._approval) return res.status(202).json(err._approval);
+    return res.status(err.status || err.statusCode || 400).json({ message: err.message, code: err.code });
+  }
+
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
@@ -1138,7 +1134,9 @@ export async function postGrn(req, res) {
       const grn = await GRN.findOne(withCompany(req, { grnNo })).session(session);
       if (!grn) throw new Error("GRN not found");
       if (grn.status !== "DRAFT") throw new Error("Only DRAFT GRN can be received");
-      assertAsnReceivingGrnPostBlocked(grn);
+      if (isAsnReceivingGrn(grn)) {
+        throw new ReceivingDraftGrnError("ASN receiving GRN must use the ASN post path", 409, "ASN_GRN_REQUIRED");
+      }
       grn.items = (grn.items || []).filter((x) => Number(x.acceptedQty) > 0.000001);
       if (!(grn.items || []).length) {
         throw new Error("Cannot post GRN with no lines having quantity greater than zero");
@@ -1245,13 +1243,22 @@ export async function postGrn(req, res) {
           line.recoveryInfo = recoveryInfo;
         }
       }
-      await applyReceiveToPo({ session, req, grn });
+      await applyReceiveToPo({ session, req, grn, allowOverPo });
       const hasPending = (grn.items || []).some((x) => Number(x.pendingQty || 0) > 0);
       grn.status = hasPending ? "PARTIAL_RECEIVED" : "RECEIVED";
       grn.approvalStatus = "APPROVED";
       grn.postedAt = new Date();
       grn.updatedBy = req.user?.email || "";
       await grn.save({ session });
+      if (isCustomsEnabled() && hasCustomsPayload(req.body || {})) {
+        await createCustomsLotFromGrn({
+          session,
+          req,
+          grn,
+          body: req.body || {},
+          poDate: sourcePo?.poDate || sourcePo?.orderDate || null,
+        });
+      }
       await writeStatusChange(req, {
         module: "STORE",
         entityType: "GRN",
@@ -1360,6 +1367,10 @@ export async function cancelGrn(req, res) {
         });
       }
 
+      if (isAsnReceivingGrn(grn)) {
+        await reverseAsnReceivingPostedGrn(req, grn, { session });
+      }
+
       const prevGrnStatus = grn.status;
       for (const line of grn.items) {
         if (!(Number(line.acceptedQty) > 0)) continue;
@@ -1378,27 +1389,10 @@ export async function cancelGrn(req, res) {
           remarks: `GRN cancelled: ${grn.grnNo}`,
           createdBy: req.user?.email || "",
           sourceModule: "STORE",
-          lineId: String(line._id || line.lineId || `${upper(line.article)}`),
+          lineId: String(line._id || line.asnLineId || line.lineId || `${upper(line.article)}`),
         });
       }
-      if (grn.poId) {
-        const po = await PurchaseOrder.findOne(withCompany(req, { _id: grn.poId })).session(session);
-        if (po) {
-          for (const line of grn.items || []) {
-            if (!line.poLineId) continue;
-            const poLine = findPoLineSubdocument(po, line.poLineId);
-            if (!poLine) continue;
-            const ordered = Number(poLine.orderedQty ?? poLine.qty) || 0;
-            poLine.receivedQty = Math.max(0, (Number(poLine.receivedQty) || 0) - (Number(line.acceptedQty) || 0));
-            poLine.pendingQty = Math.max(0, ordered - poLine.receivedQty - (Number(poLine.cancelledQty) || 0));
-          }
-          const snap = extractRawPoLinesFromPo(po);
-          const allReceived = snap.length > 0 && snap.every((l) => poLineQtyFromRaw(l).pending <= 0);
-          const anyReceived = snap.some((l) => (Number(l.receivedQty ?? l.received) || 0) > 0);
-          po.status = allReceived ? "RECEIVED" : anyReceived ? "PARTIAL_RECEIVED" : "SENT";
-          await po.save({ session });
-        }
-      }
+      await reverseReceiveOnPo({ session, req, grn });
       grn.status = "CANCELLED";
       grn.approvalStatus = "APPROVED";
       grn.cancelledAt = new Date();
@@ -1434,6 +1428,12 @@ export async function cancelGrn(req, res) {
     res.json({ success: true });
   } catch (err) {
     if (err?._approval) return res.status(202).json(err._approval);
+    if (err?.code === "ASN_RESERVATION_RESTORE_CONFLICT") {
+      return res.status(409).json({ message: err.message, code: err.code });
+    }
+    if (err instanceof ReceivingDraftGrnError) {
+      return res.status(err.status || 409).json({ message: err.message, code: err.code });
+    }
     res.status(400).json({ message: err.message });
   } finally {
     await session.endSession();

@@ -60,9 +60,35 @@ export async function findActiveAsnReceivingGrn(companyId, receivingSessionId, s
   return q.lean();
 }
 
+export async function findDraftAsnReceivingGrn(companyId, receivingSessionId, session = null) {
+  const sid = oid(receivingSessionId);
+  if (!sid) return null;
+  const q = GRN.findOne({
+    companyId,
+    receivingSessionId: sid,
+    status: "DRAFT",
+  });
+  if (session) q.session(session);
+  return q.lean();
+}
+
+export async function findPostedOrCancelledAsnReceivingGrn(companyId, receivingSessionId, session = null) {
+  const sid = oid(receivingSessionId);
+  if (!sid) return null;
+  const q = GRN.findOne({
+    companyId,
+    receivingSessionId: sid,
+    status: { $in: ["RECEIVED", "PARTIAL_RECEIVED", "POSTED", "CLOSED", "CANCELLED"] },
+  });
+  if (session) q.session(session);
+  return q.lean();
+}
+
 export async function assertReceivingNotFrozenByDraftGrn(companyId, receivingSessionId) {
   const existing = await findActiveAsnReceivingGrn(companyId, receivingSessionId);
   if (existing) freezeReceivingBecauseDraftGrnExists();
+  const locked = await findPostedOrCancelledAsnReceivingGrn(companyId, receivingSessionId);
+  if (locked) freezeReceivingBecauseDraftGrnExists();
 }
 
 function serializeDraftGrn(grn, extras = {}) {
@@ -109,7 +135,7 @@ async function loadEntitlementMaps(companyId, poId, { excludeGrnId = null, mongo
   return { postedByPoLine, otherDraftByPoLine };
 }
 
-async function buildReceivingRows(companyId, source) {
+export async function buildReceivingRows(companyId, source) {
   const { asn, po, receivingSession, asnLineById, poLineByAsnLineId, poLineIdByAsnLineId, poIdByAsnLineId } = source;
   const rus = await ReceivingUnit.find({
     companyId,
@@ -250,7 +276,10 @@ export async function generateDraftGrnFromReceivingSession(req, sessionId) {
   const source = await resolveAsnReceivingSource({ companyId, receivingSessionId: sessionId });
   assertAsnReceivable(source.asn);
 
-  const existing = await findActiveAsnReceivingGrn(companyId, source.receivingSession._id);
+  // Reuse an open Draft. Posted GRNs block a second active document.
+  // A CANCELLED posted GRN does not: receiving stays edit-locked, but a new Draft
+  // (new grnNo) may be generated from the same immutable session after reversal.
+  const existing = await findDraftAsnReceivingGrn(companyId, source.receivingSession._id);
   if (existing) {
     assertAsnReceivingGrnSnapshots(existing, source);
     const { review } = await reviewAsnReceivingDraftGrn(req, existing);
@@ -261,6 +290,14 @@ export async function generateDraftGrnFromReceivingSession(req, sessionId) {
       totals: summarizeGrnSources(existing),
       entitlementReview: review,
     };
+  }
+  const postedActive = await findActiveAsnReceivingGrn(companyId, source.receivingSession._id);
+  if (postedActive) {
+    throw new ReceivingDraftGrnError(
+      "An active ASN receiving GRN already exists for this session",
+      409,
+      "RECEIVING_GRN_POSTED_LOCKED"
+    );
   }
 
   const { units, rows } = await buildReceivingRows(companyId, source);
@@ -286,7 +323,7 @@ export async function generateDraftGrnFromReceivingSession(req, sessionId) {
   let reused = false;
   try {
     await mongoSession.withTransaction(async () => {
-      const raced = await findActiveAsnReceivingGrn(companyId, source.receivingSession._id, mongoSession);
+      const raced = await findDraftAsnReceivingGrn(companyId, source.receivingSession._id, mongoSession);
       if (raced) {
         createdDoc = raced;
         reused = true;
@@ -330,7 +367,7 @@ export async function generateDraftGrnFromReceivingSession(req, sessionId) {
         reused = false;
       } catch (err) {
         if (!isDupKey(err)) throw err;
-        const afterDup = await findActiveAsnReceivingGrn(companyId, source.receivingSession._id, mongoSession);
+        const afterDup = await findDraftAsnReceivingGrn(companyId, source.receivingSession._id, mongoSession);
         if (!afterDup) throw err;
         createdDoc = afterDup;
         reused = true;

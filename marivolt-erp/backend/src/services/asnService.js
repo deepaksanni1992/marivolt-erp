@@ -30,7 +30,9 @@ import {
   lineQtyDeltas,
   mergeAsnLinesPreservingIds,
   poLineArticle,
+  poLineCancelledQtyForAsn,
   poLineIdentity,
+  poLineReceivedQtyForAsn,
   poOrderedQtyForAsn,
   remainingAsnQty,
   roundAsnQty,
@@ -84,13 +86,19 @@ function sessionOpts(session) {
   return session ? { session } : {};
 }
 
+function lineAsnActive(po, poLineId) {
+  const want = String(poLineId);
+  const line = (po?.lines || []).find((l) => String(l._id) === want);
+  return roundAsnQty(line?.asnActiveQty);
+}
+
 /**
- * Atomically reserve ASN qty on the PO line: asnActiveQty + qty <= orderedQty.
- * This is prevention, not insert-then-compensate.
+ * Atomically reserve ASN qty: receivedQty + asnActiveQty + qty <= ordered - cancelled.
+ * Uses a pipeline update so receivedQty is read from the persisted PO line, not a stale cap.
  */
-async function claimPoLineAsnQty({ po, poLineId, qty, orderedQty, documentFloor = 0, session = null }) {
+export async function claimPoLineAsnQty({ po, poLineId, qty, orderedQty, documentFloor = 0, session = null }) {
   const q = roundAsnQty(qty);
-  const max = roundAsnQty(orderedQty);
+  void orderedQty;
   if (!(q > 0)) {
     throw new AsnError("ASN quantity must be greater than 0", 400, "ASN_QTY_INVALID");
   }
@@ -101,28 +109,152 @@ async function claimPoLineAsnQty({ po, poLineId, qty, orderedQty, documentFloor 
     field: "asnActiveQty",
     floor: roundAsnQty(documentFloor),
   });
-  const cap = max - q;
+  const lineOid = lineObjectId(poLineId);
+  const before = lineAsnActive(po, poLineId);
   const updated = await PurchaseOrder.findOneAndUpdate(
-    {
-      _id: po._id,
-      companyId: po.companyId,
-      lines: {
-        $elemMatch: {
-          _id: lineObjectId(poLineId),
-          asnActiveQty: { $lte: cap + ASN_QTY_EPS },
+    { _id: po._id, companyId: po.companyId, "lines._id": lineOid },
+    [
+      {
+        $set: {
+          lines: {
+            $map: {
+              input: "$lines",
+              as: "ln",
+              in: {
+                $cond: [
+                  {
+                    $and: [
+                      { $eq: ["$$ln._id", lineOid] },
+                      {
+                        $lte: [
+                          {
+                            $add: [
+                              { $ifNull: ["$$ln.receivedQty", 0] },
+                              { $ifNull: ["$$ln.asnActiveQty", 0] },
+                              q,
+                            ],
+                          },
+                          {
+                            $add: [
+                              {
+                                $subtract: [
+                                  { $ifNull: ["$$ln.orderedQty", { $ifNull: ["$$ln.qty", 0] }] },
+                                  { $ifNull: ["$$ln.cancelledQty", 0] },
+                                ],
+                              },
+                              ASN_QTY_EPS,
+                            ],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                  {
+                    $mergeObjects: [
+                      "$$ln",
+                      { asnActiveQty: { $add: [{ $ifNull: ["$$ln.asnActiveQty", 0] }, q] } },
+                    ],
+                  },
+                  "$$ln",
+                ],
+              },
+            },
+          },
         },
       },
-    },
-    { $inc: { "lines.$.asnActiveQty": q } },
+    ],
     { new: true, ...sessionOpts(session) }
   );
-  if (!updated) {
+  if (!updated || roundAsnQty(lineAsnActive(updated, poLineId) - before) + ASN_QTY_EPS < q) {
     throw new AsnError("ASN quantity exceeds remaining available", 409, "ASN_QTY_EXCEEDED");
   }
   return updated;
 }
 
-async function releasePoLineAsnQty({ po, poLineId, qty, session = null }) {
+/**
+ * Restore ASN reservation after GRN reversal.
+ * Credits receivedReversalQty so restore can run before PO receivedQty is decremented
+ * in the same transaction, without treating still-posted receipt as blocking capacity.
+ */
+export async function restorePoLineAsnQty({
+  po,
+  poLineId,
+  qty,
+  receivedReversalQty = 0,
+  session = null,
+} = {}) {
+  const q = roundAsnQty(qty);
+  const credit = roundAsnQty(receivedReversalQty);
+  if (!(q > 0)) return po;
+  const lineOid = lineObjectId(poLineId);
+  const before = lineAsnActive(po, poLineId);
+  const updated = await PurchaseOrder.findOneAndUpdate(
+    { _id: po._id, companyId: po.companyId, "lines._id": lineOid },
+    [
+      {
+        $set: {
+          lines: {
+            $map: {
+              input: "$lines",
+              as: "ln",
+              in: {
+                $cond: [
+                  {
+                    $and: [
+                      { $eq: ["$$ln._id", lineOid] },
+                      {
+                        $lte: [
+                          {
+                            $add: [
+                              {
+                                $max: [0, { $subtract: [{ $ifNull: ["$$ln.receivedQty", 0] }, credit] }],
+                              },
+                              { $ifNull: ["$$ln.asnActiveQty", 0] },
+                              q,
+                            ],
+                          },
+                          {
+                            $add: [
+                              {
+                                $subtract: [
+                                  { $ifNull: ["$$ln.orderedQty", { $ifNull: ["$$ln.qty", 0] }] },
+                                  { $ifNull: ["$$ln.cancelledQty", 0] },
+                                ],
+                              },
+                              ASN_QTY_EPS,
+                            ],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                  {
+                    $mergeObjects: [
+                      "$$ln",
+                      { asnActiveQty: { $add: [{ $ifNull: ["$$ln.asnActiveQty", 0] }, q] } },
+                    ],
+                  },
+                  "$$ln",
+                ],
+              },
+            },
+          },
+        },
+      },
+    ],
+    { new: true, ...sessionOpts(session) }
+  );
+  if (!updated || roundAsnQty(lineAsnActive(updated, poLineId) - before) + ASN_QTY_EPS < q) {
+    throw new AsnError(
+      "Cannot restore this ASN reservation while another ASN holds the remaining PO quantity",
+      409,
+      "ASN_RESERVATION_RESTORE_CONFLICT"
+    );
+  }
+  return updated;
+}
+
+export async function releasePoLineAsnQty({ po, poLineId, qty, session = null }) {
   const q = roundAsnQty(qty);
   if (!(q > 0)) return null;
   await ensureLineCounterFloor(PurchaseOrder, session, {
@@ -267,7 +399,12 @@ function buildAvailability(po, activeAsns, { excludeAsnId = "" } = {}) {
     const poLineId = poLineIdentity(line);
     const poQty = poOrderedQtyForAsn(line);
     const previouslyAsnQty = claimed.get(poLineId) || 0;
-    const remaining = remainingAsnQty(poQty, previouslyAsnQty);
+    const remaining = remainingAsnQty(
+      poQty,
+      previouslyAsnQty,
+      poLineReceivedQtyForAsn(line),
+      poLineCancelledQtyForAsn(line)
+    );
     return {
       poId: po._id,
       poLineId: line._id,
@@ -297,7 +434,7 @@ function buildAvailability(po, activeAsns, { excludeAsnId = "" } = {}) {
     totals: {
       poQty,
       asnActiveQty,
-      remainingToAsn: remainingAsnQty(poQty, asnActiveQty),
+      remainingToAsn: roundAsnQty(lines.reduce((s, l) => s + l.remainingAvailableQty, 0)),
     },
     lines,
   };
@@ -322,6 +459,8 @@ function snapshotLinesFromPo(po, payloadLines, claimed) {
       poQty,
       alreadyActive: previouslyAsnQty,
       requested,
+      receivedQty: poLineReceivedQtyForAsn(poLine),
+      cancelledQty: poLineCancelledQtyForAsn(poLine),
     });
     return {
       poId: po._id,
