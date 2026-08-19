@@ -56,6 +56,7 @@ import ArticleStockConversionPanel from "../components/store/ArticleStockConvers
 import LoadingButton from "../components/erp/LoadingButton.jsx";
 import { filterStoreTabsForRole, isStoreOperatorRole } from "../lib/rbac.js";
 import IncomingShipmentsPanel from "../components/store/IncomingShipmentsPanel.jsx";
+import { grnSourceDetail, grnSourceLabel, incomingShipmentsPath, isAsnReceivingGrn } from "../lib/asnUi.js";
 
 const TABS = [
   "GRN",
@@ -1863,9 +1864,22 @@ export default function StoreModule() {
       {tab === "Incoming Shipments" ? <IncomingShipmentsPanel /> : null}
       {tab === "GRN" ? (
         <div className="space-y-4">
+          <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4">
+            <h3 className="text-sm font-semibold text-sky-950">ASN Receiving</h3>
+            <p className="mt-1 text-sm text-sky-900">
+              Receive shipments using ASN labels, barcode scanning, quantity inspection and photo evidence.
+            </p>
+            <button
+              type="button"
+              className="mt-3 min-h-11 rounded-lg bg-sky-800 px-4 text-sm font-semibold text-white"
+              onClick={() => nav(incomingShipmentsPath())}
+            >
+              Go to Incoming Shipments
+            </button>
+          </div>
           <div className="rounded-2xl border bg-white p-4">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-slate-800">GRN from purchase order</h3>
+              <h3 className="text-sm font-semibold text-slate-800">Direct / Manual GRN from Purchase Order</h3>
               {!isStoreOp ? (
                 <button
                   type="button"
@@ -1876,6 +1890,9 @@ export default function StoreModule() {
                 </button>
               ) : null}
             </div>
+            <p className="mb-3 text-xs text-slate-600">
+              Use for direct or legacy receipts where an ASN receiving workflow is not being used.
+            </p>
             <div className="flex flex-wrap items-end gap-2">
               <SearchableDocumentSelect
                 value={grnPoId}
@@ -2800,6 +2817,7 @@ export default function StoreModule() {
                 <thead className="bg-slate-100 text-xs uppercase text-slate-600">
                   <tr>
                     <th className="px-2 py-2 text-left">GRN No</th>
+                    <th className="px-2 py-2 text-left">Source</th>
                     <th className="px-2 py-2 text-left">Date</th>
                     <th className="px-2 py-2 text-left">PO No</th>
                     <th className="px-2 py-2 text-left">Supplier</th>
@@ -2811,7 +2829,7 @@ export default function StoreModule() {
                 <tbody>
                   {(grns?.items || []).length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-2 py-4 text-center text-slate-500">
+                      <td colSpan={8} className="px-2 py-4 text-center text-slate-500">
                         {grnRegSearch || grnRegStatus || grnRegDateFrom || grnRegDateTo
                           ? "No GRNs match the current filters"
                           : "No GRNs"}
@@ -2830,6 +2848,10 @@ export default function StoreModule() {
                       return (
                         <tr key={g._id} className="border-t">
                           <td className="px-2 py-2 font-mono">{g.grnNo}</td>
+                          <td className="px-2 py-2">
+                            <div className="text-xs font-semibold">{grnSourceLabel(g)}</div>
+                            <div className="font-mono text-[11px] text-slate-500">{grnSourceDetail(g)}</div>
+                          </td>
                           <td className="px-2 py-2">{g.grnDate ? fmtDateOnly(g.grnDate) : "—"}</td>
                           <td className="px-2 py-2">{g.poNo || "—"}</td>
                           <td className="px-2 py-2">{g.supplierName || "—"}</td>
@@ -2912,6 +2934,15 @@ export default function StoreModule() {
             {grnRegisterDetail ? (
               <div className="max-h-[70vh] space-y-2 overflow-auto text-sm">
                 <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="col-span-2">
+                    <span className="text-slate-500">Source</span>{" "}
+                    <span className="font-medium">{grnSourceLabel(grnRegisterDetail)}</span>
+                    {isAsnReceivingGrn(grnRegisterDetail) ? (
+                      <span className="ml-1 text-slate-500">(GRN → ASN → PO)</span>
+                    ) : (
+                      <span className="ml-1 text-slate-500">(GRN → PO)</span>
+                    )}
+                  </div>
                   <div>
                     <span className="text-slate-500">PO</span>{" "}
                     <span className="font-medium">{grnRegisterDetail.poNo || "—"}</span>
@@ -2973,17 +3004,52 @@ export default function StoreModule() {
                         </button>
                       ) : null}
                       {grnRegisterDetail.asnId ? (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {!isStoreOp ? (
+                            <button
+                              type="button"
+                              className="min-h-11 rounded-lg border border-sky-300 bg-white px-3 font-semibold text-sky-900"
+                              onClick={() => {
+                                setGrnRegisterDetail(null);
+                                nav(`/asn/${grnRegisterDetail.asnId}`);
+                              }}
+                            >
+                              View ASN
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="min-h-11 rounded-lg border border-sky-300 bg-white px-3 font-semibold text-sky-900"
+                            onClick={() => {
+                              setGrnRegisterDetail(null);
+                              nav(incomingShipmentsPath(grnRegisterDetail.asnId));
+                            }}
+                          >
+                            View Receiving Evidence
+                          </button>
+                          {!isStoreOp && grnRegisterDetail.poId ? (
+                            <button
+                              type="button"
+                              className="min-h-11 rounded-lg border px-3 font-semibold"
+                              onClick={() => {
+                                setGrnRegisterDetail(null);
+                                nav(`/purchase?id=${grnRegisterDetail.poId}`);
+                              }}
+                            >
+                              View PO
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : !isStoreOp && grnRegisterDetail.poId ? (
                         <button
                           type="button"
-                          className="mt-2 min-h-11 rounded-lg border border-sky-300 bg-white px-3 font-semibold text-sky-900"
+                          className="mt-2 min-h-11 rounded-lg border px-3 font-semibold"
                           onClick={() => {
                             setGrnRegisterDetail(null);
-                            nav(
-                              `/store?tab=${encodeURIComponent("Incoming Shipments")}&asnId=${encodeURIComponent(String(grnRegisterDetail.asnId))}`
-                            );
+                            nav(`/purchase?id=${grnRegisterDetail.poId}`);
                           }}
                         >
-                          View Receiving Evidence
+                          View PO
                         </button>
                       ) : null}
                     </div>

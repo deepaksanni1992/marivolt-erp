@@ -415,6 +415,8 @@ function buildAvailability(po, activeAsns, { excludeAsnId = "" } = {}) {
       partNumber: line.partNumber || line.partNo || "",
       uom: line.uom || "PCS",
       poQty,
+      receivedQty: poLineReceivedQtyForAsn(line),
+      cancelledQty: poLineCancelledQtyForAsn(line),
       previouslyAsnQty,
       remainingAvailableQty: remaining,
       unitPrice: Number(line.unitPrice) || 0,

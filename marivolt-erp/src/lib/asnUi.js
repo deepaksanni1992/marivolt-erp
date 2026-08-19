@@ -27,3 +27,34 @@ export function trackingDisplay(row = {}) {
 export function asnLineQtyTotal(row = {}) {
   return (row.lines || []).reduce((s, l) => s + (Number(l.asnQty) || 0), 0);
 }
+
+export function incomingShipmentsPath(asnId = "") {
+  const tab = encodeURIComponent("Incoming Shipments");
+  const id = String(asnId || "").trim();
+  if (id) return `/store?tab=${tab}&asnId=${encodeURIComponent(id)}`;
+  return `/store?tab=${tab}`;
+}
+
+export function isAsnReceivingGrn(grn) {
+  if (!grn) return false;
+  if (String(grn.sourceType || "").toUpperCase() === "ASN_RECEIVING") return true;
+  return Boolean(grn.receivingSessionId);
+}
+
+export function grnSourceLabel(grn) {
+  if (isAsnReceivingGrn(grn)) return "ASN Receiving";
+  const src = String(grn?.sourceType || "").trim().toUpperCase();
+  if (!src || src === "MANUAL_PO") return "Direct PO";
+  return src.replace(/_/g, " ");
+}
+
+export function grnSourceDetail(grn) {
+  if (isAsnReceivingGrn(grn)) {
+    return grn.asnNo ? `ASN: ${grn.asnNo}` : "ASN Receiving";
+  }
+  const src = String(grn?.sourceType || "").trim().toUpperCase();
+  if (src && src !== "MANUAL_PO") {
+    return src.replace(/_/g, " ");
+  }
+  return grn?.poNo ? `PO: ${grn.poNo}` : "Direct PO";
+}

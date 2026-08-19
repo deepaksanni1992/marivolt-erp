@@ -48,7 +48,7 @@ import {
 } from "../lib/api.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import { notify, confirmDialog } from "../lib/notifications.js";
-import { AsnStatusBadge } from "../lib/asnUi.js";
+import { AsnStatusBadge, formatAsnDate } from "../lib/asnUi.js";
 
 const TABS = [
   { id: "orders", label: "Purchase order" },
@@ -2689,7 +2689,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                 {can("ASN", "create") && !["CANCELLED", "REJECTED"].includes(String(detail.status || "").toUpperCase()) ? (
                   <button
                     type="button"
-                    className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
+                    className="min-h-11 rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white"
                     onClick={() => nav(`/asn/new?poId=${detail._id}`)}
                   >
                     Create ASN
@@ -2706,6 +2706,8 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                         </button>
                         <AsnStatusBadge status={asn.status} />
                         <span className="tabular-nums">{asn.qty} {asn.uom || "PCS"}</span>
+                        <span className="text-xs text-gray-500">Ship {formatAsnDate(asn.shipmentDate)}</span>
+                        <span className="text-xs text-gray-500">ETA {formatAsnDate(asn.expectedArrivalDate)}</span>
                       </div>
                     </li>
                   ))}
@@ -2713,6 +2715,15 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               ) : (
                 <p className="text-xs text-gray-500">No ASNs for this purchase order yet.</p>
               )}
+              {(detail._asns || []).length ? (
+                <button
+                  type="button"
+                  className="mt-2 min-h-11 rounded-lg border px-3 text-xs font-semibold"
+                  onClick={() => nav(`/asn?poNo=${encodeURIComponent(detail.poNo || detail.poNumber || "")}`)}
+                >
+                  View ASNs
+                </button>
+              ) : null}
               {detail.lines?.length ? (
                 <div className="mt-3 overflow-x-auto">
                   <table className="min-w-[520px] w-full text-xs">
@@ -2720,6 +2731,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                       <tr>
                         <th className="px-2 py-1">Article</th>
                         <th className="px-2 py-1">PO qty</th>
+                        <th className="px-2 py-1">Received</th>
                         <th className="px-2 py-1">ASN active qty</th>
                         <th className="px-2 py-1">Remaining to ASN</th>
                       </tr>
@@ -2727,8 +2739,14 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                     <tbody>
                       {detail.lines.map((line) => {
                         const poQty = Number(line.qty || line.orderedQty || 0);
+                        const received = Number(line.receivedQty) || 0;
+                        const cancelled = Number(line.cancelledQty) || 0;
                         const active = (detail._asns || [])
-                          .filter((a) => String(a.status || "").toUpperCase() !== "CANCELLED")
+                          .filter((a) =>
+                            ["DRAFT", "SHIPPED", "ARRIVED", "PARTIALLY_RECEIVED"].includes(
+                              String(a.status || "").toUpperCase()
+                            )
+                          )
                           .reduce(
                             (sum, a) =>
                               sum +
@@ -2737,12 +2755,14 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                                 .reduce((s, l) => s + (Number(l.asnQty) || 0), 0),
                             0
                           );
+                        const remaining = Math.max(0, poQty - cancelled - received - active);
                         return (
                           <tr key={String(line._id)} className="border-t border-gray-100">
                             <td className="px-2 py-1 font-mono">{line.article || line.itemCode}</td>
                             <td className="px-2 py-1 tabular-nums">{poQty}</td>
+                            <td className="px-2 py-1 tabular-nums">{received}</td>
                             <td className="px-2 py-1 tabular-nums">{active}</td>
-                            <td className="px-2 py-1 tabular-nums">{Math.max(0, poQty - active)}</td>
+                            <td className="px-2 py-1 tabular-nums">{remaining}</td>
                           </tr>
                         );
                       })}

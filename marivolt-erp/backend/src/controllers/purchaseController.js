@@ -17,6 +17,7 @@ import { nextGrnNo } from "../services/grnNumberService.js";
 import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js";
 import { listAsnsForPurchaseOrder, getActiveAsnQtyByPoLine, assertPoHasNoActiveAsns } from "../services/asnService.js";
 import { AsnError, validatePoLinesAgainstActiveAsn } from "../utils/asnRules.js";
+import { escapeRegex } from "../utils/documentSearch.js";
 import {
   calcPoDiscountTotal,
   calcPoGrandTotal,
@@ -220,6 +221,18 @@ export async function listPurchaseOrders(req, res) {
     if (req.query.supplierName) {
       filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
     }
+    const q = String(req.query.q || req.query.search || "").trim().slice(0, 80);
+    if (q) {
+      const re = new RegExp(escapeRegex(q), "i");
+      filter.$or = [
+        { poNo: re },
+        { poNumber: re },
+        { supplierName: re },
+        { "lines.article": re },
+        { "lines.itemCode": re },
+        { "lines.partNumber": re },
+      ];
+    }
     const [rows, total] = await Promise.all([
       PurchaseOrder.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       PurchaseOrder.countDocuments(filter),
@@ -265,6 +278,7 @@ export async function getPurchaseOrder(req, res) {
       asnNo: a.asnNo,
       status: a.status,
       shipmentMode: a.shipmentMode,
+      shipmentDate: a.shipmentDate,
       expectedArrivalDate: a.expectedArrivalDate,
       createdBy: a.createdBy,
       createdAt: a.createdAt,

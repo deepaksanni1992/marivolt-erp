@@ -13,8 +13,11 @@ import {
   AsnStatusBadge,
   asnLineQtyTotal,
   formatAsnDate,
+  incomingShipmentsPath,
   trackingDisplay,
 } from "../lib/asnUi.js";
+import AsnCreatePoPicker from "../components/asn/AsnCreatePoPicker.jsx";
+import AsnWorkflowStrip from "../components/asn/AsnWorkflowStrip.jsx";
 
 async function openAsnDocument(documentId) {
   const data = await apiGet(`/documents/${documentId}/download`);
@@ -67,6 +70,7 @@ export default function AsnPage() {
   const { can } = useAuth();
   const creating = id === "new";
   const poId = params.get("poId") || "";
+  const poNoQuery = params.get("poNo") || "";
 
   const canCreate = can("ASN", "create");
   const canEdit = can("ASN", "edit");
@@ -76,7 +80,7 @@ export default function AsnPage() {
   const [filters, setFilters] = useState({
     asnNo: "",
     supplier: "",
-    poNo: "",
+    poNo: poNoQuery,
     status: "",
     shipmentMode: "",
   });
@@ -110,13 +114,19 @@ export default function AsnPage() {
   const availQ = useQuery({
     queryKey: ["asn-availability", poId],
     queryFn: () => apiGet(`/purchase-orders/${poId}/asn-availability`),
-    enabled: creating && Boolean(poId),
+    enabled: creating && Boolean(poId) && canCreate,
   });
 
   const auditQ = useQuery({
     queryKey: ["asn-audit", detailQ.data?.asnNo],
     queryFn: () => apiGet(`/audit-logs/document/${encodeURIComponent(detailQ.data.asnNo)}`),
     enabled: Boolean(detailQ.data?.asnNo) && can("AUDIT", "view"),
+  });
+
+  const progressQ = useQuery({
+    queryKey: ["receiving-progress", id],
+    queryFn: () => apiGet(`/receiving/asn/${id}/progress`),
+    enabled: Boolean(id) && !creating,
   });
 
   useEffect(() => {
@@ -282,7 +292,12 @@ export default function AsnPage() {
       <div className="p-4 sm:p-6">
         <PageHeader title="Advance Shipment Notices" subtitle="Supplier shipment notifications before warehouse receiving">
           {canCreate ? (
-            <p className="text-xs text-gray-500">Create ASN from a purchase order.</p>
+            <Link
+              className="inline-flex min-h-11 items-center rounded-lg bg-gray-900 px-4 text-sm font-semibold text-white"
+              to="/asn/new"
+            >
+              + Create ASN
+            </Link>
           ) : null}
         </PageHeader>
         <div className="mb-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
@@ -317,6 +332,7 @@ export default function AsnPage() {
                 <th className="px-3 py-2">ETA</th>
                 <th className="px-3 py-2">Pkgs</th>
                 <th className="px-3 py-2">Created by</th>
+                <th className="px-3 py-2">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -335,10 +351,45 @@ export default function AsnPage() {
                   <td className="px-3 py-2">{formatAsnDate(row.expectedArrivalDate)}</td>
                   <td className="px-3 py-2">{row.numberOfPackages || "—"}</td>
                   <td className="px-3 py-2">{row.createdBy || "—"}</td>
+                  <td className="px-3 py-2">
+                    <div className="flex flex-wrap gap-1">
+                      <Link className="inline-flex min-h-11 items-center rounded-lg border px-3 text-xs font-semibold" to={`/asn/${row._id}`}>
+                        View
+                      </Link>
+                      {canEdit && String(row.status).toUpperCase() === "DRAFT" ? (
+                        <Link className="inline-flex min-h-11 items-center rounded-lg border px-3 text-xs font-semibold" to={`/asn/${row._id}`}>
+                          Edit
+                        </Link>
+                      ) : null}
+                      {["SHIPPED", "ARRIVED"].includes(String(row.status || "").toUpperCase()) ? (
+                        <Link
+                          className="inline-flex min-h-11 items-center rounded-lg border border-sky-300 bg-sky-50 px-3 text-xs font-semibold text-sky-900"
+                          to={incomingShipmentsPath(row._id)}
+                        >
+                          Receive
+                        </Link>
+                      ) : null}
+                    </div>
+                  </td>
                 </tr>
               ))}
               {!items.length ? (
-                <tr><td className="px-3 py-8 text-center text-gray-500" colSpan={11}>No ASNs found</td></tr>
+                <tr>
+                  <td className="px-3 py-10 text-center text-gray-600" colSpan={12}>
+                    <p className="font-medium text-gray-800">No ASNs found.</p>
+                    <p className="mt-1 text-sm">
+                      Create an ASN from an eligible purchase order to begin shipment receiving.
+                    </p>
+                    {canCreate ? (
+                      <Link
+                        className="mt-3 inline-flex min-h-11 items-center rounded-lg bg-gray-900 px-4 text-sm font-semibold text-white"
+                        to="/asn/new"
+                      >
+                        Create ASN
+                      </Link>
+                    ) : null}
+                  </td>
+                </tr>
               ) : null}
             </tbody>
           </table>
@@ -347,12 +398,28 @@ export default function AsnPage() {
     );
   }
 
+  if (creating && !canCreate) {
+    return (
+      <div className="p-4 sm:p-6">
+        <PageHeader title="Create ASN" subtitle="Permission required">
+          <button type="button" className="min-h-11 rounded-lg border px-3 text-sm" onClick={() => nav("/asn")}>
+            Back to list
+          </button>
+        </PageHeader>
+        <p className="text-sm text-gray-700">You need ASN create permission to create a shipment notice.</p>
+      </div>
+    );
+  }
+
   if (creating && !poId) {
     return (
-      <div className="p-6">
-        <PageHeader title="Create ASN" subtitle="Start from a purchase order" />
-        <p className="text-sm text-gray-600">Open a purchase order and click Create ASN.</p>
-        <Link className="mt-3 inline-block text-sm font-semibold text-sky-800" to="/purchase">Go to Purchase Orders</Link>
+      <div className="p-4 sm:p-6 space-y-4">
+        <PageHeader title="Create ASN" subtitle="Select an eligible purchase order">
+          <button type="button" className="min-h-11 rounded-lg border px-3 text-sm" onClick={() => nav("/asn")}>
+            Back to list
+          </button>
+        </PageHeader>
+        <AsnCreatePoPicker />
       </div>
     );
   }
@@ -365,14 +432,26 @@ export default function AsnPage() {
         title={creating ? "Create ASN" : detail?.asnNo || "ASN"}
         subtitle={creating ? `From ${availQ.data?.poNo || "purchase order"}` : detail?.supplierName}
       >
-        <button type="button" className="rounded-lg border px-3 py-2 text-sm" onClick={() => nav("/asn")}>Back to list</button>
+        <button type="button" className="min-h-11 rounded-lg border px-3 py-2 text-sm" onClick={() => nav("/asn")}>Back to list</button>
+        {creating ? (
+          <button type="button" className="min-h-11 rounded-lg border px-3 py-2 text-sm" onClick={() => nav("/asn/new")}>
+            Change PO
+          </button>
+        ) : null}
       </PageHeader>
 
       {detail ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <AsnStatusBadge status={detail.status} />
-          <span className="text-sm text-gray-600">{detail.supplierName}</span>
-          <Link className="text-sm font-semibold text-sky-800" to={`/purchase?id=${detail.sourcePoId}`}>{detail.sourcePoNo}</Link>
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <AsnStatusBadge status={detail.status} />
+            <span className="text-sm text-gray-600">{detail.supplierName}</span>
+            <Link className="text-sm font-semibold text-sky-800" to={`/purchase?id=${detail.sourcePoId}`}>{detail.sourcePoNo}</Link>
+          </div>
+          <AsnWorkflowStrip
+            asnStatus={detail.status}
+            sessionStatus={progressQ.data?.session?.status}
+            grnStatus={progressQ.data?.draftGrn?.status}
+          />
         </div>
       ) : null}
 
@@ -445,32 +524,34 @@ export default function AsnPage() {
             <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500">
               <tr>
                 <th className="px-2 py-2">Article</th>
-                <th className="px-2 py-2">Part no.</th>
                 <th className="px-2 py-2">Description</th>
-                <th className="px-2 py-2">PO qty</th>
-                <th className="px-2 py-2">Previously ASN</th>
-                <th className="px-2 py-2">ASN qty</th>
-                <th className="px-2 py-2">Remaining</th>
                 <th className="px-2 py-2">UOM</th>
+                <th className="px-2 py-2">Ordered</th>
+                <th className="px-2 py-2">Received</th>
+                <th className="px-2 py-2">Active ASN</th>
+                <th className="px-2 py-2">Available for new ASN</th>
+                <th className="px-2 py-2">ASN qty</th>
               </tr>
             </thead>
             <tbody>
               {lines.map((line) => {
                 const key = String(line.poLineId);
-                const remaining = creating
-                  ? Number(line.remainingAvailableQty || 0)
-                  : Number(line.remainingAvailableQty || 0);
+                const remaining = Number(line.remainingAvailableQty || 0);
+                const received = Number(line.receivedQty || 0);
+                const active = Number(line.previouslyAsnQty || 0);
                 return (
                   <tr key={key} className="border-t border-gray-100">
                     <td className="px-2 py-2 font-mono">{line.article || "—"}</td>
-                    <td className="px-2 py-2">{line.partNumber || line.supplierPartNumber || "—"}</td>
                     <td className="px-2 py-2">{line.description || line.itemName || "—"}</td>
+                    <td className="px-2 py-2">{line.uom || "PCS"}</td>
                     <td className="px-2 py-2 tabular-nums">{line.poQty}</td>
-                    <td className="px-2 py-2 tabular-nums">{line.previouslyAsnQty}</td>
+                    <td className="px-2 py-2 tabular-nums">{received}</td>
+                    <td className="px-2 py-2 tabular-nums">{active}</td>
+                    <td className="px-2 py-2 tabular-nums">{remaining}</td>
                     <td className="px-2 py-2">
                       {linesEditable ? (
                         <input
-                          className="w-24 rounded-lg border px-2 py-1"
+                          className="min-h-11 w-24 rounded-lg border px-2 py-1"
                           type="number"
                           min="0"
                           max={creating ? remaining : undefined}
@@ -481,8 +562,6 @@ export default function AsnPage() {
                         <span className="tabular-nums">{line.asnQty}</span>
                       )}
                     </td>
-                    <td className="px-2 py-2 tabular-nums">{remaining}</td>
-                    <td className="px-2 py-2">{line.uom || "PCS"}</td>
                   </tr>
                 );
               })}
@@ -548,6 +627,11 @@ export default function AsnPage() {
         ) : null}
         {!creating && canPost && status === "SHIPPED" ? (
           <LoadingButton loading={arriveMut.isPending} onClick={() => arriveMut.mutate()}>Mark arrived</LoadingButton>
+        ) : null}
+        {!creating && ["SHIPPED", "ARRIVED"].includes(status) ? (
+          <Link className="inline-flex min-h-11 items-center rounded-lg bg-sky-800 px-4 text-sm font-semibold text-white" to={incomingShipmentsPath(id)}>
+            Prepare labels / Receive
+          </Link>
         ) : null}
         {!creating && canCancel && status !== "CANCELLED" && status !== "PARTIALLY_RECEIVED" && status !== "COMPLETED" ? (
           <div className="flex flex-wrap items-center gap-2">
