@@ -413,9 +413,11 @@ run("scan/session APIs and tablet UI exist", () => {
   assert.match(incoming, /Scan Item/);
   assert.match(incoming, /Resume Receiving/);
   assert.match(incoming, /Enter RU Number/);
+  const scanConfig = fs.readFileSync(path.join(feRoot, "lib", "receivingBarcodeScannerConfig.js"), "utf8");
   assert.match(scanner, /html5-qrcode/);
-  assert.match(scanner, /CODE_128/);
-  assert.match(scanner, /facingMode: "environment"/);
+  assert.match(scanner, /buildHtml5QrcodeConstructorConfig/);
+  assert.match(scanConfig, /CODE_128/);
+  assert.match(scanConfig, /facingMode: "environment"/);
   assert.match(inspect, /Take Photo/);
   assert.match(inspect, /Take Another/);
   assert.match(inspect, /Complete Item/);
@@ -697,8 +699,12 @@ run("scanner stops camera on unmount, cancel, and successful decode", () => {
   assert.match(scanner, /scanner\.clear\(\)/);
   assert.match(scanner, /if \(cancelled\)/);
   assert.match(scanner, /cameraStarted/);
+  assert.match(scanner, /releasedRef\.current = true/);
+  assert.match(scanner, /stopScanner\(scannerRef\.current/);
+  assert.match(scanner, /Enter RU Number/);
   assert.match(incoming, /scanLockRef/);
   assert.match(incoming, /\/receiving\/scan\//);
+  assert.match(incoming, /Enter RU Number/);
 });
 
 run("image decode falls back when createImageBitmap orientation option is unsupported", () => {
