@@ -7,6 +7,8 @@ import {
 /**
  * ReceivingSessionUnit — mutable inspection/count for one Receiving Unit in a session.
  * Identity (ruNo, article, plannedQty, …) is snapshotted from the persisted RU.
+ * Phase 3B stores acceptedQty / damagedQty / rejectedQty. variance, shortQty,
+ * and excessQty are derived on read and are never client-authoritative.
  */
 const receivingSessionUnitSchema = new mongoose.Schema(
   {
@@ -44,6 +46,9 @@ const receivingSessionUnitSchema = new mongoose.Schema(
     plannedQty: { type: Number, required: true, min: 0 },
 
     actualQty: { type: Number, default: null },
+    acceptedQty: { type: Number, default: null, min: 0 },
+    damagedQty: { type: Number, default: null, min: 0 },
+    rejectedQty: { type: Number, default: null, min: 0 },
     condition: {
       type: String,
       enum: ["", ...RECEIVING_CONDITIONS],

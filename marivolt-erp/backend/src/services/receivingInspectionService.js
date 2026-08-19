@@ -21,13 +21,20 @@ import {
   assertOptimisticVersion,
   assertReceivingActualQty,
   assertReceivingCondition,
+  assertReceivingDispositionQty,
   assertReceivingPhotoUpload,
   assertUnitCompletable,
   evaluateReceivingScanEligibility,
   evaluateCompletePhotoInvariant,
+  evaluateCompleteDispositionEvidence,
   evaluatePhotoDeleteAgainstUnitStatus,
   isActiveReceivingSessionStatus,
   isCompletedReceivingUnitResult,
+  isDispositionRequired,
+  hasValidDisposition,
+  computeDispositionReadiness,
+  computeDispositionDerived,
+  aggregateAsnLineDisposition,
   normalizePhotoCategory,
   receivingPhotoSettingsFromEnv,
   summarizeReceivingProgress,
@@ -99,6 +106,14 @@ function serializeUnit(unit, extras = {}) {
   if (!unit) return null;
   const planned = Number(unit.plannedQty) || 0;
   const actual = unit.actualQty == null ? null : Number(unit.actualQty);
+  const derived = computeDispositionDerived({
+    plannedQty: planned,
+    actualQty: actual,
+    acceptedQty: unit.acceptedQty,
+    damagedQty: unit.damagedQty,
+    rejectedQty: unit.rejectedQty,
+  });
+  const dispositionRequired = isDispositionRequired(unit);
   return {
     _id: unit._id,
     companyId: unit.companyId,
@@ -113,11 +128,18 @@ function serializeUnit(unit, extras = {}) {
     uom: unit.uom,
     plannedQty: planned,
     actualQty: actual,
-    variance: varianceQty(planned, actual),
+    acceptedQty: derived.acceptedQty,
+    damagedQty: derived.damagedQty,
+    rejectedQty: derived.rejectedQty,
+    dispositionTotal: derived.dispositionTotal,
+    variance: derived.variance,
+    shortQty: derived.shortQty,
+    excessQty: derived.excessQty,
     condition: unit.condition || "",
     remarks: unit.remarks || "",
     qtyConfirmed: unit.qtyConfirmed === true,
     status: unit.status,
+    dispositionRequired,
     version: Number(unit.version) || 0,
     photoCount: extras.photoCount != null ? extras.photoCount : Number(unit.photoCount) || 0,
     photos: extras.photos || undefined,
@@ -469,6 +491,15 @@ export async function saveReceivingDraft(req, sessionId, ruId, body = {}) {
     set.remarks = t(body.remarks).slice(0, 2000);
   }
   if (body.qtyConfirmed === true) set.qtyConfirmed = true;
+  if (Object.prototype.hasOwnProperty.call(body, "acceptedQty")) {
+    set.acceptedQty = assertReceivingDispositionQty(body.acceptedQty, "Accepted quantity");
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "damagedQty")) {
+    set.damagedQty = assertReceivingDispositionQty(body.damagedQty, "Damaged quantity");
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "rejectedQty")) {
+    set.rejectedQty = assertReceivingDispositionQty(body.rejectedQty, "Rejected quantity");
+  }
 
   const updated = await ReceivingSessionUnit.findOneAndUpdate(
     {
@@ -541,21 +572,38 @@ export async function completeReceivingUnit(req, sessionId, ruId, body = {}) {
     set.remarks = t(body.remarks).slice(0, 2000);
   }
   if (body.qtyConfirmed === true) set.qtyConfirmed = true;
+  if (Object.prototype.hasOwnProperty.call(body, "acceptedQty")) {
+    set.acceptedQty = assertReceivingDispositionQty(body.acceptedQty, "Accepted quantity");
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "damagedQty")) {
+    set.damagedQty = assertReceivingDispositionQty(body.damagedQty, "Damaged quantity");
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "rejectedQty")) {
+    set.rejectedQty = assertReceivingDispositionQty(body.rejectedQty, "Rejected quantity");
+  }
 
   const merged = {
     actualQty: Object.prototype.hasOwnProperty.call(set, "actualQty") ? set.actualQty : unit.actualQty,
     condition: Object.prototype.hasOwnProperty.call(set, "condition") ? set.condition : unit.condition,
     remarks: Object.prototype.hasOwnProperty.call(set, "remarks") ? set.remarks : unit.remarks,
     qtyConfirmed: set.qtyConfirmed === true ? true : unit.qtyConfirmed,
+    acceptedQty: Object.prototype.hasOwnProperty.call(set, "acceptedQty") ? set.acceptedQty : unit.acceptedQty,
+    damagedQty: Object.prototype.hasOwnProperty.call(set, "damagedQty") ? set.damagedQty : unit.damagedQty,
+    rejectedQty: Object.prototype.hasOwnProperty.call(set, "rejectedQty") ? set.rejectedQty : unit.rejectedQty,
   };
   const photosBefore = await listActivePhotos(req.companyId, unit._id);
-  assertUnitCompletable({
+  const resolved = assertUnitCompletable({
     actualQty: merged.actualQty,
     condition: merged.condition,
     remarks: merged.remarks,
     photoCount: photosBefore.length,
     minPhotosPerRU: settings.minPhotosPerRU,
     qtyConfirmed: merged.qtyConfirmed,
+    plannedQty: unit.plannedQty,
+    acceptedQty: merged.acceptedQty,
+    damagedQty: merged.damagedQty,
+    rejectedQty: merged.rejectedQty,
+    photos: photosBefore,
   });
 
   const actor = actorName(req);
@@ -570,6 +618,10 @@ export async function completeReceivingUnit(req, sessionId, ruId, body = {}) {
     {
       $set: {
         ...set,
+        acceptedQty: resolved.acceptedQty,
+        damagedQty: resolved.damagedQty,
+        rejectedQty: resolved.rejectedQty,
+        condition: resolved.condition,
         qtyConfirmed: merged.qtyConfirmed,
         status: "COMPLETED",
         completedBy: actor,
@@ -601,7 +653,14 @@ export async function completeReceivingUnit(req, sessionId, ruId, body = {}) {
     photoCount: photosAfter.length,
     minPhotosPerRU: settings.minPhotosPerRU,
   });
-  if (invariant.revert) {
+  const evidence = evaluateCompleteDispositionEvidence({
+    status: completed.status,
+    damagedQty: completed.damagedQty,
+    rejectedQty: completed.rejectedQty,
+    photos: photosAfter,
+    photoCount: photosAfter.length,
+  });
+  if (invariant.revert || evidence.revert) {
     await ReceivingSessionUnit.findOneAndUpdate(
       { _id: completed._id, companyId: req.companyId, status: "COMPLETED", version: completed.version },
       {
@@ -614,9 +673,11 @@ export async function completeReceivingUnit(req, sessionId, ruId, body = {}) {
       }
     );
     throw new ReceivingInspectionError(
-      "At least one photo is required before completing this item",
+      evidence.revert
+        ? evidence.message || "Damage or rejection evidence is required before completing this item"
+        : "At least one photo is required before completing this item",
       400,
-      "RECEIVING_PHOTO_REQUIRED"
+      evidence.revert ? evidence.code || "RECEIVING_DAMAGE_PHOTO_REQUIRED" : "RECEIVING_PHOTO_REQUIRED"
     );
   }
 
@@ -633,6 +694,9 @@ export async function completeReceivingUnit(req, sessionId, ruId, body = {}) {
       actualQty: completed.actualQty,
       condition: completed.condition,
       photoCount: photosAfter.length,
+      acceptedQty: completed.acceptedQty,
+      damagedQty: completed.damagedQty,
+      rejectedQty: completed.rejectedQty,
       receivingSessionId: String(session._id),
     },
   });
@@ -915,6 +979,13 @@ async function buildProgressRows(companyId, asn, session) {
   return currentRus.map((ru) => {
     const unit = unitByRu.get(String(ru._id));
     const photoCount = unit ? photoCounts.get(String(unit._id)) || 0 : 0;
+    const derived = computeDispositionDerived({
+      plannedQty: ru.plannedQty,
+      actualQty: unit?.actualQty,
+      acceptedQty: unit?.acceptedQty,
+      damagedQty: unit?.damagedQty,
+      rejectedQty: unit?.rejectedQty,
+    });
     return {
       receivingUnitId: ru._id,
       ruNo: ru.ruNo,
@@ -925,9 +996,18 @@ async function buildProgressRows(companyId, asn, session) {
       uom: ru.uom,
       plannedQty: ru.plannedQty,
       actualQty: unit?.actualQty ?? null,
+      acceptedQty: derived.acceptedQty,
+      damagedQty: derived.damagedQty,
+      rejectedQty: derived.rejectedQty,
+      dispositionTotal: derived.dispositionTotal,
       variance: varianceQty(ru.plannedQty, unit?.actualQty),
+      shortQty: derived.shortQty,
+      excessQty: derived.excessQty,
       condition: unit?.condition || "",
+      remarks: unit?.remarks || "",
+      qtyConfirmed: unit?.qtyConfirmed === true,
       status: unit?.status || "NOT_STARTED",
+      dispositionRequired: unit ? isDispositionRequired(unit) : false,
       photoCount,
       version: unit?.version || 0,
     };
@@ -939,22 +1019,29 @@ export async function getReceivingSummary(req, sessionId) {
   const asn = await loadAsn(req.companyId, session.asnId);
   const rus = await buildProgressRows(req.companyId, asn, session);
   const progress = summarizeReceivingProgress(rus);
+  const readiness = computeDispositionReadiness(rus);
   const lines = (asn.lines || []).map((line) => {
     const lineRus = rus.filter((r) => String(r.asnLineId) === String(line._id));
-    const counted = lineRus.reduce(
-      (sum, r) => sum + (r.actualQty == null ? 0 : Number(r.actualQty) || 0),
-      0
-    );
+    const agg = aggregateAsnLineDisposition(lineRus);
+    const counted = agg.actualQty;
     return {
       asnLineId: line._id,
       article: line.article,
       description: line.description || line.itemName || "",
       uom: line.uom,
       asnQty: line.asnQty,
+      plannedQty: agg.plannedQty,
       countedQty: counted,
+      actualQty: counted,
+      acceptedQty: agg.acceptedQty,
+      damagedQty: agg.damagedQty,
+      rejectedQty: agg.rejectedQty,
       variance: varianceQty(line.asnQty, counted),
+      shortQty: agg.shortQty,
+      excessQty: agg.excessQty,
       ruTotal: lineRus.length,
       ruCompleted: lineRus.filter((r) => r.status === "COMPLETED").length,
+      dispositionRequired: lineRus.filter((r) => r.dispositionRequired).length,
       photos: lineRus.reduce((sum, r) => sum + (Number(r.photoCount) || 0), 0),
     };
   });
@@ -965,6 +1052,8 @@ export async function getReceivingSummary(req, sessionId) {
     progress,
     receivingUnits: rus,
     lines,
+    dispositionReady: readiness.dispositionReady,
+    dispositionRequiredCount: readiness.dispositionRequiredCount,
   };
 }
 
@@ -982,10 +1071,13 @@ export async function getAsnReceivingProgress(req, asnId) {
         .lean();
   const use = session || completed;
   const rus = await buildProgressRows(req.companyId, asn, use);
+  const progress = summarizeReceivingProgress(rus);
   return {
     session: serializeSession(use),
-    progress: summarizeReceivingProgress(rus),
+    progress,
     receivingUnits: rus,
+    dispositionReady: progress.dispositionReady === true,
+    dispositionRequiredCount: Number(progress.dispositionRequiredCount) || 0,
   };
 }
 
@@ -1005,6 +1097,24 @@ export async function completeReceivingSession(req, sessionId) {
       `Cannot complete receiving while ${incomplete.length} Receiving Unit(s) are unfinished`,
       409,
       "RECEIVING_SESSION_INCOMPLETE"
+    );
+  }
+  const needsDisposition = (summary.receivingUnits || []).filter((r) => r.dispositionRequired);
+  if (needsDisposition.length) {
+    throw new ReceivingInspectionError(
+      `Disposition is required for ${needsDisposition.length} completed Receiving Unit(s) before finishing receiving`,
+      409,
+      "RECEIVING_DISPOSITION_REQUIRED"
+    );
+  }
+  const invalidDisposition = (summary.receivingUnits || []).filter(
+    (r) => r.status === "COMPLETED" && !hasValidDisposition(r)
+  );
+  if (invalidDisposition.length) {
+    throw new ReceivingInspectionError(
+      "Every completed Receiving Unit must have a valid accepted/damaged/rejected disposition",
+      409,
+      "RECEIVING_DISPOSITION_REQUIRED"
     );
   }
   const actor = actorName(req);

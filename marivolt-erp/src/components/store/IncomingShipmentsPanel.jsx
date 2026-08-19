@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import Modal from "../erp/Modal.jsx";
 import AsnReceivingLabelPlanner from "./AsnReceivingLabelPlanner.jsx";
 import ReceivingBarcodeScanner from "./ReceivingBarcodeScanner.jsx";
+import ReceivingDispositionReview from "./ReceivingDispositionReview.jsx";
 import ReceivingUnitInspectScreen from "./ReceivingUnitInspectScreen.jsx";
 import { apiGet, apiGetWithQuery, apiPost } from "../../lib/api.js";
 import { useAuth } from "../../context/AuthContext.jsx";
@@ -23,6 +24,7 @@ export default function IncomingShipmentsPanel() {
   const [inspect, setInspect] = useState(null);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualRu, setManualRu] = useState("");
+  const [reviewOpen, setReviewOpen] = useState(false);
   const scanLockRef = useRef("");
 
   const listQ = useQuery({
@@ -59,6 +61,7 @@ export default function IncomingShipmentsPanel() {
   const detail = detailQ.data;
   const progress = progressQ.data?.progress;
   const session = progressQ.data?.session;
+  const receivingUnits = progressQ.data?.receivingUnits || [];
 
   function refreshReceiving() {
     if (selectedId) qc.invalidateQueries({ queryKey: ["receiving-progress", selectedId] });
@@ -110,13 +113,15 @@ export default function IncomingShipmentsPanel() {
     }
   }
 
-  async function completeSession() {
+  async function confirmCompleteSession() {
     if (!session?._id) return;
     try {
       await apiPost(`/receiving/sessions/${session._id}/complete`);
+      setReviewOpen(false);
       refreshReceiving();
     } catch (err) {
       setScanError(err.message || "Cannot complete receiving yet");
+      setReviewOpen(false);
     }
   }
 
@@ -261,7 +266,7 @@ export default function IncomingShipmentsPanel() {
                   <button
                     type="button"
                     className="min-h-12 w-full rounded-2xl border text-base font-semibold"
-                    onClick={completeSession}
+                    onClick={() => setReviewOpen(true)}
                   >
                     Complete Receiving Session
                   </button>
@@ -399,6 +404,13 @@ export default function IncomingShipmentsPanel() {
         open={scannerOpen}
         onClose={() => setScannerOpen(false)}
         onScan={openScannedBarcode}
+      />
+
+      <ReceivingDispositionReview
+        open={reviewOpen}
+        rows={receivingUnits}
+        onClose={() => setReviewOpen(false)}
+        onConfirm={confirmCompleteSession}
       />
 
       <ReceivingUnitInspectScreen

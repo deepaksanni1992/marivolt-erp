@@ -748,12 +748,12 @@ run("completion requires explicit qtyConfirmed even when actual equals planned",
   );
 });
 
-run("zero actual qty is valid with REJECTED + remarks and rejected as GOOD", () => {
+run("zero actual qty is valid with NOT_RECEIVED + remarks and rejected as GOOD", () => {
   assert.equal(assertReceivingActualQty(0), 0);
   assert.doesNotThrow(() =>
     assertUnitCompletable({
       actualQty: 0,
-      condition: "REJECTED",
+      condition: "NOT_RECEIVED",
       remarks: "empty crate",
       photoCount: 1,
       qtyConfirmed: true,
@@ -774,7 +774,7 @@ run("zero actual qty is valid with REJECTED + remarks and rejected as GOOD", () 
     () =>
       assertUnitCompletable({
         actualQty: 0,
-        condition: "REJECTED",
+        condition: "NOT_RECEIVED",
         remarks: "",
         photoCount: 1,
         qtyConfirmed: true,

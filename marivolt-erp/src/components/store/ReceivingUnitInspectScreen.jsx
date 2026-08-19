@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiDelete, apiGet, apiPatch, apiPost, apiPostFormData } from "../../lib/api.js";
+import { allGoodDisposition, dispositionTotal, notReceivedDisposition, suggestConditionFromDisposition } from "../../lib/receivingDisposition.js";
 import { processReceivingPhoto } from "../../lib/receivingPhotoProcess.js";
 
 const CONDITIONS = [
@@ -48,6 +49,9 @@ export default function ReceivingUnitInspectScreen({
   const [actualQty, setActualQty] = useState("");
   const [qtyConfirmed, setQtyConfirmed] = useState(false);
   const [condition, setCondition] = useState("");
+  const [acceptedQty, setAcceptedQty] = useState("");
+  const [damagedQty, setDamagedQty] = useState("");
+  const [rejectedQty, setRejectedQty] = useState("");
   const [remarks, setRemarks] = useState("");
   const [version, setVersion] = useState(0);
   const [photos, setPhotos] = useState([]);
@@ -73,6 +77,9 @@ export default function ReceivingUnitInspectScreen({
     setActualQty(nextQty);
     setQtyConfirmed(result?.qtyConfirmed === true);
     setCondition(result?.condition || "");
+    setAcceptedQty(result?.acceptedQty == null ? "" : String(result.acceptedQty));
+    setDamagedQty(result?.damagedQty == null ? "" : String(result.damagedQty));
+    setRejectedQty(result?.rejectedQty == null ? "" : String(result.rejectedQty));
     setRemarks(result?.remarks || "");
     setVersion(Number(result?.version) || 0);
     setPhotos(result?.photos || scan?.photos || []);
@@ -89,6 +96,9 @@ export default function ReceivingUnitInspectScreen({
     setActualQty(result.actualQty == null ? String(planned) : String(result.actualQty));
     setQtyConfirmed(result.qtyConfirmed === true);
     setCondition(result.condition || "");
+    setAcceptedQty(result.acceptedQty == null ? "" : String(result.acceptedQty));
+    setDamagedQty(result.damagedQty == null ? "" : String(result.damagedQty));
+    setRejectedQty(result.rejectedQty == null ? "" : String(result.rejectedQty));
     setRemarks(result.remarks || "");
     setVersion(Number(result.version) || 0);
     setPhotos(result.photos || []);
@@ -98,14 +108,27 @@ export default function ReceivingUnitInspectScreen({
     skipAutosave.current = true;
   }
 
-  async function saveDraft({ explicit = false, qtyTouched = qtyConfirmed } = {}) {
+  function dispositionFields() {
+    if (Number(actualQty) === 0) {
+      return { acceptedQty: 0, damagedQty: 0, rejectedQty: 0 };
+    }
+    if (acceptedQty === "" && damagedQty === "" && rejectedQty === "") return {};
+    return {
+      acceptedQty: Number(acceptedQty || 0),
+      damagedQty: Number(damagedQty || 0),
+      rejectedQty: Number(rejectedQty || 0),
+    };
+  }
+
+  async function saveDraft({ explicit = false, qtyTouched } = {}) {
     if (!sessionId || !ruId || locked) return null;
     setError("");
     setSaveState(explicit ? "Saving…" : "Saving…");
     try {
       const result = await apiPatch(`/receiving/sessions/${sessionId}/units/${ruId}`, {
         actualQty: actualQty === "" ? 0 : Number(actualQty),
-        condition,
+        ...dispositionFields(),
+        condition: actualQty !== "" && Number(actualQty) === 0 ? "NOT_RECEIVED" : condition,
         remarks,
         version,
         qtyConfirmed: qtyTouched === true,
@@ -147,13 +170,78 @@ export default function ReceivingUnitInspectScreen({
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actualQty, condition, remarks, qtyConfirmed, open, locked]);
+  }, [actualQty, acceptedQty, damagedQty, rejectedQty, condition, remarks, qtyConfirmed, open, locked]);
 
   function bumpQty(delta) {
     const cur = actualQty === "" ? planned : Number(actualQty);
     const next = Math.max(0, Math.round((cur + delta) * 1e6) / 1e6);
     setActualQty(String(next));
     setQtyConfirmed(true);
+    if (next === 0) {
+      applyNotReceived();
+      return;
+    }
+    if (condition === "NOT_RECEIVED" || condition === "GOOD" || acceptedQty === "" || Number(acceptedQty) === Number(actualQty || planned)) {
+      applyAllGood(next);
+    }
+  }
+
+  function applyNotReceived() {
+    const next = notReceivedDisposition();
+    setQtyConfirmed(true);
+    setAcceptedQty("0");
+    setDamagedQty("0");
+    setRejectedQty("0");
+    setCondition(next.condition);
+  }
+
+  function applyAllGood(qty = actualQty === "" ? planned : Number(actualQty)) {
+    if (Number(qty) === 0) {
+      applyNotReceived();
+      return;
+    }
+    const next = allGoodDisposition(qty);
+    setQtyConfirmed(true);
+    setAcceptedQty(String(next.acceptedQty));
+    setDamagedQty("0");
+    setRejectedQty("0");
+    if (next.condition) setCondition(next.condition);
+  }
+
+  function applyCondition(id) {
+    const actual = actualQty === "" ? planned : Number(actualQty);
+    if (actual === 0) {
+      applyNotReceived();
+      return;
+    }
+    setCondition(id);
+    if (id === "GOOD") applyAllGood(actual);
+    else if (id === "DAMAGED") {
+      setAcceptedQty("0");
+      setDamagedQty(String(actual));
+      setRejectedQty("0");
+    } else if (id === "REJECTED") {
+      setAcceptedQty("0");
+      setDamagedQty("0");
+      setRejectedQty(String(actual));
+    }
+  }
+
+  function applyBuckets(nextAccepted, nextDamaged, nextRejected) {
+    setAcceptedQty(String(nextAccepted));
+    setDamagedQty(String(nextDamaged));
+    setRejectedQty(String(nextRejected));
+    const suggested = suggestConditionFromDisposition(actualQty === "" ? planned : actualQty, nextAccepted, nextDamaged, nextRejected);
+    if (suggested) setCondition(suggested);
+  }
+
+  function bumpBucket(field, delta) {
+    const a = Number(acceptedQty || 0);
+    const d = Number(damagedQty || 0);
+    const r = Number(rejectedQty || 0);
+    const cur = field === "accepted" ? a : field === "damaged" ? d : r;
+    const next = Math.max(0, Math.round((cur + delta) * 1e6) / 1e6);
+    applyBuckets(field === "accepted" ? next : a, field === "damaged" ? next : d, field === "rejected" ? next : r);
   }
 
   async function onPickPhoto(ev) {
@@ -222,7 +310,8 @@ export default function ReceivingUnitInspectScreen({
     try {
       const data = await apiPost(`/receiving/sessions/${sessionId}/units/${ruId}/complete`, {
         actualQty: actualQty === "" ? 0 : Number(actualQty),
-        condition,
+        ...dispositionFields(),
+        condition: actualQty !== "" && Number(actualQty) === 0 ? "NOT_RECEIVED" : condition,
         remarks,
         version: saved?.version ?? version,
         qtyConfirmed: true,
@@ -236,6 +325,9 @@ export default function ReceivingUnitInspectScreen({
   }
 
   const photoCount = photos.length;
+  const actualN = actualQty === "" ? planned : Number(actualQty) || 0;
+  const dispTotal = dispositionTotal(acceptedQty, damagedQty, rejectedQty);
+  const dispOk = Math.abs(dispTotal - actualN) < 1e-6;
   const header = useMemo(
     () => ({
       ruNo: ru.ruNo,
@@ -308,6 +400,7 @@ export default function ReceivingUnitInspectScreen({
               onChange={(e) => {
                 setActualQty(e.target.value);
                 setQtyConfirmed(true);
+                if (e.target.value !== "" && Number(e.target.value) === 0) applyNotReceived();
               }}
             />
             <button
@@ -323,16 +416,96 @@ export default function ReceivingUnitInspectScreen({
             <button
               type="button"
               className="mt-3 min-h-12 w-full rounded-xl border border-slate-300 text-base font-semibold"
-              onClick={() => setQtyConfirmed(true)}
+              onClick={() => {
+                setQtyConfirmed(true);
+                if (Number(actualQty === "" ? planned : actualQty) === 0) applyNotReceived();
+              }}
             >
               Confirm quantity
             </button>
           ) : (
             <p className="mt-2 text-sm text-emerald-700">Quantity confirmed</p>
           )}
+          {!locked && actualN > 0 ? (
+            <button
+              type="button"
+              className="mt-3 min-h-16 w-full rounded-2xl bg-emerald-800 text-xl font-bold text-white"
+              onClick={() => applyAllGood()}
+            >
+              All Good
+            </button>
+          ) : null}
+          {actualN === 0 ? (
+            <div className="mt-3 rounded-2xl bg-amber-50 p-4">
+              <div className="text-lg font-bold text-amber-950">Nothing Received / Not Found</div>
+              <p className="mt-1 text-sm text-amber-900">
+                Condition: NOT_RECEIVED. Missing goods are a shortage, not a rejection.
+              </p>
+              <div className="mt-2 grid grid-cols-2 gap-1 text-sm">
+                <div>Accepted 0</div>
+                <div>Damaged 0</div>
+                <div>Rejected 0</div>
+                <div>Short {header.planned}</div>
+              </div>
+            </div>
+          ) : null}
         </div>
 
+        {actualN > 0 ? (
         <div className="mt-4 rounded-3xl border bg-white p-5">
+          <div className="text-sm font-semibold uppercase text-slate-500">Disposition</div>
+          <p className="mt-1 text-sm text-slate-600">
+            Disposition total: {dispTotal} / {actualN} {header.uom}
+            {!dispOk ? <span className="ml-2 font-semibold text-amber-800">must equal actual qty</span> : null}
+          </p>
+          {[
+            ["Accepted", acceptedQty, setAcceptedQty, "accepted"],
+            ["Damaged", damagedQty, setDamagedQty, "damaged"],
+            ["Rejected", rejectedQty, setRejectedQty, "rejected"],
+          ].map(([label, value, setter, field]) => (
+            <div key={field} className="mt-3">
+              <div className="text-sm font-semibold text-slate-600">{label}</div>
+              <div className="mt-1 flex items-center gap-2">
+                <button
+                  type="button"
+                  className="min-h-14 min-w-14 rounded-2xl bg-slate-900 text-2xl text-white disabled:opacity-40"
+                  disabled={locked}
+                  onClick={() => bumpBucket(field, -step)}
+                >
+                  −
+                </button>
+                <input
+                  className="min-h-14 flex-1 rounded-2xl border text-center text-2xl font-semibold"
+                  inputMode="decimal"
+                  disabled={locked}
+                  value={value}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    const a = field === "accepted" ? next : acceptedQty;
+                    const d = field === "damaged" ? next : damagedQty;
+                    const r = field === "rejected" ? next : rejectedQty;
+                    setter(next);
+                    const suggested = suggestConditionFromDisposition(actualQty === "" ? planned : actualQty, a, d, r);
+                    if (suggested) setCondition(suggested);
+                  }}
+                />
+                <button
+                  type="button"
+                  className="min-h-14 min-w-14 rounded-2xl bg-slate-900 text-2xl text-white disabled:opacity-40"
+                  disabled={locked}
+                  onClick={() => bumpBucket(field, step)}
+                >
+                  +
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+        ) : null}
+
+        <div className="mt-4 rounded-3xl border bg-white p-5">
+          {actualN > 0 ? (
+            <>
           <div className="text-sm font-semibold uppercase text-slate-500">Condition</div>
           <div className="mt-3 grid grid-cols-2 gap-2">
             {CONDITIONS.map((row) => (
@@ -343,15 +516,25 @@ export default function ReceivingUnitInspectScreen({
                 className={`min-h-14 rounded-2xl border text-base font-semibold ${
                   condition === row.id ? "bg-slate-900 text-white" : "bg-white"
                 }`}
-                onClick={() => setCondition(row.id)}
+                onClick={() => applyCondition(row.id)}
               >
                 {row.label}
               </button>
             ))}
           </div>
+            </>
+          ) : (
+            <div className="text-sm font-semibold uppercase text-slate-500">Remarks required</div>
+          )}
           <textarea
             className="mt-3 min-h-20 w-full rounded-2xl border p-3 text-base"
-            placeholder="Remarks (optional)"
+            placeholder={
+              actualN === 0
+                ? "Remarks required — e.g. Packet missing from shipment"
+                : dispOk && Number(damagedQty || 0) === 0 && Number(rejectedQty || 0) === 0 && actualN === planned
+                  ? "Remarks (optional)"
+                  : "Remarks required for shortage, excess, damage, rejection, or zero qty"
+            }
             disabled={locked}
             value={remarks}
             onChange={(e) => setRemarks(e.target.value)}
@@ -363,6 +546,12 @@ export default function ReceivingUnitInspectScreen({
             <div className="text-sm font-semibold uppercase text-slate-500">Photos ({photoCount})</div>
             {photoBusy ? <div className="text-sm font-semibold text-sky-800">{photoBusy}</div> : null}
           </div>
+          {Number(damagedQty || 0) > 0 ? (
+            <p className="mt-2 text-sm font-semibold text-amber-800">Damaged qty requires a DAMAGE photo before Complete Item.</p>
+          ) : null}
+          {actualN === 0 ? (
+            <p className="mt-2 text-sm text-slate-600">A packing/package photo is useful evidence even when quantity is 0.</p>
+          ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
             {PHOTO_CATEGORIES.map((id) => (
               <button
@@ -435,7 +624,8 @@ export default function ReceivingUnitInspectScreen({
           ) : (
             <button
               type="button"
-              className="min-h-16 rounded-2xl bg-emerald-700 text-xl font-semibold text-white"
+              disabled={!dispOk}
+              className="min-h-16 rounded-2xl bg-emerald-700 text-xl font-semibold text-white disabled:opacity-40"
               onClick={completeItem}
             >
               Complete Item
