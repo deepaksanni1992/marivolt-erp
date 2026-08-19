@@ -14,6 +14,7 @@ import { approvalRequiredPayload, ensureApproval } from "../services/approvalSer
 import { writeAudit, writeStatusChange } from "../services/auditService.js";
 import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentController.js";
 import { nextGrnNo } from "../services/grnNumberService.js";
+import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js";
 import { listAsnsForPurchaseOrder, getActiveAsnQtyByPoLine, assertPoHasNoActiveAsns } from "../services/asnService.js";
 import { AsnError, validatePoLinesAgainstActiveAsn } from "../utils/asnRules.js";
 import {
@@ -297,7 +298,7 @@ async function assignNewPurchaseOrderNumbers(body, req, company) {
 export async function createPurchaseOrder(req, res) {
   try {
     let body = stripClientPoNumbers(req.body);
-    body.lines = normalizePoLines(body.lines);
+    body.lines = normalizePoLines(body.lines).map((l) => ({ ...l, asnActiveQty: 0 }));
     if (!body.lines.length) {
       return res.status(400).json({
         message: "At least one line with Article Nr. (or item / part code) and quantity is required",

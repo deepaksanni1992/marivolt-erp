@@ -149,6 +149,12 @@ run("ASN reservation counter is preserved on PO line merge", () => {
   assert.equal(merged[0].qty, 90);
 });
 
+run("new PO lines initialize asnActiveQty to 0 without an ASN", () => {
+  const merged = mergePoLineBases([], [{ article: "ART-NEW", qty: 10, orderedQty: 10 }]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].asnActiveQty, 0);
+});
+
 run("empty payload keeps the stored lines untouched", () => {
   const merged = mergePoLineBases([storedLine()], []);
   assert.equal(merged.length, 1);
