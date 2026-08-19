@@ -48,7 +48,7 @@ import {
 } from "../lib/api.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import { notify, confirmDialog } from "../lib/notifications.js";
-import { AsnStatusBadge, formatAsnDate } from "../lib/asnUi.js";
+import { AsnStatusBadge, formatAsnDate, incomingShipmentsPath } from "../lib/asnUi.js";
 
 const TABS = [
   { id: "orders", label: "Purchase order" },
@@ -2709,6 +2709,15 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                         <span className="text-xs text-gray-500">Ship {formatAsnDate(asn.shipmentDate)}</span>
                         <span className="text-xs text-gray-500">ETA {formatAsnDate(asn.expectedArrivalDate)}</span>
                       </div>
+                      {can("STORE", "view") && ["SHIPPED", "ARRIVED"].includes(String(asn.status || "").toUpperCase()) ? (
+                        <button
+                          type="button"
+                          className="min-h-11 rounded-lg border border-sky-300 bg-sky-50 px-3 text-xs font-semibold text-sky-900"
+                          onClick={() => nav(incomingShipmentsPath(asn._id))}
+                        >
+                          Receive Shipment
+                        </button>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

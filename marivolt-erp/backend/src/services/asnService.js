@@ -523,22 +523,28 @@ export async function getPoAsnAvailability(companyId, poId) {
   };
 }
 
+export const INCOMING_ASN_STATUSES = ["SHIPPED", "ARRIVED", "PARTIALLY_RECEIVED", "COMPLETED"];
+
+/** Incoming / register list status from query. Accepts CSV or repeated status params. */
+export function asnListStatusFilter(query = {}) {
+  const raw = query.status;
+  const parts = (Array.isArray(raw) ? raw : raw != null && raw !== "" ? [raw] : [])
+    .flatMap((s) => String(s).split(","))
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+  if (parts.length === 1) return { status: parts[0] };
+  if (parts.length > 1) return { status: { $in: parts } };
+  if (String(query.incoming || "") === "1") {
+    return { status: { $in: INCOMING_ASN_STATUSES } };
+  }
+  return {};
+}
+
 export async function listAsns(companyId, query = {}) {
   const page = Math.max(1, parseInt(String(query.page || "1"), 10) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(String(query.limit || "50"), 10) || 50));
   const skip = (page - 1) * limit;
-  const extra = {};
-  if (query.status) {
-    const statuses = String(query.status)
-      .split(",")
-      .map((s) => s.trim().toUpperCase())
-      .filter(Boolean);
-    if (statuses.length === 1) extra.status = statuses[0];
-    else if (statuses.length > 1) extra.status = { $in: statuses };
-  }
-  if (String(query.incoming || "") === "1" && !query.status) {
-    extra.status = { $in: ["SHIPPED", "ARRIVED", "PARTIALLY_RECEIVED", "COMPLETED"] };
-  }
+  const extra = { ...asnListStatusFilter(query) };
   if (query.shipmentMode) extra.shipmentMode = String(query.shipmentMode).trim().toUpperCase();
   if (query.supplier) {
     extra.supplierName = new RegExp(String(query.supplier).trim(), "i");

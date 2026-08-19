@@ -201,7 +201,7 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
     <div className="fixed inset-0 z-[80] flex flex-col bg-slate-100">
       <header className="flex items-center justify-between gap-3 border-b bg-white px-4 py-3">
         <div className="min-w-0">
-          <h2 className="text-lg font-semibold text-slate-900">Prepare labels</h2>
+          <h2 className="text-lg font-semibold text-slate-900">Prepare Receiving Units</h2>
           <p className="truncate font-mono text-sm text-slate-600">{asn?.asnNo}</p>
         </div>
         <button type="button" className="min-h-12 min-w-12 rounded-xl border px-4 text-base" onClick={onClose}>
@@ -286,7 +286,7 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
                               reprintMutation.mutate({ ruId: ru._id, reason: reprintReason || "Replacement" })
                             }
                           >
-                            Reprint
+                            Reprint RU Label
                           </LoadingButton>
                         ) : null}
                       </li>
@@ -377,7 +377,7 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
             disabled={!canSave}
             onClick={() => savePlan()}
           >
-            Save plan
+            Save Receiving Units
           </LoadingButton>
           <LoadingButton
             variant="success"
@@ -386,7 +386,7 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
             disabled={!canPrint || !previewFaces.some((ru) => ru.status === "PLANNED")}
             onClick={() => printMutation.mutate({ printerCode: printerCode || undefined })}
           >
-            Print labels
+            Print RU Labels
           </LoadingButton>
         </div>
       </footer>

@@ -35,6 +35,21 @@ export function incomingShipmentsPath(asnId = "") {
   return `/store?tab=${tab}`;
 }
 
+/** Default Incoming Shipments list uses incoming=1 (no CSV status) so SHIPPED ASNs are not dropped. */
+export function incomingAsnListQuery({ status, search } = {}) {
+  const params = {
+    limit: 50,
+    page: 1,
+    asnNo: search || undefined,
+  };
+  if (status === "SHIPPED" || status === "ARRIVED") {
+    params.status = status;
+  } else {
+    params.incoming = "1";
+  }
+  return params;
+}
+
 export function isAsnReceivingGrn(grn) {
   if (!grn) return false;
   if (String(grn.sourceType || "").toUpperCase() === "ASN_RECEIVING") return true;

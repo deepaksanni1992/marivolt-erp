@@ -76,6 +76,7 @@ export default function AsnPage() {
   const canEdit = can("ASN", "edit");
   const canPost = can("ASN", "post");
   const canCancel = can("ASN", "cancel");
+  const canStoreView = can("STORE", "view");
 
   const [filters, setFilters] = useState({
     asnNo: "",
@@ -361,12 +362,12 @@ export default function AsnPage() {
                           Edit
                         </Link>
                       ) : null}
-                      {["SHIPPED", "ARRIVED"].includes(String(row.status || "").toUpperCase()) ? (
+                      {canStoreView && ["SHIPPED", "ARRIVED"].includes(String(row.status || "").toUpperCase()) ? (
                         <Link
                           className="inline-flex min-h-11 items-center rounded-lg border border-sky-300 bg-sky-50 px-3 text-xs font-semibold text-sky-900"
                           to={incomingShipmentsPath(row._id)}
                         >
-                          Receive
+                          Receive Shipment
                         </Link>
                       ) : null}
                     </div>
@@ -452,6 +453,17 @@ export default function AsnPage() {
             sessionStatus={progressQ.data?.session?.status}
             grnStatus={progressQ.data?.draftGrn?.status}
           />
+          {progressQ.data?.progress ? (
+            <p className="text-sm text-gray-600">
+              Receiving Units: {progressQ.data.progress.ruTotal || 0}
+              {" · "}
+              Receiving: {progressQ.data.progress.ruCompleted || 0}/{progressQ.data.progress.ruTotal || 0} completed
+              {" · "}
+              GRN: {progressQ.data.draftGrn?.grnNo
+                ? `${progressQ.data.draftGrn.grnNo} ${progressQ.data.draftGrn.status || ""}`
+                : "Not generated"}
+            </p>
+          ) : null}
         </div>
       ) : null}
 
@@ -628,9 +640,9 @@ export default function AsnPage() {
         {!creating && canPost && status === "SHIPPED" ? (
           <LoadingButton loading={arriveMut.isPending} onClick={() => arriveMut.mutate()}>Mark arrived</LoadingButton>
         ) : null}
-        {!creating && ["SHIPPED", "ARRIVED"].includes(status) ? (
+        {!creating && canStoreView && ["SHIPPED", "ARRIVED"].includes(status) ? (
           <Link className="inline-flex min-h-11 items-center rounded-lg bg-sky-800 px-4 text-sm font-semibold text-white" to={incomingShipmentsPath(id)}>
-            Prepare labels / Receive
+            Receive Shipment
           </Link>
         ) : null}
         {!creating && canCancel && status !== "CANCELLED" && status !== "PARTIALLY_RECEIVED" && status !== "COMPLETED" ? (

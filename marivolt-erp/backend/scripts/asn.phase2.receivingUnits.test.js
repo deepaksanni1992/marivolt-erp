@@ -338,9 +338,10 @@ await runAsync("hasPermission STORE_OPERATOR plan vs edit", async () => {
   assert.equal(await hasPermission(req, "ASN", "create"), false);
 });
 
-run("frontend Incoming Shipments has Prepare Labels and tablet planner", () => {
+run("frontend Incoming Shipments has Prepare Receiving Units and tablet planner", () => {
   const panel = fs.readFileSync(path.join(feRoot, "components", "store", "IncomingShipmentsPanel.jsx"), "utf8");
-  assert.match(panel, /Prepare Labels/);
+  assert.match(panel, /Prepare Receiving Units/);
+  assert.match(panel, /Print RU Labels/);
   assert.match(panel, /AsnReceivingLabelPlanner/);
   assert.match(panel, /can\("ASN", "view"\)/);
   assert.match(panel, /can\("LABELS", "print"\)/);

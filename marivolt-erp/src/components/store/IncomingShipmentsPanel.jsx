@@ -8,10 +8,11 @@ import ReceivingDispositionReview from "./ReceivingDispositionReview.jsx";
 import ReceivingUnitInspectScreen from "./ReceivingUnitInspectScreen.jsx";
 import { apiGet, apiGetWithQuery, apiPost } from "../../lib/api.js";
 import { useAuth } from "../../context/AuthContext.jsx";
-import { AsnStatusBadge, formatAsnDate, trackingDisplay } from "../../lib/asnUi.js";
+import { AsnStatusBadge, formatAsnDate, incomingAsnListQuery, incomingShipmentsPath, trackingDisplay } from "../../lib/asnUi.js";
+import { isStoreOperatorRole } from "../../lib/rbac.js";
 
 export default function IncomingShipmentsPanel() {
-  const { can } = useAuth();
+  const { can, role } = useAuth();
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -19,7 +20,8 @@ export default function IncomingShipmentsPanel() {
   const canReprint = can("LABELS", "reprint");
   const canReceive = can("ASN", "view") && can("STORE", "create");
   const canPostGrn = can("STORE", "post") || can("STORE", "approve");
-  const [status, setStatus] = useState("SHIPPED,ARRIVED");
+  const canOpenAsnRegister = can("ASN", "view") && !isStoreOperatorRole(role);
+  const [status, setStatus] = useState("incoming");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState(null);
   const [plannerOpen, setPlannerOpen] = useState(false);
@@ -36,19 +38,12 @@ export default function IncomingShipmentsPanel() {
 
   useEffect(() => {
     const asnId = String(searchParams.get("asnId") || "").trim();
-    if (asnId) setSelectedId(asnId);
+    setSelectedId(asnId || null);
   }, [searchParams]);
 
   const listQ = useQuery({
     queryKey: ["incoming-asn", status, search],
-    queryFn: () =>
-      apiGetWithQuery("/asn", {
-        incoming: status ? undefined : "1",
-        status: status || undefined,
-        asnNo: search || undefined,
-        limit: 50,
-        page: 1,
-      }),
+    queryFn: () => apiGetWithQuery("/asn", incomingAsnListQuery({ status, search })),
   });
 
   const detailQ = useQuery({
@@ -67,6 +62,12 @@ export default function IncomingShipmentsPanel() {
     queryKey: ["receiving-settings"],
     queryFn: () => apiGet("/receiving/settings"),
     staleTime: 60_000,
+  });
+
+  const ruListQ = useQuery({
+    queryKey: ["asn-receiving-units", selectedId],
+    queryFn: () => apiGet(`/asn/${selectedId}/receiving-units`),
+    enabled: Boolean(selectedId),
   });
 
   const items = listQ.data?.items || [];
@@ -88,9 +89,29 @@ export default function IncomingShipmentsPanel() {
     }),
     { accepted: 0, damaged: 0, rejected: 0, short: 0, excess: 0 }
   );
+  const currentRus = ruListQ.data?.receivingUnits || [];
+  const ruCount = currentRus.length;
+  const printedCount = currentRus.filter((ru) => String(ru.status || "").toUpperCase() === "PRINTED").length;
+  const plannedCount = currentRus.filter((ru) => String(ru.status || "").toUpperCase() === "PLANNED").length;
+  const eligibleReceiveStatus = ["SHIPPED", "ARRIVED"].includes(String(detail?.status || "").toUpperCase());
+  const canScanNow = canReceive && printedCount > 0 && !receivingComplete && !draftGrn?.grnNo;
+  const canStartNow = canReceive && ruCount > 0 && eligibleReceiveStatus && !receivingComplete && !draftGrn?.grnNo;
+  const canEnterRu = canReceive && ruCount > 0 && !receivingComplete && !draftGrn?.grnNo;
+
+  function selectAsn(id) {
+    navigate(incomingShipmentsPath(id), { replace: true });
+  }
+
+  function clearSelectedAsn() {
+    navigate(incomingShipmentsPath(), { replace: true });
+  }
 
   function refreshReceiving() {
-    if (selectedId) qc.invalidateQueries({ queryKey: ["receiving-progress", selectedId] });
+    if (selectedId) {
+      qc.invalidateQueries({ queryKey: ["receiving-progress", selectedId] });
+      qc.invalidateQueries({ queryKey: ["asn-receiving-units", selectedId] });
+      qc.invalidateQueries({ queryKey: ["incoming-asn"] });
+    }
   }
 
   async function openScannedBarcode(barcode) {
@@ -194,30 +215,12 @@ export default function IncomingShipmentsPanel() {
       <div className="rounded-2xl border bg-white p-4">
         <h3 className="text-base font-semibold text-slate-800">Incoming shipments</h3>
         <p className="mt-1 text-sm text-slate-500">
-          Scan a Receiving Unit label, count, photograph, and save a draft. Stock is not posted from this screen.
+          Warehouse receiving workspace. Prepare Receiving Units, print barcode labels, then scan and count. Stock is not
+          posted until GRN is posted.
         </p>
-        {canReceive ? (
-          <button
-            type="button"
-            className="mt-4 min-h-16 w-full rounded-2xl bg-sky-700 text-2xl font-bold text-white"
-            onClick={() => {
-              setScanError("");
-              setScannerOpen(true);
-            }}
-          >
-            Scan Item
-          </button>
+        {listQ.isError ? (
+          <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{listQ.error?.message || "Could not load shipments"}</p>
         ) : null}
-        <button
-          type="button"
-          className="mt-2 min-h-12 w-full rounded-2xl border text-base font-semibold"
-          onClick={() => {
-            setScanError("");
-            setManualOpen(true);
-          }}
-        >
-          Enter RU Number
-        </button>
         {scanError ? <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{scanError}</p> : null}
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           <input
@@ -231,7 +234,7 @@ export default function IncomingShipmentsPanel() {
             value={status}
             onChange={(e) => setStatus(e.target.value)}
           >
-            <option value="SHIPPED,ARRIVED">Shipped & arrived</option>
+            <option value="incoming">Shipped & arrived</option>
             <option value="SHIPPED">Shipped</option>
             <option value="ARRIVED">Arrived</option>
           </select>
@@ -244,7 +247,7 @@ export default function IncomingShipmentsPanel() {
             key={row._id}
             type="button"
             className="w-full rounded-2xl border bg-white p-4 text-left"
-            onClick={() => setSelectedId(row._id)}
+            onClick={() => selectAsn(row._id)}
           >
             <div className="flex items-center justify-between gap-2">
               <span className="font-mono text-lg font-semibold text-sky-800">{row.asnNo}</span>
@@ -255,7 +258,21 @@ export default function IncomingShipmentsPanel() {
             <div className="mt-1 text-sm text-slate-500">ETA {formatAsnDate(row.expectedArrivalDate)}</div>
           </button>
         ))}
-        {!items.length ? <p className="py-8 text-center text-slate-500">No incoming shipments</p> : null}
+        {!items.length ? (
+          <div className="py-8 text-center text-slate-500">
+            <p className="font-medium text-slate-700">No shipments ready for receiving.</p>
+            <p className="mt-1 text-sm">SHIPPED and ARRIVED ASNs will appear here.</p>
+            {canOpenAsnRegister ? (
+              <button
+                type="button"
+                className="mt-3 min-h-11 rounded-xl border px-4 text-sm font-semibold"
+                onClick={() => navigate("/asn")}
+              >
+                Open ASN Register
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="hidden overflow-x-auto rounded-2xl border bg-white md:block">
@@ -278,7 +295,7 @@ export default function IncomingShipmentsPanel() {
                   <button
                     type="button"
                     className="min-h-11 font-mono font-semibold text-sky-800"
-                    onClick={() => setSelectedId(row._id)}
+                    onClick={() => selectAsn(row._id)}
                   >
                     {row.asnNo}
                   </button>
@@ -293,14 +310,24 @@ export default function IncomingShipmentsPanel() {
             ))}
             {!items.length ? (
               <tr>
-                <td className="px-3 py-8 text-center text-slate-500" colSpan={7}>No incoming shipments</td>
+                <td className="px-3 py-8 text-center text-slate-500" colSpan={7}>
+                  <div>No shipments ready for receiving.</div>
+                  <div className="mt-1 text-xs">SHIPPED and ARRIVED ASNs will appear here.</div>
+                </td>
               </tr>
             ) : null}
           </tbody>
         </table>
       </div>
 
-      <Modal open={!!selectedId} onClose={() => setSelectedId(null)} title={detail?.asnNo || "ASN"} document>
+      {selectedId ? (
+        <div className="space-y-4 rounded-2xl border bg-white p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-lg font-bold text-slate-900">{detail?.asnNo || "Shipment"}</h3>
+            <button type="button" className="min-h-11 rounded-xl border px-3 text-sm font-semibold" onClick={clearSelectedAsn}>
+              Back to Incoming Shipments
+            </button>
+          </div>
         {!detail ? (
           <p className="text-sm text-gray-500">Loading…</p>
         ) : (
@@ -310,29 +337,67 @@ export default function IncomingShipmentsPanel() {
               <span>{detail.supplierName}</span>
               <span className="font-mono">{detail.sourcePoNo}</span>
             </div>
-            {canReceive && ["SHIPPED", "ARRIVED"].includes(String(detail.status || "").toUpperCase()) && !receivingComplete && !draftGrn?.grnNo ? (
+            {eligibleReceiveStatus && !receivingComplete && !draftGrn?.grnNo ? (
               <div className="grid gap-2">
-                <button
-                  type="button"
-                  className="min-h-16 w-full rounded-2xl bg-sky-700 px-4 text-xl font-bold text-white"
-                  onClick={() => setScannerOpen(true)}
-                >
-                  Scan Item
-                </button>
-                <button
-                  type="button"
-                  className="min-h-14 w-full rounded-2xl bg-slate-900 px-4 text-base font-semibold text-white"
-                  onClick={resumeReceiving}
-                >
-                  {session ? "Resume Receiving" : "Start Receiving"}
-                </button>
+                {ruCount === 0 ? (
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                    <div className="text-lg font-bold text-amber-950">Receiving Units have not been prepared.</div>
+                    <p className="mt-2 text-sm text-amber-900">
+                      Create Receiving Units and print barcode labels before starting physical inspection.
+                    </p>
+                    {canPrepareLabels ? (
+                      <button
+                        type="button"
+                        className="mt-3 min-h-14 w-full rounded-2xl bg-slate-900 px-4 text-base font-semibold text-white"
+                        onClick={() => setPlannerOpen(true)}
+                      >
+                        Prepare Receiving Units
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {ruCount > 0 && printedCount === 0 && plannedCount > 0 ? (
+                  <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-950">
+                    Labels are not printed yet. Print RU Labels before scanning. Unprinted (PLANNED) barcodes cannot be received.
+                  </p>
+                ) : null}
+                {canScanNow ? (
+                  <button
+                    type="button"
+                    className="min-h-16 w-full rounded-2xl bg-sky-700 px-4 text-xl font-bold text-white"
+                    onClick={() => setScannerOpen(true)}
+                  >
+                    Scan Item
+                  </button>
+                ) : null}
+                {canEnterRu ? (
+                  <button
+                    type="button"
+                    className="min-h-12 w-full rounded-2xl border text-base font-semibold"
+                    onClick={() => {
+                      setScanError("");
+                      setManualOpen(true);
+                    }}
+                  >
+                    Enter RU Number
+                  </button>
+                ) : null}
+                {canStartNow && (session || printedCount > 0) ? (
+                  <button
+                    type="button"
+                    className="min-h-14 w-full rounded-2xl bg-slate-900 px-4 text-base font-semibold text-white"
+                    onClick={resumeReceiving}
+                  >
+                    {session ? "Resume Receiving" : "Start Receiving"}
+                  </button>
+                ) : null}
                 {progress?.ruPending === 0 && progress?.ruTotal > 0 && session?.status !== "COMPLETED" ? (
                   <button
                     type="button"
                     className="min-h-12 w-full rounded-2xl border text-base font-semibold"
                     onClick={() => setReviewOpen(true)}
                   >
-                    Complete Receiving Session
+                    Complete Receiving
                   </button>
                 ) : null}
               </div>
@@ -367,7 +432,7 @@ export default function IncomingShipmentsPanel() {
                         <button
                           type="button"
                           className="mt-2 min-h-12 w-full rounded-2xl border text-base font-semibold"
-                          onClick={() => setSelectedId(null)}
+                          onClick={clearSelectedAsn}
                         >
                           Back to Incoming Shipments
                         </button>
@@ -431,26 +496,32 @@ export default function IncomingShipmentsPanel() {
                 ) : null}
               </div>
             ) : null}
-            {progress ? (
+            {progress || ruCount > 0 ? (
               <div className="rounded-2xl border bg-slate-50 p-4">
                 <div className="font-semibold">{detail.asnNo}</div>
                 <div className="mt-2 grid grid-cols-2 gap-2 text-base">
-                  <div>Receiving Units: {progress.ruTotal}</div>
-                  <div>Photos: {progress.photos}</div>
-                  <div>Completed {progress.ruCompleted}</div>
-                  <div>In Progress {progress.ruInProgress}</div>
-                  <div>Pending {progress.ruPending}</div>
-                  {!progress.mixedUom ? (
+                  <div>Receiving Units: {ruCount || progress?.ruTotal || 0}</div>
+                  <div>Printed: {printedCount} / {ruCount || progress?.ruTotal || 0}</div>
+                  <div>Photos: {progress?.photos || 0}</div>
+                  <div>Completed {progress?.ruCompleted || 0}</div>
+                  <div>In Progress {progress?.ruInProgress || 0}</div>
+                  <div>Pending {progress?.ruPending || 0}</div>
+                  <div>Accepted {receivingTotals.accepted}</div>
+                  <div>Damaged {receivingTotals.damaged}</div>
+                  <div>Rejected {receivingTotals.rejected}</div>
+                  <div>Short {receivingTotals.short}</div>
+                  <div className="col-span-2">Excess {receivingTotals.excess}</div>
+                  {!progress?.mixedUom ? (
                     <>
-                      <div>Planned Qty {progress.plannedQty}</div>
-                      <div>Counted Qty {progress.countedQty}</div>
+                      <div>Planned Qty {progress?.plannedQty}</div>
+                      <div>Counted Qty {progress?.countedQty}</div>
                     </>
                   ) : (
                     <div className="col-span-2 text-slate-600">Quantities shown per article (mixed UOM)</div>
                   )}
                 </div>
                 <div className="mt-3 space-y-2">
-                  {(progress.articles || []).map((row) => (
+                  {(progress?.articles || []).map((row) => (
                     <div key={`${row.article}-${row.uom}`} className="rounded-xl bg-white p-3">
                       <div className="font-mono font-bold">
                         {row.article} — {row.description || ""}
@@ -466,14 +537,32 @@ export default function IncomingShipmentsPanel() {
                 </div>
               </div>
             ) : null}
-            {canPrepareLabels && ["SHIPPED", "ARRIVED"].includes(String(detail.status || "").toUpperCase()) ? (
-              <button
-                type="button"
-                className="min-h-14 w-full rounded-2xl bg-slate-900 px-4 text-base font-semibold text-white"
-                onClick={() => setPlannerOpen(true)}
-              >
-                Prepare Labels
-              </button>
+            {canPrepareLabels && eligibleReceiveStatus ? (
+              <div className="grid gap-2">
+                <button
+                  type="button"
+                  className="min-h-14 w-full rounded-2xl bg-slate-900 px-4 text-base font-semibold text-white"
+                  onClick={() => setPlannerOpen(true)}
+                >
+                  {ruCount === 0 ? "Prepare Receiving Units" : "Review Receiving Units"}
+                </button>
+                {ruCount > 0 ? (
+                  <button
+                    type="button"
+                    className="min-h-14 w-full rounded-2xl bg-sky-800 px-4 text-base font-semibold text-white"
+                    onClick={() => setPlannerOpen(true)}
+                  >
+                    Print RU Labels
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="min-h-12 w-full rounded-2xl border text-base font-semibold"
+                  onClick={() => navigate(`/store?tab=${encodeURIComponent("Label Queue")}`)}
+                >
+                  View Label Queue
+                </button>
+              </div>
             ) : null}
             <div className="grid gap-2 sm:grid-cols-2 text-sm">
               <div>Mode: {detail.shipmentMode || "—"}</div>
@@ -524,7 +613,8 @@ export default function IncomingShipmentsPanel() {
             </p>
           </div>
         )}
-      </Modal>
+        </div>
+      ) : null}
 
       <Modal
         open={postConfirmOpen}
