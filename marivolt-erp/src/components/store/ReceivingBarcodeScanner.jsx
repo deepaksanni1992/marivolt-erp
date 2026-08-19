@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import {
   CAMERA_ERROR,
+  SCAN_REGION_MODE,
   SCAN_STATUS,
   buildCameraIdOrConfig,
   buildCameraScanConfig,
   buildHtml5QrcodeConstructorConfig,
   classifyCameraStartError,
   classifyFrameDecodeError,
+  describeDecoderPath,
+  isNativeBarcodeDetectorPresent,
   normalizeRuBarcode,
   optionalFocusConstraints,
   preferRearCameraId,
+  readLiveScanGeometry,
   shouldLockDuplicateScan,
   torchCapabilitySupported,
   zoomCapabilitySupported,
@@ -64,9 +68,10 @@ async function applyOptionalTrackEnhancements(scanner) {
   }
 }
 
-function readDiagnostics(scanner, cameras, deviceId) {
+function readDiagnostics(scanner, cameras, deviceId, regionId) {
   let resolution = "";
   let cameraLabel = "";
+  let geometry = null;
   try {
     const settings = scanner.getRunningTrackSettings?.() || {};
     if (settings.width && settings.height) {
@@ -74,10 +79,14 @@ function readDiagnostics(scanner, cameras, deviceId) {
     }
     const match = (cameras || []).find((cam) => cam.id === deviceId);
     cameraLabel = String(match?.label || "").trim();
+    geometry = readLiveScanGeometry(regionId);
+    if (!resolution && geometry?.videoWidth && geometry?.videoHeight) {
+      resolution = `${geometry.videoWidth}×${geometry.videoHeight}`;
+    }
   } catch {
     /* labels may be empty until permission is granted */
   }
-  return { resolution, cameraLabel };
+  return { resolution, cameraLabel, geometry };
 }
 
 export default function ReceivingBarcodeScanner({ open, onClose, onScan }) {
@@ -87,6 +96,7 @@ export default function ReceivingBarcodeScanner({ open, onClose, onScan }) {
   const lastRef = useRef({ value: "", at: 0 });
   const releasedRef = useRef(false);
   const lastFrameLogRef = useRef(0);
+  const decodeAttemptsRef = useRef(0);
   const [denied, setDenied] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const [error, setError] = useState("");
@@ -120,12 +130,19 @@ export default function ReceivingBarcodeScanner({ open, onClose, onScan }) {
     setTorchOn(false);
     setTorchAvailable(false);
     setZoomAvailable(false);
+    decodeAttemptsRef.current = 0;
     setDiag({
       status: "",
       scanning: "",
       resolution: "",
       cameraLabel: "",
       lastCategory: "",
+      decoderPath: "",
+      scanRegion: "",
+      viewfinder: "",
+      parent: "",
+      qrbox: "",
+      attempts: 0,
     });
 
     (async () => {
@@ -166,15 +183,20 @@ export default function ReceivingBarcodeScanner({ open, onClose, onScan }) {
               });
             },
             (errorMessage) => {
+              decodeAttemptsRef.current += 1;
               const category = classifyFrameDecodeError(errorMessage);
               const now = Date.now();
               if (now - lastFrameLogRef.current < 5000) return;
               lastFrameLogRef.current = now;
               if (import.meta.env.DEV) {
-                console.info("[receiving-scanner]", category);
+                console.info("[receiving-scanner]", category, decodeAttemptsRef.current);
               }
               if (!cancelled) {
-                setDiag((prev) => ({ ...prev, lastCategory: category }));
+                setDiag((prev) => ({
+                  ...prev,
+                  lastCategory: category,
+                  attempts: decodeAttemptsRef.current,
+                }));
               }
             }
           );
@@ -208,13 +230,24 @@ export default function ReceivingBarcodeScanner({ open, onClose, onScan }) {
         setTorchAvailable(torchCapabilitySupported(camCaps));
         setZoomAvailable(zoomCapabilitySupported(camCaps));
 
-        const info = readDiagnostics(scanner, cameras, deviceId);
+        const info = readDiagnostics(scanner, cameras, deviceId, regionId);
+        const geo = info.geometry;
         setDiag({
           status: SCAN_STATUS.READY,
           scanning: SCAN_STATUS.SCANNING,
           resolution: info.resolution,
           cameraLabel: info.cameraLabel,
           lastCategory: "",
+          decoderPath: describeDecoderPath({
+            nativeApiPresent: isNativeBarcodeDetectorPresent(),
+          }),
+          scanRegion: SCAN_REGION_MODE,
+          viewfinder: geo
+            ? `${geo.viewfinderWidth}×${geo.viewfinderHeight}`
+            : "",
+          parent: geo ? `${geo.parentWidth}×${geo.parentHeight}` : "",
+          qrbox: "full-frame (no crop)",
+          attempts: 0,
         });
         setStarting(false);
       } catch (err) {
@@ -327,8 +360,13 @@ export default function ReceivingBarcodeScanner({ open, onClose, onScan }) {
               <p className="text-xs text-slate-400">
                 {diag.status}
                 {diag.scanning ? ` · ${diag.scanning}` : ""}
-                {diag.resolution ? ` · ${diag.resolution}` : ""}
+                {diag.resolution ? ` · video ${diag.resolution}` : ""}
+                {diag.viewfinder ? ` · viewfinder ${diag.viewfinder}` : ""}
+                {diag.parent ? ` · parent ${diag.parent}` : ""}
+                {diag.qrbox ? ` · ${diag.qrbox}` : ""}
+                {diag.decoderPath ? ` · ${diag.decoderPath}` : ""}
                 {diag.cameraLabel ? ` · ${diag.cameraLabel}` : ""}
+                {diag.attempts ? ` · frames ${diag.attempts}` : ""}
                 {diag.lastCategory === SCAN_STATUS.NOT_DETECTED_YET
                   ? " · No code in view yet"
                   : ""}

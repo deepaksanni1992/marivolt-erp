@@ -3,13 +3,25 @@
  *
  * formatsToSupport MUST be passed to the Html5Qrcode constructor.
  * Html5QrcodeCameraScanConfig (start()) does not read formatsToSupport.
- * Without constructor formats, 2.3.8 enables every symbology and prefers
- * Chrome BarcodeDetector, which is unreliable for Code128 on Samsung Chrome.
+ *
+ * Portrait Samsung Chrome (live UAT 720x1280): html5-qrcode sizes <video> to
+ * parent clientWidth and lets height follow the stream aspect ratio. The
+ * parent is overflow:hidden, so the operator sees the top of the video, but a
+ * centered qrbox is computed on the full (taller) video element. Decode then
+ * samples a band that is not the visible overlay. Omit qrbox so 2.3.8 uses
+ * the full rendered surface (foreverScan qrRegion = viewfinder).
+ *
+ * Decoder: 2.3.8 with useBarCodeDetectorIfSupported true uses Chrome
+ * BarcodeDetector as primary and ZXing as secondary, alternating frames.
+ * ZXing in this build sets TRY_HARDER=false. Native BarcodeDetector is the
+ * path that matches other Android scanner apps on the same tablet.
  */
 
 export const RECEIVING_SCANNER_FPS = 12;
 export const RECEIVING_SCAN_DUPLICATE_MS = 1600;
 export const RECEIVING_CODE128_FORMAT = 5; // Html5QrcodeSupportedFormats.CODE_128
+export const SCAN_REGION_MODE = "full-frame";
+export const USE_NATIVE_BARCODE_DETECTOR = true;
 
 export const CAMERA_ERROR = {
   PERMISSION_DENIED: "CAMERA_PERMISSION_DENIED",
@@ -53,12 +65,59 @@ export function isWideRectangularQrbox(box) {
   return box.width > box.height * 1.4;
 }
 
+export function videoClientSizeFromStream(videoWidth, videoHeight, parentClientWidth) {
+  const vw = Math.max(1, Number(videoWidth) || 1);
+  const vh = Math.max(1, Number(videoHeight) || 1);
+  const cw = Math.max(1, Number(parentClientWidth) || 1);
+  return {
+    clientWidth: cw,
+    clientHeight: Math.round(cw * (vh / vw)),
+  };
+}
+
+export function html5QrcodeCenteredQrboxBounds(viewfinderWidth, viewfinderHeight, qrbox) {
+  const box = qrbox || { width: 0, height: 0 };
+  return {
+    x: (Number(viewfinderWidth) - box.width) / 2,
+    y: (Number(viewfinderHeight) - box.height) / 2,
+    width: box.width,
+    height: box.height,
+  };
+}
+
+export function centeredQrboxMissesVisibleParent({
+  viewfinderHeight,
+  parentHeight,
+  qrbox,
+} = {}) {
+  if (!qrbox?.height || !viewfinderHeight || !parentHeight) return false;
+  const top = (Number(viewfinderHeight) - qrbox.height) / 2;
+  const bottom = top + qrbox.height;
+  const overlap = Math.max(0, Math.min(bottom, parentHeight) - Math.max(top, 0));
+  return overlap < qrbox.height * 0.5;
+}
+
+export function describeDecoderPath({ nativeApiPresent } = {}) {
+  if (USE_NATIVE_BARCODE_DETECTOR && nativeApiPresent) {
+    return "BarcodeDetector+ZXing";
+  }
+  return "ZXing";
+}
+
+export function isNativeBarcodeDetectorPresent(globalObject = globalThis) {
+  try {
+    return typeof globalObject?.BarcodeDetector === "function";
+  } catch {
+    return false;
+  }
+}
+
 export function buildHtml5QrcodeConstructorConfig(Html5QrcodeSupportedFormats) {
   const code128 = Html5QrcodeSupportedFormats?.CODE_128 ?? RECEIVING_CODE128_FORMAT;
   return {
     verbose: false,
     formatsToSupport: [code128],
-    useBarCodeDetectorIfSupported: false,
+    useBarCodeDetectorIfSupported: USE_NATIVE_BARCODE_DETECTOR,
   };
 }
 
@@ -87,7 +146,6 @@ export function buildCameraScanConfig({ deviceId, includeVideoConstraints = true
   return {
     fps: RECEIVING_SCANNER_FPS,
     disableFlip: true,
-    qrbox: buildQrbox,
     ...(includeVideoConstraints
       ? { videoConstraints: buildIdealVideoConstraints(deviceId) }
       : {}),
@@ -146,4 +204,33 @@ export function zoomCapabilitySupported(cameraCapabilities) {
   } catch {
     return false;
   }
+}
+
+export function readLiveScanGeometry(regionId) {
+  if (typeof document === "undefined") return null;
+  const root = document.getElementById(regionId);
+  const video = root?.querySelector?.("video");
+  if (!root || !video) return null;
+  const parentHeight = root.clientHeight;
+  const parentWidth = root.clientWidth;
+  const videoWidth = video.videoWidth || 0;
+  const videoHeight = video.videoHeight || 0;
+  const clientWidth = video.clientWidth || 0;
+  const clientHeight = video.clientHeight || 0;
+  const wouldCrop = buildQrbox(clientWidth, clientHeight);
+  return {
+    videoWidth,
+    videoHeight,
+    viewfinderWidth: clientWidth,
+    viewfinderHeight: clientHeight,
+    parentWidth,
+    parentHeight,
+    scanRegion: SCAN_REGION_MODE,
+    wouldHaveCroppedQrbox: wouldCrop,
+    cropWouldMissVisible: centeredQrboxMissesVisibleParent({
+      viewfinderHeight: clientHeight,
+      parentHeight,
+      qrbox: wouldCrop,
+    }),
+  };
 }

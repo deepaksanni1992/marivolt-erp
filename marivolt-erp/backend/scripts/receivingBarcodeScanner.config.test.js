@@ -11,19 +11,24 @@ import {
   CAMERA_ERROR,
   RECEIVING_CODE128_FORMAT,
   RECEIVING_SCANNER_FPS,
+  SCAN_REGION_MODE,
   SCAN_STATUS,
   buildCameraIdOrConfig,
   buildCameraScanConfig,
   buildHtml5QrcodeConstructorConfig,
   buildIdealVideoConstraints,
   buildQrbox,
+  centeredQrboxMissesVisibleParent,
   classifyCameraStartError,
   classifyFrameDecodeError,
+  describeDecoderPath,
+  html5QrcodeCenteredQrboxBounds,
   isWideRectangularQrbox,
   normalizeRuBarcode,
   optionalFocusConstraints,
   preferRearCameraId,
   shouldLockDuplicateScan,
+  videoClientSizeFromStream,
 } from "../../src/lib/receivingBarcodeScannerConfig.js";
 
 const require = createRequire(import.meta.url);
@@ -57,36 +62,60 @@ run("installed html5-qrcode exposes CODE_128 = 5", () => {
   assert.match(String(pkg.dependencies["html5-qrcode"]), /2\.3\.8/);
 });
 
-run("constructor config enables only Code128 and disables BarcodeDetector", () => {
+run("constructor config enables only Code128 and prefers native BarcodeDetector", () => {
   const cfg = buildHtml5QrcodeConstructorConfig(Html5QrcodeSupportedFormats);
   assert.deepEqual(cfg.formatsToSupport, [Html5QrcodeSupportedFormats.CODE_128]);
-  assert.equal(cfg.useBarCodeDetectorIfSupported, false);
+  assert.equal(cfg.useBarCodeDetectorIfSupported, true);
   assert.equal(cfg.verbose, false);
 });
 
-run("start() camera config requests environment camera, ~12 fps, and 1280x720 ideals", () => {
+run("start() camera config requests environment camera, ~12 fps, full-frame, and 1280x720 ideals", () => {
   const camera = buildCameraIdOrConfig("");
   assert.deepEqual(camera, { facingMode: "environment" });
   const scan = buildCameraScanConfig();
   assert.equal(scan.fps, 12);
   assert.equal(scan.fps, RECEIVING_SCANNER_FPS);
   assert.equal(scan.disableFlip, true);
-  assert.equal(typeof scan.qrbox, "function");
+  assert.equal(scan.qrbox, undefined);
   assert.equal(scan.videoConstraints.facingMode.ideal, "environment");
   assert.equal(scan.videoConstraints.width.ideal, 1280);
   assert.equal(scan.videoConstraints.height.ideal, 720);
   assert.ok(scan.videoConstraints.width.max <= 1920);
 });
 
-run("qrbox is a wide rectangle suitable for Code128", () => {
+run("qrbox helper stays a wide rectangle; start() does not crop with it", () => {
   const portrait = buildQrbox(800, 1280);
   const landscape = buildQrbox(1280, 720);
+  const samsungPortrait = buildQrbox(720, 1280);
   assert.ok(isWideRectangularQrbox(portrait));
   assert.ok(isWideRectangularQrbox(landscape));
+  assert.ok(isWideRectangularQrbox(samsungPortrait));
+  assert.ok(samsungPortrait.width > samsungPortrait.height);
+  assert.ok(samsungPortrait.width >= Math.round(720 * 0.8));
   assert.ok(portrait.width >= 640);
   assert.ok(portrait.width <= 800);
   assert.ok(portrait.height < portrait.width);
   assert.ok(portrait.height >= 80);
+});
+
+run("portrait 720x1280 centered qrbox misses the visible overflow-clipped parent", () => {
+  const stream = videoClientSizeFromStream(720, 1280, 800);
+  assert.equal(stream.clientWidth, 800);
+  assert.equal(stream.clientHeight, Math.round(800 * (1280 / 720)));
+  const qrbox = buildQrbox(stream.clientWidth, stream.clientHeight);
+  const bounds = html5QrcodeCenteredQrboxBounds(stream.clientWidth, stream.clientHeight, qrbox);
+  const parentHeight = 640;
+  assert.equal(
+    centeredQrboxMissesVisibleParent({
+      viewfinderHeight: stream.clientHeight,
+      parentHeight,
+      qrbox,
+    }),
+    true
+  );
+  assert.ok(bounds.y > parentHeight * 0.5);
+  assert.equal(SCAN_REGION_MODE, "full-frame");
+  assert.equal("qrbox" in buildCameraScanConfig(), false);
 });
 
 run("normalizeRuBarcode trims without changing hyphens or leading zeros", () => {
@@ -129,6 +158,11 @@ run("rear camera preference skips hardcoded ids and avoids macro labels when pre
   assert.equal("facingMode" in constraints, false);
 });
 
+run("decoder path reports BarcodeDetector+ZXing when the native API exists", () => {
+  assert.equal(describeDecoderPath({ nativeApiPresent: true }), "BarcodeDetector+ZXing");
+  assert.equal(describeDecoderPath({ nativeApiPresent: false }), "ZXing");
+});
+
 run("continuous autofocus is optional and skipped when unsupported", () => {
   assert.equal(optionalFocusConstraints({}), null);
   assert.deepEqual(optionalFocusConstraints({ focusMode: ["continuous"] }), { focusMode: "continuous" });
@@ -145,6 +179,9 @@ run("scanner component uses constructor formats, stops on success, and keeps man
   assert.match(scanner, /onScanRef\.current\?\.\(value\)/);
   assert.match(scanner, /Enter RU Number/);
   assert.match(scanner, /Align the barcode inside the box/);
+  assert.match(scanner, /SCAN_REGION_MODE/);
+  assert.match(scanner, /describeDecoderPath/);
+  assert.match(scanner, /full-frame/);
   assert.match(scanner, /if \(cancelled\)/);
   assert.match(incoming, /Enter RU Number/);
   assert.match(incoming, /onScan=\{openScannedBarcode\}/);
