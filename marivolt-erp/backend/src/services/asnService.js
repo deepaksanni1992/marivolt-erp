@@ -86,6 +86,11 @@ function sessionOpts(session) {
   return session ? { session } : {};
 }
 
+/** Mongoose 9 requires this for aggregation-pipeline updates (array of $set/$map stages). */
+function poLinePipelineUpdateOptions(session) {
+  return { new: true, updatePipeline: true, ...sessionOpts(session) };
+}
+
 function lineAsnActive(po, poLineId) {
   const want = String(poLineId);
   const line = (po?.lines || []).find((l) => String(l._id) === want);
@@ -163,7 +168,7 @@ export async function claimPoLineAsnQty({ po, poLineId, qty, orderedQty, documen
         },
       },
     ],
-    { new: true, ...sessionOpts(session) }
+    poLinePipelineUpdateOptions(session)
   );
   if (!updated || roundAsnQty(lineAsnActive(updated, poLineId) - before) + ASN_QTY_EPS < q) {
     throw new AsnError("ASN quantity exceeds remaining available", 409, "ASN_QTY_EXCEEDED");
@@ -242,7 +247,7 @@ export async function restorePoLineAsnQty({
         },
       },
     ],
-    { new: true, ...sessionOpts(session) }
+    poLinePipelineUpdateOptions(session)
   );
   if (!updated || roundAsnQty(lineAsnActive(updated, poLineId) - before) + ASN_QTY_EPS < q) {
     throw new AsnError(
@@ -295,7 +300,7 @@ export async function releasePoLineAsnQty({ po, poLineId, qty, session = null })
         },
       },
     ],
-    { new: true, ...sessionOpts(session) }
+    poLinePipelineUpdateOptions(session)
   );
 }
 

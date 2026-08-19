@@ -37,6 +37,8 @@ import {
   hasPermission,
 } from "../src/services/roleService.js";
 import { PERMISSION_MODULES } from "../src/models/Role.js";
+import mongoose from "mongoose";
+import PurchaseOrder from "../src/models/PurchaseOrder.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const backendRoot = path.join(__dirname, "..");
@@ -380,6 +382,8 @@ run("ASN reservation uses atomic pipeline predicate including receivedQty", () =
   assert.ok(service.includes("claimPoLineAsnQty"));
   assert.ok(service.includes("restorePoLineAsnQty"));
   assert.ok(service.includes("ASN_RESERVATION_RESTORE_CONFLICT"));
+  assert.ok(service.includes("updatePipeline: true"));
+  assert.ok(service.includes("poLinePipelineUpdateOptions"));
   assert.equal(service.includes("deleteOne"), false);
   assert.equal(service.includes("recomputeAndGuard"), false);
   assert.equal(service.includes("orderedQty ="), false);
@@ -458,6 +462,108 @@ run("frontend Incoming Shipments is a Store operator tab", () => {
 run("roundAsnQty preserves engine-style decimals", () => {
   assert.equal(roundAsnQty(1.2345674), 1.234567);
   assert.equal(poLines[0].qty, 100);
+});
+
+run("legacy missing received/cancelled/asnActiveQty default to zero", () => {
+  const line = { orderedQty: 50 };
+  const a = tryClaimAsnQtyInMemory(line, 50);
+  const b = tryClaimAsnQtyInMemory(line, 51);
+  assert.equal(a.ok, true);
+  assert.equal(a.line.asnActiveQty, 50);
+  assert.equal(b.ok, false);
+});
+
+run("multi-line ASN 5/10/5 claims then injected failure rolls all back", () => {
+  const lines = [
+    { _id: "A", orderedQty: 5, receivedQty: 0, cancelledQty: 0, asnActiveQty: 0 },
+    { _id: "B", orderedQty: 10, receivedQty: 0, cancelledQty: 0, asnActiveQty: 0 },
+    { _id: "C", orderedQty: 5, receivedQty: 0, cancelledQty: 0, asnActiveQty: 0 },
+  ];
+  const claims = [
+    { id: "A", qty: 5 },
+    { id: "B", qty: 10 },
+    { id: "C", qty: 5 },
+  ];
+  const applied = [];
+  try {
+    for (const row of claims) {
+      const line = lines.find((l) => l._id === row.id);
+      const next = tryClaimAsnQtyInMemory(line, row.qty);
+      assert.equal(next.ok, true);
+      Object.assign(line, next.line);
+      applied.push(row);
+      if (applied.length === 2) throw new Error("injected-failure-after-two-claims");
+    }
+  } catch (err) {
+    assert.equal(err.message, "injected-failure-after-two-claims");
+    for (const row of [...applied].reverse()) {
+      const line = lines.find((l) => l._id === row.id);
+      line.asnActiveQty = roundAsnQty(Math.max(0, (Number(line.asnActiveQty) || 0) - row.qty));
+    }
+  }
+  assert.deepEqual(
+    lines.map((l) => l.asnActiveQty),
+    [0, 0, 0]
+  );
+});
+
+run("multi-line ASN 5/10/5 succeeds without injection", () => {
+  const lines = [
+    { _id: "A", orderedQty: 5, asnActiveQty: 0 },
+    { _id: "B", orderedQty: 10, asnActiveQty: 0 },
+    { _id: "C", orderedQty: 5, asnActiveQty: 0 },
+  ];
+  for (const row of [
+    { id: "A", qty: 5 },
+    { id: "B", qty: 10 },
+    { id: "C", qty: 5 },
+  ]) {
+    const line = lines.find((l) => l._id === row.id);
+    const next = tryClaimAsnQtyInMemory(line, row.qty);
+    assert.equal(next.ok, true);
+    Object.assign(line, next.line);
+  }
+  assert.deepEqual(
+    lines.map((l) => l.asnActiveQty),
+    [5, 10, 5]
+  );
+});
+
+const pipelineUpdate = [
+  {
+    $set: {
+      lines: {
+        $map: {
+          input: "$lines",
+          as: "ln",
+          in: {
+            $mergeObjects: ["$$ln", { asnActiveQty: { $add: [{ $ifNull: ["$$ln.asnActiveQty", 0] }, 5] } }],
+          },
+        },
+      },
+    },
+  },
+];
+
+run("Mongoose 9 rejects aggregation pipeline updates unless updatePipeline is set", () => {
+  const filter = { _id: new mongoose.Types.ObjectId() };
+  assert.throws(
+    () => PurchaseOrder.findOneAndUpdate(filter, pipelineUpdate, { new: true }),
+    (err) =>
+      err?.name === "MongooseError" &&
+      String(err.message).includes("Cannot pass an array to query updates unless the `updatePipeline` option is set.")
+  );
+});
+
+run("claim/release/restore pipeline shape is accepted with updatePipeline: true", () => {
+  const filter = { _id: new mongoose.Types.ObjectId() };
+  const query = PurchaseOrder.findOneAndUpdate(filter, pipelineUpdate, {
+    new: true,
+    updatePipeline: true,
+  });
+  assert.equal(Array.isArray(query.getUpdate()), true);
+  assert.equal(query.getUpdate().length, 1);
+  assert.equal(query.getUpdate()[0].$set.lines.$map.as, "ln");
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
