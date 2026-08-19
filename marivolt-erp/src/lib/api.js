@@ -195,7 +195,11 @@ export async function apiPostFormData(path, formData) {
         { message: body?.message, body, status: res.status, response: { status: res.status, data: body } },
         `Request failed (${res.status})`
       ) || `Request failed (${res.status})`;
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = res.status;
+    if (body?.code) err.code = body.code;
+    err.body = body;
+    throw err;
   }
   return body;
 }

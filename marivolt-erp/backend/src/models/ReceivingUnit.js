@@ -15,6 +15,9 @@ import { RU_STATUSES } from "../utils/receivingUnitRules.js";
  *   image pipeline (not implemented): camera → EXIF/orientation → client resize/compress → S3
  *   Phase 3 backend still validates MIME, size, and authorization; one RU may have many photos
  *   recommended later config (do not hard-code as Phase 2 constants): long edge ≈ 1800px, quality ≈ 0.80
+ *
+ * Phase 3A implements receiving inspection in ReceivingSession / ReceivingSessionUnit /
+ * ReceivingUnitPhoto. This RU document still has no actualQty or photos fields.
  */
 const receivingUnitSchema = new mongoose.Schema(
   {

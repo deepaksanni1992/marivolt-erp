@@ -12,9 +12,14 @@ import {
 import { cancelAsn } from "../services/receivingUnitService.js";
 import { AsnError } from "../utils/asnRules.js";
 import { ReceivingUnitError } from "../utils/receivingUnitRules.js";
+import { ReceivingInspectionError } from "../utils/receivingInspectionRules.js";
 
 function sendError(res, err) {
-  if (err instanceof AsnError || err instanceof ReceivingUnitError) {
+  if (
+    err instanceof AsnError ||
+    err instanceof ReceivingUnitError ||
+    err instanceof ReceivingInspectionError
+  ) {
     return res.status(err.status || err.statusCode || 400).json({ message: err.message, code: err.code });
   }
   const status = Number(err?.statusCode || err?.status) || 500;

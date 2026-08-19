@@ -12,7 +12,7 @@ import { ReceivingUnitError } from "../utils/receivingUnitRules.js";
 import { AsnError } from "../utils/asnRules.js";
 
 function sendError(res, err) {
-  if (err instanceof ReceivingUnitError || err instanceof AsnError) {
+  if (err instanceof ReceivingUnitError || err instanceof AsnError || err?.name === "ReceivingInspectionError") {
     return res.status(err.status || err.statusCode || 400).json({
       message: err.message,
       code: err.code,

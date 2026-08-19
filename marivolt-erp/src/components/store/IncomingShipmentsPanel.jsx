@@ -1,19 +1,29 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRef, useState } from "react";
 import Modal from "../erp/Modal.jsx";
 import AsnReceivingLabelPlanner from "./AsnReceivingLabelPlanner.jsx";
-import { apiGet, apiGetWithQuery } from "../../lib/api.js";
+import ReceivingBarcodeScanner from "./ReceivingBarcodeScanner.jsx";
+import ReceivingUnitInspectScreen from "./ReceivingUnitInspectScreen.jsx";
+import { apiGet, apiGetWithQuery, apiPost } from "../../lib/api.js";
 import { useAuth } from "../../context/AuthContext.jsx";
 import { AsnStatusBadge, formatAsnDate, trackingDisplay } from "../../lib/asnUi.js";
 
 export default function IncomingShipmentsPanel() {
   const { can } = useAuth();
+  const qc = useQueryClient();
   const canPrepareLabels = can("ASN", "view") && can("LABELS", "print");
   const canReprint = can("LABELS", "reprint");
+  const canReceive = can("ASN", "view") && can("STORE", "create");
   const [status, setStatus] = useState("SHIPPED,ARRIVED");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState(null);
   const [plannerOpen, setPlannerOpen] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const [inspect, setInspect] = useState(null);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualRu, setManualRu] = useState("");
+  const scanLockRef = useRef("");
 
   const listQ = useQuery({
     queryKey: ["incoming-asn", status, search],
@@ -33,16 +43,113 @@ export default function IncomingShipmentsPanel() {
     enabled: Boolean(selectedId),
   });
 
+  const progressQ = useQuery({
+    queryKey: ["receiving-progress", selectedId],
+    queryFn: () => apiGet(`/receiving/asn/${selectedId}/progress`),
+    enabled: Boolean(selectedId),
+  });
+
+  const settingsQ = useQuery({
+    queryKey: ["receiving-settings"],
+    queryFn: () => apiGet("/receiving/settings"),
+    staleTime: 60_000,
+  });
+
   const items = listQ.data?.items || [];
   const detail = detailQ.data;
+  const progress = progressQ.data?.progress;
+  const session = progressQ.data?.session;
+
+  function refreshReceiving() {
+    if (selectedId) qc.invalidateQueries({ queryKey: ["receiving-progress", selectedId] });
+  }
+
+  async function openScannedBarcode(barcode) {
+    const value = String(barcode || "").trim().toUpperCase();
+    if (!value) return;
+    if (scanLockRef.current) return;
+    scanLockRef.current = value;
+    setScanError("");
+    try {
+      const data = await apiGet(`/receiving/scan/${encodeURIComponent(value)}`);
+      if (!data.canReceive) {
+        setScannerOpen(false);
+        setScanError(data.message || "This barcode cannot be received.");
+        return;
+      }
+      let sess = data.session;
+      if (canReceive && !sess) {
+        const started = await apiPost("/receiving/sessions", { asnId: data.ru.asnId });
+        sess = started.session;
+      }
+      if (!sess) {
+        setScanError("Could not open a receiving session.");
+        return;
+      }
+      setScannerOpen(false);
+      setSelectedId(String(data.ru.asnId));
+      setInspect({ scan: { ...data, session: sess }, session: sess });
+    } catch (err) {
+      setScannerOpen(false);
+      setScanError(err.message || "Barcode not found");
+    } finally {
+      scanLockRef.current = "";
+    }
+  }
+
+  async function resumeReceiving() {
+    if (!detail?._id) return;
+    setScanError("");
+    try {
+      const started = await apiPost("/receiving/sessions", { asnId: detail._id });
+      await qc.invalidateQueries({ queryKey: ["receiving-progress", detail._id] });
+      setScannerOpen(true);
+      return started;
+    } catch (err) {
+      setScanError(err.message || "Could not start receiving");
+    }
+  }
+
+  async function completeSession() {
+    if (!session?._id) return;
+    try {
+      await apiPost(`/receiving/sessions/${session._id}/complete`);
+      refreshReceiving();
+    } catch (err) {
+      setScanError(err.message || "Cannot complete receiving yet");
+    }
+  }
 
   return (
     <div className="space-y-4">
       <div className="rounded-2xl border bg-white p-4">
         <h3 className="text-base font-semibold text-slate-800">Incoming shipments</h3>
         <p className="mt-1 text-sm text-slate-500">
-          View-only ASN register for warehouse receiving. Prepare labels here. Stock is not posted from this screen.
+          Scan a Receiving Unit label, count, photograph, and save a draft. Stock is not posted from this screen.
         </p>
+        {canReceive ? (
+          <button
+            type="button"
+            className="mt-4 min-h-16 w-full rounded-2xl bg-sky-700 text-2xl font-bold text-white"
+            onClick={() => {
+              setScanError("");
+              setScannerOpen(true);
+            }}
+          >
+            Scan Item
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="mt-2 min-h-12 w-full rounded-2xl border text-base font-semibold"
+          onClick={() => {
+            setScanError("");
+            setManualOpen(true);
+          }}
+        >
+          Enter RU Number
+        </button>
+        {scanError ? <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{scanError}</p> : null}
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           <input
             className="min-h-12 rounded-xl border border-slate-200 px-3 py-2 text-base"
@@ -134,6 +241,68 @@ export default function IncomingShipmentsPanel() {
               <span>{detail.supplierName}</span>
               <span className="font-mono">{detail.sourcePoNo}</span>
             </div>
+            {canReceive && ["SHIPPED", "ARRIVED"].includes(String(detail.status || "").toUpperCase()) ? (
+              <div className="grid gap-2">
+                <button
+                  type="button"
+                  className="min-h-16 w-full rounded-2xl bg-sky-700 px-4 text-xl font-bold text-white"
+                  onClick={() => setScannerOpen(true)}
+                >
+                  Scan Item
+                </button>
+                <button
+                  type="button"
+                  className="min-h-14 w-full rounded-2xl bg-slate-900 px-4 text-base font-semibold text-white"
+                  onClick={resumeReceiving}
+                >
+                  {session ? "Resume Receiving" : "Start Receiving"}
+                </button>
+                {progress?.ruPending === 0 && progress?.ruTotal > 0 && session?.status !== "COMPLETED" ? (
+                  <button
+                    type="button"
+                    className="min-h-12 w-full rounded-2xl border text-base font-semibold"
+                    onClick={completeSession}
+                  >
+                    Complete Receiving Session
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {progress ? (
+              <div className="rounded-2xl border bg-slate-50 p-4">
+                <div className="font-semibold">{detail.asnNo}</div>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-base">
+                  <div>Receiving Units: {progress.ruTotal}</div>
+                  <div>Photos: {progress.photos}</div>
+                  <div>Completed {progress.ruCompleted}</div>
+                  <div>In Progress {progress.ruInProgress}</div>
+                  <div>Pending {progress.ruPending}</div>
+                  {!progress.mixedUom ? (
+                    <>
+                      <div>Planned Qty {progress.plannedQty}</div>
+                      <div>Counted Qty {progress.countedQty}</div>
+                    </>
+                  ) : (
+                    <div className="col-span-2 text-slate-600">Quantities shown per article (mixed UOM)</div>
+                  )}
+                </div>
+                <div className="mt-3 space-y-2">
+                  {(progress.articles || []).map((row) => (
+                    <div key={`${row.article}-${row.uom}`} className="rounded-xl bg-white p-3">
+                      <div className="font-mono font-bold">
+                        {row.article} — {row.description || ""}
+                      </div>
+                      <div>
+                        {row.ruCompleted} / {row.ruTotal} RUs completed
+                      </div>
+                      <div>
+                        {row.countedQty} / {row.plannedQty} {row.uom} counted
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             {canPrepareLabels && ["SHIPPED", "ARRIVED"].includes(String(detail.status || "").toUpperCase()) ? (
               <button
                 type="button"
@@ -187,9 +356,35 @@ export default function IncomingShipmentsPanel() {
                 {!(detail.attachments || []).length ? <li className="text-gray-500">No documents</li> : null}
               </ul>
             </div>
-            <p className="text-xs text-slate-500">Store operators can prepare labels without editing shipment details.</p>
+            <p className="text-xs text-slate-500">Physical receiving does not post stock or create a GRN.</p>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={manualOpen}
+        onClose={() => setManualOpen(false)}
+        title="Enter RU Number"
+      >
+        <form
+          className="space-y-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setManualOpen(false);
+            openScannedBarcode(manualRu);
+          }}
+        >
+          <input
+            className="min-h-14 w-full rounded-xl border px-3 text-lg uppercase"
+            value={manualRu}
+            onChange={(e) => setManualRu(e.target.value.toUpperCase())}
+            placeholder="MAR-RU-000125"
+            autoCapitalize="characters"
+          />
+          <button type="submit" className="min-h-14 w-full rounded-2xl bg-sky-700 text-lg font-semibold text-white">
+            Lookup
+          </button>
+        </form>
       </Modal>
 
       <AsnReceivingLabelPlanner
@@ -198,6 +393,25 @@ export default function IncomingShipmentsPanel() {
         onClose={() => setPlannerOpen(false)}
         canPrint={canPrepareLabels}
         canReprint={canReprint}
+      />
+
+      <ReceivingBarcodeScanner
+        open={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onScan={openScannedBarcode}
+      />
+
+      <ReceivingUnitInspectScreen
+        open={!!inspect}
+        scan={inspect?.scan}
+        session={inspect?.session}
+        settings={settingsQ.data}
+        onClose={() => setInspect(null)}
+        onChanged={refreshReceiving}
+        onScanNext={() => {
+          setInspect(null);
+          setScannerOpen(true);
+        }}
       />
     </div>
   );

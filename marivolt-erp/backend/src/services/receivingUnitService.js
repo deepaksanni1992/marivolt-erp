@@ -28,6 +28,11 @@ import {
 } from "../utils/receivingUnitRules.js";
 import { nextRuNo } from "./receivingUnitNumberService.js";
 import { cancelAsn as executeAsnCancel } from "./asnService.js";
+import { ReceivingInspectionError } from "../utils/receivingInspectionRules.js";
+import {
+  assertAsnCancelNotBlockedByReceiving,
+  assertReplanNotBlockedByReceiving,
+} from "./receivingInspectionGuard.js";
 import {
   isSuccessfulLabelJobStatus,
   validateGrnLabelLinePrintConfig,
@@ -462,7 +467,13 @@ async function persistReplacementPlan(args) {
     });
     return inserted;
   } catch (err) {
-    if (err instanceof ReceivingUnitError || err instanceof AsnError) throw err;
+    if (
+      err instanceof ReceivingUnitError ||
+      err instanceof AsnError ||
+      err instanceof ReceivingInspectionError
+    ) {
+      throw err;
+    }
     if (isTransactionUnsupported(err)) {
       return persistReplacementPlanStandalone(args);
     }
@@ -534,6 +545,11 @@ export async function planReceivingUnits(req, asnId, body = {}) {
       existing.map((ru) => ru._id)
     );
     assertReplanAllowedForPrintJobs(inflightJobs);
+    await assertReplanNotBlockedByReceiving(
+      companyId,
+      existing.map((ru) => ru._id),
+      asn._id
+    );
 
     const planBatchId = new mongoose.Types.ObjectId();
     const expectedVersion =
@@ -648,7 +664,13 @@ export async function cancelAsn(req, id, body = {}) {
     });
     return result;
   } catch (err) {
-    if (err instanceof ReceivingUnitError || err instanceof AsnError) throw err;
+    if (
+      err instanceof ReceivingUnitError ||
+      err instanceof AsnError ||
+      err instanceof ReceivingInspectionError
+    ) {
+      throw err;
+    }
     if (isTransactionUnsupported(err)) {
       return cancelAsnStandalone(req, id, body);
     }
@@ -675,6 +697,7 @@ async function assertNoPrintedReceivingUnits(companyId, asnId, session = null) {
 async function cancelAsnWithRuPolicy(req, id, body, session) {
   const companyId = req.companyId;
   const asn = await loadAsnForCompany(companyId, id);
+  await assertAsnCancelNotBlockedByReceiving(companyId, asn._id);
   await assertNoPrintedReceivingUnits(companyId, asn._id, session);
   await ReceivingUnit.updateMany(
     { companyId, asnId: asn._id, status: "PLANNED" },
@@ -710,6 +733,7 @@ async function cancelAsnWithRuPolicy(req, id, body, session) {
 async function cancelAsnStandalone(req, id, body) {
   const companyId = req.companyId;
   const asn = await loadAsnForCompany(companyId, id);
+  await assertAsnCancelNotBlockedByReceiving(companyId, asn._id);
   await assertNoPrintedReceivingUnits(companyId, asn._id);
   const ruCount = await ReceivingUnit.countDocuments({
     companyId,

@@ -93,6 +93,16 @@ run("STORE_OPERATOR matrix — allowed Store/Label ops", () => {
   assert.deepEqual(m.ASN, ["view"]);
 });
 
+run("STORE_OPERATOR can start receiving without ASN.edit", () => {
+  const receivingRoutes = fs.readFileSync(path.join(srcRoot, "routes", "receivingInspectionRoutes.js"), "utf8");
+  assert.ok(receivingRoutes.includes("/sessions"));
+  assert.ok(receivingRoutes.includes("/photos/:photoId/url"));
+  assert.ok(receivingRoutes.includes("requireAllPermissions"));
+  assert.ok(receivingRoutes.includes('["STORE", "create"]'));
+  assert.ok(receivingRoutes.includes('requirePermission("ASN", "view")'));
+  assert.ok(!receivingRoutes.includes('requirePermission("ASN", "edit")'));
+});
+
 run("STORE_OPERATOR can prepare ASN receiving labels without ASN.edit", () => {
   const asnRoutes = fs.readFileSync(path.join(srcRoot, "routes", "asnRoutes.js"), "utf8");
   assert.ok(asnRoutes.includes("receiving-units/plan"));

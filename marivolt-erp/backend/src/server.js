@@ -45,6 +45,7 @@ import traceabilityRoutes from "./routes/traceabilityRoutes.js";
 import dataHealthRoutes from "./routes/dataHealthRoutes.js";
 import asnRoutes from "./routes/asnRoutes.js";
 import receivingUnitRoutes from "./routes/receivingUnitRoutes.js";
+import receivingInspectionRoutes from "./routes/receivingInspectionRoutes.js";
 import { isCustomsEnabled } from "./config/customsConfig.js";
 import { ensureSearchIndexes } from "./config/searchIndexes.js";
 import { isS3Configured } from "./config/s3.js";
@@ -79,6 +80,22 @@ async function startServer() {
     ensureSearchIndexes().catch((err) => {
       console.warn("Search index ensure skipped:", err?.message || err);
     });
+    import("./utils/receivingInspectionIndexes.js")
+      .then(({ ensureReceivingInspectionIndexes }) =>
+        ensureReceivingInspectionIndexes(mongoose.connection.db, { create: true })
+      )
+      .then((report) => {
+        const created = (report || []).filter((r) => r.action === "created");
+        if (created.length) {
+          console.log(
+            "Receiving inspection indexes created:",
+            created.map((r) => r.name).join(", ")
+          );
+        }
+      })
+      .catch((err) => {
+        console.warn("Receiving inspection index ensure skipped:", err?.message || err);
+      });
 
     const app = express();
 
@@ -110,6 +127,7 @@ async function startServer() {
     app.use("/api/grn", grnRoutes);
     app.use("/api/asn", asnRoutes);
     app.use("/api/receiving-units", receivingUnitRoutes);
+    app.use("/api/receiving", receivingInspectionRoutes);
     app.use("/api/stock", stockRoutes);
     app.use("/api/store", storeRoutes);
     app.use("/api/shipments", logisticsRoutes);

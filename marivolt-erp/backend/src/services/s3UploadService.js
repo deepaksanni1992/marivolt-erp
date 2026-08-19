@@ -44,6 +44,30 @@ export function buildCompanyTenantPrefix({ companyId, companyCode }) {
   return parts.join("/");
 }
 
+/**
+ * Server-generated S3 key for a Receiving Unit inspection photo.
+ * Path components come from persisted session/RU ids, never from the client.
+ */
+export function buildReceivingPhotoObjectKey({
+  companyId,
+  companyCode,
+  sessionId,
+  ruNo,
+  ext = "jpg",
+}) {
+  const sid = String(sessionId || "").replace(/[^a-f0-9]/gi, "") || "session";
+  const ru = String(ruNo || "ru")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9-]/g, "")
+    .slice(0, 40) || "RU";
+  const safeExt = String(ext || "jpg")
+    .replace(/[^a-z0-9]/gi, "")
+    .toLowerCase()
+    .slice(0, 5) || "jpg";
+  return `${buildCompanyTenantPrefix({ companyId, companyCode })}/receiving/${sid}/${ru}/${randomUUID()}.${safeExt}`;
+}
+
 /** Full S3 object key for ERP document uploads (always under tenant prefix). */
 export function buildTenantDocumentObjectKey({ companyId, companyCode, documentFolder, originalFileName }) {
   const folder = String(documentFolder || "others").replace(/^\/+|\/+$/g, "");
