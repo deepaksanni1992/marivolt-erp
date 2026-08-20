@@ -541,8 +541,8 @@ export async function retryJob(req, res) {
 
 export async function confirmPartial(req, res) {
   try {
-    const job = await labelService.confirmPartial(req, req.params.id, req.body?.printedQty);
-    res.json({ success: true, job });
+    const result = await labelService.confirmPartial(req, req.params.id, req.body?.printedQty);
+    res.json({ success: true, ...result });
   } catch (err) {
     sendErr(res, err);
   }
@@ -550,8 +550,8 @@ export async function confirmPartial(req, res) {
 
 export async function resolveUncertain(req, res) {
   try {
-    const job = await labelService.resolveUncertain(req, req.params.id, req.body?.printedQty);
-    res.json({ success: true, job });
+    const result = await labelService.resolveUncertain(req, req.params.id, req.body?.printedQty);
+    res.json({ success: true, ...result });
   } catch (err) {
     sendErr(res, err);
   }

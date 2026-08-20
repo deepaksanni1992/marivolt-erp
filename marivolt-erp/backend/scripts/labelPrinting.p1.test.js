@@ -256,7 +256,9 @@ run("Idempotency + qty guard present in labelService", () => {
   const svc = fs.readFileSync(path.join(backendRoot, "src/services/label/labelService.js"), "utf8");
   assert.ok(svc.includes("idempotencyKey"));
   assert.ok(svc.includes("LABEL_QTY_EXCEEDS_RECEIVED"));
-  assert.ok(svc.includes("LABEL_CONFIRM_EXCEEDS_REMAINING"));
+  assert.ok(svc.includes("planManualPrintedQtyConfirmation"));
+  const confirmRules = fs.readFileSync(path.join(backendRoot, "src/utils/labelConfirmRules.js"), "utf8");
+  assert.ok(confirmRules.includes("LABEL_CONFIRM_EXCEEDS_REMAINING"));
 });
 
 run("Agent routes rate-limited and HTTPS gated", () => {
@@ -414,6 +416,9 @@ run("Label queue UI distinguishes PENDING wait from errors", () => {
   assert.ok(panel.includes("Waiting for printer"));
   assert.ok(panel.includes("not optical/physical paper confirmation"));
   assert.ok(panel.includes("UNCERTAIN"));
+  assert.ok(panel.includes("resolve-uncertain"));
+  assert.ok(panel.includes("Confirm qty"));
+  assert.ok(panel.includes("confirmMut.isPending"));
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

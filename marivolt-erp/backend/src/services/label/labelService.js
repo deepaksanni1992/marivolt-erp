@@ -1289,70 +1289,126 @@ function scaleLinesToRemaining(lines, remaining, copies) {
   return out;
 }
 
-export async function confirmPartial(req, jobId, printedQty) {
+export async function confirmPartial(req, jobId, printedQty, options = {}) {
+  const {
+    autoRetryRemaining = true,
+    requireStatuses = ["PARTIAL", "PRINTING", "LEASED", "UNCERTAIN", "FAILED"],
+    historyEvent = "CONFIRM_PARTIAL",
+  } = options;
   const job = await LabelPrintJob.findOne({ _id: jobId, companyId: req.companyId });
   if (!job) {
     const err = new Error("Job not found");
     err.statusCode = 404;
     throw err;
   }
-  if (!["PARTIAL", "PRINTING", "LEASED", "UNCERTAIN", "FAILED"].includes(job.status)) {
-    const err = new Error(`Cannot confirm partial for status ${job.status}`);
+  await assertAsnViewForAsnLabelJob(req, job);
+
+  const { planManualPrintedQtyConfirmation, formatUncertainConfirmSuccessMessage } = await import(
+    "../../utils/labelConfirmRules.js"
+  );
+  const planned = planManualPrintedQtyConfirmation({
+    status: job.status,
+    printedLabels: job.printedLabels,
+    remainingLabels: job.remainingLabels,
+    requestedLabels: job.requestedLabels,
+    confirmedQty: printedQty,
+    allowedStatuses: requireStatuses,
+  });
+  if (!planned.ok) {
+    const err = new Error(planned.message);
+    err.code = planned.code;
     err.statusCode = 400;
     throw err;
   }
-  const qty = Math.max(0, Number(printedQty) || 0);
-  const wasRemaining = Number(job.remainingLabels) || Number(job.requestedLabels) || 0;
-  if (qty > wasRemaining + 1e-9) {
-    const err = new Error(`Confirmed printed qty (${qty}) cannot exceed remaining (${wasRemaining})`);
-    err.code = "LABEL_CONFIRM_EXCEEDS_REMAINING";
-    err.statusCode = 400;
+
+  const $set = {
+    printedLabels: planned.nextPrintedLabels,
+    remainingLabels: planned.nextRemainingLabels,
+    status: planned.nextStatus,
+    leaseToken: "",
+    leasedToAgentId: "",
+    leaseExpiresAt: null,
+  };
+  if (planned.clearLastError) $set.lastError = "";
+
+  const updated = await LabelPrintJob.findOneAndUpdate(
+    {
+      _id: job._id,
+      companyId: req.companyId,
+      status: job.status,
+    },
+    { $set },
+    { new: true }
+  );
+  if (!updated) {
+    const err = new Error(
+      "Label job was already confirmed or changed by another request. Refresh the Label Queue and try again."
+    );
+    err.code = "LABEL_CONFIRM_CONFLICT";
+    err.statusCode = 409;
     throw err;
   }
-  job.printedLabels = (Number(job.printedLabels) || 0) + qty;
-  job.remainingLabels = Math.max(0, wasRemaining - qty);
-  job.status = job.remainingLabels > 0 ? "PARTIAL" : "COMPLETED";
-  job.leaseToken = "";
-  job.leasedToAgentId = "";
-  job.leaseExpiresAt = null;
-  await job.save();
-  await syncGrnLabelStatus(job.sourceId, job);
-  if (isAsnLabelJob(job)) {
+
+  await syncGrnLabelStatus(updated.sourceId, updated);
+  let ruSync = { updated: 0, ruNos: [] };
+  if (isAsnLabelJob(updated)) {
     const { applyReceivingUnitPrintResult } = await import("./asnLabelService.js");
-    await applyReceivingUnitPrintResult(job);
+    ruSync = await applyReceivingUnitPrintResult(updated);
+    ruSync.ruNos = (updated.lines || [])
+      .map((ln) => ln.ruNo || ln.labelId)
+      .filter(Boolean);
   }
   await recordLabelHistory({
-    jobId: job._id,
-    companyId: job.companyId,
-    agentId: job.agentId,
-    requestedQty: wasRemaining,
-    printedQty: qty,
-    status: job.status,
-    templateCode: job.templateCode,
+    jobId: updated._id,
+    companyId: updated.companyId,
+    agentId: updated.agentId,
+    requestedQty: planned.wasRemaining,
+    printedQty: planned.confirmedQty,
+    status: updated.status,
+    templateCode: updated.templateCode,
     userId: req.user?.id || null,
     userName: t(req.user?.name || ""),
-    event: "CONFIRM_PARTIAL",
-    failureReason: `user confirmed printedQty=${qty}; remaining=${job.remainingLabels}`,
+    event: historyEvent,
+    failureReason: `user confirmed printedQty=${planned.confirmedQty}; remaining=${updated.remainingLabels}`,
   });
-  if (job.remainingLabels > 0) {
-    return retryJob(req, jobId);
+
+  const message = formatUncertainConfirmSuccessMessage({
+    confirmedQty: planned.confirmedQty,
+    ruNos: ruSync.ruNos || [],
+    jobStatus: updated.status,
+  });
+
+  if (autoRetryRemaining && updated.remainingLabels > 0) {
+    const retried = await retryJob(req, jobId);
+    return {
+      job: retried,
+      confirmedQty: planned.confirmedQty,
+      receivingUnitNos: ruSync.ruNos || [],
+      receivingUnitsPrinted: Number(ruSync.updated) || 0,
+      message,
+      autoRetriedRemaining: true,
+    };
   }
-  return job;
+  return {
+    job: updated,
+    confirmedQty: planned.confirmedQty,
+    receivingUnitNos: ruSync.ruNos || [],
+    receivingUnitsPrinted: Number(ruSync.updated) || 0,
+    message,
+    autoRetriedRemaining: false,
+  };
 }
 
+/**
+ * Operator verified physical labels after an UNCERTAIN agent result.
+ * Does not enqueue another RAW print — remaining faces need explicit Retry.
+ */
 export async function resolveUncertain(req, jobId, printedQty) {
-  const job = await LabelPrintJob.findOne({ _id: jobId, companyId: req.companyId });
-  if (!job) {
-    const err = new Error("Job not found");
-    err.statusCode = 404;
-    throw err;
-  }
-  if (job.status !== "UNCERTAIN") {
-    const err = new Error("Job is not UNCERTAIN");
-    err.statusCode = 400;
-    throw err;
-  }
-  return confirmPartial(req, jobId, printedQty);
+  return confirmPartial(req, jobId, printedQty, {
+    autoRetryRemaining: false,
+    requireStatuses: ["UNCERTAIN"],
+    historyEvent: "RESOLVE_UNCERTAIN",
+  });
 }
 
 export async function cancelJob(req, jobId) {

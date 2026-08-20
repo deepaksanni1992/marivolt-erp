@@ -9,6 +9,8 @@ export default function LabelQueuePanel({ onMessage }) {
   const [status, setStatus] = useState("");
   const [confirmJob, setConfirmJob] = useState(null);
   const [printedQty, setPrintedQty] = useState("");
+  const [confirmLocalError, setConfirmLocalError] = useState("");
+  const [confirmLocalSuccess, setConfirmLocalSuccess] = useState("");
   const [reprintJob, setReprintJob] = useState(null);
   const [reprintReason, setReprintReason] = useState(REPRINT_REASONS[0]);
   const [customOpen, setCustomOpen] = useState(false);
@@ -48,12 +50,29 @@ export default function LabelQueuePanel({ onMessage }) {
         uncertain ? `/labels/jobs/${id}/resolve-uncertain` : `/labels/jobs/${id}/confirm-partial`,
         { printedQty: qty }
       ),
-    onSuccess: () => {
-      setConfirmJob(null);
+    onSuccess: (res) => {
+      const msg =
+        res?.message ||
+        (Number(res?.confirmedQty) >= 0
+          ? `${res.confirmedQty} physical label(s) confirmed.`
+          : "Printed quantity confirmed.");
+      setConfirmLocalError("");
+      setConfirmLocalSuccess(msg);
       qc.invalidateQueries({ queryKey: ["label-jobs"] });
-      onMessage?.("Printed quantity confirmed.");
+      qc.invalidateQueries({ queryKey: ["asn-receiving-units"] });
+      qc.invalidateQueries({ queryKey: ["receiving-progress"] });
+      onMessage?.(msg);
+      window.setTimeout(() => {
+        setConfirmJob(null);
+        setConfirmLocalSuccess("");
+      }, 1600);
     },
-    onError: (e) => onMessage?.(e.message || String(e)),
+    onError: (e) => {
+      const msg = e.message || String(e);
+      setConfirmLocalSuccess("");
+      setConfirmLocalError(msg);
+      onMessage?.(msg);
+    },
   });
 
   const reprintMut = useMutation({
@@ -78,6 +97,29 @@ export default function LabelQueuePanel({ onMessage }) {
       return `Waiting for printer — ${st}`;
     }
     return "";
+  }
+
+  function openConfirm(job) {
+    setConfirmJob(job);
+    setPrintedQty(String(job.remainingLabels ?? job.requestedLabels ?? 1));
+    setConfirmLocalError("");
+    setConfirmLocalSuccess("");
+  }
+
+  function submitConfirm() {
+    if (!confirmJob || confirmMut.isPending) return;
+    setConfirmLocalError("");
+    setConfirmLocalSuccess("");
+    const qty = Number(printedQty);
+    if (!Number.isFinite(qty) || qty < 0) {
+      setConfirmLocalError("Enter a non-negative printed quantity.");
+      return;
+    }
+    confirmMut.mutate({
+      id: confirmJob._id,
+      qty,
+      uncertain: String(confirmJob.status || "").toUpperCase() === "UNCERTAIN",
+    });
   }
 
   return (
@@ -135,7 +177,12 @@ export default function LabelQueuePanel({ onMessage }) {
           </thead>
           <tbody>
             {items.map((j) => (
-              <tr key={j._id} className="border-t border-slate-100">
+              <tr
+                key={j._id}
+                className={`border-t border-slate-100 ${
+                  confirmJob && String(confirmJob._id) === String(j._id) ? "bg-amber-50" : ""
+                }`}
+              >
                 <td className="px-2 py-1.5 font-mono">{j.jobNo}</td>
                 <td className="px-2 py-1.5">
                   {formatLabelJobSource(j)}
@@ -169,11 +216,9 @@ export default function LabelQueuePanel({ onMessage }) {
                     {["PARTIAL", "UNCERTAIN"].includes(j.status) && (
                       <button
                         type="button"
-                        className="rounded border px-1.5 py-0.5 text-[11px] font-semibold"
-                        onClick={() => {
-                          setConfirmJob(j);
-                          setPrintedQty(String(j.remainingLabels || 0));
-                        }}
+                        className="rounded border border-amber-400 bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-950"
+                        onClick={() => openConfirm(j)}
+                        data-testid="label-confirm-qty-open"
                       >
                         Confirm qty
                       </button>
@@ -214,21 +259,33 @@ export default function LabelQueuePanel({ onMessage }) {
       <p className="text-[11px] text-slate-500">
         PENDING waits for a READY printer. COMPLETED means the agent submitted RAW while READY and the
         Windows spool queue drained — not optical/physical paper confirmation. UNCERTAIN means the spool
-        outcome is ambiguous.
+        outcome is ambiguous. Use Confirm qty only after you verify the physical label(s) came out.
       </p>
 
       {confirmJob && (
-        <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs">
+        <div
+          className="sticky bottom-2 z-10 rounded border border-amber-300 bg-amber-50 p-3 text-xs shadow-sm"
+          data-testid="label-confirm-qty-panel"
+        >
           <p className="font-semibold text-amber-900">
             Confirm how many labels actually printed for {confirmJob.jobNo} ({confirmJob.status})
           </p>
           {confirmJob.status === "UNCERTAIN" ? (
             <p className="mt-1 text-amber-800">
               Warning: some or all physical labels may already have printed. Enter the confirmed
-              physical printed quantity. Remaining labels will be calculated from requested − confirmed.
-              Windows spooler cannot prove exact physical count.
+              physical printed quantity. This does not send another print — it only marks the job
+              (and ASN RU) as printed when remaining becomes 0.
             </p>
           ) : null}
+          {(confirmJob.lines || [])
+            .map((ln) => ln.ruNo || ln.labelId)
+            .filter(Boolean)
+            .slice(0, 3)
+            .map((ruNo) => (
+              <p key={ruNo} className="mt-1 font-mono text-amber-900">
+                RU {ruNo}
+              </p>
+            ))}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <label>
               Printed qty{" "}
@@ -238,26 +295,43 @@ export default function LabelQueuePanel({ onMessage }) {
                 max={confirmJob.requestedLabels}
                 className="ml-1 w-24 rounded border px-1 py-0.5"
                 value={printedQty}
+                disabled={confirmMut.isPending}
                 onChange={(e) => setPrintedQty(e.target.value)}
+                data-testid="label-confirm-qty-input"
               />
             </label>
             <button
               type="button"
-              className="rounded bg-slate-900 px-2 py-1 font-semibold text-white"
-              onClick={() =>
-                confirmMut.mutate({
-                  id: confirmJob._id,
-                  qty: Number(printedQty) || 0,
-                  uncertain: confirmJob.status === "UNCERTAIN",
-                })
-              }
+              className="rounded bg-slate-900 px-2 py-1 font-semibold text-white disabled:opacity-60"
+              disabled={confirmMut.isPending}
+              onClick={submitConfirm}
+              data-testid="label-confirm-qty-submit"
             >
-              Confirm
+              {confirmMut.isPending ? "Confirming…" : "Confirm"}
             </button>
-            <button type="button" className="rounded border px-2 py-1" onClick={() => setConfirmJob(null)}>
+            <button
+              type="button"
+              className="rounded border px-2 py-1 disabled:opacity-60"
+              disabled={confirmMut.isPending}
+              onClick={() => {
+                setConfirmJob(null);
+                setConfirmLocalError("");
+                setConfirmLocalSuccess("");
+              }}
+            >
               Cancel
             </button>
           </div>
+          {confirmLocalError ? (
+            <p className="mt-2 font-semibold text-rose-700" data-testid="label-confirm-qty-error">
+              {confirmLocalError}
+            </p>
+          ) : null}
+          {confirmLocalSuccess ? (
+            <p className="mt-2 font-semibold text-emerald-800" data-testid="label-confirm-qty-success">
+              {confirmLocalSuccess}
+            </p>
+          ) : null}
         </div>
       )}
 

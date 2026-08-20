@@ -10,6 +10,7 @@ const files = [
   "src/utils/itemMasterTaxonomy.js",
   "src/utils/asnRules.js",
   "src/utils/receivingUnitRules.js",
+  "src/utils/labelConfirmRules.js",
   "src/utils/receivingInspectionRules.js",
   "src/utils/receivingInspectionIndexes.js",
   "src/utils/grnReceiptQty.js",
