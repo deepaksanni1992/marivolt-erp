@@ -36,6 +36,9 @@ import {
   resolveAsnReceivingSource,
 } from "./asnReceivingSourceResolver.js";
 import { buildReceivingRows } from "./asnReceivingDraftService.js";
+import { evaluateAsnReceivingPostReadiness } from "../utils/asnReceivingPostReadiness.js";
+import ReceivingSessionUnit from "../models/ReceivingSessionUnit.js";
+import { getCustomsBoeByIdOrRef, findCustomsBoeByNormalizedNumber } from "./customsBoeService.js";
 import {
   applyReceiveToPo,
   ensureDefaultGrnStockLocation,
@@ -185,6 +188,48 @@ export async function postAsnReceivingDraftGrn(req, grnNo) {
         poLineIdByAsnLineId: source.poLineIdByAsnLineId,
         ...maps,
       });
+
+      // Canonical post-readiness (weights, BOE declaration, ASN HS/COO/SI, location).
+      const sessionUnits = await ReceivingSessionUnit.find({
+        companyId: req.companyId,
+        receivingSessionId: source.receivingSession._id,
+      })
+        .session(session)
+        .lean();
+      const firstCapture = (grn.items || []).map((ln) => ln.customsCapture).find(Boolean) || {};
+      let parentBoe = null;
+      const selectRef = firstCapture.customsBoeId || firstCapture.customsBoeRef;
+      if (selectRef && String(firstCapture.boeMode || "").toUpperCase() !== "CREATE") {
+        parentBoe = await getCustomsBoeByIdOrRef({
+          companyId: req.companyId,
+          idOrRef: selectRef,
+          session,
+        });
+      } else if (firstCapture.boeNumber) {
+        parentBoe = await findCustomsBoeByNormalizedNumber({
+          companyId: req.companyId,
+          boeNumber: firstCapture.boeNumber,
+          session,
+        });
+      }
+      const readiness = evaluateAsnReceivingPostReadiness({
+        grn: {
+          ...(typeof grn.toObject === "function" ? grn.toObject() : grn),
+          entitlementReview,
+        },
+        asn: source.asn,
+        session: source.receivingSession,
+        parentBoe,
+        sessionUnits,
+      });
+      if (!readiness.postReady) {
+        const top = readiness.blockers[0];
+        throw new ReceivingDraftGrnError(
+          top?.message || "Draft GRN is not ready to post",
+          409,
+          top?.code || "GRN_POST_NOT_READY",
+        );
+      }
 
       maybeFailAsnGrnPost("claim_po");
       // ASN_RECEIVING never reads STORE_ALLOW_GRN_OVER_PO. Entitlement is hard-capped.

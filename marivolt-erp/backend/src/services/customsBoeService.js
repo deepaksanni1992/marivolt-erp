@@ -200,6 +200,8 @@ export function assertCustomsBoeDeclarationCompatible(parentBoe, header = {}) {
   const parentCurrency = upper(parentBoe.customsCurrency);
   const parentFx = Number(parentBoe.exchangeRateToAED) || 0;
   const parentUom = upper(parentBoe.customsUom || "PCS") || "PCS";
+  const parentGross = Number(parentBoe.grossWeightKg) || 0;
+  const parentNet = Number(parentBoe.netWeightKg) || 0;
 
   const clientQty = pickNum(header.boeDeclaredQty);
   const clientValue = pickNum(header.boeDeclaredValue);
@@ -211,6 +213,8 @@ export function assertCustomsBoeDeclarationCompatible(parentBoe, header = {}) {
   const clientUom = header.customsUom != null && t(header.customsUom)
     ? upper(header.customsUom)
     : "";
+  const clientGross = pickNum(header.grossWeightKg);
+  const clientNet = pickNum(header.netWeightKg);
 
   if (clientQty != null && Math.abs(clientQty - parentQty) > 1e-6) {
     errors.push(
@@ -238,6 +242,16 @@ export function assertCustomsBoeDeclarationCompatible(parentBoe, header = {}) {
   if (clientUom && parentUom && clientUom !== parentUom) {
     errors.push(
       `Cannot override Customs UOM for existing BOE ${parentBoe.customsBoeRef || ""}. Parent has ${parentUom}.`,
+    );
+  }
+  if (clientGross != null && parentGross > 0 && Math.abs(clientGross - parentGross) > 1e-6) {
+    errors.push(
+      `Cannot override Customs Declared Gross Weight for existing BOE ${parentBoe.customsBoeRef || ""}. Parent has ${parentGross}.`,
+    );
+  }
+  if (clientNet != null && parentNet > 0 && Math.abs(clientNet - parentNet) > 1e-6) {
+    errors.push(
+      `Cannot override Customs Declared Net Weight for existing BOE ${parentBoe.customsBoeRef || ""}. Parent has ${parentNet}.`,
     );
   }
 

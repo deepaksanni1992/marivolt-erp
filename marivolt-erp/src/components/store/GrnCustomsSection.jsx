@@ -532,7 +532,7 @@ export default function GrnCustomsSection({
             Calculated once on the Customs BOE parent (server authoritative)
           </span>
         </Field>
-        <Field label="Gross Weight (KG)">
+        <Field label="Customs Declared Gross Weight (KG)" required={isAsnReceiving && !isSelect}>
           <input
             type="number"
             min="0"
@@ -543,8 +543,11 @@ export default function GrnCustomsSection({
             value={value.grossWeightKg ?? ""}
             onChange={(e) => setField("grossWeightKg", e.target.value)}
           />
+          <span className="mt-0.5 block text-[10px] text-slate-500">
+            BOE declaration total — not article Actual Unit Weight
+          </span>
         </Field>
-        <Field label="Net Weight (KG)">
+        <Field label="Customs Declared Net Weight (KG)" required={isAsnReceiving && !isSelect}>
           <input
             type="number"
             min="0"
@@ -555,6 +558,9 @@ export default function GrnCustomsSection({
             value={value.netWeightKg ?? ""}
             onChange={(e) => setField("netWeightKg", e.target.value)}
           />
+          <span className="mt-0.5 block text-[10px] text-slate-500">
+            Must be &gt; 0 and must not exceed Gross Weight
+          </span>
         </Field>
         <Field label="Customs Currency" required={!isSelect}>
           <input

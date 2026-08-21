@@ -27,6 +27,8 @@ function captureFromGrn(grn) {
     boeDeclaredValue: first.boeDeclaredValue || "",
     customsUom: first.customsUom || "PCS",
     customsRemarks: first.customsRemarks || "",
+    grossWeightKg: first.grossWeightKg || "",
+    netWeightKg: first.netWeightKg || "",
     linkedCustomsQty: "",
   };
 }
@@ -105,7 +107,8 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
         const key = String(ln.poLineId || ln.asnLineId || ln.article);
         const ed = lineEdits[key] || {};
         const qty = Number(ln.acceptedQty ?? ln.receivedQty) || 0;
-        const unitWeightKg = Number(ed.unitWeightKg) || 0;
+        // Actual Unit Weight is receiving-authoritative — never send client overrides.
+        const unitWeightKg = Number(ln.customsCapture?.unitWeightKg) || 0;
         return {
           ...ln,
           warehouse: ed.warehouse || ln.warehouse || "MAIN",
@@ -114,7 +117,9 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
           customsCapture: {
             ...customs,
             unitWeightKg,
-            totalWeightKg: qty > 0 && unitWeightKg > 0 ? qty * unitWeightKg : 0,
+            totalWeightKg: qty > 0 && unitWeightKg > 0 ? qty * unitWeightKg : Number(ln.customsCapture?.totalWeightKg) || 0,
+            grossWeightKg: Number(customs.grossWeightKg) || 0,
+            netWeightKg: Number(customs.netWeightKg) || 0,
             supplierInvoiceNumber: "",
             supplierInvoiceDate: null,
             hsCode: "",
@@ -146,6 +151,21 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
 
   return (
     <div className="mt-3 space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+      {Array.isArray(grn.postReadiness?.blockers) && grn.postReadiness.blockers.length > 0 ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+          <div className="font-semibold">Posting Readiness</div>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            {grn.postReadiness.blockers.map((b) => (
+              <li key={`${b.code}-${b.article || ""}-${b.message}`}>{b.message}</li>
+            ))}
+          </ul>
+        </div>
+      ) : grn.postReadiness?.postReady ? (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">
+          ✓ Ready to Post
+        </div>
+      ) : null}
+
       <GrnCustomsSection
         value={customs}
         onChange={setCustoms}
@@ -168,7 +188,7 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
               <th className="px-2 py-1.5 text-right">Accepted Qty</th>
               <th className="px-2 py-1.5">HS Code</th>
               <th className="px-2 py-1.5">COO</th>
-              <th className="px-2 py-1.5">Unit Weight (kg)</th>
+              <th className="px-2 py-1.5">Actual Unit Weight (kg)</th>
               <th className="px-2 py-1.5">Line kg</th>
               <th className="px-2 py-1.5">Location</th>
             </tr>
@@ -179,7 +199,7 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
               const ed = lineEdits[key] || {};
               const asnLine = resolveAsnLine(ln);
               const qty = Number(ln.acceptedQty ?? ln.receivedQty) || 0;
-              const uw = Number(ed.unitWeightKg) || 0;
+              const uw = Number(ln.customsCapture?.unitWeightKg) || Number(ed.unitWeightKg) || 0;
               const lineKg = qty > 0 && uw > 0 ? Math.round(qty * uw * 1000) / 1000 : null;
               const hs = asnLine?.hsCode || "—";
               const coo = asnLine?.countryOfOrigin || asnQ.data?.countryOfOrigin || "—";
@@ -194,20 +214,11 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
                     {coo} <span className="text-slate-400">🔒</span>
                   </td>
                   <td className="px-2 py-1.5">
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      className="w-24 rounded border px-1 py-0.5 text-right"
-                      disabled={disabled || saveMut.isPending}
-                      value={ed.unitWeightKg ?? ""}
-                      onChange={(e) =>
-                        setLineEdits((prev) => ({
-                          ...prev,
-                          [key]: { ...ed, unitWeightKg: e.target.value },
-                        }))
-                      }
-                    />
+                    <div className="flex items-center gap-1 tabular-nums text-slate-800">
+                      {uw > 0 ? uw : "—"}
+                      <span className="text-slate-400">🔒</span>
+                    </div>
+                    <div className="text-[10px] text-slate-400">Source: Receiving</div>
                   </td>
                   <td className="px-2 py-1.5 tabular-nums text-slate-500">{lineKg ?? "—"}</td>
                   <td className="px-2 py-1.5">

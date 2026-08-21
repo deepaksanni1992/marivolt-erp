@@ -500,19 +500,49 @@ export default function IncomingShipmentsPanel() {
                         blocked until the draft is deleted and regenerated.
                       </p>
                     ) : null}
+                    {draftGrn.postReadiness && draftGrn.postReadiness.postReady === false ? (
+                      <div className="mt-2 rounded-xl bg-amber-50 p-3 text-sm text-amber-950">
+                        <div className="font-semibold">
+                          GRN NOT READY TO POST — {draftGrn.postReadiness.blockers?.length || 0} required item
+                          {(draftGrn.postReadiness.blockers?.length || 0) === 1 ? "" : "s"} remaining
+                        </div>
+                        <ul className="mt-2 list-disc space-y-1 pl-5">
+                          {(draftGrn.postReadiness.blockers || []).slice(0, 8).map((b) => (
+                            <li key={`${b.code}-${b.message}`}>{b.message}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : draftGrn.postReadiness?.postReady ? (
+                      <p className="mt-2 rounded-xl bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">
+                        ✓ READY TO POST
+                      </p>
+                    ) : null}
                     <button
                       type="button"
                       className="mt-3 min-h-16 w-full rounded-2xl bg-sky-700 text-xl font-bold text-white"
                       onClick={reviewDraftGrn}
                     >
-                      Review Draft GRN
+                      {draftGrn.postReadiness?.postReady === false
+                        ? "Complete / Review Draft GRN"
+                        : "Review Draft GRN"}
                     </button>
-                    {canPostGrn && draftGrn.entitlementReview?.entitlementValid !== false ? (
+                    {canPostGrn &&
+                    draftGrn.entitlementReview?.entitlementValid !== false &&
+                    draftGrn.postReadiness?.postReady === true ? (
                       <button
                         type="button"
                         className="mt-2 min-h-16 w-full rounded-2xl bg-emerald-700 text-xl font-bold text-white"
                         onClick={() => setPostConfirmOpen(true)}
                         disabled={grnBusy}
+                      >
+                        POST GRN
+                      </button>
+                    ) : canPostGrn && draftGrn.entitlementReview?.entitlementValid !== false ? (
+                      <button
+                        type="button"
+                        className="mt-2 min-h-16 w-full rounded-2xl bg-slate-300 text-xl font-bold text-slate-600"
+                        disabled
+                        title="Complete Draft GRN customs and receiving requirements first"
                       >
                         POST GRN
                       </button>

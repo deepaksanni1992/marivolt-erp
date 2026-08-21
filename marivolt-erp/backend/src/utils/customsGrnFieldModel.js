@@ -412,7 +412,10 @@ export function validateCustomsMandatoryEffective(effective, { location = "" } =
 }
 
 /** Header-level required fields — one error per missing BOE/shipment value. */
-export function validateCustomsHeaderRequired(header = {}, { existingBoe = false } = {}) {
+export function validateCustomsHeaderRequired(
+  header = {},
+  { existingBoe = false, requireDeclaredWeights = false } = {},
+) {
   const errors = [];
   const received = parseCustomsDate(header.receivedDate);
   if (!received) errors.push("Received Date is required");
@@ -439,6 +442,22 @@ export function validateCustomsHeaderRequired(header = {}, { existingBoe = false
     }
   } else if (fx == null || !(fx > 0)) {
     errors.push("Exchange Rate to AED is required");
+  }
+  // ASN_RECEIVING: both Customs Declared Gross and Net Weight are mandatory (> 0),
+  // and Net must not exceed Gross. These are BOE header totals only — never unit weight
+  // and never inputs to customsUnitValue.
+  if (requireDeclaredWeights) {
+    const gross = pickNum(header.grossWeightKg);
+    const net = pickNum(header.netWeightKg);
+    if (gross == null || !(gross > 0)) {
+      errors.push("Customs Declared Gross Weight (KG) is required");
+    }
+    if (net == null || !(net > 0)) {
+      errors.push("Customs Declared Net Weight (KG) is required");
+    }
+    if (gross != null && gross > 0 && net != null && net > 0 && net > gross + 1e-9) {
+      errors.push("Customs Declared Net Weight cannot exceed Gross Weight");
+    }
   }
   return errors;
 }
@@ -674,7 +693,11 @@ export function validateCustomsCaptureForGrn({
 
   const declaredQty = pickNum(headerNorm.boeDeclaredQty);
   const declaredValue = pickNum(headerNorm.boeDeclaredValue);
-  const headerMsgs = validateCustomsHeaderRequired(headerNorm, { existingBoe });
+  const headerMsgs = validateCustomsHeaderRequired(headerNorm, {
+    existingBoe,
+    // ASN_RECEIVING: both Gross and Net declaration weights are mandatory.
+    requireDeclaredWeights: forceAcceptedQtyOnly,
+  });
   if (headerMsgs.length) {
     errors.push({ line: "HEADER", article: "", group: "header", messages: headerMsgs });
   }

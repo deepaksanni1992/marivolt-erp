@@ -20,6 +20,7 @@ import {
   ReceivingInspectionError,
   assertOptimisticVersion,
   assertReceivingActualQty,
+  assertReceivingActualUnitWeightKg,
   assertReceivingCondition,
   assertReceivingDispositionQty,
   assertReceivingPhotoUpload,
@@ -129,6 +130,10 @@ function serializeUnit(unit, extras = {}) {
     uom: unit.uom,
     plannedQty: planned,
     actualQty: actual,
+    actualUnitWeightKg:
+      unit.actualUnitWeightKg == null || unit.actualUnitWeightKg === ""
+        ? null
+        : Number(unit.actualUnitWeightKg),
     acceptedQty: derived.acceptedQty,
     damagedQty: derived.damagedQty,
     rejectedQty: derived.rejectedQty,
@@ -486,6 +491,11 @@ export async function saveReceivingDraft(req, sessionId, ruId, body = {}) {
   if (Object.prototype.hasOwnProperty.call(body, "actualQty")) {
     set.actualQty = assertReceivingActualQty(body.actualQty);
   }
+  if (Object.prototype.hasOwnProperty.call(body, "actualUnitWeightKg")) {
+    set.actualUnitWeightKg = assertReceivingActualUnitWeightKg(body.actualUnitWeightKg, {
+      required: false,
+    });
+  }
   if (Object.prototype.hasOwnProperty.call(body, "condition")) {
     set.condition = assertReceivingCondition(body.condition, { required: false });
   }
@@ -568,6 +578,11 @@ export async function completeReceivingUnit(req, sessionId, ruId, body = {}) {
   if (Object.prototype.hasOwnProperty.call(body, "actualQty")) {
     set.actualQty = assertReceivingActualQty(body.actualQty);
   }
+  if (Object.prototype.hasOwnProperty.call(body, "actualUnitWeightKg")) {
+    set.actualUnitWeightKg = assertReceivingActualUnitWeightKg(body.actualUnitWeightKg, {
+      required: false,
+    });
+  }
   if (Object.prototype.hasOwnProperty.call(body, "condition")) {
     set.condition = assertReceivingCondition(body.condition, { required: true });
   }
@@ -587,6 +602,9 @@ export async function completeReceivingUnit(req, sessionId, ruId, body = {}) {
 
   const merged = {
     actualQty: Object.prototype.hasOwnProperty.call(set, "actualQty") ? set.actualQty : unit.actualQty,
+    actualUnitWeightKg: Object.prototype.hasOwnProperty.call(set, "actualUnitWeightKg")
+      ? set.actualUnitWeightKg
+      : unit.actualUnitWeightKg,
     condition: Object.prototype.hasOwnProperty.call(set, "condition") ? set.condition : unit.condition,
     remarks: Object.prototype.hasOwnProperty.call(set, "remarks") ? set.remarks : unit.remarks,
     qtyConfirmed: set.qtyConfirmed === true ? true : unit.qtyConfirmed,
@@ -607,6 +625,7 @@ export async function completeReceivingUnit(req, sessionId, ruId, body = {}) {
     damagedQty: merged.damagedQty,
     rejectedQty: merged.rejectedQty,
     photos: photosBefore,
+    actualUnitWeightKg: merged.actualUnitWeightKg,
   });
 
   const actor = actorName(req);

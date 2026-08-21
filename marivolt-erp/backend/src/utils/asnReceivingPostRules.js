@@ -225,6 +225,8 @@ export function buildCustomsPostBodyFromGrn(grn) {
     boeDeclaredValue: first.boeDeclaredValue || 0,
     customsUom: first.customsUom || "",
     unitWeightKg: first.unitWeightKg || 0,
+    grossWeightKg: first.grossWeightKg || 0,
+    netWeightKg: first.netWeightKg || 0,
     customsRemarks: first.customsRemarks || "",
   };
   const lineOverrides = items

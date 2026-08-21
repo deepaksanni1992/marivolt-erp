@@ -29,10 +29,12 @@ import {
   freezeReceivingBecauseDraftGrnExists,
   groupReceivingUnitsForDraftGrn,
 } from "../utils/receivingDraftGrnRules.js";
+import { evaluateAsnReceivingPostReadiness } from "../utils/asnReceivingPostReadiness.js";
 import {
   assertAsnReceivingGrnSnapshots,
   resolveAsnReceivingSource,
 } from "./asnReceivingSourceResolver.js";
+import { getCustomsBoeByIdOrRef, findCustomsBoeByNormalizedNumber } from "./customsBoeService.js";
 import { nextGrnNo } from "./grnNumberService.js";
 import { writeAudit } from "./auditService.js";
 
@@ -202,6 +204,7 @@ export async function buildReceivingRows(companyId, source) {
       warehouse: DEFAULT_GRN_WAREHOUSE_CODE,
       plannedQty: ru.plannedQty,
       actualQty: unit?.actualQty ?? null,
+      actualUnitWeightKg: unit?.actualUnitWeightKg ?? null,
       acceptedQty: derived.acceptedQty,
       damagedQty: derived.damagedQty,
       rejectedQty: derived.rejectedQty,
@@ -259,7 +262,9 @@ export async function getDraftGrnForReceivingSession(req, sessionId) {
   let extras = {};
   if (grn) {
     assertAsnReceivingGrnSnapshots(grn, source);
-    extras = { entitlementReview: (await reviewAsnReceivingDraftGrn(req, grn)).review };
+    const entitlementReview = (await reviewAsnReceivingDraftGrn(req, grn)).review;
+    const postReadiness = await evaluatePostReadinessForDraft(req, grn, source, entitlementReview);
+    extras = { entitlementReview, postReadiness };
   }
   return {
     session: {
@@ -269,6 +274,60 @@ export async function getDraftGrnForReceivingSession(req, sessionId) {
     },
     grn: serializeDraftGrn(grn, extras),
   };
+}
+
+/**
+ * Canonical post-readiness for an ASN_RECEIVING Draft GRN (UX + POST precheck).
+ */
+export async function getAsnReceivingPostReadiness(req, sessionId) {
+  const source = await resolveAsnReceivingSource({
+    companyId: req.companyId,
+    receivingSessionId: sessionId,
+  });
+  const grn = await findDraftAsnReceivingGrn(req.companyId, source.receivingSession._id);
+  if (!grn) {
+    throw new ReceivingDraftGrnError("No Draft GRN for this receiving session", 404, "RECEIVING_GRN_NOT_FOUND");
+  }
+  assertAsnReceivingGrnSnapshots(grn, source);
+  let entitlementReview;
+  try {
+    entitlementReview = (await reviewAsnReceivingDraftGrn(req, grn)).review;
+  } catch {
+    entitlementReview = undefined;
+  }
+  return evaluatePostReadinessForDraft(req, grn, source, entitlementReview);
+}
+
+async function evaluatePostReadinessForDraft(req, grn, source, entitlementReview) {
+  const units = await ReceivingSessionUnit.find({
+    companyId: req.companyId,
+    receivingSessionId: source.receivingSession._id,
+  }).lean();
+  const first = (grn.items || []).map((ln) => ln.customsCapture).find(Boolean) || {};
+  let parentBoe = null;
+  const selectRef = first.customsBoeId || first.customsBoeRef;
+  if (selectRef && String(first.boeMode || "").toUpperCase() !== "CREATE") {
+    parentBoe = await getCustomsBoeByIdOrRef({
+      companyId: req.companyId,
+      idOrRef: selectRef,
+    });
+  } else if (first.boeNumber) {
+    parentBoe = await findCustomsBoeByNormalizedNumber({
+      companyId: req.companyId,
+      boeNumber: first.boeNumber,
+    });
+  }
+  const grnForEval = {
+    ...(typeof grn.toObject === "function" ? grn.toObject() : grn),
+    entitlementReview,
+  };
+  return evaluateAsnReceivingPostReadiness({
+    grn: grnForEval,
+    asn: source.asn,
+    session: source.receivingSession,
+    parentBoe,
+    sessionUnits: units,
+  });
 }
 
 export async function generateDraftGrnFromReceivingSession(req, sessionId) {
@@ -283,12 +342,14 @@ export async function generateDraftGrnFromReceivingSession(req, sessionId) {
   if (existing) {
     assertAsnReceivingGrnSnapshots(existing, source);
     const { review } = await reviewAsnReceivingDraftGrn(req, existing);
+    const postReadiness = await evaluatePostReadinessForDraft(req, existing, source, review);
     return {
       created: false,
       reused: true,
-      grn: serializeDraftGrn(existing, { entitlementReview: review }),
+      grn: serializeDraftGrn(existing, { entitlementReview: review, postReadiness }),
       totals: summarizeGrnSources(existing),
       entitlementReview: review,
+      postReadiness,
     };
   }
   const postedActive = await findActiveAsnReceivingGrn(companyId, source.receivingSession._id);
@@ -444,8 +505,14 @@ export async function attachDraftGrnToReceivingProgress(companyId, sessionDoc, p
   if (!grn) return { ...progressPayload, draftGrn: null };
   let extras = { totals: summarizeGrnSources(grn) };
   try {
-    const { review } = await reviewAsnReceivingDraftGrn({ companyId }, grn);
+    const fakeReq = { companyId };
+    const source = await resolveAsnReceivingSource({
+      companyId,
+      receivingSessionId: sessionDoc._id,
+    });
+    const { review } = await reviewAsnReceivingDraftGrn(fakeReq, grn);
     extras.entitlementReview = review;
+    extras.postReadiness = await evaluatePostReadinessForDraft(fakeReq, grn, source, review);
   } catch {
     /* review is additive; freeze/progress still returns the draft */
   }

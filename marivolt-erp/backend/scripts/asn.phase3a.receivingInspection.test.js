@@ -279,6 +279,7 @@ run("cannot complete without qty, condition, confirmed qty, or photo", () => {
 run("completion is idempotent", () => {
   const unit = {
     actualQty: 25,
+    actualUnitWeightKg: 1,
     condition: "GOOD",
     qtyConfirmed: true,
     status: "IN_PROGRESS",
@@ -613,6 +614,7 @@ run("photo delete vs complete race never leaves COMPLETED below min photos", () 
 run("delayed autosave after completion is 409 RECEIVING_UNIT_ALREADY_COMPLETED", () => {
   const unit = {
     actualQty: 25,
+    actualUnitWeightKg: 1,
     condition: "GOOD",
     qtyConfirmed: true,
     status: "IN_PROGRESS",
@@ -635,6 +637,7 @@ run("delayed autosave after completion is 409 RECEIVING_UNIT_ALREADY_COMPLETED",
 run("duplicate Complete Item is idempotent and keeps first completedAt", () => {
   const unit = {
     actualQty: 25,
+    actualUnitWeightKg: 1,
     condition: "GOOD",
     qtyConfirmed: true,
     status: "IN_PROGRESS",
@@ -737,6 +740,7 @@ run("completion requires explicit qtyConfirmed even when actual equals planned",
     () =>
       assertUnitCompletable({
         actualQty: 25,
+        actualUnitWeightKg: 1,
         condition: "GOOD",
         photoCount: 1,
         qtyConfirmed: false,
@@ -747,6 +751,7 @@ run("completion requires explicit qtyConfirmed even when actual equals planned",
   assert.doesNotThrow(() =>
     assertUnitCompletable({
       actualQty: 25,
+      actualUnitWeightKg: 1,
       condition: "GOOD",
       photoCount: 1,
       qtyConfirmed: true,

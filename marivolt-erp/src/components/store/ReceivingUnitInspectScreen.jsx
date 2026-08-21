@@ -47,6 +47,7 @@ export default function ReceivingUnitInspectScreen({
   const ruId = ru._id;
   const sessionId = session?._id;
   const [actualQty, setActualQty] = useState("");
+  const [actualUnitWeightKg, setActualUnitWeightKg] = useState("");
   const [qtyConfirmed, setQtyConfirmed] = useState(false);
   const [condition, setCondition] = useState("");
   const [acceptedQty, setAcceptedQty] = useState("");
@@ -75,6 +76,11 @@ export default function ReceivingUnitInspectScreen({
     const result = scan?.result;
     const nextQty = result?.actualQty != null ? String(result.actualQty) : String(planned);
     setActualQty(nextQty);
+    setActualUnitWeightKg(
+      result?.actualUnitWeightKg == null || result?.actualUnitWeightKg === ""
+        ? ""
+        : String(result.actualUnitWeightKg),
+    );
     setQtyConfirmed(result?.qtyConfirmed === true);
     setCondition(result?.condition || "");
     setAcceptedQty(result?.acceptedQty == null ? "" : String(result.acceptedQty));
@@ -94,6 +100,11 @@ export default function ReceivingUnitInspectScreen({
   function applyServer(result) {
     if (!result) return;
     setActualQty(result.actualQty == null ? String(planned) : String(result.actualQty));
+    setActualUnitWeightKg(
+      result.actualUnitWeightKg == null || result.actualUnitWeightKg === ""
+        ? ""
+        : String(result.actualUnitWeightKg),
+    );
     setQtyConfirmed(result.qtyConfirmed === true);
     setCondition(result.condition || "");
     setAcceptedQty(result.acceptedQty == null ? "" : String(result.acceptedQty));
@@ -127,6 +138,8 @@ export default function ReceivingUnitInspectScreen({
     try {
       const result = await apiPatch(`/receiving/sessions/${sessionId}/units/${ruId}`, {
         actualQty: actualQty === "" ? 0 : Number(actualQty),
+        actualUnitWeightKg:
+          actualUnitWeightKg === "" ? null : Number(actualUnitWeightKg),
         ...dispositionFields(),
         condition: actualQty !== "" && Number(actualQty) === 0 ? "NOT_RECEIVED" : condition,
         remarks,
@@ -170,7 +183,7 @@ export default function ReceivingUnitInspectScreen({
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actualQty, acceptedQty, damagedQty, rejectedQty, condition, remarks, qtyConfirmed, open, locked]);
+  }, [actualQty, actualUnitWeightKg, acceptedQty, damagedQty, rejectedQty, condition, remarks, qtyConfirmed, open, locked]);
 
   function bumpQty(delta) {
     const cur = actualQty === "" ? planned : Number(actualQty);
@@ -310,6 +323,8 @@ export default function ReceivingUnitInspectScreen({
     try {
       const data = await apiPost(`/receiving/sessions/${sessionId}/units/${ruId}/complete`, {
         actualQty: actualQty === "" ? 0 : Number(actualQty),
+        actualUnitWeightKg:
+          actualUnitWeightKg === "" ? null : Number(actualUnitWeightKg),
         ...dispositionFields(),
         condition: actualQty !== "" && Number(actualQty) === 0 ? "NOT_RECEIVED" : condition,
         remarks,
@@ -426,6 +441,31 @@ export default function ReceivingUnitInspectScreen({
           ) : (
             <p className="mt-2 text-sm text-emerald-700">Quantity confirmed</p>
           )}
+          {actualN > 0 ? (
+            <div className="mt-4 border-t border-slate-100 pt-4">
+              <div className="text-sm font-semibold uppercase text-slate-500">Actual Unit Weight (KG)</div>
+              <p className="mt-1 text-xs text-slate-500">
+                Warehouse physical weight per unit. Not BOE customs declared weight.
+              </p>
+              <input
+                className="mt-2 min-h-14 w-full rounded-2xl border text-center text-2xl font-semibold"
+                inputMode="decimal"
+                disabled={locked}
+                value={actualUnitWeightKg}
+                placeholder="e.g. 2.350"
+                onChange={(e) => setActualUnitWeightKg(e.target.value)}
+              />
+              {Number(actualUnitWeightKg) > 0 && actualN > 0 ? (
+                <p className="mt-2 text-sm text-slate-600">
+                  Calculated total actual weight:{" "}
+                  <span className="font-semibold tabular-nums">
+                    {(Math.round(Number(actualUnitWeightKg) * actualN * 1000) / 1000).toFixed(3)} KG
+                  </span>{" "}
+                  (informational only)
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           {!locked && actualN > 0 ? (
             <button
               type="button"

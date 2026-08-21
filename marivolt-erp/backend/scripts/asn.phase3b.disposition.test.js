@@ -228,6 +228,7 @@ run("zero actual is NOT_RECEIVED with all-zero buckets + short planned", () => {
     () =>
       assertUnitCompletable({
         actualQty: 5,
+        actualUnitWeightKg: 1,
         condition: "NOT_RECEIVED",
         remarks: "no",
         photoCount: 1,
@@ -268,6 +269,7 @@ run("bulk O-ring 43 planned / 41 actual / 39+1+1 MIXED", () => {
   assert.doesNotThrow(() =>
     assertUnitCompletable({
       actualQty: 41,
+      actualUnitWeightKg: 1,
       condition: "MIXED",
       remarks: "2 short, 1 damaged, 1 rejected",
       photoCount: 2,
@@ -305,6 +307,7 @@ run("damaged requires DAMAGE photo; short/excess/rejected require remarks", () =
     () =>
       assertUnitCompletable({
         actualQty: 5,
+        actualUnitWeightKg: 1,
         condition: "DAMAGED",
         remarks: "scuffed",
         photoCount: 1,
@@ -321,6 +324,7 @@ run("damaged requires DAMAGE photo; short/excess/rejected require remarks", () =
     () =>
       assertUnitCompletable({
         actualQty: 23,
+        actualUnitWeightKg: 1,
         condition: "GOOD",
         remarks: "",
         photoCount: 1,
@@ -336,6 +340,7 @@ run("damaged requires DAMAGE photo; short/excess/rejected require remarks", () =
     () =>
       assertUnitCompletable({
         actualQty: 27,
+        actualUnitWeightKg: 1,
         condition: "GOOD",
         remarks: "",
         photoCount: 1,
@@ -350,6 +355,7 @@ run("damaged requires DAMAGE photo; short/excess/rejected require remarks", () =
   assert.doesNotThrow(() =>
     assertUnitCompletable({
       actualQty: 25,
+      actualUnitWeightKg: 1,
       condition: "GOOD",
       remarks: "",
       photoCount: 1,
@@ -364,6 +370,7 @@ run("damaged requires DAMAGE photo; short/excess/rejected require remarks", () =
     () =>
       assertUnitCompletable({
         actualQty: 5,
+        actualUnitWeightKg: 1,
         condition: "REJECTED",
         remarks: "wrong part",
         photoCount: 0,
@@ -381,6 +388,7 @@ run("KG decimal disposition 12.5 / 12.2 / 12.0 + 0.2", () => {
   assert.doesNotThrow(() =>
     assertUnitCompletable({
       actualQty: 12.2,
+      actualUnitWeightKg: 1,
       condition: "MIXED",
       remarks: "0.2 kg damaged",
       photoCount: 2,
@@ -405,6 +413,7 @@ run("KG decimal disposition 12.5 / 12.2 / 12.0 + 0.2", () => {
 run("stale version disposition save conflicts", () => {
   const unit = {
     actualQty: 50,
+    actualUnitWeightKg: 1,
     acceptedQty: 45,
     damagedQty: 5,
     rejectedQty: 0,
@@ -424,6 +433,7 @@ run("late autosave cannot change completed disposition", () => {
   const unit = {
     plannedQty: 25,
     actualQty: 25,
+    actualUnitWeightKg: 1,
     acceptedQty: 25,
     damagedQty: 0,
     rejectedQty: 0,

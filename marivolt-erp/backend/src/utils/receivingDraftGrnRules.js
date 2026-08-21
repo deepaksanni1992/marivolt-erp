@@ -25,6 +25,63 @@ export const ASN_GRN_SOURCE_MISMATCH = "ASN_GRN_SOURCE_MISMATCH";
 export const ASN_GRN_EDIT_FORBIDDEN = "ASN_GRN_EDIT_FORBIDDEN";
 export const GRN_DRAFT_ENTITLEMENT_CHANGED = "GRN_DRAFT_ENTITLEMENT_CHANGED";
 export const GRN_DRAFT_ADDITIONAL_ENTITLEMENT_AVAILABLE = "GRN_DRAFT_ADDITIONAL_ENTITLEMENT_AVAILABLE";
+export const RECEIVING_UNIT_WEIGHT_CONFLICT = "RECEIVING_UNIT_WEIGHT_CONFLICT";
+export const RECEIVING_UNIT_WEIGHT_REQUIRED = "RECEIVING_UNIT_WEIGHT_REQUIRED";
+
+/**
+ * Resolve Actual Unit Weight across RUs merged into one GRN line.
+ *
+ * Weighted average by accepted contribution qty (prefers grnAcceptedQty):
+ *   SUM(qty × actualUnitWeightKg) / SUM(qty)
+ *
+ * Different RU weights are allowed. Missing weight on an accepted source → missing.
+ * Zero/rejected sources (qty ≤ 0) do not enter the denominator.
+ *
+ * Rounding: compute in full precision; round only at return with roundAsnQty (6 dp),
+ * matching receiving qty / unit-weight persistence conventions.
+ */
+export function resolveUnitWeightFromReceivingSources(sources = []) {
+  const withAccepted = (sources || []).filter(
+    (s) => roundAsnQty(s.grnAcceptedQty ?? s.acceptedQty) > 0,
+  );
+  if (!withAccepted.length) {
+    return { ok: true, unitWeightKg: 0, conflict: false, missing: false, contributions: [] };
+  }
+  const contributions = [];
+  let sumQty = 0;
+  let sumQtyWeight = 0;
+  for (const s of withAccepted) {
+    const qty = roundAsnQty(s.grnAcceptedQty ?? s.acceptedQty);
+    const w = Number(s.actualUnitWeightKg);
+    if (!Number.isFinite(w) || !(w > 0)) {
+      return {
+        ok: false,
+        unitWeightKg: 0,
+        conflict: false,
+        missing: true,
+        contributions: withAccepted.map((row) => ({
+          ruNo: row.ruNo,
+          qty: roundAsnQty(row.grnAcceptedQty ?? row.acceptedQty),
+          actualUnitWeightKg: Number(row.actualUnitWeightKg) || null,
+        })),
+      };
+    }
+    sumQty += qty;
+    sumQtyWeight += qty * w;
+    contributions.push({
+      ruNo: s.ruNo,
+      receivingUnitId: s.receivingUnitId,
+      receivingSessionUnitId: s.receivingSessionUnitId,
+      qty,
+      actualUnitWeightKg: w,
+    });
+  }
+  if (!(sumQty > 0)) {
+    return { ok: true, unitWeightKg: 0, conflict: false, missing: false, contributions };
+  }
+  const unitWeightKg = roundAsnQty(sumQtyWeight / sumQty);
+  return { ok: true, unitWeightKg, conflict: false, missing: false, contributions };
+}
 
 export class ReceivingDraftGrnError extends Error {
   constructor(message, status = 400, code = "RECEIVING_GRN_ERROR") {
@@ -108,6 +165,10 @@ export function allocateGrnAcceptedAcrossSources(sources = [], entitlementQty = 
       acceptedQty,
       grnAcceptedQty,
       excessPendingQty: roundAsnQty(acceptedQty - grnAcceptedQty),
+      actualUnitWeightKg:
+        src.actualUnitWeightKg == null || src.actualUnitWeightKg === ""
+          ? null
+          : Number(src.actualUnitWeightKg),
     };
   });
 }
@@ -213,10 +274,20 @@ export function buildDraftGrnLinesFromReceiving({
 
     if (!(grnAcceptedQty > 0)) continue;
 
+    const weightRes = resolveUnitWeightFromReceivingSources(allocated);
+    if (weightRes.missing) {
+      throw new ReceivingDraftGrnError(
+        `Actual Unit Weight is required for accepted Receiving Units before Draft GRN (ASN line ${asnLineId})`,
+        409,
+        RECEIVING_UNIT_WEIGHT_REQUIRED,
+      );
+    }
+
     const article = String(poLine.itemCode || poLine.materialCode || poLine.article || "").trim().toUpperCase();
     const uom = String(group.uom || poLine.uom || "PCS").trim().toUpperCase() || "PCS";
     const unitCost = Number(poLine.unitPrice ?? poLine.price ?? poLine.rate) || 0;
     const currency = String(poLine.currency || group.currency || "USD").trim().toUpperCase() || "USD";
+    const unitWeightKg = weightRes.unitWeightKg || 0;
     const item = {
       article: article || "—",
       description: poLine.description || poLine.desc || "",
@@ -242,6 +313,13 @@ export function buildDraftGrnLinesFromReceiving({
       poNo: poNo || group.poNo || "",
       remarks: "",
       receivingSources: allocated,
+      customsCapture:
+        unitWeightKg > 0
+          ? {
+              unitWeightKg,
+              totalWeightKg: roundAsnQty(unitWeightKg * grnAcceptedQty),
+            }
+          : null,
     };
     assertReceivingSourcesMatchLineAccepted(item);
     items.push(item);
@@ -297,6 +375,10 @@ export function groupReceivingUnitsForDraftGrn(rows = []) {
         receivingSessionUnitId: row.receivingSessionUnitId,
         ruNo: row.ruNo,
         acceptedQty: accepted,
+        actualUnitWeightKg:
+          row.actualUnitWeightKg == null || row.actualUnitWeightKg === ""
+            ? null
+            : Number(row.actualUnitWeightKg),
       });
     }
   }
@@ -385,13 +467,21 @@ export async function generateDraftGrnIdempotent(store, { companyId, receivingSe
  * Preserve only review-stage fields. Commercial identity and receivingSources are immutable.
  * Tampering throws ASN_GRN_EDIT_FORBIDDEN rather than silently applying.
  *
- * ASN_RECEIVING customsCapture: operator may set unitWeightKg (+ BOE header fields mirrored per line).
- * HS/COO/SI/line economics are not accepted as authority — post resolves from ASN/BOE.
+ * ASN_RECEIVING customsCapture:
+ * - BOE header fields (incl. declared Gross/Net) editable on CREATE
+ * - Actual Unit Weight is receiving-authoritative — client cannot override
+ * - HS/COO/SI/line economics are not accepted as authority — post resolves from ASN/BOE
  */
 export function sanitizeAsnReceivingCustomsCapture(incoming = {}, existing = null) {
   if (incoming == null) return existing ?? null;
   const src = typeof incoming === "object" ? incoming : {};
   const prev = existing && typeof existing === "object" ? existing : {};
+  // Receiving-stamped unit weight wins; ignore client override.
+  const unitWeightKg = Number(prev.unitWeightKg) || 0;
+  const totalWeightKg =
+    Number(prev.totalWeightKg) ||
+    (unitWeightKg > 0 ? unitWeightKg * (Number(src._acceptedQtyHint) || 0) : 0) ||
+    0;
   return {
     ...prev,
     receivedDate: src.receivedDate ?? prev.receivedDate ?? null,
@@ -410,9 +500,12 @@ export function sanitizeAsnReceivingCustomsCapture(incoming = {}, existing = nul
     customsBoeId: src.customsBoeId != null ? String(src.customsBoeId) : prev.customsBoeId || "",
     customsBoeRef: src.customsBoeRef != null ? String(src.customsBoeRef) : prev.customsBoeRef || "",
     boeMode: src.boeMode != null ? String(src.boeMode) : prev.boeMode || "",
-    // Operator-owned: actual unit weight
-    unitWeightKg: src.unitWeightKg != null ? Number(src.unitWeightKg) || 0 : Number(prev.unitWeightKg) || 0,
-    totalWeightKg: src.totalWeightKg != null ? Number(src.totalWeightKg) || 0 : Number(prev.totalWeightKg) || 0,
+    // BOE Customs Declared Weight (header) — operator enters on CREATE NEW BOE
+    grossWeightKg: src.grossWeightKg != null ? Number(src.grossWeightKg) || 0 : Number(prev.grossWeightKg) || 0,
+    netWeightKg: src.netWeightKg != null ? Number(src.netWeightKg) || 0 : Number(prev.netWeightKg) || 0,
+    // Receiving-authoritative actual unit weight — never client-writable
+    unitWeightKg,
+    totalWeightKg: unitWeightKg > 0 && Number(prev.totalWeightKg) > 0 ? Number(prev.totalWeightKg) : totalWeightKg,
     // Explicitly clear ASN-owned / pooled fields from client write (post stamps from ASN/BOE).
     supplierInvoiceNumber: "",
     supplierInvoiceDate: null,

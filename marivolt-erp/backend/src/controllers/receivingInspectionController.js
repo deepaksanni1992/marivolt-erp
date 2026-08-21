@@ -20,6 +20,7 @@ import {
 } from "../services/receivingInspectionService.js";
 import {
   generateDraftGrnFromReceivingSession,
+  getAsnReceivingPostReadiness,
   getDraftGrnForReceivingSession,
 } from "../services/asnReceivingDraftService.js";
 
@@ -199,6 +200,15 @@ export async function getSessionGrn(req, res) {
         code: "RECEIVING_GRN_NOT_FOUND",
       });
     }
+    res.json(data);
+  } catch (err) {
+    sendError(res, err);
+  }
+}
+
+export async function getSessionGrnPostReadiness(req, res) {
+  try {
+    const data = await getAsnReceivingPostReadiness(req, req.params.sessionId);
     res.json(data);
   } catch (err) {
     sendError(res, err);

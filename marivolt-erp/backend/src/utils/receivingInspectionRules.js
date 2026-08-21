@@ -736,6 +736,7 @@ export function assertUnitCompletable({
   damagedQty,
   rejectedQty,
   photos,
+  actualUnitWeightKg,
 } = {}) {
   assertReceivingActualQty(actualQty);
   assertReceivingCondition(condition, { required: true });
@@ -781,6 +782,10 @@ export function assertUnitCompletable({
     photoCount: photosN,
     remarks,
   });
+  // Actual Unit Weight required when any accepted qty will go to GRN.
+  if (roundAsnQty(resolved.acceptedQty) > 0) {
+    assertReceivingActualUnitWeightKg(actualUnitWeightKg, { required: true });
+  }
   return resolved;
 }
 
@@ -886,6 +891,10 @@ export function upsertReceivingSessionUnit(units, input = {}) {
     uom: input.uom || "PCS",
     plannedQty: roundAsnQty(input.plannedQty),
     actualQty: input.actualQty == null ? null : roundAsnQty(input.actualQty),
+    actualUnitWeightKg:
+      input.actualUnitWeightKg == null || input.actualUnitWeightKg === ""
+        ? null
+        : Number(input.actualUnitWeightKg),
     condition: input.condition || "",
     remarks: input.remarks || "",
     qtyConfirmed: input.qtyConfirmed === true,
@@ -906,6 +915,35 @@ export function upsertReceivingSessionUnit(units, input = {}) {
   return { created: true, unit };
 }
 
+export function assertReceivingActualUnitWeightKg(value, { required = false } = {}) {
+  if (value == null || value === "") {
+    if (required) {
+      throw new ReceivingInspectionError(
+        "Actual Unit Weight (KG) is required when accepted quantity is greater than zero",
+        400,
+        "RECEIVING_UNIT_WEIGHT_REQUIRED",
+      );
+    }
+    return null;
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new ReceivingInspectionError(
+      "Actual Unit Weight (KG) must be a non-negative number",
+      400,
+      "RECEIVING_UNIT_WEIGHT_INVALID",
+    );
+  }
+  if (required && !(n > 0)) {
+    throw new ReceivingInspectionError(
+      "Actual Unit Weight (KG) must be greater than zero when accepted quantity is greater than zero",
+      400,
+      "RECEIVING_UNIT_WEIGHT_REQUIRED",
+    );
+  }
+  return Math.round(n * 1e6) / 1e6;
+}
+
 export function applyReceivingDraftSave(unit, patch = {}) {
   if (isCompletedReceivingUnitResult(unit.status) && patch.allowCompleted !== true) {
     throw new ReceivingInspectionError(
@@ -919,6 +957,11 @@ export function applyReceivingDraftSave(unit, patch = {}) {
   }
   if (Object.prototype.hasOwnProperty.call(patch, "actualQty")) {
     unit.actualQty = assertReceivingActualQty(patch.actualQty);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "actualUnitWeightKg")) {
+    unit.actualUnitWeightKg = assertReceivingActualUnitWeightKg(patch.actualUnitWeightKg, {
+      required: false,
+    });
   }
   if (Object.prototype.hasOwnProperty.call(patch, "condition")) {
     unit.condition = assertReceivingCondition(patch.condition, { required: false });
@@ -959,6 +1002,7 @@ export function applyReceivingUnitComplete(unit, { photoCount, minPhotosPerRU, a
     damagedQty: unit.damagedQty,
     rejectedQty: unit.rejectedQty,
     photos,
+    actualUnitWeightKg: unit.actualUnitWeightKg,
   });
   unit.acceptedQty = resolved.acceptedQty;
   unit.damagedQty = resolved.damagedQty;

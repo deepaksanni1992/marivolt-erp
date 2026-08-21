@@ -19,6 +19,7 @@ router.get("/sessions/:sessionId", receivingView, c.getSession);
 router.get("/sessions/:sessionId/summary", receivingView, c.summary);
 router.post("/sessions/:sessionId/complete", receivingMutate, c.completeSession);
 router.get("/sessions/:sessionId/grn", receivingView, c.getSessionGrn);
+router.get("/sessions/:sessionId/grn/post-readiness", receivingView, c.getSessionGrnPostReadiness);
 router.post("/sessions/:sessionId/grn", receivingMutate, c.generateSessionGrn);
 router.patch("/sessions/:sessionId/units/:ruId", receivingMutate, c.saveDraft);
 router.post("/sessions/:sessionId/units/:ruId/complete", receivingMutate, c.completeUnit);

@@ -46,6 +46,11 @@ const receivingSessionUnitSchema = new mongoose.Schema(
     plannedQty: { type: Number, required: true, min: 0 },
 
     actualQty: { type: Number, default: null },
+    /**
+     * Warehouse physical actual unit weight (KG) measured at receiving.
+     * Distinct from CustomsBoe.grossWeightKg / netWeightKg (BOE declared weight).
+     */
+    actualUnitWeightKg: { type: Number, default: null, min: 0 },
     acceptedQty: { type: Number, default: null, min: 0 },
     damagedQty: { type: Number, default: null, min: 0 },
     rejectedQty: { type: Number, default: null, min: 0 },

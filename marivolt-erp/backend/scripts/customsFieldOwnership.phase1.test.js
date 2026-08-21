@@ -184,6 +184,8 @@ run("existing BOE read-only: client cannot override declaration", () => {
     exchangeRateToAED: 4.25,
     customsUom: "PCS",
     linkedCustomsQty: 200,
+    grossWeightKg: 250,
+    netWeightKg: 225,
   };
   const r = validateCustomsCaptureForGrn({
     header: {
@@ -224,14 +226,17 @@ run("find ASN line for GRN item", () => {
 });
 
 run("ASN_RECEIVING draft capture sanitizes HS/COO/SI/economics", () => {
-  const cleaned = sanitizeAsnReceivingCustomsCapture({
-    boeNumber: "83535",
-    hsCode: "HACK",
-    countryOfOrigin: "XX",
-    supplierInvoiceNumber: "FAKE",
-    customsQty: 99,
-    unitWeightKg: 2.35,
-  });
+  const cleaned = sanitizeAsnReceivingCustomsCapture(
+    {
+      boeNumber: "83535",
+      hsCode: "HACK",
+      countryOfOrigin: "XX",
+      supplierInvoiceNumber: "FAKE",
+      customsQty: 99,
+      unitWeightKg: 99,
+    },
+    { unitWeightKg: 2.35, totalWeightKg: 11.75 },
+  );
   assert.equal(cleaned.hsCode, "");
   assert.equal(cleaned.countryOfOrigin, "");
   assert.equal(cleaned.supplierInvoiceNumber, "");
@@ -268,7 +273,7 @@ run("frontend ASN_RECEIVING draft customs review present", () => {
     "utf8",
   );
   assert.match(review, /variant=\"ASN_RECEIVING\"/);
-  assert.match(review, /Unit Weight/);
+  assert.match(review, /Actual Unit Weight|Unit Weight/);
   const grnSec = fs.readFileSync(path.join(feRoot, "components", "store", "GrnCustomsSection.jsx"), "utf8");
   assert.match(grnSec, /isAsnReceiving/);
 });
@@ -305,6 +310,8 @@ run("stale customsQty 50 cannot override acceptedQty 43 (forceAcceptedQtyOnly)",
       boeDeclaredQty: 500,
       boeDeclaredValue: 25000,
       customsUom: "PCS",
+      grossWeightKg: 250,
+      netWeightKg: 225,
     },
     lines: [{ poLineId: "1", article: "700011", acceptedQty: 43, location: "A-01", uom: "PCS" }],
     lineOverrides: new Map([["1", { customsQty: 50, hsCode: "840999", countryOfOrigin: "DE" }]]),
@@ -355,6 +362,8 @@ run("crafted line economics cannot override existing parent", () => {
     exchangeRateToAED: 4.25,
     customsUom: "PCS",
     linkedCustomsQty: 0,
+    grossWeightKg: 250,
+    netWeightKg: 225,
   };
   const r = validateCustomsCaptureForGrn({
     header: {
@@ -404,6 +413,8 @@ run("existing parent retained when client economics omitted (lock)", () => {
     exchangeRateToAED: 4.25,
     customsUom: "PCS",
     linkedCustomsQty: 200,
+    grossWeightKg: 250,
+    netWeightKg: 225,
   };
   const r = validateCustomsCaptureForGrn({
     header: {

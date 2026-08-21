@@ -104,6 +104,7 @@ function ruRow(partial) {
     damagedQty: partial.damagedQty ?? 0,
     rejectedQty: partial.rejectedQty ?? 0,
     shortQty: partial.shortQty ?? 0,
+    actualUnitWeightKg: partial.actualUnitWeightKg ?? (partial.acceptedQty > 0 ? 1 : null),
   };
 }
 

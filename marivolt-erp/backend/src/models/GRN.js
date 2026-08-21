@@ -24,6 +24,9 @@ const grnCustomsCaptureSchema = new mongoose.Schema(
     hsCode: { type: String, default: "", trim: true, uppercase: true },
     unitWeightKg: { type: Number, default: 0, min: 0 },
     totalWeightKg: { type: Number, default: 0, min: 0 },
+    /** BOE customs declared weights (header mirrored onto line capture). Not article unit weight. */
+    grossWeightKg: { type: Number, default: 0, min: 0 },
+    netWeightKg: { type: Number, default: 0, min: 0 },
     customsUnitPrice: { type: Number, default: 0, min: 0 },
     customsTotalPrice: { type: Number, default: 0, min: 0 },
     customsCurrency: { type: String, default: "", trim: true, uppercase: true },
@@ -90,6 +93,8 @@ const grnItemSchema = new mongoose.Schema(
           acceptedQty: { type: Number, default: 0, min: 0 },
           grnAcceptedQty: { type: Number, default: 0, min: 0 },
           excessPendingQty: { type: Number, default: 0, min: 0 },
+          /** Snapshot of ReceivingSessionUnit.actualUnitWeightKg at Draft generate. */
+          actualUnitWeightKg: { type: Number, default: null, min: 0 },
         },
       ],
       default: [],
