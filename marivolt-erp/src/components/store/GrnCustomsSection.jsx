@@ -75,7 +75,8 @@ function Field({ label, required, children }) {
 
 /**
  * Customs capture on GRN — Create New BOE or Select Existing BOE.
- * Supplier Invoice remains GRN-level. BOE economics freeze on parent CustomsBoe.
+ * ASN_RECEIVING: Supplier Invoice / HS / COO come from ASN (read-only display).
+ * MANUAL_PO: Supplier Invoice remains GRN-level editable.
  */
 export default function GrnCustomsSection({
   value,
@@ -90,6 +91,9 @@ export default function GrnCustomsSection({
   suggestedBoeQty = null,
   thisGrnCustomsQty = null,
   validationText = "",
+  /** ASN_RECEIVING hides SI/HS/COO/header unit-weight operator entry. */
+  variant = "MANUAL_PO",
+  asnSupplierInvoices = null,
 }) {
   const fileRefs = useRef({});
   const [uploading, setUploading] = useState("");
@@ -97,6 +101,7 @@ export default function GrnCustomsSection({
   const [boeResults, setBoeResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [duplicates, setDuplicates] = useState([]);
+  const isAsnReceiving = String(variant || "").toUpperCase() === "ASN_RECEIVING";
 
   const setField = (field, next) => onChange({ ...value, [field]: next });
   const boeMode = String(value.boeMode || "CREATE").toUpperCase() === "SELECT" ? "SELECT" : "CREATE";
@@ -243,10 +248,11 @@ export default function GrnCustomsSection({
     <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/80 p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h4 className="text-sm font-semibold text-slate-800">Customs Information</h4>
+          <h4 className="text-sm font-semibold text-slate-800">Customs / BOE</h4>
           <p className="text-[11px] text-slate-500">
-            One Customs BOE can span many PO-based GRNs. Create a new BOE or select an existing one. Supplier
-            Invoice stays on this GRN. Customs unit value is frozen on the BOE parent.
+            {isAsnReceiving
+              ? "One BOE per GRN. Supplier invoices, HS Code, and Country of Origin come from the ASN. Customs unit value is frozen on the BOE parent."
+              : "One Customs BOE can span many PO-based GRNs. Create a new BOE or select an existing one. Supplier Invoice stays on this GRN. Customs unit value is frozen on the BOE parent."}
           </p>
         </div>
       </div>
@@ -370,7 +376,7 @@ export default function GrnCustomsSection({
       ) : null}
 
       <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-        GRN receipt (Supplier Invoice)
+        {isAsnReceiving ? "Receipt / Supplier Invoices (from ASN)" : "GRN receipt (Supplier Invoice)"}
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <Field label="Received Date" required>
@@ -382,24 +388,45 @@ export default function GrnCustomsSection({
             onChange={(e) => setField("receivedDate", e.target.value)}
           />
         </Field>
-        <Field label="Supplier Invoice Number" required>
-          <input
-            className={inputCls}
-            disabled={disabled}
-            value={value.supplierInvoiceNumber}
-            onChange={(e) => setField("supplierInvoiceNumber", e.target.value)}
-          />
-        </Field>
-        <Field label="Supplier Invoice Date" required>
-          <input
-            type="date"
-            className={inputCls}
-            disabled={disabled}
-            value={value.supplierInvoiceDate || ""}
-            onChange={(e) => setField("supplierInvoiceDate", e.target.value)}
-          />
-        </Field>
+        {!isAsnReceiving ? (
+          <>
+            <Field label="Supplier Invoice Number" required>
+              <input
+                className={inputCls}
+                disabled={disabled}
+                value={value.supplierInvoiceNumber}
+                onChange={(e) => setField("supplierInvoiceNumber", e.target.value)}
+              />
+            </Field>
+            <Field label="Supplier Invoice Date" required>
+              <input
+                type="date"
+                className={inputCls}
+                disabled={disabled}
+                value={value.supplierInvoiceDate || ""}
+                onChange={(e) => setField("supplierInvoiceDate", e.target.value)}
+              />
+            </Field>
+          </>
+        ) : null}
       </div>
+      {isAsnReceiving ? (
+        <div className="mt-2 rounded-lg border border-slate-200 bg-white p-2 text-xs text-slate-700">
+          {(Array.isArray(asnSupplierInvoices) ? asnSupplierInvoices : []).length ? (
+            <ul className="space-y-1">
+              {asnSupplierInvoices.map((inv, i) => (
+                <li key={`asn-si-${i}`} className="font-mono">
+                  {inv.invoiceNumber || "—"}
+                  {inv.invoiceDate ? ` | ${String(inv.invoiceDate).slice(0, 10)}` : ""}
+                  <span className="ml-1 text-slate-400">🔒</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-amber-700">No supplier invoices on ASN — update the ASN before posting.</p>
+          )}
+        </div>
+      ) : null}
 
       <div className="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
         {isSelect ? "BOE identity (read-only from parent)" : "BOE identity"}
@@ -553,46 +580,61 @@ export default function GrnCustomsSection({
         </Field>
       </div>
 
-      <div className="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-        Article defaults
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <Field label="Country of Origin" required>
-          <input
-            className={inputCls}
-            disabled={disabled}
-            value={value.countryOfOrigin}
-            onChange={(e) => setField("countryOfOrigin", e.target.value)}
-          />
-        </Field>
-        <Field label="HS Code" required>
-          <input
-            className={inputCls}
-            disabled={disabled}
-            value={value.hsCode}
-            onChange={(e) => setField("hsCode", e.target.value)}
-          />
-        </Field>
-        <Field label="Unit Weight (KG)">
-          <input
-            type="number"
-            min="0"
-            step="any"
-            className={inputCls}
-            disabled={disabled}
-            value={value.unitWeightKg ?? value.weightKg ?? ""}
-            onChange={(e) => setField("unitWeightKg", e.target.value)}
-          />
-        </Field>
-        <Field label="Customs Remarks">
-          <input
-            className={inputCls}
-            disabled={disabled}
-            value={value.customsRemarks ?? value.remarks ?? ""}
-            onChange={(e) => setField("customsRemarks", e.target.value)}
-          />
-        </Field>
-      </div>
+      {!isAsnReceiving ? (
+        <>
+          <div className="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Article defaults
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <Field label="Country of Origin" required>
+              <input
+                className={inputCls}
+                disabled={disabled}
+                value={value.countryOfOrigin}
+                onChange={(e) => setField("countryOfOrigin", e.target.value)}
+              />
+            </Field>
+            <Field label="HS Code" required>
+              <input
+                className={inputCls}
+                disabled={disabled}
+                value={value.hsCode}
+                onChange={(e) => setField("hsCode", e.target.value)}
+              />
+            </Field>
+            <Field label="Unit Weight (KG)">
+              <input
+                type="number"
+                min="0"
+                step="any"
+                className={inputCls}
+                disabled={disabled}
+                value={value.unitWeightKg ?? value.weightKg ?? ""}
+                onChange={(e) => setField("unitWeightKg", e.target.value)}
+              />
+            </Field>
+            <Field label="Customs Remarks">
+              <input
+                className={inputCls}
+                disabled={disabled}
+                value={value.customsRemarks ?? value.remarks ?? ""}
+                onChange={(e) => setField("customsRemarks", e.target.value)}
+              />
+            </Field>
+          </div>
+        </>
+      ) : (
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <Field label="Customs Remarks">
+            <input
+              className={inputCls}
+              disabled={disabled}
+              value={value.customsRemarks ?? value.remarks ?? ""}
+              onChange={(e) => setField("customsRemarks", e.target.value)}
+            />
+          </Field>
+        </div>
+      )}
 
       <div className="mt-3 flex flex-wrap gap-4 text-[11px] text-slate-600">
         <p className="w-full text-[10px] text-slate-500">

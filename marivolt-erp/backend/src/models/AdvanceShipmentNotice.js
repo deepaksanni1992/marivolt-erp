@@ -18,12 +18,24 @@ const asnLineSchema = new mongoose.Schema(
     asnQty: { type: Number, required: true, min: 0 },
     unitPrice: { type: Number, default: 0, min: 0 },
     currency: { type: String, default: "", trim: true, uppercase: true },
+    /** Article-level HS Code (authoritative for ASN_RECEIVING customs). */
+    hsCode: { type: String, default: "", trim: true, uppercase: true },
+    /** Article-level Country of Origin (authoritative; legacy header COO is fallback only). */
+    countryOfOrigin: { type: String, default: "", trim: true, uppercase: true },
     /** Atomic label-plan revision. Incremented on each accepted plan/replan. */
     ruPlanVersion: { type: Number, default: 0, min: 0 },
     /** Current authoritative Receiving Unit plan batch for this line. */
     ruActivePlanBatchId: { type: mongoose.Schema.Types.ObjectId, default: null },
   },
   { _id: true }
+);
+
+const asnSupplierInvoiceSchema = new mongoose.Schema(
+  {
+    invoiceNumber: { type: String, default: "", trim: true },
+    invoiceDate: { type: Date, default: null },
+  },
+  { _id: false }
 );
 
 const asnAttachmentSchema = new mongoose.Schema(
@@ -56,8 +68,11 @@ const advanceShipmentNoticeSchema = new mongoose.Schema(
     sourcePoDate: { type: Date, default: null },
     /** Future multi-PO: always includes sourcePoId. Phase 1 UI creates from one PO. */
     poIds: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: "PurchaseOrder" }], default: [] },
+    /** Legacy scalar SI — kept for read compatibility; shadowed from supplierInvoices[FIFO]. */
     supplierInvoiceNumber: { type: String, default: "", trim: true },
     supplierInvoiceDate: { type: Date, default: null },
+    /** One BL may carry multiple supplier invoices (ASN header ownership). */
+    supplierInvoices: { type: [asnSupplierInvoiceSchema], default: [] },
     supplierPackingListNumber: { type: String, default: "", trim: true },
     shipmentMode: {
       type: String,

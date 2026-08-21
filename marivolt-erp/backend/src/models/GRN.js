@@ -41,6 +41,10 @@ const grnCustomsCaptureSchema = new mongoose.Schema(
     boeDeclaredQty: { type: Number, default: 0, min: 0 },
     boeDeclaredValue: { type: Number, default: 0, min: 0 },
     customsUom: { type: String, default: "", trim: true, uppercase: true },
+    /** Draft SELECT existing BOE (ASN_RECEIVING review). */
+    customsBoeId: { type: String, default: "", trim: true },
+    customsBoeRef: { type: String, default: "", trim: true, uppercase: true },
+    boeMode: { type: String, default: "", trim: true, uppercase: true },
   },
   { _id: false }
 );

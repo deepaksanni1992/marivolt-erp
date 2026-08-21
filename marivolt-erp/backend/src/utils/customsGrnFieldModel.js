@@ -586,6 +586,8 @@ export function validateCustomsCaptureForGrn({
   allowances = {},
   parentBoe = null,
   maxLinkQty = null,
+  /** ASN_RECEIVING: BOE link qty = SUM(acceptedQty); ignore all customsQty overrides. */
+  forceAcceptedQtyOnly = false,
 } = {}) {
   let headerNorm = normalizeCustomsHeaderDefaults(header);
   const errors = [];
@@ -699,7 +701,8 @@ export function validateCustomsCaptureForGrn({
       article: ln.article,
       acceptedQty: ln.acceptedQty ?? ln.receivedQty ?? ln.quantity ?? ln.grnQty,
       uom: ln.uom || "PCS",
-      customsQty: override.customsQty,
+      // ASN_RECEIVING never consults override/capture customsQty.
+      customsQty: forceAcceptedQtyOnly ? null : override.customsQty,
       location: ln.location,
       override,
     };
@@ -719,6 +722,7 @@ export function validateCustomsCaptureForGrn({
     boeDeclaredQty: declaredQty,
     customsUom: headerNorm.customsUom || "PCS",
     maxLinkQty: linkCap,
+    forceAcceptedQtyOnly,
   });
   if (!qtyResolve.ok) {
     errors.push({ line: "HEADER", article: "", group: "header", messages: [qtyResolve.message] });
@@ -833,7 +837,8 @@ export class CustomsGrnValidationError extends Error {
         .join("; ");
     super(flat || "Customs validation failed");
     this.name = "CustomsGrnValidationError";
-    this.code = "CUSTOMS_GRN_VALIDATION";
+    const firstCode = (errors || []).find((e) => e.code)?.code;
+    this.code = firstCode || "CUSTOMS_GRN_VALIDATION";
     this.errors = errors;
     this.statusCode = 400;
   }

@@ -207,6 +207,9 @@ export function buildCustomsPostBodyFromGrn(grn) {
   const captures = items.map((ln) => ln.customsCapture).filter(Boolean);
   const first = captures[0] || {};
   const header = {
+    boeMode: first.boeMode || "",
+    customsBoeId: first.customsBoeId || "",
+    customsBoeRef: first.customsBoeRef || "",
     boeNumber: first.boeNumber || grn.customsDocRef || "",
     boeDate: first.boeDate || "",
     blNumber: first.blNumber || grn.blAwbNo || "",

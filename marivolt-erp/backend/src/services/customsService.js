@@ -37,11 +37,23 @@ import GRN from "../models/GRN.js";
 import {
   createCustomsBoe,
   getCustomsBoeByIdOrRef,
+  findCustomsBoeByNormalizedNumber,
+  assertCustomsBoeNotCancelled,
+  assertCustomsBoeDeclarationCompatible,
   reserveLinkedCustomsQty,
   releaseLinkedCustomsQty,
   mapBoeEconomicsToLotSnapshot,
 } from "./customsBoeService.js";
 import CustomsBoe from "../models/CustomsBoe.js";
+import AdvanceShipmentNotice from "../models/AdvanceShipmentNotice.js";
+import { isAsnReceivingGrn } from "../utils/receivingDraftGrnRules.js";
+import {
+  assertAsnLineCooPresent,
+  assertAsnLineHsCodePresent,
+  assertAsnSupplierInvoicesPresent,
+  findAsnLineForGrnItem,
+  pickAsnSupplierInvoiceFifoSnapshot,
+} from "../utils/asnCustomsFieldOwnership.js";
 
 export { isCustomsEnabled };
 export { CustomsGrnValidationError };
@@ -217,6 +229,144 @@ export function normalizeCustomsPayload(body = {}, grn = {}) {
 }
 
 /**
+ * ASN_RECEIVING authority: HS/COO/SI come from ASN; line customs economics are not operator-entered.
+ * Client overrides for HS/COO/SI/currency/FX/customsQty/declared values are ignored.
+ * unitWeightKg remains GRN-line operator input.
+ */
+async function applyAsnReceivingFieldAuthority({ grn, payload, session = null } = {}) {
+  if (!isAsnReceivingGrn(grn) || !grn.asnId) return payload;
+
+  let asnQ = AdvanceShipmentNotice.findOne({
+    _id: grn.asnId,
+    companyId: grn.companyId,
+  });
+  if (session) asnQ = asnQ.session(session);
+  const asn = await asnQ.lean();
+  if (!asn) {
+    throw new CustomsGrnValidationError([
+      {
+        line: "HEADER",
+        article: "",
+        code: "ASN_REQUIRED",
+        messages: ["ASN is required for ASN_RECEIVING customs posting."],
+      },
+    ]);
+  }
+
+  const siCheck = assertAsnSupplierInvoicesPresent(asn);
+  if (!siCheck.ok) {
+    throw new CustomsGrnValidationError([
+      {
+        line: "HEADER",
+        article: "",
+        code: siCheck.code,
+        messages: [siCheck.message],
+      },
+    ]);
+  }
+  const fifoSnap = pickAsnSupplierInvoiceFifoSnapshot(asn);
+
+  const nextOverrides = new Map(payload.lineOverrides || []);
+  const activeLines = (grn.items || []).filter(
+    (ln) => (Number(ln.acceptedQty ?? ln.receivedQty) || 0) > 0,
+  );
+
+  for (const line of activeLines) {
+    const asnLine = findAsnLineForGrnItem(asn, line);
+    const article = upper(line.article);
+    if (!asnLine) {
+      throw new CustomsGrnValidationError([
+        {
+          line: String(line.poLineId || line.asnLineId || article),
+          article,
+          code: "ASN_LINE_REQUIRED",
+          messages: [`ASN line not found for Article ${article || "UNKNOWN"}.`],
+        },
+      ]);
+    }
+    const hsCheck = assertAsnLineHsCodePresent(asnLine, article);
+    if (!hsCheck.ok) {
+      throw new CustomsGrnValidationError([
+        {
+          line: String(line.poLineId || asnLine._id || article),
+          article,
+          code: hsCheck.code,
+          messages: [hsCheck.message],
+        },
+      ]);
+    }
+    const cooCheck = assertAsnLineCooPresent(asnLine, asn, article);
+    if (!cooCheck.ok) {
+      throw new CustomsGrnValidationError([
+        {
+          line: String(line.poLineId || asnLine._id || article),
+          article,
+          code: cooCheck.code,
+          messages: [cooCheck.message],
+        },
+      ]);
+    }
+
+    const key = String(line.poLineId ?? "");
+    const prev = nextOverrides.get(key) || {};
+    // Keep only unit weight (+ optional totalWeight/remarks) from operator input.
+    // Strip ALL line customs economics and ASN-owned fields from client/stale capture.
+    nextOverrides.set(key, {
+      unitWeightKg: prev.unitWeightKg,
+      totalWeightKg: prev.totalWeightKg,
+      customsRemarks: prev.customsRemarks,
+      hsCode: hsCheck.hsCode,
+      countryOfOrigin: cooCheck.countryOfOrigin,
+      supplierInvoiceNumber: fifoSnap.invoiceNumber,
+      supplierInvoiceDate: fifoSnap.invoiceDate,
+      // Explicit null — never EXPLICIT customsQty mode for ASN_RECEIVING.
+      customsQty: null,
+      customsUnitValue: undefined,
+      customsUnitPrice: undefined,
+      customsTotalPrice: undefined,
+      customsValueAED: undefined,
+      customsCurrency: undefined,
+      exchangeRateToAED: undefined,
+      boeDeclaredQty: undefined,
+      boeDeclaredValue: undefined,
+      boeNumber: undefined,
+      boeDate: undefined,
+      customsBoeId: undefined,
+      customsBoeRef: undefined,
+    });
+
+    // Neutralize stale Draft capture so createCustomsLot cannot read old customsQty.
+    if (line.customsCapture && typeof line.customsCapture === "object") {
+      line.customsCapture.customsQty = 0;
+      line.customsCapture.customsUnitValue = 0;
+      line.customsCapture.customsUnitPrice = 0;
+      line.customsCapture.customsTotalPrice = 0;
+      line.customsCapture.customsValueAED = 0;
+      line.customsCapture.hsCode = hsCheck.hsCode;
+      line.customsCapture.countryOfOrigin = cooCheck.countryOfOrigin;
+      line.customsCapture.supplierInvoiceNumber = fifoSnap.invoiceNumber;
+      line.customsCapture.supplierInvoiceDate = fifoSnap.invoiceDate;
+    }
+  }
+
+  payload.lineOverrides = nextOverrides;
+  payload.header = {
+    ...payload.header,
+    supplierInvoiceNumber: fifoSnap.invoiceNumber,
+    supplierInvoiceDate: fifoSnap.invoiceDate,
+    // Do not use header HS/COO as line authority for ASN_RECEIVING.
+    hsCode: "",
+    countryOfOrigin: "",
+    unitWeightKg: "",
+  };
+  payload.asnSupplierInvoices = fifoSnap.invoices;
+  payload.asnAuthorityApplied = true;
+  /** Locked: BOE link qty = SUM(GRN acceptedQty) only. */
+  payload.forceAcceptedQtyOnly = true;
+  return payload;
+}
+
+/**
  * Validate customs capture and stamp resolved effective values onto GRN lines.
  * Call inside the GRN post transaction before/while creating the customs lot.
  * Date/weight overrides require STORE approve permission — client checkboxes alone are ignored.
@@ -238,7 +388,7 @@ export async function applyResolvedCustomsToGrnLines({
   });
   payload.allowances = allowances;
 
-  // Resolve existing parent BOE when selecting by id/ref (company-scoped).
+  // Resolve existing parent BOE when selecting by id/ref OR by company + normalized BOE number.
   let parentBoe = null;
   const boeMode = String(payload.header.boeMode || "").toUpperCase();
   const selectRef = payload.header.customsBoeId || payload.header.customsBoeRef;
@@ -257,9 +407,34 @@ export async function applyResolvedCustomsToGrnLines({
         },
       ]);
     }
+  } else if (payload.header.boeNumber) {
+    // CREATE path: reuse existing parent for same company + normalized BOE number.
+    parentBoe = await findCustomsBoeByNormalizedNumber({
+      companyId: req?.companyId,
+      boeNumber: payload.header.boeNumber,
+      session,
+    });
   }
 
+  if (parentBoe) {
+    assertCustomsBoeNotCancelled(parentBoe);
+    const compat = assertCustomsBoeDeclarationCompatible(parentBoe, payload.header);
+    if (!compat.ok) {
+      throw new CustomsGrnValidationError([
+        {
+          line: "HEADER",
+          article: "",
+          code: compat.code,
+          messages: compat.errors,
+        },
+      ]);
+    }
+  }
+
+  await applyAsnReceivingFieldAuthority({ grn, payload, session });
+
   const lines = (grn.items || []).filter((ln) => (Number(ln.acceptedQty ?? ln.receivedQty) || 0) > 0);
+  const forceAcceptedQtyOnly = Boolean(payload.forceAcceptedQtyOnly) || isAsnReceivingGrn(grn);
   const result = validateCustomsCaptureForGrn({
     header: payload.header,
     lineOverrides: payload.lineOverrides,
@@ -267,6 +442,7 @@ export async function applyResolvedCustomsToGrnLines({
     poDate,
     allowances,
     parentBoe: parentBoe ? parentBoe.toObject?.() || parentBoe : null,
+    forceAcceptedQtyOnly,
   });
   if (!result.ok) throw new CustomsGrnValidationError(result.errors);
 
@@ -276,6 +452,13 @@ export async function applyResolvedCustomsToGrnLines({
   payload.boeDeclaredValue = result.boeDeclaredValue;
   payload.lineCustomsQty = result.lineCustomsQty;
   payload.thisGrnCustomsQty = result.thisGrnCustomsQty || 0;
+  payload.forceAcceptedQtyOnly = forceAcceptedQtyOnly;
+  // Defense: ASN_RECEIVING link qty is always SUM(acceptedQty), never client customsQty.
+  if (forceAcceptedQtyOnly) {
+    payload.thisGrnCustomsQty = roundCustomsQty(
+      lines.reduce((s, ln) => s + (Number(ln.acceptedQty ?? ln.receivedQty) || 0), 0),
+    );
+  }
   payload.parentBoe = parentBoe;
   payload.boeMode = parentBoe ? "SELECT" : "CREATE";
   // Stamp frozen parent economics onto header for lot persistence
@@ -471,9 +654,14 @@ export async function createCustomsLotFromGrn({ session, req, grn, body = {}, po
       );
 
     const unitValue = customsUnitValue;
-    const customsQtyImported = roundCustomsQty(cap.customsQty || mapped?.customsQty || qty);
-    const lineTotal =
-      mapped?.customsTotalPrice != null
+    // ASN_RECEIVING: lot item qty and BOE customs qty = GRN acceptedQty only.
+    const acceptedOnly = Boolean(payload.forceAcceptedQtyOnly) || isAsnReceivingGrn(grn);
+    const customsQtyImported = acceptedOnly
+      ? roundCustomsQty(qty)
+      : roundCustomsQty(cap.customsQty || mapped?.customsQty || qty);
+    const lineTotal = acceptedOnly
+      ? roundCustomsMoney(customsQtyImported * unitValue)
+      : mapped?.customsTotalPrice != null
         ? Number(mapped.customsTotalPrice)
         : Number(cap.customsTotalPrice) || roundCustomsMoney(customsQtyImported * unitValue);
 

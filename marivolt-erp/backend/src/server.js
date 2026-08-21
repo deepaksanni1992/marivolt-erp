@@ -112,6 +112,24 @@ async function startServer() {
       .catch((err) => {
         console.warn("ASN receiving GRN index ensure skipped:", err?.message || err);
       });
+    // CustomsBoe legal identity: VERIFY ONLY — never auto-create unique index before migration.
+    import("./utils/customsBoeIdentityIndexes.js")
+      .then(({ ensureCustomsBoeIdentityIndexes }) =>
+        ensureCustomsBoeIdentityIndexes(mongoose.connection.db, { create: false })
+      )
+      .then((report) => {
+        const missing = (report || []).filter((r) => r.action === "missing");
+        if (missing.length) {
+          console.warn(
+            "CustomsBoe identity unique index not present yet:",
+            missing.map((r) => r.name).join(", "),
+            "— run npm run migrate:customs-boe-identity-indexes -- --execute after dry-run audit",
+          );
+        }
+      })
+      .catch((err) => {
+        console.warn("CustomsBoe identity index verify skipped:", err?.message || err);
+      });
 
     const app = express();
 

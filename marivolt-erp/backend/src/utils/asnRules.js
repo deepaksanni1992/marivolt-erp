@@ -460,6 +460,7 @@ export function actorName(req) {
 export const ASN_SHIPMENT_PATCH_KEYS = Object.freeze([
   "supplierInvoiceNumber",
   "supplierInvoiceDate",
+  "supplierInvoices",
   "supplierPackingListNumber",
   "shipmentMode",
   "forwarder",
@@ -477,4 +478,11 @@ export const ASN_SHIPMENT_PATCH_KEYS = Object.freeze([
   "grossWeightUom",
   "remarks",
   "currency",
+]);
+
+/** Customs-authoritative shipment fields — frozen once receiving evidence exists. */
+export const ASN_CUSTOMS_AUTHORITY_SHIPMENT_KEYS = Object.freeze([
+  "supplierInvoiceNumber",
+  "supplierInvoiceDate",
+  "supplierInvoices",
 ]);

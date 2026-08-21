@@ -10,6 +10,7 @@ import {
   roundCustomsQty,
   CUSTOMS_VALUATION_BOE_AVERAGE,
 } from "../utils/customsBoeAverage.js";
+import { normalizeBoeNumber } from "../utils/asnCustomsFieldOwnership.js";
 
 function t(v) {
   return String(v ?? "").trim();
@@ -176,8 +177,151 @@ export async function getCustomsBoeByIdOrRef({ companyId, idOrRef, session = nul
   return q;
 }
 
+export function isMongoDuplicateKeyError(err) {
+  return Boolean(err && (Number(err.code) === 11000 || err.codeName === "DuplicateKey"));
+}
+
+function pickNum(v) {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * When reusing an existing parent (lookup or E11000 race loser), client-supplied
+ * declaration fields must match the locked parent. Omitted client fields are OK.
+ */
+export function assertCustomsBoeDeclarationCompatible(parentBoe, header = {}) {
+  if (!parentBoe) return { ok: true, errors: [] };
+  const errors = [];
+  const parentQty = Number(parentBoe.boeDeclaredQty) || 0;
+  const parentValue = Number(parentBoe.boeDeclaredValue) || 0;
+  const parentUnit = Number(parentBoe.customsUnitValue) || 0;
+  const parentCurrency = upper(parentBoe.customsCurrency);
+  const parentFx = Number(parentBoe.exchangeRateToAED) || 0;
+  const parentUom = upper(parentBoe.customsUom || "PCS") || "PCS";
+
+  const clientQty = pickNum(header.boeDeclaredQty);
+  const clientValue = pickNum(header.boeDeclaredValue);
+  const clientUnit = pickNum(header.customsUnitValue ?? header.customsUnitPrice);
+  const clientCurrency = header.customsCurrency != null || header.currency != null
+    ? upper(header.customsCurrency || header.currency)
+    : "";
+  const clientFx = pickNum(header.exchangeRateToAED);
+  const clientUom = header.customsUom != null && t(header.customsUom)
+    ? upper(header.customsUom)
+    : "";
+
+  if (clientQty != null && Math.abs(clientQty - parentQty) > 1e-6) {
+    errors.push(
+      `Cannot override BOE Declared Qty for existing BOE ${parentBoe.customsBoeRef || ""}. Parent has ${parentQty}.`,
+    );
+  }
+  if (clientValue != null && Math.abs(clientValue - parentValue) > 1e-6) {
+    errors.push(
+      `Cannot override BOE Declared Value for existing BOE ${parentBoe.customsBoeRef || ""}. Parent has ${parentValue}.`,
+    );
+  }
+  if (clientUnit != null && Math.abs(clientUnit - parentUnit) > 1e-6) {
+    errors.push(`Cannot override frozen Customs Unit Value for existing BOE (${parentUnit}).`);
+  }
+  if (clientCurrency && parentCurrency && clientCurrency !== parentCurrency) {
+    errors.push(
+      `Cannot override Customs Currency for existing BOE ${parentBoe.customsBoeRef || ""}. Parent has ${parentCurrency}.`,
+    );
+  }
+  if (clientFx != null && parentFx > 0 && Math.abs(clientFx - parentFx) > 1e-9) {
+    errors.push(
+      `Cannot override Exchange Rate for existing BOE ${parentBoe.customsBoeRef || ""}. Parent has ${parentFx}.`,
+    );
+  }
+  if (clientUom && parentUom && clientUom !== parentUom) {
+    errors.push(
+      `Cannot override Customs UOM for existing BOE ${parentBoe.customsBoeRef || ""}. Parent has ${parentUom}.`,
+    );
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    code: errors.length ? "CUSTOMS_BOE_DECLARATION_CONFLICT" : undefined,
+  };
+}
+
+export function assertCustomsBoeNotCancelled(parentBoe) {
+  if (parentBoe && upper(parentBoe.status) === "CANCELLED") {
+    const err = new Error(
+      `Customs BOE ${parentBoe.customsBoeRef || parentBoe.boeNumber || ""} is CANCELLED and cannot be linked. The legal BOE number remains reserved — a second parent will not be created.`,
+    );
+    err.code = "CUSTOMS_BOE_CANCELLED";
+    err.statusCode = 409;
+    throw err;
+  }
+  return true;
+}
+
+/**
+ * Company-scoped lookup by normalized BOE number (trim + uppercase).
+ * Includes CANCELLED — legal identity is never freed for a second parent.
+ * Prefers persisted normalizedBoeNumber; legacy fallback on boeNumber until backfill.
+ */
+export async function findCustomsBoeByNormalizedNumber({
+  companyId,
+  boeNumber = "",
+  session = null,
+  excludeBoeId = null,
+  /** When false (default), CANCELLED parents are still returned (identity reserved). */
+  excludeCancelled = false,
+} = {}) {
+  const normalized = normalizeBoeNumber(boeNumber);
+  if (!normalized) return null;
+  const base = {};
+  if (excludeCancelled) base.status = { $ne: "CANCELLED" };
+  if (excludeBoeId) base._id = { $ne: excludeBoeId };
+
+  let filter = withCompanyId(companyId, { ...base, normalizedBoeNumber: normalized });
+  let q = CustomsBoe.findOne(filter).sort({ createdAt: 1 });
+  if (session) q = q.session(session);
+  const byNorm = await q;
+  if (byNorm) return byNorm;
+
+  // Pre-migration legacy parents without normalizedBoeNumber.
+  filter = withCompanyId(companyId, {
+    ...base,
+    $or: [
+      {
+        normalizedBoeNumber: { $in: [null, ""] },
+        boeNumber: new RegExp(`^${normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"),
+      },
+    ],
+  });
+  q = CustomsBoe.findOne(filter).sort({ createdAt: 1 });
+  if (session) q = q.session(session);
+  return q;
+}
+
+async function reuseExistingCustomsBoe(existing, header = {}) {
+  assertCustomsBoeNotCancelled(existing);
+  const compat = assertCustomsBoeDeclarationCompatible(existing, header);
+  if (!compat.ok) {
+    const err = new Error(compat.errors.join(" "));
+    err.code = compat.code || "CUSTOMS_BOE_DECLARATION_CONFLICT";
+    err.statusCode = 400;
+    err.errors = compat.errors;
+    throw err;
+  }
+  return {
+    boe: existing,
+    duplicates: [],
+    customsUnitValue: Number(existing.customsUnitValue) || 0,
+    reusedExisting: true,
+  };
+}
+
 /**
  * Create a new parent CustomsBoe with frozen unit value.
+ * Lookup by company + normalizedBoeNumber first.
+ * On E11000 race: reload winner, validate declaration, reuse (never generic 500).
  */
 export async function createCustomsBoe({
   session = null,
@@ -187,6 +331,18 @@ export async function createCustomsBoe({
 } = {}) {
   const companyId = req.companyId;
   const companyCode = upper(req.companyCode || "CMP");
+  const normalized = normalizeBoeNumber(header.boeNumber);
+  if (!normalized) throw new Error("BOE Number is required");
+
+  const existingByNumber = await findCustomsBoeByNormalizedNumber({
+    companyId,
+    boeNumber: header.boeNumber,
+    session,
+  });
+  if (existingByNumber) {
+    return reuseExistingCustomsBoe(existingByNumber, header);
+  }
+
   const boeDeclaredQty = roundCustomsQty(header.boeDeclaredQty);
   const boeDeclaredValue = roundCustomsMoney(header.boeDeclaredValue);
   const unitCalc = computeBoeCustomsUnitValue(boeDeclaredValue, boeDeclaredQty);
@@ -208,36 +364,58 @@ export async function createCustomsBoe({
 
   const customsBoeRef = await nextCustomsBoeRef({ companyId, companyCode });
   const lockedAt = new Date();
-  const rows = await CustomsBoe.create(
-    [
-      {
-        companyId,
-        companyCode,
-        customsBoeRef,
-        boeNumber: t(header.boeNumber),
-        boeDate: parseDate(header.boeDate),
-        blNumber: t(header.blNumber),
-        awbNumber: t(header.awbNumber),
-        boeDeclaredQty,
-        customsUom: upper(header.customsUom || "PCS") || "PCS",
-        boeDeclaredValue,
-        customsCurrency: currency,
-        exchangeRateToAED: fx,
-        customsUnitValue: unitCalc.customsUnitValue,
-        grossWeightKg: Number(header.grossWeightKg) || 0,
-        netWeightKg: Number(header.netWeightKg) || 0,
-        valuationMethod: CUSTOMS_VALUATION_BOE_AVERAGE,
-        valuationLockedAt: lockedAt,
-        linkedCustomsQty: 0,
-        status: "OPEN",
-        createdBy: req.user?.email || "",
-        updatedBy: req.user?.email || "",
-      },
-    ],
-    session ? { session } : undefined,
-  );
-  const boe = rows[0];
-  return { boe, duplicates, customsUnitValue: unitCalc.customsUnitValue };
+  const doc = {
+    companyId,
+    companyCode,
+    customsBoeRef,
+    boeNumber: t(header.boeNumber),
+    // Server-authoritative; never trust client normalizedBoeNumber.
+    normalizedBoeNumber: normalized,
+    boeDate: parseDate(header.boeDate),
+    blNumber: t(header.blNumber),
+    awbNumber: t(header.awbNumber),
+    boeDeclaredQty,
+    customsUom: upper(header.customsUom || "PCS") || "PCS",
+    boeDeclaredValue,
+    customsCurrency: currency,
+    exchangeRateToAED: fx,
+    customsUnitValue: unitCalc.customsUnitValue,
+    grossWeightKg: Number(header.grossWeightKg) || 0,
+    netWeightKg: Number(header.netWeightKg) || 0,
+    valuationMethod: CUSTOMS_VALUATION_BOE_AVERAGE,
+    valuationLockedAt: lockedAt,
+    linkedCustomsQty: 0,
+    status: "OPEN",
+    createdBy: req.user?.email || "",
+    updatedBy: req.user?.email || "",
+  };
+
+  try {
+    const rows = await CustomsBoe.create([doc], session ? { session } : undefined);
+    return {
+      boe: rows[0],
+      duplicates,
+      customsUnitValue: unitCalc.customsUnitValue,
+      reusedExisting: false,
+    };
+  } catch (err) {
+    if (!isMongoDuplicateKeyError(err)) throw err;
+    // Race loser: unique index on companyId+normalizedBoeNumber — reload winner.
+    const winner = await findCustomsBoeByNormalizedNumber({
+      companyId,
+      boeNumber: header.boeNumber,
+      session,
+    });
+    if (!winner) {
+      const raceErr = new Error(
+        "Customs BOE was created concurrently but could not be reloaded. Retry the GRN post.",
+      );
+      raceErr.code = "CUSTOMS_BOE_RACE_RELOAD_FAILED";
+      raceErr.statusCode = 409;
+      throw raceErr;
+    }
+    return reuseExistingCustomsBoe(winner, header);
+  }
 }
 
 /**

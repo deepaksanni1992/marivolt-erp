@@ -27,6 +27,7 @@ async function openAsnDocument(documentId) {
 
 function emptyShipment() {
   return {
+    supplierInvoices: [{ invoiceNumber: "", invoiceDate: "" }],
     supplierInvoiceNumber: "",
     supplierInvoiceDate: "",
     supplierPackingListNumber: "",
@@ -48,9 +49,30 @@ function emptyShipment() {
   };
 }
 
+function hydrateSupplierInvoices(doc = {}) {
+  const rows = Array.isArray(doc.supplierInvoices) ? doc.supplierInvoices : [];
+  const mapped = rows
+    .map((r) => ({
+      invoiceNumber: r?.invoiceNumber || "",
+      invoiceDate: r?.invoiceDate ? String(r.invoiceDate).slice(0, 10) : "",
+    }))
+    .filter((r) => r.invoiceNumber || r.invoiceDate);
+  if (mapped.length) return mapped;
+  if (doc.supplierInvoiceNumber || doc.supplierInvoiceDate) {
+    return [
+      {
+        invoiceNumber: doc.supplierInvoiceNumber || "",
+        invoiceDate: doc.supplierInvoiceDate ? String(doc.supplierInvoiceDate).slice(0, 10) : "",
+      },
+    ];
+  }
+  return [{ invoiceNumber: "", invoiceDate: "" }];
+}
+
 function shipmentFromDoc(doc = {}) {
   const base = emptyShipment();
   for (const key of Object.keys(base)) {
+    if (key === "supplierInvoices") continue;
     const val = doc[key];
     if (val == null || val === "") continue;
     if (String(key).toLowerCase().includes("date") && val) {
@@ -59,6 +81,7 @@ function shipmentFromDoc(doc = {}) {
       base[key] = val;
     }
   }
+  base.supplierInvoices = hydrateSupplierInvoices(doc);
   return base;
 }
 
@@ -87,6 +110,8 @@ export default function AsnPage() {
   });
   const [shipment, setShipment] = useState(emptyShipment());
   const [lineQtys, setLineQtys] = useState({});
+  const [lineHs, setLineHs] = useState({});
+  const [lineCoo, setLineCoo] = useState({});
   const [cancelReason, setCancelReason] = useState("");
   const [docType, setDocType] = useState(ASN_DOC_TYPES[0]);
   const [docFile, setDocFile] = useState(null);
@@ -134,20 +159,34 @@ export default function AsnPage() {
     if (detailQ.data) {
       setShipment(shipmentFromDoc(detailQ.data));
       const next = {};
+      const nextHs = {};
+      const nextCoo = {};
       for (const line of detailQ.data.lines || []) {
-        next[String(line.poLineId)] = line.asnQty;
+        const key = String(line.poLineId);
+        next[key] = line.asnQty;
+        nextHs[key] = line.hsCode || "";
+        nextCoo[key] = line.countryOfOrigin || "";
       }
       setLineQtys(next);
+      setLineHs(nextHs);
+      setLineCoo(nextCoo);
     }
   }, [detailQ.data]);
 
   useEffect(() => {
     if (availQ.data?.lines) {
       const next = {};
+      const nextHs = {};
+      const nextCoo = {};
       for (const line of availQ.data.lines) {
-        next[String(line.poLineId)] = line.remainingAvailableQty > 0 ? line.remainingAvailableQty : "";
+        const key = String(line.poLineId);
+        next[key] = line.remainingAvailableQty > 0 ? line.remainingAvailableQty : "";
+        nextHs[key] = "";
+        nextCoo[key] = "";
       }
       setLineQtys(next);
+      setLineHs(nextHs);
+      setLineCoo(nextCoo);
     }
   }, [availQ.data]);
 
@@ -246,12 +285,28 @@ export default function AsnPage() {
         poLineId: line.poLineId,
         article: line.article,
         asnQty: Number(lineQtys[String(line.poLineId)] || 0),
+        hsCode: String(lineHs[String(line.poLineId)] || "").trim(),
+        countryOfOrigin: String(lineCoo[String(line.poLineId)] || "").trim(),
       }))
       .filter((l) => l.asnQty > 0);
-  }, [availabilityLines, creating, detail, lineQtys]);
+  }, [availabilityLines, creating, detail, lineQtys, lineHs, lineCoo]);
 
   function setShip(key, value) {
     setShipment((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function shipmentPayload() {
+    const invoices = (shipment.supplierInvoices || [])
+      .map((r) => ({
+        invoiceNumber: String(r.invoiceNumber || "").trim(),
+        invoiceDate: r.invoiceDate || null,
+      }))
+      .filter((r) => r.invoiceNumber || r.invoiceDate);
+    const { supplierInvoiceNumber: _a, supplierInvoiceDate: _b, ...rest } = shipment;
+    return {
+      ...rest,
+      supplierInvoices: invoices.length ? invoices : [],
+    };
   }
 
   async function onCreate() {
@@ -261,14 +316,14 @@ export default function AsnPage() {
     }
     createMut.mutate({
       sourcePoId: poId,
-      ...shipment,
+      ...shipmentPayload(),
       lines: payloadLines,
     });
   }
 
   async function onSave() {
     patchMut.mutate({
-      ...shipment,
+      ...shipmentPayload(),
       lines: status === "DRAFT" ? payloadLines : undefined,
     });
   }
@@ -469,13 +524,75 @@ export default function AsnPage() {
 
       <section className="rounded-xl border border-gray-200 bg-white p-4">
         <h2 className="mb-3 text-sm font-semibold text-gray-900">Shipment details</h2>
+        <div className="mb-4 rounded-lg border border-slate-100 bg-slate-50/80 p-3">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Supplier Invoices</h3>
+            {headerEditable ? (
+              <button
+                type="button"
+                className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700"
+                onClick={() =>
+                  setShipment((prev) => ({
+                    ...prev,
+                    supplierInvoices: [...(prev.supplierInvoices || []), { invoiceNumber: "", invoiceDate: "" }],
+                  }))
+                }
+              >
+                + Add Supplier Invoice
+              </button>
+            ) : null}
+          </div>
+          <div className="space-y-2">
+            {(shipment.supplierInvoices || []).map((inv, idx) => (
+              <div key={`si-${idx}`} className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+                <FormField label={idx === 0 ? "Invoice Number" : undefined}>
+                  <TextInput
+                    disabled={!headerEditable}
+                    value={inv.invoiceNumber}
+                    onChange={(e) =>
+                      setShipment((prev) => {
+                        const rows = [...(prev.supplierInvoices || [])];
+                        rows[idx] = { ...rows[idx], invoiceNumber: e.target.value };
+                        return { ...prev, supplierInvoices: rows };
+                      })
+                    }
+                  />
+                </FormField>
+                <FormField label={idx === 0 ? "Invoice Date" : undefined}>
+                  <TextInput
+                    type="date"
+                    disabled={!headerEditable}
+                    value={inv.invoiceDate}
+                    onChange={(e) =>
+                      setShipment((prev) => {
+                        const rows = [...(prev.supplierInvoices || [])];
+                        rows[idx] = { ...rows[idx], invoiceDate: e.target.value };
+                        return { ...prev, supplierInvoices: rows };
+                      })
+                    }
+                  />
+                </FormField>
+                {headerEditable && (shipment.supplierInvoices || []).length > 1 ? (
+                  <button
+                    type="button"
+                    className="mt-6 h-10 rounded border border-rose-200 px-2 text-xs text-rose-700"
+                    onClick={() =>
+                      setShipment((prev) => ({
+                        ...prev,
+                        supplierInvoices: (prev.supplierInvoices || []).filter((_, i) => i !== idx),
+                      }))
+                    }
+                  >
+                    Remove
+                  </button>
+                ) : (
+                  <span />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <FormField label="Supplier invoice">
-            <TextInput disabled={!headerEditable} value={shipment.supplierInvoiceNumber} onChange={(e) => setShip("supplierInvoiceNumber", e.target.value)} />
-          </FormField>
-          <FormField label="Invoice date">
-            <TextInput type="date" disabled={!headerEditable} value={shipment.supplierInvoiceDate} onChange={(e) => setShip("supplierInvoiceDate", e.target.value)} />
-          </FormField>
           <FormField label="Packing list no.">
             <TextInput disabled={!headerEditable} value={shipment.supplierPackingListNumber} onChange={(e) => setShip("supplierPackingListNumber", e.target.value)} />
           </FormField>
@@ -505,8 +622,13 @@ export default function AsnPage() {
           <FormField label="Actual arrival">
             <TextInput type="date" disabled={!headerEditable} value={shipment.actualArrivalDate} onChange={(e) => setShip("actualArrivalDate", e.target.value)} />
           </FormField>
-          <FormField label="Country of origin">
-            <TextInput disabled={!headerEditable} value={shipment.countryOfOrigin} onChange={(e) => setShip("countryOfOrigin", e.target.value)} />
+          <FormField label="Country of origin (legacy header)">
+            <TextInput
+              disabled={!headerEditable}
+              value={shipment.countryOfOrigin}
+              onChange={(e) => setShip("countryOfOrigin", e.target.value)}
+              title="Legacy header fallback only. Prefer line Country of Origin."
+            />
           </FormField>
           <FormField label="Port / airport of pending">
             <TextInput disabled={!headerEditable} value={shipment.portOfLoading} onChange={(e) => setShip("portOfLoading", e.target.value)} />
@@ -532,7 +654,7 @@ export default function AsnPage() {
       <section className="rounded-xl border border-gray-200 bg-white p-4">
         <h2 className="mb-3 text-sm font-semibold text-gray-900">Shipment lines</h2>
         <div className="overflow-x-auto">
-          <table className="min-w-[900px] w-full text-sm">
+          <table className="min-w-[1100px] w-full text-sm">
             <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500">
               <tr>
                 <th className="px-2 py-2">Article</th>
@@ -543,6 +665,8 @@ export default function AsnPage() {
                 <th className="px-2 py-2">Active ASN</th>
                 <th className="px-2 py-2">Available for new ASN</th>
                 <th className="px-2 py-2">ASN qty</th>
+                <th className="px-2 py-2">HS Code</th>
+                <th className="px-2 py-2">Country of Origin</th>
               </tr>
             </thead>
             <tbody>
@@ -572,6 +696,32 @@ export default function AsnPage() {
                         />
                       ) : (
                         <span className="tabular-nums">{line.asnQty}</span>
+                      )}
+                    </td>
+                    <td className="px-2 py-2">
+                      {linesEditable ? (
+                        <input
+                          className="min-h-11 w-28 rounded-lg border px-2 py-1 font-mono text-xs"
+                          value={lineHs[key] ?? ""}
+                          onChange={(e) => setLineHs((prev) => ({ ...prev, [key]: e.target.value }))}
+                          placeholder="HS"
+                        />
+                      ) : (
+                        <span className="font-mono text-xs">{line.hsCode || "—"}</span>
+                      )}
+                    </td>
+                    <td className="px-2 py-2">
+                      {linesEditable ? (
+                        <input
+                          className="min-h-11 w-28 rounded-lg border px-2 py-1 text-xs"
+                          value={lineCoo[key] ?? ""}
+                          onChange={(e) =>
+                            setLineCoo((prev) => ({ ...prev, [key]: e.target.value.toUpperCase() }))
+                          }
+                          placeholder="COO"
+                        />
+                      ) : (
+                        <span className="text-xs">{line.countryOfOrigin || "—"}</span>
                       )}
                     </td>
                   </tr>

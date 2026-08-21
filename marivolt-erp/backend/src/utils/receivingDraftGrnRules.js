@@ -381,6 +381,51 @@ export async function generateDraftGrnIdempotent(store, { companyId, receivingSe
  * Preserve only review-stage fields. Commercial identity and receivingSources are immutable.
  * Tampering throws ASN_GRN_EDIT_FORBIDDEN rather than silently applying.
  */
+/**
+ * Preserve only review-stage fields. Commercial identity and receivingSources are immutable.
+ * Tampering throws ASN_GRN_EDIT_FORBIDDEN rather than silently applying.
+ *
+ * ASN_RECEIVING customsCapture: operator may set unitWeightKg (+ BOE header fields mirrored per line).
+ * HS/COO/SI/line economics are not accepted as authority — post resolves from ASN/BOE.
+ */
+export function sanitizeAsnReceivingCustomsCapture(incoming = {}, existing = null) {
+  if (incoming == null) return existing ?? null;
+  const src = typeof incoming === "object" ? incoming : {};
+  const prev = existing && typeof existing === "object" ? existing : {};
+  return {
+    ...prev,
+    receivedDate: src.receivedDate ?? prev.receivedDate ?? null,
+    boeNumber: src.boeNumber != null ? String(src.boeNumber) : prev.boeNumber || "",
+    boeDate: src.boeDate ?? prev.boeDate ?? null,
+    blNumber: src.blNumber != null ? String(src.blNumber) : prev.blNumber || "",
+    awbNumber: src.awbNumber != null ? String(src.awbNumber) : prev.awbNumber || "",
+    customsCurrency: src.customsCurrency != null ? String(src.customsCurrency).toUpperCase() : prev.customsCurrency || "",
+    exchangeRateToAED:
+      src.exchangeRateToAED != null ? Number(src.exchangeRateToAED) || 0 : Number(prev.exchangeRateToAED) || 0,
+    boeDeclaredQty: src.boeDeclaredQty != null ? Number(src.boeDeclaredQty) || 0 : Number(prev.boeDeclaredQty) || 0,
+    boeDeclaredValue:
+      src.boeDeclaredValue != null ? Number(src.boeDeclaredValue) || 0 : Number(prev.boeDeclaredValue) || 0,
+    customsUom: src.customsUom != null ? String(src.customsUom).toUpperCase() : prev.customsUom || "",
+    customsRemarks: src.customsRemarks != null ? String(src.customsRemarks) : prev.customsRemarks || "",
+    customsBoeId: src.customsBoeId != null ? String(src.customsBoeId) : prev.customsBoeId || "",
+    customsBoeRef: src.customsBoeRef != null ? String(src.customsBoeRef) : prev.customsBoeRef || "",
+    boeMode: src.boeMode != null ? String(src.boeMode) : prev.boeMode || "",
+    // Operator-owned: actual unit weight
+    unitWeightKg: src.unitWeightKg != null ? Number(src.unitWeightKg) || 0 : Number(prev.unitWeightKg) || 0,
+    totalWeightKg: src.totalWeightKg != null ? Number(src.totalWeightKg) || 0 : Number(prev.totalWeightKg) || 0,
+    // Explicitly clear ASN-owned / pooled fields from client write (post stamps from ASN/BOE).
+    supplierInvoiceNumber: "",
+    supplierInvoiceDate: null,
+    countryOfOrigin: "",
+    hsCode: "",
+    customsQty: 0,
+    customsUnitPrice: 0,
+    customsUnitValue: 0,
+    customsTotalPrice: 0,
+    customsValueAED: 0,
+  };
+}
+
 export function mergeAsnReceivingDraftItems(existingItems = [], incomingItems = []) {
   const incomingByKey = new Map();
   for (const row of incomingItems || []) {
@@ -396,7 +441,10 @@ export function mergeAsnReceivingDraftItems(existingItems = [], incomingItems = 
       warehouse: inc.warehouse != null && String(inc.warehouse).trim() ? String(inc.warehouse).trim().toUpperCase() : raw.warehouse,
       location: inc.location != null ? String(inc.location) : raw.location,
       remarks: inc.remarks != null ? String(inc.remarks) : raw.remarks,
-      customsCapture: inc.customsCapture != null ? inc.customsCapture : raw.customsCapture,
+      customsCapture:
+        inc.customsCapture !== undefined
+          ? sanitizeAsnReceivingCustomsCapture(inc.customsCapture, raw.customsCapture)
+          : raw.customsCapture,
     };
   });
 }

@@ -135,6 +135,9 @@ export function canDefaultBoeQtyFromPhysical({ customsUom, lineUoms = [] } = {})
  * - Else if 1:1 UOM-compatible → customsQty = physical qty.
  * - Else error: explicit mapping required.
  *
+ * ASN_RECEIVING: pass forceAcceptedQtyOnly=true — ignores all customsQty overrides;
+ * BOE link contribution is always SUM(acceptedQty).
+ *
  * Over-link vs remaining is enforced at CustomsBoe reserve time, not here.
  * Optional maxLinkQty: when set, reject if this GRN contribution exceeds it.
  */
@@ -143,6 +146,7 @@ export function resolveLineCustomsQuantities({
   boeDeclaredQty,
   customsUom,
   maxLinkQty = null,
+  forceAcceptedQtyOnly = false,
 } = {}) {
   const declared = roundCustomsQty(boeDeclaredValueSafe(boeDeclaredQty));
   const physical = lines.map((ln) => ({
@@ -150,7 +154,12 @@ export function resolveLineCustomsQuantities({
     article: ln.article || "",
     physicalQty: roundCustomsQty(ln.acceptedQty ?? ln.receivedQty ?? ln.quantity ?? ln.grnQty),
     uom: ln.uom || "PCS",
-    customsQtyOverride: ln.customsQty != null && ln.customsQty !== "" ? roundCustomsQty(ln.customsQty) : null,
+    customsQtyOverride:
+      forceAcceptedQtyOnly
+        ? null
+        : ln.customsQty != null && ln.customsQty !== ""
+          ? roundCustomsQty(ln.customsQty)
+          : null,
   }));
 
   const active = physical.filter((p) => p.physicalQty > 0);
@@ -170,7 +179,16 @@ export function resolveLineCustomsQuantities({
   let mapped;
   let mode;
 
-  if (hasAllOverrides) {
+  if (forceAcceptedQtyOnly) {
+    mapped = active.map((p) => ({
+      key: p.key,
+      article: p.article,
+      physicalQty: p.physicalQty,
+      uom: p.uom,
+      customsQty: p.physicalQty,
+    }));
+    mode = "ACCEPTED_QTY_ONLY";
+  } else if (hasAllOverrides) {
     mapped = active.map((p) => ({
       key: p.key,
       article: p.article,
@@ -207,6 +225,7 @@ export function resolveLineCustomsQuantities({
       ok: false,
       lines: mapped,
       thisGrnCustomsQty: 0,
+      mode,
       message: "This GRN customs qty must be greater than zero.",
     };
   }

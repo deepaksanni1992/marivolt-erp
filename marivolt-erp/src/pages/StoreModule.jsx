@@ -18,6 +18,7 @@ import Modal from "../components/erp/Modal.jsx";
 import SearchableDocumentSelect from "../components/erp/SearchableDocumentSelect.jsx";
 import CreateInvoiceFromPackingModal, { packingReadyForSalesInvoice } from "../components/sales/CreateInvoiceFromPackingModal.jsx";
 import GrnCustomsSection from "../components/store/GrnCustomsSection.jsx";
+import AsnReceivingDraftCustomsReview from "../components/store/AsnReceivingDraftCustomsReview.jsx";
 import LabelQueuePanel from "../components/store/LabelQueuePanel.jsx";
 import PostGrnLabelDecisionDialog from "../components/store/PostGrnLabelDecisionDialog.jsx";
 import GrnLabelPreviewModal from "../components/store/GrnLabelPreviewModal.jsx";
@@ -2987,8 +2988,15 @@ export default function StoreModule() {
                       ) : String(grnRegisterDetail.status || "").toUpperCase() === "DRAFT" ? (
                         <p className="mt-2 text-slate-700">
                           Confirm POST GRN to receive accepted qty into stock. Damaged, rejected, short, and excess stay
-                          as receiving evidence.
+                          as receiving evidence. Save BOE / unit weights below before posting when customs is required.
                         </p>
+                      ) : null}
+                      {String(grnRegisterDetail.status || "").toUpperCase() === "DRAFT" ? (
+                        <AsnReceivingDraftCustomsReview
+                          grn={grnRegisterDetail}
+                          disabled={postGrnMut.isPending}
+                          onSaved={(row) => setGrnRegisterDetail(row)}
+                        />
                       ) : null}
                       {String(grnRegisterDetail.status || "").toUpperCase() === "DRAFT" &&
                       grnRegisterDetail.entitlementReview?.entitlementValid !== false ? (

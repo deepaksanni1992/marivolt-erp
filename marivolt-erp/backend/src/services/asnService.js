@@ -15,6 +15,7 @@ import {
   ASN_ACTIVE_STATUSES,
   ASN_SHIPMENT_MODES,
   ASN_SHIPMENT_PATCH_KEYS,
+  ASN_CUSTOMS_AUTHORITY_SHIPMENT_KEYS,
   ASN_QTY_EPS,
   ALLOWED_ASN_TRANSITIONS,
   AsnError,
@@ -39,6 +40,12 @@ import {
   sameCompanyId,
   shipmentFieldsEditable,
 } from "../utils/asnRules.js";
+import {
+  applySupplierInvoiceScalarShadow,
+  normalizeSupplierInvoiceRows,
+  resolveAsnSupplierInvoices,
+} from "../utils/asnCustomsFieldOwnership.js";
+import { asnHasReceivingResults } from "./receivingInspectionGuard.js";
 
 const PO_BLOCKED_STATUSES = new Set(["CANCELLED", "REJECTED"]);
 const MAX_ASN_NUMBER_SAVE_RETRIES = 4;
@@ -395,7 +402,55 @@ function pickShipmentPatch(body = {}) {
   if (out.grossWeight != null) out.grossWeight = Math.max(0, Number(out.grossWeight) || 0);
   if (out.grossWeightUom) out.grossWeightUom = String(out.grossWeightUom).trim().toUpperCase() || "KG";
   if (out.currency) out.currency = String(out.currency).trim().toUpperCase();
+
+  // supplierInvoices[] is canonical; keep legacy scalars as FIFO shadow for compatibility.
+  if (body.supplierInvoices !== undefined) {
+    const rows = normalizeSupplierInvoiceRows(body.supplierInvoices);
+    const shadow = applySupplierInvoiceScalarShadow({}, rows);
+    out.supplierInvoices = shadow.supplierInvoices;
+    out.supplierInvoiceNumber = shadow.supplierInvoiceNumber;
+    out.supplierInvoiceDate = shadow.supplierInvoiceDate;
+  } else if (body.supplierInvoiceNumber !== undefined || body.supplierInvoiceDate !== undefined) {
+    // Legacy scalar write: hydrate into supplierInvoices[0] when array not sent.
+    const invoiceNumber =
+      body.supplierInvoiceNumber !== undefined
+        ? String(body.supplierInvoiceNumber || "").trim()
+        : "";
+    const invoiceDate =
+      body.supplierInvoiceDate !== undefined && body.supplierInvoiceDate
+        ? new Date(body.supplierInvoiceDate)
+        : null;
+    if (invoiceNumber || invoiceDate) {
+      const shadow = applySupplierInvoiceScalarShadow({}, [{ invoiceNumber, invoiceDate }]);
+      out.supplierInvoices = shadow.supplierInvoices;
+      out.supplierInvoiceNumber = shadow.supplierInvoiceNumber;
+      out.supplierInvoiceDate = shadow.supplierInvoiceDate;
+    } else if (body.supplierInvoiceNumber !== undefined) {
+      out.supplierInvoiceNumber = "";
+      out.supplierInvoiceDate = body.supplierInvoiceDate !== undefined ? null : undefined;
+      if (out.supplierInvoiceDate === undefined) delete out.supplierInvoiceDate;
+      out.supplierInvoices = [];
+    }
+  }
   return out;
+}
+
+/**
+ * Freeze supplier invoice customs-authority fields once receiving evidence exists,
+ * even while SHIPPED (shipmentFieldsEditable would otherwise allow edits).
+ */
+async function assertCustomsAuthorityShipmentEditable(doc, body = {}) {
+  const patch = pickShipmentPatch(body);
+  const touchesAuthority = ASN_CUSTOMS_AUTHORITY_SHIPMENT_KEYS.some((k) => patch[k] !== undefined);
+  if (!touchesAuthority) return;
+  const hasReceiving = await asnHasReceivingResults(doc.companyId, doc._id);
+  if (hasReceiving) {
+    throw new AsnError(
+      "Supplier invoice fields are frozen after receiving has started",
+      400,
+      "ASN_CUSTOMS_FIELDS_FROZEN"
+    );
+  }
 }
 
 function buildAvailability(po, activeAsns, { excludeAsnId = "" } = {}) {
@@ -485,6 +540,8 @@ function snapshotLinesFromPo(po, payloadLines, claimed) {
       asnQty: requested,
       unitPrice: Number(poLine.unitPrice) || 0,
       currency: poLine.currency || po.currency || "",
+      hsCode: String(incoming.hsCode || "").trim().toUpperCase(),
+      countryOfOrigin: String(incoming.countryOfOrigin || "").trim().toUpperCase(),
     };
   });
 }
@@ -575,6 +632,10 @@ export async function listAsns(companyId, query = {}) {
 export async function getAsn(companyId, id) {
   const row = await AdvanceShipmentNotice.findOne(companyScope(companyId, { _id: asObjectId(id, "ASN id") })).lean();
   if (!row) throw new AsnError("ASN not found", 404, "ASN_NOT_FOUND");
+  // Hydrate supplierInvoices for clients when only legacy scalars exist (read-only view).
+  if (!Array.isArray(row.supplierInvoices) || !row.supplierInvoices.length) {
+    row.supplierInvoices = resolveAsnSupplierInvoices(row);
+  }
   return row;
 }
 
@@ -709,6 +770,8 @@ export async function updateAsn(req, id, body = {}) {
   else if (!shipmentFieldsEditable(doc.status) && Object.keys(pickShipmentPatch(body)).length) {
     throw new AsnError("Shipment details cannot be edited in this status", 400, "ASN_FROZEN");
   }
+
+  await assertCustomsAuthorityShipmentEditable(doc, body);
 
   if (wantsLines) {
     const po = await loadPoForCompany(companyId, doc.sourcePoId);
