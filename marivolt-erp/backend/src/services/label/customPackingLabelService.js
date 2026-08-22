@@ -216,22 +216,11 @@ export function parseCustomPackingSpreadsheetRows(rawRows = []) {
 }
 
 export function parseCustomPackingSpreadsheetBuffer(buffer, filename = "") {
-  const lower = String(filename || "").toLowerCase();
-  if (lower.endsWith(".csv")) {
-    const text = Buffer.isBuffer(buffer) ? buffer.toString("utf8") : String(buffer || "");
-    const lines = text.split(/\r?\n/).filter((ln) => ln.trim() !== "");
-    if (!lines.length) return [];
-    const headers = lines[0].split(",").map((h) => h.trim().replace(/^"|"$/g, ""));
-    return lines.slice(1).map((line, idx) => {
-      const cells = line.split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
-      const data = {};
-      headers.forEach((h, j) => {
-        if (h) data[h] = cells[j] ?? "";
-      });
-      return { rowNumber: idx + 2, data };
-    });
-  }
-  return parseExcelBufferToRows(buffer);
+  void filename;
+  if (!buffer?.length) return [];
+  return parseExcelBufferToRows(buffer, {
+    preserveFormattedTextColumns: ["Part No.", "Part No", "PartNo", "partNo", "SPN"],
+  });
 }
 
 export function buildCustomPackingTemplateWorkbook() {
@@ -241,6 +230,12 @@ export function buildCustomPackingTemplateWorkbook() {
     ["1", "OR-220", "O-RING", 25, 2],
     ["2", "123456", "GASKET", 1, 4],
   ]);
+  for (const ref of ["B2", "B3"]) {
+    if (ws[ref]) {
+      ws[ref].t = "s";
+      ws[ref].z = "@";
+    }
+  }
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Custom Packing Labels");
   return XLSX.write(wb, { type: "buffer", bookType: "xlsx" });

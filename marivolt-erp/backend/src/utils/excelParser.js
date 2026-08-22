@@ -12,6 +12,23 @@ export function trimCell(v) {
   return String(v).trim();
 }
 
+function normalizeHeaderName(value = "") {
+  return String(value).trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/**
+ * Prefer Excel formatted display text for specific identifier columns only.
+ * @param {import('xlsx').CellObject | undefined} cell
+ * @param {boolean} useFormatted
+ */
+function cellValue(cell, useFormatted) {
+  if (!cell) return "";
+  if (useFormatted && cell.w != null && String(cell.w).trim() !== "") {
+    return String(cell.w).trim();
+  }
+  return trimCell(cell.v);
+}
+
 /**
  * Case- and spacing-insensitive lookup on a row object (Excel header → value).
  * @param {Record<string, string>} row
@@ -38,7 +55,7 @@ export function rowGet(row, ...headerCandidates) {
  * Read first sheet (or named sheet) into { rowNumber, data }[].
  * rowNumber is 1-based Excel row index (includes header row as row 1; data starts row 2+).
  * @param {Buffer} buffer
- * @param {{ sheetName?: string }} [options]
+ * @param {{ sheetName?: string, preserveFormattedTextColumns?: string[] }} [options]
  * @returns {{ rowNumber: number, data: Record<string, string> }[]}
  */
 export function parseExcelBufferToRows(buffer, options = {}) {
@@ -51,6 +68,15 @@ export function parseExcelBufferToRows(buffer, options = {}) {
 
   const headerLine = aoa[0] || [];
   const headers = headerLine.map((h) => trimCell(h));
+
+  const preserveNorm = new Set(
+    (options.preserveFormattedTextColumns || []).map((h) => normalizeHeaderName(h))
+  );
+  const preserveColIndexes = preserveNorm.size
+    ? headers
+        .map((h, j) => (preserveNorm.has(normalizeHeaderName(h)) ? j : -1))
+        .filter((j) => j >= 0)
+    : [];
 
   const rows = [];
   for (let i = 1; i < aoa.length; i++) {
@@ -66,7 +92,17 @@ export function parseExcelBufferToRows(buffer, options = {}) {
       data[h] = cells[j] ?? "";
     });
 
-    rows.push({ rowNumber: i + 1, data });
+    const rowNumber = i + 1;
+    if (preserveColIndexes.length) {
+      for (const j of preserveColIndexes) {
+        const h = headers[j];
+        if (!h) continue;
+        const addr = XLSX.utils.encode_cell({ r: rowNumber - 1, c: j });
+        data[h] = cellValue(sheet[addr], true);
+      }
+    }
+
+    rows.push({ rowNumber, data });
   }
   return rows;
 }
@@ -74,7 +110,8 @@ export function parseExcelBufferToRows(buffer, options = {}) {
 /**
  * Convert first sheet to array of plain objects (legacy / simple use).
  * @param {Buffer} buffer
+ * @param {{ sheetName?: string, preserveFormattedTextColumns?: string[] }} [options]
  */
-export function parseExcelBufferToJson(buffer) {
-  return parseExcelBufferToRows(buffer).map((r) => r.data);
+export function parseExcelBufferToJson(buffer, options = {}) {
+  return parseExcelBufferToRows(buffer, options).map((r) => r.data);
 }

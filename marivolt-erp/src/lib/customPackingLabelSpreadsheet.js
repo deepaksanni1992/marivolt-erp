@@ -101,9 +101,15 @@ function isBlankMappedRow(row = {}) {
 }
 
 export function parseCustomPackingCsvText(text = "") {
-  const parsed = Papa.parse(text, { header: true, skipEmptyLines: false });
+  const normalized = String(text || "").replace(/^\uFEFF/, "");
+  const firstLine = normalized.split(/\r?\n/).find((ln) => ln.trim() !== "") || "";
+  let body = normalized;
+  if (/^sep\s*=/i.test(firstLine.trim())) {
+    body = normalized.split(/\r?\n/).slice(1).join("\n");
+  }
+  const parsed = Papa.parse(body, { header: true, skipEmptyLines: false, delimiter: "" });
   if (parsed.errors?.length) {
-    const first = parsed.errors[0];
+    const first = parsed.errors.find((e) => e.type === "FieldMismatch") || parsed.errors[0];
     throw new Error(first.message || "CSV parse failed");
   }
   const errors = [];
@@ -134,6 +140,31 @@ export function parseCustomPackingCsvText(text = "") {
   if (errors.length) throw new Error(errors.join("\n"));
   if (!rows.length) throw new Error("Spreadsheet has no data rows");
   return rows;
+}
+
+function isSupportedSpreadsheetFile(file) {
+  const name = String(file?.name || "").toLowerCase();
+  const type = String(file?.type || "").toLowerCase();
+  return (
+    name.endsWith(".csv") ||
+    name.endsWith(".xlsx") ||
+    name.endsWith(".xls") ||
+    type.includes("spreadsheetml") ||
+    type.includes("ms-excel") ||
+    type === "text/csv" ||
+    type === "application/csv"
+  );
+}
+
+function mapApiRowsToTableRows(apiRows = []) {
+  return (apiRows || []).map((row, idx) =>
+    emptyCustomPackingTableRow(row.serialNo || String(idx + 1), {
+      partNo: row.partNo,
+      description: row.description,
+      qty: String(row.qty),
+      labelCount: String(row.labelCount),
+    })
+  );
 }
 
 export function exportCustomPackingRows(rows = []) {
@@ -168,25 +199,14 @@ export async function downloadCustomPackingTemplateXlsx() {
 }
 
 export async function importCustomPackingSpreadsheetFile(file) {
-  const name = String(file?.name || "").toLowerCase();
-  if (name.endsWith(".csv")) {
-    const text = await file.text();
-    return parseCustomPackingCsvText(text);
+  if (!file) throw new Error("No file selected");
+  if (!isSupportedSpreadsheetFile(file)) {
+    throw new Error("Supported formats: .csv, .xlsx, .xls");
   }
-  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
-    const form = new FormData();
-    form.append("file", file);
-    const data = await apiPostFormData("/labels/jobs/from-custom-packing/parse-import", form);
-    return (data.rows || []).map((row, idx) =>
-      emptyCustomPackingTableRow(row.serialNo || String(idx + 1), {
-        partNo: row.partNo,
-        description: row.description,
-        qty: String(row.qty),
-        labelCount: String(row.labelCount),
-      })
-    );
-  }
-  throw new Error("Supported formats: .csv, .xlsx, .xls");
+  const form = new FormData();
+  form.append("file", file);
+  const data = await apiPostFormData("/labels/jobs/from-custom-packing/parse-import", form);
+  return mapApiRowsToTableRows(data.rows);
 }
 
 export function buildCustomPackingPayload(header, rows) {

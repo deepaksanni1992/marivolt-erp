@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import XLSX from "xlsx";
 import {
   buildCustomPackingFingerprint,
   buildCustomPackingIdempotencyKey,
@@ -15,6 +16,7 @@ import {
   formatCustomPackingQtyDisplay,
   formatCustomPackingQtyDisplayLegacy,
   normalizeCustomPackingLines,
+  parseCustomPackingSpreadsheetBuffer,
   parseCustomPackingSpreadsheetRows,
   summarizeCustomPackingBatch,
 } from "../src/services/label/customPackingLabelService.js";
@@ -63,6 +65,33 @@ const sampleRow = {
 };
 
 const sampleBody = { header: batchHeader, lines: [sampleRow] };
+
+function buildReproductionWorkbookBuffer() {
+  const data = [
+    ["S. No.", "Part No.", "Description", "Qty", "No. of Labels"],
+    ["1", "9.2107-005", "Inlet valve guide", 10, 1],
+    ["2", "9.2107-004", "Exhaust valve guide", 12, 2],
+    ["3", "9.2225BB", "Valve rotator assembly", 15, 1],
+    ["4", "9.2107-010", "Spring disk", 12, 1],
+    ["5", "9.2107-015", "Valve spring", 25, 1],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  for (let r = 2; r <= 6; r++) {
+    const ref = `B${r}`;
+    if (ws[ref]) {
+      ws[ref].t = "s";
+      ws[ref].z = "@";
+    }
+  }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Custom Packing Labels");
+  return XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+}
+
+function simulateParseImportApi(buffer) {
+  const rawRows = parseCustomPackingSpreadsheetBuffer(buffer);
+  return parseCustomPackingSpreadsheetRows(rawRows);
+}
 
 run("1. Normalize batch header + row schema (no Article)", () => {
   const { header, lines } = normalizeCustomPackingLines(sampleBody);
@@ -276,6 +305,104 @@ run("17. One combined TSPL job for multi-row batch", () => {
   });
   const tspl = buildPackingJobTspl(lines, CUSTOM_PACKING_TSPL_OPTS);
   assert.equal((tspl.match(/PRINT 1,1/g) || []).length, 6);
+});
+
+run("18. Reproduction xlsx imports 5 rows with exact part numbers", () => {
+  const buf = buildReproductionWorkbookBuffer();
+  const rows = simulateParseImportApi(buf);
+  assert.equal(rows.length, 5);
+  assert.equal(rows[0].partNo, "9.2107-005");
+  assert.equal(rows[1].partNo, "9.2107-004");
+  assert.equal(rows[2].partNo, "9.2225BB");
+  assert.equal(rows[1].qty, 12);
+  assert.equal(rows[1].labelCount, 2);
+  const summary = summarizeCustomPackingBatch(rows);
+  assert.equal(summary.rowCount, 5);
+  assert.equal(summary.physicalLabels, 6);
+  assert.equal(summary.totalQtyRepresented, 86);
+});
+
+run("19. Semicolon CSV imports through workbook parser (no PapaParse split)", () => {
+  const csv =
+    "S. No.;Part No.;Description;Qty;No. of Labels\n" +
+    "1;9.2107-005;Inlet valve guide;10;1\n" +
+    "2;9.2107-004;Exhaust valve guide;12;2\n";
+  const rows = simulateParseImportApi(Buffer.from(csv, "utf8"));
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].partNo, "9.2107-005");
+  assert.equal(rows[1].labelCount, 2);
+});
+
+run("20. Comma CSV imports successfully", () => {
+  const csv =
+    "S. No.,Part No.,Description,Qty,No. of Labels\n" +
+    "1,001234,Leading zero part,1,1\n" +
+    "2,TE201,Inlet valve,1,1\n";
+  const rows = simulateParseImportApi(Buffer.from(csv, "utf8"));
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].partNo, "001234");
+  assert.equal(rows[1].partNo, "TE201");
+});
+
+run("21. Downloaded template round-trips through parse-import path", () => {
+  const buf = buildCustomPackingTemplateWorkbook();
+  const rows = simulateParseImportApi(buf);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].partNo, "OR-220");
+  assert.equal(rows[0].qty, 25);
+  assert.equal(rows[0].labelCount, 2);
+});
+
+run("22. Row 2 reproduction expands to two physical labels each QTY 12", () => {
+  const buf = buildReproductionWorkbookBuffer();
+  const rows = simulateParseImportApi(buf);
+  const { lines } = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: rows.map((r) => ({
+      serialNo: r.serialNo,
+      partNo: r.partNo,
+      description: r.description,
+      qty: r.qty,
+      labelCount: r.labelCount,
+    })),
+  });
+  const row2 = lines.find((ln) => ln.partNo === "9.2107-004");
+  assert.equal(row2.lineCopies, 2);
+  const expanded = expandCustomPackingPreviewLabels([row2]);
+  assert.equal(expanded.length, 2);
+  assert.equal(expanded[0].previewRows.find((r) => r.label === "QTY").value, "12");
+});
+
+run("23. Frontend import uses parse-import for all spreadsheet types", () => {
+  const sheet = fs.readFileSync(path.join(feRoot, "lib/customPackingLabelSpreadsheet.js"), "utf8");
+  assert.match(sheet, /parse-import/);
+  assert.doesNotMatch(sheet, /name\.endsWith\("\.csv"\)[\s\S]*parseCustomPackingCsvText/);
+  assert.doesNotMatch(sheet, /file\.text\(\)/);
+});
+
+run("24. Invalid spreadsheet rows produce validation errors", () => {
+  assert.throws(
+    () =>
+      parseCustomPackingSpreadsheetRows([
+        { rowNumber: 2, data: { "S. No.": "1", Qty: "0", "No. of Labels": "1" } },
+      ]),
+    /Qty/
+  );
+});
+
+run("25. Part No. formatted text preserved; Qty stays numeric", () => {
+  const data = [
+    ["S. No.", "Part No.", "Description", "Qty", "No. of Labels"],
+    ["1", "001234", "Gasket", 10, 1],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  ws.B2 = { t: "s", v: "001234", w: "001234", z: "@" };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+  const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+  const rows = simulateParseImportApi(buf);
+  assert.equal(rows[0].partNo, "001234");
+  assert.equal(rows[0].qty, 10);
 });
 
 console.log(`\nCustom packing label: ${passed} passed, ${failed} failed\n`);
