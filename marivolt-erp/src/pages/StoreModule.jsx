@@ -3000,16 +3000,46 @@ export default function StoreModule() {
                       ) : null}
                       {String(grnRegisterDetail.status || "").toUpperCase() === "DRAFT" &&
                       grnRegisterDetail.entitlementReview?.entitlementValid !== false ? (
-                        <button
-                          type="button"
-                          className="mt-2 min-h-11 w-full rounded-lg bg-emerald-700 px-3 font-semibold text-white"
-                          onClick={() => {
-                            if (!window.confirm(`POST GRN ${grnRegisterDetail.grnNo}? Accepted qty will go to stock. RU labels will not reprint.`)) return;
-                            postGrnMut.mutate(grnRegisterDetail.grnNo);
-                          }}
-                        >
-                          POST GRN
-                        </button>
+                        <>
+                          {grnRegisterDetail.postReadiness?.postReady !== true &&
+                          Array.isArray(grnRegisterDetail.postReadiness?.blockers) &&
+                          grnRegisterDetail.postReadiness.blockers.length > 0 ? (
+                            <p className="mt-2 text-sm text-slate-600">
+                              Complete {grnRegisterDetail.postReadiness.blockers.length} required item
+                              {grnRegisterDetail.postReadiness.blockers.length === 1 ? "" : "s"} before posting.
+                            </p>
+                          ) : null}
+                          <button
+                            type="button"
+                            className={`mt-2 min-h-11 w-full rounded-lg px-3 font-semibold ${
+                              grnRegisterDetail.postReadiness?.postReady === true && !postGrnMut.isPending
+                                ? "bg-emerald-700 text-white"
+                                : "cursor-not-allowed bg-slate-300 text-slate-600"
+                            }`}
+                            disabled={
+                              postGrnMut.isPending ||
+                              grnRegisterDetail.postReadiness?.postReady !== true
+                            }
+                            title={
+                              grnRegisterDetail.postReadiness?.postReady === true
+                                ? "Post this Draft GRN to stock"
+                                : "Complete Draft GRN customs and receiving requirements first"
+                            }
+                            onClick={() => {
+                              if (grnRegisterDetail.postReadiness?.postReady !== true) return;
+                              if (
+                                !window.confirm(
+                                  `POST GRN ${grnRegisterDetail.grnNo}? Accepted qty will go to stock. RU labels will not reprint.`,
+                                )
+                              ) {
+                                return;
+                              }
+                              postGrnMut.mutate(grnRegisterDetail.grnNo);
+                            }}
+                          >
+                            {postGrnMut.isPending ? "Posting…" : "POST GRN"}
+                          </button>
+                        </>
                       ) : null}
                       {grnRegisterDetail.asnId ? (
                         <div className="mt-2 flex flex-wrap gap-2">

@@ -24,6 +24,7 @@ import {
   getDraftGrnForReceivingSession,
 } from "../services/asnReceivingDraftService.js";
 import { reopenReceivingSession } from "../services/asnReceivingReopenService.js";
+import { createReceivingSessionPutawayLocation } from "../services/asnReceivingPutawayLocationService.js";
 
 function sendError(res, err) {
   if (
@@ -190,6 +191,18 @@ export async function reopenSession(req, res) {
       receivingSessionUnitIds: req.body?.receivingSessionUnitIds,
     });
     res.json(data);
+  } catch (err) {
+    sendError(res, err);
+  }
+}
+
+export async function createSessionPutawayLocation(req, res) {
+  try {
+    const data = await createReceivingSessionPutawayLocation(req, req.params.sessionId, {
+      rack: req.body?.rack,
+      bin: req.body?.bin,
+    });
+    res.status(data.created ? 201 : 200).json(data);
   } catch (err) {
     sendError(res, err);
   }

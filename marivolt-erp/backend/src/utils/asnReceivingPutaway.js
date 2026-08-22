@@ -10,6 +10,29 @@ export function upperLoc(v) {
   return tLoc(v).toUpperCase();
 }
 
+/** Trim rack/bin parts; preserve display casing except for code generation. */
+export function normalizeRackBinPart(v) {
+  return tLoc(v);
+}
+
+/**
+ * Canonical physical putaway locationCode: WAREHOUSE-RACK-BIN (all segments uppercased).
+ * Matches existing test/seed convention e.g. MAIN-R01-B03.
+ */
+export function buildPhysicalPutawayLocationCode(warehouse = "MAIN", rack = "", bin = "") {
+  const wh = upperLoc(warehouse) || "MAIN";
+  const r = upperLoc(rack);
+  const b = upperLoc(bin);
+  if (!r || !b) return "";
+  return `${wh}-${r}-${b}`;
+}
+
+export function defaultPhysicalPutawayLocationName(warehouse = "MAIN", rack = "", bin = "") {
+  const code = buildPhysicalPutawayLocationCode(warehouse, rack, bin);
+  if (!code) return "";
+  return `Putaway ${code}`;
+}
+
 /**
  * ASN_RECEIVING physical putaway requires an Active StockLocation in the target warehouse
  * with BOTH rack and bin configured. Warehouse codes (e.g. MAIN) are not putaway.

@@ -26,7 +26,7 @@ import {
   applyAsnReceivingDraftEdit,
   isAsnReceivingGrn,
 } from "../utils/receivingDraftGrnRules.js";
-import { reviewAsnReceivingDraftGrn } from "../services/asnReceivingDraftService.js";
+import { reviewAsnReceivingDraftGrn, enrichAsnReceivingDraftGrnResponse } from "../services/asnReceivingDraftService.js";
 import { postAsnReceivingDraftGrn, reverseAsnReceivingPostedGrn } from "../services/asnReceivingPostService.js";
 import { applyReceiveToPo, reverseReceiveOnPo } from "../services/grnPostingEffects.js";
 import {
@@ -553,8 +553,8 @@ export async function getGrn(req, res) {
       row.attachments = row.attachments || [];
     }
     if (isAsnReceivingGrn(row)) {
-      const { review } = await reviewAsnReceivingDraftGrn(req, row);
-      row.entitlementReview = review;
+      const enriched = await enrichAsnReceivingDraftGrnResponse(req, row);
+      return res.json(enriched);
     }
     res.json(row);
   } catch (err) {
@@ -583,7 +583,8 @@ export async function updateGrn(req, res) {
         documentNo: grn.grnNo,
         description: `ASN receiving Draft GRN ${grn.grnNo} review fields updated`,
       });
-      return res.json(grn);
+      const enriched = await enrichAsnReceivingDraftGrnResponse(req, grn);
+      return res.json(enriched);
     }
     grn.branchId = req.body.branchId ?? grn.branchId;
     grn.warehouseId = req.body.warehouseId ?? grn.warehouseId;

@@ -4,6 +4,7 @@ import StockBalance from "../models/StockBalance.js";
 import StockLedger, { TX_TYPES } from "../models/StockLedger.js";
 import InventoryLedger from "../models/InventoryLedger.js";
 import StockLocation from "../models/StockLocation.js";
+import { createOrReuseStockLocation } from "../services/stockLocationService.js";
 import StockAdjustment from "../models/StockAdjustment.js";
 import StockTransfer from "../models/StockTransfer.js";
 import OrderAllocation from "../models/OrderAllocation.js";
@@ -1218,7 +1219,7 @@ export async function postTransfer(req, res) {
 
 export async function createLocation(req, res) {
   try {
-    const row = await StockLocation.create({
+    const { row, created } = await createOrReuseStockLocation({
       companyId: req.companyId,
       locationCode: t(req.body.locationCode).toUpperCase(),
       locationName: t(req.body.locationName),
@@ -1227,7 +1228,7 @@ export async function createLocation(req, res) {
       bin: t(req.body.bin),
       status: req.body.status === "Inactive" ? "Inactive" : "Active",
     });
-    res.status(201).json(row);
+    res.status(created ? 201 : 200).json(row);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }

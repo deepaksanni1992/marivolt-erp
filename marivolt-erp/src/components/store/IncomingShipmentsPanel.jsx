@@ -584,6 +584,8 @@ export default function IncomingShipmentsPanel() {
                       <p className="mt-2 rounded-xl bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">
                         ✓ READY TO POST
                       </p>
+                    ) : progressQ.isFetching ? (
+                      <p className="mt-2 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">Evaluating posting readiness…</p>
                     ) : null}
                     <button
                       type="button"
@@ -599,21 +601,29 @@ export default function IncomingShipmentsPanel() {
                     draftGrn.postReadiness?.postReady === true ? (
                       <button
                         type="button"
-                        className="mt-2 min-h-16 w-full rounded-2xl bg-emerald-700 text-xl font-bold text-white"
+                        className="mt-2 min-h-16 w-full rounded-2xl bg-emerald-700 text-xl font-bold text-white disabled:opacity-40"
                         onClick={() => setPostConfirmOpen(true)}
-                        disabled={grnBusy}
+                        disabled={grnBusy || progressQ.isFetching}
                       >
                         POST GRN
                       </button>
                     ) : canPostGrn && draftGrn.entitlementReview?.entitlementValid !== false ? (
-                      <button
-                        type="button"
-                        className="mt-2 min-h-16 w-full rounded-2xl bg-slate-300 text-xl font-bold text-slate-600"
-                        disabled
-                        title="Complete Draft GRN customs and receiving requirements first"
-                      >
-                        POST GRN
-                      </button>
+                      <>
+                        {draftGrn.postReadiness?.postReady === false ? (
+                          <p className="mt-2 text-sm text-slate-600">
+                            Complete {draftGrn.postReadiness.blockers?.length || 0} required item
+                            {(draftGrn.postReadiness.blockers?.length || 0) === 1 ? "" : "s"} before posting.
+                          </p>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="mt-2 min-h-16 w-full cursor-not-allowed rounded-2xl bg-slate-300 text-xl font-bold text-slate-600"
+                          disabled
+                          title="Complete Draft GRN customs and receiving requirements first"
+                        >
+                          POST GRN
+                        </button>
+                      </>
                     ) : null}
                     {canReceive ? (
                       <button

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiPut } from "../../lib/api.js";
+import { apiGet, apiPost, apiPut } from "../../lib/api.js";
 import { notify } from "../../lib/notifications.js";
+import { useAuth } from "../../context/AuthContext.jsx";
+import Modal from "../erp/Modal.jsx";
 import GrnCustomsSection from "./GrnCustomsSection.jsx";
 import { emptyGrnCustomsState } from "../../lib/grnCustomsPayload.js";
 
@@ -72,14 +74,38 @@ function formatLocOption(loc) {
   return code;
 }
 
+function buildPutawayLocationCode(warehouse, rack, bin) {
+  const wh = String(warehouse || "MAIN").trim().toUpperCase();
+  const r = String(rack || "").trim().toUpperCase();
+  const b = String(bin || "").trim().toUpperCase();
+  if (!r || !b) return "";
+  return `${wh}-${r}-${b}`;
+}
+
+function lineKey(ln) {
+  return String(ln.poLineId || ln.asnLineId || ln.article);
+}
+
 /**
  * ASN_RECEIVING Draft GRN customs review: BOE header + read-only unit weight + putaway.
  * HS / COO / SI are ASN-owned (display only). Actual Unit Weight is receiving-owned.
  */
 export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, onSaved }) {
   const qc = useQueryClient();
+  const { can } = useAuth();
+  const canQuickCreatePutaway =
+    can("ASN", "view") &&
+    can("STORE", "create") &&
+    String(grn?.status || "").toUpperCase() === "DRAFT" &&
+    String(grn?.sourceType || "").toUpperCase() === "ASN_RECEIVING" &&
+    Boolean(grn?.receivingSessionId);
   const [customs, setCustoms] = useState(() => captureFromGrn(grn));
   const [lineEdits, setLineEdits] = useState({});
+  const [quickCreateOpen, setQuickCreateOpen] = useState(false);
+  const [quickCreateLineKey, setQuickCreateLineKey] = useState("");
+  const [quickRack, setQuickRack] = useState("");
+  const [quickBin, setQuickBin] = useState("");
+  const [quickApplyAll, setQuickApplyAll] = useState(false);
 
   const asnQ = useQuery({
     queryKey: ["asn", grn?.asnId],
@@ -101,8 +127,7 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
     setCustoms(captureFromGrn(grn));
     const next = {};
     for (const ln of grn?.items || []) {
-      const key = String(ln.poLineId || ln.asnLineId || ln.article);
-      // Never treat warehouse MAIN as putaway — only explicit items[].location.
+      const key = lineKey(ln);
       next[key] = {
         location: ln.location || "",
         warehouse: ln.warehouse || "MAIN",
@@ -132,10 +157,25 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
     );
   }
 
+  function applyLocationToLines(locationCode, { allLines = false, targetKey = "" } = {}) {
+    const code = String(locationCode || "").trim().toUpperCase();
+    if (!code) return;
+    setLineEdits((prev) => {
+      const next = { ...prev };
+      const keys = allLines
+        ? (grn.items || []).map(lineKey)
+        : [targetKey].filter(Boolean);
+      for (const key of keys) {
+        next[key] = { ...(next[key] || {}), location: code, warehouse: "MAIN" };
+      }
+      return next;
+    });
+  }
+
   const saveMut = useMutation({
     mutationFn: async () => {
       const items = (grn.items || []).map((ln) => {
-        const key = String(ln.poLineId || ln.asnLineId || ln.article);
+        const key = lineKey(ln);
         const ed = lineEdits[key] || {};
         const qty = Number(ln.acceptedQty ?? ln.receivedQty) || 0;
         const unitWeightKg = Number(ln.customsCapture?.unitWeightKg) || 0;
@@ -168,7 +208,36 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
     onSuccess: (row) => {
       notify.success("Draft GRN customs saved");
       qc.invalidateQueries({ queryKey: ["grns"] });
+      qc.invalidateQueries({ queryKey: ["receiving-progress"] });
       onSaved?.(row);
+    },
+    onError: (e) => notify.fromError(e),
+  });
+
+  const createLocMut = useMutation({
+    mutationFn: async ({ rack, bin }) => {
+      const sessionId = String(grn?.receivingSessionId || "").trim();
+      if (!sessionId) {
+        throw new Error("Receiving session is required for putaway quick-create");
+      }
+      const data = await apiPost(`/receiving/sessions/${sessionId}/putaway-locations`, {
+        rack: String(rack || "").trim(),
+        bin: String(bin || "").trim(),
+      });
+      return data?.location || data;
+    },
+    onSuccess: (row) => {
+      qc.invalidateQueries({ queryKey: ["stock-locations"] });
+      const code = String(row.locationCode || "").toUpperCase();
+      applyLocationToLines(code, {
+        allLines: quickApplyAll,
+        targetKey: quickCreateLineKey,
+      });
+      setQuickCreateOpen(false);
+      setQuickRack("");
+      setQuickBin("");
+      setQuickApplyAll(false);
+      notify.success(`Putaway location ${code} ready — save Draft GRN to update readiness`);
     },
     onError: (e) => notify.fromError(e),
   });
@@ -178,21 +247,38 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
     (s, ln) => s + (Number(ln.acceptedQty ?? ln.receivedQty) || 0),
     0,
   );
+  const previewLocationCode = buildPutawayLocationCode("MAIN", quickRack, quickBin);
+  const postReady = grn.postReadiness?.postReady === true;
+  const postBlockers = grn.postReadiness?.blockers || [];
+  const readinessKnown = grn.postReadiness != null;
+
+  function openQuickCreate(lineKeyValue) {
+    setQuickCreateLineKey(lineKeyValue);
+    setQuickRack("");
+    setQuickBin("");
+    setQuickApplyAll((grn.items || []).length > 1);
+    setQuickCreateOpen(true);
+  }
 
   return (
     <div className="mt-3 space-y-3 rounded-xl border border-slate-200 bg-white p-3">
-      {Array.isArray(grn.postReadiness?.blockers) && grn.postReadiness.blockers.length > 0 ? (
+      {!readinessKnown ? (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+          Evaluating posting readiness…
+        </div>
+      ) : postBlockers.length > 0 ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-          <div className="font-semibold">Posting Readiness</div>
+          <div className="font-semibold">GRN NOT READY TO POST</div>
+          <div className="mt-1 text-xs font-medium uppercase tracking-wide text-amber-800">Outstanding</div>
           <ul className="mt-2 list-disc space-y-1 pl-5">
-            {grn.postReadiness.blockers.map((b) => (
+            {postBlockers.map((b) => (
               <li key={`${b.code}-${b.article || ""}-${b.message}`}>{b.message}</li>
             ))}
           </ul>
         </div>
-      ) : grn.postReadiness?.postReady ? (
+      ) : postReady ? (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">
-          ✓ Ready to Post
+          ✓ READY TO POST
         </div>
       ) : null}
 
@@ -212,8 +298,10 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
 
       {putawayOptions.length === 0 ? (
         <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-950">
-          No physical putaway StockLocations found. Create Active locations with both Rack and Bin under Store →
-          Locations, then select them here.
+          No physical putaway StockLocations found yet.
+          {canQuickCreatePutaway
+            ? " Use + Create Putaway Location below, or create Active Rack/Bin locations under Store → Locations."
+            : " Ask a Store user with location-master access to create Active Rack/Bin locations."}
         </p>
       ) : null}
 
@@ -233,7 +321,7 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
           </thead>
           <tbody>
             {(grn.items || []).map((ln) => {
-              const key = String(ln.poLineId || ln.asnLineId || ln.article);
+              const key = lineKey(ln);
               const ed = lineEdits[key] || {};
               const asnLine = resolveAsnLine(ln);
               const qty = Number(ln.acceptedQty ?? ln.receivedQty) || 0;
@@ -264,24 +352,36 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
                     {warehouse} <span className="text-slate-400">🔒</span>
                   </td>
                   <td className="px-2 py-1.5">
-                    <select
-                      className="min-w-[180px] rounded border px-1 py-0.5"
-                      disabled={disabled || saveMut.isPending}
-                      value={ed.location || ""}
-                      onChange={(e) =>
-                        setLineEdits((prev) => ({
-                          ...prev,
-                          [key]: { ...ed, location: e.target.value },
-                        }))
-                      }
-                    >
-                      <option value="">Select putaway…</option>
-                      {putawayOptions.map((loc) => (
-                        <option key={loc.locationCode} value={String(loc.locationCode).toUpperCase()}>
-                          {formatLocOption(loc)}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="flex flex-col gap-1">
+                      <select
+                        className="min-w-[180px] rounded border px-1 py-0.5"
+                        disabled={disabled || saveMut.isPending}
+                        value={ed.location || ""}
+                        onChange={(e) =>
+                          setLineEdits((prev) => ({
+                            ...prev,
+                            [key]: { ...ed, location: e.target.value },
+                          }))
+                        }
+                      >
+                        <option value="">Select putaway…</option>
+                        {putawayOptions.map((loc) => (
+                          <option key={loc.locationCode} value={String(loc.locationCode).toUpperCase()}>
+                            {formatLocOption(loc)}
+                          </option>
+                        ))}
+                      </select>
+                      {canQuickCreatePutaway ? (
+                        <button
+                          type="button"
+                          className="text-left text-[11px] font-semibold text-sky-800 hover:underline"
+                          disabled={disabled || saveMut.isPending || createLocMut.isPending}
+                          onClick={() => openQuickCreate(key)}
+                        >
+                          + Create Putaway Location
+                        </button>
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
               );
@@ -298,6 +398,76 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
       >
         {saveMut.isPending ? "Saving…" : "Save Customs / Putaway"}
       </button>
+
+      <Modal open={quickCreateOpen} onClose={() => !createLocMut.isPending && setQuickCreateOpen(false)} title="Create Putaway Location">
+        <div className="space-y-3">
+          <p className="text-sm text-slate-600">
+            Creates an Active StockLocation master record. Warehouse stock accounting remains at MAIN; this selects
+            physical Rack/Bin provenance for the GRN line.
+          </p>
+          <label className="block text-sm font-semibold text-slate-700">
+            Warehouse
+            <input className="mt-1 w-full rounded-lg border bg-slate-50 px-3 py-2 font-mono" value="MAIN" readOnly disabled />
+          </label>
+          <label className="block text-sm font-semibold text-slate-700">
+            Rack *
+            <input
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono uppercase"
+              value={quickRack}
+              disabled={createLocMut.isPending}
+              onChange={(e) => setQuickRack(e.target.value)}
+              placeholder="R01"
+            />
+          </label>
+          <label className="block text-sm font-semibold text-slate-700">
+            Bin *
+            <input
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono uppercase"
+              value={quickBin}
+              disabled={createLocMut.isPending}
+              onChange={(e) => setQuickBin(e.target.value)}
+              placeholder="B03"
+            />
+          </label>
+          <label className="block text-sm font-semibold text-slate-700">
+            Location Code
+            <input
+              className="mt-1 w-full rounded-lg border bg-slate-50 px-3 py-2 font-mono"
+              value={previewLocationCode || "—"}
+              readOnly
+              disabled
+            />
+          </label>
+          {(grn.items || []).length > 1 ? (
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={quickApplyAll}
+                disabled={createLocMut.isPending}
+                onChange={(e) => setQuickApplyAll(e.target.checked)}
+              />
+              Apply to all lines
+            </label>
+          ) : null}
+          <button
+            type="button"
+            className="min-h-11 w-full rounded-lg bg-sky-700 font-semibold text-white disabled:opacity-40"
+            disabled={
+              createLocMut.isPending ||
+              !String(quickRack || "").trim() ||
+              !String(quickBin || "").trim()
+            }
+            onClick={() =>
+              createLocMut.mutate({
+                rack: quickRack,
+                bin: quickBin,
+              })
+            }
+          >
+            {createLocMut.isPending ? "Creating…" : "Create Putaway Location"}
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 }

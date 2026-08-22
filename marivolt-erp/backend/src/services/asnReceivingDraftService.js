@@ -343,6 +343,39 @@ async function evaluatePostReadinessForDraft(req, grn, source, entitlementReview
   });
 }
 
+/** Attach entitlement + canonical post-readiness to ASN_RECEIVING Draft GRN API payloads. */
+export async function enrichAsnReceivingDraftGrnResponse(req, grnRow) {
+  if (!grnRow || !isAsnReceivingGrn(grnRow)) return grnRow;
+  const row = typeof grnRow.toObject === "function" ? grnRow.toObject() : { ...grnRow };
+  if (String(row.status || "").toUpperCase() !== "DRAFT") {
+    if (!row.entitlementReview) {
+      try {
+        const { review } = await reviewAsnReceivingDraftGrn(req, row);
+        row.entitlementReview = review;
+      } catch {
+        /* optional */
+      }
+    }
+    return row;
+  }
+  try {
+    const source = await resolveAsnReceivingSource({
+      companyId: req.companyId,
+      receivingSessionId: row.receivingSessionId,
+    });
+    let entitlementReview = row.entitlementReview;
+    if (!entitlementReview) {
+      const { review } = await reviewAsnReceivingDraftGrn(req, row);
+      entitlementReview = review;
+    }
+    row.entitlementReview = entitlementReview;
+    row.postReadiness = await evaluatePostReadinessForDraft(req, row, source, entitlementReview);
+  } catch {
+    /* source/review failure — return row without postReadiness */
+  }
+  return row;
+}
+
 export async function generateDraftGrnFromReceivingSession(req, sessionId) {
   const companyId = req.companyId;
   const source = await resolveAsnReceivingSource({ companyId, receivingSessionId: sessionId });
