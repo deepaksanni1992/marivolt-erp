@@ -11,10 +11,12 @@ import {
   ASN_CANCEL_CUSTOMS_EFFECT_EXISTS,
   ASN_CANCEL_REASON_REQUIRED,
   ASN_CANCEL_STOCK_EFFECT_EXISTS,
+  ASN_RECEIVING_LIFECYCLE_CANCEL_AUDIT_EVENT,
   AsnReceivingLifecycleCancelError,
 } from "../src/services/asnReceivingLifecycleCancelService.js";
 import { evaluateReceivingScanEligibility } from "../src/utils/receivingInspectionRules.js";
 import { applyCancelRelease, roundAsnQty } from "../src/utils/asnRules.js";
+import { getDefaultPermissionsForRole } from "../src/services/roleService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const srcRoot = path.join(__dirname, "../src");
@@ -39,6 +41,10 @@ const svc = fs.readFileSync(path.join(srcRoot, "services", "asnReceivingLifecycl
 const routes = fs.readFileSync(path.join(srcRoot, "routes", "asnRoutes.js"), "utf8");
 const ctrl = fs.readFileSync(path.join(srcRoot, "controllers", "asnController.js"), "utf8");
 const asnSvc = fs.readFileSync(path.join(srcRoot, "services", "asnService.js"), "utf8");
+const auditLogModel = fs.readFileSync(path.join(srcRoot, "models", "AuditLog.js"), "utf8");
+const sessionUnitModel = fs.readFileSync(path.join(srcRoot, "models", "ReceivingSessionUnit.js"), "utf8");
+const auditSvc = fs.readFileSync(path.join(srcRoot, "services", "auditService.js"), "utf8");
+const investigate = fs.readFileSync(path.join(__dirname, "investigateAsnMar0004Cancel.readonly.mjs"), "utf8");
 
 run("1. canonical service export cancelAsnReceivingLifecycle exists", () => {
   assert.match(svc, /export async function cancelAsnReceivingLifecycle/);
@@ -122,24 +128,55 @@ run("13. PO release math uses per-line asnQty only (not zeroing PO)", () => {
   assert.equal(roundAsnQty(18 - 6), 12);
 });
 
-run("14. audit trail records ASN, GRNs, RUs, released lines", () => {
-  assert.match(svc, /ASN_RECEIVING_LIFECYCLE_CANCELLED/);
+run("14. audit uses canonical CANCEL action with lifecycle event metadata", () => {
+  assert.match(svc, /action: "CANCEL"/);
+  assert.match(svc, /eventType: ASN_RECEIVING_LIFECYCLE_CANCEL_AUDIT_EVENT/);
   assert.match(svc, /cancelledDraftGrns/);
   assert.match(svc, /retiredRuNos/);
   assert.match(svc, /releasedLines/);
+  assert.match(svc, /receivingSessionNos/);
+  assert.match(svc, /sourcePoNo/);
+  assert.match(auditLogModel, /"CANCEL"/);
+  assert.doesNotMatch(svc, /action: "ASN_RECEIVING_LIFECYCLE_CANCELLED"/);
+  assert.equal(ASN_RECEIVING_LIFECYCLE_CANCEL_AUDIT_EVENT, "ASN_RECEIVING_LIFECYCLE_CANCELLED");
 });
 
-run("15. MANUAL_PO unchanged — service scoped to ASN_RECEIVING GRNs", () => {
+run("15. audit write is best-effort after transaction (not enum-breaking inside txn)", () => {
+  assert.match(auditSvc, /never throw/i);
+  assert.match(svc, /await mongoSession\.withTransaction/);
+  assert.match(svc, /await writeAudit\(req,/);
+  const auditIdx = svc.indexOf("await writeAudit(req,");
+  const txnEndIdx = svc.indexOf("await mongoSession.endSession()");
+  assert.ok(auditIdx > txnEndIdx, "writeAudit should run after session ends");
+});
+
+run("16. ReceivingSessionUnit lookup uses receivingSessionId (not sessionId)", () => {
+  assert.match(sessionUnitModel, /receivingSessionId/);
+  assert.match(sessionUnitModel, /collection: "receivingSessionUnits"/);
+  assert.match(investigate, /ReceivingSessionUnit\.find\(\{ companyId, asnId: asn\._id \}\)/);
+  assert.doesNotMatch(investigate, /sessionId:/);
+});
+
+run("17. PURCHASE and ADMIN defaults include ASN.cancel; STORE_OPERATOR does not", () => {
+  assert.ok(getDefaultPermissionsForRole("purchase").ASN.includes("cancel"));
+  assert.ok(getDefaultPermissionsForRole("admin").ASN.includes("cancel"));
+  assert.ok(getDefaultPermissionsForRole("super_admin").ASN.includes("cancel"));
+  const storeOp = getDefaultPermissionsForRole("store_operator");
+  assert.ok(storeOp.ASN.includes("view"));
+  assert.ok(!storeOp.ASN.includes("cancel"));
+});
+
+run("18. MANUAL_PO unchanged — service scoped to ASN_RECEIVING GRNs", () => {
   assert.match(svc, /GRN_SOURCE_ASN_RECEIVING/);
   assert.doesNotMatch(asnSvc, /cancelAsnReceivingLifecycle/);
 });
 
-run("16. existing simple ASN cancel path preserved", () => {
+run("19. existing simple ASN cancel path preserved", () => {
   assert.match(routes, /router\.post\("\/:id\/cancel", asnCancel, c\.cancel\)/);
   assert.match(ctrl, /cancelAsn\(req/);
 });
 
-run("17. investigation readonly script exists for MAR-ASN-0004", () => {
+run("20. investigation readonly script exists for MAR-ASN-0004", () => {
   const inv = fs.readFileSync(path.join(__dirname, "investigateAsnMar0004Cancel.readonly.mjs"), "utf8");
   assert.match(inv, /MAR-ASN-0004/);
   assert.match(inv, /READ-ONLY/);

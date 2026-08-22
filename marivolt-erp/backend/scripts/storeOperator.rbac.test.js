@@ -110,6 +110,14 @@ run("STORE_OPERATOR can prepare ASN receiving labels without ASN.edit", () => {
   assert.ok(!asnRoutes.includes('requirePermission("ASN", "edit"), ru.plan'));
 });
 
+run("STORE_OPERATOR cannot cancel ASN receiving lifecycle", () => {
+  const asnRoutes = fs.readFileSync(path.join(srcRoot, "routes", "asnRoutes.js"), "utf8");
+  assert.ok(asnRoutes.includes("cancel-receiving-lifecycle"));
+  assert.ok(asnRoutes.includes("asnCancel, c.cancelReceivingLifecycle"));
+  const m = getDefaultPermissionsForRole("store_operator");
+  assert.ok(!m.ASN.includes("cancel"));
+});
+
 run("STORE_OPERATOR cannot mutate ASN attachments; downloads stay company-scoped", () => {
   const asnRoutes = fs.readFileSync(path.join(srcRoot, "routes", "asnRoutes.js"), "utf8");
   const docCtrl = fs.readFileSync(path.join(srcRoot, "controllers", "documentController.js"), "utf8");

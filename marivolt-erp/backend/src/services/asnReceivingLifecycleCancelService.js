@@ -26,6 +26,7 @@ export const ASN_CANCEL_RESERVATION_CONFLICT = "ASN_CANCEL_RESERVATION_CONFLICT"
 export const ASN_CANCEL_RECEIVING_CONFLICT = "ASN_CANCEL_RECEIVING_CONFLICT";
 export const ASN_CANCEL_INVALID_TRANSITION = "ASN_CANCEL_INVALID_TRANSITION";
 export const ASN_CANCEL_NOT_FOUND = "ASN_NOT_FOUND";
+export const ASN_RECEIVING_LIFECYCLE_CANCEL_AUDIT_EVENT = "ASN_RECEIVING_LIFECYCLE_CANCELLED";
 
 const POSTED_GRN_STATUSES = Object.freeze(["POSTED", "RECEIVED", "PARTIAL_RECEIVED", "CLOSED"]);
 const LIFECYCLE_CANCEL_ASN_STATUSES = Object.freeze(["DRAFT", "SHIPPED", "ARRIVED"]);
@@ -369,26 +370,38 @@ export async function cancelAsnReceivingLifecycle(req, asnId, body = {}) {
           article: ln.article,
           releasedQty: Number(ln.asnQty) || 0,
         })),
+        receivingSessionNos: (eligibility.sessions || [])
+          .map((s) => t(s.sessionNo))
+          .filter(Boolean),
+        sourcePoNo: t(cancelledAsn.sourcePoNo || cancelledAsn.poNo),
       };
-
-      await writeAudit(req, {
-        action: "ASN_RECEIVING_LIFECYCLE_CANCELLED",
-        module: "ASN",
-        entityType: "ASN",
-        entityId: cancelledAsn._id,
-        documentNo: cancelledAsn.asnNo,
-        description: `ASN ${cancelledAsn.asnNo} receiving lifecycle cancelled`,
-        metadata: {
-          reason,
-          cancelledDraftGrns: result.cancelledDraftGrns,
-          sessionsCancelled,
-          retiredRuNos: result.retiredRuNos,
-          releasedLines: result.releasedLines,
-        },
-      });
     });
   } finally {
     await mongoSession.endSession();
+  }
+
+  if (result && !result.alreadyCancelled) {
+    const fromStatus = String(pre.asn?.status || "").toUpperCase();
+    await writeAudit(req, {
+      action: "CANCEL",
+      module: "ASN",
+      entityType: "ASN",
+      entityId: result.asn._id,
+      documentNo: result.asn.asnNo,
+      fromStatus,
+      toStatus: "CANCELLED",
+      description: `ASN ${result.asn.asnNo} receiving lifecycle cancelled`,
+      metadata: {
+        eventType: ASN_RECEIVING_LIFECYCLE_CANCEL_AUDIT_EVENT,
+        reason,
+        poNo: result.sourcePoNo,
+        receivingSessionNos: result.receivingSessionNos,
+        cancelledDraftGrns: result.cancelledDraftGrns,
+        sessionsCancelled: result.sessionsCancelled,
+        retiredRuNos: result.retiredRuNos,
+        releasedLines: result.releasedLines,
+      },
+    });
   }
 
   return result;
