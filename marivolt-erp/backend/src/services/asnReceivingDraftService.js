@@ -7,6 +7,7 @@ import mongoose from "mongoose";
 import GRN from "../models/GRN.js";
 import ReceivingSessionUnit from "../models/ReceivingSessionUnit.js";
 import ReceivingUnit from "../models/ReceivingUnit.js";
+import StockLocation from "../models/StockLocation.js";
 import { actorName } from "../utils/asnRules.js";
 import { RU_ACTIVE_STATUSES, RU_PLAN_ELIGIBLE_ASN_STATUSES, isCurrentPlanRu } from "../utils/receivingUnitRules.js";
 import {
@@ -74,22 +75,29 @@ export async function findDraftAsnReceivingGrn(companyId, receivingSessionId, se
   return q.lean();
 }
 
-export async function findPostedOrCancelledAsnReceivingGrn(companyId, receivingSessionId, session = null) {
+export async function findPostedOrLockedAsnReceivingGrn(companyId, receivingSessionId, session = null) {
   const sid = oid(receivingSessionId);
   if (!sid) return null;
+  // CANCELLED drafts (e.g. after Reopen Receiving) must NOT freeze regenerate.
+  // Only stock-affecting / closed statuses lock the session slot permanently until reverse.
   const q = GRN.findOne({
     companyId,
     receivingSessionId: sid,
-    status: { $in: ["RECEIVED", "PARTIAL_RECEIVED", "POSTED", "CLOSED", "CANCELLED"] },
+    status: { $in: ["RECEIVED", "PARTIAL_RECEIVED", "POSTED", "CLOSED"] },
   });
   if (session) q.session(session);
   return q.lean();
 }
 
+/** @deprecated Use findPostedOrLockedAsnReceivingGrn — CANCELLED no longer freezes. */
+export async function findPostedOrCancelledAsnReceivingGrn(companyId, receivingSessionId, session = null) {
+  return findPostedOrLockedAsnReceivingGrn(companyId, receivingSessionId, session);
+}
+
 export async function assertReceivingNotFrozenByDraftGrn(companyId, receivingSessionId) {
   const existing = await findActiveAsnReceivingGrn(companyId, receivingSessionId);
   if (existing) freezeReceivingBecauseDraftGrnExists();
-  const locked = await findPostedOrCancelledAsnReceivingGrn(companyId, receivingSessionId);
+  const locked = await findPostedOrLockedAsnReceivingGrn(companyId, receivingSessionId);
   if (locked) freezeReceivingBecauseDraftGrnExists();
 }
 
@@ -303,6 +311,10 @@ async function evaluatePostReadinessForDraft(req, grn, source, entitlementReview
     companyId: req.companyId,
     receivingSessionId: source.receivingSession._id,
   }).lean();
+  const stockLocations = await StockLocation.find({
+    companyId: req.companyId,
+    status: "Active",
+  }).lean();
   const first = (grn.items || []).map((ln) => ln.customsCapture).find(Boolean) || {};
   let parentBoe = null;
   const selectRef = first.customsBoeId || first.customsBoeRef;
@@ -327,6 +339,7 @@ async function evaluatePostReadinessForDraft(req, grn, source, entitlementReview
     session: source.receivingSession,
     parentBoe,
     sessionUnits: units,
+    stockLocations,
   });
 }
 
@@ -501,8 +514,24 @@ function summarizeGrnSources(grn) {
 
 export async function attachDraftGrnToReceivingProgress(companyId, sessionDoc, progressPayload) {
   if (!sessionDoc?._id) return progressPayload;
+  let reopenReceiving = { eligible: false, blockers: [] };
+  try {
+    const { evaluateReopenReceivingEligibility } = await import("./asnReceivingReopenService.js");
+    reopenReceiving = await evaluateReopenReceivingEligibility({
+      companyId,
+      receivingSessionId: sessionDoc._id,
+    });
+  } catch {
+    reopenReceiving = { eligible: false, blockers: [] };
+  }
   const grn = await findActiveAsnReceivingGrn(companyId, sessionDoc._id);
-  if (!grn) return { ...progressPayload, draftGrn: null };
+  const reopenPayload = {
+    eligible: reopenReceiving.eligible === true,
+    blockers: reopenReceiving.blockers || [],
+  };
+  if (!grn) {
+    return { ...progressPayload, draftGrn: null, reopenReceiving: reopenPayload };
+  }
   let extras = { totals: summarizeGrnSources(grn) };
   try {
     const fakeReq = { companyId };
@@ -519,5 +548,6 @@ export async function attachDraftGrnToReceivingProgress(companyId, sessionDoc, p
   return {
     ...progressPayload,
     draftGrn: serializeDraftGrn(grn, extras),
+    reopenReceiving: reopenPayload,
   };
 }

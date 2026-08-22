@@ -52,9 +52,29 @@ function hydrateInvoices(asn = {}) {
   return [];
 }
 
+function isPhysicalPutaway(loc, warehouse = "MAIN") {
+  if (!loc || String(loc.status || "Active") === "Inactive") return false;
+  const code = String(loc.locationCode || "").trim().toUpperCase();
+  if (!code) return false;
+  const wh = String(warehouse || "MAIN").trim().toUpperCase();
+  const locWh = String(loc.warehouse || "").trim().toUpperCase();
+  if (locWh && locWh !== wh) return false;
+  const rack = String(loc.rack || "").trim();
+  const bin = String(loc.bin || "").trim();
+  return Boolean(rack && bin);
+}
+
+function formatLocOption(loc) {
+  const code = String(loc.locationCode || "").toUpperCase();
+  const rack = String(loc.rack || "").trim();
+  const bin = String(loc.bin || "").trim();
+  if (rack && bin) return `${code} — Rack ${rack} · Bin ${bin}`;
+  return code;
+}
+
 /**
- * ASN_RECEIVING Draft GRN customs review: BOE header + line unit weight / location.
- * HS / COO / SI are ASN-owned (display only).
+ * ASN_RECEIVING Draft GRN customs review: BOE header + read-only unit weight + putaway.
+ * HS / COO / SI are ASN-owned (display only). Actual Unit Weight is receiving-owned.
  */
 export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, onSaved }) {
   const qc = useQueryClient();
@@ -67,13 +87,24 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
     enabled: Boolean(grn?.asnId),
   });
 
+  const locationsQ = useQuery({
+    queryKey: ["stock-locations"],
+    queryFn: () => apiGet("/stock/locations"),
+  });
+
+  const putawayOptions = useMemo(() => {
+    const rows = Array.isArray(locationsQ.data) ? locationsQ.data : locationsQ.data?.items || [];
+    return rows.filter((l) => isPhysicalPutaway(l, "MAIN"));
+  }, [locationsQ.data]);
+
   useEffect(() => {
     setCustoms(captureFromGrn(grn));
     const next = {};
     for (const ln of grn?.items || []) {
       const key = String(ln.poLineId || ln.asnLineId || ln.article);
+      // Never treat warehouse MAIN as putaway — only explicit items[].location.
       next[key] = {
-        location: ln.location || ln.warehouse || "",
+        location: ln.location || "",
         warehouse: ln.warehouse || "MAIN",
         unitWeightKg: ln.customsCapture?.unitWeightKg || "",
         remarks: ln.remarks || "",
@@ -107,12 +138,11 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
         const key = String(ln.poLineId || ln.asnLineId || ln.article);
         const ed = lineEdits[key] || {};
         const qty = Number(ln.acceptedQty ?? ln.receivedQty) || 0;
-        // Actual Unit Weight is receiving-authoritative — never send client overrides.
         const unitWeightKg = Number(ln.customsCapture?.unitWeightKg) || 0;
         return {
           ...ln,
           warehouse: ed.warehouse || ln.warehouse || "MAIN",
-          location: ed.location || ln.location || "",
+          location: String(ed.location || ln.location || "").trim().toUpperCase(),
           remarks: ed.remarks != null ? ed.remarks : ln.remarks,
           customsCapture: {
             ...customs,
@@ -180,8 +210,15 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
         disabled={disabled || saveMut.isPending}
       />
 
+      {putawayOptions.length === 0 ? (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-950">
+          No physical putaway StockLocations found. Create Active locations with both Rack and Bin under Store →
+          Locations, then select them here.
+        </p>
+      ) : null}
+
       <div className="overflow-x-auto">
-        <table className="min-w-[900px] w-full text-xs">
+        <table className="min-w-[980px] w-full text-xs">
           <thead className="bg-slate-50 text-left uppercase text-slate-500">
             <tr>
               <th className="px-2 py-1.5">Article</th>
@@ -190,7 +227,8 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
               <th className="px-2 py-1.5">COO</th>
               <th className="px-2 py-1.5">Actual Unit Weight (kg)</th>
               <th className="px-2 py-1.5">Line kg</th>
-              <th className="px-2 py-1.5">Location</th>
+              <th className="px-2 py-1.5">Warehouse</th>
+              <th className="px-2 py-1.5">Putaway Location *</th>
             </tr>
           </thead>
           <tbody>
@@ -199,10 +237,11 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
               const ed = lineEdits[key] || {};
               const asnLine = resolveAsnLine(ln);
               const qty = Number(ln.acceptedQty ?? ln.receivedQty) || 0;
-              const uw = Number(ln.customsCapture?.unitWeightKg) || Number(ed.unitWeightKg) || 0;
+              const uw = Number(ln.customsCapture?.unitWeightKg) || 0;
               const lineKg = qty > 0 && uw > 0 ? Math.round(qty * uw * 1000) / 1000 : null;
               const hs = asnLine?.hsCode || "—";
               const coo = asnLine?.countryOfOrigin || asnQ.data?.countryOfOrigin || "—";
+              const warehouse = ed.warehouse || ln.warehouse || "MAIN";
               return (
                 <tr key={key} className="border-t border-slate-100">
                   <td className="px-2 py-1.5 font-mono font-semibold">{ln.article}</td>
@@ -221,18 +260,28 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
                     <div className="text-[10px] text-slate-400">Source: Receiving</div>
                   </td>
                   <td className="px-2 py-1.5 tabular-nums text-slate-500">{lineKg ?? "—"}</td>
+                  <td className="px-2 py-1.5 font-mono text-slate-600">
+                    {warehouse} <span className="text-slate-400">🔒</span>
+                  </td>
                   <td className="px-2 py-1.5">
-                    <input
-                      className="min-w-[120px] rounded border px-1 py-0.5"
+                    <select
+                      className="min-w-[180px] rounded border px-1 py-0.5"
                       disabled={disabled || saveMut.isPending}
-                      value={ed.location ?? ""}
+                      value={ed.location || ""}
                       onChange={(e) =>
                         setLineEdits((prev) => ({
                           ...prev,
                           [key]: { ...ed, location: e.target.value },
                         }))
                       }
-                    />
+                    >
+                      <option value="">Select putaway…</option>
+                      {putawayOptions.map((loc) => (
+                        <option key={loc.locationCode} value={String(loc.locationCode).toUpperCase()}>
+                          {formatLocOption(loc)}
+                        </option>
+                      ))}
+                    </select>
                   </td>
                 </tr>
               );
@@ -247,7 +296,7 @@ export default function AsnReceivingDraftCustomsReview({ grn, disabled = false, 
         disabled={disabled || saveMut.isPending}
         onClick={() => saveMut.mutate()}
       >
-        {saveMut.isPending ? "Saving…" : "Save Customs / Locations"}
+        {saveMut.isPending ? "Saving…" : "Save Customs / Putaway"}
       </button>
     </div>
   );

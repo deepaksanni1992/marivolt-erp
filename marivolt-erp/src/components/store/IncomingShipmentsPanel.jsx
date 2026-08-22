@@ -36,6 +36,11 @@ export default function IncomingShipmentsPanel() {
   const [grnBusy, setGrnBusy] = useState(false);
   const [postConfirmOpen, setPostConfirmOpen] = useState(false);
   const [postResult, setPostResult] = useState(null);
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenReason, setReopenReason] = useState("");
+  const [reopenSelectedUnitIds, setReopenSelectedUnitIds] = useState([]);
+  const [reopenBanner, setReopenBanner] = useState("");
+  const [reopenBusy, setReopenBusy] = useState(false);
   const scanLockRef = useRef("");
 
   useEffect(() => {
@@ -78,9 +83,19 @@ export default function IncomingShipmentsPanel() {
   const session = progressQ.data?.session;
   const receivingUnits = progressQ.data?.receivingUnits || [];
   const draftGrn = progressQ.data?.draftGrn;
+  const reopenReceiving = progressQ.data?.reopenReceiving;
   const draftStatus = String(draftGrn?.status || "").toUpperCase();
   const draftIsPosted = ["RECEIVED", "PARTIAL_RECEIVED", "POSTED", "CLOSED"].includes(draftStatus);
   const receivingComplete = String(session?.status || "").toUpperCase() === "COMPLETED";
+  const canReopenReceiving =
+    canReceive &&
+    receivingComplete &&
+    Boolean(draftGrn?.grnNo) &&
+    draftStatus === "DRAFT" &&
+    reopenReceiving?.eligible === true;
+  const reopenableUnits = receivingUnits.filter(
+    (r) => String(r.status || "").toUpperCase() === "COMPLETED" && r.receivingSessionUnitId,
+  );
   const receivingTotals = receivingUnits.reduce(
     (acc, row) => ({
       accepted: acc.accepted + (Number(row.acceptedQty) || 0),
@@ -256,6 +271,54 @@ export default function IncomingShipmentsPanel() {
     }
   }
 
+  async function confirmReopenReceiving() {
+    if (!session?._id || reopenBusy) return;
+    const reason = String(reopenReason || "").trim();
+    if (!reason) {
+      setScanError("Reason for reopening receiving is required");
+      return;
+    }
+    const selectedIds = reopenSelectedUnitIds.filter(Boolean);
+    if (!selectedIds.length) {
+      setScanError("Select at least one Receiving Unit to reopen");
+      return;
+    }
+    const ok = await confirmDialog({
+      title: "Reopen receiving?",
+      message:
+        `Reopen ${selectedIds.length} selected Receiving Unit(s) for correction.\n\nThe current Draft GRN will be invalidated and a new Draft GRN must be generated after receiving is completed again.\n\nReceiving Unit numbers and printed barcode labels will NOT change.`,
+      confirmLabel: "Reopen Receiving",
+    });
+    if (!ok) return;
+    setReopenBusy(true);
+    setScanError("");
+    try {
+      await apiPost(`/receiving/sessions/${session._id}/reopen`, {
+        reason,
+        receivingSessionUnitIds: selectedIds,
+      });
+      setReopenOpen(false);
+      setReopenReason("");
+      setReopenSelectedUnitIds([]);
+      setReopenBanner("RECEIVING REOPENED FOR CORRECTION");
+      notify.success("Receiving reopened for correction");
+      refreshReceiving();
+      if (selectedId) qc.invalidateQueries({ queryKey: ["asn-receiving-units", selectedId] });
+    } catch (err) {
+      setScanError(err.message || "Could not reopen receiving");
+    } finally {
+      setReopenBusy(false);
+    }
+  }
+
+  function toggleReopenUnit(sessionUnitId) {
+    const id = String(sessionUnitId || "");
+    if (!id) return;
+    setReopenSelectedUnitIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="rounded-2xl border bg-white p-4">
@@ -268,6 +331,11 @@ export default function IncomingShipmentsPanel() {
           <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{listQ.error?.message || "Could not load shipments"}</p>
         ) : null}
         {scanError ? <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{scanError}</p> : null}
+        {reopenBanner ? (
+          <p className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm font-semibold text-amber-950">
+            {reopenBanner}
+          </p>
+        ) : null}
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           <input
             className="min-h-12 rounded-xl border border-slate-200 px-3 py-2 text-base"
@@ -557,6 +625,20 @@ export default function IncomingShipmentsPanel() {
                         Open existing Draft GRN
                       </button>
                     ) : null}
+                    {canReopenReceiving ? (
+                      <button
+                        type="button"
+                        className="mt-2 min-h-12 w-full rounded-2xl border border-amber-400 bg-amber-50 text-base font-semibold text-amber-950"
+                        onClick={() => {
+                          setReopenReason("");
+                          setReopenSelectedUnitIds([]);
+                          setReopenOpen(true);
+                        }}
+                        disabled={reopenBusy || grnBusy}
+                      >
+                        Reopen Receiving
+                      </button>
+                    ) : null}
                       </>
                     )}
                   </>
@@ -728,7 +810,7 @@ export default function IncomingShipmentsPanel() {
           <div>Damaged {receivingTotals.damaged} · Rejected {receivingTotals.rejected} · Short {receivingTotals.short}</div>
           <div>Extra physical qty (evidence only) {draftGrn?.totals?.excessPendingQty ?? receivingTotals.excess}</div>
           <div>Warehouse {(draftGrn?.items || [])[0]?.warehouse || "MAIN"}</div>
-          <div>Location {(draftGrn?.items || [])[0]?.location || (draftGrn?.items || [])[0]?.warehouse || "MAIN"}</div>
+          <div>Putaway {(draftGrn?.items || [])[0]?.location || "—"}</div>
           <p className="text-sm text-slate-600">RU labels already printed will not be reprinted.</p>
           <button
             type="button"
@@ -772,6 +854,75 @@ export default function IncomingShipmentsPanel() {
             Lookup
           </button>
         </form>
+      </Modal>
+
+      <Modal
+        open={reopenOpen}
+        onClose={() => !reopenBusy && setReopenOpen(false)}
+        title="Reopen Receiving"
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-slate-600">
+            Select the Receiving Unit(s) needing correction. The current Draft GRN will be invalidated. RU numbers and
+            barcodes will not change.
+          </p>
+          <div className="max-h-64 space-y-2 overflow-y-auto rounded-xl border p-2">
+            {reopenableUnits.length === 0 ? (
+              <p className="p-2 text-sm text-slate-500">No completed Receiving Units available to reopen.</p>
+            ) : (
+              reopenableUnits.map((ru) => {
+                const sid = String(ru.receivingSessionUnitId);
+                const weight =
+                  ru.actualUnitWeightKg != null && Number(ru.actualUnitWeightKg) > 0
+                    ? `${Number(ru.actualUnitWeightKg)} kg`
+                    : "—";
+                return (
+                  <label
+                    key={sid}
+                    className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-2 hover:bg-slate-50"
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={reopenSelectedUnitIds.includes(sid)}
+                      disabled={reopenBusy}
+                      onChange={() => toggleReopenUnit(sid)}
+                    />
+                    <span className="text-sm">
+                      <span className="font-mono font-semibold">{ru.ruNo}</span>
+                      <span className="text-slate-600">
+                        {" "}
+                        — {ru.article || "—"} — Qty {ru.acceptedQty ?? ru.actualQty ?? "—"} — Weight {weight}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })
+            )}
+          </div>
+          <label className="block text-sm font-semibold text-slate-700">
+            Reason for reopening receiving *
+            <textarea
+              className="mt-1 min-h-24 w-full rounded-xl border px-3 py-2 text-sm"
+              value={reopenReason}
+              disabled={reopenBusy}
+              onChange={(e) => setReopenReason(e.target.value)}
+              placeholder="e.g. Missing actual unit weight"
+            />
+          </label>
+          <button
+            type="button"
+            className="min-h-14 w-full rounded-2xl border border-amber-500 bg-amber-600 text-lg font-semibold text-white disabled:opacity-40"
+            disabled={
+              reopenBusy ||
+              !String(reopenReason || "").trim() ||
+              reopenSelectedUnitIds.length === 0
+            }
+            onClick={confirmReopenReceiving}
+          >
+            {reopenBusy ? "Reopening…" : "Confirm Reopen Receiving"}
+          </button>
+        </div>
       </Modal>
 
       <AsnReceivingLabelPlanner

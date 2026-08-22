@@ -1011,6 +1011,7 @@ async function buildProgressRows(companyId, asn, session) {
       rejectedQty: unit?.rejectedQty,
     });
     return {
+      receivingSessionUnitId: unit?._id ?? null,
       receivingUnitId: ru._id,
       ruNo: ru.ruNo,
       article: ru.article,
@@ -1020,6 +1021,7 @@ async function buildProgressRows(companyId, asn, session) {
       uom: ru.uom,
       plannedQty: ru.plannedQty,
       actualQty: unit?.actualQty ?? null,
+      actualUnitWeightKg: unit?.actualUnitWeightKg ?? null,
       acceptedQty: derived.acceptedQty,
       damagedQty: derived.damagedQty,
       rejectedQty: derived.rejectedQty,
@@ -1140,6 +1142,21 @@ export async function completeReceivingSession(req, sessionId) {
       "Every completed Receiving Unit must have a valid accepted/damaged/rejected disposition",
       409,
       "RECEIVING_DISPOSITION_REQUIRED"
+    );
+  }
+  // Actual Unit Weight required for every completed RU that will contribute accepted qty.
+  const missingWeight = (summary.receivingUnits || []).filter((r) => {
+    if (String(r.status || "").toUpperCase() !== "COMPLETED") return false;
+    const accepted = Number(r.acceptedQty) || 0;
+    if (!(accepted > 0)) return false;
+    const w = Number(r.actualUnitWeightKg);
+    return !Number.isFinite(w) || !(w > 0);
+  });
+  if (missingWeight.length) {
+    throw new ReceivingInspectionError(
+      `Actual Unit Weight is required for ${missingWeight.length} accepted Receiving Unit(s) before completing receiving`,
+      409,
+      "RECEIVING_UNIT_WEIGHT_REQUIRED"
     );
   }
   const actor = actorName(req);

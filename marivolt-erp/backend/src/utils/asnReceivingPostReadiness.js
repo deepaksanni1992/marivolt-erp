@@ -15,6 +15,7 @@ import {
   normalizeBoeNumber,
   findAsnLineForGrnItem,
 } from "./asnCustomsFieldOwnership.js";
+import { assertAsnReceivingPutawayLocation } from "./asnReceivingPutaway.js";
 
 function t(v) {
   return String(v ?? "").trim();
@@ -61,11 +62,7 @@ export function resolveReceivingUnitWeightForGrnLine(line, sessionUnitsById = ne
  * Pure readiness evaluation for an ASN_RECEIVING Draft GRN.
  *
  * @param {object} args
- * @param {object} args.grn
- * @param {object} [args.asn]
- * @param {object} [args.session]
- * @param {object} [args.parentBoe] resolved CustomsBoe when SELECT / reuse
- * @param {Map|object[]} [args.sessionUnits]
+ * @param {Map|object[]} [args.stockLocations] Active StockLocation rows or Map by locationCode
  */
 export function evaluateAsnReceivingPostReadiness({
   grn,
@@ -73,6 +70,7 @@ export function evaluateAsnReceivingPostReadiness({
   session = null,
   parentBoe = null,
   sessionUnits = [],
+  stockLocations = [],
 } = {}) {
   const blockers = [];
   if (!grn) {
@@ -101,6 +99,16 @@ export function evaluateAsnReceivingPostReadiness({
     if (u?._id) unitsById.set(String(u._id), u);
     if (u?.receivingUnitId) unitsById.set(String(u.receivingUnitId), u);
   }
+
+  const locMap =
+    stockLocations instanceof Map
+      ? stockLocations
+      : new Map(
+          (Array.isArray(stockLocations) ? stockLocations : []).map((l) => [
+            String(l.locationCode || "").trim().toUpperCase(),
+            l,
+          ]),
+        );
 
   const items = (grn.items || []).filter((ln) => (Number(ln.acceptedQty ?? ln.receivedQty) || 0) > 0);
   const firstCapture = items.map((ln) => ln.customsCapture).find(Boolean) || {};
@@ -141,13 +149,16 @@ export function evaluateAsnReceivingPostReadiness({
     blockers.push(blocker("ASN_REQUIRED", "ASN is required for ASN_RECEIVING posting"));
   }
 
-  // --- GRN line location + actual unit weight ---
+  // --- GRN line physical putaway + actual unit weight ---
   for (const ln of items) {
     const article = t(ln.article) || "—";
-    if (!t(ln.location) && !t(ln.warehouse)) {
-      blockers.push(
-        blocker("GRN_LOCATION_REQUIRED", `Location missing for Article ${article}`, { article }),
-      );
+    const warehouse = t(ln.warehouse) || "MAIN";
+    const putaway = assertAsnReceivingPutawayLocation(ln.location, {
+      warehouse,
+      stockLocationsByCode: locMap,
+    });
+    if (!putaway.ok) {
+      blockers.push(blocker(putaway.code, `${putaway.message} (Article ${article})`, { article }));
     }
     const weightRes = resolveReceivingUnitWeightForGrnLine(ln, unitsById);
     if (weightRes.missing || !(weightRes.unitWeightKg > 0)) {

@@ -249,6 +249,9 @@ run("L. readiness blocks missing RU weight, not different weights", () => {
 });
 
 run("M. CREATE readiness requires Gross+Net and rejects net>gross", () => {
+  const putawayLocations = [
+    { locationCode: "A-01", warehouse: "MAIN", rack: "A", bin: "01", status: "Active" },
+  ];
   const baseItem = {
     article: "700011",
     acceptedQty: 5,
@@ -290,6 +293,7 @@ run("M. CREATE readiness requires Gross+Net and rejects net>gross", () => {
     asn,
     session,
     sessionUnits,
+    stockLocations: putawayLocations,
   });
   assert.equal(missing.postReady, false);
   assert.ok(missing.blockers.some((b) => b.code === "BOE_GROSS_WEIGHT_REQUIRED"));
@@ -321,6 +325,7 @@ run("M. CREATE readiness requires Gross+Net and rejects net>gross", () => {
     asn,
     session,
     sessionUnits,
+    stockLocations: putawayLocations,
   });
   assert.equal(exceeds.postReady, false);
   assert.ok(exceeds.blockers.some((b) => b.code === "BOE_NET_WEIGHT_EXCEEDS_GROSS"));
@@ -351,6 +356,7 @@ run("M. CREATE readiness requires Gross+Net and rejects net>gross", () => {
     asn,
     session,
     sessionUnits,
+    stockLocations: putawayLocations,
   });
   assert.equal(ok.postReady, true, JSON.stringify(ok.blockers));
 });
@@ -411,6 +417,9 @@ run("Q. normalize BOE unchanged", () => {
 });
 
 run("R. SELECT/reuse loads parent Gross/Net into readiness (not client invent)", () => {
+  const putawayLocations = [
+    { locationCode: "A-01", warehouse: "MAIN", rack: "A", bin: "01", status: "Active" },
+  ];
   const grn = {
     status: "DRAFT",
     sourceType: "ASN_RECEIVING",
@@ -460,6 +469,7 @@ run("R. SELECT/reuse loads parent Gross/Net into readiness (not client invent)",
     session: { status: "COMPLETED" },
     parentBoe,
     sessionUnits: [{ _id: "U1", actualUnitWeightKg: 2.35 }],
+    stockLocations: putawayLocations,
   });
   assert.equal(r.postReady, true, JSON.stringify(r.blockers));
   assert.equal(r.summary.declaredGrossWeightKg, 250);

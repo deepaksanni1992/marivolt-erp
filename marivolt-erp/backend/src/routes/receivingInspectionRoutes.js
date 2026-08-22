@@ -18,6 +18,7 @@ router.post("/sessions", receivingMutate, c.startSession);
 router.get("/sessions/:sessionId", receivingView, c.getSession);
 router.get("/sessions/:sessionId/summary", receivingView, c.summary);
 router.post("/sessions/:sessionId/complete", receivingMutate, c.completeSession);
+router.post("/sessions/:sessionId/reopen", receivingMutate, c.reopenSession);
 router.get("/sessions/:sessionId/grn", receivingView, c.getSessionGrn);
 router.get("/sessions/:sessionId/grn/post-readiness", receivingView, c.getSessionGrnPostReadiness);
 router.post("/sessions/:sessionId/grn", receivingMutate, c.generateSessionGrn);

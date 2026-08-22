@@ -38,6 +38,7 @@ import {
 import { buildReceivingRows } from "./asnReceivingDraftService.js";
 import { evaluateAsnReceivingPostReadiness } from "../utils/asnReceivingPostReadiness.js";
 import ReceivingSessionUnit from "../models/ReceivingSessionUnit.js";
+import StockLocation from "../models/StockLocation.js";
 import { getCustomsBoeByIdOrRef, findCustomsBoeByNormalizedNumber } from "./customsBoeService.js";
 import {
   applyReceiveToPo,
@@ -196,6 +197,12 @@ export async function postAsnReceivingDraftGrn(req, grnNo) {
       })
         .session(session)
         .lean();
+      const stockLocations = await StockLocation.find({
+        companyId: req.companyId,
+        status: "Active",
+      })
+        .session(session)
+        .lean();
       const firstCapture = (grn.items || []).map((ln) => ln.customsCapture).find(Boolean) || {};
       let parentBoe = null;
       const selectRef = firstCapture.customsBoeId || firstCapture.customsBoeRef;
@@ -221,6 +228,7 @@ export async function postAsnReceivingDraftGrn(req, grnNo) {
         session: source.receivingSession,
         parentBoe,
         sessionUnits,
+        stockLocations,
       });
       if (!readiness.postReady) {
         const top = readiness.blockers[0];

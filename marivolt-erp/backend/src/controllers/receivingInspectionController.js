@@ -23,6 +23,7 @@ import {
   getAsnReceivingPostReadiness,
   getDraftGrnForReceivingSession,
 } from "../services/asnReceivingDraftService.js";
+import { reopenReceivingSession } from "../services/asnReceivingReopenService.js";
 
 function sendError(res, err) {
   if (
@@ -176,6 +177,18 @@ export async function asnProgress(req, res) {
 export async function completeSession(req, res) {
   try {
     const data = await completeReceivingSession(req, req.params.sessionId);
+    res.json(data);
+  } catch (err) {
+    sendError(res, err);
+  }
+}
+
+export async function reopenSession(req, res) {
+  try {
+    const data = await reopenReceivingSession(req, req.params.sessionId, {
+      reason: req.body?.reason,
+      receivingSessionUnitIds: req.body?.receivingSessionUnitIds,
+    });
     res.json(data);
   } catch (err) {
     sendError(res, err);
