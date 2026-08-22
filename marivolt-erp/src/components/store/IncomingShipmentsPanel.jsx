@@ -9,10 +9,17 @@ import ReceivingUnitInspectScreen from "./ReceivingUnitInspectScreen.jsx";
 import { apiGet, apiGetWithQuery, apiPost } from "../../lib/api.js";
 import { confirmDialog, notify } from "../../lib/notifications.js";
 import { useAuth } from "../../context/AuthContext.jsx";
-import { AsnStatusBadge, formatAsnDate, incomingAsnListQuery, incomingShipmentsPath, trackingDisplay } from "../../lib/asnUi.js";
+import {
+  AsnStatusBadge,
+  formatAsnDate,
+  incomingAsnListQuery,
+  incomingShipmentsPath,
+  storeGrnOpenPath,
+  trackingDisplay,
+} from "../../lib/asnUi.js";
 import { isStoreOperatorRole } from "../../lib/rbac.js";
 
-export default function IncomingShipmentsPanel() {
+export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
   const { can, role } = useAuth();
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -235,10 +242,15 @@ export default function IncomingShipmentsPanel() {
     }
   }
 
-  function reviewDraftGrn() {
+  function openExistingDraftGrn() {
     const grnNo = String(draftGrn?.grnNo || "").trim();
     if (!grnNo) return;
-    navigate(`/store?tab=GRN&grnNo=${encodeURIComponent(grnNo)}`);
+    const returnAsnId = String(selectedId || detail?._id || "").trim();
+    if (typeof onOpenDraftGrn === "function") {
+      onOpenDraftGrn(grnNo, { returnAsnId });
+      return;
+    }
+    navigate(storeGrnOpenPath(grnNo, { returnAsnId }));
   }
 
   async function confirmPostDraftGrn() {
@@ -539,7 +551,7 @@ export default function IncomingShipmentsPanel() {
                         <button
                           type="button"
                           className="mt-3 min-h-14 w-full rounded-2xl bg-sky-700 text-lg font-bold text-white"
-                          onClick={reviewDraftGrn}
+                          onClick={openExistingDraftGrn}
                         >
                           View GRN
                         </button>
@@ -590,7 +602,7 @@ export default function IncomingShipmentsPanel() {
                     <button
                       type="button"
                       className="mt-3 min-h-16 w-full rounded-2xl bg-sky-700 text-xl font-bold text-white"
-                      onClick={reviewDraftGrn}
+                      onClick={openExistingDraftGrn}
                     >
                       {draftGrn.postReadiness?.postReady === false
                         ? "Complete / Review Draft GRN"
@@ -629,7 +641,7 @@ export default function IncomingShipmentsPanel() {
                       <button
                         type="button"
                         className="mt-2 min-h-12 w-full rounded-2xl border text-base font-semibold"
-                        onClick={generateDraftGrn}
+                        onClick={openExistingDraftGrn}
                         disabled={grnBusy}
                       >
                         Open existing Draft GRN

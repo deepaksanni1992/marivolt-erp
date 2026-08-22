@@ -363,11 +363,71 @@ export default function StoreModule() {
   const [grnStaleLabelAck, setGrnStaleLabelAck] = useState(false);
   const grnUrlPoLoadedRef = useRef("");
   const grnCsvInputRef = useRef(null);
+  const grnOpenInFlightRef = useRef("");
   const [grnRegSearchInput, setGrnRegSearchInput] = useState(() => searchParams.get("grnQ") || "");
   const [grnRegSearch, setGrnRegSearch] = useState(() => searchParams.get("grnQ") || "");
   const [grnRegStatus, setGrnRegStatus] = useState(() => searchParams.get("grnStatus") || "");
   const [grnRegDateFrom, setGrnRegDateFrom] = useState(() => searchParams.get("grnFrom") || "");
   const [grnRegDateTo, setGrnRegDateTo] = useState(() => searchParams.get("grnTo") || "");
+  const grnNoFromUrl = String(searchParams.get("grnNo") || "")
+    .trim()
+    .toUpperCase();
+
+  const closeGrnRegisterDetail = useCallback(
+    ({ returnToIncomingAsnId, skipReturnNav = false } = {}) => {
+      const explicitReturn = String(returnToIncomingAsnId || "").trim();
+      const urlReturn = String(searchParams.get("returnAsnId") || "").trim();
+      setGrnRegisterDetail(null);
+      grnOpenInFlightRef.current = "";
+      const next = new URLSearchParams(searchParams);
+      next.delete("grnNo");
+      next.delete("returnAsnId");
+      if (next.toString() !== searchParams.toString()) {
+        setSearchParams(next, { replace: true });
+      }
+      if (skipReturnNav) return;
+      const asnId = explicitReturn || urlReturn;
+      if (asnId) {
+        setTab("Incoming Shipments");
+        nav(incomingShipmentsPath(asnId));
+      }
+    },
+    [searchParams, setSearchParams, nav],
+  );
+
+  const openExistingDraftGrn = useCallback(
+    async (grnNoRaw, { returnAsnId } = {}) => {
+      const grnNo = String(grnNoRaw || "").trim().toUpperCase();
+      if (!grnNo) return;
+      grnOpenInFlightRef.current = grnNo;
+      setTab("GRN");
+      const next = new URLSearchParams(searchParams);
+      next.set("tab", "GRN");
+      next.set("grnNo", grnNo);
+      const ret = String(returnAsnId || "").trim();
+      if (ret) next.set("returnAsnId", ret);
+      else next.delete("returnAsnId");
+      if (next.toString() !== searchParams.toString()) {
+        setSearchParams(next, { replace: true });
+      }
+      try {
+        const row = await apiGet(`/grn/${encodeURIComponent(grnNo)}`);
+        if (grnOpenInFlightRef.current === grnNo && row?.grnNo) {
+          setGrnRegisterDetail(row);
+          setGrnUiErr("");
+        }
+      } catch (e) {
+        if (grnOpenInFlightRef.current === grnNo) {
+          setGrnUiErr(e.message || `Could not open GRN ${grnNo}`);
+        }
+      } finally {
+        if (grnOpenInFlightRef.current === grnNo) {
+          grnOpenInFlightRef.current = "";
+        }
+      }
+    },
+    [searchParams, setSearchParams],
+  );
   const [packAllocInputId, setPackAllocInputId] = useState("");
   const [packAllocSelectedMeta, setPackAllocSelectedMeta] = useState(null);
   const [packAllocQueryId, setPackAllocQueryId] = useState("");
@@ -918,24 +978,41 @@ export default function StoreModule() {
   }, [searchParams]);
 
   useEffect(() => {
-    const grnNo = String(searchParams.get("grnNo") || "").trim().toUpperCase();
-    if (!grnNo) return;
-    setTab("GRN");
-    const found = (grns?.items || []).find((g) => String(g.grnNo || "").toUpperCase() === grnNo);
-    if (found) {
-      setGrnRegisterDetail(found);
+    if (!grnNoFromUrl) return;
+    if (grnOpenInFlightRef.current === grnNoFromUrl) return;
+    if (
+      grnRegisterDetail &&
+      String(grnRegisterDetail.grnNo || "")
+        .trim()
+        .toUpperCase() === grnNoFromUrl
+    ) {
+      setTab("GRN");
       return;
     }
+    setTab("GRN");
     let cancelled = false;
-    apiGet(`/grn/${encodeURIComponent(grnNo)}`)
+    grnOpenInFlightRef.current = grnNoFromUrl;
+    apiGet(`/grn/${encodeURIComponent(grnNoFromUrl)}`)
       .then((row) => {
-        if (!cancelled && row?.grnNo) setGrnRegisterDetail(row);
+        if (!cancelled && grnOpenInFlightRef.current === grnNoFromUrl && row?.grnNo) {
+          setGrnRegisterDetail(row);
+          setGrnUiErr("");
+        }
       })
-      .catch(() => {});
+      .catch((e) => {
+        if (!cancelled && grnOpenInFlightRef.current === grnNoFromUrl) {
+          setGrnUiErr(e.message || `Could not open GRN ${grnNoFromUrl}`);
+        }
+      })
+      .finally(() => {
+        if (!cancelled && grnOpenInFlightRef.current === grnNoFromUrl) {
+          grnOpenInFlightRef.current = "";
+        }
+      });
     return () => {
       cancelled = true;
     };
-  }, [searchParams, grns?.items]);
+  }, [grnNoFromUrl, grnRegisterDetail?.grnNo]);
 
   const searchEligibleAllocationsForPacking = useCallback(
     async ({ q, page, limit }) =>
@@ -1862,7 +1939,9 @@ export default function StoreModule() {
         ))}
       </div>
 
-      {tab === "Incoming Shipments" ? <IncomingShipmentsPanel /> : null}
+      {tab === "Incoming Shipments" ? (
+        <IncomingShipmentsPanel onOpenDraftGrn={openExistingDraftGrn} />
+      ) : null}
       {tab === "GRN" ? (
         <div className="space-y-4">
           <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4">
@@ -2929,7 +3008,7 @@ export default function StoreModule() {
           </div>
           <Modal
             open={Boolean(grnRegisterDetail)}
-            onClose={() => setGrnRegisterDetail(null)}
+            onClose={() => closeGrnRegisterDetail()}
             title={grnRegisterDetail ? `GRN ${grnRegisterDetail.grnNo}` : "GRN"}
           >
             {grnRegisterDetail ? (
@@ -3047,10 +3126,11 @@ export default function StoreModule() {
                             <button
                               type="button"
                               className="min-h-11 rounded-lg border border-sky-300 bg-white px-3 font-semibold text-sky-900"
-                              onClick={() => {
-                                setGrnRegisterDetail(null);
-                                nav(`/asn/${grnRegisterDetail.asnId}`);
-                              }}
+                            onClick={() => {
+                              const asnId = grnRegisterDetail.asnId;
+                              closeGrnRegisterDetail({ skipReturnNav: true });
+                              nav(`/asn/${asnId}`);
+                            }}
                             >
                               View ASN
                             </button>
@@ -3058,10 +3138,9 @@ export default function StoreModule() {
                           <button
                             type="button"
                             className="min-h-11 rounded-lg border border-sky-300 bg-white px-3 font-semibold text-sky-900"
-                            onClick={() => {
-                              setGrnRegisterDetail(null);
-                              nav(incomingShipmentsPath(grnRegisterDetail.asnId));
-                            }}
+                            onClick={() =>
+                              closeGrnRegisterDetail({ returnToIncomingAsnId: grnRegisterDetail.asnId })
+                            }
                           >
                             View Receiving Evidence
                           </button>
@@ -3070,8 +3149,9 @@ export default function StoreModule() {
                               type="button"
                               className="min-h-11 rounded-lg border px-3 font-semibold"
                               onClick={() => {
-                                setGrnRegisterDetail(null);
-                                nav(`/purchase?id=${grnRegisterDetail.poId}`);
+                                const poId = grnRegisterDetail.poId;
+                                closeGrnRegisterDetail({ skipReturnNav: true });
+                                nav(`/purchase?id=${poId}`);
                               }}
                             >
                               View PO
@@ -3083,8 +3163,9 @@ export default function StoreModule() {
                           type="button"
                           className="mt-2 min-h-11 rounded-lg border px-3 font-semibold"
                           onClick={() => {
-                            setGrnRegisterDetail(null);
-                            nav(`/purchase?id=${grnRegisterDetail.poId}`);
+                            const poId = grnRegisterDetail.poId;
+                            closeGrnRegisterDetail({ skipReturnNav: true });
+                            nav(`/purchase?id=${poId}`);
                           }}
                         >
                           View PO

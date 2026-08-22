@@ -35,6 +35,18 @@ export function incomingShipmentsPath(asnId = "") {
   return `/store?tab=${tab}`;
 }
 
+/** Deep-link into Store GRN register with a specific GRN detail modal open. */
+export function storeGrnOpenPath(grnNo, { returnAsnId } = {}) {
+  const no = String(grnNo || "").trim();
+  if (!no) return "/store?tab=GRN";
+  const params = new URLSearchParams();
+  params.set("tab", "GRN");
+  params.set("grnNo", no);
+  const asnId = String(returnAsnId || "").trim();
+  if (asnId) params.set("returnAsnId", asnId);
+  return `/store?${params.toString()}`;
+}
+
 /** Default Incoming Shipments list uses incoming=1 (no CSV status) so SHIPPED ASNs are not dropped. */
 export function incomingAsnListQuery({ status, search } = {}) {
   const params = {
