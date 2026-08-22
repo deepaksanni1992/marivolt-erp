@@ -29,6 +29,7 @@ router.patch("/:id", asnEdit, c.patch);
 router.post("/:id/ship", asnPost, c.ship);
 router.post("/:id/arrive", asnPost, c.arrive);
 router.post("/:id/cancel", asnCancel, c.cancel);
+router.post("/:id/cancel-receiving-lifecycle", asnCancel, c.cancelReceivingLifecycle);
 router.post("/:id/attachments", asnEdit, c.addAttachment);
 router.delete("/:id/attachments/:attachmentId", asnEdit, c.removeAttachment);
 

@@ -10,6 +10,10 @@ import {
   updateAsn,
 } from "../services/asnService.js";
 import { cancelAsn } from "../services/receivingUnitService.js";
+import {
+  cancelAsnReceivingLifecycle,
+  AsnReceivingLifecycleCancelError,
+} from "../services/asnReceivingLifecycleCancelService.js";
 import { AsnError } from "../utils/asnRules.js";
 import { ReceivingUnitError } from "../utils/receivingUnitRules.js";
 import { ReceivingInspectionError } from "../utils/receivingInspectionRules.js";
@@ -18,7 +22,8 @@ function sendError(res, err) {
   if (
     err instanceof AsnError ||
     err instanceof ReceivingUnitError ||
-    err instanceof ReceivingInspectionError
+    err instanceof ReceivingInspectionError ||
+    err instanceof AsnReceivingLifecycleCancelError
   ) {
     return res.status(err.status || err.statusCode || 400).json({ message: err.message, code: err.code });
   }
@@ -83,6 +88,15 @@ export async function arrive(req, res) {
 export async function cancel(req, res) {
   try {
     const row = await cancelAsn(req, req.params.id, req.body || {});
+    res.json(row);
+  } catch (err) {
+    sendError(res, err);
+  }
+}
+
+export async function cancelReceivingLifecycle(req, res) {
+  try {
+    const row = await cancelAsnReceivingLifecycle(req, req.params.id, req.body || {});
     res.json(row);
   } catch (err) {
     sendError(res, err);
