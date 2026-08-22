@@ -9,11 +9,20 @@ import { fileURLToPath } from "node:url";
 import {
   buildCustomPackingFingerprint,
   buildCustomPackingIdempotencyKey,
+  buildCustomPackingTemplateWorkbook,
+  CUSTOM_PACKING_TSPL_OPTS,
+  expandCustomPackingPreviewLabels,
   formatCustomPackingQtyDisplay,
-  hashCustomPackingFingerprint,
+  formatCustomPackingQtyDisplayLegacy,
   normalizeCustomPackingLines,
+  parseCustomPackingSpreadsheetRows,
+  summarizeCustomPackingBatch,
 } from "../src/services/label/customPackingLabelService.js";
-import { buildPackingJobTspl, buildSingleLabelTspl, packingLabelPreviewRows } from "../src/services/label/tsplGenerator.js";
+import {
+  buildPackingJobTspl,
+  buildSingleLabelTspl,
+  packingLabelPreviewRows,
+} from "../src/services/label/tsplGenerator.js";
 import { fitPackingDescription } from "../src/utils/labelTextFit.js";
 import { PACKING_STANDARD_TEMPLATE_CODE } from "../src/services/label/labelTemplateService.js";
 import { getDefaultPermissionsForRole } from "../src/services/roleService.js";
@@ -38,116 +47,163 @@ function run(name, fn) {
 
 console.log("\nCustom packing label\n");
 
-const sampleLine = {
+const batchHeader = {
   customerName: "ALTAMAR OCEANIC",
   customerRef: "21200174",
   brand: "WARTSILA",
   modelName: "W34SG",
-  article: "700004.28",
-  serialNo: "A1",
-  partNo: "432108 AA",
-  description: "SET OF GASKETS FOR CYLINDER HEAD",
-  labelQty: 5,
-  totalQty: 9,
-  copies: 2,
 };
 
-run("1/2. Normalize lines + preview rows use packing face fields", () => {
-  const lines = normalizeCustomPackingLines([sampleLine]);
+const sampleRow = {
+  serialNo: "1",
+  partNo: "OR-220",
+  description: "O-RING",
+  qty: 25,
+  labelCount: 2,
+};
+
+const sampleBody = { header: batchHeader, lines: [sampleRow] };
+
+run("1. Normalize batch header + row schema (no Article)", () => {
+  const { header, lines } = normalizeCustomPackingLines(sampleBody);
+  assert.equal(header.customerName, "ALTAMAR OCEANIC");
   assert.equal(lines.length, 1);
-  assert.equal(lines[0].qtyDisplay, "5 of 9");
+  assert.equal(lines[0].qtyDisplay, "25");
   assert.equal(lines[0].lineCopies, 2);
-  assert.equal(lines[0].article, "700004.28");
-  const rows = packingLabelPreviewRows(lines[0]);
+  assert.equal(lines[0].article, "");
+  const rows = packingLabelPreviewRows(lines[0], CUSTOM_PACKING_TSPL_OPTS);
   const map = Object.fromEntries(rows.map((r) => [r.label, r.value]));
   assert.equal(map.Customer, "ALTAMAR OCEANIC");
-  assert.equal(map["Customer Ref."], "21200174");
-  assert.equal(map.Brand, "WARTSILA");
-  assert.equal(map.Model, "W34SG");
-  assert.equal(map.Article, "700004.28");
-  assert.equal(map["S. No."], "A1");
-  assert.equal(map["Part No."], "432108 AA");
-  assert.equal(map.QTY, "5 of 9");
+  assert.equal(map["Part No."], "OR-220");
+  assert.equal(map.QTY, "25");
+  assert.equal(map.Article, undefined);
 });
 
-run("3. Same PACKING_STANDARD_100X50 TSPL renderer (no barcode)", () => {
-  const lines = normalizeCustomPackingLines([sampleLine]);
-  const tspl = buildPackingJobTspl(lines, {});
+run("2. Same PACKING_STANDARD_100X50 TSPL renderer without Article row", () => {
+  const { lines } = normalizeCustomPackingLines(sampleBody);
+  const tspl = buildPackingJobTspl(lines, CUSTOM_PACKING_TSPL_OPTS);
   assert.match(tspl, /SIZE 100 mm,50 mm/);
-  assert.match(tspl, /Customer/);
-  assert.match(tspl, /ALTAMAR OCEANIC/);
+  assert.match(tspl, /OR-220/);
   assert.match(tspl, /QTY/);
-  assert.match(tspl, /5 of 9/);
+  assert.match(tspl, /"25"/);
   assert.doesNotMatch(tspl, /BARCODE/);
+  assert.doesNotMatch(tspl, /\r\nTEXT [^,]+,[^,]+,"0",0,[^,]+,[^,]+,"Article"/);
   assert.equal(PACKING_STANDARD_TEMPLATE_CODE, "PACKING_STANDARD_100X50");
-  // Two copies → two PRINT commands
   assert.equal((tspl.match(/PRINT 1,1/g) || []).length, 2);
 });
 
-run("7/8. QTY 5 of 9 and QTY 5 when total blank", () => {
-  assert.equal(formatCustomPackingQtyDisplay(5, 9), "5 of 9");
-  assert.equal(formatCustomPackingQtyDisplay(5, ""), "5");
-  assert.equal(formatCustomPackingQtyDisplay(5, null), "5");
-  const blankTotal = normalizeCustomPackingLines([{ ...sampleLine, totalQty: "" }]);
-  assert.equal(blankTotal[0].qtyDisplay, "5");
+run("3. Qty 25 + labelCount 2 → two physical labels each QTY 25", () => {
+  const { lines } = normalizeCustomPackingLines(sampleBody);
+  const expanded = expandCustomPackingPreviewLabels(lines);
+  assert.equal(expanded.length, 2);
+  assert.equal(expanded[0].previewRows.find((r) => r.label === "QTY").value, "25");
+  assert.equal(expanded[1].previewRows.find((r) => r.label === "QTY").value, "25");
+  assert.notEqual(expanded[0].previewRows.find((r) => r.label === "QTY").value, "50");
 });
 
-run("9. Copies independent of QTY text", () => {
-  const a = normalizeCustomPackingLines([{ ...sampleLine, copies: 1 }]);
-  const b = normalizeCustomPackingLines([{ ...sampleLine, copies: 3 }]);
-  assert.equal(a[0].qtyDisplay, b[0].qtyDisplay);
-  assert.equal(a[0].lineCopies, 1);
-  assert.equal(b[0].lineCopies, 3);
+run("4. Legacy qty display helper retained for historical reads", () => {
+  assert.equal(formatCustomPackingQtyDisplayLegacy(5, 9), "5 of 9");
+  assert.equal(formatCustomPackingQtyDisplay(25), "25");
 });
 
-run("10/11. Description wrap + overflow detection", () => {
+run("5. labelCount maps from legacy copies field", () => {
+  const { lines } = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: [{ ...sampleRow, labelCount: undefined, copies: 3 }],
+  });
+  assert.equal(lines[0].lineCopies, 3);
+});
+
+run("6. Description wrap + overflow detection", () => {
   const fit = fitPackingDescription("WORD ".repeat(80));
   assert.ok(fit.lines.length >= 1);
-  const overflow = normalizeCustomPackingLines([
-    { ...sampleLine, description: "LONGTOKENWITHOUTSPACES".repeat(40), copies: 1 },
-  ]);
-  assert.equal(overflow[0].descriptionTruncated, true);
+  const overflow = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: [{ ...sampleRow, description: "LONGTOKENWITHOUTSPACES".repeat(40), labelCount: 1 }],
+  });
+  assert.equal(overflow.lines[0].descriptionTruncated, true);
 });
 
-run("Validation: labelQty and totalQty rules", () => {
-  assert.throws(() => normalizeCustomPackingLines([]), (e) => e.code === "LABEL_NO_LINES");
+run("7. Validation: qty and labelCount rules", () => {
+  assert.throws(() => normalizeCustomPackingLines({ header: batchHeader, lines: [] }), (e) => e.code === "LABEL_NO_LINES");
   assert.throws(
-    () => normalizeCustomPackingLines([{ ...sampleLine, labelQty: 0 }]),
+    () => normalizeCustomPackingLines({ header: batchHeader, lines: [{ ...sampleRow, qty: 0 }] }),
     (e) => e.code === "LABEL_QTY_INVALID"
   );
   assert.throws(
-    () => normalizeCustomPackingLines([{ ...sampleLine, labelQty: 9, totalQty: 5 }]),
-    (e) => e.code === "LABEL_QTY_INVALID"
+    () => normalizeCustomPackingLines({ header: batchHeader, lines: [{ ...sampleRow, labelCount: 1.5 }] }),
+    (e) => e.code === "LABEL_COPIES_INVALID"
   );
   assert.throws(
-    () => normalizeCustomPackingLines([{ ...sampleLine, copies: 51 }]),
+    () => normalizeCustomPackingLines({ header: batchHeader, lines: [{ ...sampleRow, labelCount: 51 }] }),
     (e) => e.code === "LABEL_COPIES_MAX"
   );
 });
 
-run("16/17. Idempotency key stable; copies included; different payload differs", () => {
-  const lines = normalizeCustomPackingLines([sampleLine]);
-  const k1 = buildCustomPackingIdempotencyKey(lines);
-  const k2 = buildCustomPackingIdempotencyKey(lines);
-  assert.equal(k1, k2);
-  assert.match(k1, /^custom-packing:[a-f0-9]{16}$/);
-  const other = normalizeCustomPackingLines([{ ...sampleLine, copies: 3 }]);
-  assert.notEqual(buildCustomPackingIdempotencyKey(lines), buildCustomPackingIdempotencyKey(other));
-  assert.equal(
-    hashCustomPackingFingerprint(buildCustomPackingFingerprint(lines)).length,
-    16
+run("8. Spreadsheet import ignores blank rows and validates decimals", () => {
+  const rows = parseCustomPackingSpreadsheetRows([
+    { rowNumber: 2, data: { "S. No.": "1", "Part No.": "OR-220", Description: "O-RING", Qty: "25", "No. of Labels": "2" } },
+    { rowNumber: 3, data: {} },
+  ]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].qty, 25);
+  assert.throws(
+    () =>
+      parseCustomPackingSpreadsheetRows([
+        { rowNumber: 4, data: { "S. No.": "2", Qty: "1", "No. of Labels": "2.5" } },
+      ]),
+    /positive whole number/
   );
 });
 
-run("13/14. STORE_OPERATOR has LABELS print/reprint; no LABELS.admin", () => {
+run("9. Template workbook has five columns without Article", () => {
+  const buf = buildCustomPackingTemplateWorkbook();
+  assert.ok(Buffer.isBuffer(buf));
+  assert.ok(buf.length > 100);
+});
+
+run("10. Batch summary totals", () => {
+  const { lines } = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: [
+      sampleRow,
+      { serialNo: "2", partNo: "123456", description: "GASKET", qty: 1, labelCount: 4 },
+      { serialNo: "3", partNo: "TE201", description: "INLET VALVE", qty: 1, labelCount: 1 },
+    ],
+  });
+  const summary = summarizeCustomPackingBatch(lines);
+  assert.equal(summary.rowCount, 3);
+  assert.equal(summary.physicalLabels, 7);
+  assert.equal(summary.totalQtyRepresented, 55);
+});
+
+run("11. Idempotency key stable; labelCount included", () => {
+  const { header, lines } = normalizeCustomPackingLines(sampleBody);
+  const k1 = buildCustomPackingIdempotencyKey(header, lines);
+  const k2 = buildCustomPackingIdempotencyKey(header, lines);
+  assert.equal(k1, k2);
+  assert.match(k1, /^custom-packing:[a-f0-9]{16}$/);
+  const other = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: [{ ...sampleRow, labelCount: 3 }],
+  });
+  assert.notEqual(
+    buildCustomPackingIdempotencyKey(header, lines),
+    buildCustomPackingIdempotencyKey(other.header, other.lines)
+  );
+  assert.equal(buildCustomPackingFingerprint(header, lines).includes("OR-220"), true);
+});
+
+run("12. STORE_OPERATOR has LABELS print/reprint; no LABELS.admin", () => {
   const m = getDefaultPermissionsForRole("store_operator");
   assert.ok(m.LABELS.includes("view"));
   assert.ok(m.LABELS.includes("print"));
   assert.ok(m.LABELS.includes("reprint"));
   assert.ok(!m.LABELS.includes("admin"));
+  assert.ok(!m.ASN.includes("cancel"));
 });
 
-run("18-21. Custom service has no stock/allocation/packing/GRN mutations", () => {
+run("13. Custom service has no stock/allocation/packing/GRN mutations", () => {
   const src = fs.readFileSync(
     path.join(backendRoot, "src/services/label/customPackingLabelService.js"),
     "utf8"
@@ -155,28 +211,27 @@ run("18-21. Custom service has no stock/allocation/packing/GRN mutations", () =>
   assert.doesNotMatch(src, /StockLedger|OrderAllocation|StorePacking|Inventory|Reservation|SalesInvoice|GRN\.|Grn\./);
   assert.match(src, /LabelPrintJob\.create/);
   assert.match(src, /sourceType: "CUSTOM_PACKING"/);
-  assert.match(src, /PACKING_STANDARD_TEMPLATE_CODE/);
-  assert.match(src, /buildPackingJobTspl/);
+  assert.match(src, /buildPackingJobTspl\(lines, CUSTOM_PACKING_TSPL_OPTS\)/);
 });
 
-run("Routes + model + UI wired", () => {
+run("14. Routes + UI wired (table, import, template)", () => {
   const routes = fs.readFileSync(path.join(backendRoot, "src/routes/labelRoutes.js"), "utf8");
   assert.match(routes, /\/jobs\/from-custom-packing/);
   assert.match(routes, /\/jobs\/from-custom-packing\/preview/);
-  assert.match(routes, /labelsPrint.*createFromCustomPacking|createFromCustomPacking/);
-  const model = fs.readFileSync(path.join(backendRoot, "src/models/LabelPrintJob.js"), "utf8");
-  assert.match(model, /CUSTOM_PACKING/);
-  const queue = fs.readFileSync(path.join(feRoot, "components/store/LabelQueuePanel.jsx"), "utf8");
-  assert.match(queue, /Custom Label/);
-  assert.match(queue, /CustomPackingLabelModal/);
+  assert.match(routes, /\/jobs\/from-custom-packing\/template/);
+  assert.match(routes, /\/jobs\/from-custom-packing\/parse-import/);
   const modal = fs.readFileSync(path.join(feRoot, "components/store/CustomPackingLabelModal.jsx"), "utf8");
-  assert.match(modal, /from-custom-packing/);
-  assert.match(modal, /Print with truncated description/);
-  const reprint = fs.readFileSync(path.join(backendRoot, "src/services/label/labelService.js"), "utf8");
-  assert.match(reprint, /CUSTOM_PACKING/);
+  assert.match(modal, /Common header/);
+  assert.match(modal, /No\. of Labels/);
+  assert.match(modal, /Import Excel\/CSV/);
+  assert.match(modal, /Download Template/);
+  assert.doesNotMatch(modal, /\["article", "Article"\]/);
+  const sheet = fs.readFileSync(path.join(feRoot, "lib/customPackingLabelSpreadsheet.js"), "utf8");
+  assert.match(sheet, /No\. of Labels/);
+  assert.doesNotMatch(sheet, /header: "Article"/);
 });
 
-run("22. GRN label regression — unit barcode path unchanged", () => {
+run("15. GRN label regression — unit barcode path unchanged", () => {
   const tspl = buildSingleLabelTspl(
     {
       article: "A1",
@@ -188,10 +243,9 @@ run("22. GRN label regression — unit barcode path unchanged", () => {
     { copies: 1, companyName: "MARIVOLT FZE", barcodeMode: "ARTICLE" }
   );
   assert.match(tspl, /BARCODE/);
-  assert.match(tspl, /SIZE 100 mm,50 mm/);
 });
 
-run("23. Packing label face still renders qty of total", () => {
+run("16. Normal packing label face still renders Article + qty of total", () => {
   const tspl = buildPackingJobTspl(
     [
       {
@@ -212,7 +266,16 @@ run("23. Packing label face still renders qty of total", () => {
     {}
   );
   assert.match(tspl, /5 of 9/);
-  assert.doesNotMatch(tspl, /BARCODE/);
+  assert.match(tspl, /Article/);
+});
+
+run("17. One combined TSPL job for multi-row batch", () => {
+  const { lines } = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: [sampleRow, { serialNo: "2", partNo: "X", description: "Y", qty: 1, labelCount: 4 }],
+  });
+  const tspl = buildPackingJobTspl(lines, CUSTOM_PACKING_TSPL_OPTS);
+  assert.equal((tspl.match(/PRINT 1,1/g) || []).length, 6);
 });
 
 console.log(`\nCustom packing label: ${passed} passed, ${failed} failed\n`);

@@ -440,17 +440,11 @@ export function buildPackingLabelSelections(rows) {
 export function emptyCustomPackingLabelRow() {
   return {
     key: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    customerName: "",
-    customerRef: "",
-    brand: "",
-    modelName: "",
-    article: "",
     serialNo: "",
     partNo: "",
     description: "",
-    labelQty: "1",
-    totalQty: "",
-    copies: "1",
+    qty: "1",
+    labelCount: "1",
   };
 }
 

@@ -273,6 +273,7 @@ export function computePackingLabelLayout(description = "", opts = {}) {
   const minDescH = scale(24);
   const qtyRowH = scale(44);
 
+  const omitArticle = opts.omitArticle === true;
   const fixedSpecs = [
     { key: "Customer", minH: minEmphasisH, grow: 1.2 },
     { key: "Customer Ref.", minH: minNormalH, grow: 0.8 },
@@ -281,7 +282,7 @@ export function computePackingLabelLayout(description = "", opts = {}) {
     { key: "Article", minH: minEmphasisH, grow: 1.1 },
     { key: "S. No.", minH: minNormalH, grow: 0.7 },
     { key: "Part No.", minH: minEmphasisH, grow: 1.1 },
-  ];
+  ].filter((row) => !(omitArticle && row.key === "Article"));
 
   const fixedMinSum = fixedSpecs.reduce((s, r) => s + r.minH, 0);
   const reserved = fixedMinSum + qtyRowH;
@@ -396,7 +397,10 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
   const h = LABEL_HEIGHT_MM;
   const widthDots = Math.round(w * dpm);
   const heightDots = Math.round(h * dpm);
-  const layout = computePackingLabelLayout(line.description || "", { dpi });
+  const layout = computePackingLabelLayout(line.description || "", {
+    dpi,
+    omitArticle: opts.omitArticle === true,
+  });
   const margin = layout.margin ?? scale(10);
   const outerX = margin;
   const outerY = margin;
@@ -442,13 +446,17 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
       valueMul: fonts.valueNormal,
       labelMul: fonts.fieldLabel,
     },
-    {
-      label: "Article",
-      value: article,
-      h: rh.Article,
-      valueMul: fonts.valueEmphasis,
-      labelMul: fonts.fieldLabel,
-    },
+    ...(opts.omitArticle
+      ? []
+      : [
+          {
+            label: "Article",
+            value: article,
+            h: rh.Article,
+            valueMul: fonts.valueEmphasis,
+            labelMul: fonts.fieldLabel,
+          },
+        ]),
     {
       label: "S. No.",
       value: serialNo,
@@ -531,7 +539,10 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
 
 /** Metadata companion for a packing face (overflow / fit). */
 export function packingLabelDescriptionMeta(line = {}, opts = {}) {
-  const layout = computePackingLabelLayout(line.description || "", opts);
+  const layout = computePackingLabelLayout(line.description || "", {
+    ...opts,
+    omitArticle: opts.omitArticle === true,
+  });
   return {
     descriptionTruncated: layout.descriptionTruncated === true,
     descriptionOverflow: layout.descriptionTruncated === true,
@@ -559,8 +570,8 @@ export function buildPackingJobTspl(lines = [], opts = {}) {
 }
 
 /** Preview-friendly rows from the same normalized packing line payload + layout weights. */
-export function packingLabelPreviewRows(line = {}) {
-  const meta = packingLabelDescriptionMeta(line);
+export function packingLabelPreviewRows(line = {}, opts = {}) {
+  const meta = packingLabelDescriptionMeta(line, opts);
   const heights = meta.rowHeights || {};
   const totalH =
     Object.values(heights).reduce((s, n) => s + (Number(n) || 0), 0) || 1;
@@ -570,7 +581,7 @@ export function packingLabelPreviewRows(line = {}) {
   const qtyValue =
     t(line.qtyDisplay) || formatPackingQtyDisplay(line.labelQty, line.totalQty ?? line.qty);
 
-  return [
+  const rows = [
     {
       label: "Customer",
       value: t(line.customerName) || "—",
@@ -595,12 +606,16 @@ export function packingLabelPreviewRows(line = {}) {
       emphasis: "normal",
       weight: weight("Model", 26),
     },
-    {
-      label: "Article",
-      value: t(line.article).toUpperCase() || "—",
-      emphasis: "strong",
-      weight: weight("Article", 30),
-    },
+    ...(opts.omitArticle
+      ? []
+      : [
+          {
+            label: "Article",
+            value: t(line.article).toUpperCase() || "—",
+            emphasis: "strong",
+            weight: weight("Article", 30),
+          },
+        ]),
     {
       label: "S. No.",
       value: line.serialNo != null && line.serialNo !== "" ? String(line.serialNo) : "—",
@@ -630,6 +645,7 @@ export function packingLabelPreviewRows(line = {}) {
       weight: weight("QTY", 44),
     },
   ];
+  return rows;
 }
 
 /** One-off test label for agent/printer connectivity checks. */

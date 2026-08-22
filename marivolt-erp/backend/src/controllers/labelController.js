@@ -464,6 +464,43 @@ export async function previewFromCustomPacking(req, res) {
   }
 }
 
+export async function downloadCustomPackingTemplate(req, res) {
+  try {
+    const { buildCustomPackingTemplateWorkbook } = await import(
+      "../services/label/customPackingLabelService.js"
+    );
+    const buffer = buildCustomPackingTemplateWorkbook();
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      'attachment; filename="custom-packing-label-template.xlsx"'
+    );
+    res.send(buffer);
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function parseCustomPackingImport(req, res) {
+  try {
+    const {
+      parseCustomPackingSpreadsheetBuffer,
+      parseCustomPackingSpreadsheetRows,
+    } = await import("../services/label/customPackingLabelService.js");
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({ message: "Spreadsheet file is required" });
+    }
+    const rawRows = parseCustomPackingSpreadsheetBuffer(req.file.buffer, req.file.originalname || "");
+    const rows = parseCustomPackingSpreadsheetRows(rawRows);
+    res.json({ success: true, rows });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
 export async function createFromAsn(req, res) {
   try {
     const { createJobsFromAsn } = await import("../services/label/asnLabelService.js");

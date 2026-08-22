@@ -1,4 +1,5 @@
 import express from "express";
+import multer from "multer";
 import { requireErpAccess } from "../middleware/erpAccess.js";
 import { requirePermission, requireAnyPermission, requireAllPermissions } from "../middleware/permissions.js";
 import { requirePrintAgent } from "../middleware/printAgentAuth.js";
@@ -7,6 +8,10 @@ import * as c from "../controllers/labelController.js";
 import * as agent from "../controllers/labelAgentController.js";
 
 const router = express.Router();
+const customPackingUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
 
 const labelsView = requirePermission("LABELS", "view");
 const labelsPrint = requirePermission("LABELS", "print");
@@ -86,6 +91,13 @@ router.post("/jobs/from-packing", labelsPrint, c.createFromPacking);
 router.post("/jobs/from-packing/preview", labelsView, c.previewFromPacking);
 router.post("/jobs/from-custom-packing", labelsPrint, c.createFromCustomPacking);
 router.post("/jobs/from-custom-packing/preview", labelsView, c.previewFromCustomPacking);
+router.get("/jobs/from-custom-packing/template", labelsView, c.downloadCustomPackingTemplate);
+router.post(
+  "/jobs/from-custom-packing/parse-import",
+  labelsView,
+  customPackingUpload.single("file"),
+  c.parseCustomPackingImport
+);
 router.post("/jobs/from-asn", asnLabelPrint, c.createFromAsn);
 router.post("/jobs/from-asn/preview", asnLabelView, c.previewFromAsn);
 router.post("/jobs/stock-reprint", labelsReprint, c.stockReprint);

@@ -1,0 +1,211 @@
+import Papa from "papaparse";
+import { downloadCsv } from "./purchaseExport.js";
+import { API_BASE, loadStoredAuth, apiPostFormData } from "./api.js";
+
+export const CUSTOM_PACKING_COLUMNS = [
+  { key: "serialNo", header: "S. No." },
+  { key: "partNo", header: "Part No." },
+  { key: "description", header: "Description" },
+  { key: "qty", header: "Qty" },
+  { key: "labelCount", header: "No. of Labels" },
+];
+
+export function emptyCustomPackingHeader() {
+  return {
+    customerName: "",
+    customerRef: "",
+    brand: "",
+    modelName: "",
+  };
+}
+
+export function emptyCustomPackingTableRow(serialNo = "", seed = {}) {
+  return {
+    key: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    serialNo: serialNo ? String(serialNo) : "",
+    partNo: seed.partNo || "",
+    description: seed.description || "",
+    qty: seed.qty != null ? String(seed.qty) : "1",
+    labelCount: seed.labelCount != null ? String(seed.labelCount) : "1",
+  };
+}
+
+export function rowHasContent(row = {}) {
+  return Boolean(
+    String(row.serialNo || "").trim() ||
+      String(row.partNo || "").trim() ||
+      String(row.description || "").trim() ||
+      String(row.qty || "").trim() ||
+      String(row.labelCount || "").trim()
+  );
+}
+
+export function summarizeCustomPackingRows(rows = []) {
+  const active = (rows || []).filter(rowHasContent);
+  let physicalLabels = 0;
+  let totalQtyRepresented = 0;
+  for (const row of active) {
+    const qty = Number(row.qty) || 0;
+    const labelCount = Math.max(1, Math.floor(Number(row.labelCount) || 0));
+    physicalLabels += labelCount;
+    totalQtyRepresented += qty * labelCount;
+  }
+  return {
+    rowCount: active.length,
+    physicalLabels,
+    totalQtyRepresented,
+  };
+}
+
+export function rowDerivedTotal(row = {}) {
+  const qty = Number(row.qty) || 0;
+  const labelCount = Math.max(0, Math.floor(Number(row.labelCount) || 0));
+  return qty * labelCount;
+}
+
+function normalizeHeaderKey(value = "") {
+  return String(value).trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+const HEADER_ALIASES = {
+  serialno: "serialNo",
+  "s. no.": "serialNo",
+  "s no": "serialNo",
+  "s.no.": "serialNo",
+  partno: "partNo",
+  "part no.": "partNo",
+  "part no": "partNo",
+  description: "description",
+  qty: "qty",
+  quantity: "qty",
+  "label qty": "qty",
+  labelcount: "labelCount",
+  "no. of labels": "labelCount",
+  "no of labels": "labelCount",
+  labels: "labelCount",
+  copies: "labelCount",
+};
+
+function mapImportRecord(record = {}) {
+  const mapped = {};
+  for (const [rawKey, rawVal] of Object.entries(record || {})) {
+    const nk = normalizeHeaderKey(rawKey);
+    const target = HEADER_ALIASES[nk];
+    if (target) mapped[target] = String(rawVal ?? "").trim();
+  }
+  return mapped;
+}
+
+function isBlankMappedRow(row = {}) {
+  return !row.serialNo && !row.partNo && !row.description && !row.qty && !row.labelCount;
+}
+
+export function parseCustomPackingCsvText(text = "") {
+  const parsed = Papa.parse(text, { header: true, skipEmptyLines: false });
+  if (parsed.errors?.length) {
+    const first = parsed.errors[0];
+    throw new Error(first.message || "CSV parse failed");
+  }
+  const errors = [];
+  const rows = [];
+  (parsed.data || []).forEach((record, idx) => {
+    const mapped = mapImportRecord(record);
+    if (isBlankMappedRow(mapped)) return;
+    const rowNumber = idx + 2;
+    const qty = Number(mapped.qty);
+    const labelCount = Number(mapped.labelCount);
+    if (!Number.isFinite(qty) || qty <= 0 || !Number.isInteger(qty)) {
+      errors.push(`Row ${rowNumber}: Qty must be a positive whole number.`);
+      return;
+    }
+    if (!Number.isFinite(labelCount) || labelCount < 1 || !Number.isInteger(labelCount)) {
+      errors.push(`Row ${rowNumber}: No. of Labels must be a positive whole number.`);
+      return;
+    }
+    rows.push(
+      emptyCustomPackingTableRow(mapped.serialNo || String(rows.length + 1), {
+        partNo: mapped.partNo,
+        description: mapped.description,
+        qty: String(qty),
+        labelCount: String(labelCount),
+      })
+    );
+  });
+  if (errors.length) throw new Error(errors.join("\n"));
+  if (!rows.length) throw new Error("Spreadsheet has no data rows");
+  return rows;
+}
+
+export function exportCustomPackingRows(rows = []) {
+  const data = (rows || [])
+    .filter(rowHasContent)
+    .map((row, idx) => ({
+      serialNo: row.serialNo || String(idx + 1),
+      partNo: row.partNo || "",
+      description: row.description || "",
+      qty: row.qty || "",
+      labelCount: row.labelCount || "",
+    }));
+  downloadCsv("custom-packing-labels.csv", CUSTOM_PACKING_COLUMNS, data);
+}
+
+export async function downloadCustomPackingTemplateXlsx() {
+  const auth = loadStoredAuth();
+  const headers = {};
+  if (auth?.token) headers.Authorization = `Bearer ${auth.token}`;
+  if (auth?.company?.id) headers["x-company-id"] = auth.company.id;
+  const res = await fetch(`${API_BASE}/labels/jobs/from-custom-packing/template`, { headers });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Download failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "custom-packing-label-template.xlsx";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+export async function importCustomPackingSpreadsheetFile(file) {
+  const name = String(file?.name || "").toLowerCase();
+  if (name.endsWith(".csv")) {
+    const text = await file.text();
+    return parseCustomPackingCsvText(text);
+  }
+  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+    const form = new FormData();
+    form.append("file", file);
+    const data = await apiPostFormData("/labels/jobs/from-custom-packing/parse-import", form);
+    return (data.rows || []).map((row, idx) =>
+      emptyCustomPackingTableRow(row.serialNo || String(idx + 1), {
+        partNo: row.partNo,
+        description: row.description,
+        qty: String(row.qty),
+        labelCount: String(row.labelCount),
+      })
+    );
+  }
+  throw new Error("Supported formats: .csv, .xlsx, .xls");
+}
+
+export function buildCustomPackingPayload(header, rows) {
+  const lines = (rows || [])
+    .filter(rowHasContent)
+    .map((row, idx) => ({
+      serialNo: row.serialNo || String(idx + 1),
+      partNo: row.partNo,
+      description: row.description,
+      qty: row.qty,
+      labelCount: row.labelCount,
+    }));
+  return {
+    header: {
+      customerName: header.customerName,
+      customerRef: header.customerRef,
+      brand: header.brand,
+      modelName: header.modelName,
+    },
+    lines,
+  };
+}
