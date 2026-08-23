@@ -7,6 +7,8 @@
   "agentId": "AGTXXXXXXXX",
   "secret": "PASTE_ONE_TIME_SECRET_HERE",
   "windowsPrinterName": "Rongta RP420",
-  "pollIntervalMs": 5000,
+  "pollIntervalMs": 1000,
+  "heartbeatIntervalMs": 15000,
+  "diagnosticLogging": false,
   "connectionType": "WINDOWS_SPOOLER"
 }

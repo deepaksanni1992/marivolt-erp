@@ -386,21 +386,26 @@ run("Print agent auto-detect + first-launch present", () => {
   assert.ok(ui.includes("Printer Dashboard"));
 });
 
-run("Agent READY gate, spool drain, unique doc name, release-to-PENDING", () => {
+run("Agent READY gate, spool JobId drain, unique doc name, release-to-PENDING", () => {
   const safety = fs.readFileSync(path.join(repoRoot, "print-agent/src/printSafety.js"), "utf8");
   assert.ok(safety.includes("isLeaseEligiblePrinterStatus"));
   assert.ok(safety.includes("waitForQueueDrain"));
+  assert.ok(safety.includes("waitForSpoolJobCompletion"));
+  assert.ok(safety.includes("classifySpoolJobResult"));
   assert.ok(safety.includes("createPrinterFifo"));
   assert.ok(safety.includes("acquireAgentProcessLock"));
   const processor = fs.readFileSync(path.join(repoRoot, "print-agent/src/jobProcessor.js"), "utf8");
   assert.ok(processor.includes("releaseLease"));
-  assert.ok(processor.includes("COMPLETED only after READY"));
+  assert.ok(processor.includes("waitForSpoolJobCompletion"));
+  assert.ok(processor.includes("classifySpoolJobResult"));
+  assert.ok(processor.includes("getWindowsPrintJobStatus"));
   const adapter = fs.readFileSync(path.join(repoRoot, "print-agent/src/adapters/windowsRawSpooler.js"), "utf8");
   assert.ok(adapter.includes("documentName"));
   assert.ok(!adapter.includes('di.pDocName = "Marivolt Label"'));
   const index = fs.readFileSync(path.join(repoRoot, "print-agent/src/index.js"), "utf8");
   assert.ok(index.includes("/agent/jobs/${job.id}/release") || index.includes("/agent/jobs/"));
   assert.ok(index.includes("createJobProcessor"));
+  assert.ok(index.includes('APP_VERSION = "1.5.0"'));
   const routes = fs.readFileSync(path.join(backendRoot, "src/routes/labelRoutes.js"), "utf8");
   assert.ok(routes.includes("/agent/jobs/:id/release"));
   const queue = fs.readFileSync(path.join(backendRoot, "src/services/label/printQueue.js"), "utf8");

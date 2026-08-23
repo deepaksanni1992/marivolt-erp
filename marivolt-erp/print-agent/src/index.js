@@ -7,8 +7,15 @@ import {
 import { createTransport } from "./adapters/windowsRawSpooler.js";
 import { createJobProcessor } from "./jobProcessor.js";
 import { acquireAgentProcessLock } from "./printSafety.js";
+import {
+  getWindowsPrintJobStatus,
+  probePrinterReadyLightweight,
+} from "./windowsPrintJobStatus.js";
 
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.5.0";
+
+/** Freshness window for using heartbeat health as lease eligibility (ms). */
+const HEALTH_CACHE_TTL_MS = 20_000;
 
 /** Set by SIGINT/SIGTERM / Windows service stop — stop leasing new jobs. */
 let shuttingDown = false;
@@ -81,17 +88,88 @@ function toHeartbeatPrinterRow(h) {
   };
 }
 
+/** Shared health cache updated by full heartbeat probes. */
+const healthCache = {
+  at: 0,
+  byKey: new Map(),
+  primary: null,
+};
+
+function cacheKey(name) {
+  return String(name || "").trim().toLowerCase();
+}
+
+function rememberHealth(health) {
+  if (!health) return;
+  const key = cacheKey(health.name);
+  if (key) healthCache.byKey.set(key, health);
+  healthCache.primary = health;
+  healthCache.at = Date.now();
+}
+
+function cachedHealth(printerName) {
+  const age = Date.now() - healthCache.at;
+  if (age > HEALTH_CACHE_TTL_MS) return null;
+  const key = cacheKey(printerName || "");
+  if (key && healthCache.byKey.has(key)) return { ...healthCache.byKey.get(key), fromCache: true, cacheAgeMs: age };
+  if (!key && healthCache.primary) {
+    return { ...healthCache.primary, fromCache: true, cacheAgeMs: age };
+  }
+  return null;
+}
+
+async function fullPrinterHealth(cfg, printerName, { logProbe = false } = {}) {
+  const name = String(printerName || cfg.windowsPrinterName || "").trim();
+  const probeStarted = Date.now();
+  const probe = await probeWindowsPrinterHealth();
+  const health = resolveConfiguredPrinterHealth(name, probe.rows || [], {
+    queryFailed: !probe.ok,
+    queryError: probe.error,
+  });
+  const timing = probe.timing || { totalMs: Date.now() - probeStarted };
+  health.probeTiming = timing;
+  health.timing = timing;
+  rememberHealth(health);
+  if (logProbe && cfg.diagnosticLogging) {
+    logLine(
+      `PRINT_DIAG event=printer_health_probe totalMs=${timing.totalMs ?? ""} psMs=${timing.powershellSpawnMs ?? ""} getPrinterMs=${timing.getPrinterMs ?? ""} cimWmiMs=${timing.cimWmiMs ?? ""} pnpMs=${timing.pnpMs ?? ""} overheadMs=${timing.powershellOverheadMs ?? ""} status=${health.status || "UNKNOWN"} queueLength=${health.queueLength ?? ""}`,
+      { event: "print_diag" }
+    );
+  }
+  return health;
+}
+
 function createAgentJobProcessor(cfg, transport) {
+  const diagEnabled = Boolean(cfg.diagnosticLogging);
   return createJobProcessor({
     log: logLine,
-    getPrinterHealth: async (printerName) => {
-      const name = String(printerName || cfg.windowsPrinterName || "").trim();
-      const probe = await probeWindowsPrinterHealth();
-      return resolveConfiguredPrinterHealth(name, probe.rows || [], {
-        queryFailed: !probe.ok,
-        queryError: probe.error,
-      });
+    diagLog: diagEnabled
+      ? (msg) => logLine(msg, { event: "print_diag" })
+      : null,
+    getPrinterHealth: async (opts = {}) => {
+      const purpose = opts.purpose || "lease";
+      const name = String(opts.printerName || cfg.windowsPrinterName || "").trim();
+      if (purpose === "lease") {
+        const cached = cachedHealth(name);
+        if (cached && String(cached.status || "").toUpperCase() === "READY") {
+          return cached;
+        }
+      }
+      return fullPrinterHealth(cfg, name, { logProbe: true });
     },
+    getPrinterHealthLightweight: async (printerName) => {
+      const name = String(printerName || cfg.windowsPrinterName || "").trim();
+      const health = await probePrinterReadyLightweight(name);
+      if (cfg.diagnosticLogging) {
+        logLine(
+          `PRINT_DIAG event=printer_ready_lightweight totalMs=${health.timing?.totalMs ?? ""} status=${health.status} queueLength=${health.queueLength ?? ""}`,
+          { event: "print_diag" }
+        );
+      }
+      return health;
+    },
+    getWindowsPrintJobStatus: async (printerName, windowsSpoolJobId) =>
+      getWindowsPrintJobStatus(printerName, windowsSpoolJobId),
     leaseNext: async () => {
       const leased = await api(cfg, "POST", "/api/labels/agent/lease", {});
       const job = leased?.job;
@@ -191,6 +269,8 @@ async function sendHeartbeat(cfg) {
         })
       : null);
 
+  if (primary) rememberHealth(primary);
+
   await api(cfg, "POST", "/api/labels/agent/heartbeat", {
     computerName: profile.computerName,
     appVersion: APP_VERSION,
@@ -284,17 +364,28 @@ async function loop() {
   }
 
   await checkConfiguredPrinter(cfg);
+  // Seed health cache (one full probe) for lease eligibility before first heartbeat
+  try {
+    await fullPrinterHealth(cfg, cfg.windowsPrinterName, { logProbe: cfg.diagnosticLogging });
+  } catch (e) {
+    logLine(`Startup health probe warning: ${e.message}`, { level: "error", event: "printer_check" });
+  }
 
   const transport = createTransport(cfg.connectionType);
   const processor = createAgentJobProcessor(cfg, transport);
   logLine(
-    `Marivolt Print Agent ${APP_VERSION} starting. Backend=${cfg.backendUrl} agent=${cfg.agentId}`,
+    `Marivolt Print Agent ${APP_VERSION} starting. Backend=${cfg.backendUrl} agent=${cfg.agentId} pollIntervalMs=${cfg.pollIntervalMs} heartbeatIntervalMs=${cfg.heartbeatIntervalMs}`,
     { event: "service_started" }
   );
 
+  let lastHeartbeatAt = 0;
   while (!shuttingDown) {
     try {
-      await sendHeartbeat(cfg);
+      if (Date.now() - lastHeartbeatAt >= cfg.heartbeatIntervalMs) {
+        // Heartbeat collectHostProfile refreshes healthCache via rememberHealth
+        await sendHeartbeat(cfg);
+        lastHeartbeatAt = Date.now();
+      }
       let worked = true;
       while (worked && !shuttingDown) {
         worked = await processOneJob(processor);

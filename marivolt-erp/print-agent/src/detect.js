@@ -742,34 +742,62 @@ export async function detectWindowsPrinters() {
  * Returns { ok, rows, error, pnpChecked }.
  */
 export async function probeWindowsPrinterHealth() {
+  const wallStarted = Date.now();
   if (process.platform !== "win32") {
-    return { ok: false, rows: [], error: "not-windows", pnpChecked: false };
+    return {
+      ok: false,
+      rows: [],
+      error: "not-windows",
+      pnpChecked: false,
+      timing: { totalMs: Date.now() - wallStarted, powershellSpawnMs: 0 },
+    };
   }
   try {
     // Fixed script only — never interpolate untrusted names into -Command text.
+    // Phase timings are diagnostic only (measurement); output shape still includes getPrinter/wmi/pnp.
     const ps = [
       "$ErrorActionPreference='Stop'",
-      "$gp = @(Get-Printer | Select-Object Name,PrinterStatus,JobCount,WorkOffline,PortName)",
+      "$sw = [System.Diagnostics.Stopwatch]::StartNew()",
+      "$tGet = 0; $tWmi = 0; $tPnp = 0",
+      "$sw.Restart(); $gp = @(Get-Printer | Select-Object Name,PrinterStatus,JobCount,WorkOffline,PortName); $tGet = $sw.ElapsedMilliseconds",
       "$wmi = @()",
-      "try { $wmi = @(Get-CimInstance -ClassName Win32_Printer -ErrorAction Stop | Select-Object Name,PrinterStatus,DetectedErrorState,WorkOffline,PortName,Availability,PrinterState) } catch { $wmi = @() }",
+      "$sw.Restart(); try { $wmi = @(Get-CimInstance -ClassName Win32_Printer -ErrorAction Stop | Select-Object Name,PrinterStatus,DetectedErrorState,WorkOffline,PortName,Availability,PrinterState) } catch { $wmi = @() }; $tWmi = $sw.ElapsedMilliseconds",
       "$pnp = @()",
       "$pnpFailed = $false",
+      "$sw.Restart()",
       "try { $pnp = @(Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -match 'USBPRINT|DOT4PRINT' -or $_.Class -in @('Printer','USB','USBDevice') -or $_.FriendlyName -match 'print|Rongta|RP4' } | Select-Object FriendlyName,InstanceId,Status,Class) } catch { $pnpFailed = $true; $pnp = @() }",
       "if (-not $pnp) { try { $pnp = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.DeviceID -match 'USBPRINT|DOT4PRINT' -or $_.PNPClass -in @('Printer','USB') } | Select-Object @{N='FriendlyName';E={$_.Name}}, @{N='InstanceId';E={$_.DeviceID}}, Status, @{N='Class';E={$_.PNPClass}}) } catch { $pnpFailed = $true } }",
-      "@{ getPrinter = $gp; wmi = $wmi; pnp = $pnp; pnpFailed = $pnpFailed } | ConvertTo-Json -Compress -Depth 6",
+      "$tPnp = $sw.ElapsedMilliseconds",
+      "@{ getPrinter = $gp; wmi = $wmi; pnp = $pnp; pnpFailed = $pnpFailed; timing = @{ getPrinterMs = $tGet; cimWmiMs = $tWmi; pnpMs = $tPnp } } | ConvertTo-Json -Compress -Depth 6",
     ].join("; ");
+    const spawnStarted = Date.now();
     const { stdout } = await execFileAsync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps],
       { windowsHide: true, timeout: 15000, maxBuffer: 3 * 1024 * 1024 }
     );
+    const powershellWallMs = Date.now() - spawnStarted;
     const text = String(stdout || "").trim();
-    if (!text) return { ok: false, rows: [], error: "empty-output", pnpChecked: false };
+    if (!text) {
+      return {
+        ok: false,
+        rows: [],
+        error: "empty-output",
+        pnpChecked: false,
+        timing: { totalMs: Date.now() - wallStarted, powershellSpawnMs: powershellWallMs },
+      };
+    }
     let parsed;
     try {
       parsed = JSON.parse(text);
     } catch {
-      return { ok: false, rows: [], error: "malformed-json", pnpChecked: false };
+      return {
+        ok: false,
+        rows: [],
+        error: "malformed-json",
+        pnpChecked: false,
+        timing: { totalMs: Date.now() - wallStarted, powershellSpawnMs: powershellWallMs },
+      };
     }
     const now = new Date();
     const pnpFailed = Boolean(parsed.pnpFailed || parsed.PnpFailed);
@@ -779,11 +807,31 @@ export async function probeWindowsPrinterHealth() {
       pnpChecked: true,
       pnpQueryFailed: pnpFailed,
     });
-    return { ok: true, rows, error: "", pnpChecked: true, pnpQueryFailed: pnpFailed };
+    const phase = parsed.timing || parsed.Timing || {};
+    const getPrinterMs = Number(phase.getPrinterMs ?? phase.GetPrinterMs) || 0;
+    const cimWmiMs = Number(phase.cimWmiMs ?? phase.CimWmiMs) || 0;
+    const pnpMs = Number(phase.pnpMs ?? phase.PnpMs) || 0;
+    const scriptPhasesMs = getPrinterMs + cimWmiMs + pnpMs;
+    const timing = {
+      totalMs: Date.now() - wallStarted,
+      powershellSpawnMs: powershellWallMs,
+      getPrinterMs,
+      cimWmiMs,
+      pnpMs,
+      /** Approximate PowerShell process overhead = wall PS time minus internal phase sum. */
+      powershellOverheadMs: Math.max(0, powershellWallMs - scriptPhasesMs),
+    };
+    return { ok: true, rows, error: "", pnpChecked: true, pnpQueryFailed: pnpFailed, timing };
   } catch (e) {
     const msg = String(e?.message || e || "query-failed").slice(0, 200);
     const timedOut = /TIMEOUT|ETIMEDOUT/i.test(msg) || e?.killed;
-    return { ok: false, rows: [], error: timedOut ? "timeout" : msg, pnpChecked: false };
+    return {
+      ok: false,
+      rows: [],
+      error: timedOut ? "timeout" : msg,
+      pnpChecked: false,
+      timing: { totalMs: Date.now() - wallStarted, powershellSpawnMs: Date.now() - wallStarted },
+    };
   }
 }
 

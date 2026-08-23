@@ -334,9 +334,9 @@ run("same distribution is reused unless forceReplan", () => {
   assert.equal(distributionsMatch([1, 1, 1, 1, 1], [3, 2]), false);
 });
 
-run("print-agent 1.4.0 is not modified by this workflow", () => {
+run("print-agent version is independent of this reprepare workflow", () => {
   const agent = fs.readFileSync(path.join(feRoot, "..", "print-agent", "src", "index.js"), "utf8");
-  assert.match(agent, /APP_VERSION = "1.4.0"/);
+  assert.match(agent, /APP_VERSION = "1\.5\.0"/);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -130,7 +130,14 @@ export function loadConfig() {
     agentId: String(raw.agentId || "").trim().toUpperCase(),
     secret: String(raw.secret || "").trim(),
     windowsPrinterName: String(raw.windowsPrinterName || "").trim(),
-    pollIntervalMs: Math.max(2000, Number(raw.pollIntervalMs) || 5000),
+    // Job pickup poll (independent of heartbeat). Default 1s; floor 500ms.
+    pollIntervalMs: Math.max(500, Number(raw.pollIntervalMs) || 1000),
+    /** Full printer-health heartbeat cadence (ms). Default 15s. */
+    heartbeatIntervalMs: Math.max(5000, Number(raw.heartbeatIntervalMs) || 15_000),
+    /** Verbose PRINT_DIAG lines (timing summary always on). */
+    diagnosticLogging:
+      raw.diagnosticLogging === true ||
+      String(process.env.MARIVOLT_AGENT_DIAG || "").trim() === "1",
     connectionType: raw.connectionType || "WINDOWS_SPOOLER",
     companyId: String(raw.companyId || "").trim(),
     warehouseCode: String(raw.warehouseCode || "").trim().toUpperCase(),
@@ -251,7 +258,9 @@ export async function ensureConfigured() {
       agentId: data.agent.agentId,
       secret: data.secret,
       windowsPrinterName,
-      pollIntervalMs: 5000,
+      pollIntervalMs: 1000,
+      heartbeatIntervalMs: 15_000,
+      diagnosticLogging: false,
       connectionType: "WINDOWS_SPOOLER",
     };
     const saved = saveConfig(cfg);

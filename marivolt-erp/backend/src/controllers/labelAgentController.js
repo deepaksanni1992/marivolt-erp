@@ -68,6 +68,7 @@ export async function lease(req, res) {
         requestedLabels: job.remainingLabels,
         tsplPayload: job.tsplPayload,
         sourceNo: job.sourceNo,
+        sourceType: job.sourceType,
       },
     });
   } catch (err) {
