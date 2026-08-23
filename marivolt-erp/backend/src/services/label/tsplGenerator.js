@@ -16,6 +16,15 @@ export function dotsPerMm(dpi = 203) {
   return d / 25.4;
 }
 
+/**
+ * Typical TSPL built-in font "0" cell height (dots) at 1× magnification.
+ * TEXT yMul multiplies this for physical glyph extent (not the scale(28) estimate).
+ */
+export const TSPL_FONT0_CELL_DOTS = 24;
+
+/** Safe bottom margin inside the physical label (dots). */
+export const PACKING_LABEL_BOTTOM_SAFE_DOTS = 4;
+
 export function labelDotDimensions(dpi = 203) {
   const dpm = dotsPerMm(dpi);
   return {
@@ -24,6 +33,11 @@ export function labelDotDimensions(dpi = 203) {
     heightDots: Math.round(LABEL_HEIGHT_MM * dpm),
     dotsPerMm: dpm,
   };
+}
+
+/** Physical glyph height for TSPL font "0" at given multipliers. */
+export function tsplFont0GlyphHeight(yMul = 1) {
+  return TSPL_FONT0_CELL_DOTS * Math.max(1, Math.floor(Number(yMul) || 1));
 }
 
 function t(v) {
@@ -257,6 +271,10 @@ export function getFixedLabelSize() {
  * Analyze packing Description fit for 100×50 layout (same rules as TSPL).
  * QTY row height is reserved so description never overlaps it.
  * Prefer dynamic desc height from content; leftover height redistributes to fixed rows.
+ *
+ * Custom packing (`omitArticle: true`) intentionally reflows after Article removal:
+ * Description does not absorb all leftover height (that mismatched preview vs TSPL),
+ * and QTY row is sized for real 2×2 font glyph extent so it cannot spill onto the next sticker.
  */
 export function computePackingLabelLayout(description = "", opts = {}) {
   const dpi = Number(opts.dpi) || 203;
@@ -266,14 +284,16 @@ export function computePackingLabelLayout(description = "", opts = {}) {
   const margin = scale(10);
   const outerH = heightDots - margin * 2;
   const labelColRatio = 0.26;
+  const omitArticle = opts.omitArticle === true;
 
-  // Minimums — slightly taller than prior 28 for readability; QTY reserved largest.
+  // Minimums — slightly taller than prior 28 for readability; QTY reserved for real 2×2 glyph.
   const minNormalH = scale(26);
   const minEmphasisH = scale(30); // Customer / Article / Part No.
   const minDescH = scale(24);
-  const qtyRowH = scale(44);
+  const qtyGlyphH = tsplFont0GlyphHeight(2);
+  // Must fit 2×2 QTY glyph with padding and stay above bottom safe margin.
+  const qtyRowH = Math.max(scale(44), qtyGlyphH + scale(12));
 
-  const omitArticle = opts.omitArticle === true;
   const fixedSpecs = [
     { key: "Customer", minH: minEmphasisH, grow: 1.2 },
     { key: "Customer Ref.", minH: minNormalH, grow: 0.8 },
@@ -312,22 +332,28 @@ export function computePackingLabelLayout(description = "", opts = {}) {
   const heights = Object.fromEntries(fixedSpecs.map((r) => [r.key, r.minH]));
   if (leftover > 0) {
     const growTotal = fixedSpecs.reduce((s, r) => s + r.grow, 0) || 1;
+    // Custom (no Article): allow header rows a bit more growth; do not dump all leftover into Description.
+    const headerCapExtra = omitArticle ? scale(14) : scale(10);
     for (const r of fixedSpecs) {
       const share = Math.floor((leftover * r.grow) / growTotal);
-      const cap = r.minH + scale(10);
+      const cap = r.minH + headerCapExtra;
       const next = Math.min(cap, heights[r.key] + share);
       leftover -= next - heights[r.key];
       heights[r.key] = next;
     }
-    // Any remaining dots go to Description (still below availableForDesc).
+    // Remaining leftover → Description, but custom packing caps inflation so QTY geometry stays stable
+    // and description text can be vertically centered (preview parity).
     if (leftover > 0) {
       const room = availableForDesc - descH;
-      const add = Math.min(leftover, Math.max(0, room));
+      const maxDescExtra = omitArticle ? scale(24) : room;
+      const add = Math.min(leftover, Math.max(0, room), Math.max(0, maxDescExtra));
       descH += add;
       leftover -= add;
     }
     if (leftover > 0) {
+      // Park residual in Customer (top), never push QTY down past the box.
       heights.Customer = (heights.Customer || minEmphasisH) + leftover;
+      leftover = 0;
     }
   }
 
@@ -336,6 +362,15 @@ export function computePackingLabelLayout(description = "", opts = {}) {
     fixedSpecs.reduce((s, r) => s + heights[r.key], 0) + descH + qtyRowH;
   if (used > outerH) {
     descH = Math.max(minDescH, descH - (used - outerH));
+  }
+
+  // Absolute physical guard: QTY glyph must stay above bottom safe margin.
+  const outerY = margin;
+  const qtyTop = outerY + outerH - qtyRowH;
+  const qtyTextMaxBottom = heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS;
+  if (qtyTop + qtyGlyphH > qtyTextMaxBottom) {
+    const overflow = qtyTop + qtyGlyphH - qtyTextMaxBottom;
+    descH = Math.max(minDescH, descH - overflow);
   }
 
   return {
@@ -351,6 +386,8 @@ export function computePackingLabelLayout(description = "", opts = {}) {
     qtyRowReserved: true,
     descriptionTruncated: descFit.truncated === true,
     descLineDots,
+    qtyGlyphH,
+    omitArticle,
     rowHeights: {
       ...heights,
       Description: descH,
@@ -506,26 +543,40 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
       cmds.push(`BAR ${outerX},${y2},${outerW},${1}`);
     }
     const [lx, ly] = row.labelMul || [1, 1];
-    const labelTextH = scale(ly >= 2 ? 22 : 16);
-    const labelY = y + Math.max(scale(4), Math.floor((row.h - labelTextH) / 2));
+    const labelGlyphH = tsplFont0GlyphHeight(ly);
+    const labelY = y + Math.max(scale(2), Math.floor((row.h - labelGlyphH) / 2));
+    // Keep label text inside the row / label face.
+    const labelYClamped = Math.min(labelY, Math.max(y, y2 - labelGlyphH - 1));
     cmds.push(
-      `TEXT ${outerX + textPad},${labelY},"0",0,${lx},${ly},"${escapeTspl(row.label)}"`
+      `TEXT ${outerX + textPad},${labelYClamped},"0",0,${lx},${ly},"${escapeTspl(row.label)}"`
     );
 
     if (row.desc) {
       const lh = layout.descLineDots || Math.max(scale(17), Math.round((layout.fontSize / 8) * scale(20)));
-      let dy = y + scale(4);
       const [dx, dyMul] = fonts.description;
+      const blockH = Math.max(lh, (layout.lines.length || 0) * lh);
+      // Vertically center the description block in its cell (matches CSS table preview).
+      let dy = y + Math.max(scale(3), Math.floor((row.h - blockH) / 2));
+      const dyMax = y2 - lh - 1;
       for (const dl of layout.lines) {
+        const lineY = Math.min(dy, dyMax);
         cmds.push(
-          `TEXT ${valueColX + textPad},${dy},"0",0,${dx},${dyMul},"${escapeTspl(dl)}"`
+          `TEXT ${valueColX + textPad},${lineY},"0",0,${dx},${dyMul},"${escapeTspl(dl)}"`
         );
         dy += lh;
       }
     } else {
       const [vx, vy] = row.valueMul || [1, 1];
-      const valueTextH = scale(vy >= 2 ? 28 : vx >= 2 ? 20 : 16);
-      const valueY = y + Math.max(scale(3), Math.floor((row.h - valueTextH) / 2));
+      const glyphH = tsplFont0GlyphHeight(vy);
+      let valueY = y + Math.max(scale(2), Math.floor((row.h - glyphH) / 2));
+      // Never let QTY (or any value) glyph cross the physical label bottom.
+      const maxBottom = Math.min(
+        heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS,
+        y2 - 1
+      );
+      if (valueY + glyphH > maxBottom) {
+        valueY = Math.max(y, maxBottom - glyphH);
+      }
       cmds.push(
         `TEXT ${valueColX + textPad},${valueY},"0",0,${vx},${vy},"${escapeTspl(row.value)}"`
       );
@@ -535,6 +586,120 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
 
   cmds.push("PRINT 1,1");
   return cmds.join("\r\n") + "\r\n";
+}
+
+/**
+ * Measure max physical Y extent (including font glyph height) for a packing/custom face.
+ * Used by geometry regression tests — must stay within labelDotDimensions().heightDots.
+ */
+export function measurePackingLabelGeometry(line = {}, opts = {}) {
+  const dpi = Number(opts.dpi) || 203;
+  const { heightDots, widthDots } = labelDotDimensions(dpi);
+  const layout = computePackingLabelLayout(line.description || "", {
+    dpi,
+    omitArticle: opts.omitArticle === true,
+  });
+  const scale = layout.scale;
+  const margin = layout.margin ?? scale(10);
+  const outerY = margin;
+  const keys = [
+    "Customer",
+    "Customer Ref.",
+    "Brand",
+    "Model",
+    ...(opts.omitArticle ? [] : ["Article"]),
+    "S. No.",
+    "Part No.",
+    "Description",
+    "QTY",
+  ];
+  let y = outerY;
+  let maxY = outerY;
+  const elements = [];
+  for (const key of keys) {
+    const h = Number(layout.rowHeights[key]) || 0;
+    const y2 = y + h;
+    let textTop = y;
+    let textBottom = y2;
+    let yMul = 1;
+    if (key === "Description") {
+      const lh = layout.descLineDots || scale(20);
+      const blockH = Math.max(lh, (layout.lines.length || 0) * lh);
+      textTop = y + Math.max(scale(3), Math.floor((h - blockH) / 2));
+      textBottom = textTop + blockH;
+    } else if (key === "QTY") {
+      yMul = 2;
+      const glyphH = tsplFont0GlyphHeight(yMul);
+      textTop = y + Math.max(scale(2), Math.floor((h - glyphH) / 2));
+      const maxBottom = Math.min(heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS, y2 - 1);
+      if (textTop + glyphH > maxBottom) textTop = Math.max(y, maxBottom - glyphH);
+      textBottom = textTop + glyphH;
+    } else {
+      yMul = key === "Part No." || key === "Article" ? 1 : 1;
+      const xMul = key === "Part No." || key === "Article" || key === "Customer" ? 2 : 1;
+      // Customer may use 2×1; Part/Article 2×1
+      const glyphH = tsplFont0GlyphHeight(1);
+      textTop = y + Math.max(scale(2), Math.floor((h - glyphH) / 2));
+      textBottom = textTop + glyphH;
+      void xMul;
+    }
+    maxY = Math.max(maxY, textBottom, y2);
+    elements.push({ key, rowY: y, rowBottom: y2, textTop, textBottom });
+    y = y2;
+  }
+  return {
+    widthDots,
+    heightDots,
+    maxY,
+    boxBottom: outerY + (layout.outerH || 0),
+    withinLabel: maxY <= heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS,
+    qtyWithinLabel:
+      (elements.find((e) => e.key === "QTY")?.textBottom || 0) <=
+      heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS,
+    descriptionAboveQty: (() => {
+      const d = elements.find((e) => e.key === "Description");
+      const q = elements.find((e) => e.key === "QTY");
+      return d && q ? d.textBottom <= q.rowY + 1 : false;
+    })(),
+    elements,
+    rowHeights: layout.rowHeights,
+    omitArticle: opts.omitArticle === true,
+  };
+}
+
+/**
+ * Diagnostic faces: outer rectangle + top/bottom rules + sequence number.
+ * Used to distinguish true media feed drift from content overflow.
+ */
+export function buildPackingGeometryDiagnosticTspl(count = 6, opts = {}) {
+  const dpi = Number(opts.dpi) || 203;
+  const dpm = dotsPerMm(dpi);
+  const scale = (dotsAt203) => Math.round(dotsAt203 * (dpm / 8));
+  const w = LABEL_WIDTH_MM;
+  const h = LABEL_HEIGHT_MM;
+  const widthDots = Math.round(w * dpm);
+  const heightDots = Math.round(h * dpm);
+  const margin = scale(10);
+  const n = Math.max(1, Math.min(20, Math.floor(Number(count) || 6)));
+  const parts = [];
+  for (let i = 1; i <= n; i++) {
+    parts.push(
+      [
+        `SIZE ${w} mm,${h} mm`,
+        "GAP 3 mm,0",
+        "DIRECTION 1",
+        "REFERENCE 0,0",
+        "CLS",
+        `BOX ${margin},${margin},${widthDots - margin},${heightDots - margin},3`,
+        `BAR ${margin},${margin},${widthDots - margin * 2},2`,
+        `BAR ${margin},${heightDots - margin - 2},${widthDots - margin * 2},2`,
+        `TEXT ${scale(40)},${scale(160)},"0",0,3,3,"DIAG ${i}/${n}"`,
+        "PRINT 1,1",
+        "",
+      ].join("\r\n")
+    );
+  }
+  return parts.join("");
 }
 
 /** Metadata companion for a packing face (overflow / fit). */

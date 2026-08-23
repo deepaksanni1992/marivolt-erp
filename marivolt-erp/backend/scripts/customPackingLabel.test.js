@@ -23,7 +23,11 @@ import {
 import {
   buildPackingJobTspl,
   buildSingleLabelTspl,
+  buildPackingGeometryDiagnosticTspl,
+  measurePackingLabelGeometry,
   packingLabelPreviewRows,
+  labelDotDimensions,
+  PACKING_LABEL_BOTTOM_SAFE_DOTS,
 } from "../src/services/label/tsplGenerator.js";
 import { fitPackingDescription } from "../src/utils/labelTextFit.js";
 import { PACKING_STANDARD_TEMPLATE_CODE } from "../src/services/label/labelTemplateService.js";
@@ -403,6 +407,115 @@ run("25. Part No. formatted text preserved; Qty stays numeric", () => {
   const rows = simulateParseImportApi(buf);
   assert.equal(rows[0].partNo, "001234");
   assert.equal(rows[0].qty, 10);
+});
+
+run("26. Custom geometry: all Y extents stay inside 50 mm label; QTY has bottom margin", () => {
+  const line = {
+    customerName: "Cool Management AS",
+    customerRef: "260825.12",
+    brand: "Wartsila",
+    modelName: "W34SG",
+    serialNo: "1",
+    partNo: "9.2107-005",
+    description: "Inlet valve guide",
+    qtyDisplay: "10",
+    labelQty: 10,
+  };
+  const g = measurePackingLabelGeometry(line, CUSTOM_PACKING_TSPL_OPTS);
+  const { heightDots } = labelDotDimensions(203);
+  assert.equal(heightDots, 400);
+  assert.equal(g.omitArticle, true);
+  assert.ok(g.withinLabel, `maxY=${g.maxY} heightDots=${heightDots}`);
+  assert.ok(g.qtyWithinLabel);
+  assert.ok(g.descriptionAboveQty);
+  const qty = g.elements.find((e) => e.key === "QTY");
+  assert.ok(qty.textBottom <= heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS);
+  assert.ok(!/Article/i.test(buildPackingJobTspl([line], CUSTOM_PACKING_TSPL_OPTS).split("Description")[0]));
+});
+
+run("27. Long description stays above reserved QTY; no overlap", () => {
+  const line = {
+    customerName: "C",
+    customerRef: "R",
+    brand: "B",
+    modelName: "M",
+    serialNo: "1",
+    partNo: "P1",
+    description:
+      "Connecting rod assembly without bolt hydraulic type suitable for marine diesel engines with spare kit inlet valve",
+    qtyDisplay: "12",
+    labelQty: 12,
+  };
+  const g = measurePackingLabelGeometry(line, CUSTOM_PACKING_TSPL_OPTS);
+  assert.ok(g.withinLabel, `maxY=${g.maxY}`);
+  assert.ok(g.descriptionAboveQty);
+  assert.ok(g.qtyWithinLabel);
+});
+
+run("28. Preview rows omit Article and keep QTY; Part No. emphasized", () => {
+  const rows = packingLabelPreviewRows(
+    {
+      customerName: "C",
+      partNo: "9.2107-005",
+      description: "Inlet valve guide",
+      qtyDisplay: "10",
+    },
+    CUSTOM_PACKING_TSPL_OPTS
+  );
+  assert.ok(!rows.some((r) => r.label === "Article"));
+  assert.equal(rows.find((r) => r.label === "Part No.").emphasis, "strong");
+  assert.equal(rows.find((r) => r.label === "QTY").emphasis, "qty");
+  assert.ok(rows.find((r) => r.label === "Description").weight > 0);
+});
+
+run("29. Six-label custom job remains one combined TSPL payload", () => {
+  const { lines } = normalizeCustomPackingLines({
+    customerName: "Cool Management AS",
+    customerRef: "260825.12",
+    brand: "Wartsila",
+    modelName: "W34SG",
+    lines: [
+      { serialNo: "1", partNo: "A", description: "d1", qty: 20, labelCount: 1 },
+      { serialNo: "2", partNo: "B", description: "d2", qty: 12, labelCount: 2 },
+      { serialNo: "3", partNo: "C", description: "d3", qty: 18, labelCount: 1 },
+      { serialNo: "4", partNo: "D", description: "d4", qty: 16, labelCount: 1 },
+      { serialNo: "5", partNo: "E", description: "d5", qty: 20, labelCount: 1 },
+    ],
+  });
+  const tspl = buildPackingJobTspl(lines, CUSTOM_PACKING_TSPL_OPTS);
+  assert.equal((tspl.match(/PRINT 1,1/g) || []).length, 6);
+  assert.equal((tspl.match(/^SIZE /gm) || []).length, 6);
+  assert.match(tspl, /GAP 3 mm,0/);
+  assert.doesNotMatch(tspl, /OFFSET|SHIFT|HOME/i);
+});
+
+run("30. Geometry diagnostic TSPL emits N boxed faces", () => {
+  const tspl = buildPackingGeometryDiagnosticTspl(6);
+  assert.equal((tspl.match(/PRINT 1,1/g) || []).length, 6);
+  assert.equal((tspl.match(/DIAG /g) || []).length, 6);
+  assert.match(tspl, /BOX /);
+});
+
+run("31. Normal packing (with Article) geometry also keeps QTY inside label", () => {
+  const g = measurePackingLabelGeometry(
+    {
+      customerName: "ALTAMAR",
+      article: "52236",
+      partNo: "111006",
+      description: "Connecting rod",
+      qtyDisplay: "1 of 9",
+    },
+    { omitArticle: false }
+  );
+  assert.equal(g.omitArticle, false);
+  assert.ok(g.withinLabel, `maxY=${g.maxY}`);
+  assert.ok(g.qtyWithinLabel);
+});
+
+run("32. GRN unit label path still uses SIZE 100×50 and is unchanged entrypoint", () => {
+  const tspl = buildSingleLabelTspl({ article: "A1", description: "Widget", uom: "PCS" });
+  assert.match(tspl, /SIZE 100 mm,50 mm/);
+  assert.match(tspl, /BARCODE/);
 });
 
 console.log(`\nCustom packing label: ${passed} passed, ${failed} failed\n`);
