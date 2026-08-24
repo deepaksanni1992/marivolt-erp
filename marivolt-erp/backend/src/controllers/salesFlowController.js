@@ -72,6 +72,10 @@ import {
   roundMoney,
 } from "../utils/piPaymentRequest.js";
 import {
+  computeSalesCommercialTotals,
+  plainCommercialSource,
+} from "../utils/salesCommercialTotals.js";
+import {
   buildOaPiProgressSummary,
   buildOaCommercialRevision,
   isOaEditLockedByLifecycle,
@@ -372,35 +376,47 @@ function normalizeLines(lines = []) {
     .map((line, idx) => ({ ...line, serialNo: idx + 1 }));
 }
 
+/** @deprecated Prefer computeSalesCommercialTotals + plainCommercialSource for Mongoose docs. */
 function computeTotals(lines = [], source = {}) {
-  let subTotal = 0;
-  for (const line of lines) {
-    subTotal += Number(line.totalPrice) || 0;
+  return computeSalesCommercialTotals(lines, source);
+}
+
+/**
+ * Sync PI payment-request snapshot to a corrected commercial grand total.
+ * Editable unpaid drafts: rebuild requestedAmount from piValueType.
+ * Locked / paid docs: update commercialGrandTotal display only; freeze requestedAmount.
+ */
+function alignPiPaymentRequestToCommercial(doc, commercialGrandTotal) {
+  const commercial = roundMoney(Math.max(0, Number(commercialGrandTotal) || 0));
+  const status = String(doc?.status || "").toUpperCase();
+  const paymentStatus = String(doc?.paymentStatus || "UNPAID").toUpperCase();
+  const received = Number(doc?.totalReceivedAmount) || 0;
+  const editableUnpaid =
+    status === "DRAFT" && paymentStatus === "UNPAID" && received <= 0.005;
+
+  if (editableUnpaid) {
+    try {
+      return buildValidatedPiPaymentRequest(commercial, {
+        piValueType: doc.piValueType || "FULL",
+        advancePercentage: doc.advancePercentage,
+        requestedAmount: doc.requestedAmount,
+        advanceRemarks: doc.advanceRemarks,
+      });
+    } catch {
+      return {
+        commercialGrandTotal: commercial,
+        grandTotal: commercial,
+        commercialBalanceAmount: roundMoney(
+          Math.max(0, commercial - (Number(doc.requestedAmount) || 0))
+        ),
+      };
+    }
   }
-  const discountType = String(source?.discountType || "NONE").toUpperCase();
-  const discountValue = Math.max(0, Number(source?.discountValue) || 0);
-  let discountTotal = Math.max(0, Number(source?.discountTotal) || 0);
-  if (discountType === "PERCENT") {
-    discountTotal = Math.min(subTotal, (subTotal * discountValue) / 100);
-  } else if (discountType === "FLAT") {
-    discountTotal = Math.min(subTotal, discountValue);
-  } else if (discountTotal > 0) {
-    discountTotal = Math.min(subTotal, discountTotal);
-  } else {
-    discountTotal = 0;
-  }
-  const taxTotal = Math.max(0, Number(source?.taxTotal) || 0);
-  const packingCost = Math.max(0, Number(source?.packingCost) || 0);
-  const clearanceCost = Math.max(0, Number(source?.clearanceCost) || 0);
+
+  const requested = roundMoney(Math.max(0, Number(doc.requestedAmount ?? doc.grandTotal) || 0));
   return {
-    subTotal,
-    discountType: ["PERCENT", "FLAT"].includes(discountType) ? discountType : "NONE",
-    discountValue: ["PERCENT", "FLAT"].includes(discountType) ? discountValue : 0,
-    discountTotal,
-    taxTotal,
-    packingCost,
-    clearanceCost,
-    grandTotal: subTotal - discountTotal + taxTotal + packingCost + clearanceCost,
+    commercialGrandTotal: commercial,
+    commercialBalanceAmount: roundMoney(Math.max(0, commercial - requested)),
   };
 }
 
@@ -579,7 +595,18 @@ async function applyLinkedQuotationDiscountFallback(req, docs = [], { persistMod
     const discountTotal = Number(doc?.discountTotal) || 0;
     const packingCost = Number(doc?.packingCost) || 0;
     const clearanceCost = Number(doc?.clearanceCost) || 0;
-    return subTotal > 0 && doc?.linkedQuotationId && (discountTotal <= 0 || packingCost <= 0 || clearanceCost <= 0);
+    const grandTotal = Number(doc?.grandTotal) || 0;
+    const commercialSnap = Number(doc?.commercialGrandTotal);
+    const paymentDrift =
+      Boolean(doc?.proformaNo) &&
+      Number.isFinite(commercialSnap) &&
+      grandTotal > 0 &&
+      Math.abs(commercialSnap - grandTotal) > 0.005;
+    return (
+      subTotal > 0 &&
+      doc?.linkedQuotationId &&
+      (discountTotal <= 0 || packingCost <= 0 || clearanceCost <= 0 || paymentDrift)
+    );
   });
   if (!needsFallback.length) return rows;
   const quotationIds = [...new Set(needsFallback.map((doc) => String(doc.linkedQuotationId)).filter(Boolean))];
@@ -591,7 +618,21 @@ async function applyLinkedQuotationDiscountFallback(req, docs = [], { persistMod
   const byQuotationId = new Map(quotations.map((q) => [String(q._id), q]));
   const out = rows.map((doc) => {
     const q = byQuotationId.get(String(doc.linkedQuotationId || ""));
-    if (!q) return doc;
+    const looksLikePi =
+      Boolean(doc.proformaNo) ||
+      persistModel === ProformaInvoice ||
+      String(persistModel?.modelName || "") === "ProformaInvoice";
+    if (!q) {
+      if (looksLikePi) {
+        const gt = Number(doc.grandTotal) || 0;
+        const cg = Number(doc.commercialGrandTotal);
+        if (gt > 0 && Number.isFinite(cg) && Math.abs(cg - gt) > 0.005) {
+          const paymentAlign = alignPiPaymentRequestToCommercial(doc, gt);
+          return { ...doc, ...paymentAlign, grandTotal: gt, _discountBackfilled: true };
+        }
+      }
+      return doc;
+    }
     const subTotal = Number(doc.subTotal) || 0;
     const currentDiscount = Number(doc.discountTotal) || 0;
     const currentPacking = Math.max(0, Number(doc.packingCost) || 0);
@@ -628,30 +669,71 @@ async function applyLinkedQuotationDiscountFallback(req, docs = [], { persistMod
       Math.abs(taxTotal - (Number(doc.taxTotal) || 0)) > 0.000001 ||
       Math.abs(packingCost - currentPacking) > 0.000001 ||
       Math.abs(clearanceCost - currentClearance) > 0.000001;
-    if (!changed) return doc;
-    const grandTotal = subTotal - discountTotal + taxTotal + packingCost + clearanceCost;
-    return { ...doc, discountType, discountValue, discountTotal, taxTotal, packingCost, clearanceCost, grandTotal, _discountBackfilled: true };
+    const grandTotal = changed
+      ? subTotal - discountTotal + taxTotal + packingCost + clearanceCost
+      : Number(doc.grandTotal) || subTotal - discountTotal + taxTotal + packingCost + clearanceCost;
+    const commercialSnap = Number(doc.commercialGrandTotal);
+    const paymentDrift =
+      looksLikePi &&
+      Number.isFinite(commercialSnap) &&
+      grandTotal > 0 &&
+      Math.abs(commercialSnap - grandTotal) > 0.005;
+    if (!changed && !paymentDrift) return doc;
+    const base = changed
+      ? {
+          ...doc,
+          discountType,
+          discountValue,
+          discountTotal,
+          taxTotal,
+          packingCost,
+          clearanceCost,
+          grandTotal,
+          _discountBackfilled: true,
+        }
+      : { ...doc, grandTotal, _discountBackfilled: true };
+    if (looksLikePi) {
+      const paymentAlign = alignPiPaymentRequestToCommercial(doc, grandTotal);
+      return { ...base, ...paymentAlign, grandTotal };
+    }
+    return base;
   });
   if (persistModel) {
     const ops = out
       .filter((doc) => doc._discountBackfilled && doc._id)
-      .map((doc) => ({
-        updateOne: {
-          filter: withCompany(req, { _id: doc._id }),
-          update: {
-            $set: {
-              discountType: doc.discountType || "NONE",
-              discountValue: Number(doc.discountValue) || 0,
-              discountTotal: Number(doc.discountTotal) || 0,
-              taxTotal: Number(doc.taxTotal) || 0,
-              packingCost: Number(doc.packingCost) || 0,
-              clearanceCost: Number(doc.clearanceCost) || 0,
-              grandTotal: Number(doc.grandTotal) || 0,
-              updatedBy: req.user?.email || "",
-            },
+      .map((doc) => {
+        const $set = {
+          discountType: doc.discountType || "NONE",
+          discountValue: Number(doc.discountValue) || 0,
+          discountTotal: Number(doc.discountTotal) || 0,
+          taxTotal: Number(doc.taxTotal) || 0,
+          packingCost: Number(doc.packingCost) || 0,
+          clearanceCost: Number(doc.clearanceCost) || 0,
+          grandTotal: Number(doc.grandTotal) || 0,
+          updatedBy: req.user?.email || "",
+        };
+        if (doc.commercialGrandTotal != null) {
+          $set.commercialGrandTotal = Number(doc.commercialGrandTotal) || 0;
+        }
+        if (doc.commercialBalanceAmount != null) {
+          $set.commercialBalanceAmount = Number(doc.commercialBalanceAmount) || 0;
+        }
+        if (doc.requestedAmount != null) {
+          $set.requestedAmount = Number(doc.requestedAmount) || 0;
+        }
+        if (doc.piValueType != null) {
+          $set.piValueType = doc.piValueType;
+        }
+        if (doc.advancePercentage !== undefined) {
+          $set.advancePercentage = doc.advancePercentage;
+        }
+        return {
+          updateOne: {
+            filter: withCompany(req, { _id: doc._id }),
+            update: { $set },
           },
-        },
-      }));
+        };
+      });
     if (ops.length) await persistModel.bulkWrite(ops, { ordered: false });
   }
   return out.map((doc) => {
@@ -2814,7 +2896,24 @@ export async function createProforma(req, res) {
         field: "proformaNo",
       });
     }
-    const totals = computeTotals(lines, body);
+    const totals = computeTotals(
+      lines,
+      plainCommercialSource(oa, {
+        discountType: body.discountType,
+        discountValue: body.discountValue,
+        discountTotal: body.discountTotal,
+        taxTotal: body.taxTotal,
+        // FE create form defaults packing/clearance to 0 — fall back to OA commercial costs.
+        packingCost:
+          Number(body.packingCost) > 0 || (body.packingCost === 0 && Number(oa.packingCost) <= 0)
+            ? body.packingCost
+            : undefined,
+        clearanceCost:
+          Number(body.clearanceCost) > 0 || (body.clearanceCost === 0 && Number(oa.clearanceCost) <= 0)
+            ? body.clearanceCost
+            : undefined,
+      })
+    );
     const currency = body.currency || "USD";
     let bankDetails = String(body.bankDetails || "").trim();
     if (!bankDetails) {
@@ -2959,7 +3058,7 @@ export async function updateProforma(req, res) {
       doc.status = req.body.status;
     }
     doc.lines = normalizeLines(doc.lines || []);
-    const totals = computeTotals(doc.lines, doc);
+    const totals = computeTotals(doc.lines, plainCommercialSource(doc));
     Object.assign(doc, totals);
     let maxRequestedAmount = null;
     if (doc.linkedOAId) {
@@ -3188,7 +3287,8 @@ export async function convertOAToProforma(req, res) {
       discountType = "FLAT";
       discountValue = Number(oa.discountTotal) || 0;
     }
-    const totals = computeTotals(lines, { ...oa, discountType, discountValue });
+    // Never spread a Mongoose document into computeTotals — packing/clearance drop to 0.
+    const totals = computeTotals(lines, plainCommercialSource(oa, { discountType, discountValue }));
     const currency = oa.currency || "USD";
     const bankDetails = (await resolveBankDetailsTextForCurrency(withCompany(req), currency)) || "";
     let termsAndConditions = t(oa.termsAndConditions);
