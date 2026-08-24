@@ -14,6 +14,11 @@ export function createPrintTimingTrace(job = {}) {
   const sourceType = String(job.sourceType || job.sourceNo || "").slice(0, 40);
   const requestedLabels = Math.max(0, Number(job.requestedLabels) || 0);
   const payloadBytes = Buffer.byteLength(String(job.tsplPayload || ""), "utf8");
+  const rawFaces = Array.isArray(job.rawFacePayloads) ? job.rawFacePayloads : [];
+  const faceBytes = rawFaces.reduce(
+    (s, face) => s + Buffer.byteLength(String(face || ""), "utf8"),
+    0
+  );
   const startedAt = nowMs();
   const leasedAt = nowMs();
 
@@ -23,7 +28,7 @@ export function createPrintTimingTrace(job = {}) {
     jobNo,
     sourceType,
     requestedLabels,
-    payloadBytes,
+    payloadBytes: payloadBytes + faceBytes,
     startedAt,
     leasedAt,
     documentName: "",

@@ -13,10 +13,12 @@ import {
   ensurePackingStandardTemplate,
 } from "./labelTemplateService.js";
 import {
-  buildPackingJobTspl,
   packingLabelPreviewRows,
   packingLabelDescriptionMeta,
+  buildPackingRawFacePayloads,
+  measurePackingLabelGeometry,
 } from "./tsplGenerator.js";
+import { LABEL_PAYLOAD_MODE_RAW_FACE_BATCH } from "./labelPayloadModes.js";
 import { auditLabelEvent, recordLabelHistory } from "./labelAudit.js";
 
 function t(v) {
@@ -355,8 +357,8 @@ export async function previewCustomPackingLabels(req, body = {}) {
   }
   const { header, lines } = normalizeCustomPackingLines(body);
   await ensurePackingStandardTemplate();
-  const tsplPayload = buildPackingJobTspl(lines, CUSTOM_PACKING_TSPL_OPTS);
-  const requestedLabels = lines.reduce((s, ln) => s + Math.max(1, Number(ln.lineCopies) || 1), 0);
+  const rawFacePayloads = buildPackingRawFacePayloads(lines, CUSTOM_PACKING_TSPL_OPTS);
+  const requestedLabels = rawFacePayloads.length;
   const descriptionTruncated = lines.some((ln) => ln.descriptionTruncated === true);
   const summary = summarizeCustomPackingBatch(lines);
   return {
@@ -364,6 +366,7 @@ export async function previewCustomPackingLabels(req, body = {}) {
     sourceType: "CUSTOM_PACKING",
     sourceNo: "CUSTOM",
     templateCode: PACKING_STANDARD_TEMPLATE_CODE,
+    payloadMode: LABEL_PAYLOAD_MODE_RAW_FACE_BATCH,
     requestedLabels,
     descriptionTruncated,
     requiresTruncationConfirmation: descriptionTruncated,
@@ -375,7 +378,8 @@ export async function previewCustomPackingLabels(req, body = {}) {
     header,
     summary,
     labels: expandCustomPackingPreviewLabels(lines),
-    tsplPayload,
+    tsplPayload: "",
+    faceCount: rawFacePayloads.length,
   };
 }
 
@@ -420,7 +424,20 @@ export async function createJobsFromCustomPacking(req, body = {}) {
     );
   }
 
-  const tsplPayload = buildPackingJobTspl(lines, CUSTOM_PACKING_TSPL_OPTS);
+  const rawFacePayloads = buildPackingRawFacePayloads(lines, CUSTOM_PACKING_TSPL_OPTS);
+  if (rawFacePayloads.length !== requestedLabels) {
+    throw err(
+      `RAW_FACE_BATCH face count ${rawFacePayloads.length} != requestedLabels ${requestedLabels}`,
+      400,
+      "LABEL_FACE_COUNT"
+    );
+  }
+  for (const ln of lines) {
+    const g = measurePackingLabelGeometry(ln, CUSTOM_PACKING_TSPL_OPTS);
+    if (!g.withinLabel || !g.qtyWithinLabel) {
+      throw err("Packing label geometry exceeds 100×50 page bounds", 400, "LABEL_GEOMETRY");
+    }
+  }
   const jobLines = lines.map((ln) => ({
     article: ln.article || "",
     description: ln.description,
@@ -463,7 +480,9 @@ export async function createJobsFromCustomPacking(req, body = {}) {
       printedLabels: 0,
       remainingLabels: requestedLabels,
       lines: jobLines,
-      tsplPayload,
+      tsplPayload: "",
+      payloadMode: LABEL_PAYLOAD_MODE_RAW_FACE_BATCH,
+      rawFacePayloads,
       status: "PENDING",
       createdByUserId: req.user?.id || req.user?._id || null,
       createdByName: t(req.user?.name || req.user?.email || ""),

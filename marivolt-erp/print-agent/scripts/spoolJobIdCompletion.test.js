@@ -121,11 +121,30 @@ function okRaw(jobId, bytes) {
 
 console.log("\nSpool JobId completion (1.5.0)\n");
 
-await run("1. mapWindowsJobStatusText covers queued/printing/error/paused", () => {
+await run("1. mapWindowsJobStatusText conservative classification", () => {
   assert.strictEqual(mapWindowsJobStatusText("Normal"), SPOOL_JOB_STATES.QUEUED);
+  assert.strictEqual(mapWindowsJobStatusText(0), SPOOL_JOB_STATES.QUEUED);
   assert.strictEqual(mapWindowsJobStatusText("Printing"), SPOOL_JOB_STATES.PRINTING);
+  assert.strictEqual(mapWindowsJobStatusText("Spooling"), SPOOL_JOB_STATES.SPOOLING);
   assert.strictEqual(mapWindowsJobStatusText("Error"), SPOOL_JOB_STATES.ERROR);
   assert.strictEqual(mapWindowsJobStatusText("Paused"), SPOOL_JOB_STATES.PAUSED);
+  assert.strictEqual(mapWindowsJobStatusText("Offline"), SPOOL_JOB_STATES.ERROR);
+  assert.strictEqual(mapWindowsJobStatusText("PaperOut"), SPOOL_JOB_STATES.ERROR);
+  // Only PRINTED is auto-success while present
+  assert.strictEqual(mapWindowsJobStatusText("Printed"), SPOOL_JOB_STATES.PRINTED);
+  assert.strictEqual(mapWindowsJobStatusText(128), SPOOL_JOB_STATES.PRINTED);
+  assert.strictEqual(mapWindowsJobStatusText("Printed,Deleted"), SPOOL_JOB_STATES.PRINTED);
+  // Deleted/Deleting alone → REMOVING (not ERROR, not PRINTED)
+  assert.strictEqual(mapWindowsJobStatusText("Deleted"), SPOOL_JOB_STATES.REMOVING);
+  assert.strictEqual(mapWindowsJobStatusText("Deleting"), SPOOL_JOB_STATES.REMOVING);
+  assert.strictEqual(mapWindowsJobStatusText(256), SPOOL_JOB_STATES.REMOVING);
+  assert.strictEqual(mapWindowsJobStatusText(4), SPOOL_JOB_STATES.REMOVING);
+  // Windows Completed alone → ambiguous (not auto-success)
+  assert.strictEqual(mapWindowsJobStatusText("Completed"), SPOOL_JOB_STATES.WIN_COMPLETED);
+  assert.strictEqual(mapWindowsJobStatusText(4096), SPOOL_JOB_STATES.WIN_COMPLETED);
+  // Failure bits win over Printed
+  assert.strictEqual(mapWindowsJobStatusText("Printed,Error"), SPOOL_JOB_STATES.ERROR);
+  assert.strictEqual(mapWindowsJobStatusText("Printed,Paused"), SPOOL_JOB_STATES.PAUSED);
 });
 
 await run("2. StartDocPrinter JobId + full Write + EndDoc → capture path COMPLETED", async () => {
@@ -589,6 +608,336 @@ await run("21. waitForSpoolJobCompletion: absent-on-first → fastAbsent COMPLET
     spoolOutcome: out,
   });
   assert.strictEqual(cls.status, "COMPLETED");
+});
+
+await run("22. Explicit Printed terminal success → COMPLETED (job still present)", async () => {
+  const out = await waitForSpoolJobCompletion({
+    timeoutMs: 200,
+    pollMs: 0,
+    windowsSpoolJobId: 126,
+    sleepFn: async () => {},
+    getJobStatus: async () => ({
+      ok: true,
+      present: true,
+      state: SPOOL_JOB_STATES.PRINTED,
+      jobStatusBits: 128,
+      jobStatusRaw: "Printed",
+    }),
+  });
+  assert.strictEqual(out.completed, true);
+  assert.strictEqual(out.finalState, SPOOL_JOB_STATES.PRINTED);
+  assert.strictEqual(out.terminalStatusSuccess, true);
+});
+
+await run("23. PRINTED + ERROR → NOT COMPLETED", async () => {
+  assert.strictEqual(mapWindowsJobStatusText("Printed,Error"), SPOOL_JOB_STATES.ERROR);
+  const out = await waitForSpoolJobCompletion({
+    timeoutMs: 50,
+    pollMs: 0,
+    windowsSpoolJobId: 126,
+    sleepFn: async () => {},
+    getJobStatus: async () => ({
+      ok: true,
+      present: true,
+      state: mapWindowsJobStatusText("Printed,Error"),
+    }),
+  });
+  assert.strictEqual(out.completed, false);
+  assert.strictEqual(out.finalState, SPOOL_JOB_STATES.ERROR);
+});
+
+await run("24. PRINTING → continue waiting until ABSENT", async () => {
+  let n = 0;
+  const out = await waitForSpoolJobCompletion({
+    timeoutMs: 200,
+    pollMs: 0,
+    windowsSpoolJobId: 12,
+    sleepFn: async () => {},
+    getJobStatus: async () => {
+      n += 1;
+      if (n < 3) return { ok: true, present: true, state: SPOOL_JOB_STATES.PRINTING };
+      return { ok: true, present: false, state: SPOOL_JOB_STATES.ABSENT };
+    },
+  });
+  assert.strictEqual(out.completed, true);
+  assert.ok(n >= 3);
+});
+
+await run("25. SPOOLING → continue until PRINTED", async () => {
+  let n = 0;
+  const out = await waitForSpoolJobCompletion({
+    timeoutMs: 200,
+    pollMs: 0,
+    windowsSpoolJobId: 13,
+    sleepFn: async () => {},
+    getJobStatus: async () => {
+      n += 1;
+      if (n < 2) return { ok: true, present: true, state: SPOOL_JOB_STATES.SPOOLING };
+      return { ok: true, present: true, state: SPOOL_JOB_STATES.PRINTED };
+    },
+  });
+  assert.strictEqual(out.completed, true);
+  assert.strictEqual(out.finalState, SPOOL_JOB_STATES.PRINTED);
+});
+
+await run("26. None(0) → continue; timeout while present → UNCERTAIN", async () => {
+  const out = await waitForSpoolJobCompletion({
+    timeoutMs: 30,
+    pollMs: 0,
+    windowsSpoolJobId: 126,
+    sleepFn: async () => {},
+    getJobStatus: async () => ({
+      ok: true,
+      present: true,
+      state: SPOOL_JOB_STATES.QUEUED,
+      jobStatusBits: 0,
+      jobStatusRaw: "0",
+    }),
+  });
+  assert.strictEqual(out.completed, false);
+  assert.strictEqual(out.timeout, true);
+  assert.strictEqual(
+    classifySpoolJobResult({
+      wrote: true,
+      bytesRequested: 729,
+      bytesWritten: 729,
+      windowsSpoolJobId: 126,
+      jobIdCaptured: true,
+      spoolOutcome: out,
+    }).status,
+    "UNCERTAIN"
+  );
+});
+
+await run("27. DELETING alone → NOT COMPLETED", async () => {
+  assert.strictEqual(mapWindowsJobStatusText("Deleting"), SPOOL_JOB_STATES.REMOVING);
+  const out = await waitForSpoolJobCompletion({
+    timeoutMs: 30,
+    pollMs: 0,
+    windowsSpoolJobId: 20,
+    sleepFn: async () => {},
+    getJobStatus: async () => ({
+      ok: true,
+      present: true,
+      state: SPOOL_JOB_STATES.REMOVING,
+      jobStatusBits: 4,
+    }),
+  });
+  assert.strictEqual(out.completed, false);
+  assert.strictEqual(out.timeout, true);
+  assert.strictEqual(out.finalState, SPOOL_JOB_STATES.REMOVING);
+});
+
+await run("28. DELETED alone → NOT COMPLETED", async () => {
+  assert.strictEqual(mapWindowsJobStatusText("Deleted"), SPOOL_JOB_STATES.REMOVING);
+  const out = await waitForSpoolJobCompletion({
+    timeoutMs: 30,
+    pollMs: 0,
+    windowsSpoolJobId: 21,
+    sleepFn: async () => {},
+    getJobStatus: async () => ({
+      ok: true,
+      present: true,
+      state: SPOOL_JOB_STATES.REMOVING,
+      jobStatusBits: 256,
+    }),
+  });
+  assert.strictEqual(out.completed, false);
+  assert.strictEqual(out.timeout, true);
+});
+
+await run("29. DELETING → later ABSENT → COMPLETED", async () => {
+  let n = 0;
+  const out = await waitForSpoolJobCompletion({
+    timeoutMs: 200,
+    pollMs: 0,
+    windowsSpoolJobId: 22,
+    sleepFn: async () => {},
+    getJobStatus: async () => {
+      n += 1;
+      if (n < 3) {
+        return { ok: true, present: true, state: SPOOL_JOB_STATES.REMOVING, jobStatusBits: 4 };
+      }
+      return { ok: true, present: false, state: SPOOL_JOB_STATES.ABSENT };
+    },
+  });
+  assert.strictEqual(out.completed, true);
+  assert.strictEqual(out.finalState, SPOOL_JOB_STATES.ABSENT);
+});
+
+await run("30. DELETED → later ABSENT → COMPLETED", async () => {
+  let n = 0;
+  const out = await waitForSpoolJobCompletion({
+    timeoutMs: 200,
+    pollMs: 0,
+    windowsSpoolJobId: 23,
+    sleepFn: async () => {},
+    getJobStatus: async () => {
+      n += 1;
+      if (n < 2) {
+        return { ok: true, present: true, state: SPOOL_JOB_STATES.REMOVING, jobStatusBits: 256 };
+      }
+      return { ok: true, present: false, state: SPOOL_JOB_STATES.ABSENT };
+    },
+  });
+  assert.strictEqual(out.completed, true);
+  assert.strictEqual(out.finalState, SPOOL_JOB_STATES.ABSENT);
+});
+
+await run("31. DELETED → timeout → UNCERTAIN", async () => {
+  const out = await waitForSpoolJobCompletion({
+    timeoutMs: 30,
+    pollMs: 0,
+    windowsSpoolJobId: 24,
+    sleepFn: async () => {},
+    getJobStatus: async () => ({
+      ok: true,
+      present: true,
+      state: SPOOL_JOB_STATES.REMOVING,
+      jobStatusBits: 256,
+    }),
+  });
+  assert.strictEqual(out.completed, false);
+  assert.strictEqual(out.timeout, true);
+  assert.strictEqual(
+    classifySpoolJobResult({
+      wrote: true,
+      bytesRequested: 10,
+      bytesWritten: 10,
+      windowsSpoolJobId: 24,
+      jobIdCaptured: true,
+      spoolOutcome: out,
+    }).status,
+    "UNCERTAIN"
+  );
+});
+
+await run("32. Windows Completed alone → keep polling; ABSENT → COMPLETED", async () => {
+  assert.strictEqual(mapWindowsJobStatusText("Completed"), SPOOL_JOB_STATES.WIN_COMPLETED);
+  let n = 0;
+  const out = await waitForSpoolJobCompletion({
+    timeoutMs: 200,
+    pollMs: 0,
+    windowsSpoolJobId: 25,
+    sleepFn: async () => {},
+    getJobStatus: async () => {
+      n += 1;
+      if (n < 2) {
+        return { ok: true, present: true, state: SPOOL_JOB_STATES.WIN_COMPLETED, jobStatusBits: 4096 };
+      }
+      return { ok: true, present: false, state: SPOOL_JOB_STATES.ABSENT };
+    },
+  });
+  assert.strictEqual(out.completed, true);
+  assert.strictEqual(out.finalState, SPOOL_JOB_STATES.ABSENT);
+});
+
+await run("33. Windows Completed alone → timeout UNCERTAIN (not auto-success)", async () => {
+  const out = await waitForSpoolJobCompletion({
+    timeoutMs: 30,
+    pollMs: 0,
+    windowsSpoolJobId: 26,
+    sleepFn: async () => {},
+    getJobStatus: async () => ({
+      ok: true,
+      present: true,
+      state: SPOOL_JOB_STATES.WIN_COMPLETED,
+      jobStatusBits: 4096,
+    }),
+  });
+  assert.strictEqual(out.completed, false);
+  assert.strictEqual(out.timeout, true);
+});
+
+await run("34. PRINTED observed then REMOVING → COMPLETED (seenPrinted)", async () => {
+  let n = 0;
+  const out = await waitForSpoolJobCompletion({
+    timeoutMs: 200,
+    pollMs: 0,
+    windowsSpoolJobId: 27,
+    sleepFn: async () => {},
+    getJobStatus: async () => {
+      n += 1;
+      if (n === 1) {
+        // Record PRINTED bits while still mapping to a non-terminal transitional wait
+        // is impossible via mapper (Printed bit => PRINTED). Simulate: first probe sets
+        // seenPrinted via jobStatusBits, state already PRINTED → completes on probe 1.
+        // Second scenario: Printed bit then only Deleted on later probe:
+        return {
+          ok: true,
+          present: true,
+          state: SPOOL_JOB_STATES.PRINTED,
+          jobStatusBits: 128,
+        };
+      }
+      return {
+        ok: true,
+        present: true,
+        state: SPOOL_JOB_STATES.REMOVING,
+        jobStatusBits: 256,
+      };
+    },
+  });
+  // Probe 1 PRINTED completes immediately (approved); never needs probe 2
+  assert.strictEqual(out.completed, true);
+  assert.strictEqual(out.finalState, SPOOL_JOB_STATES.PRINTED);
+  assert.strictEqual(n, 1);
+
+  // Explicit: REMOVING after seenPrinted via bits without PRINTED state
+  let n2 = 0;
+  const out2 = await waitForSpoolJobCompletion({
+    timeoutMs: 200,
+    pollMs: 0,
+    windowsSpoolJobId: 28,
+    sleepFn: async () => {},
+    getJobStatus: async () => {
+      n2 += 1;
+      if (n2 === 1) {
+        return {
+          ok: true,
+          present: true,
+          state: SPOOL_JOB_STATES.QUEUED,
+          jobStatusBits: 128, // Printed bit seen → seenPrinted
+        };
+      }
+      return {
+        ok: true,
+        present: true,
+        state: SPOOL_JOB_STATES.REMOVING,
+        jobStatusBits: 256,
+      };
+    },
+  });
+  assert.strictEqual(out2.completed, true);
+  assert.strictEqual(out2.printedThenRemoved, true);
+  assert.ok(n2 >= 2);
+});
+
+await run("35. Offline / PaperOut → not COMPLETED", async () => {
+  for (const raw of ["Offline", "PaperOut", "Error", "Blocked", "UserIntervention"]) {
+    const state = mapWindowsJobStatusText(raw);
+    assert.ok(state === SPOOL_JOB_STATES.ERROR || state === SPOOL_JOB_STATES.PAUSED, raw);
+    const out = await waitForSpoolJobCompletion({
+      timeoutMs: 50,
+      pollMs: 0,
+      windowsSpoolJobId: 14,
+      sleepFn: async () => {},
+      getJobStatus: async () => ({ ok: true, present: true, state }),
+    });
+    assert.strictEqual(out.completed, false, raw);
+  }
+});
+
+await run("36. WritePrinter success alone never COMPLETED without spool outcome", () => {
+  const cls = classifySpoolJobResult({
+    wrote: true,
+    bytesRequested: 100,
+    bytesWritten: 100,
+    windowsSpoolJobId: 1,
+    jobIdCaptured: true,
+    spoolOutcome: null,
+  });
+  assert.strictEqual(cls.status, "UNCERTAIN");
 });
 
 console.log(`\nSpool JobId completion: ${passed} passed, ${failed} failed\n`);

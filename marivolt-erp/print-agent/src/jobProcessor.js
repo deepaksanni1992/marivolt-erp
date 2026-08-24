@@ -11,11 +11,16 @@ import {
   createPrintTimingTrace,
   formatPrintTimingSummaryLine,
 } from "./printTiming.js";
+import {
+  classifyRawFaceBatchResult,
+  faceDocumentName,
+  validateRawFaceBatchInput,
+} from "./adapters/rawFaceBatch.js";
 
 /**
  * Sequential per-printer print cycle.
- * Primary completion: specific Windows spool JobId (lightweight Get-PrintJob).
- * Fallback: JobCount baseline when JobId cannot be captured.
+ * SINGLE_RAW: one WritePrinter TSPL + JobId drain (GRN/ASN/RU).
+ * RAW_FACE_BATCH: N independent RAW docs (packing) inside one FIFO lease.
  */
 export function createJobProcessor({
   getPrinterHealth,
@@ -51,6 +56,172 @@ export function createJobProcessor({
     return { health, ms: Date.now() - started, mode: "full" };
   }
 
+  async function processRawFaceBatch({ job, printerName, trace }) {
+    const faces = Array.isArray(job.rawFacePayloads) ? job.rawFacePayloads : [];
+    const requested = Math.max(0, Number(job.requestedLabels) || 0);
+    const pre = validateRawFaceBatchInput({ faces, requestedLabels: requested });
+    if (!pre.ok) {
+      const outcome = {
+        status: "FAILED",
+        printedQty: 0,
+        submittedFaceCount: 0,
+        windowsSpoolJobIds: [],
+        error: pre.error,
+      };
+      await reportResult(job, outcome);
+      emitTimingSummary(log, trace.finish(outcome));
+      return true;
+    }
+    if (typeof printRaw !== "function") {
+      const outcome = {
+        status: "FAILED",
+        printedQty: 0,
+        submittedFaceCount: 0,
+        windowsSpoolJobIds: [],
+        error: "RAW transport not configured on agent",
+      };
+      await reportResult(job, outcome);
+      emitTimingSummary(log, trace.finish(outcome));
+      return true;
+    }
+
+    const windowsSpoolJobIds = [];
+    let submittedFaceCount = 0;
+    let lastDocumentName = "";
+    let submitError = "";
+    const submitStarted = Date.now();
+
+    dlog(
+      `PRINT_DIAG jobId=${trace.jobId} event=raw_face_batch_start faces=${faces.length} requested=${requested}`
+    );
+
+    for (let i = 0; i < faces.length; i++) {
+      const documentName = faceDocumentName(job.jobNo, i);
+      lastDocumentName = documentName;
+      const buf = Buffer.from(String(faces[i] || ""), "utf8");
+      if (!buf.length) {
+        submitError = `RAW_FACE_BATCH face ${i + 1} empty buffer`;
+        break;
+      }
+      try {
+        if (i === 0) trace.markSubmitStart();
+        dlog(
+          `PRINT_DIAG jobId=${trace.jobId} event=raw_face_submit_start face=${i + 1}/${faces.length} documentName=${documentName} bytes=${buf.length}`
+        );
+        const sent = await printRaw(buf, printerName, {
+          documentName,
+          jobNo: job.jobNo,
+          faceIndex: i,
+        });
+        const wrote = sent?.ok !== false;
+        const timing = sent?.timing || null;
+        const bytesWritten =
+          timing?.bytesWritten != null
+            ? Number(timing.bytesWritten)
+            : sent?.bytesWritten != null
+              ? Number(sent.bytesWritten)
+              : null;
+        if (
+          wrote &&
+          bytesWritten != null &&
+          Number.isFinite(bytesWritten) &&
+          buf.length > 0 &&
+          bytesWritten < buf.length
+        ) {
+          submitError = `Partial WritePrinter face ${i + 1} (${bytesWritten}/${buf.length})`;
+          break;
+        }
+        if (!wrote) {
+          submitError = sent?.error || `WritePrinter failed for face ${i + 1}`;
+          break;
+        }
+        submittedFaceCount += 1;
+        const rawId = timing?.windowsSpoolJobId ?? sent?.windowsSpoolJobId ?? null;
+        const id = Number(rawId);
+        if (Number.isFinite(id) && id > 0) {
+          windowsSpoolJobIds.push(id);
+        }
+        dlog(
+          `PRINT_DIAG jobId=${trace.jobId} event=raw_face_submit_done face=${i + 1} windowsSpoolJobId=${Number.isFinite(id) && id > 0 ? id : "null"}`
+        );
+      } catch (e) {
+        submitError = e.message || `WritePrinter failed for face ${i + 1}`;
+        break;
+      }
+    }
+
+    const submitMs = Date.now() - submitStarted;
+    const lastId = windowsSpoolJobIds.length
+      ? windowsSpoolJobIds[windowsSpoolJobIds.length - 1]
+      : null;
+    if (lastId != null) {
+      trace.setDocumentName(lastDocumentName);
+      trace.setRawSubmit({
+        totalMs: submitMs,
+        windowsSpoolJobId: lastId,
+        windowsJobName: lastDocumentName,
+      });
+    } else {
+      trace.setRawSubmit({ totalMs: submitMs, windowsSpoolJobId: null, windowsJobName: lastDocumentName });
+    }
+
+    const jobIdCorrelationFailed =
+      submittedFaceCount === requested && windowsSpoolJobIds.length < requested;
+
+    let drained = false;
+    let drainTimeout = false;
+    let spoolMonitorError = "";
+    if (
+      submittedFaceCount === requested &&
+      lastId != null &&
+      !jobIdCorrelationFailed &&
+      typeof getWindowsPrintJobStatus === "function"
+    ) {
+      const spoolOutcome = await waitForSpoolJobCompletion({
+        timeoutMs: drainTimeoutMs,
+        pollMs: drainPollMs,
+        windowsSpoolJobId: lastId,
+        documentName: lastDocumentName,
+        jobId: trace.jobId,
+        sleepFn,
+        getJobStatus: () => getWindowsPrintJobStatus(printerName, lastId),
+        onProbe: (obs) => {
+          dlog(
+            `PRINT_DIAG jobId=${trace.jobId} event=raw_face_batch_spool_probe n=${obs.probeNumber} windowsSpoolJobId=${lastId} state=${obs.state}`
+          );
+        },
+      });
+      trace.setDrain({
+        drainMs: spoolOutcome.drainMs,
+        probeCount: spoolOutcome.probeCount,
+        maxProbeMs: spoolOutcome.maxProbeMs,
+      });
+      drained = spoolOutcome.completed === true;
+      drainTimeout = spoolOutcome.timeout === true || spoolOutcome.completed !== true;
+      spoolMonitorError = String(spoolOutcome.error || "");
+    } else if (submittedFaceCount === requested && jobIdCorrelationFailed) {
+      drainTimeout = true;
+      spoolMonitorError = "Windows spool JobId(s) could not be safely identified";
+    } else if (submittedFaceCount === requested && lastId == null) {
+      drainTimeout = true;
+      spoolMonitorError = "Windows spool JobId not captured after RAW_FACE_BATCH submit";
+    }
+
+    const outcome = classifyRawFaceBatchResult({
+      requestedLabels: requested,
+      submittedFaceCount,
+      windowsSpoolJobIds,
+      drained,
+      drainTimeout,
+      submitError: submitError || spoolMonitorError,
+      jobIdCorrelationFailed,
+    });
+    outcome.submitMs = submitMs;
+    await reportResult(job, outcome);
+    emitTimingSummary(log, trace.finish(outcome));
+    return true;
+  }
+
   async function processOne() {
     const { health: defaultHealth, ms: preLeaseProbeMs } = await resolveLeaseHealth();
     if (!isLeaseEligiblePrinterStatus(defaultHealth?.status)) {
@@ -66,7 +237,7 @@ export function createJobProcessor({
     const trace = createPrintTimingTrace(job);
     trace.setPreLeaseProbeMs(preLeaseProbeMs);
     dlog(
-      `PRINT_DIAG jobId=${trace.jobId} jobNo=${trace.jobNo} event=leased requestedLabels=${trace.state.requestedLabels} payloadBytes=${trace.state.payloadBytes} preLeaseProbeMs=${preLeaseProbeMs}`
+      `PRINT_DIAG jobId=${trace.jobId} jobNo=${trace.jobNo} event=leased requestedLabels=${trace.state.requestedLabels} payloadBytes=${trace.state.payloadBytes} payloadMode=${job.payloadMode || "SINGLE_RAW"} preLeaseProbeMs=${preLeaseProbeMs}`
     );
 
     const printerName = job.windowsPrinterName || defaultHealth?.name || "";
@@ -105,6 +276,21 @@ export function createJobProcessor({
       }
 
       await markPrinting(job);
+      const payloadMode = String(job.payloadMode || "SINGLE_RAW").toUpperCase();
+      if (payloadMode === "RAW_FACE_BATCH") {
+        return processRawFaceBatch({ job, printerName, trace });
+      }
+      if (payloadMode === "DRIVER_PAGES") {
+        const outcome = {
+          status: "FAILED",
+          printedQty: 0,
+          error: "DRIVER_PAGES abandoned — use RAW_FACE_BATCH for packing",
+        };
+        await reportResult(job, outcome);
+        emitTimingSummary(log, trace.finish(outcome));
+        return true;
+      }
+
       const documentName = spoolDocumentName(job.jobNo);
       trace.setDocumentName(documentName);
       const baselineQueueLength = Number(preSend.queueLength) || 0;
@@ -169,7 +355,6 @@ export function createJobProcessor({
         return true;
       }
 
-      // Partial write → UNCERTAIN (do not claim COMPLETED)
       if (
         wrote &&
         bytesWritten != null &&
@@ -217,7 +402,6 @@ export function createJobProcessor({
           spoolOutcome,
         });
       } else {
-        // Safe fallback: lightweight JobCount baseline (no JobId available)
         const drain = await waitForQueueDrain({
           timeoutMs: drainTimeoutMs,
           pollMs: drainPollMs,
@@ -245,10 +429,6 @@ export function createJobProcessor({
           printerReadyAfterWrite:
             drain.printerReady && isLeaseEligiblePrinterStatus(drain.finalPrinterStatus),
         });
-        if (!jobIdCaptured && outcome.status === "COMPLETED") {
-          // Prefer UNCERTAIN when JobId missing unless drain clearly succeeded —
-          // still allow COMPLETED on legacy drain success for non-Windows/mocks.
-        }
       }
 
       if (outcome.status === "COMPLETED") {

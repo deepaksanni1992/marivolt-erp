@@ -1483,18 +1483,27 @@ export async function reprintJob(req, jobId, body = {}) {
     parent.sourceType === "PACKING" ||
     parent.sourceType === "CUSTOM_PACKING" ||
     String(parent.templateCode || "").includes("PACKING");
-  const { buildPackingJobTspl } = await import("./tsplGenerator.js");
   const { PACKING_STANDARD_TEMPLATE_CODE } = await import("./labelTemplateService.js");
   const { companyName } = await loadLabelCompanyBranding(req.companyId);
-  const tsplPayload = isPacking
-    ? buildPackingJobTspl(
-        lines.map((ln) => ({
-          ...ln,
-          lineCopies: Math.max(1, Number(ln.lineCopies || copies) || 1),
-        })),
-        {}
-      )
-    : buildJobTspl(lines, tsplOptsForJob(parent, { copies, companyName }));
+  const omitArticle = parent.sourceType === "CUSTOM_PACKING";
+  let tsplPayload = "";
+  let payloadMode = "SINGLE_RAW";
+  let rawFacePayloads = undefined;
+  if (isPacking) {
+    const { buildPackingRawFacePayloads } = await import("./tsplGenerator.js");
+    const { LABEL_PAYLOAD_MODE_RAW_FACE_BATCH } = await import("./labelPayloadModes.js");
+    rawFacePayloads = buildPackingRawFacePayloads(
+      lines.map((ln) => ({
+        ...ln,
+        lineCopies: Math.max(1, Number(ln.lineCopies || copies) || 1),
+      })),
+      { omitArticle }
+    );
+    payloadMode = LABEL_PAYLOAD_MODE_RAW_FACE_BATCH;
+    tsplPayload = "";
+  } else {
+    tsplPayload = buildJobTspl(lines, tsplOptsForJob(parent, { copies, companyName }));
+  }
   const job = await LabelPrintJob.create({
     companyId: req.companyId,
     jobNo: jobNo(),
@@ -1515,6 +1524,8 @@ export async function reprintJob(req, jobId, body = {}) {
     remainingLabels: requestedLabels,
     lines,
     tsplPayload,
+    payloadMode,
+    rawFacePayloads,
     status: "PENDING",
     isReprint: true,
     reprintReason: reason,

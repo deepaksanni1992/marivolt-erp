@@ -22,6 +22,12 @@ export function dotsPerMm(dpi = 203) {
  */
 export const TSPL_FONT0_CELL_DOTS = 24;
 
+/**
+ * Typical TSPL font "0" character advance width (dots) at 1× magnification.
+ * Font 0 is roughly half as wide as tall (~12×24); raster must not use square cells.
+ */
+export const TSPL_FONT0_CELL_WIDTH_DOTS = 12;
+
 /** Safe bottom margin inside the physical label (dots). */
 export const PACKING_LABEL_BOTTOM_SAFE_DOTS = 4;
 
@@ -38,6 +44,44 @@ export function labelDotDimensions(dpi = 203) {
 /** Physical glyph height for TSPL font "0" at given multipliers. */
 export function tsplFont0GlyphHeight(yMul = 1) {
   return TSPL_FONT0_CELL_DOTS * Math.max(1, Math.floor(Number(yMul) || 1));
+}
+
+/** Physical glyph advance width for TSPL font "0" at given x multiplier. */
+export function tsplFont0GlyphWidth(xMul = 1) {
+  return TSPL_FONT0_CELL_WIDTH_DOTS * Math.max(1, Math.floor(Number(xMul) || 1));
+}
+
+/** Monospace text width in dots for TSPL font "0". */
+export function measureTsplFont0TextWidth(text, xMul = 1) {
+  return String(text ?? "").length * tsplFont0GlyphWidth(xMul);
+}
+
+/**
+ * Shrink xMul (and truncate if still too wide) so text fits maxWidthDots.
+ * Preserves preferred emphasis when it fits; never increases multipliers.
+ */
+export function fitTsplFont0TextToWidth(
+  text,
+  preferredXMul = 1,
+  maxWidthDots = 0,
+  { minXMul = 1, allowTruncate = true } = {}
+) {
+  let t = String(text ?? "");
+  const maxW = Math.max(0, Math.floor(Number(maxWidthDots) || 0));
+  let xMul = Math.max(minXMul, Math.floor(Number(preferredXMul) || 1));
+  if (maxW <= 0) return { text: t, xMul };
+
+  while (xMul > minXMul && measureTsplFont0TextWidth(t, xMul) > maxW) {
+    xMul -= 1;
+  }
+  if (allowTruncate && measureTsplFont0TextWidth(t, xMul) > maxW) {
+    const charW = tsplFont0GlyphWidth(xMul);
+    const maxChars = Math.max(1, Math.floor(maxW / charW));
+    if (t.length > maxChars) {
+      t = maxChars <= 2 ? t.slice(0, maxChars) : `${t.slice(0, maxChars - 2)}..`;
+    }
+  }
+  return { text: t, xMul };
 }
 
 function t(v) {
@@ -525,15 +569,23 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
     },
   ];
 
-  const cmds = [
-    `SIZE ${w} mm,${h} mm`,
-    "GAP 3 mm,0",
-    "DIRECTION 1",
-    "REFERENCE 0,0",
-    "CLS",
-    `BOX ${outerX},${outerY},${outerX + outerW},${outerY + outerH},${border}`,
-    `BAR ${valueColX},${outerY},${border},${outerH}`,
-  ];
+  // RAW_FACE_BATCH (omitMediaSetup): CLS + face + PRINT only — no SIZE/GAP/DIRECTION/REFERENCE.
+  // Resident calibrated media advances one physical label per independent RAW document.
+  const cmds = opts.omitMediaSetup
+    ? [
+        "CLS",
+        `BOX ${outerX},${outerY},${outerX + outerW},${outerY + outerH},${border}`,
+        `BAR ${valueColX},${outerY},${border},${outerH}`,
+      ]
+    : [
+        `SIZE ${w} mm,${h} mm`,
+        "GAP 3 mm,0",
+        "DIRECTION 1",
+        "REFERENCE 0,0",
+        "CLS",
+        `BOX ${outerX},${outerY},${outerX + outerW},${outerY + outerH},${border}`,
+        `BAR ${valueColX},${outerY},${border},${outerH}`,
+      ];
 
   let y = outerY;
   for (let i = 0; i < rows.length; i++) {
@@ -722,6 +774,7 @@ export function packingLabelDescriptionMeta(line = {}, opts = {}) {
 /**
  * Packing job TSPL: each line produces lineCopies identical stickers showing full QTY face.
  * Independent of GRN unit-label semantics.
+ * NOTE: concatenates faces into one string — do not use for production packing RAW_FACE_BATCH.
  */
 export function buildPackingJobTspl(lines = [], opts = {}) {
   const parts = [];
@@ -732,6 +785,25 @@ export function buildPackingJobTspl(lines = [], opts = {}) {
     }
   }
   return parts.join("");
+}
+
+/**
+ * One independent RAW TSPL document per physical packing face (ab61a9d geometry).
+ * Each payload: CLS … face content … PRINT 1,1 — no SIZE/GAP/DIRECTION/REFERENCE.
+ */
+export function buildPackingRawFacePayloads(lines = [], opts = {}) {
+  const faceOpts = { ...opts, omitMediaSetup: true };
+  const payloads = [];
+  for (const line of lines) {
+    const copies = Math.max(
+      1,
+      Math.min(50, Math.floor(Number(line.lineCopies ?? line.copies ?? opts.copies) || 1))
+    );
+    for (let i = 0; i < copies; i++) {
+      payloads.push(buildSinglePackingLabelTspl(line, faceOpts));
+    }
+  }
+  return payloads;
 }
 
 /** Preview-friendly rows from the same normalized packing line payload + layout weights. */

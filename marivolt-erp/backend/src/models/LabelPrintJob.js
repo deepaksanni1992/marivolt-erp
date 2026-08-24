@@ -88,6 +88,47 @@ const labelPrintJobSchema = new mongoose.Schema(
     remainingLabels: { type: Number, default: 0, min: 0 },
     lines: { type: [labelJobLineSchema], default: [] },
     tsplPayload: { type: String, default: "" },
+    /**
+     * Transport mode.
+     * SINGLE_RAW = one TSPL WritePrinter (GRN/ASN/RU).
+     * RAW_FACE_BATCH = N independent RAW TSPL docs (packing/custom packing).
+     * DRIVER_PAGES = abandoned (legacy enum only; not used for new packing jobs).
+     */
+    payloadMode: {
+      type: String,
+      enum: ["SINGLE_RAW", "RAW_FACE_BATCH", "DRIVER_PAGES"],
+      default: "SINGLE_RAW",
+      trim: true,
+      uppercase: true,
+    },
+    /**
+     * RAW_FACE_BATCH only: one independent TSPL string per physical sticker
+     * (CLS … PRINT 1,1). Never concatenate faces into tsplPayload for packing.
+     */
+    rawFacePayloads: {
+      type: [String],
+      default: undefined,
+    },
+    /**
+     * @deprecated Abandoned GDI path. Kept for reading historical jobs only.
+     */
+    driverPages: {
+      type: [
+        {
+          pageIndex: { type: Number, default: 0 },
+          widthPx: { type: Number, default: 0 },
+          heightPx: { type: Number, default: 0 },
+          dpi: { type: Number, default: 203 },
+          widthMm: { type: Number, default: 100 },
+          heightMm: { type: Number, default: 50 },
+          pngBase64: { type: String, default: "" },
+          partNo: { type: String, default: "" },
+          qtyDisplay: { type: String, default: "" },
+          omitArticle: { type: Boolean, default: false },
+        },
+      ],
+      default: undefined,
+    },
     status: {
       type: String,
       enum: LABEL_JOB_STATUSES,

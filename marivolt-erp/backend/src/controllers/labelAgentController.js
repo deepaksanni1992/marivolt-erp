@@ -66,7 +66,13 @@ export async function lease(req, res) {
         windowsPrinterName: job.windowsPrinterName,
         templateCode: job.templateCode,
         requestedLabels: job.remainingLabels,
-        tsplPayload: job.tsplPayload,
+        payloadMode: job.payloadMode || "SINGLE_RAW",
+        tsplPayload:
+          job.payloadMode === "RAW_FACE_BATCH" || job.payloadMode === "DRIVER_PAGES"
+            ? ""
+            : job.tsplPayload,
+        rawFacePayloads:
+          job.payloadMode === "RAW_FACE_BATCH" ? job.rawFacePayloads || [] : undefined,
         sourceNo: job.sourceNo,
         sourceType: job.sourceType,
       },

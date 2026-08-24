@@ -150,6 +150,17 @@ export const QUEUE_DRAIN_MIN_READY_POLLS = 2;
 /**
  * Monitor a specific Windows spool JobId with lightweight Get-PrintJob queries.
  *
+ * COMPLETED only when:
+ *   1) JobId becomes ABSENT, OR
+ *   2) Job reports PRINTED with no failure flags
+ *
+ * Deleted / Deleting alone are transitional (not ERROR, not COMPLETED):
+ * keep polling for ABSENT. If PRINTED was already observed for this JobId,
+ * subsequent REMOVING may complete (Printed then removal).
+ *
+ * Windows Completed alone is non-failure ambiguous — wait for PRINTED or ABSENT.
+ * Never COMPLETED on WritePrinter alone.
+ *
  * Fast-USB: JobId already ABSENT on first observation after successful
  * StartDoc+WritePrinter+EndDoc → COMPLETED.
  */
@@ -168,6 +179,7 @@ export async function waitForSpoolJobCompletion({
   let probeNumber = 0;
   let maxProbeMs = 0;
   let seenPresent = false;
+  let seenPrinted = false;
   let consecutiveQueryFails = 0;
   let lastState = SPOOL_JOB_STATES.UNKNOWN;
 
@@ -192,7 +204,10 @@ export async function waitForSpoolJobCompletion({
           state,
           present: Boolean(st.present),
           seenPresent,
+          seenPrinted,
           consecutiveQueryFails,
+          jobStatusBits: st.jobStatusBits ?? null,
+          jobStatusRaw: st.jobStatusRaw || "",
         });
       } catch {
         /* diagnostic only */
@@ -211,6 +226,7 @@ export async function waitForSpoolJobCompletion({
           maxProbeMs,
           drainMs: Date.now() - started,
           seenPresent,
+          seenPrinted,
           finalState: lastState,
           mode: "jobId",
         };
@@ -231,13 +247,59 @@ export async function waitForSpoolJobCompletion({
         maxProbeMs,
         drainMs: Date.now() - started,
         seenPresent,
+        seenPrinted,
         finalState: state,
         mode: "jobId",
       };
     }
 
+    const bits = Number(st.jobStatusBits);
+    if (state === SPOOL_JOB_STATES.PRINTED || (Number.isFinite(bits) && (bits & 128) !== 0)) {
+      seenPrinted = true;
+    }
+
+    // JOB_STATUS_PRINTED with no failure flags → COMPLETED
+    if (state === SPOOL_JOB_STATES.PRINTED) {
+      if (st.present) seenPresent = true;
+      return {
+        completed: true,
+        timeout: false,
+        error: "",
+        probeCount: probeNumber,
+        maxProbeMs,
+        drainMs: Date.now() - started,
+        seenPresent,
+        seenPrinted,
+        finalState: SPOOL_JOB_STATES.PRINTED,
+        mode: "jobId",
+        terminalStatusSuccess: true,
+        fastAbsent: false,
+      };
+    }
+
+    // Deleted/Deleting after PRINTED already observed for this JobId → safe removal
+    if (state === SPOOL_JOB_STATES.REMOVING && seenPrinted) {
+      if (st.present) seenPresent = true;
+      return {
+        completed: true,
+        timeout: false,
+        error: "",
+        probeCount: probeNumber,
+        maxProbeMs,
+        drainMs: Date.now() - started,
+        seenPresent,
+        seenPrinted,
+        finalState: SPOOL_JOB_STATES.PRINTED,
+        mode: "jobId",
+        terminalStatusSuccess: true,
+        printedThenRemoved: true,
+        fastAbsent: false,
+      };
+    }
+
     if (st.present) {
       seenPresent = true;
+      // REMOVING / WIN_COMPLETED / PRINTING / SPOOLING / QUEUED → keep polling
       await sleepFn(pollMs);
       continue;
     }
@@ -250,6 +312,7 @@ export async function waitForSpoolJobCompletion({
       maxProbeMs,
       drainMs: Date.now() - started,
       seenPresent,
+      seenPrinted,
       finalState: SPOOL_JOB_STATES.ABSENT,
       mode: "jobId",
       fastAbsent: !seenPresent,
@@ -264,6 +327,7 @@ export async function waitForSpoolJobCompletion({
     maxProbeMs,
     drainMs: Date.now() - started,
     seenPresent,
+    seenPrinted,
     finalState: lastState,
     mode: "jobId",
   };

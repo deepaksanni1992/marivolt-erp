@@ -12,7 +12,7 @@ import {
   probePrinterReadyLightweight,
 } from "./windowsPrintJobStatus.js";
 
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.7.0";
 
 /** Freshness window for using heartbeat health as lease eligibility (ms). */
 const HEALTH_CACHE_TTL_MS = 20_000;
@@ -192,6 +192,9 @@ function createAgentJobProcessor(cfg, transport) {
         printedQty: outcome.printedQty,
         error: outcome.error || "",
         leaseToken: job.leaseToken,
+        windowsSpoolJobId: outcome.windowsSpoolJobId ?? outcome.windowsSpoolJobIds?.[0],
+        windowsSpoolJobIds: outcome.windowsSpoolJobIds,
+        submittedFaceCount: outcome.submittedFaceCount,
       });
       const event =
         outcome.status === "COMPLETED"
