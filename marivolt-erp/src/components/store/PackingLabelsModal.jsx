@@ -103,7 +103,7 @@ export default function PackingLabelsModal({
       return apiPost("/labels/jobs/from-packing", body);
     },
     onSuccess: (data) => {
-      onPrinted?.(data?.job);
+      onPrinted?.(data);
       onClose?.();
     },
     onError: (e) => {

@@ -1255,6 +1255,14 @@ export async function retryJob(req, jobId) {
   job.tsplPayload = buildJobTspl(linesForPrint, tsplOptsForJob(job, { copies: 1, companyName }));
   job.retryCount = (Number(job.retryCount) || 0) + 1;
   await requeueJob(job);
+  if (upper(job.sourceType) === "PACKING") {
+    const { rebuildPackingLabelIdempotencyKey } = await import("./packingLabelService.js");
+    const restoredKey = rebuildPackingLabelIdempotencyKey(job);
+    if (restoredKey) {
+      job.idempotencyKey = restoredKey;
+      await job.save();
+    }
+  }
   await syncGrnLabelStatus(job.sourceId, job);
   await recordLabelHistory({
     jobId: job._id,
@@ -1427,6 +1435,7 @@ export async function cancelJob(req, jobId) {
   job.leaseToken = "";
   job.leasedToAgentId = "";
   job.leaseExpiresAt = null;
+  job.idempotencyKey = null;
   await job.save();
   await syncGrnLabelStatus(job.sourceId, job);
   await auditLabelEvent(req, { action: "CANCEL", job, description: `Label job ${job.jobNo} cancelled` });

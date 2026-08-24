@@ -28,6 +28,11 @@ import {
   buildAllocationDocumentReferences,
 } from "../../utils/allocationDocumentReferences.js";
 import { auditLabelEvent, recordLabelHistory } from "./labelAudit.js";
+import {
+  buildPackingLabelEnqueueResponse,
+  isActivePackingLabelQueueStatus,
+  resolvePackingLabelIdempotencyAction,
+} from "./packingLabelIdempotency.js";
 
 function t(v) {
   return String(v ?? "").trim();
@@ -348,6 +353,17 @@ export function buildPrePackingLabelIdempotencyKey(sourceNo, lines = []) {
   return `packing:${no}:pre:${hash}`;
 }
 
+/** Rebuild idempotency key when a packing job is requeued (Retry after cancel/fail). */
+export function rebuildPackingLabelIdempotencyKey(job = {}) {
+  const mode = normalizeMode(job.packingMode);
+  const sourceNo = t(job.sourceNo);
+  const lines = job.lines || [];
+  if (!sourceNo || mode === "REPRINT") return null;
+  if (mode === "PRE_PACKING") return buildPrePackingLabelIdempotencyKey(sourceNo, lines);
+  if (mode === "POSTED_PACKING") return buildInitialPackingLabelIdempotencyKey(sourceNo, lines);
+  return null;
+}
+
 /**
  * Preview packing labels — same normalized lines used for TSPL_LABEL_BATCH.
  */
@@ -426,7 +442,20 @@ export async function createJobsFromPacking(req, body = {}) {
 
   if (idempotencyKey) {
     const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
-    if (existing) return existing;
+    if (existing) {
+      const resolution = resolvePackingLabelIdempotencyAction(existing.status);
+      if (resolution.action === "reuse" || resolution.action === "dedupe") {
+        return buildPackingLabelEnqueueResponse(existing, { created: false, reused: true });
+      }
+      if (resolution.action === "block") {
+        throw err(resolution.message, 409, resolution.code);
+      }
+      // CANCELLED / FAILED — release stale active claim so a new job can be inserted.
+      await LabelPrintJob.updateOne(
+        { _id: existing._id, companyId },
+        { $unset: { idempotencyKey: "" } }
+      );
+    }
   }
 
   await ensurePackingStandardTemplate();
@@ -519,7 +548,15 @@ export async function createJobsFromPacking(req, body = {}) {
   } catch (e) {
     if (idempotencyKey && (e?.code === 11000 || String(e?.message || "").includes("duplicate"))) {
       const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
-      if (existing) return existing;
+      if (existing) {
+        if (isActivePackingLabelQueueStatus(existing.status)) {
+          return buildPackingLabelEnqueueResponse(existing, { created: false, reused: true });
+        }
+        const resolution = resolvePackingLabelIdempotencyAction(existing.status);
+        if (resolution.action === "reuse" || resolution.action === "dedupe") {
+          return buildPackingLabelEnqueueResponse(existing, { created: false, reused: true });
+        }
+      }
     }
     throw e;
   }
@@ -542,5 +579,5 @@ export async function createJobsFromPacking(req, body = {}) {
     job,
     description: `Packing label job ${job.jobNo} queued for ${resolved.sourceNo} (${mode})`,
   });
-  return job;
+  return buildPackingLabelEnqueueResponse(job, { created: true, reused: false });
 }

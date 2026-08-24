@@ -240,6 +240,62 @@ export function formatLabelsQueuedMessage(count) {
   return n === 1 ? "1 label queued successfully." : `${n} labels queued successfully.`;
 }
 
+const ACTIVE_PACKING_QUEUE_STATUSES = new Set(["PENDING", "LEASED", "PRINTING"]);
+
+/**
+ * Resolve packing label POST response into a user-facing toast.
+ * @returns {{ type: 'success' | 'warning' | 'error', message: string }}
+ */
+export function resolvePackingLabelQueueMessage(res = {}) {
+  const job = res?.job || res;
+  const count = Math.max(0, Math.floor(Number(job?.requestedLabels) || 0));
+  const status = String(job?.status || res?.queueState || "").trim().toUpperCase();
+  const created = res?.created;
+  const reused = res?.reused;
+
+  if (created === true) {
+    return { type: "success", message: formatLabelsQueuedMessage(count) };
+  }
+  if (reused === true && ACTIVE_PACKING_QUEUE_STATUSES.has(status)) {
+    return { type: "warning", message: "This label job is already queued." };
+  }
+  if (reused === true && status === "COMPLETED") {
+    return {
+      type: "warning",
+      message: "These labels were already printed. Use Reprint if you need another copy.",
+    };
+  }
+  if (status === "UNCERTAIN") {
+    return {
+      type: "error",
+      message:
+        "An uncertain label print job exists. Confirm the printed quantity before printing again.",
+    };
+  }
+  if (status === "PARTIAL") {
+    return {
+      type: "warning",
+      message: "A partial label print job exists. Use Retry or Confirm qty on the existing job.",
+    };
+  }
+  if (status === "FAILED") {
+    return {
+      type: "error",
+      message: "The previous label print job failed. Use Retry on the failed job.",
+    };
+  }
+  if (status === "CANCELLED") {
+    return {
+      type: "error",
+      message: "Label job was not queued. The previous job was cancelled.",
+    };
+  }
+  if (ACTIVE_PACKING_QUEUE_STATUSES.has(status)) {
+    return { type: "success", message: formatLabelsQueuedMessage(count) };
+  }
+  return { type: "error", message: "Label job was not queued." };
+}
+
 /** Stable initial-print key so retries return the same job for a GRN. */
 export function buildInitialGrnLabelIdempotencyKey(grnNo) {
   const no = String(grnNo || "").trim();

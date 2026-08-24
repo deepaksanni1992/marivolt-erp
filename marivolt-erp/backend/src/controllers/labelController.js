@@ -425,8 +425,8 @@ export async function previewFromGrnPrepost(req, res) {
 export async function createFromPacking(req, res) {
   try {
     const { createJobsFromPacking } = await import("../services/label/packingLabelService.js");
-    const job = await createJobsFromPacking(req, req.body || {});
-    res.status(201).json({ success: true, job });
+    const result = await createJobsFromPacking(req, req.body || {});
+    res.status(201).json({ success: true, ...result });
   } catch (err) {
     sendErr(res, err);
   }

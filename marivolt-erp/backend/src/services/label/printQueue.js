@@ -203,6 +203,11 @@ export async function applyAgentResult(jobId, agent, body = {}) {
     $set.lastError = String(body.error);
   }
 
+  const update = { $set };
+  if (status === "FAILED" && String(job.sourceType || "").toUpperCase() === "PACKING") {
+    update.$unset = { idempotencyKey: "" };
+  }
+
   const updated = await LabelPrintJob.findOneAndUpdate(
     {
       _id: jobId,
@@ -211,7 +216,7 @@ export async function applyAgentResult(jobId, agent, body = {}) {
       status: { $in: ["LEASED", "PRINTING"] },
       leaseToken: job.leaseToken,
     },
-    { $set },
+    update,
     { new: true }
   );
   if (!updated) {

@@ -42,6 +42,7 @@ import {
   formatLabelDistribution,
   formatLabelDistributionCompact,
   formatLabelsQueuedMessage,
+  resolvePackingLabelQueueMessage,
   getLineLabelDistribution,
   newGrnDraftRef,
   resolveCompletedGrnLabelPrint,
@@ -5937,10 +5938,11 @@ export default function StoreModule() {
         documentReferences={packingLabelsModal?.documentReferences || null}
         printerCode={labelPrinterCode}
         printers={labelPrintersData?.items || []}
-        onPrinted={(job) => {
-          notify.success(
-            formatLabelsQueuedMessage(job?.requestedLabels || 0) || "Packing labels queued."
-          );
+        onPrinted={(res) => {
+          const { type, message } = resolvePackingLabelQueueMessage(res);
+          if (type === "success") notify.success(message);
+          else if (type === "warning") notify.warning(message);
+          else notify.error(message);
           qc.invalidateQueries({ queryKey: ["label-jobs"] });
         }}
         onError={(msg) => notify.error(msg)}
