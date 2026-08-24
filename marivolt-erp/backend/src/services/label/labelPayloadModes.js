@@ -1,8 +1,8 @@
 /**
  * Label print transport modes.
  * SINGLE_RAW — one TSPL WritePrinter (GRN / ASN / RU / test); full SIZE+GAP per job.
- * TSPL_LABEL_BATCH — packing/custom packing: agent GAPDETECT once, then N faces
- *   with SIZE (100×50 imaging) but no GAP, so detected media pitch stays authoritative.
+ * TSPL_LABEL_BATCH — packing/custom packing: agent GAPDETECT once, then N faces with
+ *   SIZE + HOME (sensor origin) + CLS + content + PRINT 1,1; no hardcoded GAP.
  * RAW_FACE_BATCH — legacy packing mode (faces omitted media setup). Kept for
  *   historical jobs only; new packing enqueues use TSPL_LABEL_BATCH.
  * DRIVER_PAGES — abandoned GDI path (enum only).
@@ -36,9 +36,9 @@ export function isMultiLabelFaceBatchMode(mode) {
 }
 
 /**
- * Validate TSPL_LABEL_BATCH (GAPDETECT + detected-media faces).
- * Each face: SIZE (imaging coords) + CLS + PRINT 1,1; must not reissue GAP
- * (would override GAPDETECT). GAPDETECT itself is agent-side, not in faces.
+ * Validate TSPL_LABEL_BATCH (GAPDETECT + detected-media faces with HOME).
+ * Each face: SIZE + HOME before CLS + PRINT 1,1; must not reissue GAP / FEED / FORMFEED /
+ * GAPDETECT. Agent issues GAPDETECT once before face 1.
  * @param {{ payloadMode?: string, requestedLabels?: number, rawFacePayloads?: unknown[] }} job
  */
 export function validateTsplLabelBatchPayload(job = {}) {
@@ -63,9 +63,12 @@ export function validateTsplLabelBatchPayload(job = {}) {
     const cls = (payload.match(/\bCLS\b/g) || []).length;
     const print = (payload.match(/\bPRINT\s+1\s*,\s*1\b/gi) || []).length;
     const size = (payload.match(/\bSIZE\b/gi) || []).length;
+    const home = (payload.match(/(?:^|\r?\n)\s*HOME\b/gim) || []).length;
     // Match GAP as a command, not GAPDETECT (should also be absent from faces).
     const gapCmd = (payload.match(/(?:^|\r?\n)\s*GAP\b/gim) || []).length;
     const gapDetect = (payload.match(/\bGAPDETECT\b/gi) || []).length;
+    const feed = (payload.match(/(?:^|\r?\n)\s*FEED\b/gim) || []).length;
+    const formfeed = (payload.match(/\bFORMFEED\b/gi) || []).length;
     if (cls !== 1) {
       return { ok: false, mode, error: `TSPL_LABEL_BATCH face ${i + 1} must contain CLS exactly once` };
     }
@@ -78,8 +81,23 @@ export function validateTsplLabelBatchPayload(job = {}) {
     }
     if (size < 1) {
       // SIZE kept after GAPDETECT: defines imaging width/length for TEXT/BOX coords.
-      // TSC AUTODETECT forbids GAP/BLINE after detect, not SIZE.
       return { ok: false, mode, error: `TSPL_LABEL_BATCH face ${i + 1} must include SIZE` };
+    }
+    if (home !== 1) {
+      return {
+        ok: false,
+        mode,
+        error: `TSPL_LABEL_BATCH face ${i + 1} must contain HOME exactly once`,
+      };
+    }
+    const homeIdx = payload.search(/(?:^|\r?\n)\s*HOME\b/im);
+    const clsIdx = payload.search(/\bCLS\b/);
+    if (homeIdx < 0 || clsIdx < 0 || homeIdx > clsIdx) {
+      return {
+        ok: false,
+        mode,
+        error: `TSPL_LABEL_BATCH face ${i + 1} must place HOME before CLS`,
+      };
     }
     if (gapCmd > 0) {
       return {
@@ -93,6 +111,13 @@ export function validateTsplLabelBatchPayload(job = {}) {
         ok: false,
         mode,
         error: `TSPL_LABEL_BATCH face ${i + 1} must not include GAPDETECT (agent-only once)`,
+      };
+    }
+    if (feed > 0 || formfeed > 0) {
+      return {
+        ok: false,
+        mode,
+        error: `TSPL_LABEL_BATCH face ${i + 1} must not include FEED/FORMFEED`,
       };
     }
   }

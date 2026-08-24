@@ -328,6 +328,8 @@ run("17. One TSPL_LABEL_BATCH job for multi-row batch (6 independent faces)", ()
     assert.match(face, /\bSIZE\s+100\s*mm\s*,\s*50\s*mm\b/i);
     // GAP omitted after GAPDETECT — hardcoded GAP would override detected media.
     assert.doesNotMatch(face, /(?:^|\r?\n)\s*GAP\b/i);
+    assert.equal((face.match(/(?:^|\r?\n)\s*HOME\b/gim) || []).length, 1);
+    assert.ok(face.search(/(?:^|\r?\n)\s*HOME\b/im) < face.search(/\bCLS\b/));
     assert.match(face, /\bDIRECTION\s+1\b/i);
     assert.match(face, /\bREFERENCE\s+0\s*,\s*0\b/i);
   }
@@ -359,6 +361,8 @@ run("17b. Complete TSPL face keeps packing geometry inside 100×50", () => {
   const [face] = buildPackingLabelBatchPayloads([{ ...line, lineCopies: 1 }], CUSTOM_PACKING_TSPL_OPTS);
   assert.match(face, /\bSIZE\s+100\s*mm\s*,\s*50\s*mm\b/i);
   assert.doesNotMatch(face, /(?:^|\r?\n)\s*GAP\b/i);
+  assert.match(face, /(?:^|\r?\n)\s*HOME\b/im);
+  assert.ok(face.search(/(?:^|\r?\n)\s*HOME\b/im) < face.search(/\bCLS\b/));
   assert.match(face, /\bCLS\b/);
   assert.match(face, /PRINT 1,1\r?\n$/);
   assert.match(face, /P01/);
@@ -533,7 +537,7 @@ run("28. Preview rows omit Article and keep QTY; Part No. emphasized", () => {
   assert.ok(rows.find((r) => r.label === "Description").weight > 0);
 });
 
-run("29. Six-label custom job uses TSPL_LABEL_BATCH (SIZE retained, GAP omitted after GAPDETECT)", () => {
+run("29. Six-label custom job uses TSPL_LABEL_BATCH (HOME per face; no GAP after GAPDETECT)", () => {
   const { lines } = normalizeCustomPackingLines({
     customerName: "Cool Management AS",
     customerRef: "260825.12",
@@ -553,10 +557,11 @@ run("29. Six-label custom job uses TSPL_LABEL_BATCH (SIZE retained, GAP omitted 
   assert.equal((joined.match(/\bCLS\b/g) || []).length, 6);
   assert.equal((joined.match(/\bPRINT\s+1\s*,\s*1\b/gi) || []).length, 6);
   assert.equal((joined.match(/\bSIZE\s+100\s*mm\s*,\s*50\s*mm\b/gi) || []).length, 6);
-  // No GAP / GAPDETECT in faces — agent issues GAPDETECT once before face 1.
+  assert.equal((joined.match(/(?:^|\r?\n)\s*HOME\b/gim) || []).length, 6);
+  // No GAP / GAPDETECT / FEED / FORMFEED in faces — agent issues GAPDETECT once; HOME per face.
   assert.equal((joined.match(/(?:^|\r?\n)\s*GAP\b/gim) || []).length, 0);
   assert.equal((joined.match(/\bDIRECTION\s+1\b/gi) || []).length, 6);
-  assert.doesNotMatch(joined, /GAPDETECT|FEED|FORMFEED|BACKFEED|HOME|OFFSET|SHIFT|BLINE/i);
+  assert.doesNotMatch(joined, /GAPDETECT|FEED|FORMFEED|BACKFEED|OFFSET|SHIFT|BLINE/i);
   const qtyYs = [];
   for (const face of faces) {
     const qtyVal = face.split(/\r?\n/).find((l) => /^TEXT \d+,(\d+),"0",0,2,2,"\d+"/.test(l));
@@ -566,6 +571,8 @@ run("29. Six-label custom job uses TSPL_LABEL_BATCH (SIZE retained, GAP omitted 
     qtyYs.push(y);
     assert.equal((face.match(/\bCLS\b/g) || []).length, 1);
     assert.equal((face.match(/\bPRINT\s+1\s*,\s*1\b/gi) || []).length, 1);
+    assert.equal((face.match(/(?:^|\r?\n)\s*HOME\b/gim) || []).length, 1);
+    assert.ok(face.search(/(?:^|\r?\n)\s*HOME\b/im) < face.search(/\bCLS\b/));
     assert.match(face, /\bSIZE\b/i);
     assert.doesNotMatch(face, /(?:^|\r?\n)\s*GAP\b/i);
   }

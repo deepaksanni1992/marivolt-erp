@@ -1,6 +1,6 @@
 {
   "name": "marivolt-print-agent",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "private": true,
   "type": "module",
   "description": "Marivolt warehouse Windows print agent for Rongta TSPL labels via Windows spooler",

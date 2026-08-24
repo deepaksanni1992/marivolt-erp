@@ -32,8 +32,8 @@ function run(name, fn) {
 }
 
 function facePayload(tag) {
-  // Detected-media face: SIZE retained for 100×50 coords; no GAP after GAPDETECT.
-  return `SIZE 100 mm,50 mm\r\nDIRECTION 1\r\nREFERENCE 0,0\r\nCLS\r\nTEXT 10,330,"0",0,2,2,"QTY ${tag}"\r\nPRINT 1,1\r\n`;
+  // Detected-media face: SIZE + HOME (sensor origin) before CLS; no GAP after GAPDETECT.
+  return `SIZE 100 mm,50 mm\r\nDIRECTION 1\r\nREFERENCE 0,0\r\nHOME\r\nCLS\r\nTEXT 10,330,"0",0,2,2,"QTY ${tag}"\r\nPRINT 1,1\r\n`;
 }
 
 function batchJob(n = 6, overrides = {}) {
@@ -143,7 +143,7 @@ async function main() {
     assert.equal(results[0].submittedFaceCount, 1);
   });
 
-  await run("6 packing labels => exactly one GAPDETECT before face 1; six PRINT 1,1; one lease", async () => {
+  await run("6 packing labels => exactly one GAPDETECT before face 1; six HOME; six PRINT 1,1; one lease", async () => {
     const job = batchJob(6);
     let leaseCount = 0;
     let healthCalls = 0;
@@ -221,11 +221,25 @@ async function main() {
       assert.ok(payloads[i].includes(`P0${i}`), "six distinct face contents preserved");
       assert.equal((payloads[i].match(/\bCLS\b/g) || []).length, 1);
       assert.equal((payloads[i].match(/\bPRINT\s+1\s*,\s*1\b/gi) || []).length, 1);
+      assert.equal((payloads[i].match(/(?:^|\r?\n)\s*HOME\b/gim) || []).length, 1);
+      assert.ok(
+        payloads[i].search(/(?:^|\r?\n)\s*HOME\b/im) < payloads[i].search(/\bCLS\b/),
+        "HOME before CLS"
+      );
       assert.match(payloads[i], /TEXT \d+,330,"0",0,2,2,/);
-      assert.match(payloads[i], /\bSIZE\b/i);
-      // SIZE kept for imaging coords after GAPDETECT; GAP must not reappear.
+      assert.match(payloads[i], /\bSIZE\s+100\s*mm\s*,\s*50\s*mm\b/i);
+      assert.match(payloads[i], /\bREFERENCE\s+0\s*,\s*0\b/i);
+      // SIZE kept for imaging coords after GAPDETECT; GAP/FEED/FORMFEED must not reappear.
       assert.doesNotMatch(payloads[i], /(?:^|\r?\n)\s*GAP\b/i);
+      assert.doesNotMatch(payloads[i], /(?:^|\r?\n)\s*FEED\b/i);
+      assert.doesNotMatch(payloads[i], /\bFORMFEED\b/i);
+      assert.doesNotMatch(payloads[i], /\bGAPDETECT\b/i);
     }
+    assert.equal(
+      payloads.slice(1).reduce((n, p) => n + ((p.match(/(?:^|\r?\n)\s*HOME\b/gim) || []).length), 0),
+      6,
+      "exactly 6 HOME"
+    );
     assert.equal(results[0].status, "COMPLETED");
     assert.equal(results[0].printedQty, 6);
     assert.equal(results[0].submittedFaceCount, 6);

@@ -22,8 +22,8 @@ import {
 /**
  * Sequential per-printer print cycle.
  * SINGLE_RAW: one WritePrinter TSPL + JobId drain (GRN/ASN/RU).
- * TSPL_LABEL_BATCH: once-per-batch GAPDETECT, then N faces with SIZE (no GAP)
- *   so Rongta-detected media pitch stays authoritative inside one FIFO lease.
+ * TSPL_LABEL_BATCH: once-per-batch GAPDETECT, then N faces with SIZE+HOME (no GAP)
+ *   so each face re-registers physical origin via the gap sensor under one FIFO lease.
  * RAW_FACE_BATCH: legacy packing faces (kept for historical jobs; no GAPDETECT).
  */
 export function createJobProcessor({
@@ -212,11 +212,18 @@ export function createJobProcessor({
     async function submitOneFace(i, printFn) {
       const documentName = faceDocumentName(job.jobNo, i);
       lastDocumentName = documentName;
-      const buf = Buffer.from(String(faces[i] || ""), "utf8");
+      const faceText = String(faces[i] || "");
+      const buf = Buffer.from(faceText, "utf8");
       if (!buf.length) {
         return { ok: false, error: `${modeName} face ${i + 1} empty buffer` };
       }
       if (i === 0) trace.markSubmitStart();
+      if (/(?:^|\r?\n)\s*HOME\b/im.test(faceText)) {
+        dlog(`PRINT_DIAG jobId=${trace.jobId} event=label_face_home face=${i + 1}/${faces.length}`);
+        log(`HOME before face ${i + 1}/${faces.length} for ${job.jobNo}`, {
+          event: "label_face_home",
+        });
+      }
       dlog(
         `PRINT_DIAG jobId=${trace.jobId} event=label_face_submit_start face=${i + 1}/${faces.length} documentName=${documentName} bytes=${buf.length}`
       );
@@ -267,9 +274,19 @@ export function createJobProcessor({
     }
 
     if (typeof printRawBatch === "function") {
-      // Preferred: one OpenPrinter session, N StartDoc/Write/EndDoc (Rongta gap after each PRINT).
+      // N× printRaw documents (unchanged Win32 architecture for this HOME experiment).
       try {
         trace.markSubmitStart();
+        for (let i = 0; i < faces.length; i++) {
+          if (/(?:^|\r?\n)\s*HOME\b/im.test(String(faces[i] || ""))) {
+            dlog(
+              `PRINT_DIAG jobId=${trace.jobId} event=label_face_home face=${i + 1}/${faces.length}`
+            );
+            log(`HOME before face ${i + 1}/${faces.length} for ${job.jobNo}`, {
+              event: "label_face_home",
+            });
+          }
+        }
         const batchResult = await printRawBatch(
           faces.map((face, i) => ({
             buffer: Buffer.from(String(face || ""), "utf8"),
@@ -293,6 +310,9 @@ export function createJobProcessor({
           submittedFaceCount += 1;
           const id = Number(r.windowsSpoolJobId);
           if (Number.isFinite(id) && id > 0) windowsSpoolJobIds.push(id);
+          dlog(
+            `PRINT_DIAG jobId=${trace.jobId} event=label_face_submit_done face=${i + 1} windowsSpoolJobId=${Number.isFinite(id) && id > 0 ? id : "null"}`
+          );
         }
         if (!results.length && batchResult?.error) {
           submitError = batchResult.error;

@@ -580,9 +580,8 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
   // Media setup:
   // - omitMediaSetup: legacy RAW_FACE_BATCH historical faces (CLS only).
   // - mediaAlreadyDetected: TSPL_LABEL_BATCH after agent GAPDETECT — keep SIZE for
-  //   100×50 imaging coordinates; omit GAP so detected gap/pitch stays authoritative.
-  //   (TSPL AUTODETECT explicitly forbids GAP/BLINE after sensor detect; GAPDETECT
-  //   likewise determines paper length + gap — reissuing GAP would override it.)
+  //   100×50 imaging; omit GAP (detected gap stays authoritative); HOME before CLS
+  //   so the gap sensor re-registers physical origin for each independent face.
   // - default: full SIZE+GAP for SINGLE_RAW / GRN / ASN / standalone faces.
   const cmds = opts.omitMediaSetup
     ? [
@@ -595,6 +594,8 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
           `SIZE ${w} mm,${h} mm`,
           "DIRECTION 1",
           "REFERENCE 0,0",
+          // Physical registration only — not geometry (TSPL: sensor until origin).
+          "HOME",
           "CLS",
           `BOX ${outerX},${outerY},${outerX + outerW},${outerY + outerH},${border}`,
           `BAR ${valueColX},${outerY},${border},${outerH}`,
@@ -819,10 +820,10 @@ export function buildPackingJobTspl(lines = [], opts = {}) {
 
 /**
  * One independent TSPL packing face per physical label for TSPL_LABEL_BATCH.
- * Default: mediaAlreadyDetected — SIZE/DIRECTION/REFERENCE + CLS + face + PRINT 1,1
- * (no GAP). Agent runs GAPDETECT once before face 1; hardcoded GAP would override
- * the detected gap (TSPL semantics). SIZE remains so the 100×50 coordinate system
- * (including QTY Y=330) is unchanged. Same local origin every face — no cumulative Y.
+ * Default: mediaAlreadyDetected — SIZE/DIRECTION/REFERENCE + HOME + CLS + face + PRINT 1,1
+ * (no GAP). Agent runs GAPDETECT once before face 1; each face HOME re-registers origin
+ * via the gap sensor. SIZE keeps the 100×50 coordinate system (QTY Y=330). Same local
+ * origin every face — no cumulative Y.
  *
  * Used by payloadMode TSPL_LABEL_BATCH (packing / custom packing).
  */
