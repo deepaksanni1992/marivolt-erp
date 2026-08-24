@@ -15,10 +15,10 @@ import {
 import {
   packingLabelPreviewRows,
   packingLabelDescriptionMeta,
-  buildPackingRawFacePayloads,
+  buildPackingLabelBatchPayloads,
   measurePackingLabelGeometry,
 } from "./tsplGenerator.js";
-import { LABEL_PAYLOAD_MODE_RAW_FACE_BATCH } from "./labelPayloadModes.js";
+import { LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH } from "./labelPayloadModes.js";
 import { auditLabelEvent, recordLabelHistory } from "./labelAudit.js";
 
 function t(v) {
@@ -357,7 +357,7 @@ export async function previewCustomPackingLabels(req, body = {}) {
   }
   const { header, lines } = normalizeCustomPackingLines(body);
   await ensurePackingStandardTemplate();
-  const rawFacePayloads = buildPackingRawFacePayloads(lines, CUSTOM_PACKING_TSPL_OPTS);
+  const rawFacePayloads = buildPackingLabelBatchPayloads(lines, CUSTOM_PACKING_TSPL_OPTS);
   const requestedLabels = rawFacePayloads.length;
   const descriptionTruncated = lines.some((ln) => ln.descriptionTruncated === true);
   const summary = summarizeCustomPackingBatch(lines);
@@ -366,7 +366,7 @@ export async function previewCustomPackingLabels(req, body = {}) {
     sourceType: "CUSTOM_PACKING",
     sourceNo: "CUSTOM",
     templateCode: PACKING_STANDARD_TEMPLATE_CODE,
-    payloadMode: LABEL_PAYLOAD_MODE_RAW_FACE_BATCH,
+    payloadMode: LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH,
     requestedLabels,
     descriptionTruncated,
     requiresTruncationConfirmation: descriptionTruncated,
@@ -424,10 +424,10 @@ export async function createJobsFromCustomPacking(req, body = {}) {
     );
   }
 
-  const rawFacePayloads = buildPackingRawFacePayloads(lines, CUSTOM_PACKING_TSPL_OPTS);
+  const rawFacePayloads = buildPackingLabelBatchPayloads(lines, CUSTOM_PACKING_TSPL_OPTS);
   if (rawFacePayloads.length !== requestedLabels) {
     throw err(
-      `RAW_FACE_BATCH face count ${rawFacePayloads.length} != requestedLabels ${requestedLabels}`,
+      `TSPL_LABEL_BATCH face count ${rawFacePayloads.length} != requestedLabels ${requestedLabels}`,
       400,
       "LABEL_FACE_COUNT"
     );
@@ -481,7 +481,7 @@ export async function createJobsFromCustomPacking(req, body = {}) {
       remainingLabels: requestedLabels,
       lines: jobLines,
       tsplPayload: "",
-      payloadMode: LABEL_PAYLOAD_MODE_RAW_FACE_BATCH,
+      payloadMode: LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH,
       rawFacePayloads,
       status: "PENDING",
       createdByUserId: req.user?.id || req.user?._id || null,

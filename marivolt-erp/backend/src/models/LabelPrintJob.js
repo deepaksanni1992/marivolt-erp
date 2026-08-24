@@ -91,19 +91,20 @@ const labelPrintJobSchema = new mongoose.Schema(
     /**
      * Transport mode.
      * SINGLE_RAW = one TSPL WritePrinter (GRN/ASN/RU).
-     * RAW_FACE_BATCH = N independent RAW TSPL docs (packing/custom packing).
-     * DRIVER_PAGES = abandoned (legacy enum only; not used for new packing jobs).
+     * TSPL_LABEL_BATCH = N complete TSPL labels (packing/custom packing).
+     * RAW_FACE_BATCH = legacy packing faces without media setup (historical only).
+     * DRIVER_PAGES = abandoned (legacy enum only).
      */
     payloadMode: {
       type: String,
-      enum: ["SINGLE_RAW", "RAW_FACE_BATCH", "DRIVER_PAGES"],
+      enum: ["SINGLE_RAW", "TSPL_LABEL_BATCH", "RAW_FACE_BATCH", "DRIVER_PAGES"],
       default: "SINGLE_RAW",
       trim: true,
       uppercase: true,
     },
     /**
-     * RAW_FACE_BATCH only: one independent TSPL string per physical sticker
-     * (CLS … PRINT 1,1). Never concatenate faces into tsplPayload for packing.
+     * TSPL_LABEL_BATCH / legacy RAW_FACE_BATCH: one TSPL string per physical sticker.
+     * Never concatenate faces into tsplPayload for packing.
      */
     rawFacePayloads: {
       type: [String],

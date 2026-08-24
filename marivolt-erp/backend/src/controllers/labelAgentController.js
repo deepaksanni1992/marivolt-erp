@@ -68,11 +68,15 @@ export async function lease(req, res) {
         requestedLabels: job.remainingLabels,
         payloadMode: job.payloadMode || "SINGLE_RAW",
         tsplPayload:
-          job.payloadMode === "RAW_FACE_BATCH" || job.payloadMode === "DRIVER_PAGES"
+          job.payloadMode === "TSPL_LABEL_BATCH" ||
+          job.payloadMode === "RAW_FACE_BATCH" ||
+          job.payloadMode === "DRIVER_PAGES"
             ? ""
             : job.tsplPayload,
         rawFacePayloads:
-          job.payloadMode === "RAW_FACE_BATCH" ? job.rawFacePayloads || [] : undefined,
+          job.payloadMode === "TSPL_LABEL_BATCH" || job.payloadMode === "RAW_FACE_BATCH"
+            ? job.rawFacePayloads || []
+            : undefined,
         sourceNo: job.sourceNo,
         sourceType: job.sourceType,
       },

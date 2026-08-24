@@ -1,10 +1,10 @@
 /**
- * RAW_FACE_BATCH Print Agent path — zero physical printing (mocked printRaw).
+ * TSPL_LABEL_BATCH Print Agent path — zero physical printing (mocked printRaw).
  */
 import assert from "assert";
 import {
-  classifyRawFaceBatchResult,
-  validateRawFaceBatchInput,
+  classifyLabelFaceBatchResult,
+  validateLabelFaceBatchInput,
   faceDocumentName,
 } from "../src/adapters/rawFaceBatch.js";
 import { createPrinterFifo } from "../src/printSafety.js";
@@ -31,7 +31,7 @@ function run(name, fn) {
 }
 
 function facePayload(tag) {
-  return `CLS\r\nTEXT 10,10,"0",0,1,1,"${tag}"\r\nPRINT 1,1\r\n`;
+  return `SIZE 100 mm,50 mm\r\nGAP 3 mm,0\r\nDIRECTION 1\r\nREFERENCE 0,0\r\nCLS\r\nTEXT 10,10,"0",0,1,1,"${tag}"\r\nPRINT 1,1\r\n`;
 }
 
 function batchJob(n = 6) {
@@ -42,7 +42,7 @@ function batchJob(n = 6) {
     leaseToken: "tok",
     windowsPrinterName: "RP4xx Series 200DPI TSPL",
     requestedLabels: n,
-    payloadMode: "RAW_FACE_BATCH",
+    payloadMode: "TSPL_LABEL_BATCH",
     rawFacePayloads,
     sourceType: "CUSTOM_PACKING",
   };
@@ -50,7 +50,7 @@ function batchJob(n = 6) {
 
 async function main() {
   await run("validate: face count must match requestedLabels", () => {
-    const bad = validateRawFaceBatchInput({
+    const bad = validateLabelFaceBatchInput({
       faces: [facePayload("P01")],
       requestedLabels: 6,
     });
@@ -58,7 +58,7 @@ async function main() {
   });
 
   await run("classify: 0 faces submitted → FAILED printedQty=0", () => {
-    const r = classifyRawFaceBatchResult({
+    const r = classifyLabelFaceBatchResult({
       requestedLabels: 6,
       submittedFaceCount: 0,
       submitError: "boom",
@@ -68,7 +68,7 @@ async function main() {
   });
 
   await run("classify: partial submit → UNCERTAIN printedQty=0", () => {
-    const r = classifyRawFaceBatchResult({
+    const r = classifyLabelFaceBatchResult({
       requestedLabels: 6,
       submittedFaceCount: 3,
       windowsSpoolJobIds: [1, 2, 3],
@@ -80,7 +80,7 @@ async function main() {
   });
 
   await run("classify: all submitted + drained → COMPLETED", () => {
-    const r = classifyRawFaceBatchResult({
+    const r = classifyLabelFaceBatchResult({
       requestedLabels: 6,
       submittedFaceCount: 6,
       windowsSpoolJobIds: [10, 11, 12, 13, 14, 15],
@@ -330,7 +330,7 @@ async function main() {
     assert.ok(faceDocumentName("LBL", 0).includes("F1"));
   });
 
-  await run("FIFO: two RAW_FACE_BATCH jobs do not interleave RAW submits", async () => {
+  await run("FIFO: two TSPL_LABEL_BATCH jobs do not interleave RAW submits", async () => {
     const jobA = { ...batchJob(2), id: "a", jobNo: "JOBA" };
     const jobB = { ...batchJob(2), id: "b", jobNo: "JOBB" };
     const order = [];
@@ -373,7 +373,7 @@ async function main() {
     assert.ok(Math.max(...aIdx) < Math.min(...bIdx), `order=${JSON.stringify(order)}`);
   });
 
-  console.log(`\nRAW_FACE_BATCH tests: ${passed} passed, ${failed} failed`);
+  console.log(`\nTSPL_LABEL_BATCH tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 }
 

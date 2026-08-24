@@ -1490,16 +1490,16 @@ export async function reprintJob(req, jobId, body = {}) {
   let payloadMode = "SINGLE_RAW";
   let rawFacePayloads = undefined;
   if (isPacking) {
-    const { buildPackingRawFacePayloads } = await import("./tsplGenerator.js");
-    const { LABEL_PAYLOAD_MODE_RAW_FACE_BATCH } = await import("./labelPayloadModes.js");
-    rawFacePayloads = buildPackingRawFacePayloads(
+    const { buildPackingLabelBatchPayloads } = await import("./tsplGenerator.js");
+    const { LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH } = await import("./labelPayloadModes.js");
+    rawFacePayloads = buildPackingLabelBatchPayloads(
       lines.map((ln) => ({
         ...ln,
         lineCopies: Math.max(1, Number(ln.lineCopies || copies) || 1),
       })),
       { omitArticle }
     );
-    payloadMode = LABEL_PAYLOAD_MODE_RAW_FACE_BATCH;
+    payloadMode = LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH;
     tsplPayload = "";
   } else {
     tsplPayload = buildJobTspl(lines, tsplOptsForJob(parent, { copies, companyName }));

@@ -28,8 +28,14 @@ export const TSPL_FONT0_CELL_DOTS = 24;
  */
 export const TSPL_FONT0_CELL_WIDTH_DOTS = 12;
 
-/** Safe bottom margin inside the physical label (dots). */
+/** Safe bottom margin inside the physical label (dots). Absolute floor = heightDots − this (396 @ 203 DPI). */
 export const PACKING_LABEL_BOTTOM_SAFE_DOTS = 4;
+
+/**
+ * Extra clearance for the packing QTY 2×2 glyph above the safe floor.
+ * Target: QTY baseline Y=330 → glyph bottom 378 → 18 dots above safe limit 396 (@ 203 DPI / 400-dot canvas).
+ */
+export const PACKING_QTY_BOTTOM_CLEARANCE_DOTS = 18;
 
 export function labelDotDimensions(dpi = 203) {
   const dpm = dotsPerMm(dpi);
@@ -330,12 +336,13 @@ export function computePackingLabelLayout(description = "", opts = {}) {
   const labelColRatio = 0.26;
   const omitArticle = opts.omitArticle === true;
 
-  // Minimums — slightly taller than prior 28 for readability; QTY reserved for real 2×2 glyph.
-  const minNormalH = scale(26);
-  const minEmphasisH = scale(30); // Customer / Article / Part No.
-  const minDescH = scale(24);
+  // Compacted minimums (revised continuous-print geometry): keep table/fields/fonts,
+  // pull content up so QTY 2×2 glyph clears the bottom safe limit with margin.
+  const minNormalH = scale(24);
+  const minEmphasisH = scale(28); // Customer / Article / Part No.
+  const minDescH = scale(22);
   const qtyGlyphH = tsplFont0GlyphHeight(2);
-  // Must fit 2×2 QTY glyph with padding and stay above bottom safe margin.
+  // QTY row sized for 2×2 glyph; text is top-aligned so baseline = qtyTop (330 @ 203 DPI).
   const qtyRowH = Math.max(scale(44), qtyGlyphH + scale(12));
 
   const fixedSpecs = [
@@ -351,7 +358,7 @@ export function computePackingLabelLayout(description = "", opts = {}) {
   const fixedMinSum = fixedSpecs.reduce((s, r) => s + r.minH, 0);
   const reserved = fixedMinSum + qtyRowH;
   const availableForDesc = Math.max(minDescH, outerH - reserved);
-  const availableMaxLines = Math.max(2, Math.floor(availableForDesc / scale(18)));
+  const availableMaxLines = Math.max(2, Math.floor(availableForDesc / scale(16)));
 
   // Prefer slightly larger description text; shrink only when needed.
   const descFit = fitPackingDescription(description || "", {
@@ -362,10 +369,10 @@ export function computePackingLabelLayout(description = "", opts = {}) {
     availableMaxLines,
   });
 
-  const descLineDots = Math.max(scale(17), Math.round((descFit.fontSize / 8) * scale(20)));
+  const descLineDots = Math.max(scale(16), Math.round((descFit.fontSize / 8) * scale(18)));
   const contentDescH = Math.max(
     minDescH,
-    descFit.lines.length * descLineDots + scale(6)
+    descFit.lines.length * descLineDots + scale(4)
   );
   // Dynamic: short text → one-line-ish row; long text grows up to available.
   let descH = Math.min(availableForDesc, contentDescH);
@@ -377,7 +384,7 @@ export function computePackingLabelLayout(description = "", opts = {}) {
   if (leftover > 0) {
     const growTotal = fixedSpecs.reduce((s, r) => s + r.grow, 0) || 1;
     // Custom (no Article): allow header rows a bit more growth; do not dump all leftover into Description.
-    const headerCapExtra = omitArticle ? scale(14) : scale(10);
+    const headerCapExtra = omitArticle ? scale(12) : scale(8);
     for (const r of fixedSpecs) {
       const share = Math.floor((leftover * r.grow) / growTotal);
       const cap = r.minH + headerCapExtra;
@@ -408,10 +415,11 @@ export function computePackingLabelLayout(description = "", opts = {}) {
     descH = Math.max(minDescH, descH - (used - outerH));
   }
 
-  // Absolute physical guard: QTY glyph must stay above bottom safe margin.
+  // Absolute physical guard: QTY glyph (top-aligned in its row) must clear safe floor + clearance.
   const outerY = margin;
   const qtyTop = outerY + outerH - qtyRowH;
-  const qtyTextMaxBottom = heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS;
+  const qtyTextMaxBottom =
+    heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS - PACKING_QTY_BOTTOM_CLEARANCE_DOTS;
   if (qtyTop + qtyGlyphH > qtyTextMaxBottom) {
     const overflow = qtyTop + qtyGlyphH - qtyTextMaxBottom;
     descH = Math.max(minDescH, descH - overflow);
@@ -489,7 +497,7 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
   const outerH = layout.outerH ?? heightDots - margin * 2;
   const labelColW = Math.round(outerW * (layout.labelColRatio || 0.26));
   const valueColX = outerX + labelColW;
-  const textPad = scale(5);
+  const textPad = scale(4); // revised cell left padding (was 5)
   const border = 2;
 
   const rh = layout.rowHeights;
@@ -569,8 +577,8 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
     },
   ];
 
-  // RAW_FACE_BATCH (omitMediaSetup): CLS + face + PRINT only — no SIZE/GAP/DIRECTION/REFERENCE.
-  // Resident calibrated media advances one physical label per independent RAW document.
+  // Complete TSPL label document (default): SIZE/GAP/DIRECTION/REFERENCE + CLS + face + PRINT.
+  // omitMediaSetup remains only for legacy RAW_FACE_BATCH historical payloads.
   const cmds = opts.omitMediaSetup
     ? [
         "CLS",
@@ -620,10 +628,15 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
     } else {
       const [vx, vy] = row.valueMul || [1, 1];
       const glyphH = tsplFont0GlyphHeight(vy);
-      let valueY = y + Math.max(scale(2), Math.floor((row.h - glyphH) / 2));
-      // Never let QTY (or any value) glyph cross the physical label bottom.
+      const isQty = String(row.label || "").toUpperCase() === "QTY";
+      // QTY 2×2: top-align in row (baseline = qtyTop = 330 @ 203 DPI) for continuous-print clearance.
+      let valueY = isQty
+        ? y
+        : y + Math.max(scale(2), Math.floor((row.h - glyphH) / 2));
       const maxBottom = Math.min(
-        heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS,
+        isQty
+          ? heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS - PACKING_QTY_BOTTOM_CLEARANCE_DOTS
+          : heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS,
         y2 - 1
       );
       if (valueY + glyphH > maxBottom) {
@@ -682,8 +695,11 @@ export function measurePackingLabelGeometry(line = {}, opts = {}) {
     } else if (key === "QTY") {
       yMul = 2;
       const glyphH = tsplFont0GlyphHeight(yMul);
-      textTop = y + Math.max(scale(2), Math.floor((h - glyphH) / 2));
-      const maxBottom = Math.min(heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS, y2 - 1);
+      textTop = y; // top-aligned (matches emitted TSPL)
+      const maxBottom = Math.min(
+        heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS - PACKING_QTY_BOTTOM_CLEARANCE_DOTS,
+        y2 - 1
+      );
       if (textTop + glyphH > maxBottom) textTop = Math.max(y, maxBottom - glyphH);
       textBottom = textTop + glyphH;
     } else {
@@ -774,7 +790,7 @@ export function packingLabelDescriptionMeta(line = {}, opts = {}) {
 /**
  * Packing job TSPL: each line produces lineCopies identical stickers showing full QTY face.
  * Independent of GRN unit-label semantics.
- * NOTE: concatenates faces into one string — do not use for production packing RAW_FACE_BATCH.
+ * NOTE: concatenates faces into one string — do not use for production packing multi-label jobs.
  */
 export function buildPackingJobTspl(lines = [], opts = {}) {
   const parts = [];
@@ -788,11 +804,14 @@ export function buildPackingJobTspl(lines = [], opts = {}) {
 }
 
 /**
- * One independent RAW TSPL document per physical packing face (ab61a9d geometry).
- * Each payload: CLS … face content … PRINT 1,1 — no SIZE/GAP/DIRECTION/REFERENCE.
+ * One complete independent TSPL label document per physical packing face.
+ * Each payload includes SIZE/GAP/DIRECTION/REFERENCE + CLS + face + PRINT 1,1
+ * using normal 100×50 coordinates (same origin every face — no cumulative Y).
+ *
+ * Used by payloadMode TSPL_LABEL_BATCH (packing / custom packing).
  */
-export function buildPackingRawFacePayloads(lines = [], opts = {}) {
-  const faceOpts = { ...opts, omitMediaSetup: true };
+export function buildPackingLabelBatchPayloads(lines = [], opts = {}) {
+  const faceOpts = { ...opts, omitMediaSetup: false };
   const payloads = [];
   for (const line of lines) {
     const copies = Math.max(
@@ -804,6 +823,14 @@ export function buildPackingRawFacePayloads(lines = [], opts = {}) {
     }
   }
   return payloads;
+}
+
+/**
+ * @deprecated Use buildPackingLabelBatchPayloads (complete media setup per face).
+ * Legacy RAW_FACE_BATCH omitted SIZE/GAP and relied on calibrated continuous feed.
+ */
+export function buildPackingRawFacePayloads(lines = [], opts = {}) {
+  return buildPackingLabelBatchPayloads(lines, opts);
 }
 
 /** Preview-friendly rows from the same normalized packing line payload + layout weights. */

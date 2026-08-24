@@ -12,7 +12,7 @@ import {
   probePrinterReadyLightweight,
 } from "./windowsPrintJobStatus.js";
 
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.8.0";
 
 /** Freshness window for using heartbeat health as lease eligibility (ms). */
 const HEALTH_CACHE_TTL_MS = 20_000;
@@ -212,6 +212,68 @@ function createAgentJobProcessor(cfg, transport) {
         event: "print_submitted",
       });
       return transport.printRaw(buf, printerName, opts);
+    },
+    /** Sequential face writes under one lease; stops on first failure (UNCERTAIN semantics). */
+    printRawBatch: async (items, printerName, opts = {}) => {
+      const results = [];
+      const list = Array.isArray(items) ? items : [];
+      for (let i = 0; i < list.length; i++) {
+        const item = list[i] || {};
+        const documentName = item.documentName || `Marivolt ${opts.jobNo || "JOB"} F${i + 1}`;
+        try {
+          logLine(`Print submitted to spooler for ${documentName} → ${printerName}`, {
+            event: "print_submitted",
+          });
+          const sent = await transport.printRaw(item.buffer, printerName, {
+            ...opts,
+            documentName,
+            faceIndex: item.faceIndex ?? i,
+            jobNo: opts.jobNo,
+          });
+          const wrote = sent?.ok !== false;
+          const timing = sent?.timing || null;
+          const bytesWritten =
+            timing?.bytesWritten != null
+              ? Number(timing.bytesWritten)
+              : sent?.bytesWritten != null
+                ? Number(sent.bytesWritten)
+                : null;
+          const bufLen = Buffer.isBuffer(item.buffer)
+            ? item.buffer.length
+            : Buffer.byteLength(String(item.buffer || ""), "utf8");
+          if (
+            wrote &&
+            bytesWritten != null &&
+            Number.isFinite(bytesWritten) &&
+            bufLen > 0 &&
+            bytesWritten < bufLen
+          ) {
+            results.push({
+              ok: false,
+              error: `Partial WritePrinter face ${i + 1} (${bytesWritten}/${bufLen})`,
+              windowsSpoolJobId: timing?.windowsSpoolJobId ?? sent?.windowsSpoolJobId ?? null,
+            });
+            break;
+          }
+          if (!wrote) {
+            results.push({
+              ok: false,
+              error: sent?.error || `WritePrinter failed for face ${i + 1}`,
+              windowsSpoolJobId: timing?.windowsSpoolJobId ?? sent?.windowsSpoolJobId ?? null,
+            });
+            break;
+          }
+          results.push({
+            ok: true,
+            windowsSpoolJobId: timing?.windowsSpoolJobId ?? sent?.windowsSpoolJobId ?? null,
+            timing,
+          });
+        } catch (e) {
+          results.push({ ok: false, error: e.message || `WritePrinter failed for face ${i + 1}` });
+          break;
+        }
+      }
+      return { results };
     },
   });
 }

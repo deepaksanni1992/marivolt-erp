@@ -22,7 +22,7 @@ import {
 } from "../src/services/label/customPackingLabelService.js";
 import {
   buildPackingJobTspl,
-  buildPackingRawFacePayloads,
+  buildPackingLabelBatchPayloads,
   buildSingleLabelTspl,
   buildPackingGeometryDiagnosticTspl,
   measurePackingLabelGeometry,
@@ -30,7 +30,7 @@ import {
   labelDotDimensions,
   PACKING_LABEL_BOTTOM_SAFE_DOTS,
 } from "../src/services/label/tsplGenerator.js";
-import { LABEL_PAYLOAD_MODE_RAW_FACE_BATCH, validateRawFaceBatchPayload } from "../src/services/label/labelPayloadModes.js";
+import { LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH, validateTsplLabelBatchPayload } from "../src/services/label/labelPayloadModes.js";
 import { fitTsplFont0TextToWidth, measureTsplFont0TextWidth, TSPL_FONT0_CELL_WIDTH_DOTS } from "../src/services/label/tsplGenerator.js";
 import { fitPackingDescription } from "../src/utils/labelTextFit.js";
 import { PACKING_STANDARD_TEMPLATE_CODE } from "../src/services/label/labelTemplateService.js";
@@ -247,8 +247,8 @@ run("13. Custom service has no stock/allocation/packing/GRN mutations", () => {
   assert.doesNotMatch(src, /StockLedger|OrderAllocation|StorePacking|Inventory|Reservation|SalesInvoice|GRN\.|Grn\./);
   assert.match(src, /LabelPrintJob\.create/);
   assert.match(src, /sourceType: "CUSTOM_PACKING"/);
-  assert.match(src, /LABEL_PAYLOAD_MODE_RAW_FACE_BATCH/);
-  assert.match(src, /buildPackingRawFacePayloads/);
+  assert.match(src, /LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH/);
+  assert.match(src, /buildPackingLabelBatchPayloads/);
   assert.doesNotMatch(src, /buildPackingJobTspl\(lines, CUSTOM_PACKING_TSPL_OPTS\)/);
   assert.doesNotMatch(src, /LABEL_PAYLOAD_MODE_DRIVER_PAGES/);
   assert.doesNotMatch(src, /buildPackingDriverPagesTimed/);
@@ -309,15 +309,15 @@ run("16. Normal packing label face still renders Article + qty of total", () => 
   assert.match(tspl, /Article/);
 });
 
-run("17. One RAW_FACE_BATCH job for multi-row batch (6 independent faces)", () => {
+run("17. One TSPL_LABEL_BATCH job for multi-row batch (6 independent faces)", () => {
   const { lines } = normalizeCustomPackingLines({
     header: batchHeader,
     lines: [sampleRow, { serialNo: "2", partNo: "X", description: "Y", qty: 1, labelCount: 4 }],
   });
-  const faces = buildPackingRawFacePayloads(lines, CUSTOM_PACKING_TSPL_OPTS);
+  const faces = buildPackingLabelBatchPayloads(lines, CUSTOM_PACKING_TSPL_OPTS);
   assert.equal(faces.length, 6);
-  const validated = validateRawFaceBatchPayload({
-    payloadMode: LABEL_PAYLOAD_MODE_RAW_FACE_BATCH,
+  const validated = validateTsplLabelBatchPayload({
+    payloadMode: LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH,
     requestedLabels: 6,
     rawFacePayloads: faces,
   });
@@ -325,19 +325,26 @@ run("17. One RAW_FACE_BATCH job for multi-row batch (6 independent faces)", () =
   for (const face of faces) {
     assert.equal((face.match(/\bCLS\b/g) || []).length, 1);
     assert.equal((face.match(/\bPRINT\s+1\s*,\s*1\b/gi) || []).length, 1);
-    assert.doesNotMatch(face, /\bSIZE\b/i);
-    assert.doesNotMatch(face, /\bGAP\b/i);
-    assert.doesNotMatch(face, /\bDIRECTION\b/i);
-    assert.doesNotMatch(face, /\bREFERENCE\b/i);
+    assert.match(face, /\bSIZE\s+100\s*mm\s*,\s*50\s*mm\b/i);
+    assert.match(face, /\bGAP\s+3\s*mm\s*,\s*0\b/i);
+    assert.match(face, /\bDIRECTION\s+1\b/i);
+    assert.match(face, /\bREFERENCE\s+0\s*,\s*0\b/i);
   }
   assert.ok(faces[0].includes("OR-220") || faces.some((f) => f.includes("OR-220")));
   assert.ok(faces.some((f) => f.includes("X")));
+  // New packing path must not enqueue legacy RAW_FACE_BATCH
+  const svc = fs.readFileSync(
+    path.join(backendRoot, "src/services/label/customPackingLabelService.js"),
+    "utf8"
+  );
+  assert.match(svc, /LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH/);
+  assert.doesNotMatch(svc, /payloadMode:\s*LABEL_PAYLOAD_MODE_RAW_FACE_BATCH/);
 });
 
-run("17b. RAW face TSPL keeps ab61a9d packing geometry inside 100×50", () => {
+run("17b. Complete TSPL face keeps packing geometry inside 100×50", () => {
   const line = {
     customerName: "TEST CUSTOMER",
-    customerRef: "RAW-FACE-PROOF",
+    customerRef: "LABEL-BATCH-PROOF",
     brand: "TEST BRAND",
     modelName: "TEST MODEL",
     serialNo: "1",
@@ -348,8 +355,10 @@ run("17b. RAW face TSPL keeps ab61a9d packing geometry inside 100×50", () => {
   const g = measurePackingLabelGeometry(line, CUSTOM_PACKING_TSPL_OPTS);
   assert.ok(g.withinLabel, `maxY=${g.maxY}`);
   assert.ok(g.qtyWithinLabel);
-  const [face] = buildPackingRawFacePayloads([{ ...line, lineCopies: 1 }], CUSTOM_PACKING_TSPL_OPTS);
-  assert.match(face, /^CLS\r?\n/);
+  const [face] = buildPackingLabelBatchPayloads([{ ...line, lineCopies: 1 }], CUSTOM_PACKING_TSPL_OPTS);
+  assert.match(face, /\bSIZE\s+100\s*mm\s*,\s*50\s*mm\b/i);
+  assert.match(face, /\bGAP\s+3\s*mm\s*,\s*0\b/i);
+  assert.match(face, /\bCLS\b/);
   assert.match(face, /PRINT 1,1\r?\n$/);
   assert.match(face, /P01/);
   assert.match(face, /TEST FACE P01/);
@@ -480,6 +489,11 @@ run("26. Custom geometry: all Y extents stay inside 50 mm label; QTY has bottom 
   assert.ok(g.descriptionAboveQty);
   const qty = g.elements.find((e) => e.key === "QTY");
   assert.ok(qty.textBottom <= heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS);
+  // Revised continuous-print geometry: QTY baseline 330, glyph bottom 378, 18-dot clearance to 396.
+  assert.equal(qty.textTop, 330);
+  assert.equal(qty.textBottom, 378);
+  assert.equal(g.boxBottom, 390);
+  assert.ok(heightDots - PACKING_LABEL_BOTTOM_SAFE_DOTS - qty.textBottom >= 18);
   assert.ok(!/Article/i.test(buildPackingJobTspl([line], CUSTOM_PACKING_TSPL_OPTS).split("Description")[0]));
 });
 
@@ -518,7 +532,7 @@ run("28. Preview rows omit Article and keep QTY; Part No. emphasized", () => {
   assert.ok(rows.find((r) => r.label === "Description").weight > 0);
 });
 
-run("29. Six-label custom job uses RAW_FACE_BATCH (omit SIZE/GAP/DIRECTION/REFERENCE)", () => {
+run("29. Six-label custom job uses TSPL_LABEL_BATCH (complete SIZE/GAP per face)", () => {
   const { lines } = normalizeCustomPackingLines({
     customerName: "Cool Management AS",
     customerRef: "260825.12",
@@ -532,16 +546,28 @@ run("29. Six-label custom job uses RAW_FACE_BATCH (omit SIZE/GAP/DIRECTION/REFER
       { serialNo: "5", partNo: "E", description: "d5", qty: 20, labelCount: 1 },
     ],
   });
-  const faces = buildPackingRawFacePayloads(lines, CUSTOM_PACKING_TSPL_OPTS);
+  const faces = buildPackingLabelBatchPayloads(lines, CUSTOM_PACKING_TSPL_OPTS);
   assert.equal(faces.length, 6);
   const joined = faces.join("\n");
   assert.equal((joined.match(/\bCLS\b/g) || []).length, 6);
   assert.equal((joined.match(/\bPRINT\s+1\s*,\s*1\b/gi) || []).length, 6);
-  assert.doesNotMatch(joined, /\bSIZE\b/i);
-  assert.doesNotMatch(joined, /\bGAP\b/i);
-  assert.doesNotMatch(joined, /\bDIRECTION\b/i);
-  assert.doesNotMatch(joined, /\bREFERENCE\b/i);
+  assert.equal((joined.match(/\bSIZE\s+100\s*mm\s*,\s*50\s*mm\b/gi) || []).length, 6);
+  assert.equal((joined.match(/\bGAP\s+3\s*mm\s*,\s*0\b/gi) || []).length, 6);
+  assert.equal((joined.match(/\bDIRECTION\s+1\b/gi) || []).length, 6);
   assert.doesNotMatch(joined, /GAPDETECT|FEED|FORMFEED|BACKFEED|HOME|OFFSET|SHIFT|BLINE/i);
+  const qtyYs = [];
+  for (const face of faces) {
+    const qtyVal = face.split(/\r?\n/).find((l) => /^TEXT \d+,(\d+),"0",0,2,2,"\d+"/.test(l));
+    assert.ok(qtyVal, "each face has 2×2 QTY value TEXT");
+    const y = Number(qtyVal.match(/^TEXT \d+,(\d+)/)[1]);
+    assert.equal(y, 330, `QTY baseline Y must be 330 on every face, got ${y}`);
+    qtyYs.push(y);
+    assert.equal((face.match(/\bCLS\b/g) || []).length, 1);
+    assert.equal((face.match(/\bPRINT\s+1\s*,\s*1\b/gi) || []).length, 1);
+    assert.match(face, /\bSIZE\b/i);
+    assert.match(face, /\bGAP\b/i);
+  }
+  assert.ok(qtyYs.every((y) => y === qtyYs[0]), "no cumulative Y drift across faces");
 });
 
 run("30. Geometry diagnostic TSPL emits N boxed faces", () => {

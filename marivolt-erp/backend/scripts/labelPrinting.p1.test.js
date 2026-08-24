@@ -405,7 +405,7 @@ run("Agent READY gate, spool JobId drain, unique doc name, release-to-PENDING", 
   const index = fs.readFileSync(path.join(repoRoot, "print-agent/src/index.js"), "utf8");
   assert.ok(index.includes("/agent/jobs/${job.id}/release") || index.includes("/agent/jobs/"));
   assert.ok(index.includes("createJobProcessor"));
-  assert.ok(index.includes('APP_VERSION = "1.7.0"'));
+  assert.ok(index.includes('APP_VERSION = "1.8.0"'));
   const routes = fs.readFileSync(path.join(backendRoot, "src/routes/labelRoutes.js"), "utf8");
   assert.ok(routes.includes("/agent/jobs/:id/release"));
   const queue = fs.readFileSync(path.join(backendRoot, "src/services/label/printQueue.js"), "utf8");

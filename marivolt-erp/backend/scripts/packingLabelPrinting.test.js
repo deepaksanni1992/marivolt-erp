@@ -300,10 +300,10 @@ run("16-22. Field mapping / preview rows / serial", () => {
   assert.equal(rows[8].value, "5 of 9");
 });
 
-run("23. Preview and RAW_FACE_BATCH share packingLabelPreviewRows + raw face builder", () => {
+run("23. Preview and TSPL_LABEL_BATCH share packingLabelPreviewRows + label batch builder", () => {
   assert.ok(packingSvc.includes("packingLabelPreviewRows"));
-  assert.ok(packingSvc.includes("buildPackingRawFacePayloads"));
-  assert.ok(packingSvc.includes("LABEL_PAYLOAD_MODE_RAW_FACE_BATCH"));
+  assert.ok(packingSvc.includes("buildPackingLabelBatchPayloads"));
+  assert.ok(packingSvc.includes("LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH"));
   assert.ok(!packingSvc.includes("buildPackingDriverPagesTimed"));
   assert.ok(!packingSvc.includes("LABEL_PAYLOAD_MODE_DRIVER_PAGES"));
   assert.ok(modalUi.includes("previewRows"));

@@ -12,15 +12,16 @@ import {
   formatPrintTimingSummaryLine,
 } from "./printTiming.js";
 import {
-  classifyRawFaceBatchResult,
+  classifyLabelFaceBatchResult,
   faceDocumentName,
-  validateRawFaceBatchInput,
+  validateLabelFaceBatchInput,
 } from "./adapters/rawFaceBatch.js";
 
 /**
  * Sequential per-printer print cycle.
  * SINGLE_RAW: one WritePrinter TSPL + JobId drain (GRN/ASN/RU).
- * RAW_FACE_BATCH: N independent RAW docs (packing) inside one FIFO lease.
+ * TSPL_LABEL_BATCH: N complete TSPL labels (SIZE+GAP+…) inside one FIFO lease.
+ * RAW_FACE_BATCH: legacy packing faces (kept for historical jobs).
  */
 export function createJobProcessor({
   getPrinterHealth,
@@ -31,6 +32,7 @@ export function createJobProcessor({
   markPrinting,
   reportResult,
   printRaw,
+  printRawBatch = null,
   fifo = createPrinterFifo(),
   log = () => {},
   diagLog = null,
@@ -56,28 +58,39 @@ export function createJobProcessor({
     return { health, ms: Date.now() - started, mode: "full" };
   }
 
-  async function processRawFaceBatch({ job, printerName, trace }) {
+  async function processLabelFaceBatch({ job, printerName, trace, payloadMode }) {
     const faces = Array.isArray(job.rawFacePayloads) ? job.rawFacePayloads : [];
     const requested = Math.max(0, Number(job.requestedLabels) || 0);
-    const pre = validateRawFaceBatchInput({ faces, requestedLabels: requested });
+    const modeName = String(payloadMode || "TSPL_LABEL_BATCH").toUpperCase();
+    const pre = validateLabelFaceBatchInput({
+      faces,
+      requestedLabels: requested,
+      mode: modeName,
+    });
     if (!pre.ok) {
       const outcome = {
         status: "FAILED",
         printedQty: 0,
         submittedFaceCount: 0,
         windowsSpoolJobIds: [],
+        lastLabelWriteIndex: -1,
+        labelsAttempted: 0,
+        totalLabels: requested,
         error: pre.error,
       };
       await reportResult(job, outcome);
       emitTimingSummary(log, trace.finish(outcome));
       return true;
     }
-    if (typeof printRaw !== "function") {
+    if (typeof printRaw !== "function" && typeof printRawBatch !== "function") {
       const outcome = {
         status: "FAILED",
         printedQty: 0,
         submittedFaceCount: 0,
         windowsSpoolJobIds: [],
+        lastLabelWriteIndex: -1,
+        labelsAttempted: 0,
+        totalLabels: requested,
         error: "RAW transport not configured on agent",
       };
       await reportResult(job, outcome);
@@ -92,61 +105,114 @@ export function createJobProcessor({
     const submitStarted = Date.now();
 
     dlog(
-      `PRINT_DIAG jobId=${trace.jobId} event=raw_face_batch_start faces=${faces.length} requested=${requested}`
+      `PRINT_DIAG jobId=${trace.jobId} event=label_face_batch_start mode=${modeName} faces=${faces.length} requested=${requested}`
     );
 
-    for (let i = 0; i < faces.length; i++) {
+    async function submitOneFace(i, printFn) {
       const documentName = faceDocumentName(job.jobNo, i);
       lastDocumentName = documentName;
       const buf = Buffer.from(String(faces[i] || ""), "utf8");
       if (!buf.length) {
-        submitError = `RAW_FACE_BATCH face ${i + 1} empty buffer`;
-        break;
+        return { ok: false, error: `${modeName} face ${i + 1} empty buffer` };
       }
+      if (i === 0) trace.markSubmitStart();
+      dlog(
+        `PRINT_DIAG jobId=${trace.jobId} event=label_face_submit_start face=${i + 1}/${faces.length} documentName=${documentName} bytes=${buf.length}`
+      );
+      const sent = await printFn(buf, printerName, {
+        documentName,
+        jobNo: job.jobNo,
+        faceIndex: i,
+      });
+      const wrote = sent?.ok !== false;
+      const timing = sent?.timing || null;
+      const bytesWritten =
+        timing?.bytesWritten != null
+          ? Number(timing.bytesWritten)
+          : sent?.bytesWritten != null
+            ? Number(sent.bytesWritten)
+            : null;
+      if (
+        wrote &&
+        bytesWritten != null &&
+        Number.isFinite(bytesWritten) &&
+        buf.length > 0 &&
+        bytesWritten < buf.length
+      ) {
+        return {
+          ok: false,
+          error: `Partial WritePrinter face ${i + 1} (${bytesWritten}/${buf.length})`,
+          timing,
+        };
+      }
+      if (!wrote) {
+        return {
+          ok: false,
+          error: sent?.error || `WritePrinter failed for face ${i + 1}`,
+          timing,
+        };
+      }
+      const rawId = timing?.windowsSpoolJobId ?? sent?.windowsSpoolJobId ?? null;
+      const id = Number(rawId);
+      dlog(
+        `PRINT_DIAG jobId=${trace.jobId} event=label_face_submit_done face=${i + 1} windowsSpoolJobId=${Number.isFinite(id) && id > 0 ? id : "null"}`
+      );
+      return {
+        ok: true,
+        windowsSpoolJobId: Number.isFinite(id) && id > 0 ? id : null,
+        documentName,
+        timing,
+      };
+    }
+
+    if (typeof printRawBatch === "function") {
+      // Preferred: one OpenPrinter session, N StartDoc/Write/EndDoc (Rongta gap after each PRINT).
       try {
-        if (i === 0) trace.markSubmitStart();
-        dlog(
-          `PRINT_DIAG jobId=${trace.jobId} event=raw_face_submit_start face=${i + 1}/${faces.length} documentName=${documentName} bytes=${buf.length}`
+        trace.markSubmitStart();
+        const batchResult = await printRawBatch(
+          faces.map((face, i) => ({
+            buffer: Buffer.from(String(face || ""), "utf8"),
+            documentName: faceDocumentName(job.jobNo, i),
+            faceIndex: i,
+          })),
+          printerName,
+          { jobNo: job.jobNo }
         );
-        const sent = await printRaw(buf, printerName, {
-          documentName,
-          jobNo: job.jobNo,
-          faceIndex: i,
-        });
-        const wrote = sent?.ok !== false;
-        const timing = sent?.timing || null;
-        const bytesWritten =
-          timing?.bytesWritten != null
-            ? Number(timing.bytesWritten)
-            : sent?.bytesWritten != null
-              ? Number(sent.bytesWritten)
-              : null;
-        if (
-          wrote &&
-          bytesWritten != null &&
-          Number.isFinite(bytesWritten) &&
-          buf.length > 0 &&
-          bytesWritten < buf.length
-        ) {
-          submitError = `Partial WritePrinter face ${i + 1} (${bytesWritten}/${buf.length})`;
-          break;
+        const results = Array.isArray(batchResult?.results) ? batchResult.results : [];
+        for (let i = 0; i < results.length; i++) {
+          const r = results[i];
+          lastDocumentName = faceDocumentName(job.jobNo, i);
+          if (!r || r.ok === false) {
+            submitError =
+              r?.error ||
+              batchResult?.error ||
+              `WritePrinter failed for face ${i + 1}`;
+            break;
+          }
+          submittedFaceCount += 1;
+          const id = Number(r.windowsSpoolJobId);
+          if (Number.isFinite(id) && id > 0) windowsSpoolJobIds.push(id);
         }
-        if (!wrote) {
-          submitError = sent?.error || `WritePrinter failed for face ${i + 1}`;
-          break;
+        if (!results.length && batchResult?.error) {
+          submitError = batchResult.error;
         }
-        submittedFaceCount += 1;
-        const rawId = timing?.windowsSpoolJobId ?? sent?.windowsSpoolJobId ?? null;
-        const id = Number(rawId);
-        if (Number.isFinite(id) && id > 0) {
-          windowsSpoolJobIds.push(id);
-        }
-        dlog(
-          `PRINT_DIAG jobId=${trace.jobId} event=raw_face_submit_done face=${i + 1} windowsSpoolJobId=${Number.isFinite(id) && id > 0 ? id : "null"}`
-        );
       } catch (e) {
-        submitError = e.message || `WritePrinter failed for face ${i + 1}`;
-        break;
+        submitError = e.message || `${modeName} batch write failed`;
+      }
+    } else {
+      for (let i = 0; i < faces.length; i++) {
+        try {
+          const r = await submitOneFace(i, printRaw);
+          if (!r.ok) {
+            submitError = r.error;
+            break;
+          }
+          submittedFaceCount += 1;
+          if (r.windowsSpoolJobId) windowsSpoolJobIds.push(r.windowsSpoolJobId);
+        } catch (e) {
+          submitError = e.message || `WritePrinter failed for face ${i + 1}`;
+          break;
+        }
       }
     }
 
@@ -187,7 +253,7 @@ export function createJobProcessor({
         getJobStatus: () => getWindowsPrintJobStatus(printerName, lastId),
         onProbe: (obs) => {
           dlog(
-            `PRINT_DIAG jobId=${trace.jobId} event=raw_face_batch_spool_probe n=${obs.probeNumber} windowsSpoolJobId=${lastId} state=${obs.state}`
+            `PRINT_DIAG jobId=${trace.jobId} event=label_face_batch_spool_probe n=${obs.probeNumber} windowsSpoolJobId=${lastId} state=${obs.state}`
           );
         },
       });
@@ -204,10 +270,10 @@ export function createJobProcessor({
       spoolMonitorError = "Windows spool JobId(s) could not be safely identified";
     } else if (submittedFaceCount === requested && lastId == null) {
       drainTimeout = true;
-      spoolMonitorError = "Windows spool JobId not captured after RAW_FACE_BATCH submit";
+      spoolMonitorError = `Windows spool JobId not captured after ${modeName} submit`;
     }
 
-    const outcome = classifyRawFaceBatchResult({
+    const outcome = classifyLabelFaceBatchResult({
       requestedLabels: requested,
       submittedFaceCount,
       windowsSpoolJobIds,
@@ -215,6 +281,7 @@ export function createJobProcessor({
       drainTimeout,
       submitError: submitError || spoolMonitorError,
       jobIdCorrelationFailed,
+      mode: modeName,
     });
     outcome.submitMs = submitMs;
     await reportResult(job, outcome);
@@ -277,14 +344,14 @@ export function createJobProcessor({
 
       await markPrinting(job);
       const payloadMode = String(job.payloadMode || "SINGLE_RAW").toUpperCase();
-      if (payloadMode === "RAW_FACE_BATCH") {
-        return processRawFaceBatch({ job, printerName, trace });
+      if (payloadMode === "TSPL_LABEL_BATCH" || payloadMode === "RAW_FACE_BATCH") {
+        return processLabelFaceBatch({ job, printerName, trace, payloadMode });
       }
       if (payloadMode === "DRIVER_PAGES") {
         const outcome = {
           status: "FAILED",
           printedQty: 0,
-          error: "DRIVER_PAGES abandoned — use RAW_FACE_BATCH for packing",
+          error: "DRIVER_PAGES abandoned — use TSPL_LABEL_BATCH for packing",
         };
         await reportResult(job, outcome);
         emitTimingSummary(log, trace.finish(outcome));

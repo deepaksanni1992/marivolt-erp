@@ -1,25 +1,31 @@
 /**
- * RAW_FACE_BATCH — packing/custom packing: N independent RAW TSPL documents.
+ * Multi-face packing batch helpers (TSPL_LABEL_BATCH / legacy RAW_FACE_BATCH).
  * Pure helpers for zero-paper tests (no Windows / GDI).
  */
 
-export function validateRawFaceBatchInput({ faces, requestedLabels } = {}) {
+export function validateLabelFaceBatchInput({ faces, requestedLabels, mode = "TSPL_LABEL_BATCH" } = {}) {
   const list = Array.isArray(faces) ? faces : [];
   const requested = Math.max(0, Number(requestedLabels) || 0);
+  const modeName = String(mode || "TSPL_LABEL_BATCH").toUpperCase();
   if (!list.length || list.length !== requested) {
     return {
       ok: false,
       statusHint: "FAILED",
-      error: `Invalid RAW_FACE_BATCH (faces=${list.length}, requestedLabels=${requested})`,
+      error: `Invalid ${modeName} (faces=${list.length}, requestedLabels=${requested})`,
     };
   }
   for (let i = 0; i < list.length; i++) {
     const payload = String(list[i] || "");
     if (!payload.trim()) {
-      return { ok: false, statusHint: "FAILED", error: `RAW_FACE_BATCH face ${i + 1} empty` };
+      return { ok: false, statusHint: "FAILED", error: `${modeName} face ${i + 1} empty` };
     }
   }
   return { ok: true };
+}
+
+/** @deprecated Use validateLabelFaceBatchInput */
+export function validateRawFaceBatchInput(args) {
+  return validateLabelFaceBatchInput({ ...args, mode: "RAW_FACE_BATCH" });
 }
 
 /**
@@ -28,7 +34,7 @@ export function validateRawFaceBatchInput({ faces, requestedLabels } = {}) {
  * - 1..N-1 faces submitted + failure → UNCERTAIN, printedQty 0
  * - all N submitted + spool completion → COMPLETED
  */
-export function classifyRawFaceBatchResult({
+export function classifyLabelFaceBatchResult({
   requestedLabels = 0,
   submittedFaceCount = 0,
   windowsSpoolJobIds = [],
@@ -36,10 +42,12 @@ export function classifyRawFaceBatchResult({
   drainTimeout = false,
   submitError = "",
   jobIdCorrelationFailed = false,
+  mode = "TSPL_LABEL_BATCH",
 } = {}) {
   const requested = Math.max(0, Number(requestedLabels) || 0);
   const submitted = Math.max(0, Number(submittedFaceCount) || 0);
   const ids = Array.isArray(windowsSpoolJobIds) ? windowsSpoolJobIds.filter((n) => Number(n) > 0) : [];
+  const modeName = String(mode || "TSPL_LABEL_BATCH").toUpperCase();
 
   if (submitted <= 0) {
     return {
@@ -47,7 +55,10 @@ export function classifyRawFaceBatchResult({
       printedQty: 0,
       submittedFaceCount: 0,
       windowsSpoolJobIds: [],
-      error: submitError || "RAW_FACE_BATCH submit did not start",
+      lastLabelWriteIndex: -1,
+      labelsAttempted: 0,
+      totalLabels: requested,
+      error: submitError || `${modeName} submit did not start`,
     };
   }
 
@@ -57,9 +68,12 @@ export function classifyRawFaceBatchResult({
       printedQty: 0,
       submittedFaceCount: submitted,
       windowsSpoolJobIds: ids,
+      lastLabelWriteIndex: submitted - 1,
+      labelsAttempted: submitted,
+      totalLabels: requested,
       error:
         submitError ||
-        `Partial RAW_FACE_BATCH submit (${submitted}/${requested}) — physical print unproven`,
+        `Partial ${modeName} submit (${submitted}/${requested}) — physical print unproven`,
     };
   }
 
@@ -69,6 +83,9 @@ export function classifyRawFaceBatchResult({
       printedQty: 0,
       submittedFaceCount: submitted,
       windowsSpoolJobIds: ids,
+      lastLabelWriteIndex: submitted - 1,
+      labelsAttempted: submitted,
+      totalLabels: requested,
       error: submitError || "Windows spool JobId(s) could not be safely identified",
     };
   }
@@ -79,6 +96,9 @@ export function classifyRawFaceBatchResult({
       printedQty: 0,
       submittedFaceCount: submitted,
       windowsSpoolJobIds: ids,
+      lastLabelWriteIndex: submitted - 1,
+      labelsAttempted: submitted,
+      totalLabels: requested,
       error: submitError || "Spool drain timeout — physical print unproven",
     };
   }
@@ -88,8 +108,16 @@ export function classifyRawFaceBatchResult({
     printedQty: requested,
     submittedFaceCount: submitted,
     windowsSpoolJobIds: ids,
+    lastLabelWriteIndex: requested - 1,
+    labelsAttempted: requested,
+    totalLabels: requested,
     error: "",
   };
+}
+
+/** @deprecated Use classifyLabelFaceBatchResult */
+export function classifyRawFaceBatchResult(args) {
+  return classifyLabelFaceBatchResult({ ...args, mode: "RAW_FACE_BATCH" });
 }
 
 export function faceDocumentName(jobNo, faceIndex) {
