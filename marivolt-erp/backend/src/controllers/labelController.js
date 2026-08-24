@@ -464,6 +464,18 @@ export async function previewFromCustomPacking(req, res) {
   }
 }
 
+export async function customPackingRowPrintStatus(req, res) {
+  try {
+    const { resolveCustomPackingRowPrintStatuses } = await import(
+      "../services/label/customPackingLabelService.js"
+    );
+    const result = await resolveCustomPackingRowPrintStatuses(req, req.body || {});
+    res.json({ success: true, ...result });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
 export async function downloadCustomPackingTemplate(req, res) {
   try {
     const { buildCustomPackingTemplateWorkbook } = await import(

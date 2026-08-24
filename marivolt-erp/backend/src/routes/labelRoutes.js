@@ -91,6 +91,7 @@ router.post("/jobs/from-packing", labelsPrint, c.createFromPacking);
 router.post("/jobs/from-packing/preview", labelsView, c.previewFromPacking);
 router.post("/jobs/from-custom-packing", labelsPrint, c.createFromCustomPacking);
 router.post("/jobs/from-custom-packing/preview", labelsView, c.previewFromCustomPacking);
+router.post("/jobs/from-custom-packing/row-print-status", labelsView, c.customPackingRowPrintStatus);
 router.get("/jobs/from-custom-packing/template", labelsView, c.downloadCustomPackingTemplate);
 router.post(
   "/jobs/from-custom-packing/parse-import",

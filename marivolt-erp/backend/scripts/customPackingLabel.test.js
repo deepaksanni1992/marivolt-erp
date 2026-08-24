@@ -10,6 +10,8 @@ import XLSX from "xlsx";
 import {
   buildCustomPackingFingerprint,
   buildCustomPackingIdempotencyKey,
+  buildCustomPackingRowIdempotencyKey,
+  buildCustomPackingContentFingerprint,
   buildCustomPackingTemplateWorkbook,
   CUSTOM_PACKING_TSPL_OPTS,
   expandCustomPackingPreviewLabels,
@@ -18,6 +20,8 @@ import {
   normalizeCustomPackingLines,
   parseCustomPackingSpreadsheetBuffer,
   parseCustomPackingSpreadsheetRows,
+  resolveCustomPackingPrintSelection,
+  resolveCustomPackingRowPrintStatesFromJobs,
   summarizeCustomPackingBatch,
 } from "../src/services/label/customPackingLabelService.js";
 import {
@@ -254,10 +258,11 @@ run("13. Custom service has no stock/allocation/packing/GRN mutations", () => {
   assert.doesNotMatch(src, /buildPackingDriverPagesTimed/);
 });
 
-run("14. Routes + UI wired (table, import, template)", () => {
+run("14. Routes + UI wired (row-level Preview/Print; no global Print)", () => {
   const routes = fs.readFileSync(path.join(backendRoot, "src/routes/labelRoutes.js"), "utf8");
   assert.match(routes, /\/jobs\/from-custom-packing/);
   assert.match(routes, /\/jobs\/from-custom-packing\/preview/);
+  assert.match(routes, /\/jobs\/from-custom-packing\/row-print-status/);
   assert.match(routes, /\/jobs\/from-custom-packing\/template/);
   assert.match(routes, /\/jobs\/from-custom-packing\/parse-import/);
   const modal = fs.readFileSync(path.join(feRoot, "components/store/CustomPackingLabelModal.jsx"), "utf8");
@@ -265,10 +270,45 @@ run("14. Routes + UI wired (table, import, template)", () => {
   assert.match(modal, /No\. of Labels/);
   assert.match(modal, /Import Excel\/CSV/);
   assert.match(modal, /Download Template/);
+  assert.match(modal, /Actions/);
+  assert.match(modal, /previewMut\.mutate\(r\.rowId\)/);
+  assert.match(modal, /printMut\.mutate\(\{ rowId: r\.rowId, isReprint: false \}\)/);
+  assert.match(modal, /isReprint: true/);
+  assert.match(modal, /\/labels\/jobs\/\$\{jobId\}\/reprint/);
+  assert.match(modal, /hydrateRowPrintState/);
+  assert.match(modal, /row-print-status/);
+  assert.match(modal, /\{isPending \? "Printing…" : "Reprint"\}/);
+  assert.match(modal, /\{isPending \? "Printing…" : "Print"\}/);
+  assert.match(modal, /waitForJobTerminal/);
+  assert.match(modal, /UNCERTAIN/);
+  assert.match(modal, /emptyCustomPackingTableRow/);
+  assert.doesNotMatch(modal, /Preview required before print/);
+  assert.doesNotMatch(modal, /invalidatePrintedIfContentChanged/);
   assert.doesNotMatch(modal, /\["article", "Article"\]/);
+  // Bottom area: Cancel only — no global multi-row Print / Preview buttons
+  assert.match(modal, />\s*Cancel\s*</);
+  assert.doesNotMatch(
+    modal,
+    /justify-end[\s\S]*LoadingButton[\s\S]*Print/
+  );
+  assert.doesNotMatch(
+    modal,
+    /onClick=\{\(\) => previewMut\.mutate\(\)\}/
+  );
+  assert.doesNotMatch(
+    modal,
+    /onClick=\{\(\) => printMut\.mutate\(\)\}/
+  );
   const sheet = fs.readFileSync(path.join(feRoot, "lib/customPackingLabelSpreadsheet.js"), "utf8");
   assert.match(sheet, /No\. of Labels/);
+  assert.match(sheet, /newCustomPackingRowId/);
+  assert.match(sheet, /rowId/);
+  assert.match(sheet, /buildCustomPackingPayload/);
+  assert.match(sheet, /customPackingRowContentFingerprint/);
   assert.doesNotMatch(sheet, /header: "Article"/);
+  const model = fs.readFileSync(path.join(backendRoot, "src/models/LabelPrintJob.js"), "utf8");
+  assert.match(model, /customPackingRowId/);
+  assert.match(model, /packingSelectionFingerprint/);
 });
 
 run("15. GRN label regression — unit barcode path unchanged", () => {
@@ -607,6 +647,426 @@ run("32. GRN unit label path still uses SIZE 100×50 and is unchanged entrypoint
   const tspl = buildSingleLabelTspl({ article: "A1", description: "Widget", uom: "PCS" });
   assert.match(tspl, /SIZE 100 mm,50 mm/);
   assert.match(tspl, /BARCODE/);
+});
+
+function sixRowCustomBody() {
+  const rows = [
+    { rowId: "row-1", serialNo: "1", partNo: "P1", description: "d1", qty: 20, labelCount: 1 },
+    { rowId: "row-2", serialNo: "2", partNo: "P2", description: "d2", qty: 12, labelCount: 2 },
+    { rowId: "row-3", serialNo: "3", partNo: "P3", description: "d3", qty: 18, labelCount: 1 },
+    { rowId: "row-4", serialNo: "4", partNo: "9.2107-010", description: "Spring disk", qty: 40, labelCount: 1 },
+    { rowId: "row-5", serialNo: "5", partNo: "P5", description: "d5", qty: 20, labelCount: 1 },
+    { rowId: "row-6", serialNo: "6", partNo: "P6", description: "d6", qty: 10, labelCount: 1 },
+  ];
+  return { header: batchHeader, lines: rows, rowId: "row-4" };
+}
+
+run("33. resolveCustomPackingPrintSelection requires rowId", () => {
+  assert.throws(
+    () => resolveCustomPackingPrintSelection({ header: batchHeader, lines: [{ ...sampleRow, rowId: "r1" }] }),
+    (e) => e.code === "LABEL_ROW_REQUIRED"
+  );
+});
+
+run("34. Print selection isolates row 4 only (6-row table)", () => {
+  const body = sixRowCustomBody();
+  const { lines, rowId } = resolveCustomPackingPrintSelection(body);
+  assert.equal(rowId, "row-4");
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].customPackingRowId, "row-4");
+  assert.equal(lines[0].partNo, "9.2107-010");
+  assert.equal(lines[0].qty, 40);
+  assert.equal(lines[0].lineCopies, 1);
+  assert.equal(lines[0].labelCount, 1);
+  // Neighbors must not leak
+  assert.ok(!lines.some((ln) => ln.partNo === "P1" || ln.partNo === "P5"));
+});
+
+run("35. Selected row with No. of Labels=1 → exactly one physical face", () => {
+  const { lines } = resolveCustomPackingPrintSelection(sixRowCustomBody());
+  const faces = buildPackingLabelBatchPayloads(lines, CUSTOM_PACKING_TSPL_OPTS);
+  assert.equal(faces.length, 1);
+  assert.match(faces[0], /9\.2107-010/);
+  assert.match(faces[0], /"40"/);
+  assert.doesNotMatch(faces[0], /P1|P2|P3|P5|P6/);
+  const expanded = expandCustomPackingPreviewLabels(lines);
+  assert.equal(expanded.length, 1);
+  assert.equal(expanded[0].qtyDisplay, "40");
+});
+
+run("36. Selected row with No. of Labels=2 → exactly that row's 2 faces", () => {
+  const body = {
+    ...sixRowCustomBody(),
+    rowId: "row-2",
+  };
+  const { lines, rowId } = resolveCustomPackingPrintSelection(body);
+  assert.equal(rowId, "row-2");
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].lineCopies, 2);
+  const faces = buildPackingLabelBatchPayloads(lines, CUSTOM_PACKING_TSPL_OPTS);
+  assert.equal(faces.length, 2);
+  for (const face of faces) {
+    assert.match(face, /P2/);
+    assert.doesNotMatch(face, /9\.2107-010|P1|P3|P5|P6/);
+  }
+  const summary = summarizeCustomPackingBatch(lines);
+  assert.equal(summary.rowCount, 1);
+  assert.equal(summary.physicalLabels, 2);
+});
+
+run("37. Stable row identity — S.No. change does not rematch wrong row", () => {
+  const body = sixRowCustomBody();
+  body.lines = body.lines.map((ln) =>
+    ln.rowId === "row-4" ? { ...ln, serialNo: "99" } : ln
+  );
+  const { lines } = resolveCustomPackingPrintSelection(body);
+  assert.equal(lines[0].customPackingRowId, "row-4");
+  assert.equal(lines[0].serialNo, "99");
+  assert.equal(lines[0].partNo, "9.2107-010");
+});
+
+run("38. Unknown / ambiguous rowId rejected", () => {
+  assert.throws(
+    () => resolveCustomPackingPrintSelection({ ...sixRowCustomBody(), rowId: "missing" }),
+    (e) => e.code === "LABEL_ROW_NOT_FOUND"
+  );
+  const dup = sixRowCustomBody();
+  dup.lines = [
+    ...dup.lines,
+    { rowId: "row-4", serialNo: "7", partNo: "DUP", description: "x", qty: 1, labelCount: 1 },
+  ];
+  assert.throws(
+    () => resolveCustomPackingPrintSelection(dup),
+    (e) => e.code === "LABEL_ROW_AMBIGUOUS"
+  );
+});
+
+run("39. Row idempotency key scoped to rowId + content", () => {
+  const body = sixRowCustomBody();
+  const selected = resolveCustomPackingPrintSelection(body);
+  const k1 = buildCustomPackingRowIdempotencyKey(selected.header, selected.lines[0]);
+  const k2 = buildCustomPackingRowIdempotencyKey(selected.header, selected.lines[0]);
+  assert.equal(k1, k2);
+  assert.match(k1, /^custom-packing-row:row-4:[a-f0-9]{16}$/);
+  const other = resolveCustomPackingPrintSelection({ ...body, rowId: "row-1" });
+  assert.notEqual(
+    buildCustomPackingRowIdempotencyKey(other.header, other.lines[0]),
+    k1
+  );
+  const edited = {
+    ...selected.lines[0],
+    qty: 41,
+  };
+  assert.notEqual(buildCustomPackingRowIdempotencyKey(selected.header, edited), k1);
+});
+
+run("40. createJobsFromCustomPacking source requires resolveCustomPackingPrintSelection", () => {
+  const src = fs.readFileSync(
+    path.join(backendRoot, "src/services/label/customPackingLabelService.js"),
+    "utf8"
+  );
+  assert.match(src, /resolveCustomPackingPrintSelection\(body\)/);
+  assert.match(src, /buildCustomPackingRowIdempotencyKey/);
+  assert.match(src, /customPackingRowId/);
+  assert.match(src, /LABEL_ROW_REQUIRED/);
+  // Must not enqueue whole body.lines without selection
+  assert.match(src, /Row-scoped first print only/);
+});
+
+run("41. FE payload includes every rowId; duplicate allocates new rowId (source)", () => {
+  const sheet = fs.readFileSync(path.join(feRoot, "lib/customPackingLabelSpreadsheet.js"), "utf8");
+  assert.match(sheet, /rowId: row\.rowId \|\| row\.key/);
+  assert.match(sheet, /seed\.rowId \|\| newCustomPackingRowId\(\)/);
+  const modal = fs.readFileSync(path.join(feRoot, "components/store/CustomPackingLabelModal.jsx"), "utf8");
+  assert.match(modal, /function duplicateRow/);
+  assert.match(modal, /emptyCustomPackingTableRow\([\s\S]*partNo: src\.partNo/);
+  // Duplicate must NOT pass src.rowId — new independent unprinted row
+  assert.doesNotMatch(
+    modal,
+    /duplicateRow[\s\S]*emptyCustomPackingTableRow\([\s\S]*rowId:\s*src\.rowId/
+  );
+  assert.match(modal, /"PRINTED"/);
+  assert.match(modal, /\/labels\/jobs\/from-custom-packing"/);
+  assert.match(modal, /action: "PRINT"/);
+  assert.match(modal, /hydrateRowPrintState/);
+});
+
+run("42. Preview/print consistency — selected row preview matches face qty", () => {
+  const { lines } = resolveCustomPackingPrintSelection(sixRowCustomBody());
+  const preview = expandCustomPackingPreviewLabels(lines);
+  const faces = buildPackingLabelBatchPayloads(lines, CUSTOM_PACKING_TSPL_OPTS);
+  assert.equal(preview.length, faces.length);
+  assert.equal(preview[0].qtyDisplay, "40");
+  assert.match(faces[0], /"40"/);
+  const map = Object.fromEntries(preview[0].previewRows.map((r) => [r.label, r.value]));
+  assert.equal(map.QTY, "40");
+  assert.equal(map["Part No."], "9.2107-010");
+});
+
+function mockCustomPackingJob({
+  id,
+  rowId,
+  header = batchHeader,
+  line,
+  status = "COMPLETED",
+  isReprint = false,
+  parentJobId = null,
+  createdAt,
+}) {
+  const ln = {
+    ...header,
+    serialNo: line.serialNo,
+    partNo: line.partNo,
+    description: line.description,
+    qty: line.qty,
+    labelCount: line.labelCount,
+    lineCopies: line.labelCount,
+    customPackingRowId: rowId,
+  };
+  const packingSelectionFingerprint = buildCustomPackingContentFingerprint(header, ln);
+  return {
+    _id: id,
+    sourceType: "CUSTOM_PACKING",
+    status,
+    isReprint,
+    parentJobId,
+    packingSelectionFingerprint,
+    lines: [ln],
+    createdAt: createdAt || new Date().toISOString(),
+  };
+}
+
+run("43. Durable state: COMPLETED job → Reprint after simulated modal reload (new session rowId)", () => {
+  const line = {
+    serialNo: "4",
+    partNo: "9.2107-010",
+    description: "Spring disk",
+    qty: 40,
+    labelCount: 1,
+  };
+  const job = mockCustomPackingJob({
+    id: "job-completed-1",
+    rowId: "old-session-uuid",
+    line,
+    status: "COMPLETED",
+    createdAt: "2026-08-24T10:00:00.000Z",
+  });
+  // Simulate reload: new browser UUID, same printable content
+  const reloaded = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: [{ ...line, rowId: "new-session-uuid" }],
+  });
+  const states = resolveCustomPackingRowPrintStatesFromJobs(
+    reloaded.header,
+    reloaded.lines,
+    [job]
+  );
+  assert.equal(states.length, 1);
+  assert.equal(states[0].status, "PRINTED");
+  assert.equal(states[0].jobId, "job-completed-1");
+  assert.equal(states[0].originalJobId, "job-completed-1");
+  assert.equal(states[0].rowId, "new-session-uuid");
+});
+
+run("44. Durable state: edit-after-print → Print; old COMPLETED job remains in history", () => {
+  const line = {
+    serialNo: "4",
+    partNo: "9.2107-010",
+    description: "Spring disk",
+    qty: 40,
+    labelCount: 1,
+  };
+  const job = mockCustomPackingJob({
+    id: "job-completed-1",
+    rowId: "row-same",
+    line,
+    status: "COMPLETED",
+    createdAt: "2026-08-24T10:00:00.000Z",
+  });
+  const edited = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: [{ ...line, rowId: "row-same", qty: 41 }],
+  });
+  const states = resolveCustomPackingRowPrintStatesFromJobs(edited.header, edited.lines, [job]);
+  assert.equal(states[0].status, "NOT_PRINTED");
+  assert.equal(states[0].jobId, "");
+  assert.match(states[0].message, /changed after print/i);
+  // Historical job object unchanged
+  assert.equal(job.status, "COMPLETED");
+  assert.equal(job._id, "job-completed-1");
+});
+
+run("45. FAILED does not become Reprint", () => {
+  const line = { serialNo: "1", partNo: "P1", description: "d", qty: 1, labelCount: 1 };
+  const job = mockCustomPackingJob({
+    id: "job-fail",
+    rowId: "r1",
+    line,
+    status: "FAILED",
+    createdAt: "2026-08-24T10:00:00.000Z",
+  });
+  const { header, lines } = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: [{ ...line, rowId: "r1" }],
+  });
+  const states = resolveCustomPackingRowPrintStatesFromJobs(header, lines, [job]);
+  assert.equal(states[0].status, "FAILED");
+  assert.equal(states[0].jobId, "");
+});
+
+run("46. UNCERTAIN does not become clean Print", () => {
+  const line = { serialNo: "1", partNo: "P1", description: "d", qty: 1, labelCount: 1 };
+  const job = mockCustomPackingJob({
+    id: "job-unc",
+    rowId: "r1",
+    line,
+    status: "UNCERTAIN",
+    createdAt: "2026-08-24T10:00:00.000Z",
+  });
+  const { header, lines } = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: [{ ...line, rowId: "new-uuid" }],
+  });
+  const states = resolveCustomPackingRowPrintStatesFromJobs(header, lines, [job]);
+  assert.equal(states[0].status, "UNCERTAIN");
+  assert.equal(states[0].jobId, "job-unc");
+  assert.match(states[0].message, /uncertain/i);
+});
+
+run("47. Successful Reprint preserves original print identity", () => {
+  const line = { serialNo: "1", partNo: "P1", description: "d", qty: 1, labelCount: 1 };
+  const first = mockCustomPackingJob({
+    id: "job-orig",
+    rowId: "r1",
+    line,
+    status: "COMPLETED",
+    isReprint: false,
+    createdAt: "2026-08-24T10:00:00.000Z",
+  });
+  const reprint = mockCustomPackingJob({
+    id: "job-reprint",
+    rowId: "r1",
+    line,
+    status: "COMPLETED",
+    isReprint: true,
+    parentJobId: "job-orig",
+    createdAt: "2026-08-24T11:00:00.000Z",
+  });
+  const { header, lines } = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: [{ ...line, rowId: "r1" }],
+  });
+  const states = resolveCustomPackingRowPrintStatesFromJobs(header, lines, [first, reprint]);
+  assert.equal(states[0].status, "PRINTED");
+  assert.equal(states[0].originalJobId, "job-orig");
+  assert.equal(states[0].jobId, "job-reprint");
+});
+
+run("48. Duplicate gets distinct logical claim and starts unprinted", () => {
+  const line = { serialNo: "1", partNo: "P1", description: "d", qty: 1, labelCount: 1 };
+  const job = mockCustomPackingJob({
+    id: "job-1",
+    rowId: "r-original",
+    line,
+    status: "COMPLETED",
+    createdAt: "2026-08-24T10:00:00.000Z",
+  });
+  const { header, lines } = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: [
+      { ...line, rowId: "r-original" },
+      { ...line, rowId: "r-duplicate", serialNo: "2" },
+    ],
+  });
+  // Note: serialNo differs on duplicate in UI often — use identical content for stress case
+  const identical = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: [
+      { ...line, rowId: "r-original" },
+      { ...line, rowId: "r-duplicate" },
+    ],
+  });
+  const states = resolveCustomPackingRowPrintStatesFromJobs(
+    identical.header,
+    identical.lines,
+    [job]
+  );
+  assert.equal(states[0].status, "PRINTED");
+  assert.equal(states[1].status, "NOT_PRINTED");
+  assert.equal(states[1].jobId, "");
+  void header;
+  void lines;
+});
+
+run("49. Content fingerprint excludes session rowId (reload-stable)", () => {
+  const line = { serialNo: "1", partNo: "OR-220", description: "O-RING", qty: 25, labelCount: 2 };
+  const a = buildCustomPackingContentFingerprint(batchHeader, { ...line, rowId: "aaa" });
+  const b = buildCustomPackingContentFingerprint(batchHeader, { ...line, rowId: "bbb" });
+  assert.equal(a, b);
+  assert.doesNotMatch(a, /aaa|bbb/);
+});
+
+run("50. Claim-count: 1 COMPLETED lineage cannot mark 3 identical imports as Reprint", () => {
+  const line = { serialNo: "1", partNo: "P1", description: "same", qty: 10, labelCount: 1 };
+  const job = mockCustomPackingJob({
+    id: "job-only-one",
+    rowId: "historical-uuid",
+    line,
+    status: "COMPLETED",
+    createdAt: "2026-08-24T10:00:00.000Z",
+  });
+  const imported = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: [
+      { ...line, rowId: "import-a" },
+      { ...line, rowId: "import-b" },
+      { ...line, rowId: "import-c" },
+    ],
+  });
+  const states = resolveCustomPackingRowPrintStatesFromJobs(
+    imported.header,
+    imported.lines,
+    [job]
+  );
+  const printed = states.filter((s) => s.status === "PRINTED");
+  const unprinted = states.filter((s) => s.status === "NOT_PRINTED");
+  assert.equal(printed.length, 1, "at most one identical row may hydrate as Reprint");
+  assert.equal(unprinted.length, 2, "remaining identical rows must stay Print");
+  assert.equal(printed[0].jobId, "job-only-one");
+});
+
+run("51. Claim-count: 2 COMPLETED lineages → at most 2 of 3 identical imports are Reprint", () => {
+  const line = { serialNo: "1", partNo: "P1", description: "same", qty: 10, labelCount: 1 };
+  const jobs = [
+    mockCustomPackingJob({
+      id: "job-a",
+      rowId: "hist-1",
+      line,
+      status: "COMPLETED",
+      createdAt: "2026-08-24T10:00:00.000Z",
+    }),
+    mockCustomPackingJob({
+      id: "job-b",
+      rowId: "hist-2",
+      line,
+      status: "COMPLETED",
+      createdAt: "2026-08-24T10:05:00.000Z",
+    }),
+  ];
+  const imported = normalizeCustomPackingLines({
+    header: batchHeader,
+    lines: [
+      { ...line, rowId: "import-a" },
+      { ...line, rowId: "import-b" },
+      { ...line, rowId: "import-c" },
+    ],
+  });
+  const states = resolveCustomPackingRowPrintStatesFromJobs(imported.header, imported.lines, jobs);
+  const printed = states.filter((s) => s.status === "PRINTED");
+  const unprinted = states.filter((s) => s.status === "NOT_PRINTED");
+  assert.equal(printed.length, 2);
+  assert.equal(unprinted.length, 1);
+  assert.deepEqual(printed.map((s) => s.jobId).sort(), ["job-a", "job-b"]);
 });
 
 console.log(`\nCustom packing label: ${passed} passed, ${failed} failed\n`);

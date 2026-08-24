@@ -46,6 +46,8 @@ const labelJobLineSchema = new mongoose.Schema(
     allocationLineId: { type: String, default: "" },
     packageId: { type: String, default: "" },
     descriptionTruncated: { type: Boolean, default: false },
+    /** Stable custom packing session row id (ephemeral UI UUID; additive). Rediscovery uses content fingerprint. */
+    customPackingRowId: { type: String, default: "", trim: true },
     /** ASN Receiving Unit identity (additive; unused by GRN). */
     receivingUnitId: { type: mongoose.Schema.Types.ObjectId, ref: "ReceivingUnit", default: null },
     ruNo: { type: String, default: "", trim: true, uppercase: true },
@@ -163,6 +165,8 @@ labelPrintJobSchema.index({ companyId: 1, jobNo: 1 }, { unique: true });
 labelPrintJobSchema.index({ companyId: 1, status: 1, agentId: 1 });
 labelPrintJobSchema.index({ companyId: 1, sourceNo: 1, createdAt: -1 });
 labelPrintJobSchema.index({ companyId: 1, sourceType: 1, "lines.receivingUnitId": 1, status: 1 });
+labelPrintJobSchema.index({ companyId: 1, sourceType: 1, packingSelectionFingerprint: 1, createdAt: -1 });
+labelPrintJobSchema.index({ companyId: 1, sourceType: 1, "lines.customPackingRowId": 1, createdAt: -1 });
 labelPrintJobSchema.index(
   { companyId: 1, idempotencyKey: 1 },
   {

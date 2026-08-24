@@ -19,9 +19,19 @@ export function emptyCustomPackingHeader() {
   };
 }
 
+export function newCustomPackingRowId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `cpr-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Session-only row handle (UUID). Not durable across re-import — print state uses LabelPrintJob content fingerprint + occurrence. */
 export function emptyCustomPackingTableRow(serialNo = "", seed = {}) {
+  const rowId = seed.rowId || newCustomPackingRowId();
   return {
-    key: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    key: rowId,
+    rowId,
     serialNo: serialNo ? String(serialNo) : "",
     partNo: seed.partNo || "",
     description: seed.description || "",
@@ -38,6 +48,24 @@ export function rowHasContent(row = {}) {
       String(row.qty || "").trim() ||
       String(row.labelCount || "").trim()
   );
+}
+
+/** Print-critical content fingerprint (header + row). Matches backend content fingerprint (no session rowId). */
+export function customPackingRowContentFingerprint(header = {}, row = {}) {
+  const head = [
+    String(header.customerName || "").trim(),
+    String(header.customerRef || "").trim(),
+    String(header.brand || "").trim(),
+    String(header.modelName || "").trim(),
+  ].join("\t");
+  const part = [
+    String(row.serialNo || "").trim(),
+    String(row.partNo || "").trim(),
+    String(row.description || "").trim(),
+    String(Number(row.qty) || 0),
+    String(Math.max(1, Math.floor(Number(row.labelCount) || 1))),
+  ].join("\t");
+  return `${head}\n${part}`;
 }
 
 export function summarizeCustomPackingRows(rows = []) {
@@ -209,10 +237,15 @@ export async function importCustomPackingSpreadsheetFile(file) {
   return mapApiRowsToTableRows(data.rows);
 }
 
+/**
+ * Full table payload for backend row selection (includes every rowId).
+ * Backend filters to body.rowId — never trust FE-only filtering.
+ */
 export function buildCustomPackingPayload(header, rows) {
   const lines = (rows || [])
     .filter(rowHasContent)
     .map((row, idx) => ({
+      rowId: row.rowId || row.key,
       serialNo: row.serialNo || String(idx + 1),
       partNo: row.partNo,
       description: row.description,
