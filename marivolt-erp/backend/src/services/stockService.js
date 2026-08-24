@@ -28,6 +28,7 @@ import StockBalance from "../models/StockBalance.js";
 import StockLedger from "../models/StockLedger.js";
 import InventoryLedger from "../models/InventoryLedger.js";
 import { buildPhysicalEffectKey, deriveStockBuckets, deriveAvailableQty } from "./stockExpectedBuckets.js";
+import { computeWeightedAverageUnitCost, roundMoney } from "../utils/packConversionCost.js";
 
 /**
  * Debounced Reservation Integrity re-check after bucket mutations.
@@ -1315,6 +1316,9 @@ export async function stockAdjustment({
   reversedFromLedgerId = null,
   originalEffectKey = "",
   cancellationOperationId = "",
+  unitCost = null,
+  currency = "",
+  updateAvgCostOnIncrease = false,
 }) {
   requireCompanyId(companyId);
   const q = Math.abs(Number(qty) || 0);
@@ -1337,6 +1341,14 @@ export async function stockAdjustment({
     const existing = await findLedgerByEffectKey(ek, session);
     if (existing) return existing;
   }
+
+  const beforeBal = await getStockBalance({ companyId, article, warehouse, session });
+  const oldUnitCost = Math.max(0, Number(beforeBal.raw?.avgCost ?? beforeBal.raw?.unitCost ?? 0) || 0);
+  const oldOnHand = Number(beforeBal.onHandQty ?? beforeBal.raw?.quantity ?? 0) || 0;
+  const legUnitCost =
+    unitCost != null && unitCost !== ""
+      ? Math.max(0, Number(unitCost) || 0)
+      : oldUnitCost;
 
   const incQty = isIncrease ? q : -q;
   const guard =
@@ -1369,6 +1381,31 @@ export async function stockAdjustment({
       `stockAdjustment: insufficient available qty for decrease in ${normWarehouse(warehouse)}.`
     );
   }
+
+  let newUnitCost = oldUnitCost;
+  let valuationDelta = 0;
+  if (isIncrease && updateAvgCostOnIncrease && unitCost != null && unitCost !== "") {
+    newUnitCost = computeWeightedAverageUnitCost(oldOnHand, oldUnitCost, q, legUnitCost);
+    valuationDelta = roundMoney(q * legUnitCost);
+    await StockBalance.findOneAndUpdate(
+      {
+        companyId,
+        article: normArticle(article),
+        location: normWarehouse(warehouse),
+        batchNo: "",
+        serialNo: "",
+      },
+      {
+        $set: {
+          avgCost: roundMoney(newUnitCost),
+          unitCost: roundMoney(newUnitCost),
+          ...(currency ? { currency: String(currency).trim().toUpperCase() } : {}),
+        },
+      },
+      { session, new: true }
+    );
+  }
+
   const after = await snapshotAfter({ companyId, article, warehouse, session });
   const ledger = await createStockLedgerEntry({
     session,
@@ -1388,6 +1425,11 @@ export async function stockAdjustment({
     reversedFromLedgerId,
     originalEffectKey: originalEffectKey || "",
     cancellationOperationId,
+    unitCost: isIncrease ? legUnitCost : legUnitCost,
+    oldCost: oldUnitCost,
+    newCost: isIncrease && updateAvgCostOnIncrease ? newUnitCost : oldUnitCost,
+    valuationDelta: isIncrease && updateAvgCostOnIncrease ? valuationDelta : null,
+    currency: currency || beforeBal.raw?.currency || "USD",
     ...after,
   });
   notifyReservationIntegrity(companyId, warehouse, article, "STOCK_ADJUSTMENT", session);

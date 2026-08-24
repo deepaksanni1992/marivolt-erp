@@ -291,6 +291,7 @@ async function integrationSuite() {
     const bom = await BOM.create({
       companyId,
       parentItemCode: PARENT,
+      bomCode: `${PARENT}-R1`,
       kitType: "PACK_CONVERSION",
       bomKind: "PACK_CONVERSION",
       revisionNo: "R1",

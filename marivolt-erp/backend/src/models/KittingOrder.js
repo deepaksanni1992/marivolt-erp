@@ -10,6 +10,35 @@ const previewLineSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const costSnapshotSchema = new mongoose.Schema(
+  {
+    sourceUnitCost: { type: Number, default: 0, min: 0 },
+    sourceTotalCost: { type: Number, default: 0, min: 0 },
+    producedUnitCost: { type: Number, default: 0, min: 0 },
+    producedTotalCost: { type: Number, default: 0, min: 0 },
+    currency: { type: String, default: "USD", trim: true, uppercase: true },
+    capturedAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
+const customsLotLayerSchema = new mongoose.Schema(
+  {
+    customsLotId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    customsLotItemId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    targetCustomsLotItemId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    sourceQty: { type: Number, default: 0, min: 0 },
+    targetQty: { type: Number, default: 0, min: 0 },
+    boeNumber: { type: String, default: "", trim: true },
+    grnNo: { type: String, default: "", trim: true },
+    unitCost: { type: Number, default: 0, min: 0 },
+    currency: { type: String, default: "", trim: true, uppercase: true },
+    sourceStockValue: { type: Number, default: 0, min: 0 },
+    targetStockValue: { type: Number, default: 0, min: 0 },
+  },
+  { _id: false }
+);
+
 const kitLineSnapshotSchema = new mongoose.Schema(
   {
     lineId: { type: String, default: "" },
@@ -92,6 +121,8 @@ const kittingOrderSchema = new mongoose.Schema(
     reversedBy: { type: String, default: "", trim: true },
     reversalOperationId: { type: String, default: "", trim: true },
     reversalReason: { type: String, default: "", trim: true },
+    costSnapshot: { type: costSnapshotSchema, default: null },
+    customsLotLayers: { type: [customsLotLayerSchema], default: [] },
     remarks: { type: String, default: "" },
     createdBy: { type: String, default: "" },
   },

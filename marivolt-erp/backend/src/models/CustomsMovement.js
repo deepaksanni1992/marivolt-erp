@@ -32,6 +32,7 @@ const customsMovementSchema = new mongoose.Schema(
         "CUSTOMS_INVOICE",
         "MANUAL_ADJUSTMENT",
         "ARTICLE_STOCK_CONVERSION",
+        "PACK_CONVERSION",
       ],
       required: true,
       index: true,
