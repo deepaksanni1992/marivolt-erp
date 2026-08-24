@@ -13,6 +13,11 @@ import {
   validateAsnLabelDistribution,
 } from "../../lib/receivingUnitLabels.js";
 import { REPRINT_REASONS } from "../../lib/labelPrinting.js";
+import AsnReceivingCompletenessPanel from "../asn/AsnReceivingCompletenessPanel.jsx";
+import {
+  extractAsnCompletenessMissing,
+  formatCompletenessErrorMessage,
+} from "../../lib/asnReceivingCompleteness.js";
 
 function qtyInputClass() {
   return "min-h-12 w-full rounded-xl border border-slate-300 bg-white px-3 text-lg font-semibold tabular-nums";
@@ -39,6 +44,8 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
 
   const data = ruQ.data;
   const lines = data?.lines || [];
+  const completeness = data?.receivingCompleteness || asn?.receivingCompleteness;
+  const incompleteForReceiving = Boolean(completeness && !completeness.complete);
 
   useEffect(() => {
     if (!open || !lines.length) return;
@@ -67,7 +74,19 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
       queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asn._id] });
       notify.success(`Queued ${res.count || res.jobs?.length || 0} label job(s)`);
     },
-    onError: (err) => notify.fromError(err, { fallback: "Could not queue labels" }),
+    onError: (err) => {
+      if (err?.code === "ASN_INCOMPLETE") {
+        queryClient.invalidateQueries({ queryKey: ["asn", asn._id] });
+        queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asn._id] });
+        const missing = extractAsnCompletenessMissing(err);
+        notify.error(
+          formatCompletenessErrorMessage(err) +
+            (missing.length ? ` (${missing.map((m) => m.label || m.field).join(", ")})` : "")
+        );
+        return;
+      }
+      notify.fromError(err, { fallback: "Could not queue labels" });
+    },
   });
 
   const reprintAllMutation = useMutation({
@@ -95,13 +114,13 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
   );
 
   const canSave = useMemo(() => {
-    if (!data?.eligible || !canPrint) return false;
+    if (!data?.eligible || !canPrint || incompleteForReceiving) return false;
     return lines.every((line) => {
       const plan = plans[String(line.asnLineId)] || defaultLinePlan(line);
       const diff = distributionDifference(line.asnQty, plan.labelDistribution || []);
       return Math.abs(diff.difference) < 1e-6 && (plan.labelDistribution || []).length > 0;
     });
-  }, [data?.eligible, canPrint, lines, plans]);
+  }, [data?.eligible, canPrint, incompleteForReceiving, lines, plans]);
 
   const hasActiveRus = previewFaces.length > 0;
   const reprepareMode = intent === "reprepare";
@@ -186,6 +205,16 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
         forceReplan: reprepareMode,
       });
     } catch (err) {
+      if (err?.code === "ASN_INCOMPLETE") {
+        queryClient.invalidateQueries({ queryKey: ["asn", asn._id] });
+        queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asn._id] });
+        const missing = extractAsnCompletenessMissing(err);
+        notify.error(
+          formatCompletenessErrorMessage(err) +
+            (missing.length ? ` (${missing.map((m) => m.label || m.field).join(", ")})` : "")
+        );
+        return;
+      }
       if (err?.code === "RU_PLAN_CONFLICT") {
         notify.fromError(err, { fallback: "Another user updated this label plan. Refresh and try again." });
         return;
@@ -249,7 +278,18 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
             Labels can be prepared only when the ASN is Shipped or Arrived.
           </p>
         ) : null}
-        {data?.replanAllowed === false ? (
+        {completeness ? (
+          <div className="mb-4">
+            <AsnReceivingCompletenessPanel completeness={completeness} />
+          </div>
+        ) : null}
+        {incompleteForReceiving ? (
+          <p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            New RU planning and first-print are blocked until required ASN data is completed. Existing printed
+            labels may still be reprinted.
+          </p>
+        ) : null}
+        {data?.replanAllowed === false && data?.replanBlockCode !== "ASN_INCOMPLETE" ? (
           <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
             {data.replanBlockedReason || "Receiving has started. RU structure can no longer be changed."}
           </p>
@@ -422,7 +462,11 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
             variant="success"
             className="min-h-14 text-base"
             loading={printMutation.isPending}
-            disabled={!canPrint || !previewFaces.some((ru) => ru.status === "PLANNED")}
+            disabled={
+              !canPrint ||
+              incompleteForReceiving ||
+              !previewFaces.some((ru) => ru.status === "PLANNED")
+            }
             onClick={() => printMutation.mutate({ printerCode: printerCode || undefined })}
           >
             Print RU Labels

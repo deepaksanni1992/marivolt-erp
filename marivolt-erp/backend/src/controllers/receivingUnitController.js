@@ -18,10 +18,16 @@ function sendError(res, err) {
       message: err.message,
       code: err.code,
       ...(err.details && typeof err.details === "object" ? { details: err.details } : {}),
+      ...(Array.isArray(err.missing) ? { missing: err.missing } : {}),
     });
   }
   const status = Number(err?.statusCode || err?.status) || 500;
-  return res.status(status).json({ message: err.message || "Receiving Unit request failed", code: err.code });
+  return res.status(status).json({
+    message: err.message || "Receiving Unit request failed",
+    code: err.code,
+    ...(err.details && typeof err.details === "object" ? { details: err.details } : {}),
+    ...(Array.isArray(err.missing) ? { missing: err.missing } : {}),
+  });
 }
 
 export async function listForAsn(req, res) {

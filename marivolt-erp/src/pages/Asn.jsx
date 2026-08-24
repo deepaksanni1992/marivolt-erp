@@ -18,6 +18,8 @@ import {
 } from "../lib/asnUi.js";
 import AsnCreatePoPicker from "../components/asn/AsnCreatePoPicker.jsx";
 import AsnWorkflowStrip from "../components/asn/AsnWorkflowStrip.jsx";
+import AsnReceivingCompletenessPanel from "../components/asn/AsnReceivingCompletenessPanel.jsx";
+import { shipArriveCompletenessWarning } from "../lib/asnReceivingCompleteness.js";
 
 async function openAsnDocument(documentId) {
   const data = await apiGet(`/documents/${documentId}/download`);
@@ -227,6 +229,38 @@ export default function AsnPage() {
     },
     onError: (e) => notify.fromError(e),
   });
+
+  async function confirmShipOrArrive(kind) {
+    const completeness = detailQ.data?.receivingCompleteness;
+    const warning = shipArriveCompletenessWarning(completeness);
+    if (warning) {
+      const ok = await confirmDialog({
+        title: kind === "ship" ? "Mark shipped" : "Mark arrived",
+        message: warning,
+        confirmLabel: kind === "ship" ? "Mark shipped" : "Mark arrived",
+      });
+      if (!ok) return;
+    }
+    if (kind === "ship") shipMut.mutate();
+    else arriveMut.mutate();
+  }
+
+  function focusCompletenessPanel() {
+    const el = document.getElementById("asn-data-completeness");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function onReceiveShipmentClick(e) {
+    const completeness = detailQ.data?.receivingCompleteness;
+    if (completeness && !completeness.complete) {
+      e.preventDefault();
+      notify.error(
+        completeness.summary ||
+          "ASN cannot proceed to receiving until required fields are completed."
+      );
+      focusCompletenessPanel();
+    }
+  }
 
   const cancelMut = useMutation({
     mutationFn: (reason) => apiPost(`/asn/${id}/cancel`, { reason }),
@@ -508,6 +542,9 @@ export default function AsnPage() {
             sessionStatus={progressQ.data?.session?.status}
             grnStatus={progressQ.data?.draftGrn?.status}
           />
+          {detail.receivingCompleteness ? (
+            <AsnReceivingCompletenessPanel completeness={detail.receivingCompleteness} />
+          ) : null}
           {progressQ.data?.progress ? (
             <p className="text-sm text-gray-600">
               Receiving Units: {progressQ.data.progress.ruTotal || 0}
@@ -785,15 +822,26 @@ export default function AsnPage() {
           <LoadingButton loading={patchMut.isPending} onClick={onSave}>Save</LoadingButton>
         ) : null}
         {!creating && canPost && status === "DRAFT" ? (
-          <LoadingButton loading={shipMut.isPending} onClick={() => shipMut.mutate()}>Mark shipped</LoadingButton>
+          <LoadingButton loading={shipMut.isPending} onClick={() => confirmShipOrArrive("ship")}>Mark shipped</LoadingButton>
         ) : null}
         {!creating && canPost && status === "SHIPPED" ? (
-          <LoadingButton loading={arriveMut.isPending} onClick={() => arriveMut.mutate()}>Mark arrived</LoadingButton>
+          <LoadingButton loading={arriveMut.isPending} onClick={() => confirmShipOrArrive("arrive")}>Mark arrived</LoadingButton>
         ) : null}
         {!creating && canStoreView && ["SHIPPED", "ARRIVED"].includes(status) ? (
-          <Link className="inline-flex min-h-11 items-center rounded-lg bg-sky-800 px-4 text-sm font-semibold text-white" to={incomingShipmentsPath(id)}>
-            Receive Shipment
-          </Link>
+          detail?.receivingCompleteness && !detail.receivingCompleteness.complete ? (
+            <button
+              type="button"
+              className="inline-flex min-h-11 items-center rounded-lg bg-slate-300 px-4 text-sm font-semibold text-slate-600"
+              onClick={onReceiveShipmentClick}
+              title="Complete required ASN data before receiving"
+            >
+              Receive Shipment
+            </button>
+          ) : (
+            <Link className="inline-flex min-h-11 items-center rounded-lg bg-sky-800 px-4 text-sm font-semibold text-white" to={incomingShipmentsPath(id)}>
+              Receive Shipment
+            </Link>
+          )
         ) : null}
         {!creating && canCancel && status !== "CANCELLED" && status !== "PARTIALLY_RECEIVED" && status !== "COMPLETED" ? (
           <div className="flex flex-wrap items-center gap-2">

@@ -37,6 +37,7 @@ import {
   inspectReplanReceivingBlockers,
   invalidateEmptyDraftReceivingSession,
 } from "./receivingInspectionGuard.js";
+import { assertAsnReceivingComplete } from "../utils/asnReceivingCompleteness.js";
 import {
   isSuccessfulLabelJobStatus,
   validateGrnLabelLinePrintConfig,
@@ -221,14 +222,25 @@ export async function listReceivingUnitsForAsn(companyId, asnId) {
   const blocked = blockers.blocked || grnBlockers.blocked;
   const blockedReason = blockers.blocked ? blockers.reason : grnBlockers.reason;
   const eligible = RU_PLAN_ELIGIBLE_ASN_STATUSES.includes(String(asn.status || "").toUpperCase());
+  const receivingCompleteness = validateAsnReceivingCompleteness(asn);
   return {
     asnId: asn._id,
     asnNo: asn.asnNo,
     status: asn.status,
     eligible,
-    replanAllowed: eligible && !blocked && active.length > 0,
-    replanBlockedReason: blocked ? blockedReason : "",
-    replanBlockCode: blocked ? "RU_RECEIVING_STARTED" : "",
+    receivingCompleteness,
+    receivingComplete: receivingCompleteness.complete,
+    replanAllowed: eligible && !blocked && active.length > 0 && receivingCompleteness.complete,
+    replanBlockedReason: blocked
+      ? blockedReason
+      : !receivingCompleteness.complete
+        ? receivingCompleteness.summary
+        : "",
+    replanBlockCode: blocked
+      ? "RU_RECEIVING_STARTED"
+      : !receivingCompleteness.complete
+        ? "ASN_INCOMPLETE"
+        : "",
     replanBlockSource: blockers.blocked ? blockers.source : grnBlockers.source || "",
     lines,
     receivingUnits: active,
@@ -545,6 +557,7 @@ export async function planReceivingUnits(req, asnId, body = {}) {
   const companyId = req.companyId;
   const asn = await loadAsnForCompany(companyId, asnId);
   assertAsnEligibleForRuPlan(asn.status);
+  assertAsnReceivingComplete(asn, { ErrorClass: ReceivingUnitError, status: 409 });
   await assertPoCompany(companyId, asn.sourcePoId);
 
   const linesIn = Array.isArray(body.lines) ? body.lines : [];

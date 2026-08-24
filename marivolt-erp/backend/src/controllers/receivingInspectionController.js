@@ -36,12 +36,16 @@ function sendError(res, err) {
     return res.status(err.status || err.statusCode || 400).json({
       message: err.message,
       code: err.code,
+      ...(err.details && typeof err.details === "object" ? { details: err.details } : {}),
+      ...(Array.isArray(err.missing) ? { missing: err.missing } : {}),
     });
   }
   const status = Number(err?.statusCode || err?.status) || 500;
   return res.status(status).json({
     message: err.message || "Receiving request failed",
     code: err.code,
+    ...(err.details && typeof err.details === "object" ? { details: err.details } : {}),
+    ...(Array.isArray(err.missing) ? { missing: err.missing } : {}),
   });
 }
 

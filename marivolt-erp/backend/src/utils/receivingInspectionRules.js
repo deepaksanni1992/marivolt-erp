@@ -62,12 +62,13 @@ export const DEFAULT_RECEIVING_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
 export const DEFAULT_RECEIVING_MIN_PHOTOS_PER_RU = 1;
 
 export class ReceivingInspectionError extends Error {
-  constructor(message, status = 400, code = "RECEIVING_ERROR") {
+  constructor(message, status = 400, code = "RECEIVING_ERROR", details = null) {
     super(message);
     this.name = "ReceivingInspectionError";
     this.status = status;
     this.statusCode = status;
     this.code = code;
+    if (details && typeof details === "object") this.details = details;
   }
 }
 

@@ -10,6 +10,7 @@ import ReceivingSessionUnit from "../models/ReceivingSessionUnit.js";
 import ReceivingUnit from "../models/ReceivingUnit.js";
 import ReceivingUnitPhoto from "../models/ReceivingUnitPhoto.js";
 import { actorName, sameCompanyId } from "../utils/asnRules.js";
+import { assertAsnReceivingComplete } from "../utils/asnReceivingCompleteness.js";
 import {
   RU_ACTIVE_STATUSES,
   RU_PLAN_ELIGIBLE_ASN_STATUSES,
@@ -287,6 +288,9 @@ export async function startOrResumeReceivingSession(req, body = {}) {
   if (existing) {
     return { created: false, resumed: true, session: serializeSession(existing) };
   }
+
+  // New session only — do not lock out already-started legacy sessions.
+  assertAsnReceivingComplete(asn, { ErrorClass: ReceivingInspectionError, status: 409 });
 
   const sessionNo = await nextReceivingSessionNo({
     companyId,

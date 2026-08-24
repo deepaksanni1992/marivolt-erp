@@ -6,8 +6,13 @@ import AsnReceivingLabelPlanner from "./AsnReceivingLabelPlanner.jsx";
 import ReceivingBarcodeScanner from "./ReceivingBarcodeScanner.jsx";
 import ReceivingDispositionReview from "./ReceivingDispositionReview.jsx";
 import ReceivingUnitInspectScreen from "./ReceivingUnitInspectScreen.jsx";
+import AsnReceivingCompletenessPanel from "../asn/AsnReceivingCompletenessPanel.jsx";
 import { apiGet, apiGetWithQuery, apiPost } from "../../lib/api.js";
 import { confirmDialog, notify } from "../../lib/notifications.js";
+import {
+  extractAsnCompletenessMissing,
+  formatCompletenessErrorMessage,
+} from "../../lib/asnReceivingCompleteness.js";
 import { useAuth } from "../../context/AuthContext.jsx";
 import {
   AsnStatusBadge,
@@ -118,7 +123,17 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
   const printedCount = currentRus.filter((ru) => String(ru.status || "").toUpperCase() === "PRINTED").length;
   const plannedCount = currentRus.filter((ru) => String(ru.status || "").toUpperCase() === "PLANNED").length;
   const eligibleReceiveStatus = ["SHIPPED", "ARRIVED"].includes(String(detail?.status || "").toUpperCase());
-  const canScanNow = canReceive && printedCount > 0 && !receivingComplete && !draftGrn?.grnNo;
+  const completeness = detail?.receivingCompleteness || ruListQ.data?.receivingCompleteness;
+  const incompleteForReceiving = Boolean(completeness && !completeness.complete);
+  const sessionStatus = String(session?.status || "").toUpperCase();
+  const hasActiveReceivingSession = sessionStatus === "DRAFT" || sessionStatus === "IN_PROGRESS";
+  const receivingBlockedByCompleteness = incompleteForReceiving && !hasActiveReceivingSession;
+  const canScanNow =
+    canReceive &&
+    printedCount > 0 &&
+    !receivingComplete &&
+    !draftGrn?.grnNo &&
+    !receivingBlockedByCompleteness;
   const receivingStarted =
     receivingComplete ||
     Boolean(draftGrn?.grnNo) ||
@@ -128,8 +143,11 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
     eligibleReceiveStatus &&
     ruCount > 0 &&
     !receivingStarted &&
+    !incompleteForReceiving &&
     ruListQ.data?.replanAllowed !== false;
   const reprintAllAllowed = canReprint && printedCount > 0 && eligibleReceiveStatus;
+  const canPrepareNewRus =
+    canPrepareLabels && eligibleReceiveStatus && !incompleteForReceiving && !receivingStarted;
 
   function openPlanner(intent = "review") {
     setPlannerIntent(intent);
@@ -163,8 +181,15 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
       notify.fromError(err, { fallback: "Could not reprint RU labels" });
     }
   }
-  const canStartNow = canReceive && ruCount > 0 && eligibleReceiveStatus && !receivingComplete && !draftGrn?.grnNo;
-  const canEnterRu = canReceive && ruCount > 0 && !receivingComplete && !draftGrn?.grnNo;
+  const canStartNow =
+    canReceive &&
+    ruCount > 0 &&
+    eligibleReceiveStatus &&
+    !receivingComplete &&
+    !draftGrn?.grnNo &&
+    (!incompleteForReceiving || hasActiveReceivingSession);
+  const canEnterRu =
+    canReceive && ruCount > 0 && !receivingComplete && !draftGrn?.grnNo && !receivingBlockedByCompleteness;
 
   function selectAsn(id) {
     navigate(incomingShipmentsPath(id), { replace: true });
@@ -224,6 +249,16 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
       setScannerOpen(true);
       return started;
     } catch (err) {
+      if (err?.code === "ASN_INCOMPLETE") {
+        const missing = extractAsnCompletenessMissing(err);
+        setScanError(
+          formatCompletenessErrorMessage(err) +
+            (missing.length ? ` Missing: ${missing.map((m) => m.label || m.field).join(", ")}` : "")
+        );
+        qc.invalidateQueries({ queryKey: ["asn", detail._id] });
+        qc.invalidateQueries({ queryKey: ["asn-receiving-units", detail._id] });
+        return;
+      }
       setScanError(err.message || "Could not start receiving");
     }
   }
@@ -463,6 +498,7 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
               <span>{detail.supplierName}</span>
               <span className="font-mono">{detail.sourcePoNo}</span>
             </div>
+            {completeness ? <AsnReceivingCompletenessPanel completeness={completeness} /> : null}
             {eligibleReceiveStatus && !receivingComplete && !draftGrn?.grnNo ? (
               <div className="grid gap-2">
                 {ruCount === 0 ? (
@@ -474,8 +510,25 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
                     {canPrepareLabels ? (
                       <button
                         type="button"
-                        className="mt-3 min-h-14 w-full rounded-2xl bg-slate-900 px-4 text-base font-semibold text-white"
-                        onClick={() => openPlanner("prepare")}
+                        className={`mt-3 min-h-14 w-full rounded-2xl px-4 text-base font-semibold text-white ${
+                          canPrepareNewRus ? "bg-slate-900" : "cursor-not-allowed bg-slate-300 text-slate-600"
+                        }`}
+                        onClick={() => {
+                          if (!canPrepareNewRus) {
+                            notify.error(
+                              completeness?.summary ||
+                                "Complete required ASN data before preparing Receiving Units."
+                            );
+                            return;
+                          }
+                          openPlanner("prepare");
+                        }}
+                        disabled={!canPrepareNewRus}
+                        title={
+                          incompleteForReceiving
+                            ? "Complete required ASN data before preparing Receiving Units"
+                            : undefined
+                        }
                       >
                         Prepare Receiving Units
                       </button>
@@ -729,8 +782,21 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
                 {ruCount > 0 ? (
                   <button
                     type="button"
-                    className="min-h-14 w-full rounded-2xl bg-sky-800 px-4 text-base font-semibold text-white"
-                    onClick={() => openPlanner("print")}
+                    className={`min-h-14 w-full rounded-2xl px-4 text-base font-semibold text-white ${
+                      incompleteForReceiving && plannedCount > 0 && !hasActiveReceivingSession
+                        ? "cursor-not-allowed bg-slate-300 text-slate-600"
+                        : "bg-sky-800"
+                    }`}
+                    onClick={() => {
+                      if (incompleteForReceiving && plannedCount > 0 && !printedCount) {
+                        notify.error(
+                          completeness?.summary ||
+                            "Complete required ASN data before printing Receiving Unit labels."
+                        );
+                        return;
+                      }
+                      openPlanner("print");
+                    }}
                   >
                     Print RU Labels
                   </button>

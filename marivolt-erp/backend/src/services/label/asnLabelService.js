@@ -26,6 +26,7 @@ import {
   serializeRu,
 } from "../receivingUnitService.js";
 import { actorName } from "../../utils/asnRules.js";
+import { assertAsnReceivingComplete } from "../../utils/asnReceivingCompleteness.js";
 
 function t(v) {
   return String(v ?? "").trim();
@@ -183,6 +184,7 @@ async function enqueueOneRuJob(req, { asn, ru, printer, companyName, settings, i
 
 export async function previewJobsFromAsn(req, body = {}) {
   const asn = await loadAsnForCompany(req.companyId, body.asnId || req.params?.id);
+  assertAsnReceivingComplete(asn, { ErrorClass: ReceivingUnitError, status: 409 });
   const rus = await loadPersistedRusForPrint(req.companyId, asn._id, body.receivingUnitIds);
   const companyName = await loadCompanyName(req.companyId);
   const faces = previewPayloadFromReceivingUnits(rus, asn).map((face) => {
@@ -213,6 +215,7 @@ export async function createJobsFromAsn(req, body = {}) {
   }
 
   const asn = await loadAsnForCompany(companyId, body.asnId);
+  assertAsnReceivingComplete(asn, { ErrorClass: ReceivingUnitError, status: 409 });
   const listing = await listReceivingUnitsForAsn(companyId, asn._id);
   if (!listing.eligible) {
     throw new ReceivingUnitError(

@@ -9,10 +9,12 @@ import { recordLabelHistory } from "../services/label/labelAudit.js";
 import { syncGrnLabelStatus } from "../services/label/labelService.js";
 
 function sendErr(res, err) {
-  const status = err.statusCode || 400;
+  const status = Number(err.statusCode || err.status) || 400;
   res.status(status).json({
     message: err.message || "Label request failed",
     code: err.code || undefined,
+    ...(err.details && typeof err.details === "object" ? { details: err.details } : {}),
+    ...(Array.isArray(err.missing) ? { missing: err.missing } : {}),
   });
 }
 

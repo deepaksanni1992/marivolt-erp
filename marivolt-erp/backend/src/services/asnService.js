@@ -45,6 +45,7 @@ import {
   normalizeSupplierInvoiceRows,
   resolveAsnSupplierInvoices,
 } from "../utils/asnCustomsFieldOwnership.js";
+import { validateAsnReceivingCompleteness } from "../utils/asnReceivingCompleteness.js";
 import { asnHasReceivingResults } from "./receivingInspectionGuard.js";
 
 const PO_BLOCKED_STATUSES = new Set(["CANCELLED", "REJECTED"]);
@@ -636,6 +637,7 @@ export async function getAsn(companyId, id) {
   if (!Array.isArray(row.supplierInvoices) || !row.supplierInvoices.length) {
     row.supplierInvoices = resolveAsnSupplierInvoices(row);
   }
+  row.receivingCompleteness = validateAsnReceivingCompleteness(row);
   return row;
 }
 
