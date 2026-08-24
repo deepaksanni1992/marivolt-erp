@@ -175,6 +175,16 @@ export function parsePutawayFromLedgerRemarks(remarks = "") {
   return String(m[1] || "").trim();
 }
 
+/** Append GRN-style putaway segment to ledger remarks (no-op when blank). */
+export function appendPutawayToRemarks(remarks = "", putawayLocation = "") {
+  const put = String(putawayLocation || "").trim();
+  const base = String(remarks || "").trim();
+  if (!put) return base;
+  const putPart = `Putaway: ${put}`;
+  if (!base) return putPart;
+  return `${base} | ${putPart}`;
+}
+
 /**
  * From a flat list of GRN putaway candidates (already company-scoped),
  * pick the latest valid putaway per article for one warehouse.
@@ -315,6 +325,94 @@ export function resolvePutawayViaConversionLineage(
     value: inherited.value,
     source: "ARTICLE_CONVERSION",
     sourceType: "ARTICLE_CONVERSION",
+    sourceDocument: best.conversionNo || "",
+    sourceArticle,
+    inheritedFromSourceType: inherited.sourceType || inherited.source || "",
+    inheritedFromDocument: inherited.sourceDocument || "",
+    date: best.postedAt || best.conversionDate || null,
+    historical: true,
+  };
+}
+
+/**
+ * Whether a PACK_CONVERSION kit/de-kit may inherit putaway (same warehouse, completed).
+ */
+export function packConversionAllowsPutawayInheritance(transform = {}, warehouse = "MAIN") {
+  const wh = String(warehouse || "MAIN").trim().toUpperCase();
+  const st = String(transform.status || "").trim().toUpperCase();
+  if (st !== "COMPLETED") return false;
+  const convWh = String(transform.warehouse || "").trim().toUpperCase();
+  if (convWh !== wh) return false;
+  const srcLoc = String(transform.sourceLocation || "").trim().toUpperCase();
+  const tgtLoc = String(transform.targetLocation || "").trim().toUpperCase();
+  if (srcLoc && tgtLoc && srcLoc !== tgtLoc) return false;
+  return true;
+}
+
+/**
+ * Pure PACK_CONVERSION lineage resolver (DeKittingOrder / KittingOrder graph).
+ */
+export function resolvePutawayViaPackConversionLineage(
+  targetArticle,
+  {
+    warehouse = "MAIN",
+    putawayCandidates = [],
+    transforms = [],
+    maxDepth = PUTAWAY_LINEAGE_MAX_DEPTH,
+    asOfDate = null,
+    visited = null,
+    depth = 0,
+  } = {}
+) {
+  const art = String(targetArticle || "").trim().toUpperCase();
+  const wh = String(warehouse || "MAIN").trim().toUpperCase();
+  if (!art) return null;
+  if (depth > maxDepth) return null;
+
+  const seen = visited || new Set();
+  if (seen.has(art)) return null;
+  seen.add(art);
+
+  const directMap = selectLatestPutawayByArticle(putawayCandidates, wh, asOfDate);
+  const direct = directMap.get(art);
+  if (direct?.value) {
+    return { ...direct, sourceType: direct.sourceType || direct.source || "GRN" };
+  }
+
+  const asOfTs = asOfDate != null ? new Date(asOfDate).getTime() : null;
+  let best = null;
+  let bestTs = -1;
+  for (const transform of transforms) {
+    if (!packConversionAllowsPutawayInheritance(transform, wh)) continue;
+    if (String(transform.targetArticle || "").trim().toUpperCase() !== art) continue;
+    const postedAt = transform.postedAt || transform.conversionDate || null;
+    const ts = postedAt ? new Date(postedAt).getTime() || 0 : 0;
+    if (asOfTs != null && Number.isFinite(asOfTs) && ts > asOfTs) continue;
+    if (ts >= bestTs) {
+      bestTs = ts;
+      best = transform;
+    }
+  }
+  if (!best) return null;
+
+  const sourceArticle = String(best.sourceArticle || "").trim().toUpperCase();
+  if (!sourceArticle || sourceArticle === art) return null;
+
+  const inherited = resolvePutawayViaPackConversionLineage(sourceArticle, {
+    warehouse: wh,
+    putawayCandidates,
+    transforms,
+    maxDepth,
+    asOfDate: best.postedAt || best.conversionDate || asOfDate,
+    visited: seen,
+    depth: depth + 1,
+  });
+  if (!inherited?.value) return null;
+
+  return {
+    value: inherited.value,
+    source: "PACK_CONVERSION",
+    sourceType: "PACK_CONVERSION",
     sourceDocument: best.conversionNo || "",
     sourceArticle,
     inheritedFromSourceType: inherited.sourceType || inherited.source || "",

@@ -29,6 +29,11 @@ import {
   selectPackConversionCustomsLayers,
 } from "./packConversionCustomsService.js";
 import StockLedger from "../models/StockLedger.js";
+import { batchLastKnownPutaway } from "./lastKnownPutawayService.js";
+import {
+  appendPutawayToRemarks,
+  parsePutawayFromLedgerRemarks,
+} from "../utils/packingPhysicalStock.js";
 
 function lineKey(line) {
   return String(line?.lineId || line?.componentItemCode || "");
@@ -247,6 +252,29 @@ function setPackCostSnapshot(order, {
   };
 }
 
+async function resolvePackConversionSourcePutaway({ companyId, warehouse, article }) {
+  const art = String(article || "").trim().toUpperCase();
+  if (!art) return "";
+  const map = await batchLastKnownPutaway({ companyId, warehouse, articles: [art] });
+  const row = map.get(art);
+  return row?.value ? String(row.value).trim() : "";
+}
+
+function freezePackPutawaySnapshot(order, putaway) {
+  const put = String(putaway || "").trim();
+  order.sourcePutawayLocation = put || "";
+  order.producedPutawayLocation = put || "";
+}
+
+async function resolveReversalPutaway(order, strict, { companyId, warehouse, article, origLedger }) {
+  if (!strict) return "";
+  const frozen = String(order?.sourcePutawayLocation || "").trim();
+  if (frozen) return frozen;
+  const fromLedger = parsePutawayFromLedgerRemarks(origLedger?.remarks);
+  if (fromLedger) return fromLedger;
+  return resolvePackConversionSourcePutaway({ companyId, warehouse, article });
+}
+
 /**
  * Kit assembly from frozen order snapshot (never live BOM lines).
  */
@@ -279,6 +307,7 @@ export async function runKitAssembly(order, createdBy, companyId, session) {
   let componentUnitCost = 0;
   let parentIncomingUnitCost = 0;
   let currency = "USD";
+  let sourcePutaway = "";
 
   if (strict) {
     order.customsLotLayers = await transferPackKitCustoms(order, companyId, session, createdBy);
@@ -299,6 +328,12 @@ export async function runKitAssembly(order, createdBy, companyId, session) {
       producedTotalCost: childTotalCost,
       currency,
     });
+    sourcePutaway = await resolvePackConversionSourcePutaway({
+      companyId,
+      warehouse: wh,
+      article: componentArticle,
+    });
+    freezePackPutawaySnapshot(order, sourcePutaway);
   }
 
   let componentCostTotal = 0;
@@ -366,7 +401,10 @@ export async function runKitAssembly(order, createdBy, companyId, session) {
     qty: kitQty,
     referenceType: "KITTING",
     referenceNo: refNum,
-    remarks: `Assembled kit (${order.kitType || "CUSTOM_KIT"}) ${order.parentItemCode}`,
+    remarks: appendPutawayToRemarks(
+      `Assembled kit (${order.kitType || "CUSTOM_KIT"}) ${order.parentItemCode}`,
+      strict ? sourcePutaway : ""
+    ),
     createdBy,
     movementType: stockService.MOVEMENT_TYPES.KIT_ASSEMBLY_IN,
     lineId: `PARENT:${orderLineId}`,
@@ -413,6 +451,7 @@ export async function runDeKit(order, createdBy, companyId, session) {
   let parentUnitCost = 0;
   let childIncomingUnitCost = 0;
   let currency = "USD";
+  let sourcePutaway = "";
 
   if (strict) {
     order.customsLotLayers = await transferPackDeKitCustoms(order, companyId, session, createdBy);
@@ -433,6 +472,12 @@ export async function runDeKit(order, createdBy, companyId, session) {
       producedTotalCost: parentTotalCost,
       currency,
     });
+    sourcePutaway = await resolvePackConversionSourcePutaway({
+      companyId,
+      warehouse: wh,
+      article: order.parentItemCode,
+    });
+    freezePackPutawaySnapshot(order, sourcePutaway);
   }
 
   const parentEk = buildKittingEffectKey({
@@ -496,7 +541,10 @@ export async function runDeKit(order, createdBy, companyId, session) {
       qty: compQtyIn,
       referenceType: "DEKITTING",
       referenceNo: refNum,
-      remarks: `De-kit component from (${order.kitType || "CUSTOM_KIT"}) ${order.parentItemCode}`,
+      remarks: appendPutawayToRemarks(
+        `De-kit component from (${order.kitType || "CUSTOM_KIT"}) ${order.parentItemCode}`,
+        strict ? sourcePutaway : ""
+      ),
       createdBy,
       movementType: stockService.MOVEMENT_TYPES.DEKIT_IN,
       lineId: compLineKeyId,
@@ -612,6 +660,12 @@ export async function runReverseKitAssembly(order, createdBy, companyId, session
     );
     const revKey = buildKittingReversalEffectKey(origKey);
     reversalKeys.push(revKey);
+    const childReversalPutaway = await resolveReversalPutaway(order, strict, {
+      companyId,
+      warehouse: wh,
+      article: componentArticle,
+      origLedger,
+    });
     await postIncrease({
       session,
       companyId,
@@ -620,7 +674,10 @@ export async function runReverseKitAssembly(order, createdBy, companyId, session
       qty: qtyBack,
       referenceType: "KITTING",
       referenceNo: refNum,
-      remarks: `Reverse kit component ${componentArticle} for ${order.parentItemCode}`,
+      remarks: appendPutawayToRemarks(
+        `Reverse kit component ${componentArticle} for ${order.parentItemCode}`,
+        childReversalPutaway
+      ),
       createdBy,
       movementType: stockService.MOVEMENT_TYPES.KIT_ASSEMBLY_REVERSAL_IN,
       lineId: compLineKeyId,
@@ -735,6 +792,12 @@ export async function runReverseDeKit(order, createdBy, companyId, session, reve
   );
   const parentRevKey = buildKittingReversalEffectKey(parentOrigKey);
   reversalKeys.push(parentRevKey);
+  const parentReversalPutaway = await resolveReversalPutaway(order, strict, {
+    companyId,
+    warehouse: wh,
+    article: order.parentItemCode,
+    origLedger: parentOrigLedger,
+  });
   await postIncrease({
     session,
     companyId,
@@ -743,7 +806,10 @@ export async function runReverseDeKit(order, createdBy, companyId, session, reve
     qty: kitQty,
     referenceType: "DEKITTING",
     referenceNo: refNum,
-    remarks: `Reverse de-kit parent ${order.parentItemCode}`,
+    remarks: appendPutawayToRemarks(
+      `Reverse de-kit parent ${order.parentItemCode}`,
+      parentReversalPutaway
+    ),
     createdBy,
     movementType: stockService.MOVEMENT_TYPES.DEKIT_REVERSAL_IN,
     lineId: `PARENT:${orderLineId}`,

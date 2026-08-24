@@ -121,6 +121,10 @@ const deKittingOrderSchema = new mongoose.Schema(
     reversalOperationId: { type: String, default: "", trim: true },
     reversalReason: { type: String, default: "", trim: true },
     costSnapshot: { type: costSnapshotSchema, default: null },
+    /** Frozen historical putaway of consumed parent stock at execution (PACK_CONVERSION). */
+    sourcePutawayLocation: { type: String, default: "", trim: true, uppercase: true },
+    /** Frozen historical putaway applied to produced child stock at execution (PACK_CONVERSION). */
+    producedPutawayLocation: { type: String, default: "", trim: true, uppercase: true },
     customsLotLayers: { type: [customsLotLayerSchema], default: [] },
     remarks: { type: String, default: "" },
     createdBy: { type: String, default: "" },
