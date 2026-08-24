@@ -12,7 +12,7 @@ import {
   probePrinterReadyLightweight,
 } from "./windowsPrintJobStatus.js";
 
-const APP_VERSION = "1.8.0";
+const APP_VERSION = "1.8.1";
 
 /** Freshness window for using heartbeat health as lease eligibility (ms). */
 const HEALTH_CACHE_TTL_MS = 20_000;

@@ -577,23 +577,37 @@ export function buildSinglePackingLabelTspl(line = {}, opts = {}) {
     },
   ];
 
-  // Complete TSPL label document (default): SIZE/GAP/DIRECTION/REFERENCE + CLS + face + PRINT.
-  // omitMediaSetup remains only for legacy RAW_FACE_BATCH historical payloads.
+  // Media setup:
+  // - omitMediaSetup: legacy RAW_FACE_BATCH historical faces (CLS only).
+  // - mediaAlreadyDetected: TSPL_LABEL_BATCH after agent GAPDETECT — keep SIZE for
+  //   100×50 imaging coordinates; omit GAP so detected gap/pitch stays authoritative.
+  //   (TSPL AUTODETECT explicitly forbids GAP/BLINE after sensor detect; GAPDETECT
+  //   likewise determines paper length + gap — reissuing GAP would override it.)
+  // - default: full SIZE+GAP for SINGLE_RAW / GRN / ASN / standalone faces.
   const cmds = opts.omitMediaSetup
     ? [
         "CLS",
         `BOX ${outerX},${outerY},${outerX + outerW},${outerY + outerH},${border}`,
         `BAR ${valueColX},${outerY},${border},${outerH}`,
       ]
-    : [
-        `SIZE ${w} mm,${h} mm`,
-        "GAP 3 mm,0",
-        "DIRECTION 1",
-        "REFERENCE 0,0",
-        "CLS",
-        `BOX ${outerX},${outerY},${outerX + outerW},${outerY + outerH},${border}`,
-        `BAR ${valueColX},${outerY},${border},${outerH}`,
-      ];
+    : opts.mediaAlreadyDetected
+      ? [
+          `SIZE ${w} mm,${h} mm`,
+          "DIRECTION 1",
+          "REFERENCE 0,0",
+          "CLS",
+          `BOX ${outerX},${outerY},${outerX + outerW},${outerY + outerH},${border}`,
+          `BAR ${valueColX},${outerY},${border},${outerH}`,
+        ]
+      : [
+          `SIZE ${w} mm,${h} mm`,
+          "GAP 3 mm,0",
+          "DIRECTION 1",
+          "REFERENCE 0,0",
+          "CLS",
+          `BOX ${outerX},${outerY},${outerX + outerW},${outerY + outerH},${border}`,
+          `BAR ${valueColX},${outerY},${border},${outerH}`,
+        ];
 
   let y = outerY;
   for (let i = 0; i < rows.length; i++) {
@@ -804,14 +818,22 @@ export function buildPackingJobTspl(lines = [], opts = {}) {
 }
 
 /**
- * One complete independent TSPL label document per physical packing face.
- * Each payload includes SIZE/GAP/DIRECTION/REFERENCE + CLS + face + PRINT 1,1
- * using normal 100×50 coordinates (same origin every face — no cumulative Y).
+ * One independent TSPL packing face per physical label for TSPL_LABEL_BATCH.
+ * Default: mediaAlreadyDetected — SIZE/DIRECTION/REFERENCE + CLS + face + PRINT 1,1
+ * (no GAP). Agent runs GAPDETECT once before face 1; hardcoded GAP would override
+ * the detected gap (TSPL semantics). SIZE remains so the 100×50 coordinate system
+ * (including QTY Y=330) is unchanged. Same local origin every face — no cumulative Y.
  *
  * Used by payloadMode TSPL_LABEL_BATCH (packing / custom packing).
  */
 export function buildPackingLabelBatchPayloads(lines = [], opts = {}) {
-  const faceOpts = { ...opts, omitMediaSetup: false };
+  const faceOpts = {
+    ...opts,
+    omitMediaSetup: false,
+    // Detected-media batch path (default). Pass mediaAlreadyDetected:false only for
+    // diagnostics that intentionally re-emit full SIZE+GAP.
+    mediaAlreadyDetected: opts.mediaAlreadyDetected !== false,
+  };
   const payloads = [];
   for (const line of lines) {
     const copies = Math.max(

@@ -14,14 +14,17 @@ import {
 import {
   classifyLabelFaceBatchResult,
   faceDocumentName,
+  GAPDETECT_TSPL,
+  gapDetectDocumentName,
   validateLabelFaceBatchInput,
 } from "./adapters/rawFaceBatch.js";
 
 /**
  * Sequential per-printer print cycle.
  * SINGLE_RAW: one WritePrinter TSPL + JobId drain (GRN/ASN/RU).
- * TSPL_LABEL_BATCH: N complete TSPL labels (SIZE+GAP+…) inside one FIFO lease.
- * RAW_FACE_BATCH: legacy packing faces (kept for historical jobs).
+ * TSPL_LABEL_BATCH: once-per-batch GAPDETECT, then N faces with SIZE (no GAP)
+ *   so Rongta-detected media pitch stays authoritative inside one FIFO lease.
+ * RAW_FACE_BATCH: legacy packing faces (kept for historical jobs; no GAPDETECT).
  */
 export function createJobProcessor({
   getPrinterHealth,
@@ -107,6 +110,104 @@ export function createJobProcessor({
     dlog(
       `PRINT_DIAG jobId=${trace.jobId} event=label_face_batch_start mode=${modeName} faces=${faces.length} requested=${requested}`
     );
+
+    /**
+     * Packing/custom packing only: one parameterless GAPDETECT before face 1 so the
+     * Rongta gap sensor learns media pitch. Never for RAW_FACE_BATCH / SINGLE_RAW.
+     * Failure → FAILED with zero face writes (no labels printed).
+     */
+    async function submitGapDetectOnce() {
+      const documentName = gapDetectDocumentName(job.jobNo);
+      const buf = Buffer.from(GAPDETECT_TSPL, "utf8");
+      log(`GAPDETECT start for ${job.jobNo}`, { event: "gap_detect_start" });
+      dlog(
+        `PRINT_DIAG jobId=${trace.jobId} event=gap_detect_start mode=${modeName} documentName=${documentName} bytes=${buf.length}`
+      );
+
+      let sent;
+      try {
+        if (typeof printRaw === "function") {
+          sent = await printRaw(buf, printerName, {
+            documentName,
+            jobNo: job.jobNo,
+            purpose: "gap_detect",
+          });
+        } else if (typeof printRawBatch === "function") {
+          const batchResult = await printRawBatch(
+            [{ buffer: buf, documentName, faceIndex: -1 }],
+            printerName,
+            { jobNo: job.jobNo, purpose: "gap_detect" }
+          );
+          sent = Array.isArray(batchResult?.results) ? batchResult.results[0] : null;
+          if (!sent && batchResult?.error) {
+            sent = { ok: false, error: batchResult.error };
+          }
+        } else {
+          return { ok: false, error: "RAW transport not configured for GAPDETECT" };
+        }
+      } catch (e) {
+        return { ok: false, error: e.message || "GAPDETECT write failed" };
+      }
+
+      const wrote = sent?.ok !== false;
+      const timing = sent?.timing || null;
+      const bytesWritten =
+        timing?.bytesWritten != null
+          ? Number(timing.bytesWritten)
+          : sent?.bytesWritten != null
+            ? Number(sent.bytesWritten)
+            : null;
+      if (
+        wrote &&
+        bytesWritten != null &&
+        Number.isFinite(bytesWritten) &&
+        buf.length > 0 &&
+        bytesWritten < buf.length
+      ) {
+        return {
+          ok: false,
+          error: `Partial WritePrinter GAPDETECT (${bytesWritten}/${buf.length})`,
+        };
+      }
+      if (!wrote) {
+        return {
+          ok: false,
+          error: sent?.error || "WritePrinter failed for GAPDETECT",
+        };
+      }
+
+      log(`GAPDETECT submitted for ${job.jobNo}`, { event: "gap_detect_submitted" });
+      dlog(`PRINT_DIAG jobId=${trace.jobId} event=gap_detect_submitted documentName=${documentName}`);
+      log(`GAPDETECT done for ${job.jobNo}`, { event: "gap_detect_done" });
+      dlog(`PRINT_DIAG jobId=${trace.jobId} event=gap_detect_done documentName=${documentName}`);
+      return { ok: true, documentName };
+    }
+
+    if (modeName === "TSPL_LABEL_BATCH") {
+      const gap = await submitGapDetectOnce();
+      if (!gap.ok) {
+        log(`GAPDETECT failed for ${job.jobNo}: ${gap.error || "unknown"}`, {
+          event: "gap_detect_failed",
+          level: "error",
+        });
+        dlog(
+          `PRINT_DIAG jobId=${trace.jobId} event=gap_detect_failed error=${String(gap.error || "").slice(0, 200)}`
+        );
+        const outcome = {
+          status: "FAILED",
+          printedQty: 0,
+          submittedFaceCount: 0,
+          windowsSpoolJobIds: [],
+          lastLabelWriteIndex: -1,
+          labelsAttempted: 0,
+          totalLabels: requested,
+          error: gap.error || "gap_detect_failed",
+        };
+        await reportResult(job, outcome);
+        emitTimingSummary(log, trace.finish(outcome));
+        return true;
+      }
+    }
 
     async function submitOneFace(i, printFn) {
       const documentName = faceDocumentName(job.jobNo, i);

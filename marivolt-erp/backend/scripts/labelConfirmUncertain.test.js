@@ -247,9 +247,9 @@ run("confirm does not mutate RU identity fields in applyReceivingUnitPrintResult
   assert.doesNotMatch(fn, /ruPlanVersion/);
 });
 
-run("print-agent 1.8.0 READY gate / UNCERTAIN safety unchanged by confirm workflow", () => {
+run("print-agent 1.8.1 READY gate / UNCERTAIN safety unchanged by confirm workflow", () => {
   const agent = fs.readFileSync(path.join(repoRoot, "print-agent", "src", "index.js"), "utf8");
-  assert.match(agent, /APP_VERSION = "1.8.0"/);
+  assert.match(agent, /APP_VERSION = "1.8.1"/);
   const safety = fs.readFileSync(path.join(repoRoot, "print-agent", "src", "printSafety.js"), "utf8");
   assert.match(safety, /Windows spool did not drain before timeout/);
   assert.match(safety, /Printer left READY after spool submit/);

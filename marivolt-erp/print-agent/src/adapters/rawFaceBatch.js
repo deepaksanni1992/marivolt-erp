@@ -3,6 +3,14 @@
  * Pure helpers for zero-paper tests (no Windows / GDI).
  */
 
+/** Parameterless TSPL gap calibration — once per TSPL_LABEL_BATCH, never per face. */
+export const GAPDETECT_TSPL = "GAPDETECT\r\n";
+
+export function gapDetectDocumentName(jobNo) {
+  const base = String(jobNo || "JOB").trim() || "JOB";
+  return `Marivolt ${base} GAPDETECT`.slice(0, 120);
+}
+
 export function validateLabelFaceBatchInput({ faces, requestedLabels, mode = "TSPL_LABEL_BATCH" } = {}) {
   const list = Array.isArray(faces) ? faces : [];
   const requested = Math.max(0, Number(requestedLabels) || 0);
