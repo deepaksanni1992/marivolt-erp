@@ -19,6 +19,7 @@ export default function Kitting() {
     kitBatch: "",
     remarks: "",
   });
+  const [reversalReason, setReversalReason] = useState("");
   const [shortageOpen, setShortageOpen] = useState(false);
   const [err, setErr] = useState("");
 
@@ -73,6 +74,16 @@ export default function Kitting() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["kittingOrders"] });
       qc.invalidateQueries({ queryKey: ["kittingOrder", detailId] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const reverseMutation = useMutation({
+    mutationFn: ({ id, reason }) => apiPost(`/kitting/${id}/reverse`, { reason }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["kittingOrders"] });
+      qc.invalidateQueries({ queryKey: ["kittingOrder", detailId] });
+      qc.invalidateQueries({ queryKey: ["stockBalances"] });
     },
     onError: (e) => setErr(e.message),
   });
@@ -214,10 +225,28 @@ export default function Kitting() {
                 <span className="text-gray-500">Assembled Cost</span> {Number(detail.assembledCost || 0).toFixed(2)}
               </div>
             </div>
+            {detail.previewConsume?.length > 0 && (
+              <div className="rounded-xl border bg-slate-50 p-3 text-xs">
+                <div className="mb-1 font-semibold text-slate-700">Stock effect (frozen at create)</div>
+                <div className="space-y-1">
+                  {(detail.previewConsume || []).map((ln, i) => (
+                    <div key={`c-${i}`}>Consume: {ln.article} — {ln.qty} {ln.uom}</div>
+                  ))}
+                  {(detail.previewProduce || []).map((ln, i) => (
+                    <div key={`p-${i}`}>Produce: {ln.article} — {ln.qty} {ln.uom}</div>
+                  ))}
+                </div>
+                {detail.bomKind === "PACK_CONVERSION" && detail.linesSnapshot?.[0] && (
+                  <div className="mt-2 text-slate-600">
+                    Conversion: {detail.linesSnapshot[0].qtyPerKit} {detail.linesSnapshot[0].componentUom} = 1 {detail.parentUom}
+                  </div>
+                )}
+              </div>
+            )}
             {detail.linesSnapshot?.length > 0 && (
               <div>
                 <div className="mb-1 text-xs font-semibold text-gray-500">
-                  BOM snapshot (at completion)
+                  BOM snapshot (frozen at create)
                 </div>
                 <div className="overflow-x-auto rounded-xl border">
                   <table className="min-w-full text-xs">
@@ -237,6 +266,28 @@ export default function Kitting() {
                     </tbody>
                   </table>
                 </div>
+              </div>
+            )}
+            {detail.status === "COMPLETED" && detail.reversalStatus !== "REVERSED" && (
+              <div className="flex flex-wrap items-end gap-2 border-t pt-3">
+                <TextInput
+                  className="min-w-[220px] flex-1"
+                  placeholder="Reversal reason (required)"
+                  value={reversalReason}
+                  onChange={(e) => setReversalReason(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm disabled:opacity-50"
+                  disabled={reverseMutation.isPending || !reversalReason.trim()}
+                  onClick={async () => {
+                    if (await confirmDialog("Reverse this completed kitting transaction?")) {
+                      reverseMutation.mutate({ id: detail._id, reason: reversalReason.trim() });
+                    }
+                  }}
+                >
+                  Reverse posting
+                </button>
               </div>
             )}
             {detail.status === "DRAFT" && (
@@ -298,20 +349,22 @@ export default function Kitting() {
               onChange={(e) => setForm((f) => ({ ...f, warehouse: e.target.value }))}
             />
           </FormField>
-          <FormField label="Number of kits *">
+          <FormField label={`Number of kits *${shortageData?.bomKind === "PACK_CONVERSION" ? " (whole units)" : ""}`}>
             <TextInput
               type="number"
-              step="0.0001"
+              step={shortageData?.bomKind === "PACK_CONVERSION" ? "1" : "0.0001"}
               value={form.quantity}
               onChange={(e) => setForm((f) => ({ ...f, quantity: Number(e.target.value) }))}
             />
           </FormField>
+          {shortageData?.bomKind !== "PACK_CONVERSION" && (
           <FormField label="Kit Batch">
             <TextInput
               value={form.kitBatch}
               onChange={(e) => setForm((f) => ({ ...f, kitBatch: e.target.value }))}
             />
           </FormField>
+          )}
           <FormField label="Remarks" className="sm:col-span-2">
             <TextInput
               value={form.remarks}
@@ -355,6 +408,9 @@ export default function Kitting() {
             <div className="text-xs text-slate-600">
               BOM {shortageData.bomCode || "—"} / Rev {shortageData.bomRevision || "—"} / Blocking shortage:{" "}
               <strong>{shortageData.hasBlockingShortage ? "YES" : "NO"}</strong>
+              {shortageData.maxKittable != null && (
+                <> / Max kittable: <strong>{shortageData.maxKittable}</strong> {shortageData.parentUom || ""}</>
+              )}
             </div>
             <div className="max-h-72 overflow-auto rounded border">
               <table className="min-w-full text-xs">

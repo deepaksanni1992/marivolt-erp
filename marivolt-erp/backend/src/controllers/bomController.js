@@ -1,5 +1,13 @@
 import mongoose from "mongoose";
 import BOM from "../models/BOM.js";
+import ItemMaster from "../models/itemMasterModel.js";
+import {
+  appendBomRevisionHistory,
+  bomConversionDefChanged,
+  resolveBomKind,
+  validateAndEnrichPackConversionBom,
+} from "../utils/kittingPackConversion.js";
+import { BOM_ITEM_NOT_FOUND, BOM_ITEM_INACTIVE, BOM_PACK_CONVERSION_INVALID } from "../utils/kittingIdempotency.js";
 
 function pagination(req) {
   const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
@@ -9,6 +17,16 @@ function pagination(req) {
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
+}
+
+function respondBomError(res, err) {
+  const code = err.code || BOM_PACK_CONVERSION_INVALID;
+  const status = [BOM_ITEM_NOT_FOUND, BOM_ITEM_INACTIVE, BOM_PACK_CONVERSION_INVALID].includes(code) ? 400 : 400;
+  return res.status(status).json({
+    message: err.message,
+    code,
+    article: err.article || null,
+  });
 }
 
 function normalizeBomLine(line = {}) {
@@ -28,7 +46,112 @@ function normalizeBomLine(line = {}) {
     interchangeableGroup: String(line.interchangeableGroup || "").trim().toUpperCase(),
     alternativeArticles,
     remarks: String(line.remarks || "").trim(),
+    componentUom: String(line.componentUom || "").trim().toUpperCase(),
+    componentItemName: String(line.componentItemName || "").trim(),
   };
+}
+
+async function enrichGenericBomLines(companyId, parentItemCode, lines) {
+  const codes = [
+    String(parentItemCode || "").trim().toUpperCase(),
+    ...lines.map((l) => String(l.article || l.componentItemCode || "").trim().toUpperCase()),
+  ].filter(Boolean);
+  const items = await ItemMaster.find({ companyId, article: { $in: codes } }).lean();
+  const map = new Map(items.map((i) => [String(i.article).toUpperCase(), i]));
+  const parent = map.get(String(parentItemCode).toUpperCase());
+  if (!parent) {
+    const err = new Error(`Item Master article not found: ${parentItemCode}`);
+    err.code = BOM_ITEM_NOT_FOUND;
+    err.article = parentItemCode;
+    throw err;
+  }
+  if (String(parent.status || "Active") !== "Active") {
+    const err = new Error(`Item Master article is not active: ${parentItemCode}`);
+    err.code = BOM_ITEM_INACTIVE;
+    err.article = parentItemCode;
+    throw err;
+  }
+  const enriched = lines.map((l) => {
+    const code = String(l.article || l.componentItemCode || "").trim().toUpperCase();
+    const item = map.get(code);
+    if (!item) {
+      const err = new Error(`Item Master article not found: ${code}`);
+      err.code = BOM_ITEM_NOT_FOUND;
+      err.article = code;
+      throw err;
+    }
+    if (String(item.status || "Active") !== "Active") {
+      const err = new Error(`Item Master article is not active: ${code}`);
+      err.code = BOM_ITEM_INACTIVE;
+      err.article = code;
+      throw err;
+    }
+    return {
+      ...l,
+      componentUom: String(item.uom || "PCS").toUpperCase(),
+      componentItemName: item.itemName || "",
+      description: l.description || item.description || item.itemName || "",
+    };
+  });
+  return {
+    parentUom: String(parent.uom || "PCS").toUpperCase(),
+    parentItemName: parent.itemName || "",
+    lines: enriched,
+  };
+}
+
+async function prepareBomPayload(req, body, existing = null) {
+  const payload = { ...body };
+  if (payload.parentItemCode) {
+    payload.parentItemCode = String(payload.parentItemCode).trim().toUpperCase();
+  }
+  if (Array.isArray(payload.lines)) {
+    payload.lines = payload.lines.map(normalizeBomLine).filter((l) => l.article && l.qty > 0);
+  }
+  payload.kitType = String(payload.kitType || existing?.kitType || "CUSTOM_KIT").trim().toUpperCase();
+  payload.bomKind = resolveBomKind(payload.kitType);
+  payload.workflowMode = String(payload.workflowMode || existing?.workflowMode || "BOTH").trim().toUpperCase();
+  payload.revisionNo = String(payload.revisionNo || existing?.revisionNo || "R1").trim();
+  payload.bomName = String(payload.bomName || payload.name || existing?.bomName || "").trim();
+  payload.bomCode = String(
+    payload.bomCode || `${payload.parentItemCode || existing?.parentItemCode}-${payload.revisionNo}`
+  ).trim().toUpperCase();
+
+  if (payload.bomKind === "PACK_CONVERSION") {
+    const validated = await validateAndEnrichPackConversionBom({
+      companyId: req.companyId,
+      parentItemCode: payload.parentItemCode || existing?.parentItemCode,
+      lines: payload.lines,
+      workflowMode: payload.workflowMode,
+    });
+    payload.parentUom = validated.parentUom;
+    payload.parentItemName = validated.parentItemName;
+    payload.lines = [validated.enrichedLine];
+    payload.workflowMode = validated.workflowMode;
+  } else if (payload.lines?.length) {
+    try {
+      const enriched = await enrichGenericBomLines(
+        req.companyId,
+        payload.parentItemCode || existing?.parentItemCode,
+        payload.lines
+      );
+      payload.parentUom = enriched.parentUom;
+      payload.parentItemName = enriched.parentItemName;
+      payload.lines = enriched.lines;
+    } catch (err) {
+      if (err.code === BOM_ITEM_NOT_FOUND || err.code === BOM_ITEM_INACTIVE) {
+        // Legacy generic BOMs may reference articles not yet in Item Master.
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  if (existing && payload.bomKind === "PACK_CONVERSION" && bomConversionDefChanged(existing, payload)) {
+    payload.revisions = appendBomRevisionHistory(existing, req.user?.email || "");
+  }
+
+  return payload;
 }
 
 export async function listBoms(req, res) {
@@ -89,21 +212,15 @@ export async function getBomByParentCode(req, res) {
 
 export async function createBom(req, res) {
   try {
-    const body = { ...req.body, companyId: req.companyId, createdBy: req.user?.email || "" };
-    if (body.parentItemCode) {
-      body.parentItemCode = String(body.parentItemCode).trim().toUpperCase();
-    }
-    if (Array.isArray(body.lines)) {
-      body.lines = body.lines.map(normalizeBomLine).filter((l) => l.article && l.qty > 0);
-    }
-    body.kitType = String(body.kitType || "CUSTOM_KIT").trim().toUpperCase();
-    body.workflowMode = String(body.workflowMode || "BOTH").trim().toUpperCase();
-    body.revisionNo = String(body.revisionNo || "R1").trim();
-    body.bomName = String(body.bomName || body.name || "").trim();
-    body.bomCode = String(body.bomCode || `${body.parentItemCode}-${body.revisionNo}`).trim().toUpperCase();
-    const doc = await BOM.create(body);
+    const body = await prepareBomPayload(req, { ...req.body });
+    const doc = await BOM.create({
+      ...body,
+      companyId: req.companyId,
+      createdBy: req.user?.email || "",
+    });
     res.status(201).json(doc);
   } catch (err) {
+    if (err.code) return respondBomError(res, err);
     res.status(400).json({ message: err.message });
   }
 }
@@ -114,27 +231,21 @@ export async function updateBom(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid id" });
     }
-    const payload = { ...req.body };
+    const existing = await BOM.findOne(withCompany(req, { _id: id }));
+    if (!existing) return res.status(404).json({ message: "Not found" });
+
+    const payload = await prepareBomPayload(req, { ...req.body }, existing.toObject());
     delete payload._id;
     delete payload.createdBy;
-    if (payload.parentItemCode) {
-      payload.parentItemCode = String(payload.parentItemCode).trim().toUpperCase();
-    }
-    if (Array.isArray(payload.lines)) {
-      payload.lines = payload.lines.map(normalizeBomLine).filter((l) => l.article && l.qty > 0);
-    }
-    if (payload.kitType) payload.kitType = String(payload.kitType).trim().toUpperCase();
-    if (payload.workflowMode) payload.workflowMode = String(payload.workflowMode).trim().toUpperCase();
-    if (payload.revisionNo) payload.revisionNo = String(payload.revisionNo).trim();
-    if (payload.bomName) payload.bomName = String(payload.bomName).trim();
-    if (payload.bomCode) payload.bomCode = String(payload.bomCode).trim().toUpperCase();
+    delete payload.companyId;
+
     const doc = await BOM.findOneAndUpdate(withCompany(req, { _id: id }), payload, {
       new: true,
       runValidators: true,
     });
-    if (!doc) return res.status(404).json({ message: "Not found" });
     res.json(doc);
   } catch (err) {
+    if (err.code) return respondBomError(res, err);
     res.status(400).json({ message: err.message });
   }
 }
@@ -163,7 +274,9 @@ export async function bomSummaryReport(req, res) {
       bomCode: r.bomCode || "",
       bomName: r.bomName || r.name || "",
       parentItemCode: r.parentItemCode,
+      parentUom: r.parentUom || "",
       kitType: r.kitType || "",
+      bomKind: r.bomKind || "",
       workflowMode: r.workflowMode || "",
       engineModel: r.engineModel || "",
       configuration: r.configuration || "",

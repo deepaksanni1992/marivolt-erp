@@ -1,10 +1,25 @@
 import mongoose from "mongoose";
 
+const previewLineSchema = new mongoose.Schema(
+  {
+    article: { type: String, required: true, trim: true, uppercase: true },
+    qty: { type: Number, required: true, min: 0 },
+    uom: { type: String, default: "", trim: true, uppercase: true },
+    description: { type: String, default: "" },
+  },
+  { _id: false }
+);
+
 const dekitLineSnapshotSchema = new mongoose.Schema(
   {
+    lineId: { type: String, default: "" },
     componentItemCode: { type: String, required: true, trim: true, uppercase: true },
+    componentUom: { type: String, default: "", trim: true, uppercase: true },
+    componentItemName: { type: String, default: "" },
     qtyPerKit: { type: Number, required: true, min: 0 },
     description: { type: String, default: "" },
+    optionalFlag: { type: Boolean, default: false },
+    alternativeArticles: { type: [String], default: [] },
   },
   { _id: false }
 );
@@ -14,10 +29,25 @@ const deKittingOrderSchema = new mongoose.Schema(
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
     dekitNumber: { type: String, required: true, trim: true },
     parentItemCode: { type: String, required: true, trim: true, uppercase: true },
+    parentUom: { type: String, default: "", trim: true, uppercase: true },
+    parentItemName: { type: String, default: "", trim: true },
     kitType: {
       type: String,
-      enum: ["ENGINE_OVERHAUL_KIT", "SERVICE_KIT", "CYLINDER_HEAD_KIT", "FUEL_PUMP_KIT", "CUSTOM_KIT"],
+      enum: [
+        "ENGINE_OVERHAUL_KIT",
+        "SERVICE_KIT",
+        "CYLINDER_HEAD_KIT",
+        "FUEL_PUMP_KIT",
+        "CUSTOM_KIT",
+        "PACK_CONVERSION",
+      ],
       default: "CUSTOM_KIT",
+      index: true,
+    },
+    bomKind: {
+      type: String,
+      enum: ["PACK_CONVERSION", "GENERIC"],
+      default: "GENERIC",
       index: true,
     },
     disassemblyMode: {
@@ -34,16 +64,33 @@ const deKittingOrderSchema = new mongoose.Schema(
     assemblyDate: { type: Date, default: null },
     assembledBy: { type: String, default: "", trim: true },
     linkedBomRevision: { type: String, default: "", trim: true },
+    bomSnapshotAt: { type: Date, default: null },
     assembledCost: { type: Number, default: 0, min: 0 },
     componentCostTotal: { type: Number, default: 0, min: 0 },
     quantity: { type: Number, required: true, min: 0.0001 },
+    previewConsume: { type: [previewLineSchema], default: [] },
+    previewProduce: { type: [previewLineSchema], default: [] },
     bomId: { type: mongoose.Schema.Types.ObjectId, ref: "BOM", required: true },
+    workflowMode: { type: String, default: "BOTH", trim: true, uppercase: true },
     status: {
       type: String,
-      enum: ["DRAFT", "COMPLETED", "CANCELLED"],
+      enum: ["DRAFT", "POSTING", "COMPLETED", "CANCELLED", "REVERSING", "REVERSED"],
       default: "DRAFT",
     },
     linesSnapshot: { type: [dekitLineSnapshotSchema], default: [] },
+    postingOperationId: { type: String, default: "", trim: true },
+    postedAt: { type: Date, default: null },
+    postedBy: { type: String, default: "", trim: true },
+    ledgerEffectKeys: { type: [String], default: [] },
+    reversalStatus: {
+      type: String,
+      enum: ["NONE", "REVERSING", "REVERSED"],
+      default: "NONE",
+    },
+    reversedAt: { type: Date, default: null },
+    reversedBy: { type: String, default: "", trim: true },
+    reversalOperationId: { type: String, default: "", trim: true },
+    reversalReason: { type: String, default: "", trim: true },
     remarks: { type: String, default: "" },
     createdBy: { type: String, default: "" },
   },

@@ -16,6 +16,7 @@ router.get("/reports/dekit", itemView, c.dekittingReport);
 router.get("/:id", itemView, c.getDeKittingOrder);
 router.post("/", itemCreate, c.createDeKittingOrder);
 router.post("/:id/execute", itemApprove, c.executeDeKittingOrder);
+router.post("/:id/reverse", itemApprove, c.reverseDeKittingOrder);
 router.post("/:id/cancel", itemCancel, c.cancelDeKittingOrder);
 
 export default router;

@@ -97,6 +97,7 @@ export default function BOM() {
       bomCode: row.bomCode || "",
       bomName: row.bomName || row.name || "",
       parentItemCode: row.parentItemCode || "",
+      parentUom: row.parentUom || "",
       kitType: row.kitType || "CUSTOM_KIT",
       engineModel: row.engineModel || "",
       configuration: row.configuration || "",
@@ -123,6 +124,12 @@ export default function BOM() {
   const items = data?.items ?? [];
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / limit));
+  const isPackConversion = form.kitType === "PACK_CONVERSION";
+  const packLine = form.lines[0] || emptyLine();
+  const packSummary =
+    isPackConversion && form.parentItemCode && packLine.article && packLine.qty
+      ? `1 ${form.parentUom || "parent UOM"} of ${form.parentItemCode} = ${packLine.qty} ${packLine.componentUom || "component UOM"} of ${packLine.article}`
+      : "";
 
   return (
     <div>
@@ -287,8 +294,15 @@ export default function BOM() {
             />
           </FormField>
           <FormField label="Kit Type">
-            <SelectInput value={form.kitType} onChange={(e) => setForm((f) => ({ ...f, kitType: e.target.value }))}>
-              {["ENGINE_OVERHAUL_KIT", "SERVICE_KIT", "CYLINDER_HEAD_KIT", "FUEL_PUMP_KIT", "CUSTOM_KIT"].map((x) => (
+            <SelectInput value={form.kitType} onChange={(e) => {
+              const kitType = e.target.value;
+              setForm((f) => ({
+                ...f,
+                kitType,
+                lines: kitType === "PACK_CONVERSION" ? [f.lines[0] || emptyLine()] : f.lines,
+              }));
+            }}>
+              {["ENGINE_OVERHAUL_KIT", "SERVICE_KIT", "CYLINDER_HEAD_KIT", "FUEL_PUMP_KIT", "CUSTOM_KIT", "PACK_CONVERSION"].map((x) => (
                 <option key={x} value={x}>{x}</option>
               ))}
             </SelectInput>
@@ -321,17 +335,26 @@ export default function BOM() {
         </div>
         <div className="mt-4">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm font-medium">Components (qty per 1 parent kit)</span>
-            <button
-              type="button"
-              className="text-sm underline"
-              onClick={() => setForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }))}
-            >
-              + Line
-            </button>
+            <span className="text-sm font-medium">
+              {isPackConversion ? "Pack component (qty per 1 parent)" : "Components (qty per 1 parent kit)"}
+            </span>
+            {!isPackConversion && (
+              <button
+                type="button"
+                className="text-sm underline"
+                onClick={() => setForm((f) => ({ ...f, lines: [...f.lines, emptyLine()] }))}
+              >
+                + Line
+              </button>
+            )}
           </div>
+          {isPackConversion && packSummary && (
+            <div className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-900">
+              {packSummary}
+            </div>
+          )}
           <div className="max-h-56 space-y-2 overflow-y-auto">
-            {form.lines.map((line, idx) => (
+            {(isPackConversion ? [packLine] : form.lines).map((line, idx) => (
               <div
                 key={idx}
                 className="grid grid-cols-2 gap-2 rounded-xl border p-2 sm:grid-cols-6"
@@ -347,7 +370,7 @@ export default function BOM() {
                 />
                 <TextInput
                   type="number"
-                  step="0.0001"
+                  step={isPackConversion ? "1" : "0.0001"}
                   placeholder="Qty / kit"
                   value={line.qty}
                   onChange={(e) => {
@@ -356,6 +379,8 @@ export default function BOM() {
                     setForm((f) => ({ ...f, lines }));
                   }}
                 />
+                {!isPackConversion && (
+                <>
                 <TextInput
                   placeholder="Interchange group"
                   value={line.interchangeableGroup}
@@ -374,6 +399,8 @@ export default function BOM() {
                     setForm((f) => ({ ...f, lines }));
                   }}
                 />
+                </>
+                )}
                 <TextInput
                   placeholder="Remarks"
                   value={line.remarks}
@@ -383,6 +410,7 @@ export default function BOM() {
                     setForm((f) => ({ ...f, lines }));
                   }}
                 />
+                {!isPackConversion && (
                 <label className="inline-flex items-center gap-2 text-xs">
                   <input
                     type="checkbox"
@@ -395,6 +423,8 @@ export default function BOM() {
                   />
                   Optional
                 </label>
+                )}
+                {!isPackConversion && (
                 <button
                   type="button"
                   className="rounded border px-2 py-1 text-xs text-rose-700"
@@ -405,8 +435,11 @@ export default function BOM() {
                 >
                   Remove
                 </button>
+                )}
                 <div className="sm:col-span-6 text-[11px] text-slate-500">
-                  Qty x order quantity is consumed; alternative articles are checked as substitute availability.
+                  {isPackConversion
+                    ? "Parent and child articles must exist in Item Master with different UOM values. Ratio must be a positive integer."
+                    : "Qty x order quantity is consumed; alternative articles are checked as substitute availability."}
                 </div>
               </div>
             ))}

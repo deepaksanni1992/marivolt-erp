@@ -1,10 +1,28 @@
+import crypto from "crypto";
 import mongoose from "mongoose";
 import BOM from "../models/BOM.js";
 import KittingOrder from "../models/KittingOrder.js";
 import StockBalance from "../models/StockBalance.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
-import { runKitAssembly } from "../services/kittingExecution.js";
+import { runKitAssembly, runReverseKitAssembly } from "../services/kittingExecution.js";
 import { deriveStockBuckets } from "../services/stockExpectedBuckets.js";
+import {
+  assertPackConversionParentQtyInteger,
+  assertWorkflowAllowsKitting,
+  buildConversionPreview,
+  buildLinesSnapshotFromBom,
+  deriveAvailabilityFromBalance,
+  maxKittableSets,
+  resolveBomKind,
+} from "../utils/kittingPackConversion.js";
+import {
+  KIT_ALREADY_POSTED,
+  KIT_ALREADY_REVERSED,
+  KIT_POSTING_CONFLICT,
+  KIT_POST_IN_PROGRESS,
+  KIT_REVERSAL_IN_PROGRESS,
+  kittingConflictError,
+} from "../utils/kittingIdempotency.js";
 
 function pagination(req) {
   const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
@@ -16,18 +34,46 @@ function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
 }
 
-async function buildShortageAnalysis({ companyId, parentItemCode, warehouse, quantity }) {
+function respondConflict(res, err) {
+  return res.status(err.statusCode || 409).json({
+    message: err.message,
+    code: err.code || KIT_POSTING_CONFLICT,
+    details: err.details || null,
+    article: err.article || err.details?.article || null,
+    required: err.details?.required ?? null,
+    available: err.details?.available ?? null,
+  });
+}
+
+async function loadActiveBom(companyId, parentItemCode) {
   const bom = await BOM.findOne({ companyId, parentItemCode, isActive: true }).lean();
   if (!bom) throw new Error("No active BOM for this parent item");
+  return bom;
+}
+
+function freezeOrderFromBom(bom, quantity, warehouse, direction = "KIT") {
+  assertWorkflowAllowsKitting(bom.workflowMode);
+  const linesSnapshot = buildLinesSnapshotFromBom(bom);
+  const preview = buildConversionPreview({
+    direction,
+    parentItemCode: bom.parentItemCode,
+    parentUom: bom.parentUom,
+    parentQty: quantity,
+    linesSnapshot,
+  });
+  return { linesSnapshot, preview };
+}
+
+async function buildShortageAnalysis({ companyId, parentItemCode, warehouse, quantity, bom }) {
+  const activeBom = bom || (await loadActiveBom(companyId, parentItemCode));
   const wh = String(warehouse || "MAIN").trim().toUpperCase() || "MAIN";
   const kitQty = Number(quantity) || 0;
   const lines = [];
-  for (const ln of bom.lines || []) {
+  for (const ln of activeBom.lines || []) {
     const article = String(ln.article || ln.componentItemCode || "").trim().toUpperCase();
     if (!article) continue;
     const requiredQty = (Number(ln.qty) || 0) * kitQty;
     const bal = await StockBalance.findOne({ companyId, article, warehouse: wh }).lean();
-    // Never trust persisted availableQty — derive from live buckets.
     const { availableQty } = deriveStockBuckets(bal || {});
     const missingQty = Math.max(0, requiredQty - availableQty);
     const alternatives = [];
@@ -50,13 +96,27 @@ async function buildShortageAnalysis({ companyId, parentItemCode, warehouse, qua
       short: missingQty > 0 && !ln.optionalFlag && alternatives.length === 0,
     });
   }
+  const ratio = activeBom.lines?.[0]?.qty;
+  const childArticle = activeBom.lines?.[0]?.componentItemCode || activeBom.lines?.[0]?.article;
+  let maxKittable = null;
+  if (resolveBomKind(activeBom.kitType) === "PACK_CONVERSION" && childArticle) {
+    const childBal = await StockBalance.findOne({
+      companyId,
+      article: String(childArticle).toUpperCase(),
+      warehouse: wh,
+    }).lean();
+    maxKittable = maxKittableSets(deriveAvailabilityFromBalance(childBal), ratio);
+  }
   return {
     parentItemCode,
+    parentUom: activeBom.parentUom || "",
     warehouse: wh,
     quantity: kitQty,
-    bomId: bom._id,
-    bomCode: bom.bomCode || "",
-    bomRevision: bom.revisionNo || "",
+    bomId: activeBom._id,
+    bomCode: activeBom.bomCode || "",
+    bomRevision: activeBom.revisionNo || "",
+    bomKind: resolveBomKind(activeBom.kitType),
+    maxKittable,
     lines,
     hasBlockingShortage: lines.some((x) => x.short),
   };
@@ -102,14 +162,17 @@ export async function createKittingOrder(req, res) {
     const parentItemCode = String(req.body.parentItemCode || "").trim().toUpperCase();
     if (!parentItemCode) return res.status(400).json({ message: "parentItemCode required" });
 
-    const bom = await BOM.findOne(withCompany(req, { parentItemCode, isActive: true }));
-    if (!bom) {
-      return res.status(400).json({ message: "No active BOM for this parent item" });
-    }
+    const bom = await loadActiveBom(req.companyId, parentItemCode);
+    assertWorkflowAllowsKitting(bom.workflowMode);
 
     const quantity = Number(req.body.quantity);
     if (!Number.isFinite(quantity) || quantity <= 0) {
       return res.status(400).json({ message: "quantity must be a positive number" });
+    }
+
+    const bomKind = resolveBomKind(bom.kitType);
+    if (bomKind === "PACK_CONVERSION") {
+      assertPackConversionParentQtyInteger(quantity, bom.parentUom);
     }
 
     const kitNumber = await nextSequentialNumber(
@@ -121,25 +184,36 @@ export async function createKittingOrder(req, res) {
     const warehouse = String(req.body.warehouse || "MAIN").trim().toUpperCase() || "MAIN";
     const kitType = String(req.body.kitType || bom.kitType || "CUSTOM_KIT").trim().toUpperCase();
     const assemblyMode = String(req.body.assemblyMode || "STANDARD_ASSEMBLY").trim().toUpperCase();
-    const kitBatch = String(req.body.kitBatch || `${kitNumber}-B1`).trim().toUpperCase();
+    const kitBatch =
+      bomKind === "PACK_CONVERSION"
+        ? String(req.body.kitBatch || "").trim().toUpperCase()
+        : String(req.body.kitBatch || `${kitNumber}-B1`).trim().toUpperCase();
+
+    const { linesSnapshot, preview } = freezeOrderFromBom(bom, quantity, warehouse, "KIT");
     const analysis = await buildShortageAnalysis({
       companyId: req.companyId,
       parentItemCode,
       warehouse,
       quantity,
+      bom,
     });
 
     const doc = await KittingOrder.create({
       companyId: req.companyId,
       kitNumber,
       parentItemCode,
+      parentUom: bom.parentUom || "",
+      parentItemName: bom.parentItemName || "",
       kitType,
+      bomKind,
       assemblyMode,
       linkedEngineModel: String(req.body.linkedEngineModel || "").trim(),
       linkedEngineESN: String(req.body.linkedEngineESN || "").trim(),
       sourceReference: String(req.body.sourceReference || "").trim(),
       kitBatch,
       linkedBomRevision: bom.revisionNo || "",
+      bomSnapshotAt: new Date(),
+      workflowMode: bom.workflowMode || "BOTH",
       warehouse,
       quantity,
       bomId: bom._id,
@@ -147,34 +221,126 @@ export async function createKittingOrder(req, res) {
       remarks: req.body.remarks || "",
       createdBy: req.user?.email || "",
       shortageSnapshot: analysis.lines,
+      linesSnapshot,
+      previewConsume: preview.consume,
+      previewProduce: preview.produce,
+      maxKittable: analysis.maxKittable,
     });
     res.status(201).json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    if (err.code) return respondConflict(res, err);
+    res.status(400).json({ message: err.message, code: err.code || null });
   }
 }
 
 export async function executeKittingOrder(req, res) {
+  const session = await mongoose.startSession();
   try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: "Invalid id" });
-    }
-    const order = await KittingOrder.findOne(withCompany(req, { _id: id }));
-    if (!order) return res.status(404).json({ message: "Not found" });
-    if (order.status !== "DRAFT") {
-      return res.status(400).json({ message: "Only DRAFT orders can be executed" });
-    }
+    let idempotent = false;
+    let completedDoc = null;
+    await session.withTransaction(async () => {
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw kittingConflictError(KIT_POSTING_CONFLICT, "Invalid id", null, 400);
+      }
+      const postingOperationId = crypto.randomUUID();
+      const claimed = await KittingOrder.findOneAndUpdate(
+        withCompany(req, { _id: id, status: "DRAFT" }),
+        { $set: { status: "POSTING", postingOperationId } },
+        { new: true, session }
+      );
+      if (!claimed) {
+        const existing = await KittingOrder.findOne(withCompany(req, { _id: id })).session(session);
+        if (!existing) {
+          throw kittingConflictError(KIT_POSTING_CONFLICT, "Not found", null, 404);
+        }
+        const st = String(existing.status || "").toUpperCase();
+        if (st === "POSTING") {
+          throw kittingConflictError(KIT_POST_IN_PROGRESS, "Kitting execution already in progress");
+        }
+        if (st === "COMPLETED" && existing.reversalStatus !== "REVERSED") {
+          idempotent = true;
+          completedDoc = existing;
+          return;
+        }
+        throw kittingConflictError(KIT_POSTING_CONFLICT, `Only DRAFT orders can be executed (status ${st})`);
+      }
 
-    const userEmail = req.user?.email || "";
-    await runKitAssembly(order, userEmail, req.companyId);
-    order.status = "COMPLETED";
-    order.assemblyDate = new Date();
-    order.assembledBy = userEmail;
-    await order.save();
-    res.json(order);
+      const userEmail = req.user?.email || "";
+      await runKitAssembly(claimed, userEmail, req.companyId, session);
+      claimed.status = "COMPLETED";
+      claimed.assemblyDate = new Date();
+      claimed.assembledBy = userEmail;
+      claimed.postedAt = new Date();
+      claimed.postedBy = userEmail;
+      await claimed.save({ session });
+      completedDoc = claimed;
+    });
+
+    if (idempotent) {
+      return res.status(200).json({
+        success: true,
+        code: KIT_ALREADY_POSTED,
+        alreadyPosted: true,
+        order: completedDoc,
+      });
+    }
+    res.json(completedDoc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    if (err.code) return respondConflict(res, err);
+    res.status(400).json({ message: err.message, code: err.code || null });
+  } finally {
+    session.endSession();
+  }
+}
+
+export async function reverseKittingOrder(req, res) {
+  const session = await mongoose.startSession();
+  try {
+    const reason = String(req.body?.reason || req.body?.reversalReason || "").trim();
+    if (!reason) return res.status(400).json({ message: "Reversal reason is mandatory" });
+    let idempotent = false;
+    let docOut = null;
+    await session.withTransaction(async () => {
+      const { id } = req.params;
+      const claimed = await KittingOrder.findOneAndUpdate(
+        withCompany(req, { _id: id, status: "COMPLETED", reversalStatus: "NONE" }),
+        { $set: { reversalStatus: "REVERSING", reversalReason: reason } },
+        { new: true, session }
+      );
+      if (!claimed) {
+        const existing = await KittingOrder.findOne(withCompany(req, { _id: id })).session(session);
+        if (!existing) {
+          throw kittingConflictError(KIT_POSTING_CONFLICT, "Not found", null, 404);
+        }
+        if (existing.reversalStatus === "REVERSING") {
+          throw kittingConflictError(KIT_REVERSAL_IN_PROGRESS, "Reversal already in progress");
+        }
+        if (existing.reversalStatus === "REVERSED" || existing.status === "REVERSED") {
+          idempotent = true;
+          docOut = existing;
+          return;
+        }
+        throw kittingConflictError(KIT_POSTING_CONFLICT, "Only COMPLETED kitting orders can be reversed");
+      }
+
+      await runReverseKitAssembly(claimed, req.user?.email || "", req.companyId, session, reason);
+      claimed.reversalStatus = "REVERSED";
+      claimed.reversedAt = new Date();
+      claimed.reversedBy = req.user?.email || "";
+      await claimed.save({ session });
+      docOut = claimed;
+    });
+
+    if (idempotent) {
+      return res.status(200).json({ success: true, code: KIT_ALREADY_REVERSED, alreadyReversed: true, order: docOut });
+    }
+    res.json(docOut);
+  } catch (err) {
+    if (err.code) return respondConflict(res, err);
+    res.status(400).json({ message: err.message, code: err.code || null });
+  } finally {
+    session.endSession();
   }
 }
 
@@ -200,7 +366,7 @@ export async function getKittingShortage(req, res) {
 export async function kittingAssemblyHistoryReport(req, res) {
   try {
     const rows = await KittingOrder.find(
-      withCompany(req, { status: { $in: ["COMPLETED", "CANCELLED"] } })
+      withCompany(req, { status: { $in: ["COMPLETED", "CANCELLED", "REVERSED"] } })
     )
       .sort({ updatedAt: -1 })
       .limit(500)
@@ -223,9 +389,11 @@ export async function componentConsumptionReport(req, res) {
         items.push({
           kitNumber: row.kitNumber,
           parentItemCode: row.parentItemCode,
+          parentUom: row.parentUom || "",
           kitBatch: row.kitBatch || "",
           linkedBomRevision: row.linkedBomRevision || "",
           article: ln.componentItemCode,
+          componentUom: ln.componentUom || "",
           qtyPerKit: Number(ln.qtyPerKit) || 0,
           consumedQty: (Number(ln.qtyPerKit) || 0) * (Number(row.quantity) || 0),
           warehouse: row.warehouse,

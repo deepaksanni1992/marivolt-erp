@@ -21,6 +21,7 @@ export default function DeKitting() {
     remarks: "",
   });
   const [err, setErr] = useState("");
+  const [reversalReason, setReversalReason] = useState("");
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["dekittingOrders", page],
@@ -63,6 +64,16 @@ export default function DeKitting() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["dekittingOrders"] });
       qc.invalidateQueries({ queryKey: ["dekittingOrder", detailId] });
+    },
+    onError: (e) => setErr(e.message),
+  });
+
+  const reverseMutation = useMutation({
+    mutationFn: ({ id, reason }) => apiPost(`/dekitting/${id}/reverse`, { reason }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["dekittingOrders"] });
+      qc.invalidateQueries({ queryKey: ["dekittingOrder", detailId] });
+      qc.invalidateQueries({ queryKey: ["stockBalances"] });
     },
     onError: (e) => setErr(e.message),
   });
@@ -201,10 +212,26 @@ export default function DeKitting() {
                 <span className="text-gray-500">Revision</span> {detail.linkedBomRevision || "—"}
               </div>
             </div>
+            {detail.previewConsume?.length > 0 && (
+              <div className="rounded-xl border bg-slate-50 p-3 text-xs">
+                <div className="mb-1 font-semibold text-slate-700">Stock effect (frozen at create)</div>
+                {(detail.previewConsume || []).map((ln, i) => (
+                  <div key={`c-${i}`}>Consume: {ln.article} — {ln.qty} {ln.uom}</div>
+                ))}
+                {(detail.previewProduce || []).map((ln, i) => (
+                  <div key={`p-${i}`}>Produce: {ln.article} — {ln.qty} {ln.uom}</div>
+                ))}
+                {detail.bomKind === "PACK_CONVERSION" && detail.linesSnapshot?.[0] && (
+                  <div className="mt-2 text-slate-600">
+                    Conversion: 1 {detail.parentUom} = {detail.linesSnapshot[0].qtyPerKit} {detail.linesSnapshot[0].componentUom}
+                  </div>
+                )}
+              </div>
+            )}
             {detail.linesSnapshot?.length > 0 && (
               <div>
                 <div className="mb-1 text-xs font-semibold text-gray-500">
-                  BOM snapshot (at completion)
+                  BOM snapshot (frozen at create)
                 </div>
                 <div className="overflow-x-auto rounded-xl border">
                   <table className="min-w-full text-xs">
@@ -224,6 +251,28 @@ export default function DeKitting() {
                     </tbody>
                   </table>
                 </div>
+              </div>
+            )}
+            {detail.status === "COMPLETED" && detail.reversalStatus !== "REVERSED" && (
+              <div className="flex flex-wrap items-end gap-2 border-t pt-3">
+                <TextInput
+                  className="min-w-[220px] flex-1"
+                  placeholder="Reversal reason (required)"
+                  value={reversalReason}
+                  onChange={(e) => setReversalReason(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm disabled:opacity-50"
+                  disabled={reverseMutation.isPending || !reversalReason.trim()}
+                  onClick={async () => {
+                    if (await confirmDialog("Reverse this completed de-kitting transaction?")) {
+                      reverseMutation.mutate({ id: detail._id, reason: reversalReason.trim() });
+                    }
+                  }}
+                >
+                  Reverse posting
+                </button>
               </div>
             )}
             {detail.status === "DRAFT" && (
@@ -285,18 +334,12 @@ export default function DeKitting() {
               onChange={(e) => setForm((f) => ({ ...f, warehouse: e.target.value }))}
             />
           </FormField>
-          <FormField label="Number of kits to break *">
+          <FormField label="Number of parent units to break *">
             <TextInput
               type="number"
-              step="0.0001"
+              step="1"
               value={form.quantity}
               onChange={(e) => setForm((f) => ({ ...f, quantity: Number(e.target.value) }))}
-            />
-          </FormField>
-          <FormField label="Kit Batch">
-            <TextInput
-              value={form.kitBatch}
-              onChange={(e) => setForm((f) => ({ ...f, kitBatch: e.target.value }))}
             />
           </FormField>
           <FormField label="Disassembly Reason">

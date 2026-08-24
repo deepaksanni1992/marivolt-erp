@@ -18,6 +18,7 @@ router.get("/shortage-analysis", itemView, c.getKittingShortage);
 router.get("/:id", itemView, c.getKittingOrder);
 router.post("/", itemCreate, c.createKittingOrder);
 router.post("/:id/execute", itemApprove, c.executeKittingOrder);
+router.post("/:id/reverse", itemApprove, c.reverseKittingOrder);
 router.post("/:id/cancel", itemCancel, c.cancelKittingOrder);
 
 export default router;

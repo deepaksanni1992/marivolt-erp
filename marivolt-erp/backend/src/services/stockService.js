@@ -93,8 +93,12 @@ export const MOVEMENT_TYPES = Object.freeze({
   LANDED_COST_ADJUSTMENT: "LANDED_COST_ADJUSTMENT",
   KIT_ASSEMBLY_OUT: "KIT_ASSEMBLY_OUT",
   KIT_ASSEMBLY_IN: "KIT_ASSEMBLY_IN",
+  KIT_ASSEMBLY_REVERSAL_OUT: "KIT_ASSEMBLY_REVERSAL_OUT",
+  KIT_ASSEMBLY_REVERSAL_IN: "KIT_ASSEMBLY_REVERSAL_IN",
   DEKIT_OUT: "DEKIT_OUT",
   DEKIT_IN: "DEKIT_IN",
+  DEKIT_REVERSAL_OUT: "DEKIT_REVERSAL_OUT",
+  DEKIT_REVERSAL_IN: "DEKIT_REVERSAL_IN",
   ALLOCATION: "ALLOCATION",
   ALLOCATION_CANCEL: "ALLOCATION_CANCEL",
   SALES_INVOICE_OUT: "SALES_INVOICE_OUT",
@@ -124,8 +128,12 @@ const UNIFIED_TO_LEGACY_TX = Object.freeze({
   LANDED_COST_ADJUSTMENT: "STOCK_ADJUSTMENT",
   KIT_ASSEMBLY_OUT: "STOCK_ADJUSTMENT",
   KIT_ASSEMBLY_IN: "STOCK_ADJUSTMENT",
+  KIT_ASSEMBLY_REVERSAL_OUT: "STOCK_ADJUSTMENT",
+  KIT_ASSEMBLY_REVERSAL_IN: "STOCK_ADJUSTMENT",
   DEKIT_OUT: "STOCK_ADJUSTMENT",
   DEKIT_IN: "STOCK_ADJUSTMENT",
+  DEKIT_REVERSAL_OUT: "STOCK_ADJUSTMENT",
+  DEKIT_REVERSAL_IN: "STOCK_ADJUSTMENT",
   ALLOCATION: "SALES_ALLOCATION",
   ALLOCATION_CANCEL: "ORDER_ALLOCATION_CANCEL",
   SALES_INVOICE_OUT: "SALES_INVOICE",
@@ -1304,6 +1312,9 @@ export async function stockAdjustment({
   transactionDate = null,
   effectKey = "",
   lineId = "",
+  reversedFromLedgerId = null,
+  originalEffectKey = "",
+  cancellationOperationId = "",
 }) {
   requireCompanyId(companyId);
   const q = Math.abs(Number(qty) || 0);
@@ -1374,6 +1385,9 @@ export async function stockAdjustment({
     createdBy,
     sourceModule,
     effectKey: ek,
+    reversedFromLedgerId,
+    originalEffectKey: originalEffectKey || "",
+    cancellationOperationId,
     ...after,
   });
   notifyReservationIntegrity(companyId, warehouse, article, "STOCK_ADJUSTMENT", session);
