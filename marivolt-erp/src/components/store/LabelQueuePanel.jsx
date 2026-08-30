@@ -232,6 +232,7 @@ export default function LabelQueuePanel({ onMessage }) {
                         Cancel
                       </button>
                     )}
+                    {j.status === "COMPLETED" && (
                     <button
                       type="button"
                       className="rounded border px-1.5 py-0.5 text-[11px] font-semibold"
@@ -242,6 +243,7 @@ export default function LabelQueuePanel({ onMessage }) {
                     >
                       Reprint
                     </button>
+                    )}
                   </div>
                 </td>
               </tr>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../context/AuthContext.jsx";
 import { api, apiDelete, apiGet, apiGetWithQuery, apiPost, apiPut } from "../lib/api.js";
 import { renderStorePackingListPrintWindow } from "../lib/storePackingListPrint.js";
@@ -23,6 +23,9 @@ import LabelQueuePanel from "../components/store/LabelQueuePanel.jsx";
 import PostGrnLabelDecisionDialog from "../components/store/PostGrnLabelDecisionDialog.jsx";
 import GrnLabelPreviewModal from "../components/store/GrnLabelPreviewModal.jsx";
 import PackingLabelsModal from "../components/store/PackingLabelsModal.jsx";
+import PackingLabelReprintModal, {
+  PackingLabelsToolbarButton,
+} from "../components/store/PackingLabelReprintModal.jsx";
 import {
   buildGrnCustomsPayload,
   defaultGrnLineCustomsFields,
@@ -43,6 +46,9 @@ import {
   formatLabelDistributionCompact,
   formatLabelsQueuedMessage,
   resolvePackingLabelQueueMessage,
+  pickRelevantPackingLabelJob,
+  resolvePackingLabelToolbarState,
+  buildDefaultPackingToolbarFingerprint,
   getLineLabelDistribution,
   newGrnDraftRef,
   resolveCompletedGrnLabelPrint,
@@ -318,6 +324,16 @@ function packageTypeLabel(v) {
   return String(v || "").replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
 }
 
+function postedPackingLabelLines(p) {
+  return (p?.lines || []).map((ln) => ({
+    ...ln,
+    packingLineId: ln._id,
+    allocatedQty: ln.allocatedQty,
+    packQty: ln.packQty,
+    physicalPackableQty: ln.packQty,
+  }));
+}
+
 export default function StoreModule() {
   const { auth, role, can } = useAuth();
   const nav = useNavigate();
@@ -328,6 +344,9 @@ export default function StoreModule() {
   const canCancelStore = can("STORE", "cancel");
   const canDeleteStore = can("STORE", "delete");
   const canCreateSalesInvoice = can("SALES", "create");
+  const canPrintLabels = can("LABELS", "print");
+  const canReprintLabels = can("LABELS", "reprint");
+  const canViewLabels = can("LABELS", "view");
   const [tab, setTab] = useState(() => filterStoreTabsForRole(TABS, auth?.user?.role)?.[0] || "GRN");
 
   useEffect(() => {
@@ -434,6 +453,7 @@ export default function StoreModule() {
   const [packAllocQueryId, setPackAllocQueryId] = useState("");
   const [packPackages, setPackPackages] = useState([]);
   const [packingLabelsModal, setPackingLabelsModal] = useState(null);
+  const [packingReprintJob, setPackingReprintJob] = useState(null);
   const [postPackingLabelAsk, setPostPackingLabelAsk] = useState(null);
   const [packAddArticlePkgId, setPackAddArticlePkgId] = useState("");
   const [packAddArticleSearch, setPackAddArticleSearch] = useState("");
@@ -1032,6 +1052,56 @@ export default function StoreModule() {
     refetchInterval: tab === "Packing" && packAllocQueryId ? 15_000 : false,
   });
 
+  const packingBuilderFingerprint = useMemo(
+    () => buildDefaultPackingToolbarFingerprint(packingFromAlloc?.lines || [], "PRE_PACKING"),
+    [packingFromAlloc?.lines]
+  );
+
+  const { data: packingBuilderLabelJobs, refetch: refetchPackingBuilderLabelJobs } = useQuery({
+    queryKey: [
+      "packing-label-jobs",
+      "pre",
+      packingFromAlloc?.allocation?._id,
+      packingFromAlloc?.allocation?.allocationNo,
+    ],
+    queryFn: () =>
+      apiGetWithQuery("/labels/jobs", {
+        sourceType: "PACKING",
+        packingMode: "PRE_PACKING",
+        isReprint: false,
+        allocationId: packingFromAlloc.allocation._id,
+        sourceNo: packingFromAlloc.allocation.allocationNo,
+        limit: 50,
+      }),
+    enabled: tab === "Packing" && canViewLabels && Boolean(packingFromAlloc?.allocation?._id),
+    refetchInterval: tab === "Packing" && packAllocQueryId ? 8_000 : false,
+  });
+
+  const packingBuilderLabelUi = useMemo(
+    () =>
+      resolvePackingLabelToolbarState(
+        pickRelevantPackingLabelJob(packingBuilderLabelJobs?.items, {
+          packingMode: "PRE_PACKING",
+          allocationId: packingFromAlloc?.allocation?._id,
+          sourceNo: packingFromAlloc?.allocation?.allocationNo,
+          fingerprint: packingBuilderFingerprint,
+        })
+      ),
+    [
+      packingBuilderLabelJobs?.items,
+      packingFromAlloc?.allocation?._id,
+      packingFromAlloc?.allocation?.allocationNo,
+      packingBuilderFingerprint,
+    ]
+  );
+
+  const refreshPackingLabelJobs = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ["packing-label-jobs"] });
+    qc.invalidateQueries({ queryKey: ["packing-reprint-target"] });
+    qc.invalidateQueries({ queryKey: ["label-jobs"] });
+    refetchPackingBuilderLabelJobs();
+  }, [qc, refetchPackingBuilderLabelJobs]);
+
   useEffect(() => {
     const t = setTimeout(() => setGrnRegSearch(grnRegSearchInput.trim()), 350);
     return () => clearTimeout(t);
@@ -1359,6 +1429,23 @@ export default function StoreModule() {
         dateTo: packRegDateTo || undefined,
       }),
     enabled: tab === "Packing",
+  });
+
+  const postedPackingRegisterItems = packingList?.items || [];
+  const postedPackingLabelQueries = useQueries({
+    queries: postedPackingRegisterItems.map((p) => ({
+      queryKey: ["packing-label-jobs", "posted", String(p._id)],
+      queryFn: () =>
+        apiGetWithQuery("/labels/jobs", {
+          sourceType: "PACKING",
+          packingMode: "POSTED_PACKING",
+          isReprint: false,
+          packingId: p._id,
+          limit: 50,
+        }),
+      enabled: tab === "Packing" && canViewLabels && Boolean(p._id),
+      refetchInterval: tab === "Packing" ? 8_000 : false,
+    })),
   });
 
   const { data: dispatchList } = useQuery({
@@ -4524,11 +4611,12 @@ export default function StoreModule() {
                       >
                         Add package
                       </button>
-                      <button
-                        type="button"
-                        className="rounded border border-sky-700 px-2 py-1.5 text-xs font-medium text-sky-900 hover:bg-sky-50"
-                        disabled={!packingFromAlloc?.lines?.length}
-                        onClick={() =>
+                      <PackingLabelsToolbarButton
+                        ui={packingBuilderLabelUi}
+                        canPrint={canPrintLabels}
+                        canReprint={canReprintLabels}
+                        disabledExtra={!packingFromAlloc?.lines?.length}
+                        onPrint={() =>
                           setPackingLabelsModal({
                             mode: "PRE_PACKING",
                             allocation: packingFromAlloc.allocation,
@@ -4536,9 +4624,16 @@ export default function StoreModule() {
                             documentReferences: packingFromAlloc.documentReferences,
                           })
                         }
-                      >
-                        Print Packing Labels
-                      </button>
+                        onReprint={() => setPackingReprintJob(packingBuilderLabelUi.job)}
+                        onResolve={() => {
+                          notify.warning(
+                            packingBuilderLabelUi.job?.jobNo
+                              ? `Confirm printed quantity for ${packingBuilderLabelUi.job.jobNo} on the Label Queue before printing again.`
+                              : "Confirm printed quantity on the Label Queue before printing again."
+                          );
+                          setTab("Label Queue");
+                        }}
+                      />
                     </div>
                   </div>
                   <div className="space-y-3">
@@ -5039,7 +5134,7 @@ export default function StoreModule() {
                       </td>
                     </tr>
                   ) : (
-                    (packingList?.items || []).map((p) => (
+                    (packingList?.items || []).map((p, postedIdx) => (
                       <tr key={p._id} className="border-t">
                         <td className="px-2 py-2 font-mono">{p.packingNo}</td>
                         <td className="px-2 py-2">{p.customerName}</td>
@@ -5072,29 +5167,48 @@ export default function StoreModule() {
                               PDF
                             </button>
                           {["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED"].includes(String(p.status || "").toUpperCase()) ? (
-                            <button
-                              type="button"
-                              className="rounded border px-2 py-0.5 text-xs text-sky-800 hover:bg-sky-50"
-                              onClick={() =>
+                            (() => {
+                              const postedLines = postedPackingLabelLines(p);
+                              const postedUi = resolvePackingLabelToolbarState(
+                                pickRelevantPackingLabelJob(postedPackingLabelQueries[postedIdx]?.data?.items, {
+                                  packingMode: "POSTED_PACKING",
+                                  packingId: p._id,
+                                  sourceNo: p.packingNo,
+                                  fingerprint: buildDefaultPackingToolbarFingerprint(
+                                    postedLines,
+                                    "POSTED_PACKING"
+                                  ),
+                                })
+                              );
+                              return (
+                            <PackingLabelsToolbarButton
+                              ui={postedUi}
+                              canPrint={canPrintLabels}
+                              canReprint={canReprintLabels}
+                              className="rounded border px-2 py-0.5 text-xs text-sky-800 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50"
+                              onPrint={() =>
                                 setPackingLabelsModal({
                                   mode: "POSTED_PACKING",
                                   packing: p,
-                                  lines: (p.lines || []).map((ln) => ({
-                                    ...ln,
-                                    packingLineId: ln._id,
-                                    allocatedQty: ln.allocatedQty,
-                                    packQty: ln.packQty,
-                                    physicalPackableQty: ln.packQty,
-                                  })),
+                                  lines: postedLines,
                                   documentReferences: {
                                     customerName: p.customerName,
                                     customerReference: p.customerReference,
                                   },
                                 })
                               }
-                            >
-                              Print Packing Labels
-                            </button>
+                              onReprint={() => setPackingReprintJob(postedUi.job)}
+                              onResolve={() => {
+                                notify.warning(
+                                  postedUi.job?.jobNo
+                                    ? `Confirm printed quantity for ${postedUi.job.jobNo} on the Label Queue before printing again.`
+                                    : "Confirm printed quantity on the Label Queue before printing again."
+                                );
+                                setTab("Label Queue");
+                              }}
+                            />
+                              );
+                            })()
                           ) : null}
                           {p.status === "DRAFT" ? (
                             <>
@@ -5930,7 +6044,10 @@ export default function StoreModule() {
 
       <PackingLabelsModal
         open={Boolean(packingLabelsModal)}
-        onClose={() => setPackingLabelsModal(null)}
+        onClose={() => {
+          setPackingLabelsModal(null);
+          refreshPackingLabelJobs();
+        }}
         mode={packingLabelsModal?.mode || "PRE_PACKING"}
         packing={packingLabelsModal?.packing || null}
         allocation={packingLabelsModal?.allocation || null}
@@ -5938,12 +6055,31 @@ export default function StoreModule() {
         documentReferences={packingLabelsModal?.documentReferences || null}
         printerCode={labelPrinterCode}
         printers={labelPrintersData?.items || []}
-        onPrinted={(res) => {
+        canPrint={canPrintLabels}
+        canReprint={canReprintLabels}
+        onPrinted={(res, meta) => {
           const { type, message } = resolvePackingLabelQueueMessage(res);
           if (type === "success") notify.success(message);
           else if (type === "warning") notify.warning(message);
           else notify.error(message);
-          qc.invalidateQueries({ queryKey: ["label-jobs"] });
+          refreshPackingLabelJobs();
+          if (res?.reused === true && String(res?.job?.status || res?.queueState || "").toUpperCase() === "COMPLETED") {
+            return;
+          }
+          if (!meta?.keepOpen) {
+            /* modal closes itself on a newly queued job */
+          }
+        }}
+        onError={(msg) => notify.error(msg)}
+        onRequestReprint={(job) => setPackingReprintJob(job)}
+      />
+      <PackingLabelReprintModal
+        open={Boolean(packingReprintJob)}
+        job={packingReprintJob}
+        onClose={() => setPackingReprintJob(null)}
+        onQueued={() => {
+          notify.success("Reprint job queued.");
+          refreshPackingLabelJobs();
         }}
         onError={(msg) => notify.error(msg)}
       />

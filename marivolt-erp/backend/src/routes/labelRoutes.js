@@ -103,6 +103,7 @@ router.post("/jobs/from-asn", asnLabelPrint, c.createFromAsn);
 router.post("/jobs/from-asn/preview", asnLabelView, c.previewFromAsn);
 router.post("/jobs/stock-reprint", labelsReprint, c.stockReprint);
 router.get("/jobs", labelsView, c.listJobs);
+router.get("/jobs/:id/reprint-target", labelsReprint, c.getReprintTarget);
 router.get("/jobs/:id", labelsView, c.getJob);
 router.get("/jobs/:id/preview", labelsView, c.previewJob);
 router.get("/jobs/:id/history", labelsView, c.jobHistory);

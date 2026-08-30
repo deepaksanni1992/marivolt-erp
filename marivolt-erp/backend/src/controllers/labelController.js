@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import LabelPrintJob from "../models/LabelPrintJob.js";
 import LabelPrintHistory from "../models/LabelPrintHistory.js";
 import * as labelService from "../services/label/labelService.js";
@@ -7,6 +8,11 @@ import * as templateService from "../services/label/labelTemplateService.js";
 import { getFixedLabelSize } from "../services/label/tsplGenerator.js";
 import { recordLabelHistory } from "../services/label/labelAudit.js";
 import { syncGrnLabelStatus } from "../services/label/labelService.js";
+import {
+  buildLabelPrintJobListFilter,
+  parseLabelJobIdList,
+  clampLabelJobListLimit,
+} from "../services/label/labelJobListQuery.js";
 
 function sendErr(res, err) {
   const status = Number(err.statusCode || err.status) || 400;
@@ -537,16 +543,39 @@ export async function previewFromAsn(req, res) {
 
 export async function listJobs(req, res) {
   try {
-    const filter = { companyId: req.companyId };
-    if (req.query.status) filter.status = String(req.query.status).toUpperCase();
-    if (req.query.sourceNo) filter.sourceNo = String(req.query.sourceNo).toUpperCase();
-    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
-    const items = await LabelPrintJob.find(filter)
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .select("-tsplPayload")
-      .lean();
+    const filter = buildLabelPrintJobListFilter(req.companyId, req.query);
+    const limit = clampLabelJobListLimit(req.query.limit);
+    const select = "-tsplPayload -rawFacePayloads -driverPages";
+    const packingIds = parseLabelJobIdList(req.query.packingIds);
+    let items;
+    if (packingIds.length) {
+      const chunks = await Promise.all(
+        packingIds.slice(0, 80).map((id) =>
+          LabelPrintJob.find({ ...filter, packingId: id })
+            .sort({ createdAt: -1 })
+            .limit(limit)
+            .select(select)
+            .lean()
+        )
+      );
+      items = chunks.flat();
+    } else {
+      items = await LabelPrintJob.find(filter)
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .select(select)
+        .lean();
+    }
     res.json({ items });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function getReprintTarget(req, res) {
+  try {
+    const target = await labelService.resolvePackingReprintTarget(req, req.params.id);
+    res.json(target);
   } catch (err) {
     sendErr(res, err);
   }

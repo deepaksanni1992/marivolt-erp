@@ -60,6 +60,105 @@ function jobNo() {
   return `LBL${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
 }
 
+function throwLabelErr(message, statusCode, code, details) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  if (code) err.code = code;
+  if (details !== undefined) err.details = details;
+  throw err;
+}
+
+/**
+ * PACKING reprints only: original printer if still eligible, else warehouse/company routing.
+ * Explicit printerCode is validated (company, active, agent, warehouse) and never silently swapped.
+ */
+async function resolveOfficialPackingReprintPrinter(req, parent, { printerCode } = {}) {
+  const {
+    isOriginalPackingPrinterEligible,
+    packingReprintPrinterWarehouseError,
+    packingReprintPrinterCompanyError,
+  } = await import("./labelReprint.js");
+  const companyId = req.companyId;
+  const warehouse = upper(parent.warehouseCode);
+  const originalWindowsPrinterName = t(parent.windowsPrinterName);
+
+  if (t(printerCode)) {
+    const explicit = await PrinterConfig.findOne({
+      companyId,
+      code: upper(printerCode),
+      isActive: true,
+    }).lean();
+    const companyErr = packingReprintPrinterCompanyError(explicit, companyId);
+    if (companyErr) throwLabelErr(companyErr.message, companyErr.statusCode, companyErr.code);
+    const agent = await PrintAgent.findOne({ companyId, agentId: upper(explicit.agentId) }).lean();
+    if (
+      !isOriginalPackingPrinterEligible({
+        printer: explicit,
+        agent,
+        companyId,
+        parentWarehouse: warehouse,
+      })
+    ) {
+      const wh = packingReprintPrinterWarehouseError(explicit, warehouse);
+      if (wh) throwLabelErr(wh.message, wh.statusCode, wh.code);
+      throwLabelErr(
+        "Printer is not eligible for this packing reprint",
+        400,
+        "LABEL_REPRINT_PRINTER_INELIGIBLE"
+      );
+    }
+    return { printer: explicit, originalUnavailable: false, originalWindowsPrinterName };
+  }
+
+  let original = null;
+  if (parent.printerConfigId) {
+    original = await PrinterConfig.findOne({ _id: parent.printerConfigId, companyId }).lean();
+  }
+  const originalAgent = original
+    ? await PrintAgent.findOne({ companyId, agentId: upper(original.agentId) }).lean()
+    : null;
+  const originalEligible = isOriginalPackingPrinterEligible({
+    printer: original,
+    agent: originalAgent,
+    companyId,
+    parentWarehouse: warehouse,
+  });
+  if (originalEligible) {
+    return {
+      printer: original,
+      originalUnavailable: false,
+      originalWindowsPrinterName: original.windowsPrinterName || originalWindowsPrinterName,
+    };
+  }
+  const replacement = await resolvePrinterForJob(companyId, null, { warehouseCode: warehouse });
+  return {
+    printer: replacement,
+    originalUnavailable: true,
+    originalWindowsPrinterName: originalWindowsPrinterName || original?.windowsPrinterName || "",
+  };
+}
+
+export async function resolvePackingReprintTarget(req, jobId) {
+  const parent = await LabelPrintJob.findOne({ _id: jobId, companyId: req.companyId }).lean();
+  if (!parent) throwLabelErr("Job not found", 404);
+  await assertAsnViewForAsnLabelJob(req, parent);
+  const { parentReprintRejection, serializePackingReprintTarget } = await import("./labelReprint.js");
+  const rejection = parentReprintRejection(parent.status);
+  if (!rejection.ok) throwLabelErr(rejection.message, rejection.statusCode, rejection.code);
+  if (upper(parent.sourceType) !== "PACKING") {
+    throwLabelErr(
+      "Reprint target preview is only for packing label jobs",
+      400,
+      "LABEL_REPRINT_TARGET_TYPE"
+    );
+  }
+  const chosen = await resolveOfficialPackingReprintPrinter(req, parent, {});
+  return serializePackingReprintTarget(chosen.printer, {
+    originalUnavailable: chosen.originalUnavailable,
+    originalWindowsPrinterName: chosen.originalWindowsPrinterName,
+  });
+}
+
 function mapJobStatusToGrnLabelStatus(status) {
   switch (status) {
     case "PENDING":
@@ -1456,15 +1555,53 @@ export async function reprintJob(req, jobId, body = {}) {
     throw err;
   }
   await assertAsnViewForAsnLabelJob(req, parent);
+  const {
+    parentReprintRejection,
+    buildReprintIdempotencyKey,
+    packingPhysicalLabelCount,
+    canCopyFrozenPackingFaces,
+    cloneFrozenFacePayloads,
+  } = await import("./labelReprint.js");
+  const rejection = parentReprintRejection(parent.status);
+  if (!rejection.ok) {
+    const err = new Error(rejection.message);
+    err.statusCode = rejection.statusCode;
+    err.code = rejection.code;
+    throw err;
+  }
   const reason = t(body.reason);
   if (!reason) {
     const err = new Error("Reprint reason is required");
     err.statusCode = 400;
     throw err;
   }
+  const requesterId = req.user?.id || req.user?._id || null;
+  const clientRequestId = t(body.clientRequestId);
+  const reprintIdempotencyKey = buildReprintIdempotencyKey({
+    parentJobId: parent._id,
+    userId: requesterId,
+    clientRequestId,
+  });
+  if (reprintIdempotencyKey) {
+    const existingReprint = await LabelPrintJob.findOne({
+      companyId: req.companyId,
+      idempotencyKey: reprintIdempotencyKey,
+    });
+    if (existingReprint) return existingReprint;
+  }
   const copies = Math.max(1, Number(body.copies) || parent.copies || 1);
+  const isPackingSnapshot =
+    parent.sourceType === "PACKING" ||
+    parent.sourceType === "CUSTOM_PACKING" ||
+    String(parent.templateCode || "").includes("PACKING");
   let lines = parent.lines.map((ln) => ({ ...(ln.toObject?.() ?? ln) }));
-  if (!isAsnLabelJob(parent) && Array.isArray(body.lines) && body.lines.length) {
+  // Packing reprints always use the frozen parent snapshot — never caller-supplied live lines.
+  if (
+    !isPackingSnapshot &&
+    !isAsnLabelJob(parent) &&
+    Array.isArray(body.lines) &&
+    body.lines.length
+  ) {
     lines = body.lines.map((ln) => ({
       ...ln,
       article: upper(ln.article),
@@ -1472,79 +1609,123 @@ export async function reprintJob(req, jobId, body = {}) {
       labelQty: Math.max(1, Number(ln.labelQty) || 1),
     }));
   }
-  const printer = await resolvePrinterForJob(req.companyId, body.printerCode || null, {
-    warehouseCode: upper(body.warehouseCode) || upper(parent.warehouseCode),
-  });
-  const requestedLabels = lines.reduce((s, ln) => {
-    if (
-      parent.sourceType === "PACKING" ||
-      parent.sourceType === "CUSTOM_PACKING" ||
-      parent.templateCode === "PACKING_STANDARD_100X50"
-    ) {
-      return s + Math.max(1, Number(ln.lineCopies || copies) || 1);
+  let printer = null;
+  if (upper(parent.sourceType) === "PACKING") {
+    const { packingReprintShownPrinterConflict, serializePackingReprintTarget } = await import(
+      "./labelReprint.js"
+    );
+    const chosen = await resolveOfficialPackingReprintPrinter(req, parent, {
+      printerCode: body.printerCode,
+    });
+    if (packingReprintShownPrinterConflict(body.expectedPrinterConfigId, chosen.printer?._id)) {
+      throwLabelErr(
+        "The reprint printer changed. Confirm again to send to the current printer.",
+        409,
+        "LABEL_REPRINT_PRINTER_CHANGED",
+        serializePackingReprintTarget(chosen.printer, {
+          originalUnavailable: chosen.originalUnavailable,
+          originalWindowsPrinterName: chosen.originalWindowsPrinterName,
+        })
+      );
     }
-    if (Array.isArray(ln.labelDistribution) && ln.labelDistribution.length > 0) {
-      return s + ln.labelDistribution.length * copies;
-    }
-    return s + Math.max(0, Number(ln.labelQty) || 0) * copies;
-  }, 0);
-  const isPacking =
-    parent.sourceType === "PACKING" ||
-    parent.sourceType === "CUSTOM_PACKING" ||
-    String(parent.templateCode || "").includes("PACKING");
+    printer = chosen.printer;
+  } else if (t(body.printerCode)) {
+    printer = await resolvePrinterForJob(req.companyId, body.printerCode, {
+      warehouseCode: upper(body.warehouseCode) || upper(parent.warehouseCode),
+    });
+  } else if (parent.printerConfigId) {
+    printer = await PrinterConfig.findOne({
+      _id: parent.printerConfigId,
+      companyId: req.companyId,
+      isActive: true,
+    }).lean();
+  }
+  if (!printer) {
+    printer = await resolvePrinterForJob(req.companyId, null, {
+      warehouseCode: upper(body.warehouseCode) || upper(parent.warehouseCode),
+    });
+  }
+  const requestedLabels = isPackingSnapshot
+    ? packingPhysicalLabelCount(parent, lines, copies)
+    : lines.reduce((s, ln) => {
+        if (Array.isArray(ln.labelDistribution) && ln.labelDistribution.length > 0) {
+          return s + ln.labelDistribution.length * copies;
+        }
+        return s + Math.max(0, Number(ln.labelQty) || 0) * copies;
+      }, 0);
   const { PACKING_STANDARD_TEMPLATE_CODE } = await import("./labelTemplateService.js");
   const { companyName } = await loadLabelCompanyBranding(req.companyId);
   const omitArticle = parent.sourceType === "CUSTOM_PACKING";
   let tsplPayload = "";
   let payloadMode = "SINGLE_RAW";
   let rawFacePayloads = undefined;
-  if (isPacking) {
-    const { buildPackingLabelBatchPayloads } = await import("./tsplGenerator.js");
+  if (isPackingSnapshot) {
     const { LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH } = await import("./labelPayloadModes.js");
-    rawFacePayloads = buildPackingLabelBatchPayloads(
-      lines.map((ln) => ({
-        ...ln,
-        lineCopies: Math.max(1, Number(ln.lineCopies || copies) || 1),
-      })),
-      { omitArticle }
-    );
-    payloadMode = LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH;
+    if (canCopyFrozenPackingFaces(parent, requestedLabels)) {
+      rawFacePayloads = cloneFrozenFacePayloads(parent);
+      payloadMode = parent.payloadMode || LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH;
+    } else {
+      const { buildPackingLabelBatchPayloads } = await import("./tsplGenerator.js");
+      rawFacePayloads = buildPackingLabelBatchPayloads(
+        lines.map((ln) => ({
+          ...ln,
+          lineCopies: Math.max(1, Number(ln.lineCopies || copies) || 1),
+        })),
+        { omitArticle }
+      );
+      payloadMode = LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH;
+    }
     tsplPayload = "";
   } else {
     tsplPayload = buildJobTspl(lines, tsplOptsForJob(parent, { copies, companyName }));
   }
-  const job = await LabelPrintJob.create({
-    companyId: req.companyId,
-    jobNo: jobNo(),
-    sourceType: parent.sourceType,
-    sourceId: parent.sourceId,
-    sourceNo: parent.sourceNo,
-    draftRef: parent.draftRef || "",
-    linkedGrnNo: parent.linkedGrnNo || "",
-    labelConfigFingerprint: parent.labelConfigFingerprint || "",
-    warehouseCode: printer.warehouseCode,
-    printerConfigId: printer._id,
-    agentId: upper(printer.agentId),
-    windowsPrinterName: printer.windowsPrinterName,
-    templateCode: isPacking ? PACKING_STANDARD_TEMPLATE_CODE : MARIVOLT_STANDARD_TEMPLATE_CODE,
-    copies: isPacking ? 1 : copies,
-    requestedLabels,
-    printedLabels: 0,
-    remainingLabels: requestedLabels,
-    lines,
-    tsplPayload,
-    payloadMode,
-    rawFacePayloads,
-    status: "PENDING",
-    isReprint: true,
-    reprintReason: reason,
-    parentJobId: parent._id,
-    createdByUserId: req.user?.id || null,
-    createdByName: t(req.user?.name || ""),
-    packingMode: isPacking ? "REPRINT" : "",
-    allocationId: parent.allocationId || null,
-    packingId: parent.packingId || null,
-  });
+  let job;
+  try {
+    job = await LabelPrintJob.create({
+      companyId: req.companyId,
+      jobNo: jobNo(),
+      sourceType: parent.sourceType,
+      sourceId: parent.sourceId,
+      sourceNo: parent.sourceNo,
+      draftRef: parent.draftRef || "",
+      linkedGrnNo: parent.linkedGrnNo || "",
+      labelConfigFingerprint: parent.labelConfigFingerprint || "",
+      warehouseCode: printer.warehouseCode,
+      printerConfigId: printer._id,
+      agentId: upper(printer.agentId),
+      windowsPrinterName: printer.windowsPrinterName,
+      templateCode: isPackingSnapshot ? PACKING_STANDARD_TEMPLATE_CODE : MARIVOLT_STANDARD_TEMPLATE_CODE,
+      copies: isPackingSnapshot ? 1 : copies,
+      requestedLabels,
+      printedLabels: 0,
+      remainingLabels: requestedLabels,
+      lines,
+      tsplPayload,
+      payloadMode,
+      rawFacePayloads,
+      status: "PENDING",
+      isReprint: true,
+      reprintReason: reason,
+      parentJobId: parent._id,
+      createdByUserId: requesterId,
+      createdByName: t(req.user?.name || req.user?.email || ""),
+      packingMode: isPackingSnapshot ? "REPRINT" : "",
+      allocationId: parent.allocationId || null,
+      packingId: parent.packingId || null,
+      packingSelectionFingerprint: parent.packingSelectionFingerprint || "",
+      descriptionTruncated: parent.descriptionTruncated === true,
+      idempotencyKey: reprintIdempotencyKey || null,
+    });
+  } catch (e) {
+    if (reprintIdempotencyKey && (e?.code === 11000 || String(e?.message || "").includes("duplicate"))) {
+      const existingReprint = await LabelPrintJob.findOne({
+        companyId: req.companyId,
+        idempotencyKey: reprintIdempotencyKey,
+      });
+      if (existingReprint) return existingReprint;
+    }
+    throw e;
+  }
   await syncGrnLabelStatus(job.sourceId, job);
   await recordLabelHistory({
     jobId: job._id,
@@ -1561,7 +1742,7 @@ export async function reprintJob(req, jobId, body = {}) {
   await auditLabelEvent(req, {
     action: "OTHER",
     job,
-    description: `Label reprint ${job.jobNo} reason=${reason}`,
+    description: `Label reprint ${job.jobNo} of ${parent.jobNo} reason=${reason} labels=${requestedLabels}`,
   });
   return job;
 }

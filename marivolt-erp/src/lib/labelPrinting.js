@@ -27,6 +27,18 @@ export const REPRINT_REASONS = [
   "Other",
 ];
 
+/** Packing Builder / posted-packing reprint confirmation reasons. */
+export const PACKING_REPRINT_REASONS = [
+  "Label damaged",
+  "Label lost",
+  "Printer issue",
+  "Additional copy",
+  "Other",
+];
+
+export const PACKING_LABEL_ALREADY_PRINTED_TOAST =
+  "These labels were already printed. Use Reprint Packing Labels below for another complete set.";
+
 export {
   distributeByQtyPerLabel,
   distributeByLabelCount,
@@ -262,7 +274,7 @@ export function resolvePackingLabelQueueMessage(res = {}) {
   if (reused === true && status === "COMPLETED") {
     return {
       type: "warning",
-      message: "These labels were already printed. Use Reprint if you need another copy.",
+      message: PACKING_LABEL_ALREADY_PRINTED_TOAST,
     };
   }
   if (status === "UNCERTAIN") {
@@ -490,6 +502,88 @@ export function buildPackingLabelSelections(rows) {
       labelQty: Number(r.labelQty) || 0,
       copies: Math.max(1, Math.floor(Number(r.copies) || 1)),
     }));
+}
+
+/**
+ * Fingerprint for Packing Builder / posted-packing toolbar state.
+ * Uses available (PRE) or packed (POSTED) qty on lines that can print.
+ */
+export function buildDefaultPackingToolbarFingerprint(lines = [], mode = "PRE_PACKING") {
+  const rows = selectAvailablePackingLabelRows(defaultPackingLabelRows(lines, { mode }), { mode });
+  return buildPackingSelectionFingerprint(buildPackingLabelSelections(rows));
+}
+
+function sameId(a, b) {
+  if (a == null || b == null || a === "" || b === "") return false;
+  return String(a) === String(b);
+}
+
+/**
+ * Latest non-reprint first-print PACKING job that matches the current document + fingerprint.
+ * Reprint children and unrelated older selections must not win.
+ */
+export function pickRelevantPackingLabelJob(jobs = [], opts = {}) {
+  const mode = String(opts.packingMode || "").trim().toUpperCase();
+  const fingerprint = String(opts.fingerprint || "").trim();
+  if (!fingerprint) return null;
+  const alloc = opts.allocationId != null && opts.allocationId !== "" ? String(opts.allocationId) : "";
+  const pack = opts.packingId != null && opts.packingId !== "" ? String(opts.packingId) : "";
+  const src = String(opts.sourceNo || "").trim().toUpperCase();
+
+  const matched = (jobs || []).filter((j) => {
+    if (String(j?.sourceType || "").toUpperCase() !== "PACKING") return false;
+    if (j?.isReprint === true) return false;
+    if (j?.parentJobId) return false;
+    if (mode && String(j?.packingMode || "").toUpperCase() !== mode) return false;
+    if (alloc && !sameId(j.allocationId, alloc)) return false;
+    if (pack && !sameId(j.packingId, pack)) return false;
+    if (src && String(j.sourceNo || "").trim().toUpperCase() !== src) return false;
+    return String(j.packingSelectionFingerprint || "").trim() === fingerprint;
+  });
+
+  matched.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+  return matched[0] || null;
+}
+
+/**
+ * Toolbar / modal action for a relevant first-print packing job.
+ * @returns {{ action: 'print'|'reprint'|'printing'|'resolve', label: string, disabled: boolean, job: object|null }}
+ */
+export function resolvePackingLabelToolbarState(job) {
+  if (!job) {
+    return { action: "print", label: "Print Packing Labels", disabled: false, job: null };
+  }
+  const status = String(job.status || "").trim().toUpperCase();
+  if (status === "PENDING" || status === "LEASED" || status === "PRINTING") {
+    return { action: "printing", label: "Printing…", disabled: true, job };
+  }
+  if (status === "COMPLETED") {
+    return { action: "reprint", label: "Reprint Packing Labels", disabled: false, job };
+  }
+  if (status === "UNCERTAIN" || status === "PARTIAL") {
+    return { action: "resolve", label: "Resolve Print Status", disabled: false, job };
+  }
+  return { action: "print", label: "Print Packing Labels", disabled: false, job };
+}
+
+export function packingLabelActionEnabled(action, { canPrint = false, canReprint = false } = {}) {
+  if (action === "print") return canPrint === true;
+  if (action === "reprint") return canReprint === true;
+  if (action === "resolve") return true;
+  return false;
+}
+
+export function formatPackingReprintReason(reason, remarks = "") {
+  const r = String(reason || "").trim();
+  if (r !== "Other") return r;
+  return `Other: ${String(remarks || "").trim()}`.trim();
+}
+
+export function newPackingReprintClientRequestId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `reprint-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 /** Blank row for Custom Packing Label modal (manual entry). */

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import Modal from "../erp/Modal.jsx";
 import LoadingButton from "../erp/LoadingButton.jsx";
 import { apiPost } from "../../lib/api.js";
 import {
+  PACKING_LABEL_ALREADY_PRINTED_TOAST,
   buildPackingLabelSelections,
   defaultPackingLabelRows,
   selectAllPackingLabelRows,
@@ -15,8 +16,7 @@ import { PackingLabelPreviewFace } from "./PackingLabelPreviewFace.jsx";
  * Packing Labels — multi-select + manual qty + preview + print.
  * Does not mutate allocation/packing/stock; print is label-only.
  */
-export default function PackingLabelsModal({
-  open,
+function PackingLabelsForm({
   onClose,
   mode = "PRE_PACKING",
   packing = null,
@@ -25,28 +25,21 @@ export default function PackingLabelsModal({
   documentReferences = null,
   printerCode = "",
   printers = [],
+  canPrint = true,
+  canReprint = false,
   onPrinted,
   onError,
+  onRequestReprint,
 }) {
-  const [rows, setRows] = useState([]);
-  const [selectedPrinter, setSelectedPrinter] = useState("");
+  const [rows, setRows] = useState(() => defaultPackingLabelRows(lines, { mode }));
+  const [selectedPrinter, setSelectedPrinter] = useState(printerCode || "");
   const [previewIdx, setPreviewIdx] = useState(0);
   const [previewLabels, setPreviewLabels] = useState([]);
   const [previewErr, setPreviewErr] = useState("");
   const [descriptionTruncated, setDescriptionTruncated] = useState(false);
   const [confirmTruncation, setConfirmTruncation] = useState(false);
+  const [alreadyPrintedJob, setAlreadyPrintedJob] = useState(null);
   const titleNo = packing?.packingNo || allocation?.allocationNo || "";
-
-  useEffect(() => {
-    if (!open) return;
-    setRows(defaultPackingLabelRows(lines, { mode }));
-    setSelectedPrinter(printerCode || "");
-    setPreviewIdx(0);
-    setPreviewLabels([]);
-    setPreviewErr("");
-    setDescriptionTruncated(false);
-    setConfirmTruncation(false);
-  }, [open, lines, mode, printerCode]);
 
   const selectedCount = useMemo(() => rows.filter((r) => r.selected).length, [rows]);
 
@@ -103,6 +96,12 @@ export default function PackingLabelsModal({
       return apiPost("/labels/jobs/from-packing", body);
     },
     onSuccess: (data) => {
+      const status = String(data?.job?.status || data?.queueState || "").toUpperCase();
+      if (data?.reused === true && status === "COMPLETED") {
+        setAlreadyPrintedJob(data.job || data);
+        onPrinted?.(data, { keepOpen: true });
+        return;
+      }
       onPrinted?.(data);
       onClose?.();
     },
@@ -123,10 +122,8 @@ export default function PackingLabelsModal({
     currentPreview?.descriptionTruncated === true ||
     (currentPreview?.previewRows || []).some((r) => r.descriptionTruncated === true);
 
-  if (!open) return null;
-
   return (
-    <Modal open={open} onClose={onClose} title={`Packing Labels — ${titleNo || "—"}`} wide>
+    <Modal open onClose={onClose} title={`Packing Labels — ${titleNo || "—"}`} wide>
       <div className="mb-3 flex flex-wrap gap-2">
         <button
           type="button"
@@ -258,6 +255,12 @@ export default function PackingLabelsModal({
 
       {previewErr ? <p className="mb-2 text-xs text-rose-700">{previewErr}</p> : null}
 
+      {alreadyPrintedJob ? (
+        <p className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-950">
+          {PACKING_LABEL_ALREADY_PRINTED_TOAST}
+        </p>
+      ) : null}
+
       {descriptionTruncated ? (
         <div className="mb-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950">
           <p className="font-semibold">Description exceeds printable area. Review label before printing.</p>
@@ -322,17 +325,34 @@ export default function PackingLabelsModal({
         >
           Preview Selected
         </LoadingButton>
-        <LoadingButton
-          type="button"
-          variant="primary"
-          loading={printMut.isPending}
-          loadingText="Queueing…"
-          disabled={selectedCount <= 0 || printBlockedByOverflow}
-          onClick={() => printMut.mutate()}
-        >
-          Print Selected
-        </LoadingButton>
+        {alreadyPrintedJob ? (
+          <LoadingButton
+            type="button"
+            variant="primary"
+            disabled={!canReprint}
+            onClick={() => onRequestReprint?.(alreadyPrintedJob)}
+          >
+            Reprint Packing Labels
+          </LoadingButton>
+        ) : (
+          <LoadingButton
+            type="button"
+            variant="primary"
+            loading={printMut.isPending}
+            loadingText="Queueing…"
+            disabled={!canPrint || selectedCount <= 0 || printBlockedByOverflow || printMut.isPending}
+            onClick={() => printMut.mutate()}
+          >
+            Print Selected
+          </LoadingButton>
+        )}
       </div>
     </Modal>
   );
+}
+
+export default function PackingLabelsModal(props) {
+  if (!props.open) return null;
+  const key = `${props.mode || "PRE_PACKING"}:${props.packing?._id || ""}:${props.allocation?._id || ""}:${props.printerCode || ""}`;
+  return <PackingLabelsForm key={key} {...props} />;
 }

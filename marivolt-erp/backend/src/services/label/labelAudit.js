@@ -41,6 +41,11 @@ export async function auditLabelEvent(req, { action = "OTHER", job, description 
         agentId: job?.agentId,
         templateCode: job?.templateCode,
         retryCount: job?.retryCount,
+        windowsPrinterName: job?.windowsPrinterName,
+        isReprint: job?.isReprint === true,
+        parentJobId: job?.parentJobId || null,
+        reprintReason: job?.reprintReason || "",
+        packingMode: job?.packingMode || "",
       },
     });
   } catch {

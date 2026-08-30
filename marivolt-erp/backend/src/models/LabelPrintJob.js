@@ -166,6 +166,8 @@ labelPrintJobSchema.index({ companyId: 1, status: 1, agentId: 1 });
 labelPrintJobSchema.index({ companyId: 1, sourceNo: 1, createdAt: -1 });
 labelPrintJobSchema.index({ companyId: 1, sourceType: 1, "lines.receivingUnitId": 1, status: 1 });
 labelPrintJobSchema.index({ companyId: 1, sourceType: 1, packingSelectionFingerprint: 1, createdAt: -1 });
+labelPrintJobSchema.index({ companyId: 1, packingId: 1, packingMode: 1, createdAt: -1 });
+labelPrintJobSchema.index({ companyId: 1, allocationId: 1, packingMode: 1, createdAt: -1 });
 labelPrintJobSchema.index({ companyId: 1, sourceType: 1, "lines.customPackingRowId": 1, createdAt: -1 });
 labelPrintJobSchema.index(
   { companyId: 1, idempotencyKey: 1 },
