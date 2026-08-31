@@ -37,7 +37,7 @@ import {
   inspectReplanReceivingBlockers,
   invalidateEmptyDraftReceivingSession,
 } from "./receivingInspectionGuard.js";
-import { assertAsnReceivingComplete } from "../utils/asnReceivingCompleteness.js";
+import { assertAsnReceivingComplete, validateAsnReceivingCompleteness } from "../utils/asnReceivingCompleteness.js";
 import {
   isSuccessfulLabelJobStatus,
   validateGrnLabelLinePrintConfig,
@@ -961,4 +961,5 @@ export {
   findAsnLine,
   assertPoCompany,
   currentLineRus,
+  validateAsnReceivingCompleteness,
 };

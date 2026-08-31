@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildRuFirstPrintRequestBody,
+  buildRuPlannerViewState,
   buildRuReprintRequestBody,
   canPrintSavedRuPlan,
   defaultLinePlan,
@@ -33,6 +34,7 @@ import { RU_PLAN_ELIGIBLE_ASN_STATUSES as BACKEND_ELIGIBLE } from "../src/utils/
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const feRoot = path.join(__dirname, "..", "..", "src");
 const planner = fs.readFileSync(path.join(feRoot, "components", "store", "AsnReceivingLabelPlanner.jsx"), "utf8");
+const labels = fs.readFileSync(path.join(feRoot, "lib", "receivingUnitLabels.js"), "utf8");
 const panel = fs.readFileSync(path.join(feRoot, "components", "store", "IncomingShipmentsPanel.jsx"), "utf8");
 
 let passed = 0;
@@ -100,7 +102,8 @@ run("4. fetched detail ARRIVED overrides stale/undefined list-row status", () =>
     "ARRIVED"
   );
   assert.equal(isAsnEligibleForRuPlan(resolveAsnStatusForRuPlan({ detail: { status: "ARRIVED" }, listRow: {} })), true);
-  assert.match(planner, /resolveAsnStatusForRuPlan\(\{ detail: asn, listing \}\)/);
+  assert.match(planner, /buildRuPlannerViewState/);
+  assert.match(labels, /resolveAsnStatusForRuPlan\(\{ detail: asn, listing: extracted \}\)/);
   assert.match(panel, /asn=\{detail\}/);
   assert.match(panel, /isAsnEligibleForRuPlan\(detail\?\.status\)/);
 });
@@ -159,7 +162,7 @@ run("10. opening modal performs no write", () => {
 
 run("11. first preparation has no reprint-reason control", () => {
   assert.equal(isRuReprintMode({ lines: marAsn0009.lines, receivingUnits: [] }), false);
-  assert.match(planner, /showReprintReason = Boolean\(canReprint && reprintMode && !listingBlocked\)/);
+  assert.match(labels, /showReprintReason = Boolean\(canReprint && reprintMode && !listingBlocked\)/);
   assert.match(planner, /\{showReprintReason \?/);
 });
 
@@ -390,7 +393,8 @@ run("S10. failed listing never enables Save/Preview/Print for established ASN", 
   assert.equal(isValidReceivingUnitPlan(rows, {}), false);
   assert.equal(canPrintSavedRuPlan(rows.flatMap((l) => l.receivingUnits || [])), false);
   assert.equal(shouldShowRuListingLoadError(failedListingArgs(detail)), true);
-  assert.match(planner, /RU_PLAN_LISTING_LOAD_ERROR/);
+  assert.match(labels, /RU_PLAN_LISTING_LOAD_ERROR/);
+  assert.match(planner, /listingLoadError/);
   assert.match(planner, /listingBlocked/);
   assert.match(planner, /disabled=\{!canSavePlan\}/);
   assert.match(planner, /disabled=\{!canPrintPlan \|\| listingBlocked\}/);
@@ -425,7 +429,7 @@ run("S12. missing listing does not falsely select first-print mode for establish
   assert.equal(isRuFirstPrintMode(null), false);
   assert.equal(isRuReprintMode(undefined), false);
   assert.equal(isUntouchedFirstPreparationAsn(established), false);
-  assert.match(planner, /isRuReprintMode\(listing\)/);
+  assert.match(labels, /isRuReprintMode\(extracted\)/);
 });
 
 run("S13. MAR-ASN-0009 still renders exactly three first-preparation rows", () => {
@@ -435,6 +439,16 @@ run("S13. MAR-ASN-0009 still renders exactly three first-preparation rows", () =
     rows.map((r) => String(r.asnLineId)),
     ["6a9573251250989c1676265f", "6a9573251250989c16762660", "6a9573251250989c16762661"]
   );
+  const view = buildRuPlannerViewState({
+    asn: marAsn0009,
+    listing: undefined,
+    listingFailed: false,
+    canPrint: true,
+    canReprint: true,
+    intent: "review",
+  });
+  assert.equal(view.lines.length, 3);
+  assert.equal(view.computedCompleteness != null, true);
   assert.equal(RU_PLAN_LISTING_LOAD_ERROR, "Receiving Unit plan could not be loaded. Refresh and try again.");
 });
 

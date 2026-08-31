@@ -1,6 +1,9 @@
 /**
  * Display helpers for ASN receiving-completeness (canonical result from backend).
+ * Completeness rules live in backend/src/utils/asnReceivingCompleteness.js — do not fork them.
  */
+
+export { validateAsnReceivingCompleteness } from "../../backend/src/utils/asnReceivingCompleteness.js";
 
 export function extractAsnCompletenessMissing(payload) {
   if (Array.isArray(payload?.missing)) return payload.missing;

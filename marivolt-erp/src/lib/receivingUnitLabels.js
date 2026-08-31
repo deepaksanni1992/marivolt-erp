@@ -9,6 +9,7 @@ import {
   sumDistribution,
   validateGrnLabelLinePrintConfig,
 } from "./grnLabelDistribution.js";
+import { validateAsnReceivingCompleteness } from "./asnReceivingCompleteness.js";
 
 export function suggestedDistribution(asnQty, labelCount) {
   const q = Number(asnQty) || 0;
@@ -308,6 +309,80 @@ export function buildRuReprintRequestBody({ reason, printerCode } = {}) {
 
 export function canPrintSavedRuPlan(previewFaces = []) {
   return (previewFaces || []).some((ru) => isPlannedReceivingUnit(ru));
+}
+
+/**
+ * Pure planner open-state. Executes canonical completeness validation.
+ * Opening the modal must not write; this function is GET-side only.
+ */
+export function buildRuPlannerViewState({
+  asn,
+  listing,
+  listingFailed = false,
+  receivingContext = {},
+  canPrint = false,
+  canReprint = false,
+  intent = "review",
+  planEdits = {},
+} = {}) {
+  const computedCompleteness = asn ? validateAsnReceivingCompleteness(asn) : null;
+  const extracted = extractReceivingUnitsListing(listing);
+  const status = resolveAsnStatusForRuPlan({ detail: asn, listing: extracted });
+  const eligible = isAsnEligibleForRuPlan(status);
+  const listingBlocked = shouldShowRuListingLoadError({
+    listing: extracted,
+    detail: asn,
+    context: receivingContext,
+    listingFailed,
+  });
+  const lines =
+    eligible && !listingBlocked
+      ? resolveRuPlanningLines({ listing: extracted, detail: asn, context: receivingContext })
+      : [];
+  const completeness =
+    extracted?.receivingCompleteness || asn?.receivingCompleteness || computedCompleteness;
+  const incompleteForReceiving = Boolean(completeness && !completeness.complete);
+  const reprintMode = isRuReprintMode(extracted);
+  const firstPrintMode = isRuFirstPrintMode(extracted);
+  const showReprintReason = Boolean(canReprint && reprintMode && !listingBlocked);
+  const plans = { ...planEdits };
+  for (const line of lines) {
+    const key = String(line.asnLineId);
+    if (!plans[key]) plans[key] = defaultLinePlan(line);
+  }
+  const previewFaces = lines.flatMap((line) => line.receivingUnits || []);
+  let canSave = false;
+  if (!(listingBlocked || !eligible || !canPrint || incompleteForReceiving)) {
+    if (extracted || isUntouchedFirstPreparationAsn(asn, receivingContext)) {
+      canSave = isValidReceivingUnitPlan(lines, plans);
+    }
+  }
+  const hasActiveRus = previewFaces.length > 0;
+  const reprepareMode = intent === "reprepare";
+  const canSavePlan = canSave && (!hasActiveRus || (reprepareMode && extracted?.replanAllowed !== false));
+  const canPrintPlan = Boolean(
+    canPrint && !listingBlocked && !incompleteForReceiving && canPrintSavedRuPlan(previewFaces)
+  );
+  return {
+    status,
+    eligible,
+    listingBlocked,
+    listingLoadError: listingBlocked ? RU_PLAN_LISTING_LOAD_ERROR : "",
+    lines,
+    plans,
+    completeness,
+    computedCompleteness,
+    incompleteForReceiving,
+    reprintMode,
+    firstPrintMode,
+    showReprintReason,
+    previewFaces,
+    canSave,
+    canSavePlan,
+    canPrintPlan,
+    saveLabel: reprepareMode ? "Save New RU Plan" : "Save Receiving Units",
+    writesOnOpen: false,
+  };
 }
 
 export { formatLabelDistribution, parseDistributionInput, sumDistribution };

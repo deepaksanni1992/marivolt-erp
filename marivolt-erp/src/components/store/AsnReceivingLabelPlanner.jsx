@@ -6,22 +6,14 @@ import { apiGet, apiPost } from "../../lib/api.js";
 import { confirmDialog, notify } from "../../lib/notifications.js";
 import {
   buildRuFirstPrintRequestBody,
+  buildRuPlannerViewState,
   buildRuReprintRequestBody,
-  canPrintSavedRuPlan,
   defaultLinePlan,
   distributionDifference,
   extractReceivingUnitsListing,
   formatLabelDistribution,
-  isAsnEligibleForRuPlan,
   isPrintedReceivingUnit,
-  isRuReprintMode,
-  isUntouchedFirstPreparationAsn,
-  isValidReceivingUnitPlan,
   parseDistributionInput,
-  resolveAsnStatusForRuPlan,
-  resolveRuPlanningLines,
-  RU_PLAN_LISTING_LOAD_ERROR,
-  shouldShowRuListingLoadError,
   suggestedDistribution,
   validateAsnLabelDistribution,
 } from "../../lib/receivingUnitLabels.js";
@@ -66,34 +58,35 @@ export default function AsnReceivingLabelPlanner({
   });
 
   const listing = extractReceivingUnitsListing(ruQ.data);
-  const status = resolveAsnStatusForRuPlan({ detail: asn, listing });
-  const eligible = isAsnEligibleForRuPlan(status);
   const listingFailed = Boolean(open && (ruQ.isError || (ruQ.isFetched && !ruQ.isFetching && !listing)));
-  const listingBlocked = shouldShowRuListingLoadError({
-    listing,
-    detail: asn,
-    context: receivingContext,
-    listingFailed,
-  });
-  const lines = useMemo(
+  const view = useMemo(
     () =>
-      eligible && !listingBlocked
-        ? resolveRuPlanningLines({ listing, detail: asn, context: receivingContext })
-        : [],
-    [eligible, listingBlocked, listing, asn, receivingContext]
+      buildRuPlannerViewState({
+        asn,
+        listing,
+        listingFailed,
+        receivingContext,
+        canPrint,
+        canReprint,
+        intent,
+        planEdits,
+      }),
+    [asn, listing, listingFailed, receivingContext, canPrint, canReprint, intent, planEdits]
   );
-  const completeness = listing?.receivingCompleteness || asn?.receivingCompleteness;
-  const incompleteForReceiving = Boolean(completeness && !completeness.complete);
-  const reprintMode = isRuReprintMode(listing);
-  const showReprintReason = Boolean(canReprint && reprintMode && !listingBlocked);
-  const plans = useMemo(() => {
-    const next = { ...planEdits };
-    for (const line of lines) {
-      const key = String(line.asnLineId);
-      if (!next[key]) next[key] = defaultLinePlan(line);
-    }
-    return next;
-  }, [lines, planEdits]);
+  const {
+    eligible,
+    listingBlocked,
+    listingLoadError,
+    lines,
+    completeness,
+    incompleteForReceiving,
+    showReprintReason,
+    previewFaces,
+    canSavePlan,
+    canPrintPlan,
+    saveLabel,
+  } = view;
+  const plans = view.plans;
 
   const planMutation = useMutation({
     mutationFn: (body) => apiPost(`/asn/${asnId}/receiving-units/plan`, body),
@@ -142,23 +135,7 @@ export default function AsnReceivingLabelPlanner({
     onError: (err) => notify.fromError(err, { fallback: "Could not reprint" }),
   });
 
-  const previewFaces = useMemo(
-    () => (lines || []).flatMap((line) => line.receivingUnits || []),
-    [lines]
-  );
-
-  const canSave = useMemo(() => {
-    if (listingBlocked || !eligible || !canPrint || incompleteForReceiving) return false;
-    if (!listing && !isUntouchedFirstPreparationAsn(asn, receivingContext)) return false;
-    return isValidReceivingUnitPlan(lines, plans);
-  }, [listingBlocked, eligible, canPrint, incompleteForReceiving, listing, asn, receivingContext, lines, plans]);
-
-  const hasActiveRus = previewFaces.length > 0;
   const reprepareMode = intent === "reprepare";
-  const canSavePlan = canSave && (!hasActiveRus || (reprepareMode && listing?.replanAllowed !== false));
-  const canPrintPlan = Boolean(
-    canPrint && !listingBlocked && !incompleteForReceiving && canPrintSavedRuPlan(previewFaces)
-  );
   const currentFace = previewFaces[previewIndex] || null;
 
   if (open !== wasOpen) {
@@ -341,7 +318,7 @@ export default function AsnReceivingLabelPlanner({
         ) : null}
         {listingBlocked ? (
           <p className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">
-            {RU_PLAN_LISTING_LOAD_ERROR}
+            {listingLoadError}
           </p>
         ) : null}
         {completeness ? (
@@ -529,7 +506,7 @@ export default function AsnReceivingLabelPlanner({
             disabled={!canSavePlan}
             onClick={() => savePlan()}
           >
-            {reprepareMode ? "Save New RU Plan" : "Save Receiving Units"}
+            {saveLabel}
           </LoadingButton>
           <LoadingButton
             variant="success"
