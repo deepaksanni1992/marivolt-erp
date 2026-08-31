@@ -80,7 +80,25 @@ export const SIGNING_KEY_INDEX_SPECS = Object.freeze(
 );
 
 const SECRET_FIELD_NAMES = new Set(["encryptedSecret", "secretRef", "passwordHash", "twoFactorSecret"]);
-const MAR_PL_TOKEN_K1_RE = /MAR1\.MAR-PL-[0-9]{1,8}\.K1\./;
+/** Complete MAR1 K1 token inside TSPL/raw-face payloads. Signature is exactly 22 Base64URL chars. */
+export const MAR1_K1_COMPLETE_TOKEN_RE = /MAR1\.MAR-PL-[0-9]{1,8}\.K1\.[A-Za-z0-9_-]{22}(?![A-Za-z0-9_-])/;
+
+export function buildLabelPrintJobDependencyFilter(companyId) {
+  if (companyId == null || companyId === "") {
+    throw new Error("companyId is required for packing-label job dependency query");
+  }
+  return {
+    companyId,
+    $or: [
+      { "lines.packingLabelUnitId": { $type: "objectId" } },
+      { "lines.labelId": PACKING_LABEL_NO_PATTERN },
+      { "lines.labelNo": PACKING_LABEL_NO_PATTERN },
+      { "lines.barcodeValue": PACKING_LABEL_NO_PATTERN },
+      { tsplPayload: MAR1_K1_COMPLETE_TOKEN_RE },
+      { rawFacePayloads: MAR1_K1_COMPLETE_TOKEN_RE },
+    ],
+  };
+}
 
 export function parseRepairUnusedPackingLabelSigningKeyArgs(argv = []) {
   const parsed = {
@@ -233,25 +251,16 @@ async function collectDependencyCounts(db, companyId) {
   counts.packingLabelUnitsSignedByK1 = await safeCount(db, PACKING_LABEL_UNIT_COLLECTION, {
     signingKeyId: REQUIRED_KEY_ID,
   });
+  const jobDependencyFilter = buildLabelPrintJobDependencyFilter(companyId);
   counts.landscapeJobs = await safeCount(db, LABEL_PRINT_JOB_COLLECTION, {
+    companyId,
     templateCode: PACKING_QR_LANDSCAPE_V1_CODE,
   });
-  counts.jobsReferencingSigningKey = await safeCount(db, LABEL_PRINT_JOB_COLLECTION, {
-    $or: [
-      { "lines.packingLabelUnitId": { $ne: null } },
-      { "lines.labelId": PACKING_LABEL_NO_PATTERN },
-      { "lines.barcodeValue": PACKING_LABEL_NO_PATTERN },
-      { "lines.signingKeyId": REQUIRED_KEY_ID },
-      { tsplPayload: MAR_PL_TOKEN_K1_RE },
-      { rawFacePayloads: MAR_PL_TOKEN_K1_RE },
-    ],
-  });
+  counts.jobsReferencingSigningKey = await safeCount(db, LABEL_PRINT_JOB_COLLECTION, jobDependencyFilter);
   counts.marPlIdentities =
     counts.packingLabelUnitsSignedByK1 +
-    (await safeCount(db, LABEL_PRINT_JOB_COLLECTION, {
-      $or: [{ "lines.labelId": PACKING_LABEL_NO_PATTERN }, { tsplPayload: MAR_PL_TOKEN_K1_RE }, { rawFacePayloads: MAR_PL_TOKEN_K1_RE }],
-    })) +
-    (await safeCount(db, LABEL_PRINT_HISTORY_COLLECTION, { templateCode: PACKING_QR_LANDSCAPE_V1_CODE }));
+    counts.jobsReferencingSigningKey +
+    (await safeCount(db, LABEL_PRINT_HISTORY_COLLECTION, { companyId, templateCode: PACKING_QR_LANDSCAPE_V1_CODE }));
 
   if (await collectionExists(db, COUNTER_COLLECTION)) {
     const rows = await findMany(

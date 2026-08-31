@@ -40,12 +40,14 @@ import {
   COUNTER_COLLECTION,
   LABEL_PRINT_JOB_COLLECTION,
   LOCKED_TEST_LABEL_NO,
+  MAR1_K1_COMPLETE_TOKEN_RE,
   PACKING_LABEL_KEY_REPAIR_CONFLICT,
   PACKING_LABEL_KEY_REPAIR_NOT_REQUIRED,
   PACKING_LABEL_KEY_REPAIR_UNSAFE,
   REQUIRED_CONFIRM,
   REQUIRED_OPERATOR_EMAIL,
   SIGNING_KEY_INDEX_SPECS,
+  buildLabelPrintJobDependencyFilter,
   publicReport,
   runRepairUnusedPackingLabelSigningKey,
 } from "./repairUnusedPackingLabelSigningKey.mjs";
@@ -119,6 +121,11 @@ function getNested(doc, pathKey) {
   return pathKey.split(".").reduce((acc, part) => (acc == null ? acc : acc[part]), doc);
 }
 
+function isBsonObjectIdValue(value) {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
+  return value._bsontype === "ObjectId" || value._bsontype === "ObjectID";
+}
+
 function matchValue(actual, expected) {
   if (expected instanceof RegExp) {
     if (Array.isArray(actual)) return actual.some((item) => expected.test(String(item || "")));
@@ -126,6 +133,11 @@ function matchValue(actual, expected) {
   }
   if (expected && typeof expected === "object" && !Array.isArray(expected)) {
     if ("$exists" in expected) return expected.$exists ? actual !== undefined : actual === undefined;
+    if ("$type" in expected) {
+      const typeName = String(expected.$type || "").toLowerCase();
+      if (typeName === "objectid" || expected.$type === 7) return isBsonObjectIdValue(actual);
+      return false;
+    }
     if ("$ne" in expected) {
       if (expected.$ne == null) return actual != null && actual !== "";
       return String(actual) !== String(expected.$ne);
@@ -282,6 +294,55 @@ function currentKeyDoc(overrides = {}) {
     retiredAt: null,
     ...overrides,
   };
+}
+
+const OTHER_COMPANY_ID = "ffffffffffffffffffffffff";
+const SIG22 = "xY7_k2LmN9pQrStUvWx-zA";
+const COMPLETE_MAR1_K1_TOKEN = `MAR1.MAR-PL-000001.K1.${SIG22}`;
+
+function fakeObjectId(id = "dddddddddddddddddddddddd") {
+  return { _bsontype: "ObjectId", id };
+}
+
+function packingJob(overrides = {}) {
+  return {
+    _id: overrides._id || "job1",
+    companyId: COMPANY_ID,
+    sourceType: "PACKING",
+    templateCode: "PACKING_STANDARD_100X50",
+    packingMode: "PRE_PACKING",
+    status: "COMPLETED",
+    lines: [],
+    ...overrides,
+  };
+}
+
+const LEGACY_CUSTOM_PACKING_JOBS = [
+  packingJob({
+    _id: "6a8aee4fb4cf363dcdff5187",
+    jobNo: "LBL202608231257512920",
+    sourceType: "CUSTOM_PACKING",
+    packingMode: "CUSTOM_PACKING",
+    lines: [],
+    tsplPayload: "SIZE 100 mm,50 mm",
+  }),
+  packingJob({
+    _id: "6a8aee51e61a4ff86ed536af",
+    jobNo: "LBL20260823125753C839",
+    sourceType: "CUSTOM_PACKING",
+    packingMode: "CUSTOM_PACKING",
+    lines: [],
+    tsplPayload: "SIZE 100 mm,50 mm",
+  }),
+];
+
+async function dryRepairWithJobs(docs) {
+  const db = new FakeDb(
+    readyState({
+      [LABEL_PRINT_JOB_COLLECTION]: { exists: true, docs },
+    })
+  );
+  return runRepairUnusedPackingLabelSigningKey({ db, argv: DRY_ARGV, ...APPLY_ENV });
 }
 
 function readyState(overrides = {}) {
@@ -725,24 +786,161 @@ await run("21. no delete/insert/upsert/index mutation outside exact K1 update", 
   assert.ok(db.collection(PACKING_LABEL_SIGNING_KEY_COLLECTION).calls.updateOne[0].filterKeys.includes("encryptedSecret"));
 });
 
-await run("job line packingLabelUnitId blocks as signing-key identity", async () => {
-  const db = new FakeDb(
-    readyState({
-      [LABEL_PRINT_JOB_COLLECTION]: {
-        exists: true,
-        docs: [
-          {
-            _id: "j2",
-            companyId: COMPANY_ID,
-            templateCode: "PACKING_STANDARD_100X50",
-            lines: [{ packingLabelUnitId: "u1", labelId: "MAR-PL-000002" }],
-          },
-        ],
-      },
-    })
+await run("predicate.companyId is required and scoped", async () => {
+  assert.throws(() => buildLabelPrintJobDependencyFilter(null), /companyId is required/);
+  assert.throws(() => buildLabelPrintJobDependencyFilter(""), /companyId is required/);
+  const filter = buildLabelPrintJobDependencyFilter(COMPANY_ID);
+  assert.equal(filter.companyId, COMPANY_ID);
+  assert.equal(Array.isArray(filter.$or), true);
+  assert.equal(
+    filter.$or.some((clause) => JSON.stringify(clause) === JSON.stringify({ "lines.packingLabelUnitId": { $type: "objectId" } })),
+    true
   );
-  const report = await runRepairUnusedPackingLabelSigningKey({ db, argv: APPLY_ARGV, ...APPLY_ENV });
+  assert.equal(SCRIPT_SOURCE.includes('{ "lines.packingLabelUnitId": { $ne: null } }'), false);
+  assert.equal(SCRIPT_SOURCE.includes('"lines.signingKeyId"'), false);
+  assert.equal(MAR1_K1_COMPLETE_TOKEN_RE.source.includes("{22}"), true);
+});
+
+await run("dep.1 missing lines does not match", async () => {
+  const report = await dryRepairWithJobs([packingJob({ lines: undefined })]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 0);
+  assert.equal(report.result, "READY_TO_REPAIR");
+});
+
+await run("dep.2 empty lines does not match", async () => {
+  const report = await dryRepairWithJobs([packingJob({ lines: [] })]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 0);
+  assert.equal(report.result, "READY_TO_REPAIR");
+});
+
+await run("dep.3 null packingLabelUnitId does not match", async () => {
+  const report = await dryRepairWithJobs([
+    packingJob({
+      lines: [
+        { packingLabelUnitId: null },
+        { packingLabelUnitId: "null" },
+        { packingLabelUnitId: "u1" },
+        { packingLabelUnitId: "aaaaaaaaaaaaaaaaaaaaaaaa" },
+      ],
+    }),
+  ]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 0);
+  assert.equal(report.result, "READY_TO_REPAIR");
+});
+
+await run("dep.4 real ObjectId matches", async () => {
+  const report = await dryRepairWithJobs([
+    packingJob({ lines: [{ packingLabelUnitId: fakeObjectId() }] }),
+  ]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 1);
   assert.equal(report.result, PACKING_LABEL_KEY_REPAIR_UNSAFE);
+});
+
+await run("dep.5 MAR-PL labelId matches", async () => {
+  const report = await dryRepairWithJobs([packingJob({ lines: [{ labelId: "MAR-PL-000002" }] })]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 1);
+  assert.equal(report.result, PACKING_LABEL_KEY_REPAIR_UNSAFE);
+});
+
+await run("dep.6 MAR-PL labelNo matches", async () => {
+  const report = await dryRepairWithJobs([packingJob({ lines: [{ labelNo: "MAR-PL-7" }] })]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 1);
+  assert.equal(report.result, PACKING_LABEL_KEY_REPAIR_UNSAFE);
+});
+
+await run("dep.7 MAR-PL barcodeValue matches", async () => {
+  const report = await dryRepairWithJobs([packingJob({ lines: [{ barcodeValue: "MAR-PL-000001" }] })]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 1);
+  assert.equal(report.result, PACKING_LABEL_KEY_REPAIR_UNSAFE);
+});
+
+await run("dep.8 complete strict MAR1 K1 token matches", async () => {
+  assert.equal(SIG22.length, 22);
+  assert.equal(MAR1_K1_COMPLETE_TOKEN_RE.test(`QRCODE 1,1,H,6,A,90,"${COMPLETE_MAR1_K1_TOKEN}"`), true);
+  const report = await dryRepairWithJobs([
+    packingJob({ tsplPayload: `QRCODE 1,1,H,6,A,90,"${COMPLETE_MAR1_K1_TOKEN}"` }),
+  ]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 1);
+  assert.equal(report.result, PACKING_LABEL_KEY_REPAIR_UNSAFE);
+});
+
+await run("dep.9 21-character signature does not match", async () => {
+  const token = `MAR1.MAR-PL-000001.K1.${SIG22.slice(0, 21)}`;
+  assert.equal(MAR1_K1_COMPLETE_TOKEN_RE.test(token), false);
+  const report = await dryRepairWithJobs([packingJob({ tsplPayload: token, rawFacePayloads: [token] })]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 0);
+  assert.equal(report.result, "READY_TO_REPAIR");
+});
+
+await run("dep.10 23-character signature does not match", async () => {
+  const token = `MAR1.MAR-PL-000001.K1.${SIG22}A`;
+  assert.equal(SIG22.length + 1, 23);
+  assert.equal(MAR1_K1_COMPLETE_TOKEN_RE.test(token), false);
+  const report = await dryRepairWithJobs([packingJob({ tsplPayload: token, rawFacePayloads: [token] })]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 0);
+  assert.equal(report.result, "READY_TO_REPAIR");
+});
+
+await run("dep.11 non-Base64URL signature does not match", async () => {
+  const token = `MAR1.MAR-PL-000001.K1.${"A".repeat(21)}+`;
+  assert.equal(MAR1_K1_COMPLETE_TOKEN_RE.test(token), false);
+  const report = await dryRepairWithJobs([
+    packingJob({ tsplPayload: `MAR1.MAR-PL-000001.K1.`, rawFacePayloads: [token] }),
+  ]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 0);
+  assert.equal(report.result, "READY_TO_REPAIR");
+});
+
+await run("dep.12 bare signingKeyId K1 does not match", async () => {
+  const report = await dryRepairWithJobs([
+    packingJob({
+      lines: [{ signingKeyId: "K1", location: "K1", article: "K1" }],
+      tsplPayload: "K1",
+    }),
+  ]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 0);
+  assert.equal(report.result, "READY_TO_REPAIR");
+});
+
+await run("dep.13 other-company job does not match", async () => {
+  const report = await dryRepairWithJobs([
+    packingJob({
+      companyId: OTHER_COMPANY_ID,
+      lines: [{ packingLabelUnitId: fakeObjectId(), labelId: "MAR-PL-000001", barcodeValue: "MAR-PL-000001" }],
+      tsplPayload: `QRCODE 1,1,H,6,A,90,"${COMPLETE_MAR1_K1_TOKEN}"`,
+      templateCode: PACKING_QR_LANDSCAPE_V1_CODE,
+    }),
+  ]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 0);
+  assert.equal(report.dependencyCounts.landscapeJobs, 0);
+  assert.equal(report.result, "READY_TO_REPAIR");
+});
+
+await run("dep.14 known legacy CUSTOM_PACKING jobs no longer block", async () => {
+  const report = await dryRepairWithJobs(LEGACY_CUSTOM_PACKING_JOBS);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 0);
+  assert.equal(report.result, "READY_TO_REPAIR");
+  assert.equal(report.updated, false);
+});
+
+await run("dep.15 genuine MAR dependency remains unsafe", async () => {
+  const report = await dryRepairWithJobs([
+    packingJob({
+      companyId: COMPANY_ID,
+      lines: [{ packingLabelUnitId: fakeObjectId(), labelId: "MAR-PL-000001" }],
+    }),
+  ]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 1);
+  assert.equal(report.result, PACKING_LABEL_KEY_REPAIR_UNSAFE);
+  assert.equal(report.updated, false);
+});
+
+await run("dep.16 zero genuine dependencies permits READY_TO_REPAIR", async () => {
+  const report = await dryRepairWithJobs([]);
+  assert.equal(report.dependencyCounts.jobsReferencingSigningKey, 0);
+  assert.equal(report.dependencyCounts.landscapeJobs, 0);
+  assert.equal(report.dependencyCounts.marPlIdentities, 0);
+  assert.equal(report.result, "READY_TO_REPAIR");
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
