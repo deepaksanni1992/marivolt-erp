@@ -5,7 +5,10 @@ import LabelTemplate, {
   MARIVOLT_STANDARD_TEMPLATE_NAME,
   PACKING_STANDARD_TEMPLATE_CODE,
   PACKING_STANDARD_TEMPLATE_NAME,
+  PACKING_QR_LANDSCAPE_V1_TEMPLATE_CODE,
+  PACKING_QR_LANDSCAPE_V1_TEMPLATE_NAME,
 } from "../../models/LabelTemplate.js";
+import { packingQrLandscapeV1TemplateDocument } from "./packingQrLandscapeV1.js";
 
 export async function ensureMarivoltStandardTemplate() {
   const existing = await LabelTemplate.findOne({ code: MARIVOLT_STANDARD_TEMPLATE_CODE });
@@ -57,11 +60,47 @@ export async function getPackingStandardTemplate() {
   return LabelTemplate.findOne({ code: PACKING_STANDARD_TEMPLATE_CODE }).lean();
 }
 
+/**
+ * Catalog row for the 100×150 landscape template.
+ * Phase 1 print/preview paths do not call this (no production DB write required).
+ */
+export async function ensurePackingQrLandscapeV1Template() {
+  const existing = await LabelTemplate.findOne({ code: PACKING_QR_LANDSCAPE_V1_TEMPLATE_CODE });
+  if (existing) {
+    let dirty = false;
+    if (existing.printEnabled !== false) {
+      existing.printEnabled = false;
+      dirty = true;
+    }
+    if (existing.previewEnabled !== true) {
+      existing.previewEnabled = true;
+      dirty = true;
+    }
+    if (existing.requiresPersistentIdentity !== true) {
+      existing.requiresPersistentIdentity = true;
+      dirty = true;
+    }
+    if (Number(existing.widthMm) !== 100) {
+      existing.widthMm = 100;
+      dirty = true;
+    }
+    if (Number(existing.heightMm) !== 150) {
+      existing.heightMm = 150;
+      dirty = true;
+    }
+    if (dirty) await existing.save();
+    return existing;
+  }
+  return LabelTemplate.create(packingQrLandscapeV1TemplateDocument());
+}
+
 export {
   MARIVOLT_STANDARD_TEMPLATE_CODE,
   MARIVOLT_STANDARD_TEMPLATE_NAME,
   PACKING_STANDARD_TEMPLATE_CODE,
   PACKING_STANDARD_TEMPLATE_NAME,
+  PACKING_QR_LANDSCAPE_V1_TEMPLATE_CODE,
+  PACKING_QR_LANDSCAPE_V1_TEMPLATE_NAME,
   LABEL_WIDTH_MM,
   LABEL_HEIGHT_MM,
 };

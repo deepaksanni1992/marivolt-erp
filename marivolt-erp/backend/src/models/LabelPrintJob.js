@@ -45,6 +45,14 @@ const labelJobLineSchema = new mongoose.Schema(
     packingLineId: { type: String, default: "" },
     allocationLineId: { type: String, default: "" },
     packageId: { type: String, default: "" },
+    /** Permanent packing QR landscape identity (additive; unused by 100×50 / GRN / ASN). */
+    packingLabelUnitId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "PackingLabelUnit",
+      default: null,
+    },
+    sequence: { type: Number, default: 0, min: 0 },
+    sequenceTotal: { type: Number, default: 0, min: 0 },
     descriptionTruncated: { type: Boolean, default: false },
     /** Stable custom packing session row id (ephemeral UI UUID; additive). Rediscovery uses content fingerprint. */
     customPackingRowId: { type: String, default: "", trim: true },
@@ -166,6 +174,7 @@ labelPrintJobSchema.index({ companyId: 1, status: 1, agentId: 1 });
 labelPrintJobSchema.index({ companyId: 1, sourceNo: 1, createdAt: -1 });
 labelPrintJobSchema.index({ companyId: 1, sourceType: 1, "lines.receivingUnitId": 1, status: 1 });
 labelPrintJobSchema.index({ companyId: 1, sourceType: 1, packingSelectionFingerprint: 1, createdAt: -1 });
+labelPrintJobSchema.index({ companyId: 1, sourceType: 1, "lines.packingLabelUnitId": 1, status: 1 });
 labelPrintJobSchema.index({ companyId: 1, packingId: 1, packingMode: 1, createdAt: -1 });
 labelPrintJobSchema.index({ companyId: 1, allocationId: 1, packingMode: 1, createdAt: -1 });
 labelPrintJobSchema.index({ companyId: 1, sourceType: 1, "lines.customPackingRowId": 1, createdAt: -1 });

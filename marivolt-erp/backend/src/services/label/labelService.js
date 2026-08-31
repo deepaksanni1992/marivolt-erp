@@ -12,6 +12,7 @@ import {
   ensureMarivoltStandardTemplate,
   getStandardTemplate,
 } from "./labelTemplateService.js";
+import { isPackingQrLandscapeV1 } from "./packingQrLandscapeV1.js";
 import { requeueJob } from "./printQueue.js";
 import { auditLabelEvent, auditLabelAdminEvent, recordLabelHistory } from "./labelAudit.js";
 import {
@@ -1465,6 +1466,10 @@ export async function confirmPartial(req, jobId, printedQty, options = {}) {
       .map((ln) => ln.ruNo || ln.labelId)
       .filter(Boolean);
   }
+  if (String(updated.sourceType || "").toUpperCase() === "PACKING") {
+    const { applyPackingLabelUnitPrintResult } = await import("./packingLabelUnitService.js");
+    await applyPackingLabelUnitPrintResult(updated);
+  }
   await recordLabelHistory({
     jobId: updated._id,
     companyId: updated.companyId,
@@ -1596,12 +1601,7 @@ export async function reprintJob(req, jobId, body = {}) {
     String(parent.templateCode || "").includes("PACKING");
   let lines = parent.lines.map((ln) => ({ ...(ln.toObject?.() ?? ln) }));
   // Packing reprints always use the frozen parent snapshot — never caller-supplied live lines.
-  if (
-    !isPackingSnapshot &&
-    !isAsnLabelJob(parent) &&
-    Array.isArray(body.lines) &&
-    body.lines.length
-  ) {
+  if (!isAsnLabelJob(parent) && Array.isArray(body.lines) && body.lines.length && !isPackingSnapshot) {
     lines = body.lines.map((ln) => ({
       ...ln,
       article: upper(ln.article),
@@ -1664,6 +1664,11 @@ export async function reprintJob(req, jobId, body = {}) {
     if (canCopyFrozenPackingFaces(parent, requestedLabels)) {
       rawFacePayloads = cloneFrozenFacePayloads(parent);
       payloadMode = parent.payloadMode || LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH;
+    } else if (isPackingQrLandscapeV1(parent.templateCode)) {
+      const err = new Error("Landscape packing reprint requires frozen TSPL faces from the completed parent job.");
+      err.statusCode = 409;
+      err.code = "LABEL_REPRINT_FACES_MISSING";
+      throw err;
     } else {
       const { buildPackingLabelBatchPayloads } = await import("./tsplGenerator.js");
       rawFacePayloads = buildPackingLabelBatchPayloads(
@@ -1694,7 +1699,11 @@ export async function reprintJob(req, jobId, body = {}) {
       printerConfigId: printer._id,
       agentId: upper(printer.agentId),
       windowsPrinterName: printer.windowsPrinterName,
-      templateCode: isPackingSnapshot ? PACKING_STANDARD_TEMPLATE_CODE : MARIVOLT_STANDARD_TEMPLATE_CODE,
+      templateCode: isPackingQrLandscapeV1(parent.templateCode)
+        ? parent.templateCode
+        : isPackingSnapshot
+          ? PACKING_STANDARD_TEMPLATE_CODE
+          : MARIVOLT_STANDARD_TEMPLATE_CODE,
       copies: isPackingSnapshot ? 1 : copies,
       requestedLabels,
       printedLabels: 0,
@@ -1725,6 +1734,13 @@ export async function reprintJob(req, jobId, body = {}) {
       if (existingReprint) return existingReprint;
     }
     throw e;
+  }
+  if (isPackingQrLandscapeV1(parent.templateCode)) {
+    const { linkPackingLabelUnitsToJob } = await import("./packingLabelUnitService.js");
+    const units = (job.lines || [])
+      .map((ln) => ({ _id: ln.packingLabelUnitId, companyId: req.companyId }))
+      .filter((u) => u._id);
+    await linkPackingLabelUnitsToJob(units, job._id, { firstPrint: false });
   }
   await syncGrnLabelStatus(job.sourceId, job);
   await recordLabelHistory({

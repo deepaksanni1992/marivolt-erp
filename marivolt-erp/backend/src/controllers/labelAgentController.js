@@ -136,6 +136,10 @@ export async function result(req, res) {
       const { applyReceivingUnitPrintResult } = await import("../services/label/asnLabelService.js");
       await applyReceivingUnitPrintResult(job);
     }
+    if (String(job.sourceType || "").toUpperCase() === "PACKING") {
+      const { applyPackingLabelUnitPrintResult } = await import("../services/label/packingLabelUnitService.js");
+      await applyPackingLabelUnitPrintResult(job);
+    }
     await recordLabelHistory({
       jobId: job._id,
       companyId: job.companyId,

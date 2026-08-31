@@ -5,12 +5,17 @@ import LoadingButton from "../erp/LoadingButton.jsx";
 import { apiPost } from "../../lib/api.js";
 import {
   PACKING_LABEL_ALREADY_PRINTED_TOAST,
+  PACKING_STANDARD_TEMPLATE_CODE,
+  PACKING_QR_LANDSCAPE_V1_TEMPLATE_CODE,
+  PACKING_QR_LANDSCAPE_V1_UI_LABEL,
+  PACKING_QR_LANDSCAPE_V1_PRINT_HINT,
   buildPackingLabelSelections,
   defaultPackingLabelRows,
   selectAllPackingLabelRows,
   selectAvailablePackingLabelRows,
 } from "../../lib/labelPrinting.js";
 import { PackingLabelPreviewFace } from "./PackingLabelPreviewFace.jsx";
+import { PackingQrLandscapePreview } from "./PackingQrLandscapePreview.jsx";
 
 /**
  * Packing Labels — multi-select + manual qty + preview + print.
@@ -33,17 +38,25 @@ function PackingLabelsForm({
 }) {
   const [rows, setRows] = useState(() => defaultPackingLabelRows(lines, { mode }));
   const [selectedPrinter, setSelectedPrinter] = useState(printerCode || "");
+  const [templateCode, setTemplateCode] = useState(PACKING_STANDARD_TEMPLATE_CODE);
   const [previewIdx, setPreviewIdx] = useState(0);
   const [previewLabels, setPreviewLabels] = useState([]);
   const [previewErr, setPreviewErr] = useState("");
   const [descriptionTruncated, setDescriptionTruncated] = useState(false);
   const [confirmTruncation, setConfirmTruncation] = useState(false);
   const [alreadyPrintedJob, setAlreadyPrintedJob] = useState(null);
+  const [previewMeta, setPreviewMeta] = useState(null);
   const titleNo = packing?.packingNo || allocation?.allocationNo || "";
+  const isLandscapePreview = templateCode === PACKING_QR_LANDSCAPE_V1_TEMPLATE_CODE;
 
   const selectedCount = useMemo(() => rows.filter((r) => r.selected).length, [rows]);
 
   const printBlockedByOverflow = descriptionTruncated && !confirmTruncation;
+  const landscapePrintBlocked =
+    isLandscapePreview &&
+    previewMeta &&
+    previewMeta.printEnabled !== true &&
+    previewMeta.canQueueFirstPrint !== true;
 
   const previewMut = useMutation({
     mutationFn: async () => {
@@ -55,12 +68,20 @@ function PackingLabelsForm({
         allocationId: allocation?._id || packing?.allocationId || undefined,
         selections,
         printerCode: selectedPrinter || undefined,
+        templateCode,
       });
     },
     onSuccess: (data) => {
       setPreviewLabels(data.labels || []);
       setPreviewIdx(0);
       setPreviewErr("");
+      setPreviewMeta({
+        printEnabled: data.printEnabled === true,
+        canQueueFirstPrint: data.canQueueFirstPrint === true,
+        printBlockedCode: data.printBlockedCode || "",
+        printBlockedMessage: data.printBlockedMessage || "",
+        vesselPlantSourceMissing: data.vesselPlantSourceMissing === true,
+      });
       const overflow = data.descriptionTruncated === true || data.requiresTruncationConfirmation === true;
       setDescriptionTruncated(overflow);
       if (!overflow) setConfirmTruncation(false);
@@ -78,12 +99,16 @@ function PackingLabelsForm({
       if (printBlockedByOverflow) {
         throw new Error("Confirm truncated description before printing.");
       }
+      if (landscapePrintBlocked) {
+        throw new Error(previewMeta?.printBlockedMessage || PACKING_QR_LANDSCAPE_V1_PRINT_HINT);
+      }
       const body = {
         mode,
         packingId: packing?._id || undefined,
         allocationId: allocation?._id || packing?.allocationId || undefined,
         selections,
         printerCode: selectedPrinter || undefined,
+        templateCode,
       };
       // Server generates selection-aware hashed idempotency for PRE and POSTED.
       if (mode === "REPRINT") {
@@ -246,12 +271,43 @@ function PackingLabelsForm({
             ))}
           </select>
         </label>
-        <div className="text-xs text-slate-500">
+        <label className="text-xs text-slate-600">
+          Template
+          <select
+            className="mt-1 block w-full rounded border px-2 py-1.5 text-sm"
+            value={templateCode}
+            onChange={(e) => {
+              setTemplateCode(e.target.value);
+              setPreviewLabels([]);
+              setPreviewIdx(0);
+              setPreviewErr("");
+              setPreviewMeta(null);
+              setDescriptionTruncated(false);
+              setConfirmTruncation(false);
+            }}
+          >
+            <option value={PACKING_STANDARD_TEMPLATE_CODE}>Packing Standard 100×50</option>
+            <option value={PACKING_QR_LANDSCAPE_V1_TEMPLATE_CODE}>
+              {PACKING_QR_LANDSCAPE_V1_UI_LABEL}
+            </option>
+          </select>
+        </label>
+        <div className="text-xs text-slate-500 sm:col-span-2">
           Customer: {documentReferences?.customerName || allocation?.customerName || packing?.customerName || "—"}
           <br />
           Customer Ref.: {documentReferences?.customerReference || packing?.customerReference || "—"}
         </div>
       </div>
+
+      {isLandscapePreview ? (
+        <p className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-950">
+          {previewMeta?.printEnabled
+            ? "Preview uses persisted label identity. The QR token matches the print payload."
+            : previewMeta?.canQueueFirstPrint
+              ? "PREVIEW — permanent MAR-PL identities are minted at first print. Vessel/Plant stays blank unless a dedicated source field exists."
+              : previewMeta?.printBlockedMessage || PACKING_QR_LANDSCAPE_V1_PRINT_HINT}
+        </p>
+      ) : null}
 
       {previewErr ? <p className="mb-2 text-xs text-rose-700">{previewErr}</p> : null}
 
@@ -281,7 +337,8 @@ function PackingLabelsForm({
         <div className="mb-3 rounded border bg-slate-50 p-3">
           <div className="mb-2 flex items-center justify-between">
             <div className="text-xs font-semibold uppercase text-slate-600">
-              Preview {previewIdx + 1}/{previewLabels.length} (100 × 50 mm)
+              Preview {previewIdx + 1}/{previewLabels.length}{" "}
+              {isLandscapePreview ? "(100 × 150 mm landscape)" : "(100 × 50 mm)"}
             </div>
             <div className="flex gap-1">
               <button
@@ -302,12 +359,22 @@ function PackingLabelsForm({
               </button>
             </div>
           </div>
-          {currentOverflow ? (
+          {currentOverflow && !isLandscapePreview ? (
             <p className="mb-2 text-xs font-medium text-amber-800">
               Description exceeds printable area. Review label before printing.
             </p>
           ) : null}
-          <PackingLabelPreviewFace rows={currentPreview.previewRows || []} />
+          {isLandscapePreview ? (
+            <PackingQrLandscapePreview
+              svg={currentPreview.svg || ""}
+              layout={currentPreview.layout || null}
+              blocked={currentPreview.overflow === true || currentPreview.layout?.ok === false}
+              errors={currentPreview.overflowCodes || currentPreview.layout?.errorCodes || []}
+              identityReady={currentPreview.layout?.qr?.validIdentity === true}
+            />
+          ) : (
+            <PackingLabelPreviewFace rows={currentPreview.previewRows || []} />
+          )}
         </div>
       ) : null}
 
@@ -340,7 +407,7 @@ function PackingLabelsForm({
             variant="primary"
             loading={printMut.isPending}
             loadingText="Queueing…"
-            disabled={!canPrint || selectedCount <= 0 || printBlockedByOverflow || printMut.isPending}
+            disabled={!canPrint || selectedCount <= 0 || printBlockedByOverflow || printMut.isPending || landscapePrintBlocked}
             onClick={() => printMut.mutate()}
           >
             Print Selected

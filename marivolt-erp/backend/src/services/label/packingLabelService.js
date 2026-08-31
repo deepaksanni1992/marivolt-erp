@@ -21,7 +21,32 @@ import {
   buildPackingLabelBatchPayloads,
   measurePackingLabelGeometry,
 } from "./tsplGenerator.js";
+import {
+  PACKING_QR_LANDSCAPE_V1_CODE,
+  PACKING_QR_LANDSCAPE_V1_PRINT_HINT,
+  faceDataFromPackingLine,
+  isPackingQrLandscapeV1,
+  layoutPackingQrLandscapeV1,
+  layoutToSvg,
+} from "./packingQrLandscapeV1.js";
 import { LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH } from "./labelPayloadModes.js";
+import {
+  getActivePackingLabelSigningKey,
+  loadPackingLabelSigningKey,
+  requireActivePackingLabelSigningKey,
+  signMar1TokenWithKeyDoc,
+  assertPackingLabelSigningSecretReady,
+  LABEL_SIGNING_KEY_REQUIRED,
+} from "./packingLabelSigningService.js";
+import {
+  buildPackingQrLandscapeSelectionFingerprint,
+  expandPackingLabelPhysicalFaces,
+  faceDataFromPackingLabelUnit,
+  findPackingLabelUnitsByOriginKeys,
+  linkPackingLabelUnitsToJob,
+  mintPackingLabelUnits,
+} from "./packingLabelUnitService.js";
+import { buildPackingQrLandscapeV1BatchPayloads } from "./packingQrLandscapeV1Tspl.js";
 import { formatPackingQtyDisplay } from "../../utils/labelTextFit.js";
 import { derivePackingLineStock } from "../../utils/packingPhysicalStock.js";
 import {
@@ -57,6 +82,162 @@ function err(message, statusCode = 400, code) {
 
 const POSTED_PACKING = new Set(["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED"]);
 const MAX_COPIES = 50;
+
+export function resolveRequestedPackingTemplateCode(body = {}) {
+  const raw = String(body.templateCode ?? PACKING_STANDARD_TEMPLATE_CODE)
+    .trim()
+    .toUpperCase();
+  if (!raw || raw === PACKING_STANDARD_TEMPLATE_CODE) return PACKING_STANDARD_TEMPLATE_CODE;
+  if (isPackingQrLandscapeV1(raw) || raw === PACKING_QR_LANDSCAPE_V1_CODE) {
+    return PACKING_QR_LANDSCAPE_V1_CODE;
+  }
+  throw err(`Unknown packing label template: ${raw}`, 400, "LABEL_TEMPLATE_UNKNOWN");
+}
+
+export async function buildPackingQrLandscapeV1PreviewFromResolved(resolved = {}, req = {}) {
+  const lines = resolved.lines || [];
+  const companyId = req.companyId || resolved.companyId;
+  const expanded = expandPackingLabelPhysicalFaces(lines, { ...resolved, companyId });
+  let existingUnits = expanded.faces.map(() => null);
+  let activeKey = null;
+  if (companyId) {
+    try {
+      existingUnits = await findPackingLabelUnitsByOriginKeys(
+        companyId,
+        expanded.faces.map((f) => f.originKey)
+      );
+    } catch {
+      existingUnits = expanded.faces.map(() => null);
+    }
+    try {
+      activeKey = await getActivePackingLabelSigningKey(companyId);
+    } catch {
+      activeKey = null;
+    }
+  }
+  const labels = [];
+  let allUnitsPresent = existingUnits.length > 0 && existingUnits.every(Boolean);
+  let tokensReady = true;
+  let overflow = false;
+  const overflowCodes = [];
+  let signingConfigError = null;
+  if (activeKey) {
+    try {
+      assertPackingLabelSigningSecretReady(activeKey);
+    } catch (e) {
+      signingConfigError = e;
+    }
+  }
+
+  for (let i = 0; i < expanded.faces.length; i += 1) {
+    const face = expanded.faces[i];
+    const unit = existingUnits[i];
+    let data;
+    let token = "";
+    let printAuthorized = false;
+    if (unit) {
+      const key =
+        (await loadPackingLabelSigningKey(companyId, unit.signingKeyId)) || activeKey;
+      try {
+        if (key && String(key.status || "").toUpperCase() !== "REVOKED") {
+          const signed = signMar1TokenWithKeyDoc(key, unit.labelNo, { newLabel: false });
+          token = signed.token;
+          printAuthorized = String(key.status || "").toUpperCase() === "ACTIVE" && Boolean(token);
+        } else {
+          tokensReady = false;
+        }
+      } catch {
+        tokensReady = false;
+      }
+      data = faceDataFromPackingLabelUnit(unit, {
+        mar1QrToken: token,
+        printAuthorized,
+        previewMode: !token,
+      });
+    } else {
+      allUnitsPresent = false;
+      data = faceDataFromPackingLine(face.line, resolved, {
+        sequenceIndex: face.sequence,
+        sequenceTotal: face.sequenceTotal,
+      });
+      data.previewLabelId = "PREVIEW";
+      data.previewMode = true;
+      data.printAuthorized = false;
+    }
+    const layout = layoutPackingQrLandscapeV1(data);
+    if (layout.ok !== true) {
+      overflow = true;
+      overflowCodes.push(...(layout.errorCodes || []));
+    }
+    labels.push({
+      ...face.line,
+      packingLabelUnitId: unit?._id || null,
+      labelNo: unit?.labelNo || "",
+      barcodeValue: unit?.barcodeValue || "",
+      sequenceIndex: face.sequence,
+      sequenceTotal: face.sequenceTotal,
+      layout,
+      svg: layoutToSvg(layout),
+      previewEnabled: true,
+      printEnabled: layout.printEnabled === true,
+      requiresPersistentIdentity: true,
+      overflow: layout.ok !== true,
+      overflowCodes: layout.errorCodes || [],
+      previewMode: !unit,
+      vesselPlantSourceMissing: layout.fields?.vesselPlantSourceMissing === true,
+    });
+  }
+
+  const signingReady = Boolean(activeKey) && !signingConfigError;
+  const canQueueFirstPrint =
+    signingReady && !overflow && labels.length > 0 && (!allUnitsPresent || tokensReady);
+  const printEnabled =
+    signingReady && !overflow && allUnitsPresent && tokensReady && labels.every((ln) => ln.layout?.ok);
+  let printBlockedCode = "";
+  let printBlockedMessage = "";
+  if (overflow) {
+    printBlockedCode = [...new Set(overflowCodes)][0] || "LABEL_GEOMETRY";
+    printBlockedMessage = "Label content cannot fit. Printing is blocked.";
+  } else if (!activeKey) {
+    printBlockedCode = LABEL_SIGNING_KEY_REQUIRED;
+    printBlockedMessage =
+      "An ACTIVE packing-label signing key is required before identity creation or printing.";
+  } else if (signingConfigError) {
+    printBlockedCode = signingConfigError.code || LABEL_SIGNING_KEY_REQUIRED;
+    printBlockedMessage =
+      signingConfigError.message ||
+      "An ACTIVE packing-label signing key is required before identity creation or printing.";
+  } else if (!printEnabled && !canQueueFirstPrint) {
+    printBlockedCode = "LABEL_IDENTITY_REQUIRED";
+    printBlockedMessage = PACKING_QR_LANDSCAPE_V1_PRINT_HINT;
+  }
+
+  return {
+    mode: resolved.mode,
+    sourceNo: resolved.sourceNo,
+    packingId: resolved.packingId,
+    allocationId: resolved.allocationId,
+    templateCode: PACKING_QR_LANDSCAPE_V1_CODE,
+    payloadMode: printEnabled || canQueueFirstPrint ? LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH : "",
+    requestedLabels: labels.length,
+    descriptionTruncated: false,
+    requiresTruncationConfirmation: false,
+    overflowWarning: overflow ? "Label content cannot fit. Printing is blocked." : "",
+    overflowDetail: overflow ? [...new Set(overflowCodes)].join(", ") : "",
+    packingSelectionFingerprint: expanded.fingerprint,
+    previewEnabled: true,
+    printEnabled,
+    canQueueFirstPrint,
+    requiresPersistentIdentity: true,
+    printBlockedCode,
+    printBlockedMessage,
+    signingKeyId: activeKey?.keyId || "",
+    labels,
+    tsplPayload: "",
+    faceCount: labels.length,
+    vesselPlantSourceMissing: labels.some((ln) => ln.vesselPlantSourceMissing),
+  };
+}
 
 async function loadItemBrandModel(companyId, articles) {
   const list = [...new Set((articles || []).map((a) => upper(a)).filter(Boolean))];
@@ -102,6 +283,40 @@ function normalizeMode(raw) {
   const m = upper(raw);
   if (m === "PRE_PACKING" || m === "POSTED_PACKING" || m === "REPRINT") return m;
   return "";
+}
+
+export const LABEL_REPRINT_ENDPOINT_REQUIRED = "LABEL_REPRINT_ENDPOINT_REQUIRED";
+
+const LANDSCAPE_REPRINT_INTENT_FIELDS = ["mode", "packingMode", "action", "type", "intent", "requestType"];
+
+function isReprintToken(raw) {
+  const v = upper(raw);
+  return v === "REPRINT" || v === "REPRINT_PACKING" || v === "PACKING_REPRINT";
+}
+
+/** True when a from-packing body declares reprint intent through any accepted field. */
+export function packingRequestDeclaresReprintIntent(body = {}) {
+  for (const field of LANDSCAPE_REPRINT_INTENT_FIELDS) {
+    if (isReprintToken(body[field])) return true;
+  }
+  const flag = body.isReprint;
+  if (flag === true || flag === 1 || upper(flag) === "TRUE" || flag === "1") return true;
+  return false;
+}
+
+/**
+ * Landscape enqueue via POST /labels/jobs/from-packing is first-print only.
+ * True reprint must use POST /labels/jobs/:id/reprint.
+ */
+export function assertLandscapeFromPackingFirstPrintOnly(body = {}, templateCode) {
+  const code = templateCode || resolveRequestedPackingTemplateCode(body);
+  if (!isPackingQrLandscapeV1(code)) return false;
+  if (!packingRequestDeclaresReprintIntent(body)) return false;
+  throw err(
+    "Landscape packing reprint must use POST /labels/jobs/:id/reprint on a completed job.",
+    409,
+    LABEL_REPRINT_ENDPOINT_REQUIRED
+  );
 }
 
 /**
@@ -359,6 +574,11 @@ export function rebuildPackingLabelIdempotencyKey(job = {}) {
   const sourceNo = t(job.sourceNo);
   const lines = job.lines || [];
   if (!sourceNo || mode === "REPRINT") return null;
+  if (isPackingQrLandscapeV1(job.templateCode) && t(job.packingSelectionFingerprint)) {
+    const hash = hashPackingSelectionFingerprint(job.packingSelectionFingerprint);
+    if (mode === "PRE_PACKING") return `packing:${sourceNo}:pre:${hash}`;
+    if (mode === "POSTED_PACKING") return `packing:${sourceNo}:initial:${hash}`;
+  }
   if (mode === "PRE_PACKING") return buildPrePackingLabelIdempotencyKey(sourceNo, lines);
   if (mode === "POSTED_PACKING") return buildInitialPackingLabelIdempotencyKey(sourceNo, lines);
   return null;
@@ -372,7 +592,11 @@ export async function previewPackingLabels(req, body = {}) {
   if (!settings.enabled) {
     throw err("Label printing is disabled. Enable it in Label Settings.", 400, "LABEL_DISABLED");
   }
+  const templateCode = resolveRequestedPackingTemplateCode(body);
   const resolved = await resolvePackingLabelLines(req, body);
+  if (isPackingQrLandscapeV1(templateCode)) {
+    return buildPackingQrLandscapeV1PreviewFromResolved(resolved, req);
+  }
   await ensurePackingStandardTemplate();
   const rawFacePayloads = buildPackingLabelBatchPayloads(resolved.lines, {});
   const requestedLabels = rawFacePayloads.length;
@@ -406,6 +630,9 @@ export async function previewPackingLabels(req, body = {}) {
  * Create packing label print job. No stock / allocation / packing qty mutation.
  */
 export async function createJobsFromPacking(req, body = {}) {
+  const templateCode = resolveRequestedPackingTemplateCode(body);
+  assertLandscapeFromPackingFirstPrintOnly(body, templateCode);
+
   const companyId = req.companyId;
   const settings = await getLabelSettings(companyId);
   if (!settings.enabled) {
@@ -426,17 +653,22 @@ export async function createJobsFromPacking(req, body = {}) {
     );
   }
 
+  const landscape = isPackingQrLandscapeV1(templateCode);
+  const fingerprint = landscape
+    ? buildPackingQrLandscapeSelectionFingerprint(resolved.lines)
+    : buildPackingSelectionFingerprint(resolved.lines);
+
   // Official / pre print: selection-aware server hash. REPRINT always new.
   // Do not trust/truncate long client keys — hash the canonical fingerprint server-side.
   let idempotencyKey = null;
-  const fingerprint = buildPackingSelectionFingerprint(resolved.lines);
   if (mode === "REPRINT") {
     idempotencyKey = null;
   } else if (resolved.sourceNo) {
+    const hash = hashPackingSelectionFingerprint(fingerprint);
     if (mode === "POSTED_PACKING") {
-      idempotencyKey = buildInitialPackingLabelIdempotencyKey(resolved.sourceNo, resolved.lines);
+      idempotencyKey = `packing:${t(resolved.sourceNo)}:initial:${hash}`;
     } else if (mode === "PRE_PACKING") {
-      idempotencyKey = buildPrePackingLabelIdempotencyKey(resolved.sourceNo, resolved.lines);
+      idempotencyKey = `packing:${t(resolved.sourceNo)}:pre:${hash}`;
     }
   }
 
@@ -456,6 +688,17 @@ export async function createJobsFromPacking(req, body = {}) {
         { $unset: { idempotencyKey: "" } }
       );
     }
+  }
+
+  if (landscape) {
+    return createLandscapePackingLabelJobs(req, body, {
+      settings,
+      mode,
+      resolved,
+      fingerprint,
+      idempotencyKey,
+      descriptionTruncated,
+    });
   }
 
   await ensurePackingStandardTemplate();
@@ -578,6 +821,179 @@ export async function createJobsFromPacking(req, body = {}) {
     action: "CREATE",
     job,
     description: `Packing label job ${job.jobNo} queued for ${resolved.sourceNo} (${mode})`,
+  });
+  return buildPackingLabelEnqueueResponse(job, { created: true, reused: false });
+}
+
+async function createLandscapePackingLabelJobs(
+  req,
+  body,
+  { settings, mode, resolved, fingerprint, idempotencyKey, descriptionTruncated }
+) {
+  assertLandscapeFromPackingFirstPrintOnly(
+    { ...body, mode, packingMode: body?.packingMode || mode },
+    PACKING_QR_LANDSCAPE_V1_CODE
+  );
+  const companyId = req.companyId;
+  const activeKey = await requireActivePackingLabelSigningKey(companyId);
+  assertPackingLabelSigningSecretReady(activeKey);
+  const printer = await resolvePrinterForJob(companyId, body.printerCode, {
+    warehouseCode: resolved.warehouse,
+  });
+
+  const minted = await mintPackingLabelUnits({
+    req,
+    resolved: {
+      ...resolved,
+      companyId,
+      sourceType: mode === "POSTED_PACKING" ? "POSTED_PACKING" : "PRE_PACKING",
+      mode,
+    },
+    lines: resolved.lines,
+    signingKeyId: activeKey.keyId,
+  });
+
+  const requestedLabels = minted.units.length;
+  if (requestedLabels > settings.maxPerJob) {
+    throw err(
+      `Requested labels (${requestedLabels}) exceed max per job (${settings.maxPerJob})`,
+      400,
+      "LABEL_MAX_EXCEEDED"
+    );
+  }
+
+  const faceInputs = [];
+  const jobLines = [];
+  for (let i = 0; i < minted.units.length; i += 1) {
+    const unit = minted.units[i];
+    const signed = signMar1TokenWithKeyDoc(activeKey, unit.labelNo, { newLabel: true });
+    const data = faceDataFromPackingLabelUnit(unit, {
+      mar1QrToken: signed.token,
+      printAuthorized: true,
+    });
+    const layout = layoutPackingQrLandscapeV1(data);
+    if (layout.ok !== true) {
+      throw err(
+        layout.printBlockedMessage || "Label content cannot fit. Printing is blocked.",
+        409,
+        layout.printBlockedCode || layout.errorCodes?.[0] || "LABEL_GEOMETRY"
+      );
+    }
+    if (!layout.qr?.token) {
+      throw err("Persisted MAR1 token is required before printing.", 409, "LABEL_IDENTITY_REQUIRED");
+    }
+    faceInputs.push({ layout, token: signed.token, data });
+    const ln = minted.faces[i].line || {};
+    jobLines.push({
+      article: unit.article,
+      description: unit.descriptionSnapshot,
+      spn: unit.partNoSnapshot,
+      partNo: unit.partNoSnapshot,
+      materialCode: ln.materialCode || "",
+      qty: unit.orderQtySnapshot,
+      totalQty: unit.orderQtySnapshot,
+      labelQty: unit.labelQty,
+      qtyDisplay: formatPackingQtyDisplay(unit.labelQty, unit.orderQtySnapshot),
+      uom: ln.uom || "PCS",
+      customerName: unit.customerNameSnapshot,
+      customerRef: unit.customerPoSnapshot,
+      brand: unit.brandSnapshot,
+      modelName: unit.modelSnapshot,
+      serialNo: ln.serialNo || "",
+      lineCopies: 1,
+      packingLineId: ln.packingLineId || "",
+      allocationLineId: unit.allocationLineId,
+      packageId: unit.packageId || "",
+      packingLabelUnitId: unit._id,
+      labelId: unit.labelNo,
+      barcodeValue: unit.barcodeValue,
+      sequence: unit.sequence,
+      sequenceTotal: unit.sequenceTotal,
+      descriptionTruncated: false,
+    });
+  }
+
+  let rawFacePayloads;
+  try {
+    rawFacePayloads = buildPackingQrLandscapeV1BatchPayloads(faceInputs).payloads;
+  } catch (e) {
+    throw err(e.message || "TSPL generation failed", e.statusCode || 409, e.code || "LABEL_GEOMETRY");
+  }
+  if (rawFacePayloads.length !== requestedLabels) {
+    throw err(
+      `TSPL_LABEL_BATCH face count ${rawFacePayloads.length} != requestedLabels ${requestedLabels}`,
+      400,
+      "LABEL_FACE_COUNT"
+    );
+  }
+
+  let job;
+  try {
+    job = await LabelPrintJob.create({
+      companyId,
+      jobNo: jobNo(),
+      sourceType: "PACKING",
+      sourceId: resolved.sourceId,
+      sourceNo: upper(resolved.sourceNo),
+      warehouseCode: t(printer.warehouseCode),
+      printerConfigId: printer._id,
+      agentId: upper(printer.agentId),
+      windowsPrinterName: t(printer.windowsPrinterName),
+      templateCode: PACKING_QR_LANDSCAPE_V1_CODE,
+      copies: 1,
+      requestedLabels,
+      printedLabels: 0,
+      remainingLabels: requestedLabels,
+      lines: jobLines,
+      tsplPayload: "",
+      payloadMode: LABEL_PAYLOAD_MODE_TSPL_LABEL_BATCH,
+      rawFacePayloads,
+      status: "PENDING",
+      createdByUserId: req.user?.id || req.user?._id || null,
+      createdByName: t(req.user?.name || req.user?.email || ""),
+      idempotencyKey: mode === "REPRINT" ? null : idempotencyKey,
+      isReprint: mode === "REPRINT",
+      reprintReason: mode === "REPRINT" ? t(body.reason || "Packing label reprint") : "",
+      packingMode: mode,
+      allocationId: resolved.allocationId,
+      packingId: resolved.packingId,
+      descriptionTruncated,
+      packingSelectionFingerprint: fingerprint,
+    });
+  } catch (e) {
+    if (idempotencyKey && (e?.code === 11000 || String(e?.message || "").includes("duplicate"))) {
+      const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
+      if (existing) {
+        if (isActivePackingLabelQueueStatus(existing.status)) {
+          return buildPackingLabelEnqueueResponse(existing, { created: false, reused: true });
+        }
+        const resolution = resolvePackingLabelIdempotencyAction(existing.status);
+        if (resolution.action === "reuse" || resolution.action === "dedupe") {
+          return buildPackingLabelEnqueueResponse(existing, { created: false, reused: true });
+        }
+      }
+    }
+    throw e;
+  }
+
+  await linkPackingLabelUnitsToJob(minted.units, job._id, { firstPrint: true });
+  await recordLabelHistory({
+    jobId: job._id,
+    companyId,
+    agentId: job.agentId,
+    windowsPrinterName: job.windowsPrinterName,
+    requestedQty: requestedLabels,
+    printedQty: 0,
+    status: "PENDING",
+    templateCode: job.templateCode,
+    userId: job.createdByUserId,
+    userName: job.createdByName,
+    event: "ENQUEUE",
+  });
+  await auditLabelEvent(req, {
+    action: "CREATE",
+    job,
+    description: `Packing QR landscape job ${job.jobNo} queued for ${resolved.sourceNo} (${mode})`,
   });
   return buildPackingLabelEnqueueResponse(job, { created: true, reused: false });
 }
