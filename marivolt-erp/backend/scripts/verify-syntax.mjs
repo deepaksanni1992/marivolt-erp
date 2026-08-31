@@ -163,6 +163,7 @@ const files = [
   "src/models/PackingLabelSigningKey.js",
   "scripts/ensurePackingLabelIndexes.mjs",
   "scripts/provisionPackingLabelSigningKey.mjs",
+  "scripts/repairUnusedPackingLabelSigningKey.mjs",
   "src/models/LabelPrintJob.js",
   "src/services/label/customPackingLabelService.js",
   "src/services/label/tsplGenerator.js",
