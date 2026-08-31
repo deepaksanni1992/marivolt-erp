@@ -32,7 +32,9 @@ import {
 } from "./packingQrLandscapeV1.js";
 
 const ENC_PREFIX = "v1:";
+const ENC_PREFIX_BYTES = "v1b:";
 export const PACKING_LABEL_SECRET_ENVELOPE_VERSION = "v1";
+export const PACKING_LABEL_SECRET_ENVELOPE_VERSION_BYTES = "v1b";
 export const PACKING_LABEL_GCM_IV_BYTES = 12;
 export const PACKING_LABEL_GCM_TAG_BYTES = 16;
 export const PACKING_LABEL_SIGNING_ENCRYPTION_KEY_BYTES = 32;
@@ -115,14 +117,21 @@ export function resolvePackingLabelSigningEncryptionKeyBytes() {
 
 /**
  * Parse the versioned AES-256-GCM envelope without decrypting.
- * Format: v1:<nonceB64url>.<ciphertextB64url>.<tagB64url>
+ * Format: v1:<nonceB64url>.<ciphertextB64url>.<tagB64url>   (UTF-8 string plaintext)
+ *         v1b:<nonceB64url>.<ciphertextB64url>.<tagB64url>  (raw HMAC key bytes)
  */
 export function parsePackingLabelSecretEnvelope(stored) {
   const value = String(stored || "").trim();
-  if (!value.startsWith(ENC_PREFIX)) {
+  let version = PACKING_LABEL_SECRET_ENVELOPE_VERSION;
+  let payload = "";
+  if (value.startsWith(ENC_PREFIX_BYTES)) {
+    version = PACKING_LABEL_SECRET_ENVELOPE_VERSION_BYTES;
+    payload = value.slice(ENC_PREFIX_BYTES.length);
+  } else if (value.startsWith(ENC_PREFIX)) {
+    payload = value.slice(ENC_PREFIX.length);
+  } else {
     throw signingError("Invalid packing-label signing secret envelope.", 409, LABEL_SIGNING_SECRET_FORMAT);
   }
-  const payload = value.slice(ENC_PREFIX.length);
   const parts = payload.split(".");
   if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
     throw signingError("Invalid packing-label signing secret envelope.", 409, LABEL_SIGNING_SECRET_FORMAT);
@@ -141,52 +150,90 @@ export function parsePackingLabelSecretEnvelope(stored) {
     throw signingError("Invalid packing-label signing secret envelope.", 409, LABEL_SIGNING_SECRET_FORMAT);
   }
   return {
-    version: PACKING_LABEL_SECRET_ENVELOPE_VERSION,
+    version,
     nonce,
     ciphertext,
     tag,
   };
 }
 
-function formatPackingLabelSecretEnvelope({ nonce, ciphertext, tag }) {
-  return `${ENC_PREFIX}${Buffer.from(nonce).toString("base64url")}.${Buffer.from(ciphertext).toString("base64url")}.${Buffer.from(tag).toString("base64url")}`;
+function formatPackingLabelSecretEnvelope({ nonce, ciphertext, tag, version = PACKING_LABEL_SECRET_ENVELOPE_VERSION }) {
+  const prefix = version === PACKING_LABEL_SECRET_ENVELOPE_VERSION_BYTES ? ENC_PREFIX_BYTES : ENC_PREFIX;
+  return `${prefix}${Buffer.from(nonce).toString("base64url")}.${Buffer.from(ciphertext).toString("base64url")}.${Buffer.from(tag).toString("base64url")}`;
 }
 
-/** AES-256-GCM. New random 12-byte nonce every call. No fallback encryption key. */
-export function encryptPackingLabelSigningSecret(plainSecret) {
-  const plain = String(plainSecret || "");
-  if (!plain) {
-    throw signingError("Packing-label signing secret is empty.", 409, LABEL_SIGNING_KEY_REQUIRED);
-  }
+function gcmSeal(plaintext, version) {
   const key = resolvePackingLabelSigningEncryptionKeyBytes();
-  const nonce = crypto.randomBytes(PACKING_LABEL_GCM_IV_BYTES);
-  const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce);
-  const ciphertext = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  if (tag.length !== PACKING_LABEL_GCM_TAG_BYTES) {
-    throw signingError("Packing-label signing secret could not be wrapped.", 409, LABEL_SIGNING_SECRET_UNWRAP_FAILED);
+  try {
+    const nonce = crypto.randomBytes(PACKING_LABEL_GCM_IV_BYTES);
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce);
+    const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    if (tag.length !== PACKING_LABEL_GCM_TAG_BYTES) {
+      throw signingError("Packing-label signing secret could not be wrapped.", 409, LABEL_SIGNING_SECRET_UNWRAP_FAILED);
+    }
+    return formatPackingLabelSecretEnvelope({ nonce, ciphertext, tag, version });
+  } finally {
+    key.fill(0);
   }
-  return formatPackingLabelSecretEnvelope({ nonce, ciphertext, tag });
 }
 
-export function decryptPackingLabelSigningSecret(stored) {
+function gcmOpen(stored, expectedVersion) {
   const value = String(stored || "").trim();
   if (!value) {
     throw signingError("Packing-label signing secret envelope is missing.", 409, LABEL_SIGNING_SECRET_FORMAT);
   }
   const parsed = parsePackingLabelSecretEnvelope(value);
+  if (expectedVersion && parsed.version !== expectedVersion) {
+    throw signingError("Invalid packing-label signing secret envelope.", 409, LABEL_SIGNING_SECRET_FORMAT);
+  }
   const key = resolvePackingLabelSigningEncryptionKeyBytes();
   try {
     const decipher = crypto.createDecipheriv("aes-256-gcm", key, parsed.nonce);
     decipher.setAuthTag(parsed.tag);
-    return Buffer.concat([decipher.update(parsed.ciphertext), decipher.final()]).toString("utf8");
-  } catch {
+    return Buffer.concat([decipher.update(parsed.ciphertext), decipher.final()]);
+  } catch (err) {
+    if (err?.code === LABEL_SIGNING_SECRET_FORMAT) throw err;
     throw signingError(
       "Packing-label signing secret could not be unwrapped.",
       409,
       LABEL_SIGNING_SECRET_UNWRAP_FAILED
     );
+  } finally {
+    key.fill(0);
   }
+}
+
+/** AES-256-GCM. New random 12-byte nonce every call. UTF-8 string plaintext (v1). */
+export function encryptPackingLabelSigningSecret(plainSecret) {
+  const plain = String(plainSecret || "");
+  if (!plain) {
+    throw signingError("Packing-label signing secret is empty.", 409, LABEL_SIGNING_KEY_REQUIRED);
+  }
+  return gcmSeal(Buffer.from(plain, "utf8"), PACKING_LABEL_SECRET_ENVELOPE_VERSION);
+}
+
+/** AES-256-GCM wrap of raw HMAC key bytes (v1b). Does not stringify the buffer. */
+export function encryptPackingLabelSigningSecretBytes(secretBytes) {
+  if (!Buffer.isBuffer(secretBytes) || secretBytes.length < 1) {
+    throw signingError("Packing-label signing secret is empty.", 409, LABEL_SIGNING_KEY_REQUIRED);
+  }
+  return gcmSeal(secretBytes, PACKING_LABEL_SECRET_ENVELOPE_VERSION_BYTES);
+}
+
+export function decryptPackingLabelSigningSecret(stored) {
+  return gcmOpen(stored, PACKING_LABEL_SECRET_ENVELOPE_VERSION).toString("utf8");
+}
+
+export function decryptPackingLabelSigningSecretBytes(stored) {
+  return gcmOpen(stored, PACKING_LABEL_SECRET_ENVELOPE_VERSION_BYTES);
+}
+
+/** Returns a UTF-8 string for v1 envelopes or a Buffer for v1b envelopes. */
+export function unwrapPackingLabelSigningSecret(stored) {
+  const value = String(stored || "").trim();
+  if (value.startsWith(ENC_PREFIX_BYTES)) return decryptPackingLabelSigningSecretBytes(value);
+  return decryptPackingLabelSigningSecret(value);
 }
 
 export function buildMar1CanonicalBytes({
@@ -214,9 +261,19 @@ export function buildMar1CanonicalBytes({
 }
 
 export function hmacMar1SignatureBytes(canonicalBytes, secret) {
-  const digest = crypto.createHmac("sha256", Buffer.from(String(secret || ""), "utf8"));
-  digest.update(canonicalBytes);
-  return digest.digest().subarray(0, MAR1_SIGNATURE_BYTES);
+  const missing = Buffer.isBuffer(secret) ? secret.length < 1 : !secret;
+  if (missing) {
+    throw signingError("Signing secret is required", 409, LABEL_SIGNING_KEY_REQUIRED);
+  }
+  const allocated = !Buffer.isBuffer(secret);
+  const key = allocated ? Buffer.from(String(secret), "utf8") : secret;
+  try {
+    const digest = crypto.createHmac("sha256", key);
+    digest.update(canonicalBytes);
+    return digest.digest().subarray(0, MAR1_SIGNATURE_BYTES);
+  } finally {
+    if (allocated) key.fill(0);
+  }
 }
 
 export function encodeMar1Signature(raw16) {
@@ -285,7 +342,7 @@ export function signMar1Token({ labelNo, keyId, secret }) {
   if (!MAR1_KEY_ID_PATTERN.test(String(keyId || ""))) {
     throw signingError("keyId must match ^K[0-9]{1,2}$", 400, "LABEL_QR_TOKEN_INVALID");
   }
-  if (!secret) {
+  if (Buffer.isBuffer(secret) ? secret.length < 1 : !secret) {
     throw signingError("Signing secret is required", 409, LABEL_SIGNING_KEY_REQUIRED);
   }
   const canonical = buildMar1CanonicalBytes({ labelNo, keyId });
@@ -414,12 +471,13 @@ export function resolvePackingLabelSigningSecretFromKeyDoc(keyDoc) {
   assertExactlyOnePackingLabelSecretSource(keyDoc);
   const ref = String(keyDoc.secretRef || "").trim();
   if (ref) return resolveSecretRef(ref);
-  return decryptPackingLabelSigningSecret(String(keyDoc.encryptedSecret || "").trim());
+  return unwrapPackingLabelSigningSecret(String(keyDoc.encryptedSecret || "").trim());
 }
 
 /** Fail closed before minting identities or creating print jobs. */
 export function assertPackingLabelSigningSecretReady(keyDoc) {
-  resolvePackingLabelSigningSecretFromKeyDoc(keyDoc);
+  const secret = resolvePackingLabelSigningSecretFromKeyDoc(keyDoc);
+  if (Buffer.isBuffer(secret)) secret.fill(0);
   return true;
 }
 
@@ -490,8 +548,12 @@ export function signMar1TokenWithKeyDoc(keyDoc, labelNo, { newLabel = true } = {
     throw signingError("Signing key cannot sign or reconstruct this label", 409, "LABEL_SIGNING_KEY_REVOKED");
   }
   const secret = resolvePackingLabelSigningSecretFromKeyDoc(keyDoc);
-  const signed = signMar1Token({ labelNo, keyId: keyDoc.keyId, secret });
-  return { ...signed, keyId: keyDoc.keyId, signingKeyStatus: status };
+  try {
+    const signed = signMar1Token({ labelNo, keyId: keyDoc.keyId, secret });
+    return { ...signed, keyId: keyDoc.keyId, signingKeyStatus: status };
+  } finally {
+    if (Buffer.isBuffer(secret)) secret.fill(0);
+  }
 }
 
 export async function signPackingLabelUnitToken(companyId, labelNo, { allowVerifyOnly = false } = {}) {
@@ -557,22 +619,26 @@ export async function verifyPackingLabelMar1Token(companyId, token) {
       message: e.message || "Signing key cannot verify",
     };
   }
-  const local = verifyMar1TokenLocal({
-    token: parsed.token,
-    secret,
-    expectedLabelNo: unit.labelNo,
-    expectedKeyId: key.keyId,
-  });
-  if (!local.ok) {
-    return { ok: false, code: local.code, message: local.message };
+  try {
+    const local = verifyMar1TokenLocal({
+      token: parsed.token,
+      secret,
+      expectedLabelNo: unit.labelNo,
+      expectedKeyId: key.keyId,
+    });
+    if (!local.ok) {
+      return { ok: false, code: local.code, message: local.message };
+    }
+    return {
+      ok: true,
+      labelNo: unit.labelNo,
+      keyId: key.keyId,
+      packingLabelUnitId: unit._id,
+      qrVersion: unit.qrVersion || MAR1_TOKEN_VERSION,
+      status: unit.status,
+      constantTime: true,
+    };
+  } finally {
+    if (Buffer.isBuffer(secret)) secret.fill(0);
   }
-  return {
-    ok: true,
-    labelNo: unit.labelNo,
-    keyId: key.keyId,
-    packingLabelUnitId: unit._id,
-    qrVersion: unit.qrVersion || MAR1_TOKEN_VERSION,
-    status: unit.status,
-    constantTime: true,
-  };
 }

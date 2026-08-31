@@ -26,7 +26,11 @@ import {
   publicPackingLabelSigningKey,
   resolvePackingLabelSigningEncryptionKeyBytes,
   resolvePackingLabelSigningSecretFromKeyDoc,
+  signMar1Token,
   signMar1TokenWithKeyDoc,
+  encryptPackingLabelSigningSecretBytes,
+  decryptPackingLabelSigningSecretBytes,
+  unwrapPackingLabelSigningSecret,
 } from "../src/services/label/packingLabelSigningService.js";
 import PackingLabelSigningKey from "../src/models/PackingLabelSigningKey.js";
 
@@ -519,6 +523,57 @@ try {
       assertPackingLabelSigningSecretReady({ keyId: "K1", status: "ACTIVE" })
     );
     assert.equal(neither?.code, LABEL_SIGNING_SECRET_FORMAT);
+  });
+
+  run("raw 32-byte HMAC key wraps as v1b and unwraps to the same bytes", () => {
+    setPackingKey(KEY_HEX);
+    const raw = crypto.randomBytes(32);
+    const expected = Buffer.from(raw);
+    const envelope = encryptPackingLabelSigningSecretBytes(raw);
+    assert.equal(envelope.startsWith("v1b:"), true);
+    assert.equal(envelope.startsWith("v1:"), false);
+    const recovered = decryptPackingLabelSigningSecretBytes(envelope);
+    assert.ok(Buffer.isBuffer(recovered));
+    assert.ok(recovered.equals(expected));
+    const unwrapped = unwrapPackingLabelSigningSecret(envelope);
+    assert.ok(Buffer.isBuffer(unwrapped));
+    assert.ok(unwrapped.equals(expected));
+    const asString = catchCode(() => decryptPackingLabelSigningSecret(envelope));
+    assert.equal(asString?.code, LABEL_SIGNING_SECRET_FORMAT);
+  });
+
+  run("binary wrap of locked HMAC material reproduces the existing MAR1 token", () => {
+    setPackingKey(KEY_HEX);
+    const lockedSecret = "phase2-test-only-hmac-secret-not-for-production";
+    const fromString = signMar1Token({
+      labelNo: "MAR-PL-000001",
+      keyId: "K1",
+      secret: lockedSecret,
+    });
+    assert.equal(fromString.token, "MAR1.MAR-PL-000001.K1.cVAnxjW_hpd7OsrL-3KntQ");
+    const raw = Buffer.from(lockedSecret, "utf8");
+    const envelope = encryptPackingLabelSigningSecretBytes(raw);
+    const recovered = unwrapPackingLabelSigningSecret(envelope);
+    const fromBytes = signMar1Token({
+      labelNo: "MAR-PL-000001",
+      keyId: "K1",
+      secret: recovered,
+    });
+    assert.equal(fromBytes.token, fromString.token);
+    const viaDoc = signMar1TokenWithKeyDoc(
+      { keyId: "K1", status: "ACTIVE", encryptedSecret: envelope },
+      "MAR-PL-000001",
+      { newLabel: true }
+    );
+    assert.equal(viaDoc.token, fromString.token);
+  });
+
+  run("v1 string envelopes remain compatible beside v1b", () => {
+    setPackingKey(KEY_HEX);
+    const envelope = encryptPackingLabelSigningSecret(HMAC_PLAIN);
+    assert.equal(envelope.startsWith("v1:"), true);
+    assert.equal(decryptPackingLabelSigningSecret(envelope), HMAC_PLAIN);
+    assert.equal(unwrapPackingLabelSigningSecret(envelope), HMAC_PLAIN);
   });
 } finally {
   restoreEnv();
