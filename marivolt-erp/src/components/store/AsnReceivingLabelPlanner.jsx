@@ -1,14 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import LoadingButton from "../erp/LoadingButton.jsx";
 import AsnRuLabelPreviewFace from "./AsnRuLabelPreviewFace.jsx";
 import { apiGet, apiPost } from "../../lib/api.js";
 import { confirmDialog, notify } from "../../lib/notifications.js";
 import {
+  buildRuFirstPrintRequestBody,
+  buildRuReprintRequestBody,
+  canPrintSavedRuPlan,
   defaultLinePlan,
   distributionDifference,
+  extractReceivingUnitsListing,
   formatLabelDistribution,
+  isAsnEligibleForRuPlan,
+  isPrintedReceivingUnit,
+  isRuReprintMode,
+  isUntouchedFirstPreparationAsn,
+  isValidReceivingUnitPlan,
   parseDistributionInput,
+  resolveAsnStatusForRuPlan,
+  resolveRuPlanningLines,
+  RU_PLAN_LISTING_LOAD_ERROR,
+  shouldShowRuListingLoadError,
   suggestedDistribution,
   validateAsnLabelDistribution,
 } from "../../lib/receivingUnitLabels.js";
@@ -23,17 +36,27 @@ function qtyInputClass() {
   return "min-h-12 w-full rounded-xl border border-slate-300 bg-white px-3 text-lg font-semibold tabular-nums";
 }
 
-export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint, canReprint, intent = "review" }) {
+export default function AsnReceivingLabelPlanner({
+  asn,
+  open,
+  onClose,
+  canPrint,
+  canReprint,
+  intent = "review",
+  receivingContext = {},
+}) {
   const queryClient = useQueryClient();
-  const [plans, setPlans] = useState({});
+  const [planEdits, setPlanEdits] = useState({});
   const [previewIndex, setPreviewIndex] = useState(0);
   const [printerCode, setPrinterCode] = useState("");
-  const [reprintReason, setReprintReason] = useState(REPRINT_REASONS[0]);
+  const [reprintReason, setReprintReason] = useState("");
+  const [wasOpen, setWasOpen] = useState(Boolean(open));
+  const asnId = String(asn?._id || "").trim();
 
   const ruQ = useQuery({
-    queryKey: ["asn-receiving-units", asn?._id],
-    queryFn: () => apiGet(`/asn/${asn._id}/receiving-units`),
-    enabled: Boolean(open && asn?._id),
+    queryKey: ["asn-receiving-units", asnId],
+    queryFn: () => apiGet(`/asn/${asnId}/receiving-units`),
+    enabled: Boolean(open && asnId),
   });
 
   const printersQ = useQuery({
@@ -42,42 +65,54 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
     enabled: Boolean(open && canPrint),
   });
 
-  const data = ruQ.data;
-  const lines = data?.lines || [];
-  const completeness = data?.receivingCompleteness || asn?.receivingCompleteness;
+  const listing = extractReceivingUnitsListing(ruQ.data);
+  const status = resolveAsnStatusForRuPlan({ detail: asn, listing });
+  const eligible = isAsnEligibleForRuPlan(status);
+  const listingFailed = Boolean(open && (ruQ.isError || (ruQ.isFetched && !ruQ.isFetching && !listing)));
+  const listingBlocked = shouldShowRuListingLoadError({
+    listing,
+    detail: asn,
+    context: receivingContext,
+    listingFailed,
+  });
+  const lines = useMemo(
+    () =>
+      eligible && !listingBlocked
+        ? resolveRuPlanningLines({ listing, detail: asn, context: receivingContext })
+        : [],
+    [eligible, listingBlocked, listing, asn, receivingContext]
+  );
+  const completeness = listing?.receivingCompleteness || asn?.receivingCompleteness;
   const incompleteForReceiving = Boolean(completeness && !completeness.complete);
-
-  useEffect(() => {
-    if (!open || !lines.length) return;
-    setPlans((prev) => {
-      const next = { ...prev };
-      for (const line of lines) {
-        const key = String(line.asnLineId);
-        if (!next[key]) next[key] = defaultLinePlan(line);
-      }
-      return next;
-    });
-    setPreviewIndex(0);
-  }, [open, lines]);
+  const reprintMode = isRuReprintMode(listing);
+  const showReprintReason = Boolean(canReprint && reprintMode && !listingBlocked);
+  const plans = useMemo(() => {
+    const next = { ...planEdits };
+    for (const line of lines) {
+      const key = String(line.asnLineId);
+      if (!next[key]) next[key] = defaultLinePlan(line);
+    }
+    return next;
+  }, [lines, planEdits]);
 
   const planMutation = useMutation({
-    mutationFn: (body) => apiPost(`/asn/${asn._id}/receiving-units/plan`, body),
+    mutationFn: (body) => apiPost(`/asn/${asnId}/receiving-units/plan`, body),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asn._id] });
+      queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asnId] });
       notify.success("Receiving Units saved");
     },
   });
 
   const printMutation = useMutation({
-    mutationFn: (body) => apiPost(`/asn/${asn._id}/receiving-units/print`, body),
+    mutationFn: (body) => apiPost(`/asn/${asnId}/receiving-units/print`, body),
     onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asn._id] });
+      queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asnId] });
       notify.success(`Queued ${res.count || res.jobs?.length || 0} label job(s)`);
     },
     onError: (err) => {
       if (err?.code === "ASN_INCOMPLETE") {
-        queryClient.invalidateQueries({ queryKey: ["asn", asn._id] });
-        queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asn._id] });
+        queryClient.invalidateQueries({ queryKey: ["asn", asnId] });
+        queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asnId] });
         const missing = extractAsnCompletenessMissing(err);
         notify.error(
           formatCompletenessErrorMessage(err) +
@@ -90,19 +125,18 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
   });
 
   const reprintAllMutation = useMutation({
-    mutationFn: (body) => apiPost(`/asn/${asn._id}/receiving-units/reprint-all`, body),
+    mutationFn: (body) => apiPost(`/asn/${asnId}/receiving-units/reprint-all`, body),
     onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asn._id] });
+      queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asnId] });
       notify.success(`Queued ${res.count || res.jobs?.length || 0} reprint job(s)`);
     },
     onError: (err) => notify.fromError(err, { fallback: "Could not reprint all labels" }),
   });
 
   const reprintMutation = useMutation({
-    mutationFn: ({ ruId, reason }) =>
-      apiPost(`/asn/${asn._id}/receiving-units/${ruId}/reprint`, { reason, printerCode: printerCode || undefined }),
+    mutationFn: ({ ruId, body }) => apiPost(`/asn/${asnId}/receiving-units/${ruId}/reprint`, body),
     onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asn._id] });
+      queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asnId] });
       notify.success(`Reprint queued for ${res.receivingUnit?.ruNo || "RU"}`);
     },
     onError: (err) => notify.fromError(err, { fallback: "Could not reprint" }),
@@ -114,24 +148,32 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
   );
 
   const canSave = useMemo(() => {
-    if (!data?.eligible || !canPrint || incompleteForReceiving) return false;
-    return lines.every((line) => {
-      const plan = plans[String(line.asnLineId)] || defaultLinePlan(line);
-      const diff = distributionDifference(line.asnQty, plan.labelDistribution || []);
-      return Math.abs(diff.difference) < 1e-6 && (plan.labelDistribution || []).length > 0;
-    });
-  }, [data?.eligible, canPrint, incompleteForReceiving, lines, plans]);
+    if (listingBlocked || !eligible || !canPrint || incompleteForReceiving) return false;
+    if (!listing && !isUntouchedFirstPreparationAsn(asn, receivingContext)) return false;
+    return isValidReceivingUnitPlan(lines, plans);
+  }, [listingBlocked, eligible, canPrint, incompleteForReceiving, listing, asn, receivingContext, lines, plans]);
 
   const hasActiveRus = previewFaces.length > 0;
   const reprepareMode = intent === "reprepare";
-  const canSavePlan = canSave && (!hasActiveRus || (reprepareMode && data?.replanAllowed !== false));
+  const canSavePlan = canSave && (!hasActiveRus || (reprepareMode && listing?.replanAllowed !== false));
+  const canPrintPlan = Boolean(
+    canPrint && !listingBlocked && !incompleteForReceiving && canPrintSavedRuPlan(previewFaces)
+  );
   const currentFace = previewFaces[previewIndex] || null;
+
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setPreviewIndex(0);
+  }
 
   if (!open) return null;
 
   const updatePlan = (line, patch) => {
     const key = String(line.asnLineId);
-    setPlans((prev) => ({ ...prev, [key]: { ...prev[key], ...patch } }));
+    setPlanEdits((prev) => ({
+      ...prev,
+      [key]: { ...(prev[key] || defaultLinePlan(line)), ...patch },
+    }));
   };
 
   const setLabelCount = (line, raw) => {
@@ -197,7 +239,7 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
   const savePlan = async ({ replacePrinted = false } = {}) => {
     const payload = await buildPlanPayload();
     if (!payload) return;
-    const printedActive = previewFaces.some((ru) => String(ru.status || "").toUpperCase() === "PRINTED");
+    const printedActive = previewFaces.some((ru) => isPrintedReceivingUnit(ru));
     try {
       await planMutation.mutateAsync({
         ...payload,
@@ -206,8 +248,8 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
       });
     } catch (err) {
       if (err?.code === "ASN_INCOMPLETE") {
-        queryClient.invalidateQueries({ queryKey: ["asn", asn._id] });
-        queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asn._id] });
+        queryClient.invalidateQueries({ queryKey: ["asn", asnId] });
+        queryClient.invalidateQueries({ queryKey: ["asn-receiving-units", asnId] });
         const missing = extractAsnCompletenessMissing(err);
         notify.error(
           formatCompletenessErrorMessage(err) +
@@ -246,14 +288,28 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
     }
   };
 
+  const reprintOne = (ru) => {
+    const built = buildRuReprintRequestBody({ reason: reprintReason, printerCode });
+    if (!built.ok) {
+      notify.error(built.message);
+      return;
+    }
+    reprintMutation.mutate({ ruId: ru._id, body: built.body });
+  };
+
   const reprintAll = async () => {
-    const printed = previewFaces.filter((ru) => String(ru.status || "").toUpperCase() === "PRINTED").length;
+    const built = buildRuReprintRequestBody({ reason: reprintReason, printerCode });
+    if (!built.ok) {
+      notify.error(built.message);
+      return;
+    }
+    const printed = previewFaces.filter((ru) => isPrintedReceivingUnit(ru)).length;
     const ok = await confirmDialog({
       title: "Reprint All RU Labels",
       message: `Reprint all ${printed} active RU labels? This will print the same RU numbers again. Receiving quantities and RU identities will not change.`,
     });
     if (!ok) return;
-    reprintAllMutation.mutate({ reason: reprintReason || "Replacement", printerCode: printerCode || undefined });
+    reprintAllMutation.mutate(built.body);
   };
 
   const printers = printersQ.data?.items || [];
@@ -266,6 +322,11 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
             {reprepareMode ? "Re-Prepare Receiving Units" : "Prepare Receiving Units"}
           </h2>
           <p className="truncate font-mono text-sm text-slate-600">{asn?.asnNo}</p>
+          {!reprepareMode ? (
+            <p className="mt-1 text-xs font-medium text-slate-500">
+              Prepare Receiving Units → Save Receiving Units → Preview → Print RU Labels
+            </p>
+          ) : null}
         </div>
         <button type="button" className="min-h-12 min-w-12 rounded-xl border px-4 text-base" onClick={onClose}>
           Close
@@ -273,9 +334,14 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
       </header>
 
       <div className="flex-1 overflow-y-auto p-4">
-        {!data?.eligible ? (
+        {!eligible ? (
           <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
             Labels can be prepared only when the ASN is Shipped or Arrived.
+          </p>
+        ) : null}
+        {listingBlocked ? (
+          <p className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">
+            {RU_PLAN_LISTING_LOAD_ERROR}
           </p>
         ) : null}
         {completeness ? (
@@ -289,9 +355,9 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
             labels may still be reprinted.
           </p>
         ) : null}
-        {data?.replanAllowed === false && data?.replanBlockCode !== "ASN_INCOMPLETE" ? (
+        {listing?.replanAllowed === false && listing?.replanBlockCode !== "ASN_INCOMPLETE" ? (
           <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            {data.replanBlockedReason || "Receiving has started. RU structure can no longer be changed."}
+            {listing.replanBlockedReason || "Receiving has started. RU structure can no longer be changed."}
           </p>
         ) : null}
 
@@ -300,6 +366,7 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
             const plan = plans[String(line.asnLineId)] || defaultLinePlan(line);
             const diff = distributionDifference(line.asnQty, plan.labelDistribution || []);
             const invalid = Math.abs(diff.difference) > 1e-6;
+            const remainingQty = line.remainingQty != null ? line.remainingQty : line.asnQty;
             return (
               <section key={String(line.asnLineId)} className="rounded-2xl border bg-white p-4 shadow-sm">
                 <div className="text-2xl font-black tracking-tight">{line.article}</div>
@@ -307,9 +374,9 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
                 <p className="mt-1 text-sm text-slate-600">{line.description || "—"}</p>
                 <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
                   <div className="rounded-xl bg-slate-50 p-3">
-                    <div className="text-xs uppercase text-slate-500">ASN qty</div>
+                    <div className="text-xs uppercase text-slate-500">Remaining qty</div>
                     <div className="text-xl font-bold">
-                      {line.asnQty} {line.uom}
+                      {remainingQty} {line.uom}
                     </div>
                   </div>
                   <div className="rounded-xl bg-slate-50 p-3">
@@ -356,14 +423,12 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
                             Qty {ru.plannedQty} · {ru.status}
                           </div>
                         </div>
-                        {canReprint && ru.status !== "CANCELLED" ? (
+                        {showReprintReason && isPrintedReceivingUnit(ru) ? (
                           <LoadingButton
                             variant="secondary"
                             className="min-h-12"
                             loading={reprintMutation.isPending}
-                            onClick={() =>
-                              reprintMutation.mutate({ ruId: ru._id, reason: reprintReason || "Replacement" })
-                            }
+                            onClick={() => reprintOne(ru)}
                           >
                             Reprint RU Label
                           </LoadingButton>
@@ -377,7 +442,13 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
           })}
         </div>
 
-        {previewFaces.length ? (
+        {eligible && !listingBlocked && !lines.length ? (
+          <p className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
+            No receivable ASN lines remain for Receiving Unit planning.
+          </p>
+        ) : null}
+
+        {previewFaces.length && !listingBlocked ? (
           <section className="mt-6 rounded-2xl border bg-white p-4">
             <div className="mb-3 flex items-center justify-between">
               <h3 className="text-base font-semibold">Label preview</h3>
@@ -417,7 +488,7 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
             </div>
           </section>
         ) : (
-          <p className="mt-6 text-sm text-slate-500">Save the plan to assign RU numbers, then preview and print.</p>
+          <p className="mt-6 text-sm text-slate-500">Save Receiving Units to assign RU numbers, then preview and print.</p>
         )}
       </div>
 
@@ -436,12 +507,14 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
             ))}
           </select>
         ) : null}
-        {canReprint ? (
+        {showReprintReason ? (
           <select
             className="min-h-12 w-full rounded-xl border px-3 text-base"
             value={reprintReason}
             onChange={(e) => setReprintReason(e.target.value)}
+            data-testid="ru-reprint-reason"
           >
+            <option value="">Select reprint reason</option>
             {REPRINT_REASONS.map((r) => (
               <option key={r} value={r}>
                 {r}
@@ -462,16 +535,13 @@ export default function AsnReceivingLabelPlanner({ asn, open, onClose, canPrint,
             variant="success"
             className="min-h-14 text-base"
             loading={printMutation.isPending}
-            disabled={
-              !canPrint ||
-              incompleteForReceiving ||
-              !previewFaces.some((ru) => ru.status === "PLANNED")
-            }
-            onClick={() => printMutation.mutate({ printerCode: printerCode || undefined })}
+            disabled={!canPrintPlan || listingBlocked}
+            title={canPrintPlan ? undefined : "Save Receiving Units before printing labels"}
+            onClick={() => printMutation.mutate(buildRuFirstPrintRequestBody({ printerCode }))}
           >
             Print RU Labels
           </LoadingButton>
-          {canReprint && previewFaces.some((ru) => ru.status === "PRINTED") ? (
+          {showReprintReason && previewFaces.some((ru) => isPrintedReceivingUnit(ru)) ? (
             <LoadingButton
               variant="secondary"
               className="min-h-14 text-base sm:col-span-2"

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import Modal from "../erp/Modal.jsx";
 import AsnReceivingLabelPlanner from "./AsnReceivingLabelPlanner.jsx";
@@ -23,6 +23,7 @@ import {
   trackingDisplay,
 } from "../../lib/asnUi.js";
 import { isStoreOperatorRole } from "../../lib/rbac.js";
+import { isAsnEligibleForRuPlan } from "../../lib/receivingUnitLabels.js";
 
 export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
   const { can, role } = useAuth();
@@ -93,7 +94,8 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
   const detail = detailQ.data;
   const progress = progressQ.data?.progress;
   const session = progressQ.data?.session;
-  const receivingUnits = progressQ.data?.receivingUnits || [];
+  const receivingUnitsRaw = progressQ.data?.receivingUnits;
+  const receivingUnits = useMemo(() => receivingUnitsRaw || [], [receivingUnitsRaw]);
   const draftGrn = progressQ.data?.draftGrn;
   const reopenReceiving = progressQ.data?.reopenReceiving;
   const draftStatus = String(draftGrn?.status || "").toUpperCase();
@@ -122,7 +124,7 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
   const ruCount = currentRus.length;
   const printedCount = currentRus.filter((ru) => String(ru.status || "").toUpperCase() === "PRINTED").length;
   const plannedCount = currentRus.filter((ru) => String(ru.status || "").toUpperCase() === "PLANNED").length;
-  const eligibleReceiveStatus = ["SHIPPED", "ARRIVED"].includes(String(detail?.status || "").toUpperCase());
+  const eligibleReceiveStatus = isAsnEligibleForRuPlan(detail?.status);
   const completeness = detail?.receivingCompleteness || ruListQ.data?.receivingCompleteness;
   const incompleteForReceiving = Boolean(completeness && !completeness.complete);
   const sessionStatus = String(session?.status || "").toUpperCase();
@@ -148,6 +150,16 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
   const reprintAllAllowed = canReprint && printedCount > 0 && eligibleReceiveStatus;
   const canPrepareNewRus =
     canPrepareLabels && eligibleReceiveStatus && !incompleteForReceiving && !receivingStarted;
+
+  const receivingContext = useMemo(
+    () => ({
+      session,
+      draftGrn,
+      receivingUnits,
+      progress,
+    }),
+    [session, draftGrn, receivingUnits, progress]
+  );
 
   function openPlanner(intent = "review") {
     setPlannerIntent(intent);
@@ -1015,6 +1027,7 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
 
       <AsnReceivingLabelPlanner
         asn={detail}
+        receivingContext={receivingContext}
         open={plannerOpen && !!detail}
         intent={plannerIntent}
         onClose={() => {
