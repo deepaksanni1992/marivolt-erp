@@ -335,8 +335,16 @@ run("same distribution is reused unless forceReplan", () => {
 });
 
 run("print-agent version is independent of this reprepare workflow", () => {
-  const agent = fs.readFileSync(path.join(feRoot, "..", "print-agent", "src", "index.js"), "utf8");
-  assert.match(agent, /APP_VERSION = "1\.5\.0"/);
+  const agentRoot = path.join(feRoot, "..", "print-agent");
+  const agent = fs.readFileSync(path.join(agentRoot, "src", "index.js"), "utf8");
+  const pkg = JSON.parse(fs.readFileSync(path.join(agentRoot, "package.json"), "utf8"));
+  const declared = String(pkg.version || "").trim();
+  const m = agent.match(/const APP_VERSION = "([^"]+)"/);
+  assert.match(declared, /^\d+\.\d+\.\d+$/);
+  assert.equal(Boolean(m), true, "print-agent must declare APP_VERSION");
+  assert.equal(m[1], declared);
+  assert.doesNotMatch(fs.readFileSync(path.join(srcRoot, "services", "receivingUnitService.js"), "utf8"), /\bAPP_VERSION\b/);
+  assert.doesNotMatch(fs.readFileSync(path.join(srcRoot, "services", "label", "asnLabelService.js"), "utf8"), /\bAPP_VERSION\b/);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
