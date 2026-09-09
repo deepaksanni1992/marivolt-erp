@@ -300,12 +300,20 @@ function PackingLabelsForm({
       </div>
 
       {isLandscapePreview ? (
-        <p className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-950">
+        <p
+          className={`mb-2 rounded border px-2 py-1.5 text-xs ${
+            landscapePrintBlocked
+              ? "border-rose-200 bg-rose-50 text-rose-900"
+              : "border-slate-200 bg-slate-50 text-slate-800"
+          }`}
+        >
           {previewMeta?.printEnabled
             ? "Preview uses persisted label identity. The QR token matches the print payload."
-            : previewMeta?.canQueueFirstPrint
-              ? "PREVIEW — permanent MAR-PL identities are minted at first print. Vessel/Plant stays blank unless a dedicated source field exists."
-              : previewMeta?.printBlockedMessage || PACKING_QR_LANDSCAPE_V1_PRINT_HINT}
+            : landscapePrintBlocked
+              ? previewMeta?.printBlockedMessage || PACKING_QR_LANDSCAPE_V1_PRINT_HINT
+              : previewMeta?.canQueueFirstPrint
+                ? "Print Selected mints permanent MAR-PL identities and prints scan-ready labels. Vessel/Plant stays blank unless a dedicated source field exists."
+                : "Print Selected mints a permanent MAR-PL number on first print. Preview does not create a scan identity."}
         </p>
       ) : null}
 
@@ -379,6 +387,11 @@ function PackingLabelsForm({
       ) : null}
 
       <div className="flex flex-wrap justify-end gap-2">
+        {isLandscapePreview && !previewMeta?.printEnabled ? (
+          <p className="w-full text-right text-xs text-slate-600">
+            Preview does not print. Click Print Selected to mint MAR-PL numbers and send labels to the printer.
+          </p>
+        ) : null}
         <button type="button" className="rounded border px-3 py-1.5 text-sm" onClick={onClose}>
           Cancel
         </button>
@@ -410,7 +423,7 @@ function PackingLabelsForm({
             disabled={!canPrint || selectedCount <= 0 || printBlockedByOverflow || printMut.isPending || landscapePrintBlocked}
             onClick={() => printMut.mutate()}
           >
-            Print Selected
+            Print Selected (mint MAR-PL)
           </LoadingButton>
         )}
       </div>

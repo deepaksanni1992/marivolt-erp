@@ -13,7 +13,7 @@ import {
 
 export const PACKING_QR_LANDSCAPE_V1_CODE = "PACKING_QR_LANDSCAPE_150X100_V1";
 export const PACKING_QR_LANDSCAPE_V1_NAME = "PACKING QR LANDSCAPE 100×150 V1";
-export const PACKING_QR_LANDSCAPE_V1_UI_LABEL = "Packing QR Landscape 100×150 — Preview";
+export const PACKING_QR_LANDSCAPE_V1_UI_LABEL = "Packing QR Landscape 100×150";
 export const PACKING_QR_LANDSCAPE_V1_PRINT_HINT =
   "Landscape packing print requires a persisted label identity and an ACTIVE company signing key.";
 
@@ -1170,31 +1170,6 @@ export function layoutPackingQrLandscapeV1(data = {}) {
       ? "Persisted PackingLabelUnit labelNo."
       : "PREVIEW marker. Not a persisted PackingLabelUnit or scan identity.",
   });
-  if (!useProductionQr) {
-    const captionFit = fitBlockingText({
-      text: QR_TEST_CAPTION,
-      maxWidthDots: 560,
-      maxHeightDots: 24,
-      maxLines: 1,
-      preferredXMul: 1,
-      minXMul: 1,
-      yMul: 1,
-    });
-    const capLine = (captionFit.lines && captionFit.lines[0]) || QR_TEST_CAPTION;
-    const capW = capLine.length * 12;
-    addText({
-      id: "qr-test-caption-0",
-      field: "QR_TEST_CAPTION",
-      value: capLine,
-      x: T.x1 - T.pad - capW,
-      y: T.yFooter + 4,
-      xMul: 1,
-      yMul: 1,
-    });
-    if (!captionFit.ok) {
-      pushError(errors, "LABEL_REFERENCE_OVERFLOW", "QR test caption cannot fit.");
-    }
-  }
 
   const qtyCell = cellBox(T.x, T.yFooterQty, T.xBrand, T.yEnd);
   const orderCell = cellBox(T.xBrand, T.yFooterQty, T.xModel, T.yEnd);
@@ -1405,7 +1380,7 @@ export function layoutPackingQrLandscapeV1(data = {}) {
       rendered: qrRendered,
       placeholder: !useProductionQr,
       mark: useProductionQr ? productionQr.token : QR_PLACEHOLDER_MARK,
-      caption: useProductionQr ? "" : QR_TEST_CAPTION,
+      caption: "",
       identity: useProductionQr ? persistedLabelNo : null,
       validIdentity: useProductionQr,
       token: useProductionQr ? productionQr.token : null,

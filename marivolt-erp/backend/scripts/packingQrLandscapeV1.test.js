@@ -253,8 +253,9 @@ run("9. QR including quiet zone remains square and in bounds", () => {
   for (const t of texts) {
     assert.equal(boxesOverlap(t.logical, qr.logical), false, `${t.id} overlaps QR quiet`);
   }
-  assert.ok(texts.some((t) => t.field === "QR_TEST_CAPTION"));
+  assert.ok(!texts.some((t) => t.field === "QR_TEST_CAPTION"));
   assert.ok(!texts.some((t) => t.field === "QR_TEST_MARK"));
+  assert.equal(texts.find((t) => t.field === "LABEL_ID")?.value, "PREVIEW");
 });
 
 run("9b. MAR1 Base64URL token sizes the reserved QR, not TEST/PREVIEW", () => {

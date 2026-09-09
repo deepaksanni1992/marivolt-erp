@@ -35,10 +35,10 @@ export function PackingQrLandscapePreview({
       ) : (
         <p className="text-xs text-slate-500">No preview geometry.</p>
       )}
-      <p className={`mt-2 text-xs ${persisted ? "text-slate-700" : "text-amber-900"}`}>
+      <p className="mt-2 text-xs text-slate-700">
         {persisted
           ? `Persisted label ${layout?.fields?.labelId || ""} — QR token matches the print payload.`
-          : "PREVIEW QR is not a valid ERP scan identity. First print mints a permanent MAR-PL number."}
+          : "Layout preview only (Label ID PREVIEW). Print Selected mints a permanent MAR-PL number and prints a scan-ready QR."}
       </p>
       {layout?.fields?.vesselPlantSourceMissing ? (
         <p className="mt-1 text-xs text-slate-600">

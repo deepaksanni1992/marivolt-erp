@@ -17,7 +17,7 @@ export const LABEL_TEMPLATE_NAME = "MARIVOLT STANDARD LABEL";
 export const PACKING_LABEL_TEMPLATE_NAME = "PACKING STANDARD 100×50";
 export const PACKING_STANDARD_TEMPLATE_CODE = "PACKING_STANDARD_100X50";
 export const PACKING_QR_LANDSCAPE_V1_TEMPLATE_CODE = "PACKING_QR_LANDSCAPE_150X100_V1";
-export const PACKING_QR_LANDSCAPE_V1_UI_LABEL = "Packing QR Landscape 100×150 — Preview";
+export const PACKING_QR_LANDSCAPE_V1_UI_LABEL = "Packing QR Landscape 100×150";
 export const PACKING_QR_LANDSCAPE_V1_PRINT_HINT =
   "Landscape packing print requires a persisted label identity and an ACTIVE company signing key.";
 
