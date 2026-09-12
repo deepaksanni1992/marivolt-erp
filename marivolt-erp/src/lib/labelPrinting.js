@@ -319,7 +319,7 @@ export function buildInitialGrnLabelIdempotencyKey(grnNo) {
   return no ? `grn:${no}:initial` : `grn:unknown:initial:${Date.now()}`;
 }
 
-/** Pre-GRN print idempotency: draft session + config fingerprint. */
+/** Pre-GRN print idempotency: draft session + config fingerprint. Destination is bound server-side. */
 export function buildGrnPrepostIdempotencyKey(draftRef, fingerprint) {
   const ref = String(draftRef || "").trim();
   const fp = String(fingerprint || "").trim();

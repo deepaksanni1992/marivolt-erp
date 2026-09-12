@@ -18,6 +18,8 @@ import {
   validateAsnLabelDistribution,
 } from "../../lib/receivingUnitLabels.js";
 import { REPRINT_REASONS } from "../../lib/labelPrinting.js";
+import { filterPrintersForPurpose, describePrinterDestination, groupPrintersByAgent, LABEL_PURPOSE_ASN } from "../../lib/labelPrinterRouting.js";
+import LabelPrintDestinationBanner from "./LabelPrintDestinationBanner.jsx";
 import AsnReceivingCompletenessPanel from "../asn/AsnReceivingCompletenessPanel.jsx";
 import {
   extractAsnCompletenessMissing,
@@ -289,7 +291,13 @@ export default function AsnReceivingLabelPlanner({
     reprintAllMutation.mutate(built.body);
   };
 
-  const printers = printersQ.data?.items || [];
+  const printers = filterPrintersForPurpose(printersQ.data?.items || [], LABEL_PURPOSE_ASN);
+  const printerGroups = groupPrintersByAgent(printers);
+  const selectedAsnPrinter = printers.find((p) => p.code === printerCode) || null;
+  const asnDestination = describePrinterDestination(selectedAsnPrinter, {
+    purpose: LABEL_PURPOSE_ASN,
+    fallbackSize: "100×50 mm",
+  });
 
   return (
     <div className="fixed inset-0 z-[80] flex flex-col bg-slate-100">
@@ -405,6 +413,7 @@ export default function AsnReceivingLabelPlanner({
                             variant="secondary"
                             className="min-h-12"
                             loading={reprintMutation.isPending}
+                            disabled={!printerCode}
                             onClick={() => reprintOne(ru)}
                           >
                             Reprint RU Label
@@ -471,18 +480,40 @@ export default function AsnReceivingLabelPlanner({
 
       <footer className="space-y-3 border-t bg-white p-4">
         {canPrint ? (
+          <>
           <select
             className="min-h-12 w-full rounded-xl border px-3 text-base"
             value={printerCode}
             onChange={(e) => setPrinterCode(e.target.value)}
           >
-            <option value="">Default warehouse printer</option>
-            {printers.map((p) => (
-              <option key={p.code || p._id} value={p.code}>
-                {p.displayName || p.name || p.code} {p.windowsPrinterName ? `· ${p.windowsPrinterName}` : ""}
-              </option>
+            <option value="">Select printer</option>
+            {printerGroups.map((g) => (
+              <optgroup
+                key={g.agentId}
+                label={`${g.computerName || g.agentName || g.agentId} (${g.agentId})`}
+              >
+                {g.printers.map((p) => (
+                  <option key={p.code || p._id} value={p.code}>
+                    {p.displayName || p.name || p.code} {p.windowsPrinterName ? `· ${p.windowsPrinterName}` : ""}
+                    {p.language ? ` (${p.language})` : ""}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
+          <LabelPrintDestinationBanner
+            printerLabel={asnDestination.printerLabel}
+            agentLabel={asnDestination.agentLabel}
+            sizeLabel="100×50 mm"
+            language={asnDestination.language || ""}
+            countLabel={`${previewFaces.length || 0} RU label(s)`}
+            warning={
+              !printerCode
+                ? "Select Deepak Laptop Zebra for incoming 100×50 RU labels. Automatic routing is disabled so this job cannot be sent to STORE."
+                : "RU labels keep the permanent RU barcode (Code128). Scan-to-receive is unchanged."
+            }
+          />
+          </>
         ) : null}
         {showReprintReason ? (
           <select
@@ -512,8 +543,14 @@ export default function AsnReceivingLabelPlanner({
             variant="success"
             className="min-h-14 text-base"
             loading={printMutation.isPending}
-            disabled={!canPrintPlan || listingBlocked}
-            title={canPrintPlan ? undefined : "Save Receiving Units before printing labels"}
+            disabled={!canPrintPlan || listingBlocked || !printerCode}
+            title={
+              !printerCode
+                ? "Select a printer before printing RU labels"
+                : canPrintPlan
+                  ? undefined
+                  : "Save Receiving Units before printing labels"
+            }
             onClick={() => printMutation.mutate(buildRuFirstPrintRequestBody({ printerCode }))}
           >
             Print RU Labels
@@ -523,6 +560,7 @@ export default function AsnReceivingLabelPlanner({
               variant="secondary"
               className="min-h-14 text-base sm:col-span-2"
               loading={reprintAllMutation.isPending}
+              disabled={!printerCode}
               onClick={reprintAll}
             >
               Reprint All RU Labels

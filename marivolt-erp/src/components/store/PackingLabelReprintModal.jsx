@@ -8,6 +8,11 @@ import {
   formatPackingReprintReason,
   newPackingReprintClientRequestId,
 } from "../../lib/labelPrinting.js";
+import {
+  filterPrintersForPurpose,
+  groupPrintersByAgent,
+  LABEL_PURPOSE_PACKING,
+} from "../../lib/labelPrinterRouting.js";
 
 function formatWhen(value) {
   if (!value) return "—";
@@ -19,6 +24,7 @@ function formatWhen(value) {
 function PackingLabelReprintForm({ job, onClose, onQueued, onError }) {
   const [reason, setReason] = useState(PACKING_REPRINT_REASONS[0]);
   const [remarks, setRemarks] = useState("");
+  const [selectedPrinter, setSelectedPrinter] = useState("");
   const clientRequestIdRef = useRef("");
 
   const labelCount = Math.max(0, Math.floor(Number(job?.requestedLabels) || 0));
@@ -28,15 +34,25 @@ function PackingLabelReprintForm({ job, onClose, onQueued, onError }) {
     queryFn: () => apiGet(`/labels/jobs/${job._id}/reprint-target`),
     enabled: Boolean(job?._id),
   });
+  const printersQ = useQuery({
+    queryKey: ["label-printers"],
+    queryFn: () => apiGet("/labels/printers"),
+  });
 
   const target = targetQ.data;
+  const packingPrinters = filterPrintersForPurpose(printersQ.data?.items || [], LABEL_PURPOSE_PACKING);
+  const packingGroups = groupPrintersByAgent(packingPrinters);
+  const needPrinterPick = Boolean(targetQ.isError) || (targetQ.isSuccess && !target?.printerConfigId);
   const reprintMut = useMutation({
     mutationFn: async () => {
       if (!job?._id) throw new Error("Missing original print job");
       if (reason === "Other" && !String(remarks || "").trim()) {
         throw new Error("Enter remarks for Other");
       }
-      if (!target?.printerConfigId) {
+      if (needPrinterPick && !selectedPrinter) {
+        throw new Error("Select a compatible packing printer. Automatic routing is disabled.");
+      }
+      if (!needPrinterPick && !target?.printerConfigId) {
         throw new Error("Reprint printer is not available. Close and try again.");
       }
       if (!clientRequestIdRef.current) {
@@ -45,7 +61,8 @@ function PackingLabelReprintForm({ job, onClose, onQueued, onError }) {
       return apiPost(`/labels/jobs/${job._id}/reprint`, {
         reason: formatPackingReprintReason(reason, remarks),
         clientRequestId: clientRequestIdRef.current,
-        expectedPrinterConfigId: target.printerConfigId,
+        expectedPrinterConfigId: target?.printerConfigId,
+        ...(selectedPrinter ? { printerCode: selectedPrinter } : {}),
       });
     },
     onSuccess: (data) => {
@@ -60,8 +77,10 @@ function PackingLabelReprintForm({ job, onClose, onQueued, onError }) {
     },
   });
 
-  const printerReady = Boolean(target?.printerConfigId) && !targetQ.isFetching;
-  const submitDisabled = reprintMut.isPending || !printerReady || targetQ.isError;
+  const printerReady =
+    (!needPrinterPick && Boolean(target?.printerConfigId) && !targetQ.isFetching) ||
+    (needPrinterPick && Boolean(selectedPrinter));
+  const submitDisabled = reprintMut.isPending || !printerReady;
 
   return (
     <>
@@ -95,6 +114,30 @@ function PackingLabelReprintForm({ job, onClose, onQueued, onError }) {
               ? "—"
               : target?.windowsPrinterName || target?.printerCode || "—"}
         </p>
+        {needPrinterPick ? (
+          <label className="block text-xs text-slate-600">
+            Select packing printer
+            <select
+              className="mt-1 block w-full rounded border px-2 py-1.5 text-sm"
+              value={selectedPrinter}
+              onChange={(e) => setSelectedPrinter(e.target.value)}
+            >
+              <option value="">Select printer</option>
+              {packingGroups.map((g) => (
+                <optgroup
+                  key={g.agentId}
+                  label={`${g.computerName || g.agentName || g.agentId} (${g.agentId})`}
+                >
+                  {g.printers.map((p) => (
+                    <option key={p.code || p._id} value={p.code}>
+                      {p.displayName || p.code} · {p.windowsPrinterName || ""}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {target?.warning ? (
           <p className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-amber-950">
             {target.warning}

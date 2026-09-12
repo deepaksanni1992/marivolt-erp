@@ -16,6 +16,13 @@ import {
   rowHasContent,
   summarizeCustomPackingRows,
 } from "../../lib/customPackingLabelSpreadsheet.js";
+import LabelPrintDestinationBanner from "./LabelPrintDestinationBanner.jsx";
+import {
+  describePrinterDestination,
+  filterPrintersForPurpose,
+  groupPrintersByAgent,
+  LABEL_PURPOSE_CUSTOM_PACKING,
+} from "../../lib/labelPrinterRouting.js";
 
 const TERMINAL = new Set(["COMPLETED", "FAILED", "UNCERTAIN", "CANCELLED", "PARTIAL"]);
 
@@ -55,10 +62,27 @@ export default function CustomPackingLabelModal({
   const { can } = useAuth();
   const canPrint = can("LABELS", "print");
   const canReprint = can("LABELS", "reprint");
+  const packingPrinters = useMemo(
+    () => filterPrintersForPurpose(printers, LABEL_PURPOSE_CUSTOM_PACKING),
+    [printers]
+  );
+  const packingPrinterGroups = useMemo(() => groupPrintersByAgent(packingPrinters), [packingPrinters]);
   const fileInputRef = useRef(null);
   const [header, setHeader] = useState(emptyCustomPackingHeader());
   const [rows, setRows] = useState([emptyCustomPackingTableRow("1")]);
   const [selectedPrinter, setSelectedPrinter] = useState("");
+  const selectedPackingPrinter = useMemo(
+    () => packingPrinters.find((p) => p.code === selectedPrinter) || null,
+    [packingPrinters, selectedPrinter]
+  );
+  const packingDestination = useMemo(
+    () =>
+      describePrinterDestination(selectedPackingPrinter, {
+        purpose: LABEL_PURPOSE_CUSTOM_PACKING,
+        fallbackSize: "100×50 mm",
+      }),
+    [selectedPackingPrinter]
+  );
   const [previewIdx, setPreviewIdx] = useState(0);
   const [previewLabels, setPreviewLabels] = useState([]);
   const [previewRowId, setPreviewRowId] = useState("");
@@ -310,14 +334,35 @@ export default function CustomPackingLabelModal({
             value={selectedPrinter}
             onChange={(e) => setSelectedPrinter(e.target.value)}
           >
-            <option value="">Default route</option>
-            {(printers || []).map((p) => (
-              <option key={p.code || p._id} value={p.code || ""}>
-                {p.code || p.windowsPrinterName || p._id}
-              </option>
+            <option value="">Select printer</option>
+            {packingPrinterGroups.map((g) => (
+              <optgroup
+                key={g.agentId}
+                label={`${g.computerName || g.agentName || g.agentId} (${g.agentId})`}
+              >
+                {g.printers.map((p) => (
+                  <option key={p.code || p._id} value={p.code || ""}>
+                    {p.code} — {p.windowsPrinterName || p._id}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </label>
+        <div className="w-full">
+          <LabelPrintDestinationBanner
+            printerLabel={packingDestination.printerLabel}
+            agentLabel={packingDestination.agentLabel}
+            sizeLabel={packingDestination.sizeLabel || "100×50 mm"}
+            language={packingDestination.language || "TSPL"}
+            countLabel={`${localSummary.physicalLabels || 0} physical label(s)`}
+            warning={
+              !selectedPrinter
+                ? "Select Deepak Laptop Rongta for packing/dispatch. Automatic routing is disabled so this job cannot be sent to STORE."
+                : "Custom packing/dispatch uses Rongta TSPL. Do not select the Zebra incoming printer."
+            }
+          />
+        </div>
         <button type="button" className="rounded border px-2 py-1 text-xs font-semibold" onClick={addRow}>
           + Add Row
         </button>
@@ -472,7 +517,7 @@ export default function CustomPackingLabelModal({
                         <button
                           type="button"
                           className="text-[11px] font-semibold text-slate-900 underline disabled:opacity-40"
-                          disabled={!canReprint || isPending}
+                          disabled={!canReprint || isPending || !selectedPrinter}
                           onClick={() =>
                             printMut.mutate({ rowId: r.rowId, isReprint: true, jobId: st.jobId })
                           }
@@ -485,6 +530,7 @@ export default function CustomPackingLabelModal({
                           className="text-[11px] font-semibold text-slate-900 underline disabled:opacity-40"
                           disabled={
                             !canPrint ||
+                            !selectedPrinter ||
                             !rowHasContent(r) ||
                             isPending ||
                             (descriptionTruncated && previewRowId === r.rowId && !confirmTruncation)

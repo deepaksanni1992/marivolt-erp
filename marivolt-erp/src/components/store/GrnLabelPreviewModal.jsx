@@ -25,6 +25,7 @@ export default function GrnLabelPreviewModal({
   copies = 1,
   isPrinting = false,
   staleWarning = "",
+  destination = null,
   onPrint,
   onCancel,
   onLineConfigChange,
@@ -178,6 +179,17 @@ export default function GrnLabelPreviewModal({
         {staleWarning ? (
           <div className="mb-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
             {staleWarning}
+          </div>
+        ) : null}
+
+        {destination ? (
+          <div className="mb-3 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800">
+            <div className="font-semibold uppercase tracking-wide text-slate-500">Print destination</div>
+            <div className="mt-1">Printer: {destination.printerLabel || "—"}</div>
+            <div>Laptop / agent: {destination.agentLabel || "—"}</div>
+            <div>
+              Size: {destination.sizeLabel || "100×50 mm"} · Labels: {printLabel}
+            </div>
           </div>
         ) : null}
 

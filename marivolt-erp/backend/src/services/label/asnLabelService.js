@@ -6,11 +6,20 @@ import {
 } from "./labelSettingsService.js";
 import { resolvePrinterForJob } from "./printerManager.js";
 import {
+  LABEL_PURPOSE_ASN,
+  ZPL_ASN_RU_LAYOUT_VERSION,
+  printerLanguage,
+  requirePrinterCode,
+} from "./labelPrinterProfile.js";
+import { frozenDestinationFields, loadAndAssertPrinter, renderStandardLabelPayload } from "./labelJobPayload.js";
+import {
   MARIVOLT_STANDARD_TEMPLATE_CODE,
   ensureMarivoltStandardTemplate,
 } from "./labelTemplateService.js";
 import { encodeBarcodeValue } from "./barcodeGenerator.js";
-import { buildJobTspl, buildSingleLabelTspl } from "./tsplGenerator.js";
+import { buildSingleLabelTspl } from "./tsplGenerator.js";
+import { buildSingleLabelZpl, layoutAsnRuLabelSvg } from "./zplGenerator.js";
+import { LABEL_LANGUAGE_ZPL, normalizeLabelLanguage } from "./labelLanguages.js";
 import { auditLabelEvent, recordLabelHistory } from "./labelAudit.js";
 import { resolveLabelCompanyBranding } from "./labelCompanyBranding.js";
 import Company from "../../models/Company.js";
@@ -127,7 +136,20 @@ async function enqueueOneRuJob(req, { asn, ru, printer, companyName, settings, i
   }).sort({ createdAt: -1 });
   if (inflight && !isReprint) return inflight;
 
-  const tsplPayload = buildJobTspl([line], asnLabelTsplOpts({ companyName, copies }));
+  const language = printerLanguage(printer);
+  const renderOpts = {
+    ...asnLabelTsplOpts({ companyName, copies }),
+    language,
+  };
+  const rendered = renderStandardLabelPayload([line], renderOpts);
+  const dest = frozenDestinationFields(printer, {
+    language,
+    purpose: LABEL_PURPOSE_ASN,
+    layoutVersion: language === LABEL_LANGUAGE_ZPL ? ZPL_ASN_RU_LAYOUT_VERSION : 1,
+    widthMm: 100,
+    heightMm: 50,
+    dpi: 203,
+  });
   const job = await LabelPrintJob.create({
     companyId: req.companyId,
     jobNo: jobNo(),
@@ -136,16 +158,15 @@ async function enqueueOneRuJob(req, { asn, ru, printer, companyName, settings, i
     sourceNo: upper(asn.asnNo),
     labelConfigFingerprint: fingerprint,
     warehouseCode: t(printer.warehouseCode),
-    printerConfigId: printer._id,
-    agentId: upper(printer.agentId),
-    windowsPrinterName: t(printer.windowsPrinterName),
+    ...dest,
     templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
     copies,
     requestedLabels,
     printedLabels: 0,
     remainingLabels: requestedLabels,
     lines: [line],
-    tsplPayload,
+    tsplPayload: rendered.tsplPayload,
+    payloadMode: rendered.payloadMode,
     status: "PENDING",
     isReprint,
     reprintReason: isReprint ? t(reason) : "",
@@ -187,19 +208,37 @@ export async function previewJobsFromAsn(req, body = {}) {
   assertAsnReceivingComplete(asn, { ErrorClass: ReceivingUnitError, status: 409 });
   const rus = await loadPersistedRusForPrint(req.companyId, asn._id, body.receivingUnitIds);
   const companyName = await loadCompanyName(req.companyId);
+  let language = "TSPL";
+  if (t(body.printerCode)) {
+    const printer = await resolvePrinterForJob(req.companyId, body.printerCode, {
+      warehouseCode: upper(body.warehouseCode),
+      agentId: body.agentId,
+      purpose: LABEL_PURPOSE_ASN,
+      templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
+    });
+    language = printerLanguage(printer);
+  }
   const faces = previewPayloadFromReceivingUnits(rus, asn).map((face) => {
     const line = buildAsnRuJobLine(face, asn);
-    const tspl = buildSingleLabelTspl(line, {
+    const opts = {
       ...asnLabelTsplOpts({ companyName, copies: 1 }),
       qtyPerLabel: face.plannedQty,
-    });
-    return { ...face, tsplPreview: tspl.slice(0, 1500) };
+    };
+    const tspl = buildSingleLabelTspl(line, opts);
+    const out = { ...face, tsplPreview: tspl.slice(0, 1500), language };
+    if (normalizeLabelLanguage(language) === LABEL_LANGUAGE_ZPL) {
+      const zpl = buildSingleLabelZpl(line, { ...opts, language });
+      out.zplPreview = zpl.slice(0, 1500);
+      out.svgPreview = layoutAsnRuLabelSvg(line, { ...opts, language }).svg;
+    }
+    return out;
   });
   return {
     asnId: asn._id,
     asnNo: asn.asnNo,
     templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
     barcodeMode: "LABEL_ID",
+    language,
     faces,
   };
 }
@@ -233,8 +272,17 @@ export async function createJobsFromAsn(req, body = {}) {
   }
 
   await ensureMarivoltStandardTemplate();
+  requirePrinterCode(body.printerCode, LABEL_PURPOSE_ASN);
   const printer = await resolvePrinterForJob(companyId, body.printerCode, {
     warehouseCode: upper(body.warehouseCode),
+    agentId: body.agentId,
+    purpose: LABEL_PURPOSE_ASN,
+    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
+  });
+  await loadAndAssertPrinter(companyId, printer, {
+    purpose: LABEL_PURPOSE_ASN,
+    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
+    requireAgentId: body.agentId,
   });
   const companyName = await loadCompanyName(companyId);
 
@@ -283,8 +331,17 @@ export async function reprintReceivingUnit(req, asnId, ruId, body = {}) {
   }
 
   await ensureMarivoltStandardTemplate();
+  requirePrinterCode(body.printerCode, LABEL_PURPOSE_ASN);
   const printer = await resolvePrinterForJob(req.companyId, body.printerCode, {
     warehouseCode: upper(body.warehouseCode),
+    agentId: body.agentId,
+    purpose: LABEL_PURPOSE_ASN,
+    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
+  });
+  await loadAndAssertPrinter(req.companyId, printer, {
+    purpose: LABEL_PURPOSE_ASN,
+    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
+    requireAgentId: body.agentId,
   });
   const companyName = await loadCompanyName(req.companyId);
   const job = await enqueueOneRuJob(req, {
@@ -340,8 +397,17 @@ export async function reprintAllReceivingUnits(req, asnId, body = {}) {
   }
 
   await ensureMarivoltStandardTemplate();
+  requirePrinterCode(body.printerCode, LABEL_PURPOSE_ASN);
   const printer = await resolvePrinterForJob(req.companyId, body.printerCode, {
     warehouseCode: upper(body.warehouseCode),
+    agentId: body.agentId,
+    purpose: LABEL_PURPOSE_ASN,
+    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
+  });
+  await loadAndAssertPrinter(req.companyId, printer, {
+    purpose: LABEL_PURPOSE_ASN,
+    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
+    requireAgentId: body.agentId,
   });
   const companyName = await loadCompanyName(req.companyId);
   const jobs = [];

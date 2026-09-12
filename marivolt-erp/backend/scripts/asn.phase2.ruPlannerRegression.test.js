@@ -238,7 +238,7 @@ run("18. print button disabled until plan is saved", () => {
   assert.equal(canPrintSavedRuPlan([]), false);
   assert.equal(canPrintSavedRuPlan([{ status: "PLANNED" }]), true);
   assert.equal(canPrintSavedRuPlan([{ status: "PRINTED" }]), false);
-  assert.match(planner, /disabled=\{!canPrintPlan \|\| listingBlocked\}/);
+  assert.match(planner, /disabled=\{!canPrintPlan \|\| listingBlocked \|\| !printerCode\}/);
   assert.match(planner, /Save Receiving Units before printing labels/);
 });
 
@@ -397,7 +397,7 @@ run("S10. failed listing never enables Save/Preview/Print for established ASN", 
   assert.match(planner, /listingLoadError/);
   assert.match(planner, /listingBlocked/);
   assert.match(planner, /disabled=\{!canSavePlan\}/);
-  assert.match(planner, /disabled=\{!canPrintPlan \|\| listingBlocked\}/);
+  assert.match(planner, /disabled=\{!canPrintPlan \|\| listingBlocked \|\| !printerCode\}/);
 });
 
 run("S11. successful listing is authoritative", () => {

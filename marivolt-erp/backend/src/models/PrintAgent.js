@@ -30,6 +30,14 @@ const printAgentSchema = new mongoose.Schema(
     operatingSystem: { type: String, default: "", trim: true },
     windowsVersion: { type: String, default: "", trim: true },
     appVersion: { type: String, default: "", trim: true },
+    /**
+     * Additive agent capability snapshot from heartbeat.
+     * Legacy agents omit this and are TSPL-only.
+     */
+    capabilities: {
+      languages: { type: [String], default: undefined },
+      rawZpl: { type: Boolean, default: undefined },
+    },
     /** Detected Windows printer queue names from last heartbeat (capped) */
     availablePrinters: { type: [String], default: [] },
     /**

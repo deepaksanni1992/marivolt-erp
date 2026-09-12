@@ -316,12 +316,14 @@ run("Generate and save sample TSPL fixtures", () => {
   }
 });
 
-run("No label-size selectors in UI settings/GRN", () => {
+run("GRN UI has no operator label-size selector; printer media is profile-owned", () => {
   const settings = fs.readFileSync(path.join(repoRoot, "src/components/store/LabelSettingsPanel.jsx"), "utf8");
-  assert.ok(!/widthMm|heightMm|label size select/i.test(settings) || settings.includes("100"));
+  assert.ok(settings.includes("widthMm"));
+  assert.ok(settings.includes("heightMm"));
   assert.ok(!settings.includes("setWidth") && !settings.includes("labelWidth"));
   const store = fs.readFileSync(path.join(repoRoot, "src/pages/StoreModule.jsx"), "utf8");
   assert.ok(store.includes("100×50") || store.includes("100x50") || store.includes("100×50 mm"));
+  assert.ok(!store.includes("setWidth") && !store.includes("labelWidth"));
 });
 
 run("RAW spooler documented and used", () => {
@@ -405,7 +407,7 @@ run("Agent READY gate, spool JobId drain, unique doc name, release-to-PENDING", 
   const index = fs.readFileSync(path.join(repoRoot, "print-agent/src/index.js"), "utf8");
   assert.ok(index.includes("/agent/jobs/${job.id}/release") || index.includes("/agent/jobs/"));
   assert.ok(index.includes("createJobProcessor"));
-  assert.ok(index.includes('APP_VERSION = "1.8.2"'));
+  assert.ok(index.includes('APP_VERSION = "1.9.0"'));
   const routes = fs.readFileSync(path.join(backendRoot, "src/routes/labelRoutes.js"), "utf8");
   assert.ok(routes.includes("/agent/jobs/:id/release"));
   const queue = fs.readFileSync(path.join(backendRoot, "src/services/label/printQueue.js"), "utf8");

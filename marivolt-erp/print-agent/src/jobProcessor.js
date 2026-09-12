@@ -18,6 +18,7 @@ import {
   gapDetectDocumentName,
   validateLabelFaceBatchInput,
 } from "./adapters/rawFaceBatch.js";
+import { validateJobLanguagePayload, resolveJobWindowsQueue } from "./payloadLanguage.js";
 
 /**
  * Sequential per-printer print cycle.
@@ -44,10 +45,17 @@ export function createJobProcessor({
   sleepFn,
 } = {}) {
   const dlog = typeof diagLog === "function" ? diagLog : () => {};
+  const skipWindowsPrinterNames = new Set();
 
   async function resolveLeaseHealth() {
     const started = Date.now();
     const health = await getPrinterHealth({ purpose: "lease" });
+    return { health, ms: Date.now() - started };
+  }
+
+  async function resolveLeaseHealthForPrinter(printerName) {
+    const started = Date.now();
+    const health = await getPrinterHealth({ purpose: "lease", printerName });
     return { health, ms: Date.now() - started };
   }
 
@@ -411,34 +419,60 @@ export function createJobProcessor({
   }
 
   async function processOne() {
-    const { health: defaultHealth, ms: preLeaseProbeMs } = await resolveLeaseHealth();
-    if (!isLeaseEligiblePrinterStatus(defaultHealth?.status)) {
-      log(`Skip lease — printer ${defaultHealth?.status || "UNKNOWN"}`, {
-        event: "lease_skipped_unhealthy",
-      });
-      return false;
-    }
-
-    const job = await leaseNext();
+    const job = await leaseNext({
+      skipWindowsPrinterNames: [...skipWindowsPrinterNames],
+    });
     if (!job) return false;
 
     const trace = createPrintTimingTrace(job);
-    trace.setPreLeaseProbeMs(preLeaseProbeMs);
     dlog(
-      `PRINT_DIAG jobId=${trace.jobId} jobNo=${trace.jobNo} event=leased requestedLabels=${trace.state.requestedLabels} payloadBytes=${trace.state.payloadBytes} payloadMode=${job.payloadMode || "SINGLE_RAW"} preLeaseProbeMs=${preLeaseProbeMs}`
+      `PRINT_DIAG jobId=${trace.jobId} jobNo=${trace.jobNo} event=leased requestedLabels=${trace.state.requestedLabels} payloadBytes=${trace.state.payloadBytes} payloadMode=${job.payloadMode || "SINGLE_RAW"} language=${job.language || ""}`
     );
 
-    const printerName = job.windowsPrinterName || defaultHealth?.name || "";
-    if (!printerName) {
+    const langCheck = validateJobLanguagePayload(job);
+    if (!langCheck.ok) {
       const outcome = {
         status: "FAILED",
         printedQty: 0,
-        error: "No Windows printer name configured",
+        error: langCheck.error,
       };
       await reportResult(job, outcome);
       emitTimingSummary(log, trace.finish(outcome));
       return true;
     }
+
+    const queue = resolveJobWindowsQueue(job.windowsPrinterName);
+    if (!queue.ok) {
+      const outcome = {
+        status: "FAILED",
+        printedQty: 0,
+        error: queue.error,
+      };
+      await reportResult(job, outcome);
+      emitTimingSummary(log, trace.finish(outcome));
+      return true;
+    }
+    const printerName = queue.printerName;
+
+    const { health: defaultHealth, ms: preLeaseProbeMs } = await resolveLeaseHealthForPrinter(printerName);
+    trace.setPreLeaseProbeMs(preLeaseProbeMs);
+    if (!isLeaseEligiblePrinterStatus(defaultHealth?.status)) {
+      skipWindowsPrinterNames.add(printerName);
+      log(`Release lease ${job.jobNo} — printer ${defaultHealth?.status || "UNKNOWN"}`, {
+        event: "lease_released_unhealthy",
+      });
+      await releaseLease(job);
+      emitTimingSummary(
+        log,
+        trace.finish({
+          status: "RELEASED",
+          printedQty: 0,
+          error: `lease released — printer ${defaultHealth?.status || "UNKNOWN"}`,
+        })
+      );
+      return true;
+    }
+    skipWindowsPrinterNames.delete(printerName);
 
     return fifo.run(printerName, async () => {
       const { health: preSend, ms: preSendProbeMs, mode: preSendMode } =
@@ -448,6 +482,7 @@ export function createJobProcessor({
         `PRINT_DIAG jobId=${trace.jobId} event=pre_send_probe mode=${preSendMode} ms=${preSendProbeMs} status=${preSend?.status || "UNKNOWN"} queueLength=${preSend?.queueLength ?? ""}`
       );
       if (!isLeaseEligiblePrinterStatus(preSend?.status)) {
+        skipWindowsPrinterNames.add(printerName);
         log(`Release lease ${job.jobNo} — printer ${preSend?.status || "UNKNOWN"}`, {
           event: "lease_released_unhealthy",
         });
@@ -460,7 +495,7 @@ export function createJobProcessor({
             error: `lease released — printer ${preSend?.status || "UNKNOWN"}`,
           })
         );
-        return false;
+        return true;
       }
 
       await markPrinting(job);
@@ -487,7 +522,7 @@ export function createJobProcessor({
         const outcome = {
           status: "FAILED",
           printedQty: 0,
-          error: "Empty TSPL payload",
+          error: "Empty print payload",
         };
         await reportResult(job, outcome);
         emitTimingSummary(log, trace.finish(outcome));

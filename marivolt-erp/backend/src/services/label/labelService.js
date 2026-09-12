@@ -8,6 +8,23 @@ import {
   touchPrinterLastPrint,
 } from "./printerManager.js";
 import {
+  LABEL_PURPOSE_GRN,
+  LABEL_PURPOSE_GRN_PREPOST,
+  LABEL_PURPOSE_STOCK,
+  LABEL_PURPOSE_PACKING,
+  LABEL_PURPOSE_TEST,
+  labelRoutingError,
+  requirePrinterCode,
+} from "./labelPrinterProfile.js";
+import {
+  bindIdempotencyKeyToPrinter,
+  findIdempotentJob,
+  frozenDestinationFields,
+  loadAndAssertPrinter,
+  renderStandardLabelPayload,
+  renderTestLabelPayload,
+} from "./labelJobPayload.js";
+import {
   MARIVOLT_STANDARD_TEMPLATE_CODE,
   ensureMarivoltStandardTemplate,
   getStandardTemplate,
@@ -36,7 +53,6 @@ import GRN from "../../models/GRN.js";
 import PrintAgent from "../../models/PrintAgent.js";
 import LabelPrintJob from "../../models/LabelPrintJob.js";
 import { encodeBarcodeValue } from "./barcodeGenerator.js";
-import { buildJobTspl, buildTestLabelTspl } from "./tsplGenerator.js";
 import {
   resolveLabelCompanyBranding,
   resolveLabelTestTitle,
@@ -70,8 +86,9 @@ function throwLabelErr(message, statusCode, code, details) {
 }
 
 /**
- * PACKING reprints only: original printer if still eligible, else warehouse/company routing.
- * Explicit printerCode is validated (company, active, agent, warehouse) and never silently swapped.
+ * PACKING reprints only: original printer if still eligible.
+ * Explicit printerCode is validated and never silently swapped.
+ * If the original is unavailable, the caller must select a compatible printer — never auto-route to STORE.
  */
 async function resolveOfficialPackingReprintPrinter(req, parent, { printerCode } = {}) {
   const {
@@ -131,12 +148,10 @@ async function resolveOfficialPackingReprintPrinter(req, parent, { printerCode }
       originalWindowsPrinterName: original.windowsPrinterName || originalWindowsPrinterName,
     };
   }
-  const replacement = await resolvePrinterForJob(companyId, null, { warehouseCode: warehouse });
-  return {
-    printer: replacement,
-    originalUnavailable: true,
-    originalWindowsPrinterName: originalWindowsPrinterName || original?.windowsPrinterName || "",
-  };
+  throw labelRoutingError(
+    "The original packing printer is unavailable. Select a compatible printer. Automatic routing is disabled so this reprint cannot be sent to another laptop.",
+    "LABEL_PRINTER_REQUIRED"
+  );
 }
 
 export async function resolvePackingReprintTarget(req, jobId) {
@@ -413,10 +428,6 @@ export async function createJobsFromGrn(req, body = {}) {
   }
 
   const idempotencyKey = t(body.idempotencyKey).slice(0, 120) || null;
-  if (idempotencyKey) {
-    const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
-    if (existing) return existing;
-  }
 
   const grn = await GRN.findOne({ companyId, grnNo }).lean();
   if (!grn) {
@@ -438,9 +449,22 @@ export async function createJobsFromGrn(req, body = {}) {
     upper(grn.warehouseCode) ||
     upper((grn.items || []).find((it) => it.warehouse)?.warehouse) ||
     "";
+  requirePrinterCode(body.printerCode, LABEL_PURPOSE_GRN);
   const printer = await resolvePrinterForJob(companyId, body.printerCode, {
     warehouseCode: warehouseHint,
+    agentId: body.agentId,
+    purpose: LABEL_PURPOSE_GRN,
+    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
   });
+  const routed = await loadAndAssertPrinter(companyId, printer, {
+    purpose: LABEL_PURPOSE_GRN,
+    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
+    requireAgentId: body.agentId,
+  });
+  if (idempotencyKey) {
+    const existing = await findIdempotentJob(companyId, idempotencyKey, printer);
+    if (existing) return existing;
+  }
   const copies = Math.max(1, Number(body.copies) || settings.defaultCopies || 1);
 
   const selection = Array.isArray(body.lines) ? body.lines : null;
@@ -507,11 +531,20 @@ export async function createJobsFromGrn(req, body = {}) {
     );
 
   const { companyName } = await loadLabelCompanyBranding(companyId);
-  const tsplPayload = buildJobTspl(jobLines, {
+  const rendered = renderStandardLabelPayload(jobLines, {
     copies,
     companyName,
     barcodeMode: template?.barcodeMode || "ARTICLE",
+    language: routed.language,
   });
+  const dest = frozenDestinationFields(printer, {
+    language: routed.language,
+    layoutVersion: routed.layoutVersion,
+    widthMm: routed.widthMm,
+    heightMm: routed.heightMm,
+    dpi: routed.dpi,
+  });
+  const boundKey = bindIdempotencyKeyToPrinter(idempotencyKey, printer);
 
   let job;
   try {
@@ -525,24 +558,23 @@ export async function createJobsFromGrn(req, body = {}) {
       linkedGrnNo: grnNo,
       labelConfigFingerprint: fingerprint,
       warehouseCode: t(printer.warehouseCode),
-      printerConfigId: printer._id,
-      agentId: upper(printer.agentId),
-      windowsPrinterName: t(printer.windowsPrinterName),
+      ...dest,
       templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
       copies,
       requestedLabels,
       printedLabels: 0,
       remainingLabels: requestedLabels,
       lines: jobLines,
-      tsplPayload,
+      tsplPayload: rendered.tsplPayload,
+      payloadMode: rendered.payloadMode,
       status: "PENDING",
       createdByUserId: req.user?.id || req.user?._id || null,
       createdByName: t(req.user?.name || req.user?.email || ""),
-      idempotencyKey,
+      idempotencyKey: boundKey,
     });
   } catch (e) {
-    if (idempotencyKey && (e?.code === 11000 || String(e?.message || "").includes("duplicate"))) {
-      const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
+    if (boundKey && (e?.code === 11000 || String(e?.message || "").includes("duplicate"))) {
+      const existing = await findIdempotentJob(companyId, idempotencyKey, printer);
       if (existing) return existing;
     }
     throw e;
@@ -599,10 +631,6 @@ export async function createJobsFromGrnPrepost(req, body = {}) {
   }
 
   const idempotencyKey = t(body.idempotencyKey).slice(0, 120) || null;
-  if (idempotencyKey) {
-    const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
-    if (existing) return existing;
-  }
 
   const linesIn = Array.isArray(body.lines) ? body.lines : [];
   if (!linesIn.length) {
@@ -615,9 +643,22 @@ export async function createJobsFromGrnPrepost(req, body = {}) {
   await ensureMarivoltStandardTemplate();
   const template = await getStandardTemplate();
   const warehouseHint = upper(body.warehouseCode) || "";
+  requirePrinterCode(body.printerCode, LABEL_PURPOSE_GRN_PREPOST);
   const printer = await resolvePrinterForJob(companyId, body.printerCode, {
     warehouseCode: warehouseHint,
+    agentId: body.agentId,
+    purpose: LABEL_PURPOSE_GRN_PREPOST,
+    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
   });
+  const routed = await loadAndAssertPrinter(companyId, printer, {
+    purpose: LABEL_PURPOSE_GRN_PREPOST,
+    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
+    requireAgentId: body.agentId,
+  });
+  if (idempotencyKey) {
+    const existing = await findIdempotentJob(companyId, idempotencyKey, printer);
+    if (existing) return existing;
+  }
   const copies = Math.max(1, Number(body.copies) || settings.defaultCopies || 1);
   const poNo = t(body.poNo);
   const receivedDate = formatReceivedDate(body.receivedDate || new Date());
@@ -692,11 +733,20 @@ export async function createJobsFromGrnPrepost(req, body = {}) {
     );
 
   const { companyName } = await loadLabelCompanyBranding(companyId);
-  const tsplPayload = buildJobTspl(jobLines, {
+  const rendered = renderStandardLabelPayload(jobLines, {
     copies,
     companyName,
     barcodeMode: template?.barcodeMode || "ARTICLE",
+    language: routed.language,
   });
+  const dest = frozenDestinationFields(printer, {
+    language: routed.language,
+    layoutVersion: routed.layoutVersion,
+    widthMm: routed.widthMm,
+    heightMm: routed.heightMm,
+    dpi: routed.dpi,
+  });
+  const boundKey = bindIdempotencyKeyToPrinter(idempotencyKey, printer);
 
   let job;
   try {
@@ -710,24 +760,23 @@ export async function createJobsFromGrnPrepost(req, body = {}) {
       linkedGrnNo: "",
       labelConfigFingerprint: fingerprint,
       warehouseCode: t(printer.warehouseCode),
-      printerConfigId: printer._id,
-      agentId: upper(printer.agentId),
-      windowsPrinterName: t(printer.windowsPrinterName),
+      ...dest,
       templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
       copies,
       requestedLabels,
       printedLabels: 0,
       remainingLabels: requestedLabels,
       lines: jobLines,
-      tsplPayload,
+      tsplPayload: rendered.tsplPayload,
+      payloadMode: rendered.payloadMode,
       status: "PENDING",
       createdByUserId: req.user?.id || req.user?._id || null,
       createdByName: t(req.user?.name || req.user?.email || ""),
-      idempotencyKey,
+      idempotencyKey: boundKey,
     });
   } catch (e) {
-    if (idempotencyKey && (e?.code === 11000 || String(e?.message || "").includes("duplicate"))) {
-      const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
+    if (boundKey && (e?.code === 11000 || String(e?.message || "").includes("duplicate"))) {
+      const existing = await findIdempotentJob(companyId, idempotencyKey, printer);
       if (existing) return existing;
     }
     throw e;
@@ -1192,6 +1241,18 @@ export async function applyAgentHeartbeat(agent, body = {}, req = {}) {
   if (appVersion) agent.appVersion = appVersion;
   if (operatingSystem) agent.operatingSystem = operatingSystem;
   if (windowsVersion) agent.windowsVersion = windowsVersion;
+  if (body.capabilities && typeof body.capabilities === "object") {
+    const langs = Array.isArray(body.capabilities.languages)
+      ? body.capabilities.languages
+          .map((x) => String(x || "").trim().toUpperCase())
+          .filter((x) => x === "TSPL" || x === "ZPL")
+          .slice(0, 8)
+      : [];
+    agent.capabilities = {
+      languages: langs.length ? langs : ["TSPL"],
+      rawZpl: body.capabilities.rawZpl === true || langs.includes("ZPL"),
+    };
+  }
   if (Array.isArray(body.availablePrinters)) {
     agent.availablePrinters = normalizePrinterNames(body.availablePrinters);
   }
@@ -1240,38 +1301,47 @@ export async function createTestPrintJob(req, { agentId, printerCode } = {}) {
       throw err;
     }
   } else if (agentId) {
-    printer = await PrinterConfig.findOne({
-      companyId: req.companyId,
-      agentId: upper(agentId),
-      isActive: true,
-    }).sort({ isDefault: -1, code: 1 });
+    printer = await resolvePrinterForJob(req.companyId, null, {
+      agentId,
+      purpose: LABEL_PURPOSE_TEST,
+    }).catch(() => null);
+    if (!printer) {
+      printer = await PrinterConfig.findOne({
+        companyId: req.companyId,
+        agentId: upper(agentId),
+        isActive: true,
+      }).sort({ isDefault: -1, code: 1 });
+    }
     if (!printer) {
       const err = new Error("No active printer mapped to this agent");
       err.statusCode = 400;
       throw err;
     }
   } else {
-    printer = await resolvePrinterForJob(req.companyId, null);
+    printer = await resolvePrinterForJob(req.companyId, null, { purpose: LABEL_PURPOSE_TEST });
   }
-  const agent = await PrintAgent.findOne({ companyId: req.companyId, agentId: printer.agentId }).lean();
-  if (!agent || agent.isActive === false) {
-    const err = new Error("Assigned print agent is disabled");
-    err.statusCode = 400;
-    throw err;
-  }
-  if (!String(printer.windowsPrinterName || "").trim()) {
-    const err = new Error("Printer has no Windows printer name configured");
-    err.statusCode = 400;
-    throw err;
-  }
+  const routed = await loadAndAssertPrinter(req.companyId, printer, {
+    purpose: printer.supportedPurposes?.length ? LABEL_PURPOSE_TEST : undefined,
+  }).catch(async () => loadAndAssertPrinter(req.companyId, printer, {}));
+  const agent = routed.agent;
   const { companyName, testTitle } = await loadLabelCompanyBranding(req.companyId);
-  const tsplPayload = buildTestLabelTspl({
-    agentId: printer.agentId,
-    agentName: agent?.name || printer.agentId,
-    printerName: printer.displayName || printer.code,
-    windowsPrinterName: printer.windowsPrinterName,
-    connectionStatus: effectiveAgentStatus(agent || { isActive: true, status: "OFFLINE" }),
-    title: testTitle,
+  const rendered = renderTestLabelPayload(
+    {
+      agentId: printer.agentId,
+      agentName: agent?.name || printer.agentId,
+      printerName: printer.displayName || printer.code,
+      windowsPrinterName: printer.windowsPrinterName,
+      connectionStatus: effectiveAgentStatus(agent || { isActive: true, status: "OFFLINE" }),
+      title: testTitle,
+    },
+    { companyName, language: routed.language }
+  );
+  const dest = frozenDestinationFields(printer, {
+    language: routed.language,
+    layoutVersion: routed.layoutVersion,
+    widthMm: routed.widthMm,
+    heightMm: routed.heightMm,
+    dpi: routed.dpi,
   });
   const job = await LabelPrintJob.create({
     companyId: req.companyId,
@@ -1280,9 +1350,7 @@ export async function createTestPrintJob(req, { agentId, printerCode } = {}) {
     sourceId: null,
     sourceNo: "TEST",
     warehouseCode: printer.warehouseCode || "",
-    printerConfigId: printer._id,
-    agentId: upper(printer.agentId),
-    windowsPrinterName: printer.windowsPrinterName,
+    ...dest,
     templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
     copies: 1,
     requestedLabels: 1,
@@ -1298,7 +1366,8 @@ export async function createTestPrintJob(req, { agentId, printerCode } = {}) {
         barcodeValue: "TEST",
       },
     ],
-    tsplPayload,
+    tsplPayload: rendered.tsplPayload,
+    payloadMode: "SINGLE_RAW",
     status: "PENDING",
     createdByUserId: req.user?.id || null,
     createdByName: t(req.user?.name || ""),
@@ -1352,7 +1421,14 @@ export async function retryJob(req, jobId) {
   }
   const linesForPrint = scaleLinesToRemaining(job.lines, job.remainingLabels, job.copies);
   const { companyName } = await loadLabelCompanyBranding(req.companyId);
-  job.tsplPayload = buildJobTspl(linesForPrint, tsplOptsForJob(job, { copies: 1, companyName }));
+  const payloadMode = String(job.payloadMode || "SINGLE_RAW").toUpperCase();
+  if (payloadMode !== "TSPL_LABEL_BATCH" && payloadMode !== "RAW_FACE_BATCH") {
+    const rendered = renderStandardLabelPayload(linesForPrint, {
+      ...tsplOptsForJob(job, { copies: 1, companyName }),
+      language: job.language || "TSPL",
+    });
+    job.tsplPayload = rendered.tsplPayload;
+  }
   job.retryCount = (Number(job.retryCount) || 0) + 1;
   await requeueJob(job);
   if (upper(job.sourceType) === "PACKING") {
@@ -1599,6 +1675,15 @@ export async function reprintJob(req, jobId, body = {}) {
     parent.sourceType === "PACKING" ||
     parent.sourceType === "CUSTOM_PACKING" ||
     String(parent.templateCode || "").includes("PACKING");
+  const reprintPurpose = isAsnLabelJob(parent)
+    ? "ASN"
+    : isPackingSnapshot
+      ? LABEL_PURPOSE_PACKING
+      : upper(parent.sourceType) === "STOCK"
+        ? LABEL_PURPOSE_STOCK
+        : upper(parent.sourceType) === "GRN_PREPOST"
+          ? LABEL_PURPOSE_GRN_PREPOST
+          : LABEL_PURPOSE_GRN;
   let lines = parent.lines.map((ln) => ({ ...(ln.toObject?.() ?? ln) }));
   // Packing reprints always use the frozen parent snapshot — never caller-supplied live lines.
   if (!isAsnLabelJob(parent) && Array.isArray(body.lines) && body.lines.length && !isPackingSnapshot) {
@@ -1632,6 +1717,9 @@ export async function reprintJob(req, jobId, body = {}) {
   } else if (t(body.printerCode)) {
     printer = await resolvePrinterForJob(req.companyId, body.printerCode, {
       warehouseCode: upper(body.warehouseCode) || upper(parent.warehouseCode),
+      agentId: body.agentId,
+      purpose: reprintPurpose,
+      templateCode: parent.templateCode,
     });
   } else if (parent.printerConfigId) {
     printer = await PrinterConfig.findOne({
@@ -1641,10 +1729,20 @@ export async function reprintJob(req, jobId, body = {}) {
     }).lean();
   }
   if (!printer) {
-    printer = await resolvePrinterForJob(req.companyId, null, {
-      warehouseCode: upper(body.warehouseCode) || upper(parent.warehouseCode),
-    });
+    requirePrinterCode(body.printerCode, reprintPurpose);
   }
+  const routed = await loadAndAssertPrinter(req.companyId, printer, {
+    purpose: reprintPurpose,
+    templateCode: parent.templateCode,
+    requireAgentId: body.agentId,
+  });
+  const dest = frozenDestinationFields(printer, {
+    language: isPackingSnapshot ? "TSPL" : routed.language,
+    layoutVersion: routed.layoutVersion,
+    widthMm: isPackingQrLandscapeV1(parent.templateCode) ? 100 : routed.widthMm,
+    heightMm: isPackingQrLandscapeV1(parent.templateCode) ? 150 : routed.heightMm,
+    dpi: routed.dpi,
+  });
   const requestedLabels = isPackingSnapshot
     ? packingPhysicalLabelCount(parent, lines, copies)
     : lines.reduce((s, ln) => {
@@ -1682,7 +1780,12 @@ export async function reprintJob(req, jobId, body = {}) {
     }
     tsplPayload = "";
   } else {
-    tsplPayload = buildJobTspl(lines, tsplOptsForJob(parent, { copies, companyName }));
+    const rendered = renderStandardLabelPayload(lines, {
+      ...tsplOptsForJob(parent, { copies, companyName }),
+      language: routed.language,
+    });
+    tsplPayload = rendered.tsplPayload;
+    payloadMode = rendered.payloadMode;
   }
   let job;
   try {
@@ -1696,9 +1799,7 @@ export async function reprintJob(req, jobId, body = {}) {
       linkedGrnNo: parent.linkedGrnNo || "",
       labelConfigFingerprint: parent.labelConfigFingerprint || "",
       warehouseCode: printer.warehouseCode,
-      printerConfigId: printer._id,
-      agentId: upper(printer.agentId),
-      windowsPrinterName: printer.windowsPrinterName,
+      ...dest,
       templateCode: isPackingQrLandscapeV1(parent.templateCode)
         ? parent.templateCode
         : isPackingSnapshot
@@ -1787,6 +1888,14 @@ export async function createStockReprint(req, body = {}) {
   const reason = t(body.reason) || "Replacement";
   const printer = await resolvePrinterForJob(req.companyId, body.printerCode, {
     warehouseCode: upper(body.warehouseCode),
+    agentId: body.agentId,
+    purpose: LABEL_PURPOSE_STOCK,
+    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
+  });
+  const routed = await loadAndAssertPrinter(req.companyId, printer, {
+    purpose: LABEL_PURPOSE_STOCK,
+    templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
+    requireAgentId: body.agentId,
   });
   const line = {
     article,
@@ -1804,6 +1913,18 @@ export async function createStockReprint(req, body = {}) {
   };
   const requestedLabels = labelQty * copies;
   const { companyName } = await loadLabelCompanyBranding(req.companyId);
+  const rendered = renderStandardLabelPayload([line], {
+    copies,
+    companyName,
+    language: routed.language,
+  });
+  const dest = frozenDestinationFields(printer, {
+    language: routed.language,
+    layoutVersion: routed.layoutVersion,
+    widthMm: routed.widthMm,
+    heightMm: routed.heightMm,
+    dpi: routed.dpi,
+  });
   const job = await LabelPrintJob.create({
     companyId: req.companyId,
     jobNo: jobNo(),
@@ -1811,16 +1932,15 @@ export async function createStockReprint(req, body = {}) {
     sourceId: null,
     sourceNo: article,
     warehouseCode: printer.warehouseCode,
-    printerConfigId: printer._id,
-    agentId: upper(printer.agentId),
-    windowsPrinterName: printer.windowsPrinterName,
+    ...dest,
     templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
     copies,
     requestedLabels,
     printedLabels: 0,
     remainingLabels: requestedLabels,
     lines: [line],
-    tsplPayload: buildJobTspl([line], { copies, companyName }),
+    tsplPayload: rendered.tsplPayload,
+    payloadMode: rendered.payloadMode,
     status: "PENDING",
     isReprint: true,
     reprintReason: reason,

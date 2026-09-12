@@ -4,9 +4,52 @@ import PrintAgent from "../../models/PrintAgent.js";
 import LabelPrintJob from "../../models/LabelPrintJob.js";
 import { getLabelSettings } from "./labelSettingsService.js";
 import { pickBestPrinter, isAgentOnline } from "./labelRoutingHelpers.js";
+import {
+  LABEL_PURPOSES,
+  assertPrinterCompatible,
+  printerLanguage,
+} from "./labelPrinterProfile.js";
+import { LABEL_LANGUAGES, normalizeLabelLanguage } from "./labelLanguages.js";
 
 function upper(v) {
   return String(v || "").trim().toUpperCase();
+}
+
+function normalizePurposeList(raw) {
+  if (raw == null) return undefined;
+  if (!Array.isArray(raw)) {
+    const one = String(raw || "")
+      .trim()
+      .toUpperCase();
+    return one && LABEL_PURPOSES.includes(one) ? [one] : [];
+  }
+  const seen = new Set();
+  const out = [];
+  for (const item of raw) {
+    const p = String(item || "")
+      .trim()
+      .toUpperCase();
+    if (!LABEL_PURPOSES.includes(p) || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
+
+function normalizeTemplateCodeList(raw) {
+  if (raw == null) return undefined;
+  const list = Array.isArray(raw) ? raw : [raw];
+  const seen = new Set();
+  const out = [];
+  for (const item of list) {
+    const c = String(item || "")
+      .trim()
+      .toUpperCase();
+    if (!c || seen.has(c)) continue;
+    seen.add(c);
+    out.push(c);
+  }
+  return out;
 }
 
 function mapConnectionKind(body) {
@@ -118,6 +161,40 @@ export async function upsertPrinter(companyId, body = {}, createdBy = "") {
       : "WINDOWS_SPOOLER";
 
   const existing = await PrinterConfig.findOne({ companyId, code }).lean();
+  const language =
+    body.language != null
+      ? normalizeLabelLanguage(body.language)
+      : existing?.language
+        ? printerLanguage(existing)
+        : "TSPL";
+  if (!LABEL_LANGUAGES.includes(language)) {
+    const err = new Error("Printer language must be TSPL or ZPL");
+    err.statusCode = 400;
+    throw err;
+  }
+  const dpiRaw = body.dpi != null ? Number(body.dpi) : Number(existing?.dpi) || 203;
+  const dpi = Number.isFinite(dpiRaw) && dpiRaw > 0 ? Math.round(dpiRaw) : 203;
+  const widthMm =
+    body.widthMm != null
+      ? Math.max(0, Number(body.widthMm) || 0)
+      : existing?.widthMm != null
+        ? Number(existing.widthMm) || 0
+        : 0;
+  const heightMm =
+    body.heightMm != null
+      ? Math.max(0, Number(body.heightMm) || 0)
+      : existing?.heightMm != null
+        ? Number(existing.heightMm) || 0
+        : 0;
+  const purposes =
+    body.supportedPurposes !== undefined
+      ? normalizePurposeList(body.supportedPurposes)
+      : existing?.supportedPurposes;
+  const templates =
+    body.supportedTemplateCodes !== undefined
+      ? normalizeTemplateCodeList(body.supportedTemplateCodes)
+      : existing?.supportedTemplateCodes;
+
   try {
     const doc = await PrinterConfig.findOneAndUpdate(
       { companyId, code },
@@ -133,6 +210,12 @@ export async function upsertPrinter(companyId, body = {}, createdBy = "") {
           windowsPrinterName: windowsPrinterName.slice(0, 200),
           connectionKind,
           connectionType,
+          language,
+          dpi,
+          widthMm,
+          heightMm,
+          supportedPurposes: purposes,
+          supportedTemplateCodes: templates,
           isDefault: wantCompanyDefault,
           isWarehouseDefault: wantWarehouseDefault,
           isActive: body.isActive !== false,
@@ -202,83 +285,153 @@ export async function deletePrinter(companyId, idOrCode) {
   );
 }
 
+function compatibilityOpts(companyId, printer, agent, opts) {
+  return {
+    companyId,
+    purpose: opts.purpose,
+    templateCode: opts.templateCode,
+    language: opts.language,
+    widthMm: opts.widthMm,
+    heightMm: opts.heightMm,
+    agent,
+    requireAgentId: opts.agentId,
+  };
+}
+
+async function pickCompatible(companyId, rows, opts) {
+  if (!rows.length) return null;
+  const { agentMap, pendingMap } = await loadAgentAndPendingMaps(companyId, rows);
+  const compatible = [];
+  for (const printer of rows) {
+    const agent = agentMap[upper(printer.agentId)] || null;
+    try {
+      assertPrinterCompatible(printer, compatibilityOpts(companyId, printer, agent, opts));
+      compatible.push(printer);
+    } catch {
+      /* skip incompatible — never silent-swap at explicit resolve */
+    }
+  }
+  return selectRoutable(compatible, agentMap, pendingMap);
+}
+
+async function hopSameAgent(companyId, seed, opts) {
+  if (!seed?.agentId) return null;
+  const rows = await PrinterConfig.find({
+    companyId,
+    isActive: true,
+    agentId: upper(seed.agentId),
+  }).lean();
+  return pickCompatible(companyId, rows, opts);
+}
+
 /**
  * Enterprise print routing (company-scoped only).
  *
  * Order:
- * 1. Explicit printerCode
- * 2. Warehouse default
- * 3. Any active printer assigned to that warehouse (deterministic pick)
- * 4. Company default
- * 5. Settings LABEL_DEFAULT_PRINTER_CODE
- * 6. Legacy fallback among active printers (deterministic pick)
+ * 1. Explicit printerCode (validated; never swapped)
+ * 2. Explicit agentId — purpose-compatible printer on that agent only
+ * 3. Warehouse default — if incompatible, same-agent hop only
+ * 4. Any active printer assigned to that warehouse (deterministic pick among compatible)
+ * 5. Company default — if incompatible, same-agent hop only
+ * 6. Settings LABEL_DEFAULT_PRINTER_CODE
+ * 7. Legacy fallback among compatible printers (deterministic pick)
  *
- * Never crosses company boundaries. Skips disabled printers/agents and empty Windows names.
+ * Never crosses company boundaries. Never falls back to another laptop when an
+ * explicit printer/agent was requested. Skips disabled printers/agents.
  */
 export async function resolvePrinterForJob(companyId, printerCode, opts = {}) {
   const settings = await getLabelSettings(companyId);
   const code = upper(printerCode || "");
   const warehouseCode = upper(opts.warehouseCode || "");
-  const now = Date.now();
+  const requestedAgentId = upper(opts.agentId || "");
 
   const trySelect = async (filter) => {
     const rows = await PrinterConfig.find({ companyId, isActive: true, ...filter }).lean();
-    if (!rows.length) return null;
-    const { agentMap, pendingMap } = await loadAgentAndPendingMaps(companyId, rows);
-    return selectRoutable(rows, agentMap, pendingMap);
+    return pickCompatible(companyId, rows, opts);
   };
 
-  // 1. Explicit
   if (code) {
     const explicit = await PrinterConfig.findOne({ companyId, code, isActive: true }).lean();
     if (!explicit) {
       throw missingPrinterError(`Printer code ${code} not found or inactive`);
     }
-    if (!String(explicit.windowsPrinterName || "").trim()) {
-      throw missingPrinterError(`Printer ${code} has no Windows printer name configured`);
-    }
     const agent = await PrintAgent.findOne({ companyId, agentId: upper(explicit.agentId) }).lean();
-    if (!agent || agent.isActive === false) {
-      throw missingPrinterError(
-        `Printer ${code} is mapped to a disabled or missing agent (${explicit.agentId})`
-      );
-    }
+    assertPrinterCompatible(explicit, compatibilityOpts(companyId, explicit, agent, opts));
     return explicit;
   }
 
-  // 2. Warehouse default
-  if (warehouseCode) {
-    const whDefault = await trySelect({ warehouseCode, isWarehouseDefault: true });
-    if (whDefault) return whDefault;
+  if (requestedAgentId) {
+    const onAgent = await trySelect({ agentId: requestedAgentId });
+    if (onAgent) return onAgent;
+    throw missingPrinterError(
+      `No compatible printer on agent ${requestedAgentId} for ${opts.purpose || "this label"}`
+    );
   }
 
-  // 3. Any warehouse-assigned
+  if (warehouseCode) {
+    const rows = await PrinterConfig.find({
+      companyId,
+      isActive: true,
+      warehouseCode,
+      isWarehouseDefault: true,
+    }).lean();
+    if (rows.length) {
+      const compatible = await pickCompatible(companyId, rows, opts);
+      if (compatible) return compatible;
+      const hopped = await hopSameAgent(companyId, rows[0], opts);
+      if (hopped) return hopped;
+    }
+  }
+
   if (warehouseCode) {
     const anyWh = await trySelect({ warehouseCode });
     if (anyWh) return anyWh;
   }
 
-  // 4. Company default
   {
-    const companyDefault = await trySelect({ isDefault: true });
-    if (companyDefault) return companyDefault;
+    const defaults = await PrinterConfig.find({ companyId, isActive: true, isDefault: true }).lean();
+    if (defaults.length) {
+      const compatible = await pickCompatible(companyId, defaults, opts);
+      if (compatible) return compatible;
+      const hopped = await hopSameAgent(companyId, defaults[0], opts);
+      if (hopped) return hopped;
+    }
   }
 
-  // 5. Settings default code
   if (settings.defaultPrinterCode) {
     const fromSettings = await trySelect({ code: upper(settings.defaultPrinterCode) });
     if (fromSettings) return fromSettings;
+    const seed = await PrinterConfig.findOne({
+      companyId,
+      isActive: true,
+      code: upper(settings.defaultPrinterCode),
+    }).lean();
+    const hopped = await hopSameAgent(companyId, seed, opts);
+    if (hopped) return hopped;
   }
 
-  // 6. Legacy fallback
   const legacy = await trySelect({});
   if (legacy) return legacy;
 
   throw missingPrinterError(
     warehouseCode
-      ? `No routable printer for warehouse ${warehouseCode} (agent online preferred; check mappings/defaults)`
-      : "No routable printer configured (check agent status, Windows queue names, and defaults)"
+      ? `No compatible printer for warehouse ${warehouseCode} / ${opts.purpose || "this label"} (check mappings, language, and media)`
+      : `No compatible printer configured for ${opts.purpose || "this label"} (check agent, language, and media)`
   );
+}
+
+export async function resolvePrinterDestination(companyId, body = {}) {
+  const printer = await resolvePrinterForJob(companyId, body.printerCode, {
+    warehouseCode: body.warehouseCode,
+    agentId: body.agentId,
+    purpose: body.purpose,
+    templateCode: body.templateCode,
+    language: body.language,
+    widthMm: body.widthMm,
+    heightMm: body.heightMm,
+  });
+  const agent = await PrintAgent.findOne({ companyId, agentId: upper(printer.agentId) }).lean();
+  return { printer, agent };
 }
 
 export async function touchPrinterLastPrint(printerConfigId) {

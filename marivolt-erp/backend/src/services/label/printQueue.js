@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import LabelPrintJob from "../../models/LabelPrintJob.js";
+import { agentSupportsZpl } from "./labelLanguages.js";
 
 export const LEASE_TTL_MS = 60_000;
 
@@ -38,19 +39,57 @@ export async function reclaimExpiredLeases(companyId = null) {
   return result.modifiedCount || 0;
 }
 
+function blockedWindowsPrinterNames(agent, extra = []) {
+  const out = [];
+  const seen = new Set();
+  const add = (name) => {
+    const n = String(name || "").trim();
+    if (!n) return;
+    const key = n.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(n);
+  };
+  for (const row of agent?.printerStatus || []) {
+    const st = String(row?.status || "")
+      .trim()
+      .toUpperCase();
+    if (st && st !== "READY" && st !== "UNKNOWN") add(row.name);
+  }
+  for (const name of extra) add(name);
+  return out;
+}
+
 /**
  * Atomically lease next PENDING job for agent (DB-level race safe).
+ * Skips jobs whose frozen Windows queue is known-unhealthy so a down Rongta
+ * does not starve Zebra jobs on the same agent (never silent-swaps destination).
  */
-export async function leaseNextJob(agent) {
+export async function leaseNextJob(agent, opts = {}) {
   await reclaimExpiredLeases(agent.companyId);
   const now = new Date();
   const leaseToken = newLeaseToken();
   const leaseExpiresAt = new Date(now.getTime() + LEASE_TTL_MS);
+  const supportsZpl = agentSupportsZpl(agent);
+  const languageFilter = supportsZpl
+    ? {}
+    : {
+        $or: [
+          { language: { $exists: false } },
+          { language: null },
+          { language: "" },
+          { language: "TSPL" },
+        ],
+      };
+  const blocked = blockedWindowsPrinterNames(agent, opts.unhealthyPrinters || opts.skipWindowsPrinterNames || []);
+  const printerFilter = blocked.length ? { windowsPrinterName: { $nin: blocked } } : {};
   const job = await LabelPrintJob.findOneAndUpdate(
     {
       companyId: agent.companyId,
       agentId: String(agent.agentId).toUpperCase(),
       status: "PENDING",
+      ...languageFilter,
+      ...printerFilter,
     },
     {
       $set: {

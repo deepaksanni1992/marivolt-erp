@@ -67,6 +67,11 @@ export default function LabelSettingsPanel() {
     warehouseCode: "MAIN",
     branchName: "",
     connectionKind: "USB",
+    language: "TSPL",
+    dpi: 203,
+    widthMm: 0,
+    heightMm: 0,
+    supportedPurposesText: "",
     isDefault: false,
     isWarehouseDefault: true,
     remarks: "",
@@ -614,6 +619,56 @@ export default function LabelSettingsPanel() {
             </datalist>
           </label>
           <label className="block text-xs">
+            Language
+            <select
+              className="mt-0.5 w-full rounded border px-2 py-1"
+              value={printerForm.language || "TSPL"}
+              onChange={(e) => setPrinterForm({ ...printerForm, language: e.target.value })}
+            >
+              <option value="TSPL">TSPL (Rongta)</option>
+              <option value="ZPL">ZPL (Zebra)</option>
+            </select>
+          </label>
+          <label className="block text-xs">
+            DPI
+            <input
+              className="mt-0.5 w-full rounded border px-2 py-1"
+              type="number"
+              min="1"
+              value={printerForm.dpi}
+              onChange={(e) => setPrinterForm({ ...printerForm, dpi: Number(e.target.value) || 203 })}
+            />
+          </label>
+          <label className="block text-xs">
+            Media width mm (0 = unrestricted)
+            <input
+              className="mt-0.5 w-full rounded border px-2 py-1"
+              type="number"
+              min="0"
+              value={printerForm.widthMm}
+              onChange={(e) => setPrinterForm({ ...printerForm, widthMm: Number(e.target.value) || 0 })}
+            />
+          </label>
+          <label className="block text-xs">
+            Media height mm (0 = unrestricted)
+            <input
+              className="mt-0.5 w-full rounded border px-2 py-1"
+              type="number"
+              min="0"
+              value={printerForm.heightMm}
+              onChange={(e) => setPrinterForm({ ...printerForm, heightMm: Number(e.target.value) || 0 })}
+            />
+          </label>
+          <label className="block text-xs md:col-span-2">
+            Supported purposes (comma-separated; empty = all). GRN, GRN_PREPOST, PACKING, CUSTOM_PACKING, ASN, STOCK, MANUAL, TEST
+            <input
+              className="mt-0.5 w-full rounded border px-2 py-1"
+              value={printerForm.supportedPurposesText}
+              onChange={(e) => setPrinterForm({ ...printerForm, supportedPurposesText: e.target.value })}
+              placeholder="Leave empty for STORE / legacy"
+            />
+          </label>
+          <label className="block text-xs">
             Connection
             <select
               className="mt-0.5 w-full rounded border px-2 py-1"
@@ -667,11 +722,32 @@ export default function LabelSettingsPanel() {
             />
             Company default
           </label>
+          <p className="text-[11px] text-amber-800 sm:col-span-2">
+            Do not mark the Deepak Zebra as company or warehouse default. That would reroute STORE
+            laptop jobs. Leave STORE printers unrestricted (empty purposes, 0 mm media). Empty
+            supported purposes means unrestricted — never clear Zebra purposes to disable it.
+            Deactivate the Zebra profile (`isActive: false`) instead. Restoring an unrestricted
+            Deepak Rongta profile does not change the physical roll; incoming 100×50 printing would
+            need matching stock reloaded.
+          </p>
         </div>
         <button
           type="button"
           className="mt-3 rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white"
-          onClick={() => printerMut.mutate(printerForm)}
+          onClick={() => {
+            const purposes = String(printerForm.supportedPurposesText || "")
+              .split(/[\s,]+/)
+              .map((s) => s.trim().toUpperCase())
+              .filter(Boolean);
+            printerMut.mutate({
+              ...printerForm,
+              supportedPurposes: purposes,
+              language: printerForm.language || "TSPL",
+              dpi: Number(printerForm.dpi) || 203,
+              widthMm: Number(printerForm.widthMm) || 0,
+              heightMm: Number(printerForm.heightMm) || 0,
+            });
+          }}
         >
           Save printer
         </button>
@@ -706,7 +782,8 @@ export default function LabelSettingsPanel() {
                       {p.code} · {p.windowsPrinterName}
                     </div>
                     <div className="text-[10px] text-slate-500">
-                      {p.connectionKind || "USB"}
+                      {p.connectionKind || "USB"} · {p.language || "TSPL"}
+                      {p.widthMm && p.heightMm ? ` · ${p.widthMm}×${p.heightMm} mm` : ""}
                       {p.isDefault ? " · company default" : ""}
                       {p.isWarehouseDefault ? " · warehouse default" : ""}
                     </div>
@@ -756,6 +833,13 @@ export default function LabelSettingsPanel() {
                             warehouseCode: p.warehouseCode || "",
                             branchName: p.branchName || "",
                             connectionKind: p.connectionKind || "USB",
+                            language: p.language || "TSPL",
+                            dpi: p.dpi || 203,
+                            widthMm: p.widthMm || 0,
+                            heightMm: p.heightMm || 0,
+                            supportedPurposesText: Array.isArray(p.supportedPurposes)
+                              ? p.supportedPurposes.join(", ")
+                              : "",
                             isDefault: Boolean(p.isDefault),
                             isWarehouseDefault: Boolean(p.isWarehouseDefault),
                             remarks: p.remarks || "",

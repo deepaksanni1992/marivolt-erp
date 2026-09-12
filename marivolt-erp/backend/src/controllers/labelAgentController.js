@@ -41,7 +41,7 @@ export async function lease(req, res) {
   try {
     const agent = req.printAgent;
     await reclaimExpiredLeases(agent.companyId);
-    const job = await leaseNextJob(agent);
+    const job = await leaseNextJob(agent, req.body || {});
     if (!job) {
       return res.json({ job: null });
     }
@@ -65,6 +65,12 @@ export async function lease(req, res) {
         leaseExpiresAt: job.leaseExpiresAt,
         windowsPrinterName: job.windowsPrinterName,
         templateCode: job.templateCode,
+        language: job.language || "TSPL",
+        layoutVersion: job.layoutVersion || 1,
+        widthMm: job.widthMm || 100,
+        heightMm: job.heightMm || 50,
+        dpi: job.dpi || 203,
+        printerCode: job.printerCode || "",
         requestedLabels: job.remainingLabels,
         payloadMode: job.payloadMode || "SINGLE_RAW",
         tsplPayload:

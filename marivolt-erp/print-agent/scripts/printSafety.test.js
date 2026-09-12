@@ -42,6 +42,7 @@ function ruJob(n, printer = "RP4xx Series 200DPI TSPL") {
     leaseToken: `tok-${n}`,
     windowsPrinterName: printer,
     requestedLabels: 1,
+    language: "TSPL",
     tsplPayload: `SIZE 100 mm,50 mm\r\nTEXT 10,10,\"3\",0,1,1,\"${ru}\"\r\nPRINT 1,1\r\n`,
   };
 }
@@ -58,7 +59,13 @@ function makeHarness({ health, jobs, printRaw } = {}) {
     drainTimeoutMs: 200,
     drainPollMs: 0,
     sleepFn: async () => {},
-    getPrinterHealth: async (name) => health(name),
+    getPrinterHealth: async (opts = {}) => {
+      const name =
+        typeof opts === "string"
+          ? opts
+          : opts.printerName || opts.name || "";
+      return health(name, opts);
+    },
     leaseNext: async () => {
       const job = queue.shift() || null;
       if (job) leased.push(job.jobNo);
@@ -240,9 +247,10 @@ await run("DISCONNECTED: 0 WritePrinter, 0 COMPLETED, jobs stay pending", async 
   });
   await drainAll(h.processor);
   assert.strictEqual(h.writes.length, 0);
-  assert.strictEqual(h.leased.length, 0);
+  assert.ok(h.leased.length >= 1);
+  assert.ok(h.releases.length >= 1);
   assert.strictEqual(h.results.length, 0);
-  assert.strictEqual(h.remaining.length, 5);
+  assert.ok(!h.results.some((r) => r.status === "COMPLETED"));
 });
 
 await run("OFFLINE: 0 WritePrinter, 0 COMPLETED, jobs stay pending", async () => {
@@ -253,34 +261,45 @@ await run("OFFLINE: 0 WritePrinter, 0 COMPLETED, jobs stay pending", async () =>
   });
   await drainAll(h.processor);
   assert.strictEqual(h.writes.length, 0);
-  assert.strictEqual(h.leased.length, 0);
+  assert.ok(h.leased.length >= 1);
+  assert.ok(h.releases.length >= 1);
   assert.strictEqual(h.results.length, 0);
-  assert.strictEqual(h.remaining.length, 5);
 });
 
 await run("READY then DISCONNECT before drain → UNCERTAIN, no next send", async () => {
   const jobs = [3, 4].map((n) => ruJob(n));
-  let writes = 0;
-  let polls = 0;
+  let n = 0;
   const h = makeHarness({
     jobs,
     health: () => {
-      if (writes === 0) return { status: "READY", queueLength: 0, name: "RP4xx Series 200DPI TSPL" };
-      polls += 1;
-      if (polls === 1) return { status: "READY", queueLength: 1, name: "RP4xx Series 200DPI TSPL" };
+      n += 1;
+      if (n <= 2) return { status: "READY", queueLength: 0, name: "RP4xx Series 200DPI TSPL" };
+      if (n === 3) return { status: "READY", queueLength: 1, name: "RP4xx Series 200DPI TSPL" };
       return { status: "DISCONNECTED", queueLength: 1, name: "RP4xx Series 200DPI TSPL" };
     },
-    printRaw: async () => {
-      writes += 1;
-      return { ok: true };
-    },
+    printRaw: async () => ({ ok: true }),
   });
   await h.processor.processOne();
   await h.processor.processOne();
   assert.strictEqual(h.writes.length, 1);
   assert.strictEqual(h.results[0].status, "UNCERTAIN");
   assert.ok(!h.results.some((r) => r.status === "COMPLETED"));
-  assert.strictEqual(h.remaining.length, 1);
+});
+
+await run("Down Rongta does not starve Zebra on the same agent", async () => {
+  const rongta = "RP4xx Series 200DPI TSPL";
+  const zebra = "ZDesigner ZD220-203dpi ZPL";
+  const h = makeHarness({
+    jobs: [ruJob(1, rongta), ruJob(2, zebra)],
+    health: (name) =>
+      String(name || "").includes("ZDesigner")
+        ? { status: "READY", queueLength: 0, name: zebra }
+        : { status: "DISCONNECTED", queueLength: 0, name: rongta },
+  });
+  await drainAll(h.processor);
+  assert.strictEqual(h.writes.length, 1);
+  assert.strictEqual(h.writes[0].printerName, zebra);
+  assert.ok(h.releases.includes("LBL-RU-1"));
 });
 
 await run("READY + drain → COMPLETED printed=1", async () => {

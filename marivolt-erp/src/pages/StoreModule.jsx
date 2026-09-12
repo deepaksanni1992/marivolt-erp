@@ -22,6 +22,7 @@ import AsnReceivingDraftCustomsReview from "../components/store/AsnReceivingDraf
 import LabelQueuePanel from "../components/store/LabelQueuePanel.jsx";
 import PostGrnLabelDecisionDialog from "../components/store/PostGrnLabelDecisionDialog.jsx";
 import GrnLabelPreviewModal from "../components/store/GrnLabelPreviewModal.jsx";
+import LabelPrintDestinationBanner from "../components/store/LabelPrintDestinationBanner.jsx";
 import PackingLabelsModal from "../components/store/PackingLabelsModal.jsx";
 import PackingLabelReprintModal, {
   PackingLabelsToolbarButton,
@@ -59,6 +60,12 @@ import {
   syncLabelFieldsFromQtyPerLabel,
   validateInitialLabelLines,
 } from "../lib/labelPrinting.js";
+import {
+  describePrinterDestination,
+  filterPrintersForPurpose,
+  groupPrintersByAgent,
+  LABEL_PURPOSE_GRN,
+} from "../lib/labelPrinterRouting.js";
 import { notify, confirmDialog } from "../lib/notifications.js";
 import ArticleStockConversionPanel from "../components/store/ArticleStockConversionPanel.jsx";
 import LoadingButton from "../components/erp/LoadingButton.jsx";
@@ -822,6 +829,19 @@ export default function StoreModule() {
     queryFn: () => apiGet("/labels/printers"),
     staleTime: 60_000,
   });
+  const grnPrinters = useMemo(
+    () => filterPrintersForPurpose(labelPrintersData?.items || [], LABEL_PURPOSE_GRN),
+    [labelPrintersData]
+  );
+  const grnPrinterGroups = useMemo(() => groupPrintersByAgent(grnPrinters), [grnPrinters]);
+  const selectedGrnPrinter = useMemo(
+    () => (labelPrintersData?.items || []).find((p) => p.code === labelPrinterCode) || null,
+    [labelPrintersData, labelPrinterCode]
+  );
+  const grnDestination = useMemo(
+    () => describePrinterDestination(selectedGrnPrinter, { purpose: LABEL_PURPOSE_GRN, fallbackSize: "100×50 mm" }),
+    [selectedGrnPrinter]
+  );
 
   const postGrnMut = useMutation({
     mutationFn: (grnNo) => apiPost(`/grn/${encodeURIComponent(grnNo)}/post`, {}),
@@ -2633,11 +2653,19 @@ export default function StoreModule() {
                       value={labelPrinterCode}
                       onChange={(e) => setLabelPrinterCode(e.target.value)}
                     >
-                      <option value="">Default</option>
-                      {(labelPrintersData?.items || []).map((p) => (
-                        <option key={p._id} value={p.code}>
-                          {p.code} — {p.windowsPrinterName}
-                        </option>
+                      <option value="">Select printer</option>
+                      {grnPrinterGroups.map((g) => (
+                        <optgroup
+                          key={g.agentId}
+                          label={`${g.computerName || g.agentName || g.agentId} (${g.agentId})`}
+                        >
+                          {g.printers.map((p) => (
+                            <option key={p._id} value={p.code}>
+                              {p.code} — {p.windowsPrinterName} ({p.language || "TSPL"}{" "}
+                              {p.widthMm && p.heightMm ? `${p.widthMm}×${p.heightMm}` : "100×50"})
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
                   </label>
@@ -2651,6 +2679,23 @@ export default function StoreModule() {
                       onChange={(e) => setLabelCopies(Math.max(1, Number(e.target.value) || 1))}
                     />
                   </label>
+                  {labelSettingsData && !labelSettingsData.enabled && (
+                    <span className="text-amber-700">Label printing disabled in settings</span>
+                  )}
+                  <div className="w-full">
+                    <LabelPrintDestinationBanner
+                      printerLabel={grnDestination.printerLabel}
+                      agentLabel={grnDestination.agentLabel}
+                      sizeLabel={grnDestination.sizeLabel}
+                      language={grnDestination.language}
+                      countLabel={`${labelCopies || 1} copy set`}
+                      warning={
+                        !labelPrinterCode
+                          ? "Select Deepak Laptop Zebra for incoming 100×50 GRN labels. Automatic routing is disabled so this job cannot be sent to STORE."
+                          : ""
+                      }
+                    />
+                  </div>
                   {labelSettingsData && !labelSettingsData.enabled && (
                     <span className="text-amber-700">Label printing disabled in settings</span>
                   )}
@@ -2669,7 +2714,8 @@ export default function StoreModule() {
                       Boolean(postGrnLabelDecision) ||
                       grnTotalPending <= 0 ||
                       !grnPoSnapshot?.header?._id ||
-                      labelSettingsData?.enabled === false
+                      labelSettingsData?.enabled === false ||
+                      !labelPrinterCode
                     }
                     onClick={() => {
                       setGrnUiErr("");
@@ -2793,7 +2839,8 @@ export default function StoreModule() {
                       Boolean(postGrnLabelDecision) ||
                       grnTotalPending <= 0 ||
                       !grnPoSnapshot?.header?._id ||
-                      labelSettingsData?.enabled === false
+                      labelSettingsData?.enabled === false ||
+                      !labelPrinterCode
                     }
                     onClick={async () => {
                       setGrnUiErr("");
@@ -5923,6 +5970,7 @@ export default function StoreModule() {
         totalLabels={grnLabelPreview?.totalLabels || 0}
         copies={labelCopies}
         isPrinting={queueGrnPrepostLabelsMut.isPending}
+        destination={grnDestination}
         staleWarning={
           grnStaleLabelWarnings.length
             ? grnStaleLabelWarnings.map((w) => w.message).join(" ")
@@ -5959,6 +6007,10 @@ export default function StoreModule() {
         }}
         onPrint={async () => {
           if (!grnLabelPreview?.lines?.length || queueGrnPrepostLabelsMut.isPending) return;
+          if (!labelPrinterCode) {
+            notify.warning("Select a printer before queuing GRN labels.");
+            return;
+          }
           const total = grnLabelPreview.totalLabels || 0;
           if (total >= GRN_LABEL_LARGE_PRINT_CONFIRM_AT) {
             const okLarge = await confirmDialog({

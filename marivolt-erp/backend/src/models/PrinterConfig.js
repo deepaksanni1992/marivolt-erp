@@ -42,6 +42,26 @@ const printerConfigSchema = new mongoose.Schema(
     isWarehouseDefault: { type: Boolean, default: false },
     isActive: { type: Boolean, default: true, index: true },
     remarks: { type: String, default: "", trim: true },
+    /**
+     * Command language for RAW payloads. Missing/legacy documents are TSPL.
+     */
+    language: {
+      type: String,
+      enum: ["TSPL", "ZPL"],
+      default: "TSPL",
+      trim: true,
+      uppercase: true,
+    },
+    dpi: { type: Number, default: 203, min: 1 },
+    /** Physical media. 0/unset = unrestricted (legacy STORE printers). */
+    widthMm: { type: Number, default: 0, min: 0 },
+    heightMm: { type: Number, default: 0, min: 0 },
+    /**
+     * Empty = all label purposes (legacy). Restricts auto-routing and overrides.
+     */
+    supportedPurposes: { type: [String], default: undefined },
+    /** Empty = all templates compatible with language/media. */
+    supportedTemplateCodes: { type: [String], default: undefined },
     lastPrintAt: { type: Date, default: null },
     createdBy: { type: String, default: "" },
   },

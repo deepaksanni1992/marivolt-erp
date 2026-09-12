@@ -8,6 +8,13 @@ import LabelPrintJob from "../../models/LabelPrintJob.js";
 import { parseExcelBufferToRows, rowGet } from "../../utils/excelParser.js";
 import { getLabelSettings } from "./labelSettingsService.js";
 import { resolvePrinterForJob } from "./printerManager.js";
+import { LABEL_PURPOSE_CUSTOM_PACKING, requirePrinterCode } from "./labelPrinterProfile.js";
+import {
+  bindIdempotencyKeyToPrinter,
+  findIdempotentJob,
+  frozenDestinationFields,
+  loadAndAssertPrinter,
+} from "./labelJobPayload.js";
 import {
   PACKING_STANDARD_TEMPLATE_CODE,
   ensurePackingStandardTemplate,
@@ -711,18 +718,28 @@ export async function createJobsFromCustomPacking(req, body = {}) {
   }
 
   const fingerprint = buildCustomPackingFingerprint(header, lines);
-  const idempotencyKey = buildCustomPackingRowIdempotencyKey(header, lines[0]);
+  const printer = await resolvePrinterForJob(companyId, requirePrinterCode(body.printerCode, LABEL_PURPOSE_CUSTOM_PACKING), {
+    warehouseCode: upper(body.warehouseCode) || undefined,
+    agentId: body.agentId,
+    purpose: LABEL_PURPOSE_CUSTOM_PACKING,
+    templateCode: PACKING_STANDARD_TEMPLATE_CODE,
+  });
+  const routed = await loadAndAssertPrinter(companyId, printer, {
+    purpose: LABEL_PURPOSE_CUSTOM_PACKING,
+    templateCode: PACKING_STANDARD_TEMPLATE_CODE,
+    requireAgentId: body.agentId,
+  });
+  const idempotencyKey = bindIdempotencyKeyToPrinter(
+    buildCustomPackingRowIdempotencyKey(header, lines[0]),
+    printer
+  );
 
   if (idempotencyKey) {
-    const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
+    const existing = await findIdempotentJob(companyId, idempotencyKey, printer);
     if (existing) return existing;
   }
 
   await ensurePackingStandardTemplate();
-  const printer = await resolvePrinterForJob(companyId, body.printerCode, {
-    warehouseCode: upper(body.warehouseCode) || undefined,
-  });
-
   const requestedLabels = lines.reduce((s, ln) => s + Math.max(1, Number(ln.lineCopies) || 1), 0);
   if (requestedLabels > settings.maxPerJob) {
     throw err(
@@ -780,9 +797,13 @@ export async function createJobsFromCustomPacking(req, body = {}) {
       sourceId: null,
       sourceNo: "CUSTOM",
       warehouseCode: t(printer.warehouseCode),
-      printerConfigId: printer._id,
-      agentId: upper(printer.agentId),
-      windowsPrinterName: t(printer.windowsPrinterName),
+      ...frozenDestinationFields(printer, {
+        language: routed.language,
+        layoutVersion: 1,
+        widthMm: 100,
+        heightMm: 50,
+        dpi: routed.dpi,
+      }),
       templateCode: PACKING_STANDARD_TEMPLATE_CODE,
       copies: 1,
       requestedLabels,
@@ -805,7 +826,7 @@ export async function createJobsFromCustomPacking(req, body = {}) {
     });
   } catch (e) {
     if (idempotencyKey && (e?.code === 11000 || String(e?.message || "").includes("duplicate"))) {
-      const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
+      const existing = await findIdempotentJob(companyId, idempotencyKey, printer);
       if (existing) return existing;
     }
     throw e;

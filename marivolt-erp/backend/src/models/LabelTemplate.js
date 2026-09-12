@@ -24,7 +24,7 @@ const labelTemplateSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     widthMm: { type: Number, default: LABEL_WIDTH_MM },
     heightMm: { type: Number, default: LABEL_HEIGHT_MM },
-    language: { type: String, enum: ["TSPL"], default: "TSPL" },
+    language: { type: String, enum: ["TSPL", "ZPL"], default: "TSPL" },
     layoutVersion: { type: Number, default: 1 },
     barcodeMode: {
       type: String,

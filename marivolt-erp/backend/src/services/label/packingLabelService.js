@@ -12,6 +12,16 @@ import LabelPrintJob from "../../models/LabelPrintJob.js";
 import { getLabelSettings } from "./labelSettingsService.js";
 import { resolvePrinterForJob } from "./printerManager.js";
 import {
+  LABEL_PURPOSE_PACKING,
+  requirePrinterCode,
+} from "./labelPrinterProfile.js";
+import {
+  bindIdempotencyKeyToPrinter,
+  findIdempotentJob,
+  frozenDestinationFields,
+  loadAndAssertPrinter,
+} from "./labelJobPayload.js";
+import {
   PACKING_STANDARD_TEMPLATE_CODE,
   ensurePackingStandardTemplate,
 } from "./labelTemplateService.js";
@@ -658,8 +668,18 @@ export async function createJobsFromPacking(req, body = {}) {
     ? buildPackingQrLandscapeSelectionFingerprint(resolved.lines)
     : buildPackingSelectionFingerprint(resolved.lines);
 
-  // Official / pre print: selection-aware server hash. REPRINT always new.
-  // Do not trust/truncate long client keys — hash the canonical fingerprint server-side.
+  const printer = await resolvePrinterForJob(companyId, requirePrinterCode(body.printerCode, LABEL_PURPOSE_PACKING), {
+    warehouseCode: resolved.warehouse,
+    agentId: body.agentId,
+    purpose: LABEL_PURPOSE_PACKING,
+    templateCode,
+  });
+  const routed = await loadAndAssertPrinter(companyId, printer, {
+    purpose: LABEL_PURPOSE_PACKING,
+    templateCode,
+    requireAgentId: body.agentId,
+  });
+
   let idempotencyKey = null;
   if (mode === "REPRINT") {
     idempotencyKey = null;
@@ -671,9 +691,10 @@ export async function createJobsFromPacking(req, body = {}) {
       idempotencyKey = `packing:${t(resolved.sourceNo)}:pre:${hash}`;
     }
   }
+  idempotencyKey = bindIdempotencyKeyToPrinter(idempotencyKey, printer);
 
   if (idempotencyKey) {
-    const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
+    const existing = await findIdempotentJob(companyId, idempotencyKey, printer);
     if (existing) {
       const resolution = resolvePackingLabelIdempotencyAction(existing.status);
       if (resolution.action === "reuse" || resolution.action === "dedupe") {
@@ -682,7 +703,6 @@ export async function createJobsFromPacking(req, body = {}) {
       if (resolution.action === "block") {
         throw err(resolution.message, 409, resolution.code);
       }
-      // CANCELLED / FAILED — release stale active claim so a new job can be inserted.
       await LabelPrintJob.updateOne(
         { _id: existing._id, companyId },
         { $unset: { idempotencyKey: "" } }
@@ -698,13 +718,12 @@ export async function createJobsFromPacking(req, body = {}) {
       fingerprint,
       idempotencyKey,
       descriptionTruncated,
+      printer,
+      routed,
     });
   }
 
   await ensurePackingStandardTemplate();
-  const printer = await resolvePrinterForJob(companyId, body.printerCode, {
-    warehouseCode: resolved.warehouse,
-  });
 
   const requestedLabels = resolved.lines.reduce(
     (s, ln) => s + Math.max(1, Number(ln.lineCopies) || 1),
@@ -764,9 +783,13 @@ export async function createJobsFromPacking(req, body = {}) {
       sourceId: resolved.sourceId,
       sourceNo: upper(resolved.sourceNo),
       warehouseCode: t(printer.warehouseCode),
-      printerConfigId: printer._id,
-      agentId: upper(printer.agentId),
-      windowsPrinterName: t(printer.windowsPrinterName),
+      ...frozenDestinationFields(printer, {
+        language: routed.language,
+        layoutVersion: 1,
+        widthMm: 100,
+        heightMm: 50,
+        dpi: routed.dpi,
+      }),
       templateCode: PACKING_STANDARD_TEMPLATE_CODE,
       copies: 1,
       requestedLabels,
@@ -790,7 +813,7 @@ export async function createJobsFromPacking(req, body = {}) {
     });
   } catch (e) {
     if (idempotencyKey && (e?.code === 11000 || String(e?.message || "").includes("duplicate"))) {
-      const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
+      const existing = await findIdempotentJob(companyId, idempotencyKey, printer);
       if (existing) {
         if (isActivePackingLabelQueueStatus(existing.status)) {
           return buildPackingLabelEnqueueResponse(existing, { created: false, reused: true });
@@ -828,7 +851,7 @@ export async function createJobsFromPacking(req, body = {}) {
 async function createLandscapePackingLabelJobs(
   req,
   body,
-  { settings, mode, resolved, fingerprint, idempotencyKey, descriptionTruncated }
+  { settings, mode, resolved, fingerprint, idempotencyKey, descriptionTruncated, printer, routed }
 ) {
   assertLandscapeFromPackingFirstPrintOnly(
     { ...body, mode, packingMode: body?.packingMode || mode },
@@ -837,9 +860,6 @@ async function createLandscapePackingLabelJobs(
   const companyId = req.companyId;
   const activeKey = await requireActivePackingLabelSigningKey(companyId);
   assertPackingLabelSigningSecretReady(activeKey);
-  const printer = await resolvePrinterForJob(companyId, body.printerCode, {
-    warehouseCode: resolved.warehouse,
-  });
 
   const minted = await mintPackingLabelUnits({
     req,
@@ -936,9 +956,13 @@ async function createLandscapePackingLabelJobs(
       sourceId: resolved.sourceId,
       sourceNo: upper(resolved.sourceNo),
       warehouseCode: t(printer.warehouseCode),
-      printerConfigId: printer._id,
-      agentId: upper(printer.agentId),
-      windowsPrinterName: t(printer.windowsPrinterName),
+      ...frozenDestinationFields(printer, {
+        language: routed?.language || "TSPL",
+        layoutVersion: 1,
+        widthMm: 100,
+        heightMm: 150,
+        dpi: routed?.dpi || 203,
+      }),
       templateCode: PACKING_QR_LANDSCAPE_V1_CODE,
       copies: 1,
       requestedLabels,
@@ -962,7 +986,7 @@ async function createLandscapePackingLabelJobs(
     });
   } catch (e) {
     if (idempotencyKey && (e?.code === 11000 || String(e?.message || "").includes("duplicate"))) {
-      const existing = await LabelPrintJob.findOne({ companyId, idempotencyKey });
+      const existing = await findIdempotentJob(companyId, idempotencyKey, printer);
       if (existing) {
         if (isActivePackingLabelQueueStatus(existing.status)) {
           return buildPackingLabelEnqueueResponse(existing, { created: false, reused: true });

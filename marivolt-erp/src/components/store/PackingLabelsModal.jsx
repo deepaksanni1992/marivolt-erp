@@ -16,6 +16,13 @@ import {
 } from "../../lib/labelPrinting.js";
 import { PackingLabelPreviewFace } from "./PackingLabelPreviewFace.jsx";
 import { PackingQrLandscapePreview } from "./PackingQrLandscapePreview.jsx";
+import LabelPrintDestinationBanner from "./LabelPrintDestinationBanner.jsx";
+import {
+  describePrinterDestination,
+  filterPrintersForPurpose,
+  groupPrintersByAgent,
+  LABEL_PURPOSE_PACKING,
+} from "../../lib/labelPrinterRouting.js";
 
 /**
  * Packing Labels — multi-select + manual qty + preview + print.
@@ -48,6 +55,23 @@ function PackingLabelsForm({
   const [previewMeta, setPreviewMeta] = useState(null);
   const titleNo = packing?.packingNo || allocation?.allocationNo || "";
   const isLandscapePreview = templateCode === PACKING_QR_LANDSCAPE_V1_TEMPLATE_CODE;
+  const packingPrinters = useMemo(
+    () => filterPrintersForPurpose(printers, LABEL_PURPOSE_PACKING),
+    [printers]
+  );
+  const packingPrinterGroups = useMemo(() => groupPrintersByAgent(packingPrinters), [packingPrinters]);
+  const selectedPackingPrinter = useMemo(
+    () => packingPrinters.find((p) => p.code === selectedPrinter) || null,
+    [packingPrinters, selectedPrinter]
+  );
+  const packingDestination = useMemo(
+    () =>
+      describePrinterDestination(selectedPackingPrinter, {
+        purpose: LABEL_PURPOSE_PACKING,
+        fallbackSize: isLandscapePreview ? "100×150 mm" : "100×50 mm",
+      }),
+    [selectedPackingPrinter, isLandscapePreview]
+  );
 
   const selectedCount = useMemo(() => rows.filter((r) => r.selected).length, [rows]);
 
@@ -263,11 +287,19 @@ function PackingLabelsForm({
             value={selectedPrinter}
             onChange={(e) => setSelectedPrinter(e.target.value)}
           >
-            <option value="">Auto-route</option>
-            {(printers || []).map((p) => (
-              <option key={p._id || p.code} value={p.code}>
-                {p.code} — {p.windowsPrinterName}
-              </option>
+            <option value="">Select printer</option>
+            {packingPrinterGroups.map((g) => (
+              <optgroup
+                key={g.agentId}
+                label={`${g.computerName || g.agentName || g.agentId} (${g.agentId})`}
+              >
+                {g.printers.map((p) => (
+                  <option key={p._id || p.code} value={p.code}>
+                    {p.code} — {p.windowsPrinterName} ({p.language || "TSPL"}{" "}
+                    {p.widthMm && p.heightMm ? `${p.widthMm}×${p.heightMm}` : "100×150"})
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </label>
@@ -296,6 +328,22 @@ function PackingLabelsForm({
           Customer: {documentReferences?.customerName || allocation?.customerName || packing?.customerName || "—"}
           <br />
           Customer Ref.: {documentReferences?.customerReference || packing?.customerReference || "—"}
+        </div>
+        <div className="sm:col-span-2">
+          <LabelPrintDestinationBanner
+            printerLabel={packingDestination.printerLabel}
+            agentLabel={packingDestination.agentLabel}
+            sizeLabel={isLandscapePreview ? packingDestination.sizeLabel || "100×150 mm" : packingDestination.sizeLabel}
+            language={packingDestination.language || "TSPL"}
+            countLabel={`${selectedCount} selected line(s)`}
+            warning={
+              !selectedPrinter
+                ? "Select Deepak Laptop Rongta for packing/dispatch. Automatic routing is disabled so this job cannot be sent to STORE."
+                : isLandscapePreview
+                  ? "Deepak packing/dispatch uses Rongta 100×150 mm. Do not select the Zebra incoming printer."
+                  : "Packing/dispatch uses Rongta TSPL. Do not select the Zebra incoming printer."
+            }
+          />
         </div>
       </div>
 
@@ -420,7 +468,7 @@ function PackingLabelsForm({
             variant="primary"
             loading={printMut.isPending}
             loadingText="Queueing…"
-            disabled={!canPrint || selectedCount <= 0 || printBlockedByOverflow || printMut.isPending || landscapePrintBlocked}
+            disabled={!canPrint || !selectedPrinter || selectedCount <= 0 || printBlockedByOverflow || printMut.isPending || landscapePrintBlocked}
             onClick={() => printMut.mutate()}
           >
             Print Selected (mint MAR-PL)

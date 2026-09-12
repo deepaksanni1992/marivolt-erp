@@ -620,7 +620,7 @@ run("5. active original printer is displayed and used", () => {
     parentWarehouse: "MAIN",
   }), true);
   assert.ok(reprintUi.includes("target?.windowsPrinterName"));
-  assert.ok(reprintUi.includes("expectedPrinterConfigId: target.printerConfigId"));
+  assert.ok(reprintUi.includes("expectedPrinterConfigId: target?.printerConfigId"));
 });
 
 run("6. inactive original printer shows the resolved replacement", () => {
@@ -718,7 +718,8 @@ run("11. reprint modal resets via unmount and has no set-state-in-effect", () =>
   assert.ok(reprintUi.includes("function PackingLabelReprintForm"));
   assert.ok(reprintUi.includes("if (!open || !job) return null"));
   assert.ok(reprintUi.includes("clientRequestIdRef"));
-  assert.ok(!reprintUi.includes("printerCode:"));
+  assert.ok(reprintUi.includes("needPrinterPick"));
+  assert.ok(reprintUi.includes("printerCode: selectedPrinter"));
 });
 
 run("Packing Builder UI wires reprint confirmation; does not use modal REPRINT mode", () => {

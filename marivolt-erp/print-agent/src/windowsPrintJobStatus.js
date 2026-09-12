@@ -164,6 +164,27 @@ function mapJobStatus(raw) {
 }
 
 /**
+ * PowerShell for one Get-PrintJob probe.
+ * Joined with newlines — never `; else` — because `if { } ; else { }` is invalid PowerShell
+ * and was reported as: The term 'else' is not recognized as the name of a cmdlet.
+ */
+export function buildWindowsPrintJobStatusScript(printerName, windowsSpoolJobId) {
+  const printerEsc = String(printerName || "").replace(/'/g, "''");
+  const id = Math.floor(Number(windowsSpoolJobId));
+  return [
+    "$ErrorActionPreference='Stop'",
+    `$printer='${printerEsc}'`,
+    `$id=${id}`,
+    "try {",
+    "  $j = Get-PrintJob -PrinterName $printer -ID $id -ErrorAction Stop | Select-Object -First 1 Id,JobStatus,Document,DocumentName,PagesPrinted,TotalPages",
+    "  if ($null -eq $j) { @{ present=$false; jobStatus=''; jobStatusBits=0; document=''; pagesPrinted=$null; totalPages=$null } | ConvertTo-Json -Compress } else { $bits = 0; try { $bits = [uint32]$j.JobStatus } catch { $bits = 0 }; $doc = [string]($(if ($j.DocumentName) { $j.DocumentName } else { $j.Document })); @{ present=$true; jobStatus=[string]$j.JobStatus; jobStatusBits=$bits; document=$doc; pagesPrinted=$j.PagesPrinted; totalPages=$j.TotalPages } | ConvertTo-Json -Compress }",
+    "} catch {",
+    `  $msg = [string]$_.Exception.Message; if ($msg -match '${PS_ABSENT_MATCH}') { @{ present=$false; jobStatus=''; jobStatusBits=0; document=''; notFound=$true } | ConvertTo-Json -Compress } else { @{ present=$false; jobStatus=''; jobStatusBits=0; document=''; queryFailed=$true; error=$msg } | ConvertTo-Json -Compress }`,
+    "}",
+  ].join("\n");
+}
+
+/**
  * @param {string} printerName
  * @param {number|string} windowsSpoolJobId
  */
@@ -215,28 +236,7 @@ export async function getWindowsPrintJobStatus(printerName, windowsSpoolJobId) {
     };
   }
 
-  const printerEsc = name.replace(/'/g, "''");
-  const ps = [
-    "$ErrorActionPreference='Stop'",
-    `$printer='${printerEsc}'`,
-    `$id=${Math.floor(jobId)}`,
-    "try {",
-    "  $j = Get-PrintJob -PrinterName $printer -ID $id -ErrorAction Stop | Select-Object -First 1 Id,JobStatus,Document,DocumentName,PagesPrinted,TotalPages",
-    "  if ($null -eq $j) { @{ present=$false; jobStatus=''; jobStatusBits=0; document=''; pagesPrinted=$null; totalPages=$null } | ConvertTo-Json -Compress }",
-    "  else {",
-    "    $bits = 0; try { $bits = [uint32]$j.JobStatus } catch { $bits = 0 }",
-    "    $doc = [string]($(if ($j.DocumentName) { $j.DocumentName } else { $j.Document }))",
-    "    @{ present=$true; jobStatus=[string]$j.JobStatus; jobStatusBits=$bits; document=$doc; pagesPrinted=$j.PagesPrinted; totalPages=$j.TotalPages } | ConvertTo-Json -Compress",
-    "  }",
-    "} catch {",
-    "  $msg = [string]$_.Exception.Message",
-    `  if ($msg -match '${PS_ABSENT_MATCH}') {`,
-    "    @{ present=$false; jobStatus=''; jobStatusBits=0; document=''; notFound=$true } | ConvertTo-Json -Compress",
-    "  } else {",
-    "    @{ present=$false; jobStatus=''; jobStatusBits=0; document=''; queryFailed=$true; error=$msg } | ConvertTo-Json -Compress",
-    "  }",
-    "}",
-  ].join("; ");
+  const ps = buildWindowsPrintJobStatusScript(name, jobId);
 
   try {
     const { stdout } = await execFileAsync(

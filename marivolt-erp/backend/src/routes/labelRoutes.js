@@ -60,6 +60,7 @@ router.use(...requireErpAccess);
 router.get("/settings", labelsView, c.getSettings);
 router.put("/settings", labelsSettingsWrite, c.putSettings);
 router.get("/printers", labelsView, c.listPrinters);
+router.post("/printers/resolve", labelsView, c.resolveDestination);
 router.post("/printers", labelsAdmin, c.upsertPrinter);
 router.post("/printers/:id/disable", labelsAdmin, c.disablePrinter);
 router.post("/printers/:id/enable", labelsAdmin, c.enablePrinter);

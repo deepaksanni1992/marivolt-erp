@@ -11,8 +11,9 @@ import {
   getWindowsPrintJobStatus,
   probePrinterReadyLightweight,
 } from "./windowsPrintJobStatus.js";
+import { agentCapabilities } from "./payloadLanguage.js";
 
-const APP_VERSION = "1.8.2";
+const APP_VERSION = "1.9.0";
 
 /** Freshness window for using heartbeat health as lease eligibility (ms). */
 const HEALTH_CACHE_TTL_MS = 20_000;
@@ -148,7 +149,17 @@ function createAgentJobProcessor(cfg, transport) {
       : null,
     getPrinterHealth: async (opts = {}) => {
       const purpose = opts.purpose || "lease";
-      const name = String(opts.printerName || cfg.windowsPrinterName || "").trim();
+      const jobScoped = Object.prototype.hasOwnProperty.call(opts, "printerName");
+      const name = jobScoped
+        ? String(opts.printerName || "").trim()
+        : String(cfg.windowsPrinterName || "").trim();
+      if (jobScoped && !name) {
+        return {
+          status: "DISCONNECTED",
+          name: "",
+          statusMessage: "No Windows printer name on job; refusing config.json fallback",
+        };
+      }
       if (purpose === "lease") {
         const cached = cachedHealth(name);
         if (cached && String(cached.status || "").toUpperCase() === "READY") {
@@ -158,7 +169,14 @@ function createAgentJobProcessor(cfg, transport) {
       return fullPrinterHealth(cfg, name, { logProbe: true });
     },
     getPrinterHealthLightweight: async (printerName) => {
-      const name = String(printerName || cfg.windowsPrinterName || "").trim();
+      const name = String(printerName || "").trim();
+      if (!name) {
+        return {
+          status: "DISCONNECTED",
+          name: "",
+          statusMessage: "No Windows printer name on job; refusing config.json fallback",
+        };
+      }
       const health = await probePrinterReadyLightweight(name);
       if (cfg.diagnosticLogging) {
         logLine(
@@ -170,8 +188,10 @@ function createAgentJobProcessor(cfg, transport) {
     },
     getWindowsPrintJobStatus: async (printerName, windowsSpoolJobId) =>
       getWindowsPrintJobStatus(printerName, windowsSpoolJobId),
-    leaseNext: async () => {
-      const leased = await api(cfg, "POST", "/api/labels/agent/lease", {});
+    leaseNext: async (opts = {}) => {
+      const leased = await api(cfg, "POST", "/api/labels/agent/lease", {
+        unhealthyPrinters: opts.skipWindowsPrinterNames || [],
+      });
       const job = leased?.job;
       if (job) logLine(`Leased job ${job.jobNo} (${job.id})`, { event: "job_leased" });
       return job || null;
@@ -208,23 +228,31 @@ function createAgentJobProcessor(cfg, transport) {
       });
     },
     printRaw: async (buf, printerName, opts) => {
-      logLine(`Print submitted to spooler for ${opts?.documentName || printerName} → ${printerName}`, {
+      const name = String(printerName || "").trim();
+      if (!name) {
+        throw new Error("No Windows printer name on job; refusing config.json fallback");
+      }
+      logLine(`Print submitted to spooler for ${opts?.documentName || name} → ${name}`, {
         event: "print_submitted",
       });
-      return transport.printRaw(buf, printerName, opts);
+      return transport.printRaw(buf, name, opts);
     },
     /** Sequential face writes under one lease; stops on first failure (UNCERTAIN semantics). */
     printRawBatch: async (items, printerName, opts = {}) => {
+      const name = String(printerName || "").trim();
+      if (!name) {
+        throw new Error("No Windows printer name on job; refusing config.json fallback");
+      }
       const results = [];
       const list = Array.isArray(items) ? items : [];
       for (let i = 0; i < list.length; i++) {
         const item = list[i] || {};
         const documentName = item.documentName || `Marivolt ${opts.jobNo || "JOB"} F${i + 1}`;
         try {
-          logLine(`Print submitted to spooler for ${documentName} → ${printerName}`, {
+          logLine(`Print submitted to spooler for ${documentName} → ${name}`, {
             event: "print_submitted",
           });
-          const sent = await transport.printRaw(item.buffer, printerName, {
+          const sent = await transport.printRaw(item.buffer, name, {
             ...opts,
             documentName,
             faceIndex: item.faceIndex ?? i,
@@ -343,6 +371,7 @@ async function sendHeartbeat(cfg) {
     windowsVersion: profile.windowsVersion,
     availablePrinters: profile.availablePrinters,
     printerStatus,
+    capabilities: agentCapabilities(),
     printer: primary
       ? {
           name: primary.name,

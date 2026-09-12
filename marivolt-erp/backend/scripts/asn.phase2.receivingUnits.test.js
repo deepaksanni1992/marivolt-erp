@@ -271,7 +271,7 @@ run("print platform reused — no ASN agent/queue/TSPL fork", () => {
   const svc = fs.readFileSync(path.join(srcRoot, "services", "label", "asnLabelService.js"), "utf8");
   assert.match(svc, /resolvePrinterForJob/);
   assert.match(svc, /LabelPrintJob.create/);
-  assert.match(svc, /buildJobTspl/);
+  assert.match(svc, /renderStandardLabelPayload/);
   assert.match(svc, /barcodeMode: "LABEL_ID"/);
   assert.ok(!svc.includes("function buildAsnTsplGenerator"));
   const tspl = fs.readFileSync(path.join(srcRoot, "services", "label", "tsplGenerator.js"), "utf8");

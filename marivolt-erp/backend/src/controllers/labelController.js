@@ -6,6 +6,8 @@ import * as labelSettings from "../services/label/labelSettingsService.js";
 import * as printerManager from "../services/label/printerManager.js";
 import * as templateService from "../services/label/labelTemplateService.js";
 import { getFixedLabelSize } from "../services/label/tsplGenerator.js";
+import { serializePrinterDestination } from "../services/label/labelPrinterProfile.js";
+import { layoutAsnRuLabelSvg, layoutStandardGrnLabelSvg } from "../services/label/zplGenerator.js";
 import { recordLabelHistory } from "../services/label/labelAudit.js";
 import { syncGrnLabelStatus } from "../services/label/labelService.js";
 import {
@@ -69,6 +71,27 @@ export async function putSettings(req, res) {
     res.json({
       ...settings,
       agentBootstrapToken: "",
+    });
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function resolveDestination(req, res) {
+  try {
+    const { printer, agent } = await printerManager.resolvePrinterDestination(req.companyId, req.body || {});
+    res.json({
+      destination: serializePrinterDestination(printer, agent),
+      printer,
+      agent: agent
+        ? {
+            agentId: agent.agentId,
+            name: agent.name,
+            computerName: agent.computerName,
+            appVersion: agent.appVersion,
+            status: agent.status,
+          }
+        : null,
     });
   } catch (err) {
     sendErr(res, err);
@@ -595,16 +618,42 @@ export async function previewJob(req, res) {
   try {
     const job = await LabelPrintJob.findOne({ _id: req.params.id, companyId: req.companyId }).lean();
     if (!job) return res.status(404).json({ message: "Job not found" });
-    res.json({
+    const preview = {
       jobNo: job.jobNo,
       templateCode: job.templateCode,
-      labelSize: getFixedLabelSize(),
+      language: job.language || "TSPL",
+      printerCode: job.printerCode || "",
+      printerDisplayName: job.printerDisplayName || "",
+      agentId: job.agentId || "",
+      windowsPrinterName: job.windowsPrinterName || "",
+      labelSize: {
+        widthMm: Number(job.widthMm) || getFixedLabelSize().widthMm,
+        heightMm: Number(job.heightMm) || getFixedLabelSize().heightMm,
+        dpi: Number(job.dpi) || 203,
+      },
+      layoutVersion: job.layoutVersion || 1,
       lines: job.lines,
       requestedLabels: job.requestedLabels,
       status: job.status,
       tsplLength: (job.tsplPayload || "").length,
       tsplPreview: String(job.tsplPayload || "").slice(0, 2000),
-    });
+    };
+    if (String(job.language || "").toUpperCase() === "ZPL" && job.lines?.[0]) {
+      try {
+        const line = job.lines[0];
+        const isAsn = String(job.sourceType || "").toUpperCase() === "ASN";
+        const svgFn = isAsn ? layoutAsnRuLabelSvg : layoutStandardGrnLabelSvg;
+        preview.svgPreview = svgFn(line, {
+          companyName: "",
+          qtyPerLabel: line.qtyPerLabel || line.qty || 1,
+          barcodeMode: isAsn ? "LABEL_ID" : "ARTICLE",
+          faceVariant: isAsn ? "ASN_RU" : undefined,
+        }).svg;
+      } catch {
+        preview.svgPreview = "";
+      }
+    }
+    res.json(preview);
   } catch (err) {
     sendErr(res, err);
   }

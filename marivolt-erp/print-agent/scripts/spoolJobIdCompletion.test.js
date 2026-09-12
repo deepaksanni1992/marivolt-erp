@@ -8,7 +8,7 @@ import {
   waitForSpoolJobCompletion,
   SPOOL_JOB_QUERY_FAIL_LIMIT,
 } from "../src/printSafety.js";
-import { SPOOL_JOB_STATES, mapWindowsJobStatusText, isWindowsSpoolJobAbsentMessage } from "../src/windowsPrintJobStatus.js";
+import { SPOOL_JOB_STATES, mapWindowsJobStatusText, isWindowsSpoolJobAbsentMessage, buildWindowsPrintJobStatusScript } from "../src/windowsPrintJobStatus.js";
 import { createJobProcessor } from "../src/jobProcessor.js";
 import {
   assertNoSensitiveTimingPayload,
@@ -535,6 +535,14 @@ await run("18. PAUSED spool job → UNCERTAIN", async () => {
   });
   assert.strictEqual(out.completed, false);
   assert.match(out.error, /PAUSED/);
+});
+
+await run("18b. Get-PrintJob script must not join if/else with semicolons", () => {
+  const ps = buildWindowsPrintJobStatusScript("RP4xx Series 200DPI TSPL", 42);
+  assert.match(ps, /Get-PrintJob -PrinterName \$printer -ID \$id/);
+  assert.doesNotMatch(ps, /;\s*else\b/);
+  assert.match(ps, /if \(\$null -eq \$j\) \{.*\} else \{/);
+  assert.match(ps, /\n/);
 });
 
 await run("19. Live wording 'The specified job does not exist.' → ABSENT matcher", () => {

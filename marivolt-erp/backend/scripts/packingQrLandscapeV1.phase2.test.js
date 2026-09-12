@@ -397,7 +397,7 @@ run("FAILED/CANCELLED first-print retry is not a REPRINT action", () => {
     null
   );
   const createFn = packingSvc.slice(packingSvc.indexOf("export async function createJobsFromPacking"));
-  assert.ok(createFn.includes("CANCELLED / FAILED"));
+  assert.ok(createFn.includes("resolvePackingLabelIdempotencyAction"));
   assert.ok(createFn.includes("mintPackingLabelUnits"));
 });
 
