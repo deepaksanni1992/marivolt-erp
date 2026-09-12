@@ -23,14 +23,17 @@ import {
   purposeFromSourceType,
   requirePrinterCode,
   ZPL_ASN_RU_LAYOUT_VERSION,
+  ZPL_WIDTH_DOTS,
 } from "../src/services/label/labelPrinterProfile.js";
 import {
   assertZplEncodable,
   assertZplPayloadSafe,
   buildJobZpl,
   buildSingleLabelZpl,
+  CODE128_SUBSET_B_START,
   countZplFormats,
   escapeZplField,
+  estimateCode128Dots,
   hexEscapeZplBarcodeData,
   layoutAsnRuLabelSvg,
 } from "../src/services/label/zplGenerator.js";
@@ -115,6 +118,77 @@ function onlineAgent(id, extra = {}) {
     capabilities: { languages: ["TSPL", "ZPL"], rawZpl: true },
     ...extra,
   };
+}
+
+const BAR_QUIET_DOTS = 20;
+const LABEL_MARGIN_DOTS = 16;
+const CODE128_BC_RE =
+  /\^FO(\d+),(\d+)\^BY2,3,80\^BCN,80,N,N,N,N\^FH_\^FD(>[:;9])([\s\S]*?)\^FS/;
+
+function decodeCode128FdBody(fdBody) {
+  let i = 0;
+  let out = "";
+  const s = String(fdBody);
+  while (i < s.length) {
+    if (s[i] === ">" && s[i + 1] === "0") {
+      out += ">";
+      i += 2;
+      continue;
+    }
+    if (s[i] === "_" && /^[0-9A-Fa-f]{2}/.test(s.slice(i + 1, i + 3))) {
+      out += String.fromCharCode(parseInt(s.slice(i + 1, i + 3), 16));
+      i += 3;
+      continue;
+    }
+    out += s[i];
+    i += 1;
+  }
+  return out;
+}
+
+function inspectGrnCode128(zpl) {
+  const m = String(zpl).match(CODE128_BC_RE);
+  assert.ok(m, "expected a complete ^BC /^FD Code128 command");
+  const start = m[3];
+  const fdBody = m[4];
+  assert.equal(start, CODE128_SUBSET_B_START);
+  assert.equal(start, ">:");
+  return {
+    barX: Number(m[1]),
+    barY: Number(m[2]),
+    command: "^BCN,80,N,N,N,N",
+    orientation: "N",
+    height: 80,
+    interpretationLine: "N",
+    interpretationAbove: "N",
+    uccCheck: "N",
+    mode: "N",
+    startInvocation: start,
+    subset: "B",
+    fdBody,
+    decoded: decodeCode128FdBody(fdBody),
+  };
+}
+
+function assertArticleFitsQuietZone(article) {
+  const barWidth = estimateCode128Dots(article, 2);
+  const occupied = barWidth + BAR_QUIET_DOTS * 2;
+  const max = ZPL_WIDTH_DOTS - LABEL_MARGIN_DOTS * 2;
+  assert.ok(occupied <= max, `${article} barcode ${occupied}dots exceeds ${max}`);
+}
+
+function sampleGrnZpl(article, extra = {}) {
+  return buildSingleLabelZpl({
+    article,
+    description: extra.description || "Housing",
+    spn: extra.spn || "SPN-1",
+    materialCode: extra.materialCode || "MC-1",
+    uom: extra.uom || "PCS",
+    poNo: extra.poNo || "PO-1",
+    grnNo: extra.grnNo || "GRN-1",
+    receivedDate: extra.receivedDate || "2026-09-12",
+    location: extra.location || "BIN-A",
+  });
 }
 
 console.log("Dual printer / ZPL GRN");
@@ -271,30 +345,41 @@ run("Destinations match uses frozen printer code", () => {
   );
 });
 
-run("ZPL GRN preserves exact Article barcode including punctuation and leading zeros", () => {
-  const article = "00-ART.01";
-  const zpl = buildSingleLabelZpl({
-    article,
-    description: "Housing",
-    spn: "SPN-1",
-    materialCode: "MC-1",
-    uom: "PCS",
-    poNo: "PO-1",
-    grnNo: "GRN-1",
-    receivedDate: "2026-09-12",
-    location: "BIN-A",
-  });
-  const enc = encodeBarcodeValue({ mode: "ARTICLE", article });
-  assert.equal(enc.value, "00-ART.01");
-  assert.ok(zpl.includes("^XA"));
-  assert.ok(zpl.includes("^XZ"));
-  assert.ok(zpl.includes("^PW800"));
-  assert.ok(zpl.includes("^LL400"));
-  assert.ok(zpl.includes(`>;${article}`));
-  assert.ok(!zpl.includes("GAPDETECT"));
-  assert.ok(!zpl.includes("\nCLS"));
-  assert.ok(!/\nPRINT\s+1/.test(zpl));
-  assertZplPayloadSafe(zpl);
+run("ZPL GRN Code128 uses subset B and encodes the exact Article", () => {
+  const articles = ["123456", "12345", "001234", "MV-ZEBRA-TEST-001", "00-ART.01", "ART1"];
+  for (const article of articles) {
+    const enc = encodeBarcodeValue({ mode: "ARTICLE", article });
+    assert.equal(enc.value, article);
+    assertArticleFitsQuietZone(article);
+    const zpl = sampleGrnZpl(article);
+    const bc = inspectGrnCode128(zpl);
+    assert.equal(bc.mode, "N");
+    assert.equal(bc.subset, "B");
+    assert.equal(bc.startInvocation, ">:");
+    assert.equal(bc.fdBody, hexEscapeZplBarcodeData(article));
+    assert.equal(bc.decoded, article);
+    assert.ok(bc.barX >= LABEL_MARGIN_DOTS + BAR_QUIET_DOTS);
+    assert.ok(bc.barX + estimateCode128Dots(article, 2) + BAR_QUIET_DOTS <= ZPL_WIDTH_DOTS - LABEL_MARGIN_DOTS);
+    assert.ok(!zpl.includes(`>;${article}`));
+    assert.ok(zpl.includes("^PW800"));
+    assert.ok(zpl.includes("^LL400"));
+    assert.ok(zpl.includes("^PQ1,0,1,Y"));
+    assertZplPayloadSafe(zpl);
+  }
+});
+
+run("ZPL Code128 invocation prefix is encoded as literal greater-than", () => {
+  assert.equal(hexEscapeZplBarcodeData("A>B"), "A>0B");
+  assert.equal(hexEscapeZplBarcodeData("A>;B"), "A>0;B");
+  assert.equal(hexEscapeZplBarcodeData("A>:B"), "A>0:B");
+  assert.equal(hexEscapeZplBarcodeData("A>0B"), "A>00B");
+  assert.equal(hexEscapeZplBarcodeData("A^B_C~D"), "A_5EB_5FC_7ED");
+  const article = "A>;B";
+  const zpl = sampleGrnZpl(article);
+  const bc = inspectGrnCode128(zpl);
+  assert.equal(bc.startInvocation, ">:");
+  assert.equal(bc.fdBody, "A>0;B");
+  assert.equal(bc.decoded, "A>;B");
 });
 
 run("ZPL escapes command characters in field data", () => {
@@ -307,7 +392,8 @@ run("ZPL escapes command characters in field data", () => {
     uom: "PCS",
   });
   assert.ok(zpl.includes("^FH_"));
-  assert.ok(hexEscapeZplBarcodeData("A>B").includes("_3E"));
+  const bc = inspectGrnCode128(zpl);
+  assert.equal(bc.decoded, "ART1");
 });
 
 run("Five distinct ZPL labels emit five complete formats", () => {

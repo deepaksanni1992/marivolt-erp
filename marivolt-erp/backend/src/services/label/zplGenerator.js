@@ -27,6 +27,8 @@ const BODY_CHAR_H = 24;
 const BAR_MODULE = 2;
 const BAR_QUIET = 20;
 const MAX_ASCII = 126;
+/** Zebra Code 128 start / stay in subset B (alphanumeric, punctuation, odd-length digits). */
+export const CODE128_SUBSET_B_START = ">:";
 
 function t(v) {
   if (v == null) return "";
@@ -74,12 +76,24 @@ export function escapeZplField(raw) {
   return out.slice(0, 200);
 }
 
+/**
+ * Encode Code 128 ^FD payload after the start invocation.
+ * Preserves the exact input string (leading zeros, punctuation, case).
+ *
+ * Zebra still treats ">" as a Code 128 invocation prefix after ^FH_ unescape.
+ * Hex-escaping ">" to "_3E" is not enough: "_3E;" becomes ">;" (Start C).
+ * A literal ">" must be emitted as ">0". Other ZPL command chars stay hex-escaped.
+ */
 export function hexEscapeZplBarcodeData(raw) {
   const s = String(raw ?? "");
   let out = "";
   for (const ch of s) {
     const c = ch.charCodeAt(0);
-    if (ch === "^" || ch === "~" || ch === "_" || ch === ">" || c < 32 || c === 127) {
+    if (ch === ">") {
+      out += ">0";
+      continue;
+    }
+    if (ch === "^" || ch === "~" || ch === "_" || c < 32 || c === 127) {
       out += `_${c.toString(16).toUpperCase().padStart(2, "0")}`;
     } else {
       out += ch;
@@ -204,6 +218,7 @@ function layoutStandardGrnFace(line = {}, opts = {}) {
     barY,
     barH,
     barWidthDots,
+    code128Start: CODE128_SUBSET_B_START,
   };
 }
 
@@ -297,7 +312,7 @@ function layoutAsnRuFace(line = {}, opts = {}) {
     barY,
     barH,
     barWidthDots,
-    code128Start: ">:",
+    code128Start: CODE128_SUBSET_B_START,
     layoutVersion: ZPL_ASN_RU_LAYOUT_VERSION,
   };
 }
@@ -334,9 +349,9 @@ function emitStandardFaceZpl(face) {
     cmds.push(`^FO20,${y}^A0N,${BODY_CHAR_H},${BODY_CHAR_H}${fd(row)}`);
     y += 20;
   }
-  const start = face.code128Start || ">;";
+  const start = face.code128Start || CODE128_SUBSET_B_START;
   cmds.push(
-    `^FO${face.barX},${face.barY}^BY${BAR_MODULE},3,${face.barH}^BCN,${face.barH},N,N,N^FH_^FD${start}${hexEscapeZplBarcodeData(face.barcodeRaw)}^FS`
+    `^FO${face.barX},${face.barY}^BY${BAR_MODULE},3,${face.barH}^BCN,${face.barH},N,N,N,N^FH_^FD${start}${hexEscapeZplBarcodeData(face.barcodeRaw)}^FS`
   );
   cmds.push(`^FO${face.barX},${face.barY + face.barH + 8}^A0N,24,24${fd(face.human)}`);
   cmds.push("^PQ1,0,1,Y");
