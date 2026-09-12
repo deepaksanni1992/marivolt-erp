@@ -22,6 +22,7 @@ import AsnReceivingDraftCustomsReview from "../components/store/AsnReceivingDraf
 import LabelQueuePanel from "../components/store/LabelQueuePanel.jsx";
 import PostGrnLabelDecisionDialog from "../components/store/PostGrnLabelDecisionDialog.jsx";
 import GrnLabelPreviewModal from "../components/store/GrnLabelPreviewModal.jsx";
+import PostedGrnLabelsDialog from "../components/store/PostedGrnLabelsDialog.jsx";
 import LabelPrintDestinationBanner from "../components/store/LabelPrintDestinationBanner.jsx";
 import PackingLabelsModal from "../components/store/PackingLabelsModal.jsx";
 import PackingLabelReprintModal, {
@@ -377,6 +378,7 @@ export default function StoreModule() {
   const [grnLineEdits, setGrnLineEdits] = useState({});
   const [grnUiErr, setGrnUiErr] = useState("");
   const [grnRegisterDetail, setGrnRegisterDetail] = useState(null);
+  const [postedGrnLabelsOpen, setPostedGrnLabelsOpen] = useState(false);
   const [grnCustoms, setGrnCustoms] = useState(emptyGrnCustomsState);
   const [labelPrinterCode, setLabelPrinterCode] = useState("");
   const [labelCopies, setLabelCopies] = useState(1);
@@ -405,6 +407,7 @@ export default function StoreModule() {
       const explicitReturn = String(returnToIncomingAsnId || "").trim();
       const urlReturn = String(searchParams.get("returnAsnId") || "").trim();
       setGrnRegisterDetail(null);
+      setPostedGrnLabelsOpen(false);
       grnOpenInFlightRef.current = "";
       const next = new URLSearchParams(searchParams);
       next.delete("grnNo");
@@ -3331,16 +3334,8 @@ export default function StoreModule() {
                     <button
                       type="button"
                       className="rounded border px-1.5 py-0.5 text-[11px] font-semibold"
-                      onClick={async () => {
-                        try {
-                          await apiPost("/labels/jobs/from-grn", {
-                            grnNo: grnRegisterDetail.grnNo,
-                            copies: 1,
-                          });
-                          setGrnUiErr(`Label job queued for ${grnRegisterDetail.grnNo}`);
-                        } catch (e) {
-                          setGrnUiErr(e.message || String(e));
-                        }
+                      onClick={() => {
+                        setPostedGrnLabelsOpen(true);
                       }}
                     >
                       Print / Reprint labels
@@ -5958,6 +5953,31 @@ export default function StoreModule() {
           notify.info(
             "Label printing skipped. Labels can be printed later from the GRN or Label Queue."
           );
+        }}
+      />
+
+      <PostedGrnLabelsDialog
+        open={Boolean(postedGrnLabelsOpen && grnRegisterDetail)}
+        grn={grnRegisterDetail}
+        printers={labelPrintersData?.items || []}
+        onClose={() => setPostedGrnLabelsOpen(false)}
+        onQueued={async (data, body) => {
+          qc.invalidateQueries({ queryKey: ["label-jobs"] });
+          qc.invalidateQueries({ queryKey: ["grn"] });
+          const count =
+            Number(data?.job?.requestedLabels) ||
+            Number(data?.requestedLabels) ||
+            sumPhysicalLabelQty(body?.lines);
+          notify.success(formatLabelsQueuedMessage(count));
+          const grnNo = grnRegisterDetail?.grnNo;
+          if (grnNo) {
+            try {
+              const row = await apiGet(`/grn/${encodeURIComponent(grnNo)}`);
+              if (row?.grnNo) setGrnRegisterDetail(row);
+            } catch {
+              /* keep existing detail */
+            }
+          }
         }}
       />
 

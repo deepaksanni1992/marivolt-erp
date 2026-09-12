@@ -403,6 +403,121 @@ export function resolvePostGrnLabelMode(settings) {
   return "ask";
 }
 
+/** Compact GRN lines from a posted GRN document (one physical label of full item qty per line). */
+export function buildPostedGrnLabelLines(grn = {}) {
+  return (grn.items || []).map((it, idx) => {
+    const receivedQty = Number(it.acceptedQty ?? it.receivedQty) || 0;
+    const fields = defaultLabelLineFields(receivedQty);
+    const poLineId = it.poLineId != null && String(it.poLineId).trim() ? String(it.poLineId) : "";
+    return {
+      lineKey: poLineId || `line-${idx}`,
+      poLineId,
+      article: String(it.article || "").trim(),
+      description: it.description || "",
+      spn: it.spn || it.partNumber || "",
+      materialCode: it.materialCode || "",
+      uom: it.uom || "PCS",
+      location: it.location || "",
+      warehouse: it.warehouse || "",
+      receivedQty,
+      grnQty: receivedQty,
+      print: receivedQty > 0,
+      qtyPerLabel: Number(fields.labelQtyPerLabel) || receivedQty,
+      labelCount: Number(fields.labelCount) || (receivedQty > 0 ? 1 : 0),
+      labelDistribution: fields.labelDistribution,
+      labelQty: Number(fields.labelQty) || (receivedQty > 0 ? 1 : 0),
+    };
+  });
+}
+
+export function patchPostedGrnLabelLine(line, patch = {}) {
+  const next = { ...line, ...patch };
+  if (Object.prototype.hasOwnProperty.call(patch, "print") && !patch.labelCount && !patch.labelDistribution) {
+    return next;
+  }
+  if (patch.labelDistribution && Array.isArray(patch.labelDistribution)) {
+    const dist = patch.labelDistribution;
+    return {
+      ...next,
+      labelDistribution: dist,
+      labelCount: dist.length,
+      labelQty: dist.length,
+      qtyPerLabel: dist[0] || next.receivedQty,
+    };
+  }
+  if (patch.labelCount != null) {
+    const n = Math.max(1, Math.floor(Number(patch.labelCount) || 1));
+    const dist = distributeByLabelCount(next.receivedQty || next.grnQty, n);
+    return {
+      ...next,
+      labelCount: dist.length,
+      labelQty: dist.length,
+      labelDistribution: dist,
+      qtyPerLabel: dist[0] || next.receivedQty,
+    };
+  }
+  return next;
+}
+
+export const POSTED_GRN_PRINTER_REQUIRED =
+  "Select a printer for GRN labels. Automatic routing is disabled so this job cannot be sent to another laptop.";
+
+export function buildPostedGrnPreviewRequest({ printerCode, warehouseCode } = {}) {
+  const code = String(printerCode || "").trim();
+  if (!code) {
+    return { ok: false, error: POSTED_GRN_PRINTER_REQUIRED, body: null };
+  }
+  const body = {
+    printerCode: code,
+    purpose: "GRN",
+    templateCode: "MARIVOLT_STANDARD",
+  };
+  const wh = String(warehouseCode || "").trim();
+  if (wh) body.warehouseCode = wh;
+  return { ok: true, error: "", body };
+}
+
+/**
+ * Posted GRN → /labels/jobs/from-grn. Article barcode only (never RU / LABEL_ID).
+ * No idempotency key so a later reprint is a new job.
+ */
+export function buildPostedGrnLabelPrintBody({ grn, printerCode, copies = 1, lines } = {}) {
+  const code = String(printerCode || "").trim();
+  if (!code) {
+    return { ok: false, error: POSTED_GRN_PRINTER_REQUIRED, body: null };
+  }
+  const selected = (lines || []).filter(
+    (ln) => ln.print !== false && (Number(ln.labelCount) > 0 || (ln.labelDistribution || []).length > 0)
+  );
+  if (!selected.length) {
+    return { ok: false, error: "Select at least one GRN line with one or more physical labels.", body: null };
+  }
+  const validated = validateInitialLabelLines(selected);
+  if (!validated.ok) return { ok: false, error: validated.message, body: null };
+  const warehouseCode =
+    String(grn?.warehouseCode || "").trim() ||
+    String(selected.find((l) => l.warehouse)?.warehouse || "").trim();
+  return {
+    ok: true,
+    error: "",
+    body: {
+      grnNo: String(grn?.grnNo || "").trim(),
+      printerCode: code,
+      copies: Math.max(1, Math.floor(Number(copies) || 1)),
+      ...(warehouseCode ? { warehouseCode } : {}),
+      lines: selected.map((ln) => ({
+        ...(ln.poLineId ? { poLineId: ln.poLineId } : {}),
+        article: ln.article,
+        print: true,
+        qtyPerLabel: ln.qtyPerLabel,
+        labelCount: ln.labelCount,
+        labelQty: ln.labelCount,
+        labelDistribution: ln.labelDistribution,
+      })),
+    },
+  };
+}
+
 /** Validate label lines for GRN print (distribution must equal received qty). */
 export function validateInitialLabelLines(labelLines) {
   for (const ln of labelLines || []) {

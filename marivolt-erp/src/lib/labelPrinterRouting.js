@@ -36,6 +36,24 @@ export function filterPrintersForPurpose(printers = [], purpose) {
   );
 }
 
+export const GRN_LABEL_WIDTH_MM = 100;
+export const GRN_LABEL_HEIGHT_MM = 50;
+
+/** Unlocked media (0/unset) matches any size; locked media must equal the label. */
+export function printerMediaMatches(printer, widthMm, heightMm) {
+  const w = Number(printer?.widthMm);
+  const h = Number(printer?.heightMm);
+  if (!(w > 0 && h > 0)) return true;
+  return w === Number(widthMm) && h === Number(heightMm);
+}
+
+/** GRN Article labels: purpose GRN and 100×50 mm (or unlocked). Packing 100×150 is excluded. */
+export function filterPrintersForGrnLabels(printers = []) {
+  return filterPrintersForPurpose(printers, LABEL_PURPOSE_GRN).filter((p) =>
+    printerMediaMatches(p, GRN_LABEL_WIDTH_MM, GRN_LABEL_HEIGHT_MM)
+  );
+}
+
 export function groupPrintersByAgent(printers = []) {
   const map = new Map();
   for (const p of printers || []) {
