@@ -489,19 +489,33 @@ export function buildTestLabelZpl(info = {}, opts = {}) {
   const agent = t(info.agentName || info.agentId || "-");
   const printer = t(info.printerName || info.windowsPrinterName || "-");
   const conn = t(info.connectionStatus || "OK");
+  const widthMm = opts.widthMm != null ? Number(opts.widthMm) : ZPL_WIDTH_MM;
+  const heightMm = opts.heightMm != null ? Number(opts.heightMm) : ZPL_HEIGHT_MM;
+  const pw =
+    widthMm === ZPL_WIDTH_MM && heightMm === ZPL_HEIGHT_MM
+      ? ZPL_WIDTH_DOTS
+      : Math.round(widthMm * ZPL_DOTS_PER_MM);
+  const ll =
+    widthMm === ZPL_WIDTH_MM && heightMm === ZPL_HEIGHT_MM
+      ? ZPL_HEIGHT_DOTS
+      : Math.round(heightMm * ZPL_DOTS_PER_MM);
+  const language = t(info.language || opts.language || LABEL_LANGUAGE_ZPL);
+  const media = t(info.mediaLabel || `${widthMm}x${heightMm} mm`);
   for (const [n, v] of [
     ["Date", dateStr],
     ["Time", timeStr],
     ["Agent", agent],
     ["Printer", printer],
     ["Connection", conn],
+    ["Language", language],
+    ["Media", media],
   ]) {
     assertZplEncodable(v, n);
   }
   const payload = [
     "^XA",
-    `^PW${ZPL_WIDTH_DOTS}`,
-    `^LL${ZPL_HEIGHT_DOTS}`,
+    `^PW${pw}`,
+    `^LL${ll}`,
     "^LH0,0",
     "^CI0",
     `^FO20,20^A0N,40,40${fd(companyName)}`,
@@ -510,6 +524,8 @@ export function buildTestLabelZpl(info = {}, opts = {}) {
     `^FO20,130^A0N,24,24${fd(`Agent: ${agent}`)}`,
     `^FO20,160^A0N,24,24${fd(`Printer: ${printer}`)}`,
     `^FO20,190^A0N,24,24${fd(`Connection: ${conn}`)}`,
+    `^FO20,220^A0N,24,24${fd(`Language: ${language}`)}`,
+    `^FO20,250^A0N,24,24${fd(`Media: ${media}`)}`,
     "^PQ1,0,1,Y",
     "^XZ",
     "",

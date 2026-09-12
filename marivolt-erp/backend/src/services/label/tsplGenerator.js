@@ -935,6 +935,17 @@ export function packingLabelPreviewRows(line = {}, opts = {}) {
   return rows;
 }
 
+function testLabelTsplHeader(widthMm, heightMm) {
+  const w = Number(widthMm);
+  const h = Number(heightMm);
+  // 100×150 packing printers use detected-media faces (SIZE + HOME, no GAP).
+  // 100×50 / unrestricted diagnostics keep the established SINGLE_RAW SIZE+GAP setup.
+  if (w === 100 && h === 150) {
+    return [`SIZE ${w} mm,${h} mm`, "DIRECTION 1", "REFERENCE 0,0", "HOME", "CLS"];
+  }
+  return [`SIZE ${w} mm,${h} mm`, "GAP 3 mm,0", "DIRECTION 1", "REFERENCE 0,0", "CLS"];
+}
+
 /** One-off test label for agent/printer connectivity checks. */
 export function buildTestLabelTspl(info = {}, opts = {}) {
   const dpi = Number(opts.dpi) || 203;
@@ -947,20 +958,21 @@ export function buildTestLabelTspl(info = {}, opts = {}) {
   const printer = escapeTspl(info.printerName || info.windowsPrinterName || "—");
   const conn = escapeTspl(info.connectionStatus || "OK");
   const title = escapeTspl(info.title || opts.companyName || "TEST LABEL");
-  const w = LABEL_WIDTH_MM;
-  const h = LABEL_HEIGHT_MM;
+  const w = opts.widthMm != null ? Number(opts.widthMm) : LABEL_WIDTH_MM;
+  const h = opts.heightMm != null ? Number(opts.heightMm) : LABEL_HEIGHT_MM;
+  const language = escapeTspl(info.language || opts.language || "TSPL");
+  const media = escapeTspl(info.mediaLabel || `${w}x${h} mm`);
+  const x = scale(20);
   return [
-    `SIZE ${w} mm,${h} mm`,
-    "GAP 3 mm,0",
-    "DIRECTION 1",
-    "REFERENCE 0,0",
-    "CLS",
-    `TEXT ${scale(20)},${scale(20)},"0",0,2,2,"${title}"`,
-    `TEXT ${scale(20)},${scale(70)},"0",0,1,1,"Date: ${dateStr}"`,
-    `TEXT ${scale(20)},${scale(100)},"0",0,1,1,"Time: ${timeStr}"`,
-    `TEXT ${scale(20)},${scale(130)},"0",0,1,1,"Agent: ${agent}"`,
-    `TEXT ${scale(20)},${scale(160)},"0",0,1,1,"Printer: ${printer}"`,
-    `TEXT ${scale(20)},${scale(190)},"0",0,1,1,"Connection: ${conn}"`,
+    ...testLabelTsplHeader(w, h),
+    `TEXT ${x},${scale(20)},"0",0,2,2,"${title}"`,
+    `TEXT ${x},${scale(70)},"0",0,1,1,"Date: ${dateStr}"`,
+    `TEXT ${x},${scale(100)},"0",0,1,1,"Time: ${timeStr}"`,
+    `TEXT ${x},${scale(130)},"0",0,1,1,"Agent: ${agent}"`,
+    `TEXT ${x},${scale(160)},"0",0,1,1,"Printer: ${printer}"`,
+    `TEXT ${x},${scale(190)},"0",0,1,1,"Connection: ${conn}"`,
+    `TEXT ${x},${scale(220)},"0",0,1,1,"Language: ${language}"`,
+    `TEXT ${x},${scale(250)},"0",0,1,1,"Media: ${media}"`,
     "PRINT 1,1",
     "",
   ].join("\r\n");

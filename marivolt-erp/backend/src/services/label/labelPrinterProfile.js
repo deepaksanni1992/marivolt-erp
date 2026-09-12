@@ -154,6 +154,49 @@ export function printerHasMediaLock(printer) {
   return Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0;
 }
 
+/**
+ * Admin Test Print media: locked profile size, else documented legacy 100×50.
+ * Does not unlock or rewrite printer records.
+ */
+export function diagnosticMediaFromPrinter(printer) {
+  const language = printerLanguage(printer);
+  const dpi = Number(printer?.dpi) || 203;
+  if (printerHasMediaLock(printer)) {
+    return {
+      widthMm: Number(printer.widthMm),
+      heightMm: Number(printer.heightMm),
+      language,
+      dpi,
+    };
+  }
+  return {
+    widthMm: LABEL_WIDTH_MM,
+    heightMm: LABEL_HEIGHT_MM,
+    language,
+    dpi,
+  };
+}
+
+/**
+ * Compatibility opts for Label Settings Test Print.
+ * Passes the printer's own media so validation is not compared to a hardcoded 100×50 template.
+ * Purpose TEST is included only when the profile already allows it (empty list = unrestricted).
+ * Packing-only printers omit purpose so the diagnostic can print without becoming GRN/ASN-capable.
+ */
+export function administrativeTestPrintAssertOpts(printer) {
+  const media = diagnosticMediaFromPrinter(printer);
+  const list = printerPurposes(printer);
+  const opts = {
+    widthMm: media.widthMm,
+    heightMm: media.heightMm,
+    language: media.language,
+  };
+  if (!list.length || list.includes(LABEL_PURPOSE_TEST)) {
+    opts.purpose = LABEL_PURPOSE_TEST;
+  }
+  return opts;
+}
+
 export function printerSupportsTemplate(printer, templateCode) {
   const codes = Array.isArray(printer?.supportedTemplateCodes)
     ? printer.supportedTemplateCodes.map(upper).filter(Boolean)

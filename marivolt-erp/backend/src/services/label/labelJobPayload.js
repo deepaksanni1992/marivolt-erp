@@ -11,6 +11,7 @@ import {
   normalizeLabelLanguage,
 } from "./labelLanguages.js";
 import {
+  administrativeTestPrintAssertOpts,
   assertPrinterCompatible,
   destinationsMatch,
   jobDestinationSnapshot,
@@ -60,6 +61,49 @@ export function renderTestLabelPayload(info, opts = {}) {
   return {
     language: LABEL_LANGUAGE_TSPL,
     tsplPayload: buildTestLabelTspl(info, opts),
+  };
+}
+
+/**
+ * Plan an admin diagnostic job from a validated printer profile.
+ * Payload SIZE/PW/LL and frozen destination media come from the same routed profile.
+ */
+export function planAdministrativeTestPrint({ printer, agent = null, info = {}, companyName } = {}) {
+  const assertOpts = administrativeTestPrintAssertOpts(printer);
+  const routed = assertPrinterCompatible(printer, {
+    ...assertOpts,
+    agent,
+    companyId: printer?.companyId,
+  });
+  const dest = frozenDestinationFields(printer, {
+    language: routed.language,
+    layoutVersion: routed.layoutVersion,
+    widthMm: routed.widthMm,
+    heightMm: routed.heightMm,
+    dpi: routed.dpi,
+  });
+  const mediaLabel = `${routed.widthMm}x${routed.heightMm} mm`;
+  const rendered = renderTestLabelPayload(
+    {
+      ...info,
+      language: routed.language,
+      mediaLabel,
+    },
+    {
+      companyName,
+      language: routed.language,
+      widthMm: routed.widthMm,
+      heightMm: routed.heightMm,
+      dpi: routed.dpi,
+    }
+  );
+  return {
+    routed,
+    dest,
+    rendered,
+    copies: 1,
+    requestedLabels: 1,
+    mediaLabel,
   };
 }
 

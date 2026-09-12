@@ -13,6 +13,7 @@ import {
   LABEL_PURPOSE_STOCK,
   LABEL_PURPOSE_PACKING,
   LABEL_PURPOSE_TEST,
+  administrativeTestPrintAssertOpts,
   labelRoutingError,
   requirePrinterCode,
 } from "./labelPrinterProfile.js";
@@ -21,8 +22,8 @@ import {
   findIdempotentJob,
   frozenDestinationFields,
   loadAndAssertPrinter,
+  planAdministrativeTestPrint,
   renderStandardLabelPayload,
-  renderTestLabelPayload,
 } from "./labelJobPayload.js";
 import {
   MARIVOLT_STANDARD_TEMPLATE_CODE,
@@ -1301,48 +1302,42 @@ export async function createTestPrintJob(req, { agentId, printerCode } = {}) {
       throw err;
     }
   } else if (agentId) {
-    printer = await resolvePrinterForJob(req.companyId, null, {
-      agentId,
-      purpose: LABEL_PURPOSE_TEST,
-    }).catch(() => null);
-    if (!printer) {
-      printer = await PrinterConfig.findOne({
-        companyId: req.companyId,
-        agentId: upper(agentId),
-        isActive: true,
-      }).sort({ isDefault: -1, code: 1 });
-    }
+    printer = await PrinterConfig.findOne({
+      companyId: req.companyId,
+      agentId: upper(agentId),
+      isActive: true,
+    }).sort({ isDefault: -1, code: 1 });
     if (!printer) {
       const err = new Error("No active printer mapped to this agent");
       err.statusCode = 400;
       throw err;
     }
   } else {
-    printer = await resolvePrinterForJob(req.companyId, null, { purpose: LABEL_PURPOSE_TEST });
+    requirePrinterCode("", LABEL_PURPOSE_TEST);
   }
-  const routed = await loadAndAssertPrinter(req.companyId, printer, {
-    purpose: printer.supportedPurposes?.length ? LABEL_PURPOSE_TEST : undefined,
-  }).catch(async () => loadAndAssertPrinter(req.companyId, printer, {}));
-  const agent = routed.agent;
   const { companyName, testTitle } = await loadLabelCompanyBranding(req.companyId);
-  const rendered = renderTestLabelPayload(
-    {
+  const routed = await loadAndAssertPrinter(
+    req.companyId,
+    printer,
+    administrativeTestPrintAssertOpts(printer)
+  );
+  const planned = planAdministrativeTestPrint({
+    printer,
+    agent: routed.agent,
+    companyName,
+    info: {
       agentId: printer.agentId,
-      agentName: agent?.name || printer.agentId,
+      agentName: routed.agent?.name || printer.agentId,
       printerName: printer.displayName || printer.code,
       windowsPrinterName: printer.windowsPrinterName,
-      connectionStatus: effectiveAgentStatus(agent || { isActive: true, status: "OFFLINE" }),
+      connectionStatus: effectiveAgentStatus(
+        routed.agent || { isActive: true, status: "OFFLINE" }
+      ),
       title: testTitle,
     },
-    { companyName, language: routed.language }
-  );
-  const dest = frozenDestinationFields(printer, {
-    language: routed.language,
-    layoutVersion: routed.layoutVersion,
-    widthMm: routed.widthMm,
-    heightMm: routed.heightMm,
-    dpi: routed.dpi,
   });
+  const dest = planned.dest;
+  const rendered = planned.rendered;
   const job = await LabelPrintJob.create({
     companyId: req.companyId,
     jobNo: jobNo(),
@@ -1352,10 +1347,10 @@ export async function createTestPrintJob(req, { agentId, printerCode } = {}) {
     warehouseCode: printer.warehouseCode || "",
     ...dest,
     templateCode: MARIVOLT_STANDARD_TEMPLATE_CODE,
-    copies: 1,
-    requestedLabels: 1,
+    copies: planned.copies,
+    requestedLabels: planned.requestedLabels,
     printedLabels: 0,
-    remainingLabels: 1,
+    remainingLabels: planned.requestedLabels,
     lines: [
       {
         article: "TEST",
