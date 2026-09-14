@@ -257,6 +257,7 @@ run("ASN_RECEIVING authority applied in customsService", () => {
   assert.match(svc, /applyAsnReceivingFieldAuthority/);
   assert.match(svc, /ASN_LINE_HS_CODE_REQUIRED|assertAsnLineHsCodePresent/);
   assert.match(svc, /findCustomsBoeByNormalizedNumber/);
+  assert.match(svc, /if \(!isAsnReceivingGrn\(grn\)\)/);
 });
 
 run("frontend ASN multi-invoice + line HS/COO present", () => {
@@ -397,7 +398,11 @@ run("crafted line economics cannot override existing parent", () => {
     forceAcceptedQtyOnly: true,
     poDate: "2026-01-01",
   });
-  assert.equal(r.ok, false, "conflicting parent declaration must be rejected");
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+  assert.equal(r.boeDeclaredQty, 500);
+  assert.equal(r.boeDeclaredValue, 25000);
+  assert.equal(r.customsUnitValue, 50);
+  assert.equal(r.thisGrnCustomsQty, 5);
 });
 
 run("existing parent retained when client economics omitted (lock)", () => {

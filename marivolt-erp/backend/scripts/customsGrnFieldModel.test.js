@@ -380,5 +380,54 @@ run("FIFO sort helper uses CG2 customsFifo util", () => {
   assert.match(svc, /allocateQtyAcrossLotsFifo/);
 });
 
+run("ASN_RECEIVING reuses existing BOE identity and skips documentary date gates", () => {
+  const header = normalizeCustomsHeaderDefaults({
+    receivedDate: todayStr,
+    boeNumber: "BOE-EXISTING",
+    boeDate: "2020-01-01",
+    supplierInvoiceNumber: "SI",
+    supplierInvoiceDate: todayStr,
+    countryOfOrigin: "CN",
+    hsCode: "8409",
+    customsCurrency: "USD",
+    exchangeRateToAED: 3.67,
+    boeDeclaredQty: 34,
+    boeDeclaredValue: 3400,
+    customsUom: "PCS",
+    grossWeightKg: 10,
+    netWeightKg: 9,
+  });
+  const parentBoe = {
+    customsBoeRef: "MAR-BOE-0001",
+    boeNumber: "BOE-EXISTING",
+    boeDate: "2020-01-01",
+    boeDeclaredQty: 100,
+    boeDeclaredValue: 10000,
+    customsUnitValue: 100,
+    customsCurrency: "USD",
+    exchangeRateToAED: 3.67,
+    customsUom: "PCS",
+    grossWeightKg: 50,
+    netWeightKg: 45,
+    linkedCustomsQty: 0,
+  };
+  const r = validateCustomsCaptureForGrn({
+    header,
+    lines: [{ poLineId: "a", article: "700001", acceptedQty: 34, location: "MAIN-R01-B01", uom: "PCS" }],
+    poDate: "2026-01-01",
+    parentBoe,
+    forceAcceptedQtyOnly: true,
+  });
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+  const blockedManual = validateCustomsCaptureForGrn({
+    header,
+    lines: [{ poLineId: "a", article: "700001", acceptedQty: 34, location: "MAIN-R01-B01", uom: "PCS" }],
+    poDate: "2026-01-01",
+    parentBoe,
+    forceAcceptedQtyOnly: false,
+  });
+  assert.equal(blockedManual.ok, false);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

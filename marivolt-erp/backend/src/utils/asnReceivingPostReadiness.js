@@ -240,9 +240,9 @@ export function evaluateAsnReceivingPostReadiness({
     blockers.push(blocker("CUSTOMS_BOE_CANCELLED", "Selected Customs BOE is CANCELLED"));
   }
 
-  // Remaining-to-link (BOE cap)
-  if (hasParent && declaredQty > 0) {
-    const linked = Number(parentBoe.linkedCustomsQty) || 0;
+  // Remaining-to-link (BOE cap) — CREATE and SELECT. POST rejects thisGrn > declaredQty.
+  if (declaredQty > 0) {
+    const linked = hasParent ? Number(parentBoe.linkedCustomsQty) || 0 : 0;
     const thisGrn = roundAsnQty(items.reduce((s, ln) => s + (Number(ln.acceptedQty ?? ln.receivedQty) || 0), 0));
     if (linked + thisGrn > declaredQty + 1e-9) {
       blockers.push(

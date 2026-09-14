@@ -1111,7 +1111,11 @@ export async function postGrn(req, res) {
       if (data?.poNo || existing) {
         const postedGrn = await GRN.findOne(withCompany(req, { grnNo })).select("poId").lean();
         if (postedGrn?.poId) {
-          await syncPurchaseOrderApExtensionFields(req.companyId, postedGrn.poId);
+          try {
+            await syncPurchaseOrderApExtensionFields(req.companyId, postedGrn.poId);
+          } catch (e) {
+            console.error("[grn/post] syncPurchaseOrderApExtensionFields:", e?.message || e);
+          }
         }
       }
       return res.json(data);
@@ -1125,7 +1129,11 @@ export async function postGrn(req, res) {
       });
     }
     if (err?._approval) return res.status(202).json(err._approval);
-    return res.status(err.status || err.statusCode || 400).json({ message: err.message, code: err.code });
+    return res.status(err.status || err.statusCode || 400).json({
+      message: err.message,
+      code: err.code,
+      errors: err.errors,
+    });
   }
 
   const session = await mongoose.startSession();

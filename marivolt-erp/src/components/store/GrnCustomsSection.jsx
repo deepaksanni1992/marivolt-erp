@@ -642,39 +642,41 @@ export default function GrnCustomsSection({
         </div>
       )}
 
-      <div className="mt-3 flex flex-wrap gap-4 text-[11px] text-slate-600">
-        <p className="w-full text-[10px] text-slate-500">
-          Date overrides require STORE approve permission on the server. Checking a box alone does not grant
-          authorisation.
-        </p>
-        <label className="inline-flex items-center gap-1.5">
-          <input
-            type="checkbox"
-            disabled={disabled}
-            checked={Boolean(value.allowBoeBeforePoDate)}
-            onChange={(e) => setField("allowBoeBeforePoDate", e.target.checked)}
-          />
-          Request: authorise BOE Date before PO date
-        </label>
-        <label className="inline-flex items-center gap-1.5">
-          <input
-            type="checkbox"
-            disabled={disabled}
-            checked={Boolean(value.allowInvoiceAfterReceivedDate)}
-            onChange={(e) => setField("allowInvoiceAfterReceivedDate", e.target.checked)}
-          />
-          Request: authorise Supplier Invoice Date after Received Date
-        </label>
-        <label className="inline-flex items-center gap-1.5">
-          <input
-            type="checkbox"
-            disabled={disabled}
-            checked={Boolean(value.allowFutureReceivedDate)}
-            onChange={(e) => setField("allowFutureReceivedDate", e.target.checked)}
-          />
-          Request: authorise future Received Date
-        </label>
-      </div>
+      {!isAsnReceiving ? (
+        <div className="mt-3 flex flex-wrap gap-4 text-[11px] text-slate-600">
+          <p className="w-full text-[10px] text-slate-500">
+            Date overrides require STORE approve permission on the server. Checking a box alone does not grant
+            authorisation.
+          </p>
+          <label className="inline-flex items-center gap-1.5">
+            <input
+              type="checkbox"
+              disabled={disabled}
+              checked={Boolean(value.allowBoeBeforePoDate)}
+              onChange={(e) => setField("allowBoeBeforePoDate", e.target.checked)}
+            />
+            Request: authorise BOE Date before PO date
+          </label>
+          <label className="inline-flex items-center gap-1.5">
+            <input
+              type="checkbox"
+              disabled={disabled}
+              checked={Boolean(value.allowInvoiceAfterReceivedDate)}
+              onChange={(e) => setField("allowInvoiceAfterReceivedDate", e.target.checked)}
+            />
+            Request: authorise Supplier Invoice Date after Received Date
+          </label>
+          <label className="inline-flex items-center gap-1.5">
+            <input
+              type="checkbox"
+              disabled={disabled}
+              checked={Boolean(value.allowFutureReceivedDate)}
+              onChange={(e) => setField("allowFutureReceivedDate", e.target.checked)}
+            />
+            Request: authorise future Received Date
+          </label>
+        </div>
+      ) : null}
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         {DOC_SLOTS.map((slot) => (

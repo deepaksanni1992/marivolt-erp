@@ -361,6 +361,52 @@ run("M. CREATE readiness requires Gross+Net and rejects net>gross", () => {
   assert.equal(ok.postReady, true, JSON.stringify(ok.blockers));
 });
 
+run("M2. CREATE this GRN qty above BOE declared qty is not ready", () => {
+  const putawayLocations = [
+    { locationCode: "A-01", warehouse: "MAIN", rack: "A", bin: "01", status: "Active" },
+  ];
+  const over = evaluateAsnReceivingPostReadiness({
+    grn: {
+      status: "DRAFT",
+      sourceType: "ASN_RECEIVING",
+      items: [
+        {
+          article: "700001",
+          acceptedQty: 34,
+          location: "A-01",
+          warehouse: "MAIN",
+          asnLineId: "L1",
+          customsCapture: {
+            boeNumber: "83535",
+            boeDate: "2026-01-10",
+            boeDeclaredQty: 10,
+            boeDeclaredValue: 1000,
+            customsCurrency: "EUR",
+            exchangeRateToAED: 4.25,
+            customsUom: "PCS",
+            unitWeightKg: 2.35,
+            receivedDate: "2026-01-15",
+            grossWeightKg: 250,
+            netWeightKg: 225,
+          },
+          receivingSources: [
+            { ruNo: "RU1", grnAcceptedQty: 34, receivingSessionUnitId: "U1", actualUnitWeightKg: 2.35 },
+          ],
+        },
+      ],
+    },
+    asn: {
+      supplierInvoices: [{ invoiceNumber: "SI-1", invoiceDate: new Date("2026-01-01") }],
+      lines: [{ _id: "L1", hsCode: "8409", countryOfOrigin: "CN", article: "700001" }],
+    },
+    session: { status: "COMPLETED" },
+    sessionUnits: [{ _id: "U1", actualUnitWeightKg: 2.35 }],
+    stockLocations: putawayLocations,
+  });
+  assert.equal(over.postReady, false);
+  assert.ok(over.blockers.some((b) => b.code === "BOE_REMAINING_TO_LINK_INSUFFICIENT"));
+});
+
 run("N. CustomsBoe still persists gross/net; lock on reuse", () => {
   const model = fs.readFileSync(path.join(srcRoot, "models", "CustomsBoe.js"), "utf8");
   assert.match(model, /grossWeightKg/);

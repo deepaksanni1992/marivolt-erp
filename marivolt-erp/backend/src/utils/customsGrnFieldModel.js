@@ -620,39 +620,44 @@ export function validateCustomsCaptureForGrn({
     const parentUnit = Number(parentBoe.customsUnitValue) || 0;
     const parentQty = Number(parentBoe.boeDeclaredQty) || 0;
     const parentValue = Number(parentBoe.boeDeclaredValue) || 0;
-    if (
-      clientDeclaredQty != null &&
-      Math.abs(clientDeclaredQty - parentQty) > 1e-6
-    ) {
-      errors.push({
-        line: "HEADER",
-        article: "",
-        group: "header",
-        messages: [
-          `Cannot override BOE Declared Qty for existing BOE ${parentBoe.customsBoeRef || ""}. Parent has ${parentQty}.`,
-        ],
-      });
-    }
-    if (
-      clientDeclaredValue != null &&
-      Math.abs(clientDeclaredValue - parentValue) > 1e-6
-    ) {
-      errors.push({
-        line: "HEADER",
-        article: "",
-        group: "header",
-        messages: [
-          `Cannot override BOE Declared Value for existing BOE ${parentBoe.customsBoeRef || ""}. Parent has ${parentValue}.`,
-        ],
-      });
-    }
-    if (clientUnit != null && Math.abs(clientUnit - parentUnit) > 1e-6) {
-      errors.push({
-        line: "HEADER",
-        article: "",
-        group: "header",
-        messages: [`Cannot override frozen Customs Unit Value for existing BOE (${parentUnit}).`],
-      });
+    // ASN_RECEIVING adopts frozen parent economics. Incoming Shipments POST sends {}
+    // and operators cannot author date/declaration overrides, so client CREATE values
+    // must not block reuse of an existing legal BOE identity.
+    if (!forceAcceptedQtyOnly) {
+      if (
+        clientDeclaredQty != null &&
+        Math.abs(clientDeclaredQty - parentQty) > 1e-6
+      ) {
+        errors.push({
+          line: "HEADER",
+          article: "",
+          group: "header",
+          messages: [
+            `Cannot override BOE Declared Qty for existing BOE ${parentBoe.customsBoeRef || ""}. Parent has ${parentQty}.`,
+          ],
+        });
+      }
+      if (
+        clientDeclaredValue != null &&
+        Math.abs(clientDeclaredValue - parentValue) > 1e-6
+      ) {
+        errors.push({
+          line: "HEADER",
+          article: "",
+          group: "header",
+          messages: [
+            `Cannot override BOE Declared Value for existing BOE ${parentBoe.customsBoeRef || ""}. Parent has ${parentValue}.`,
+          ],
+        });
+      }
+      if (clientUnit != null && Math.abs(clientUnit - parentUnit) > 1e-6) {
+        errors.push({
+          line: "HEADER",
+          article: "",
+          group: "header",
+          messages: [`Cannot override frozen Customs Unit Value for existing BOE (${parentUnit}).`],
+        });
+      }
     }
     headerNorm = {
       ...headerNorm,
@@ -751,17 +756,19 @@ export function validateCustomsCaptureForGrn({
     errors.push({ line: "HEADER", article: "", group: "header", messages: [qtyResolve.message] });
   }
 
-  const headerDateProbe = resolveCustomsLineEffective({
-    header: headerNorm,
-    override: {},
-    quantity: 1,
-    allowances,
-    customsUnitValue: unitCalc.ok ? unitCalc.customsUnitValue : 0,
-    valuationMethod: CUSTOMS_VALUATION_BOE_AVERAGE,
-  });
-  const headerDateMsgs = validateCustomsDates(headerDateProbe, { poDate, allowances });
-  if (headerDateMsgs.length) {
-    errors.push({ line: "HEADER", article: "", group: "header", messages: headerDateMsgs });
+  if (!forceAcceptedQtyOnly) {
+    const headerDateProbe = resolveCustomsLineEffective({
+      header: headerNorm,
+      override: {},
+      quantity: 1,
+      allowances,
+      customsUnitValue: unitCalc.ok ? unitCalc.customsUnitValue : 0,
+      valuationMethod: CUSTOMS_VALUATION_BOE_AVERAGE,
+    });
+    const headerDateMsgs = validateCustomsDates(headerDateProbe, { poDate, allowances });
+    if (headerDateMsgs.length) {
+      errors.push({ line: "HEADER", article: "", group: "header", messages: headerDateMsgs });
+    }
   }
 
   const customsUnitValue = unitCalc.ok ? unitCalc.customsUnitValue : 0;

@@ -418,20 +418,30 @@ export async function applyResolvedCustomsToGrnLines({
 
   if (parentBoe) {
     assertCustomsBoeNotCancelled(parentBoe);
-    const compat = assertCustomsBoeDeclarationCompatible(parentBoe, payload.header);
-    if (!compat.ok) {
-      throw new CustomsGrnValidationError([
-        {
-          line: "HEADER",
-          article: "",
-          code: compat.code,
-          messages: compat.errors,
-        },
-      ]);
+    // ASN_RECEIVING reuses legal BOE identity and frozen parent economics.
+    // Manual GRN still rejects client spoof of parent declaration fields.
+    if (!isAsnReceivingGrn(grn)) {
+      const compat = assertCustomsBoeDeclarationCompatible(parentBoe, payload.header);
+      if (!compat.ok) {
+        throw new CustomsGrnValidationError([
+          {
+            line: "HEADER",
+            article: "",
+            code: compat.code,
+            messages: compat.errors,
+          },
+        ]);
+      }
     }
   }
 
   await applyAsnReceivingFieldAuthority({ grn, payload, session });
+  if (isAsnReceivingGrn(grn)) {
+    const rd = payload.header?.receivedDate;
+    if (rd == null || rd === "" || (typeof rd === "string" && !String(rd).trim())) {
+      payload.header.receivedDate = grn.grnDate || new Date();
+    }
+  }
 
   const lines = (grn.items || []).filter((ln) => (Number(ln.acceptedQty ?? ln.receivedQty) || 0) > 0);
   const forceAcceptedQtyOnly = Boolean(payload.forceAcceptedQtyOnly) || isAsnReceivingGrn(grn);

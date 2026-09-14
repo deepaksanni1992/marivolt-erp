@@ -448,6 +448,8 @@ run("tablet UI POST GRN confirmation and no auto reprint", () => {
   assert.match(incoming, /GRN Posted Successfully/);
   assert.match(incoming, /will not be reprinted/);
   assert.match(incoming, /Back to Incoming Shipments/);
+  assert.match(incoming, /notify\.fromError/);
+  assert.match(incoming, /scanError \? \(/);
   assert.doesNotMatch(incoming, /from-grn/);
 });
 

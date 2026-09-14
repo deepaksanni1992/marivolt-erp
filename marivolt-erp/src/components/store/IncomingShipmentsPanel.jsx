@@ -313,6 +313,8 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
       if (selectedId) qc.invalidateQueries({ queryKey: ["asn", selectedId] });
     } catch (err) {
       setScanError(err.message || "Could not post GRN");
+      notify.fromError(err);
+      refreshReceiving();
     } finally {
       setGrnBusy(false);
     }
@@ -664,6 +666,9 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
                     ) : progressQ.isFetching ? (
                       <p className="mt-2 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">Evaluating posting readiness…</p>
                     ) : null}
+                    {scanError ? (
+                      <p className="mt-2 rounded-xl bg-amber-50 p-3 text-sm text-amber-950">{scanError}</p>
+                    ) : null}
                     <button
                       type="button"
                       className="mt-3 min-h-16 w-full rounded-2xl bg-sky-700 text-xl font-bold text-white"
@@ -679,7 +684,10 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
                       <button
                         type="button"
                         className="mt-2 min-h-16 w-full rounded-2xl bg-emerald-700 text-xl font-bold text-white disabled:opacity-40"
-                        onClick={() => setPostConfirmOpen(true)}
+                        onClick={() => {
+                          setScanError("");
+                          setPostConfirmOpen(true);
+                        }}
                         disabled={grnBusy || progressQ.isFetching}
                       >
                         POST GRN
@@ -912,6 +920,9 @@ export default function IncomingShipmentsPanel({ onOpenDraftGrn }) {
           <div>Warehouse {(draftGrn?.items || [])[0]?.warehouse || "MAIN"}</div>
           <div>Putaway {(draftGrn?.items || [])[0]?.location || "—"}</div>
           <p className="text-sm text-slate-600">RU labels already printed will not be reprinted.</p>
+          {scanError ? (
+            <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-950">{scanError}</p>
+          ) : null}
           <button
             type="button"
             className="min-h-16 w-full rounded-2xl bg-emerald-700 text-xl font-bold text-white"
