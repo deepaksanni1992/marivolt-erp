@@ -38,9 +38,22 @@ const FULL_ACCESS = buildMatrix(
 const SYSTEM_DEFAULTS = {
   SUPER_ADMIN: FULL_ACCESS,
   ADMIN: FULL_ACCESS,
-  COMPANY_ADMIN: FULL_ACCESS,
+  COMPANY_ADMIN: {
+    ...FULL_ACCESS,
+    PRICE_LIST: [],
+  },
   SALES: buildMatrix({
-    SALES: ["view", "create", "edit", "approve", "cancel", "export"],
+    SALES: [
+      "view",
+      "create",
+      "edit",
+      "approve",
+      "cancel",
+      "export",
+      "price_tier_sell",
+      "price_tier_sell_ii",
+      "price_tier_minm",
+    ],
     PURCHASE: ["view", "create", "createFromAllocation"],
     CUSTOMS: ["view", "create", "cancel"],
     TRACEABILITY: ["article_view"],
@@ -99,7 +112,9 @@ const SYSTEM_DEFAULTS = {
     SALES: ["view"],
   }),
   VIEW_ONLY: buildMatrix({
-    ...Object.fromEntries(PERMISSION_MODULES.map((m) => [m, READ_ONLY_ACTIONS])),
+    ...Object.fromEntries(
+      PERMISSION_MODULES.map((m) => [m, m === "PRICE_LIST" ? [] : READ_ONLY_ACTIONS])
+    ),
     TRACEABILITY: ["article_view"],
   }),
 };

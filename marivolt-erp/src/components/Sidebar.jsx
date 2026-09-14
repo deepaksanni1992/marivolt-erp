@@ -1,7 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext.jsx";
-import { isStoreOperatorRole } from "../lib/rbac.js";
+import { isStoreOperatorRole, isPriceListAdminRole } from "../lib/rbac.js";
 
 const dashboardGroup = {
   label: "Dashboard",
@@ -21,11 +21,25 @@ const inventoryGroup = {
   ],
 };
 
+const masterDataGroup = {
+  label: "Master data",
+  items: [
+    { to: "/items", label: "Item Master" },
+    { to: "/price-list", label: "Price List" },
+  ],
+};
+
+const salesGroup = {
+  label: "Sales",
+  items: [
+    { to: "/sales", label: "Quotations & OA" },
+    { to: "/sales/man-rfq", label: "MAN RFQ / Quotation" },
+  ],
+};
+
 const flatLinks = [
-  { to: "/items", label: "Item Master" },
   { to: "/purchase", label: "Purchase" },
   { to: "/asn", label: "ASN" },
-  { to: "/sales", label: "Sales" },
   { to: "/store", label: "Store" },
   { to: "/logistics", label: "Logistics" },
   { to: "/accounts", label: "Accounts" },
@@ -60,12 +74,18 @@ function linkClass(isActive) {
 }
 
 export default function Sidebar({ open, onClose }) {
-  const { role } = useAuth();
+  const { role, can } = useAuth();
   const storeOnly = isStoreOperatorRole(role);
   const [dashboardOpen, setDashboardOpen] = useState(true);
   const [inventoryOpen, setInventoryOpen] = useState(true);
+  const [masterOpen, setMasterOpen] = useState(true);
+  const [salesOpen, setSalesOpen] = useState(true);
   const [customsOpen, setCustomsOpen] = useState(true);
   const [documentsOpen, setDocumentsOpen] = useState(true);
+  const masterItems = masterDataGroup.items.filter(
+    (item) => item.to !== "/price-list" || (isPriceListAdminRole(role) && can("PRICE_LIST", "view"))
+  );
+  const salesItems = salesGroup.items.filter((item) => item.to !== "/sales/man-rfq" || can("SALES", "create"));
 
   return (
     <aside
@@ -132,6 +152,42 @@ export default function Sidebar({ open, onClose }) {
                     {inventoryGroup.items.map(({ to, label }) => (
                       <li key={to}>
                         <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/inventory"}>
+                          {label}
+                        </NavLink>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </li>
+
+              <li>
+                <button type="button" className="erp-sidebar__group-btn" onClick={() => setMasterOpen((v) => !v)}>
+                  <span>{masterDataGroup.label}</span>
+                  <span className="erp-sidebar__chevron">{masterOpen ? "▾" : "▸"}</span>
+                </button>
+                {masterOpen ? (
+                  <ul className="erp-sidebar__submenu">
+                    {masterItems.map(({ to, label }) => (
+                      <li key={to}>
+                        <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
+                          {label}
+                        </NavLink>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </li>
+
+              <li>
+                <button type="button" className="erp-sidebar__group-btn" onClick={() => setSalesOpen((v) => !v)}>
+                  <span>{salesGroup.label}</span>
+                  <span className="erp-sidebar__chevron">{salesOpen ? "▾" : "▸"}</span>
+                </button>
+                {salesOpen ? (
+                  <ul className="erp-sidebar__submenu">
+                    {salesItems.map(({ to, label }) => (
+                      <li key={to}>
+                        <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/sales"}>
                           {label}
                         </NavLink>
                       </li>

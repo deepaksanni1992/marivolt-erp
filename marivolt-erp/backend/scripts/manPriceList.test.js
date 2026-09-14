@@ -1,0 +1,502 @@
+/**
+ * MAN Price List + RFQ → quotation (no Mongo).
+ * Run: node scripts/manPriceList.test.js
+ */
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  getDefaultPermissionsForRole,
+  hasPermission,
+} from "../src/services/roleService.js";
+import { PERMISSION_ACTIONS, PERMISSION_MODULES } from "../src/models/Role.js";
+import { toSalesDto, toManagementDto } from "../src/services/manPriceListService.js";
+import {
+  MAN_PRICE_LIST_HEADERS,
+  MAN_PRICE_LIST_ADMIN_ROLES,
+  buildCsv,
+  canonicalCsvHeader,
+  cellIsBlank,
+  assertNoForbiddenSalesPriceKeys,
+  classifyManRfqCandidates,
+  collectForbiddenSalesPriceKeys,
+  displayedItemMasterSpn,
+  displayedSupplier1,
+  escapeCsvCell,
+  formatExportAvailability,
+  formatManAvailability,
+  isManEligibleItem,
+  isManPriceListAdminRole,
+  mapCsvRow,
+  mergeBlankPreserving,
+  normalizePartNoForMatch,
+  parseOptionalMoney,
+  parseRfqCsvRow,
+  permittedTiersForMatrix,
+  preserveArticleCode,
+  publicSellingPrices,
+  redactManRfqMatchResponse,
+  redactQuotationForSalesApi,
+  rowHasDuplicateArticle,
+  roundQuotationMoney,
+  sanitizeCsvFormula,
+  sanitizeCustomerQuotationPrint,
+  shouldSkipUnchangedImport,
+  stripPurchaseFields,
+  tierIsSelectable,
+  toSalesMatchPrices,
+  uomsCompatible,
+} from "../src/utils/manPriceList.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const srcRoot = path.join(__dirname, "..", "src");
+const feRoot = path.join(__dirname, "..", "..", "src");
+
+let passed = 0;
+let failed = 0;
+function run(name, fn) {
+  try {
+    fn();
+    passed += 1;
+    console.log(`  ✓ ${name}`);
+  } catch (e) {
+    failed += 1;
+    console.error(`  ✗ ${name}`);
+    console.error(`    ${e.message}`);
+  }
+}
+
+async function runAsync(name, fn) {
+  try {
+    await fn();
+    passed += 1;
+    console.log(`  ✓ ${name}`);
+  } catch (e) {
+    failed += 1;
+    console.error(`  ✗ ${name}`);
+    console.error(`    ${e.message}`);
+  }
+}
+
+console.log("\nMAN Price List / RFQ\n");
+
+run("PRICE_LIST module and tier actions exist", () => {
+  assert.ok(PERMISSION_MODULES.includes("PRICE_LIST"));
+  for (const a of ["price_tier_sell", "price_tier_sell_ii", "price_tier_minm", "price_tier_rock"]) {
+    assert.ok(PERMISSION_ACTIONS.includes(a), a);
+  }
+});
+
+run("Admin / Super Admin have PRICE_LIST management; sales and company_admin do not", () => {
+  const admin = getDefaultPermissionsForRole("admin");
+  const superAdmin = getDefaultPermissionsForRole("super_admin");
+  const companyAdmin = getDefaultPermissionsForRole("company_admin");
+  const sales = getDefaultPermissionsForRole("sales");
+  for (const action of ["view", "create", "edit", "export"]) {
+    assert.ok(admin.PRICE_LIST.includes(action), `admin ${action}`);
+    assert.ok(superAdmin.PRICE_LIST.includes(action), `super_admin ${action}`);
+  }
+  assert.deepEqual(companyAdmin.PRICE_LIST || [], []);
+  assert.deepEqual(sales.PRICE_LIST || [], []);
+  assert.ok(sales.SALES.includes("price_tier_sell"));
+  assert.ok(sales.SALES.includes("price_tier_sell_ii"));
+  assert.ok(sales.SALES.includes("price_tier_minm"));
+  assert.ok(!sales.SALES.includes("price_tier_rock"));
+  assert.ok(admin.SALES.includes("price_tier_rock"));
+});
+
+await runAsync("hasPermission denies sales PRICE_LIST including export", async () => {
+  const salesReq = { user: { role: "sales" } };
+  const adminReq = { user: { role: "admin" } };
+  assert.equal(await hasPermission(salesReq, "PRICE_LIST", "view"), false);
+  assert.equal(await hasPermission(salesReq, "PRICE_LIST", "export"), false);
+  assert.equal(await hasPermission({ user: { role: "company_admin" } }, "PRICE_LIST", "view"), false);
+  assert.equal(await hasPermission({ user: { role: "company_admin" } }, "PRICE_LIST", "export"), false);
+  assert.equal(await hasPermission(salesReq, "SALES", "create"), true);
+  assert.equal(await hasPermission(salesReq, "SALES", "price_tier_rock"), false);
+  assert.equal(await hasPermission(adminReq, "PRICE_LIST", "export"), true);
+  assert.equal(await hasPermission(adminReq, "SALES", "price_tier_rock"), true);
+});
+
+run("Sales DTO never includes purchase fields", () => {
+  const dto = toSalesDto(
+    {
+      _id: "pl1",
+      itemMasterId: "im1",
+      article: "A1",
+      currency: "USD",
+      sellPrice: 10,
+      sellIi: 9,
+      minm: 8,
+      rock: 7,
+      buy: 4,
+      nextBuy: 3.5,
+      leadTime: "8 Weeks",
+      isActive: true,
+      revision: 2,
+      updatedAt: new Date("2026-01-01"),
+    },
+    { canRock: false, uom: "PCS" }
+  );
+  assert.equal(dto.buy, undefined);
+  assert.equal(dto.nextBuy, undefined);
+  assert.equal(dto.supplier, undefined);
+  assert.equal(dto.id, undefined);
+  assert.equal(dto.itemMasterId, undefined);
+  assert.equal(dto.rock, null);
+  assert.equal(dto.sellPrice, 10);
+  assert.equal(dto.revision, 2);
+  const mgmt = toManagementDto(
+    { _id: "pl1", itemMasterId: "im1", article: "A1", buy: 4, nextBuy: 3.5, sellPrice: 10, revision: 1, isActive: true },
+    { supplier: "ACME" }
+  );
+  assert.equal(mgmt.buy, 4);
+  assert.equal(mgmt.nextBuy, 3.5);
+  assert.equal(mgmt.id, "pl1");
+  assert.equal(mgmt.itemMasterId, "im1");
+});
+
+run("stripPurchaseFields removes Buy / Next Buy / supplier purchasing", () => {
+  const stripped = stripPurchaseFields({ article: "A1", sellPrice: 10, buy: 1, nextBuy: 2, supplierName: "X", supplierPartNumber: "Y" });
+  assert.equal(stripped.buy, undefined);
+  assert.equal(stripped.nextBuy, undefined);
+  assert.equal(stripped.supplierName, undefined);
+  assert.equal(stripped.sellPrice, 10);
+});
+
+run("MAN eligibility is canonical brand MAN only (not MAK / Wärtsilä / substring)", () => {
+  assert.equal(isManEligibleItem({ brand: "MAN", engine: "MAN" }), true);
+  assert.equal(isManEligibleItem({ engine: "MAN" }), true);
+  assert.equal(isManEligibleItem({ brand: "MAK" }), false);
+  assert.equal(isManEligibleItem({ brand: "Wartsila", engine: "Wartsila" }), false);
+  assert.equal(isManEligibleItem({ brand: "Wärtsilä" }), false);
+  assert.equal(isManEligibleItem({ brand: "Himsen" }), false);
+  assert.equal(isManEligibleItem({ description: "MAN spare for Wartsila" }), false);
+});
+
+run("Part no maps to SPN; Supplier part No. maps to Supplier 1 P/N; Sell 2 alias", () => {
+  const mapped = mapCsvRow({
+    Article: "00012",
+    "Part no": "051.001",
+    "Sell 2": "12.5",
+    "Supplier part No.": "SP-9",
+    Description: "Filter",
+  });
+  assert.equal(mapped["Part no"], "051.001");
+  assert.equal(mapped["Sell II"], "12.5");
+  assert.equal(mapped["Supplier part No."], "SP-9");
+  assert.equal(canonicalCsvHeader("Sell 2"), "Sell II");
+  assert.equal(preserveArticleCode("00012"), "00012");
+  assert.equal(displayedItemMasterSpn({ spn: "MASTER" }, { spn: "TECH-001" }), "TECH-001");
+  assert.equal(displayedItemMasterSpn({ spn: "MASTER" }, {}), "MASTER");
+  assert.equal(displayedSupplier1({ supplierName: "Acme", supplierPartNumber: "SP-9" }, { supplierPartNumber: "IGNORED" }).partNumber, "SP-9");
+  assert.equal(displayedSupplier1(null, { supplier: "Acme" }).name, "Acme");
+  assert.equal(displayedSupplier1(null, { supplierPartNumber: "SCALAR" }).partNumber, "");
+});
+
+run("Article / SPN string identity keeps leading zeros", () => {
+  assert.equal(preserveArticleCode("0010"), "0010");
+  assert.equal(normalizePartNoForMatch("  0123-AB  "), "0123-AB");
+  assert.equal(normalizePartNoForMatch("12  34"), "12 34");
+});
+
+run("Blank cells are not zero and preserve existing values", () => {
+  assert.equal(cellIsBlank(""), true);
+  assert.equal(parseOptionalMoney("").present, false);
+  assert.equal(parseOptionalMoney("0").present, true);
+  assert.equal(parseOptionalMoney("0").value, 0);
+  const merged = mergeBlankPreserving({ sellPrice: 10, minm: 8 }, { sellPrice: "", minm: 9, rock: "" }, ["sellPrice", "minm", "rock"]);
+  assert.equal(merged.next.sellPrice, 10);
+  assert.equal(merged.next.minm, 9);
+  assert.equal(merged.next.rock, undefined);
+});
+
+run("Duplicate Article rows in an upload are detected", () => {
+  assert.deepEqual(rowHasDuplicateArticle(["A1", "A2", "a1"]), ["A1"]);
+});
+
+run("Negative / invalid prices flagged; missing tier not selectable", () => {
+  assert.ok(parseOptionalMoney("-1").error);
+  assert.ok(parseOptionalMoney("abc").error);
+  assert.equal(tierIsSelectable({ sellPrice: null, minm: 5 }, "SELL"), false);
+  assert.equal(tierIsSelectable({ sellPrice: 0 }, "SELL"), true);
+  assert.equal(tierIsSelectable({ sellIi: 9 }, "SELL_II"), true);
+});
+
+run("SET is not treated as PCS", () => {
+  assert.equal(uomsCompatible("SET", "PCS"), false);
+  assert.equal(uomsCompatible("PCS", "PCS"), true);
+  assert.equal(uomsCompatible("", "PCS"), false);
+});
+
+run("CSV formula injection and UTF-8 template headers", () => {
+  assert.equal(sanitizeCsvFormula("=CMD"), "'=CMD");
+  assert.equal(sanitizeCsvFormula("+1+1"), "'+1+1");
+  assert.equal(sanitizeCsvFormula("@SUM"), "'@SUM");
+  assert.equal(escapeCsvCell("a,b"), '"a,b"');
+  const csv = buildCsv(MAN_PRICE_LIST_HEADERS, [{ Article: "=1+1", "Part no": "001" }]);
+  assert.ok(csv.startsWith("\uFEFF"));
+  assert.ok(csv.includes("'=1+1"));
+  assert.equal(MAN_PRICE_LIST_HEADERS[0], "Article");
+  assert.equal(MAN_PRICE_LIST_HEADERS[16], "Next Buy");
+});
+
+run("Repeat unchanged import skips new revision; stale change does not skip", () => {
+  assert.equal(shouldSkipUnchangedImport({ creating: false, hasItemChanges: false, beforeHash: "x", nextHash: "x" }), true);
+  assert.equal(shouldSkipUnchangedImport({ creating: true, hasItemChanges: false, beforeHash: "x", nextHash: "x" }), false);
+  assert.equal(shouldSkipUnchangedImport({ creating: false, hasItemChanges: true, beforeHash: "x", nextHash: "x" }), false);
+  assert.equal(shouldSkipUnchangedImport({ creating: false, hasItemChanges: false, beforeHash: "old", nextHash: "new" }), false);
+});
+
+run("RFQ match: one, exactly two, none, UOM mismatch, missing price", () => {
+  const priced = { sellPrice: 10, revision: 1 };
+  const one = classifyManRfqCandidates([
+    { article: "A1", uomOk: true, prices: priced, pricingOk: true, modelConflict: false },
+  ]);
+  assert.equal(one.status, "MATCHED");
+  assert.equal(one.pick.article, "A1");
+
+  const two = classifyManRfqCandidates([
+    { article: "A1", uomOk: true, prices: priced, pricingOk: true, modelConflict: false, pricesSell: 50 },
+    { article: "A2", uomOk: true, prices: { ...priced, sellPrice: 1 }, pricingOk: true, modelConflict: false },
+  ]);
+  assert.equal(two.status, "MULTIPLE");
+  assert.equal(two.pick, null);
+
+  const none = classifyManRfqCandidates([]);
+  assert.equal(none.status, "NOT_FOUND");
+
+  const uom = classifyManRfqCandidates([
+    { article: "A1", uomOk: false, prices: priced, pricingOk: true, modelConflict: false },
+  ]);
+  assert.equal(uom.status, "REVIEW");
+
+  const missing = classifyManRfqCandidates([
+    { article: "A1", uomOk: true, prices: null, pricingOk: false, modelConflict: false },
+  ]);
+  assert.equal(missing.status, "PRICING_REQUIRED");
+});
+
+run("Live availability strings: full, partial, zero, missing lead time", () => {
+  assert.equal(formatManAvailability({ availableQty: 10, requestedQty: 4, uom: "PCS", leadTime: "8 Weeks" }), "Ex-Stock");
+  assert.equal(
+    formatManAvailability({ availableQty: 4, requestedQty: 10, uom: "PCS", leadTime: "8 Weeks" }),
+    "4 PCS Ex-Stock; balance 6 PCS: 8 Weeks"
+  );
+  assert.equal(formatManAvailability({ availableQty: 0, requestedQty: 10, uom: "PCS", leadTime: "8 Weeks" }), "8 Weeks");
+  assert.equal(formatManAvailability({ availableQty: 0, requestedQty: 10, uom: "PCS", leadTime: "" }), "Lead time to be confirmed");
+  assert.equal(formatExportAvailability({ availableQty: 2, leadTime: "8 Weeks" }), "Ex-Stock");
+  assert.equal(formatExportAvailability({ availableQty: 0, leadTime: "" }), "Lead time to be confirmed");
+});
+
+run("Tier authorization helpers and sales cannot select Rock by default", () => {
+  const salesTiers = permittedTiersForMatrix({ SALES: ["price_tier_sell", "price_tier_sell_ii", "price_tier_minm"] });
+  assert.deepEqual(salesTiers, ["SELL", "SELL_II", "MINM"]);
+  const adminTiers = permittedTiersForMatrix({}, { isAdmin: true });
+  assert.ok(adminTiers.includes("ROCK"));
+});
+
+run("Customer print snapshot omits purchase, tier, price-list revision, and audit notes", () => {
+  const printed = sanitizeCustomerQuotationPrint({
+    quotationNo: "QT-1",
+    internalNotes: "Buy 4 / floor Minm",
+    manRfqIdempotencyKey: "abc",
+    lines: [
+      {
+        article: "A1",
+        description: "Filter",
+        partNumber: "051.001",
+        customerPartNo: "051.001",
+        qty: 2,
+        uom: "PCS",
+        price: 10,
+        totalPrice: 20,
+        availability: "Ex-Stock",
+        priceTier: "MINM",
+        priceListId: "pl1",
+        priceListRevision: 9,
+        buy: 4,
+        nextBuy: 5,
+      },
+    ],
+  });
+  assert.equal(printed.internalNotes, "");
+  assert.equal(printed.lines[0].price, 10);
+  assert.equal(printed.lines[0].customerPartNo, "051.001");
+  assert.equal(printed.lines[0].priceTier, undefined);
+  assert.equal(printed.lines[0].priceListId, undefined);
+  assert.equal(printed.lines[0].buy, undefined);
+  assert.equal(printed.lines[0].nextBuy, undefined);
+});
+
+run("Sales quotation API redaction strips purchase and price-list ids", () => {
+  const createdAt = new Date("2026-01-02T00:00:00.000Z");
+  const redacted = redactQuotationForSalesApi({
+    _id: "q1",
+    quotationNo: "QT-1",
+    createdAt,
+    lines: [{ _id: "ln1", article: "A1", price: 10, buy: 4, nextBuy: 5, priceListId: "pl", priceListRevision: 3 }],
+  });
+  assert.equal(redacted._id, "q1");
+  assert.equal(redacted.createdAt, createdAt);
+  assert.equal(redacted.lines[0]._id, "ln1");
+  assert.equal(redacted.lines[0].price, 10);
+  assert.equal(redacted.lines[0].buy, undefined);
+  assert.equal(redacted.lines[0].priceListId, undefined);
+  assert.equal(redacted.lines[0].priceListRevision, undefined);
+  assert.deepEqual(collectForbiddenSalesPriceKeys(redacted), []);
+});
+
+run("Sales match payloads keep numeric revision and drop nested price-list ids", () => {
+  const leaked = {
+    lines: [
+      {
+        selectedArticle: "A1",
+        priceListRevision: 4,
+        priceListId: "should-drop",
+        buy: 1,
+        nextBuy: 2,
+        candidates: [
+          {
+            article: "A1",
+            prices: {
+              id: "pl-mongo",
+              _id: "pl-mongo",
+              revision: 4,
+              sellPrice: 10,
+              buy: 3,
+              supplierName: "Acme",
+            },
+          },
+        ],
+      },
+    ],
+  };
+  assert.ok(collectForbiddenSalesPriceKeys(leaked).includes("lines[0].priceListId"));
+  assert.ok(collectForbiddenSalesPriceKeys(leaked).includes("lines[0].candidates[0].prices.id"));
+  const clean = redactManRfqMatchResponse(leaked);
+  assert.equal(clean.lines[0].priceListRevision, 4);
+  assert.equal(clean.lines[0].priceListId, undefined);
+  assert.equal(clean.lines[0].buy, undefined);
+  assert.equal(clean.lines[0].candidates[0].prices.id, undefined);
+  assert.equal(clean.lines[0].candidates[0].prices.sellPrice, 10);
+  assertNoForbiddenSalesPriceKeys(clean, "match");
+  const salesPrices = toSalesMatchPrices(
+    { _id: "mongo-id", revision: 4, sellPrice: 10, rock: 1, buy: 9, currency: "USD" },
+    { canRock: false }
+  );
+  assert.equal(salesPrices.id, undefined);
+  assert.equal(salesPrices._id, undefined);
+  assert.equal(salesPrices.revision, 4);
+  assert.equal(salesPrices.rock, null);
+  assert.equal(salesPrices.buy, undefined);
+  assertNoForbiddenSalesPriceKeys({ candidates: [{ prices: salesPrices }] }, "sales prices");
+});
+
+run("Quotation money rounding uses 2 dp; source precision parse preserved", () => {
+  assert.equal(roundQuotationMoney(10.126), 10.13);
+  assert.equal(parseOptionalMoney("10.125").value, 10.125);
+});
+
+run("Public selling prices do not include Buy", () => {
+  const pub = publicSellingPrices({ sellPrice: 1, buy: 9, nextBuy: 8 });
+  assert.equal(pub.buy, undefined);
+  assert.equal(pub.sellPrice, 1);
+});
+
+run("RFQ CSV required fields parse Part no / UOM / Qty", () => {
+  const row = parseRfqCsvRow({ "Part no": "051.001", UOM: "PCS", Qty: "10", Description: "x" });
+  assert.equal(row.partNo, "051.001");
+  assert.equal(row.uom, "PCS");
+  assert.equal(row.qty, "10");
+});
+
+run("Server routes enforce PRICE_LIST on management/export and SALES.create on RFQ", () => {
+  const plRoutes = fs.readFileSync(path.join(srcRoot, "routes", "manPriceListRoutes.js"), "utf8");
+  const rfqRoutes = fs.readFileSync(path.join(srcRoot, "routes", "manRfqRoutes.js"), "utf8");
+  const rfqService = fs.readFileSync(path.join(srcRoot, "services", "manRfqService.js"), "utf8");
+  const plService = fs.readFileSync(path.join(srcRoot, "services", "manPriceListService.js"), "utf8");
+  const quotation = fs.readFileSync(path.join(srcRoot, "controllers", "quotationController.js"), "utf8");
+  const itemModel = fs.readFileSync(path.join(srcRoot, "models", "itemMasterModel.js"), "utf8");
+  assert.match(plRoutes, /requirePermission\("PRICE_LIST", "view"\)/);
+  assert.match(plRoutes, /requirePermission\("PRICE_LIST", "export"\)/);
+  assert.match(plRoutes, /requireRole\(\.\.\.MAN_PRICE_LIST_ADMIN_ROLES\)/);
+  assert.match(plRoutes, /\/export/);
+  assert.deepEqual([...MAN_PRICE_LIST_ADMIN_ROLES], ["super_admin", "admin"]);
+  assert.equal(isManPriceListAdminRole("company_admin"), false);
+  assert.equal(isManPriceListAdminRole("admin"), true);
+  const qModel = fs.readFileSync(path.join(srcRoot, "models", "Quotation.js"), "utf8");
+  const migrate = fs.readFileSync(path.join(srcRoot, "..", "scripts", "migrate-man-rfq-quotation-index.mjs"), "utf8");
+  assert.match(qModel, /uniq_company_manRfqIdempotencyKey_manRfq/);
+  assert.match(qModel, /sourceType: "MAN_RFQ"/);
+  assert.doesNotMatch(qModel, /sparse:\s*true/);
+  assert.match(migrate, /const apply = process\.argv\.includes\("--apply"\)/);
+  assert.match(migrate, /duplicate qualifying MAN_RFQ keys/);
+  assert.match(migrate, /ABORT:/);
+  assert.match(migrate, /dry-run only\. No indexes were dropped or created/);
+  assert.match(migrate, /sourceType: "MAN_RFQ"/);
+  assert.match(plService, /runMongoTransaction/);
+  assert.match(plService, /injectFailureAfter/);
+  assert.match(plService, /techSet\.spn = proposed\.spn/);
+  assert.match(plService, /ItemSupplier\[0\]\.supplierPartNumber \(Supplier 1 P\/N\)/);
+  assert.match(rfqRoutes, /requirePermission\("SALES", "create"\)/);
+  assert.doesNotMatch(rfqRoutes, /PRICE_LIST/);
+  assert.match(rfqService, /TIER_DENIED/);
+  assert.match(rfqService, /STALE_PRICE/);
+  assert.match(rfqService, /skipAutoCreateItems: true/);
+  assert.doesNotMatch(rfqService, /priceListId:\s*pick\.prices/);
+  assert.doesNotMatch(rfqService, /findById\(/);
+  assert.doesNotMatch(rfqService, /line\.priceListId/);
+  assert.match(rfqService, /redactManRfqMatchResponse/);
+  const rfqPage = fs.readFileSync(path.join(feRoot, "pages", "ManRfqQuotation.jsx"), "utf8");
+  assert.doesNotMatch(rfqPage, /priceListId/);
+  assert.doesNotMatch(rfqPage, /return \{\s*\.\.\.ln/);
+  assert.doesNotMatch(rfqPage, /console\.(log|debug|info|warn)/);
+  assert.match(rfqPage, /STALE_PRICE/);
+  assert.match(rfqPage, /priceListRevision/);
+  assert.match(rfqPage, /selectedArticle/);
+  assert.match(plService, /companyId: req\.companyId/);
+  assert.match(plService, /Unknown Article/);
+  assert.match(plService, /STALE_PREVIEW/);
+  assert.match(plService, /supplierPartNumber/);
+  assert.match(quotation, /persistNewQuotation/);
+  assert.match(quotation, /sanitizeCustomerQuotationPrint/);
+  assert.match(quotation, /redactQuotationForSalesApi/);
+  assert.match(quotation, /delete body\.manRfqIdempotencyKey/);
+  assert.match(itemModel, /partNumber/);
+  assert.match(plService, /spn: cellIsBlank\(data\["Part no"\]\)/);
+});
+
+run("UI routes and Item Master MAN tab exist; stock is not written by this module", () => {
+  const app = fs.readFileSync(path.join(feRoot, "App.jsx"), "utf8");
+  const sidebar = fs.readFileSync(path.join(feRoot, "components", "Sidebar.jsx"), "utf8");
+  const itemMaster = fs.readFileSync(path.join(feRoot, "pages", "ItemMaster.jsx"), "utf8");
+  const plService = fs.readFileSync(path.join(srcRoot, "services", "manPriceListService.js"), "utf8");
+  const rfqService = fs.readFileSync(path.join(srcRoot, "services", "manRfqService.js"), "utf8");
+  const stockService = fs.readFileSync(path.join(srcRoot, "services", "manRfqService.js"), "utf8");
+  assert.match(app, /path="price-list"/);
+  assert.match(app, /path="sales\/man-rfq"/);
+  assert.match(sidebar, /Price List/);
+  assert.match(sidebar, /isPriceListAdminRole/);
+  assert.match(sidebar, /MAN RFQ \/ Quotation/);
+  assert.match(itemMaster, /MAN Price List/);
+  assert.match(plService, /getStockBalance/);
+  assert.doesNotMatch(plService, /adjustStock|createStockMovement|postStock/);
+  assert.doesNotMatch(rfqService, /allocateStock|createReservation/);
+  assert.match(stockService, /getStockBalance/);
+});
+
+run("Existing manual quotation path remains on persistNewQuotation without MAN gating", () => {
+  const quotation = fs.readFileSync(path.join(srcRoot, "controllers", "quotationController.js"), "utf8");
+  assert.match(quotation, /export async function persistNewQuotation/);
+  assert.match(quotation, /skipAutoCreateItems = false/);
+  assert.match(quotation, /export async function createQuotation/);
+  assert.doesNotMatch(quotation, /isManEligibleItem/);
+});
+
+if (failed) {
+  console.error(`\nmanPriceList.test.js failed: ${failed} failed, ${passed} passed`);
+  process.exit(1);
+}
+console.log(`\nmanPriceList.test.js passed: ${passed}`);

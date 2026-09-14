@@ -19,6 +19,7 @@ import {
   quotationCanBeDeleted,
   quotationDeleteBlockReason,
 } from "../utils/salesAdminAccess.js";
+import { sanitizeCustomerQuotationPrint, redactQuotationForSalesApi } from "../utils/manPriceList.js";
 import {
   buildOaWorkingCopyFromQuotation,
   buildQuotationSearchFilterForOA,
@@ -84,6 +85,14 @@ function normalizeLines(lines = []) {
       const qty = Number(line.qty) || 0;
       const price = Number(line.price ?? line.salePrice ?? line.unitPrice) || 0;
       const totalPrice = qty * price;
+      const snapshot = {};
+      if (line.customerPartNo != null) snapshot.customerPartNo = String(line.customerPartNo || "");
+      if (line.priceTier != null) snapshot.priceTier = String(line.priceTier || "").toUpperCase();
+      if (line.priceListRevision != null) snapshot.priceListRevision = Number(line.priceListRevision) || 0;
+      if (line.priceListId) snapshot.priceListId = String(line.priceListId);
+      if (line.availabilityCheckedAt) snapshot.availabilityCheckedAt = line.availabilityCheckedAt;
+      if (line.sourceType) snapshot.sourceType = String(line.sourceType || "");
+      if (line.currency) snapshot.currency = String(line.currency || "");
       return {
         serialNo,
         article: String(line.article || line.itemCode || "").trim().toUpperCase(),
@@ -96,6 +105,7 @@ function normalizeLines(lines = []) {
         remarks: String(line.remarks || ""),
         materialCode: String(line.materialCode || "").trim(),
         availability: String(line.availability || "").trim(),
+        ...snapshot,
       };
     })
     .filter((line) => line.article && line.description && line.uom && line.qty > 0 && line.price >= 0)
@@ -254,7 +264,7 @@ export async function listQuotations(req, res) {
       Quotation.countDocuments(filter),
     ]);
     const items = await enrichQuotationsWithDeleteEligibility(req, rows);
-    res.json({ items, total, page, limit });
+    res.json({ items: items.map(redactQuotationForSalesApi), total, page, limit });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -285,7 +295,7 @@ export async function getQuotation(req, res) {
     const row = await Quotation.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
     const [enriched] = await enrichQuotationsWithDeleteEligibility(req, [row]);
-    const base = enriched || row;
+    const base = redactQuotationForSalesApi(enriched || row);
     const linkedOA = await OrderAcknowledgement.findOne(
       withCompany(req, { linkedQuotationId: row._id, status: { $ne: "CANCELLED" } })
     )
@@ -316,76 +326,103 @@ export async function getNextQuotationNumber(req, res) {
   }
 }
 
+export async function persistNewQuotation(req, rawBody = {}, { skipAutoCreateItems = false, session = null } = {}) {
+  const body = { ...rawBody };
+  const source = String(body.sourceType || "MANUAL").trim() || "MANUAL";
+  body.sourceType = source;
+  if (source === "MAN_RFQ") {
+    const key = String(body.manRfqIdempotencyKey || "").trim();
+    if (!key) {
+      const e = new Error("MAN RFQ quotations require a populated idempotency key");
+      e.statusCode = 400;
+      e.code = "MAN_RFQ_KEY_REQUIRED";
+      throw e;
+    }
+    body.manRfqIdempotencyKey = key;
+  } else {
+    delete body.manRfqIdempotencyKey;
+    delete body.manRfqRequestHash;
+  }
+  if (!Array.isArray(body.lines) || body.lines.length === 0) {
+    const e = new Error("Quotation must contain at least one line");
+    e.statusCode = 400;
+    throw e;
+  }
+  const customer = await resolveCustomerFromMaster(req, body);
+  body.customerId = customer._id;
+  body.customerName = customer.name;
+  const company = await Company.findById(req.companyId).lean();
+  if (!company || !company.isActive) {
+    const e = new Error("Active company context required");
+    e.statusCode = 403;
+    throw e;
+  }
+  if (String(body.quotationNo || "").trim()) {
+    const prepared = await applyManualSalesDocumentNumber({
+      companyId: req.companyId,
+      documentType: "QT",
+      value: body.quotationNo,
+      model: Quotation,
+      field: "quotationNo",
+    });
+    body.quotationNo = prepared.number;
+  } else {
+    body.quotationNo = await nextUniqueSalesDocNumber({
+      companyId: req.companyId,
+      companyCode: req.companyCode,
+      docKey: "QUOTATION",
+      referenceDate: new Date(),
+      model: Quotation,
+      field: "quotationNo",
+    });
+  }
+  body.quotationNumber = body.quotationNo;
+  body.createdBy = req.user?.email || "";
+  body.companyId = req.companyId;
+  body.companySnapshot = {
+    companyName: company.name || "",
+    logo: company.logoUrl || "",
+    address: company.address || "",
+    email: company.email || "",
+    phone: company.phone || "",
+    registrationNo: "",
+  };
+  const fromBody = pickCustomerTransactionFieldsFromBody(body);
+  const fromMaster = mapCustomerMasterToTransactionDefaults(customer);
+  const customerFields = resolveDocumentCustomerFields(
+    {
+      contactPerson: fromBody.contactPerson,
+      attention: fromBody.attention,
+      billingAddress: fromBody.billingAddress,
+      shippingAddress: fromBody.shippingAddress,
+      paymentTerms: fromBody.paymentTerms,
+    },
+    fromMaster
+  );
+  body.contactPerson = customerFields.contactPerson;
+  body.attention = customerFields.attention;
+  body.billingAddress = customerFields.billingAddress;
+  body.shippingAddress = customerFields.shippingAddress;
+  body.paymentTerms = customerFields.paymentTerms;
+  body.customer = buildPartySnapshotFromFields(customer.name, customerFields, customer);
+  body.validityDate = body.validityDate || body.validUntil || null;
+  const doc = new Quotation(body);
+  recalcQuotationTotals(doc);
+  if (!doc.lines.length) {
+    const e = new Error("Each line must contain article, description, uom, qty and price");
+    e.statusCode = 400;
+    throw e;
+  }
+  await doc.save(session ? { session } : undefined);
+  if (!skipAutoCreateItems) {
+    await autoCreateItemsFromQuotation({ req, quotation: doc });
+  }
+  return doc;
+}
+
 export async function createQuotation(req, res) {
   try {
-    const body = { ...req.body };
-    if (!Array.isArray(body.lines) || body.lines.length === 0) {
-      return res.status(400).json({ message: "Quotation must contain at least one line" });
-    }
-    const customer = await resolveCustomerFromMaster(req, body);
-    body.customerId = customer._id;
-    body.customerName = customer.name;
-    const company = await Company.findById(req.companyId).lean();
-    if (!company || !company.isActive) {
-      return res.status(403).json({ message: "Active company context required" });
-    }
-    if (String(body.quotationNo || "").trim()) {
-      const prepared = await applyManualSalesDocumentNumber({
-        companyId: req.companyId,
-        documentType: "QT",
-        value: body.quotationNo,
-        model: Quotation,
-        field: "quotationNo",
-      });
-      body.quotationNo = prepared.number;
-    } else {
-      // P1: daily sequence uses UAE business date of creation clock — not editable quotationDate.
-      body.quotationNo = await nextUniqueSalesDocNumber({
-        companyId: req.companyId,
-        companyCode: req.companyCode,
-        docKey: "QUOTATION",
-        referenceDate: new Date(),
-        model: Quotation,
-        field: "quotationNo",
-      });
-    }
-    body.quotationNumber = body.quotationNo;
-    body.createdBy = req.user?.email || "";
-    body.companyId = req.companyId;
-    body.companySnapshot = {
-      companyName: company.name || "",
-      logo: company.logoUrl || "",
-      address: company.address || "",
-      email: company.email || "",
-      phone: company.phone || "",
-      registrationNo: "",
-    };
-    const fromBody = pickCustomerTransactionFieldsFromBody(body);
-    const fromMaster = mapCustomerMasterToTransactionDefaults(customer);
-    const customerFields = resolveDocumentCustomerFields(
-      {
-        contactPerson: fromBody.contactPerson,
-        attention: fromBody.attention,
-        billingAddress: fromBody.billingAddress,
-        shippingAddress: fromBody.shippingAddress,
-        paymentTerms: fromBody.paymentTerms,
-      },
-      fromMaster
-    );
-    body.contactPerson = customerFields.contactPerson;
-    body.attention = customerFields.attention;
-    body.billingAddress = customerFields.billingAddress;
-    body.shippingAddress = customerFields.shippingAddress;
-    body.paymentTerms = customerFields.paymentTerms;
-    body.customer = buildPartySnapshotFromFields(customer.name, customerFields, customer);
-    body.validityDate = body.validityDate || body.validUntil || null;
-    const doc = new Quotation(body);
-    recalcQuotationTotals(doc);
-    if (!doc.lines.length) {
-      return res.status(400).json({ message: "Each line must contain article, description, uom, qty and price" });
-    }
-    await doc.save();
-    await autoCreateItemsFromQuotation({ req, quotation: doc });
+    const doc = await persistNewQuotation(req, req.body);
     res.status(201).json(doc);
   } catch (err) {
     const dup = mapSalesDocNumberDuplicateError(err, {
@@ -806,10 +843,11 @@ export async function getQuotationPrintData(req, res) {
     }
     const row = await Quotation.findOne(withCompany(req, { _id: id })).lean();
     if (!row) return res.status(404).json({ message: "Not found" });
+    const quotation = sanitizeCustomerQuotationPrint(row);
     res.json({
       title: "Quotation",
       documentNo: row.quotationNo,
-      quotation: row,
+      quotation,
       printGeneratedAt: new Date().toISOString(),
     });
   } catch (err) {

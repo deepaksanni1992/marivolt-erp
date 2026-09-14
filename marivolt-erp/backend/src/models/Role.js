@@ -33,6 +33,7 @@ export const PERMISSION_MODULES = [
   "LABELS",
   "ARTICLE_CONVERSION",
   "ASN",
+  "PRICE_LIST",
 ];
 
 export const PERMISSION_ACTIONS = [
@@ -55,6 +56,10 @@ export const PERMISSION_ACTIONS = [
   "admin",
   "post",
   "reverse",
+  "price_tier_sell",
+  "price_tier_sell_ii",
+  "price_tier_minm",
+  "price_tier_rock",
 ];
 
 export const SYSTEM_ROLE_CODES = [

@@ -12,6 +12,8 @@ import DataHealthDashboard from "./pages/DataHealthDashboard.jsx";
 import StockBucketIntegrity from "./pages/StockBucketIntegrity.jsx";
 import ReservationIntegrity from "./pages/ReservationIntegrity.jsx";
 import ItemMaster from "./pages/ItemMaster.jsx";
+import PriceList from "./pages/PriceList.jsx";
+import ManRfqQuotation from "./pages/ManRfqQuotation.jsx";
 import ProcurementFoundation from "./pages/ProcurementFoundation.jsx";
 import Sales from "./pages/Sales.jsx";
 import Inventory from "./pages/Inventory.jsx";
@@ -72,10 +74,12 @@ export default function App() {
           <Route path="inventory" element={<Inventory />} />
           <Route path="inventory/integrity/reservation" element={<ReservationIntegrity />} />
           <Route path="items" element={<ItemMaster />} />
+          <Route path="price-list" element={<PriceList />} />
           <Route path="purchase" element={<ProcurementFoundation />} />
           <Route path="asn" element={<AsnPage />} />
           <Route path="asn/:id" element={<AsnPage />} />
           <Route path="sales" element={<Sales />} />
+          <Route path="sales/man-rfq" element={<ManRfqQuotation />} />
           <Route path="store" element={<Store />} />
           <Route path="customs/dashboard" element={<CustomsDashboard />} />
           <Route path="customs/stock" element={<CustomsStock />} />

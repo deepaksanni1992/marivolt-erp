@@ -1,10 +1,12 @@
 import { useRef, useState, useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FileUp, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { apiDelete, apiGet, apiGetWithQuery, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import { notify, confirmDialog } from "../lib/notifications.js";
+import { useAuth } from "../context/AuthContext.jsx";
+import { isPriceListAdminRole } from "../lib/rbac.js";
 import LoadingButton from "../components/erp/LoadingButton.jsx";
 
 const emptyItem = {
@@ -155,7 +157,13 @@ function Field({ label, children }) {
   );
 }
 
+function isManBrandItem(row = {}) {
+  return String(row.brand || row.engine || "").trim().toUpperCase() === "MAN";
+}
+
 export default function ItemMaster() {
+  const { can, role } = useAuth();
+  const canManageManPrice = isPriceListAdminRole(role) && can("PRICE_LIST", "view");
   const qc = useQueryClient();
   const importRef = useRef(null);
   const lookupImportRef = useRef(null);
@@ -249,6 +257,14 @@ export default function ItemMaster() {
     queryKey: ["item-compatibility", compatibilityArticle],
     enabled: Boolean(compatibilityArticle),
     queryFn: () => apiGet(`/items/${encodeURIComponent(compatibilityArticle)}/compatibility`),
+  });
+
+  const manPriceEnabled = Boolean(selectedArticle && isManBrandItem(item) && canManageManPrice);
+  const { data: manPrice } = useQuery({
+    queryKey: ["man-price-list-item", selectedArticle],
+    enabled: manPriceEnabled,
+    queryFn: () => apiGet(`/price-list/${encodeURIComponent(selectedArticle)}`),
+    retry: false,
   });
 
   const saveItem = useMutation({
@@ -848,8 +864,14 @@ export default function ItemMaster() {
               <button onClick={() => setDrawerOpen(false)} className="rounded border px-3 py-1">Close</button>
             </div>
             <div className="mb-4 flex gap-2 border-b pb-3">
-              {["basic", "technical", "suppliers"].map((id) => (
-                <button key={id} onClick={() => setTab(id)} className={tab === id ? "rounded-lg bg-slate-900 px-3 py-1 text-sm text-white" : "rounded-lg border px-3 py-1 text-sm"}>{id === "basic" ? "Basic Info" : id === "technical" ? "Technical Details" : "Suppliers"}</button>
+              {["basic", "technical", "suppliers", ...(isManBrandItem(item) ? ["manPrice"] : [])].map((id) => (
+                <button
+                  key={id}
+                  onClick={() => setTab(id)}
+                  className={tab === id ? "rounded-lg bg-slate-900 px-3 py-1 text-sm text-white" : "rounded-lg border px-3 py-1 text-sm"}
+                >
+                  {id === "basic" ? "Basic Info" : id === "technical" ? "Technical Details" : id === "suppliers" ? "Suppliers" : "MAN Price List"}
+                </button>
               ))}
             </div>
 
@@ -960,6 +982,41 @@ export default function ItemMaster() {
                   <Field label="Remarks"><input className="rounded-lg border px-3 py-2" value={supplierDraft.remarks} onChange={(e) => setSupplierDraft((v) => ({ ...v, remarks: e.target.value }))} /></Field>
                 </div>
                 <button disabled={!selectedArticle} onClick={() => saveSupplier.mutate()} className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white disabled:opacity-50">{editingSupplierId ? "Update Supplier" : "+ Add Supplier"}</button>
+              </div>
+            ) : null}
+
+            {tab === "manPrice" ? (
+              <div className="space-y-3 text-sm">
+                <p className="text-slate-600">
+                  MAN selling prices are managed on the Price List. Item Master remains one row per Article; SPN is not unique.
+                </p>
+                {canManageManPrice ? (
+                  <>
+                    {manPrice ? (
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <div>Sell price: {manPrice.sellPrice ?? "—"}</div>
+                        <div>Sell II: {manPrice.sellIi ?? "—"}</div>
+                        <div>Minm: {manPrice.minm ?? "—"}</div>
+                        <div>Rock: {manPrice.rock ?? "—"}</div>
+                        <div>Buy: {manPrice.buy ?? "—"}</div>
+                        <div>Next Buy: {manPrice.nextBuy ?? "—"}</div>
+                        <div>Currency: {manPrice.currency || "—"}</div>
+                        <div>Lead time: {manPrice.leadTime || "—"}</div>
+                        <div>Revision: {manPrice.revision}</div>
+                        <div>UOM: {manPrice.uom || item.uom || "—"}</div>
+                      </div>
+                    ) : (
+                      <p className="text-slate-500">No current MAN price-list record for this Article yet.</p>
+                    )}
+                    <Link className="inline-block rounded-xl bg-slate-900 px-4 py-2 text-white" to={`/price-list?q=${encodeURIComponent(selectedArticle || item.article)}`}>
+                      Open MAN Price List
+                    </Link>
+                  </>
+                ) : (
+                  <p className="rounded-lg border bg-slate-50 p-3 text-slate-600">
+                    Purchase prices and price-list management are Admin / Super Admin only. Use Sales → MAN RFQ / Quotation for permitted selling tiers.
+                  </p>
+                )}
               </div>
             ) : null}
           </div>

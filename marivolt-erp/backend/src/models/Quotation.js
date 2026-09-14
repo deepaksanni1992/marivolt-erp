@@ -13,6 +13,13 @@ const quotationLineSchema = new mongoose.Schema(
     remarks: { type: String, default: "" },
     materialCode: { type: String, default: "", trim: true },
     availability: { type: String, default: "", trim: true },
+    customerPartNo: { type: String, default: "", trim: true },
+    priceTier: { type: String, default: "", trim: true, uppercase: true },
+    priceListId: { type: String, default: "", trim: true },
+    priceListRevision: { type: Number, default: 0, min: 0 },
+    availabilityCheckedAt: { type: Date, default: null },
+    sourceType: { type: String, default: "", trim: true },
+    currency: { type: String, default: "", trim: true },
   },
   { _id: true }
 );
@@ -92,6 +99,8 @@ const quotationSchema = new mongoose.Schema(
       default: "DRAFT",
     },
     sourceType: { type: String, default: "MANUAL", trim: true },
+    manRfqIdempotencyKey: { type: String, trim: true },
+    manRfqRequestHash: { type: String, default: "", trim: true },
     convertedTo: [{ type: String, default: "", trim: true }],
     shipmentReference: { type: String, default: "", trim: true },
     cancelledAt: { type: Date, default: null },
@@ -105,5 +114,32 @@ const quotationSchema = new mongoose.Schema(
 
 quotationSchema.index({ companyId: 1, quotationNo: 1 }, { unique: true });
 quotationSchema.index({ companyId: 1, quotationDate: -1 });
+quotationSchema.index(
+  { companyId: 1, manRfqIdempotencyKey: 1 },
+  {
+    unique: true,
+    name: "uniq_company_manRfqIdempotencyKey_manRfq",
+    partialFilterExpression: {
+      sourceType: "MAN_RFQ",
+      manRfqIdempotencyKey: { $type: "string", $gt: "" },
+    },
+  }
+);
+
+quotationSchema.pre("validate", function omitEmptyManRfqKey() {
+  const source = String(this.sourceType || "MANUAL").trim() || "MANUAL";
+  this.sourceType = source;
+  const key = String(this.manRfqIdempotencyKey || "").trim();
+  if (source !== "MAN_RFQ") {
+    this.manRfqIdempotencyKey = undefined;
+    this.manRfqRequestHash = undefined;
+    return;
+  }
+  if (!key) {
+    this.invalidate("manRfqIdempotencyKey", "MAN RFQ quotations require a populated idempotency key");
+    return;
+  }
+  this.manRfqIdempotencyKey = key;
+});
 
 export default mongoose.model("Quotation", quotationSchema);

@@ -15,6 +15,11 @@ export function isFullAdminRole(role) {
   return r === "super_admin" || r === "company_admin" || r === "admin";
 }
 
+export function isPriceListAdminRole(role) {
+  const r = normalizeUserRole(role);
+  return r === "super_admin" || r === "admin";
+}
+
 /** Post-login landing — Store operators go straight to Store. */
 export function defaultHomePathForRole(role) {
   if (isStoreOperatorRole(role)) return "/store";

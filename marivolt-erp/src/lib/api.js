@@ -228,3 +228,14 @@ export function apiGetWithQuery(path, params = {}) {
     })
     .then((r) => r.data);
 }
+
+export async function apiDownload(path, filename) {
+  const p = path.startsWith("/") ? path : `/${path}`;
+  const res = await api.get(p, { responseType: "blob" });
+  const blob = new Blob([res.data], { type: res.headers["content-type"] || "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename || "download.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}

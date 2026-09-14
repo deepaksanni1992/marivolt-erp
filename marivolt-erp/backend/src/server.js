@@ -12,6 +12,8 @@ import itemRoutes from "./routes/itemRoutes.js";
 import purchaseRoutes from "./routes/purchaseRoutes.js";
 import supplierProformaRoutes from "./routes/supplierProformaRoutes.js";
 import quotationRoutes from "./routes/quotationRoutes.js";
+import manPriceListRoutes from "./routes/manPriceListRoutes.js";
+import manRfqRoutes from "./routes/manRfqRoutes.js";
 import documentSnapshotRoutes from "./routes/documentSnapshotRoutes.js";
 import inventoryRoutes from "./routes/inventoryRoutes.js";
 import grnRoutes from "./routes/grnRoutes.js";
@@ -156,6 +158,8 @@ async function startServer() {
     app.use("/api/supplier-proformas", supplierProformaRoutes);
     app.use("/api/purchase-returns", purchaseReturnRoutes);
     app.use("/api/quotations", quotationRoutes);
+    app.use("/api/price-list", manPriceListRoutes);
+    app.use("/api/man-rfq", manRfqRoutes);
     app.use("/api/document-snapshot", documentSnapshotRoutes);
     app.use("/api/inventory", inventoryRoutes);
     app.use("/api/grn", grnRoutes);
