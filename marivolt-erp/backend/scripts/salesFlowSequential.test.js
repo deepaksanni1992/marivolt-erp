@@ -268,7 +268,7 @@ run("TEST 11/12 — Allocation lineage from PI and from Credit OA", () => {
   assert.ok(!fromOa.includes("linkedProformaId:"));
 });
 
-run("TEST 13/14/15 — SI aliases blocked; packing FULLY_PACKED path retained", () => {
+run("TEST 13/14/15 — SI aliases blocked; posted packing path retained", () => {
   assert.ok(
     sales
       .slice(
@@ -297,8 +297,15 @@ run("TEST 13/14/15 — SI aliases blocked; packing FULLY_PACKED path retained", 
     sales.indexOf("export async function convertPackingToSalesInvoice"),
     sales.indexOf("export async function convertPackingToSalesInvoice") + 8000
   );
-  assert.ok(pack.includes("FULLY_PACKED"));
+  assert.ok(pack.includes("isPostedPackingStatus"));
+  assert.ok(!pack.includes("Packing must be FULLY_PACKED"));
   assert.ok(pack.includes("await SalesInvoice.create"));
+  const ready = sales.slice(
+    sales.indexOf("export async function listPackingsReadyForInvoice"),
+    sales.indexOf("export async function getPackingInvoicePreview")
+  );
+  assert.ok(ready.includes("POSTED_STORE_PACKING_STATUSES"));
+  assert.ok(!ready.includes('status: "FULLY_PACKED"'));
 });
 
 run("TEST 16/17 — CIPL only from SI; QTN/OA/PI blocked", () => {

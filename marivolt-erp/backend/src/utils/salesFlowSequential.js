@@ -35,7 +35,7 @@ export const SALES_FLOW_ERRORS = Object.freeze({
   PI_MISSING_OA: "Proforma Invoice is missing required Order Acknowledgement lineage.",
   PI_OA_NOT_ADVANCE:
     "Proforma Invoice Order Acknowledgement must have ADVANCE payment type before Allocation.",
-  SI_FROM_PACKING_ONLY: "Sales Invoice can only be created from completed Packing.",
+  SI_FROM_PACKING_ONLY: "Sales Invoice can only be created from a posted Packing.",
   CIPL_FROM_SI_ONLY: "CIPL can only be created from Sales Invoice.",
 });
 

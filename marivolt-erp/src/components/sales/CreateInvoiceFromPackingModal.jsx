@@ -20,10 +20,12 @@ function statusBadgeClass(status) {
   return "bg-slate-50 text-slate-700 ring-slate-200";
 }
 
+const POSTED_PACKING_STATUSES = new Set(["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED"]);
+
 export function packingReadyForSalesInvoice(packing) {
   if (!packing) return false;
   return (
-    String(packing.status || "").toUpperCase() === "FULLY_PACKED" &&
+    POSTED_PACKING_STATUSES.has(String(packing.status || "").toUpperCase()) &&
     String(packing.invoiceStatus || "NOT_INVOICED").toUpperCase() !== "FULLY_INVOICED"
   );
 }
@@ -85,7 +87,7 @@ export default function CreateInvoiceFromPackingModal({
     <Modal open={open} onClose={onClose} title="Create Sales Invoice from Packing" wide>
       <div className="space-y-4 text-sm">
         <p className="text-xs text-gray-600">
-          Select a fully packed document that has not been invoiced. One sales invoice per packing.
+          Select a posted packing with pending invoice quantity. Partial shipments can be invoiced and dispatched before the allocation is fully packed.
         </p>
 
         <FormField label="Search packing / customer / allocation">
@@ -118,7 +120,7 @@ export default function CreateInvoiceFromPackingModal({
               ) : readyItems.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-2 py-4 text-center text-gray-500">
-                    No fully packed documents ready for invoice.
+                    No packing documents ready for invoice.
                   </td>
                 </tr>
               ) : (

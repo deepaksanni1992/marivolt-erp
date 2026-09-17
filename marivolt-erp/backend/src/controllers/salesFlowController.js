@@ -423,6 +423,10 @@ function alignPiPaymentRequestToCommercial(doc, commercialGrandTotal) {
 const POSTED_STORE_PACKING_STATUSES = ["POSTED", "PARTIALLY_PACKED", "FULLY_PACKED"];
 const POSTED_STORE_DISPATCH_STATUSES = ["POSTED", "PARTIALLY_DISPATCHED", "FULLY_DISPATCHED"];
 
+function isPostedPackingStatus(status) {
+  return POSTED_STORE_PACKING_STATUSES.includes(String(status || "").toUpperCase());
+}
+
 async function invoicedQtyByPackingLine(companyId, packingId, session = null) {
   const q = SalesInvoice.find({
     companyId,
@@ -3476,7 +3480,7 @@ export async function listPackingsReadyForInvoice(req, res) {
   try {
     const q = String(req.query.search || "").trim();
     const filter = withCompany(req, {
-      status: "FULLY_PACKED",
+      status: { $in: POSTED_STORE_PACKING_STATUSES },
       invoiceStatus: { $ne: "FULLY_INVOICED" },
     });
     if (q) {
@@ -3527,8 +3531,11 @@ export async function getPackingInvoicePreview(req, res) {
     if (String(packing.invoiceStatus || "").toUpperCase() === "FULLY_INVOICED") {
       return res.status(400).json({ message: "Sales invoice already created for this packing" });
     }
-    if (String(packing.status || "").toUpperCase() !== "FULLY_PACKED") {
-      return res.status(400).json({ message: "Packing must be FULLY_PACKED before creating Sales Invoice" });
+    if (String(packing.status || "").toUpperCase() === "CANCELLED") {
+      return res.status(400).json({ message: "Cannot invoice cancelled packing" });
+    }
+    if (!isPostedPackingStatus(packing.status)) {
+      return res.status(400).json({ message: "Packing must be posted before creating Sales Invoice" });
     }
     const allocation = await OrderAllocation.findOne(withCompany(req, { _id: packing.allocationId })).lean();
     const invoicedByLine = await invoicedQtyByPackingLine(req.companyId, packing._id);
@@ -3562,8 +3569,8 @@ export async function convertPackingToSalesInvoice(req, res) {
     if (String(packingPre.status || "").toUpperCase() === "CANCELLED") {
       return res.status(400).json({ message: "Cannot invoice cancelled packing" });
     }
-    if (String(packingPre.status || "").toUpperCase() !== "FULLY_PACKED") {
-      return res.status(400).json({ message: "Packing must be FULLY_PACKED before creating Sales Invoice" });
+    if (!isPostedPackingStatus(packingPre.status)) {
+      return res.status(400).json({ message: "Packing must be posted before creating Sales Invoice" });
     }
     const allocationPre = await OrderAllocation.findOne(withCompany(req, { _id: packingPre.allocationId })).lean();
     if (!allocationPre) return res.status(404).json({ message: "Linked allocation not found" });
@@ -3626,8 +3633,8 @@ export async function convertPackingToSalesInvoice(req, res) {
         throw new Error("Sales invoice already created for this packing");
       }
       if (String(packing.status || "").toUpperCase() === "CANCELLED") throw new Error("Cannot invoice cancelled packing");
-      if (String(packing.status || "").toUpperCase() !== "FULLY_PACKED") {
-        throw new Error("Packing must be FULLY_PACKED before creating Sales Invoice");
+      if (!isPostedPackingStatus(packing.status)) {
+        throw new Error("Packing must be posted before creating Sales Invoice");
       }
       const allocation = await OrderAllocation.findOne(withCompany(req, { _id: packing.allocationId })).session(session);
       if (!allocation) throw new Error("Linked allocation not found");
@@ -3690,11 +3697,13 @@ export async function convertPackingToSalesInvoice(req, res) {
       );
       createdId = doc._id;
       await postSalesInvoiceReceivable({ req, invoice: doc, session });
-      const refreshedPacking = await recalcPackingInvoiceStatus({ companyId: req.companyId, packingId: packing._id, session });
+      await recalcPackingInvoiceStatus({ companyId: req.companyId, packingId: packing._id, session });
       allocation.linkedSalesInvoiceId = doc._id;
       allocation.linkedSalesInvoiceNo = doc.invoiceNo;
-      await persistAllocationFulfilment(req.companyId, allocation, session);
-      if (refreshedPacking?.invoiceStatus === "FULLY_INVOICED") allocation.status = "CLOSED";
+      const snapshot = await persistAllocationFulfilment(req.companyId, allocation, session);
+      if (snapshot.packingStatus === "FULLY_PACKED" && snapshot.invoiceStatus === "FULLY_INVOICED") {
+        allocation.status = "CLOSED";
+      }
       allocation.updatedBy = req.user?.email || "";
       await allocation.save({ session });
       if (allocation.linkedOAId) {
@@ -3702,7 +3711,7 @@ export async function convertPackingToSalesInvoice(req, res) {
           withCompany(req, { _id: allocation.linkedOAId })
         ).session(session);
         if (oaDoc && String(oaDoc.status || "").toUpperCase() !== "CANCELLED") {
-          oaDoc.status = "COMPLETED";
+          if (allocation.status === "CLOSED") oaDoc.status = "COMPLETED";
           const conv = Array.isArray(oaDoc.convertedTo) ? oaDoc.convertedTo.map(String) : [];
           if (!conv.includes("SALES_INVOICE")) oaDoc.convertedTo = [...conv, "SALES_INVOICE"];
           oaDoc.updatedBy = req.user?.email || "";
