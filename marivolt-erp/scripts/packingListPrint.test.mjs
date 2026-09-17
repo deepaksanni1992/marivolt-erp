@@ -6,6 +6,7 @@ import {
 } from "../src/lib/packingListTable.js";
 import { SALES_INVOICE_LINE_TABLE_HEAD } from "../src/lib/reportTableLayout.js";
 import { buildTaxInvoiceHeaderHtml } from "../src/lib/salesInvoicePrint.js";
+import { mergePackingHeaderFromInvoice } from "../src/lib/packingInvoiceHeaderSync.js";
 
 function packageTypeLabel(v) {
   return String(v || "")
@@ -98,5 +99,24 @@ assert.match(packingHeader, /MAR-PK-0001/);
 assert.match(packingHeader, /Customer/);
 assert.match(packingHeader, /Machine Details/);
 assert.doesNotMatch(packingHeader, /Customer & Address Info/);
+
+const synced = mergePackingHeaderFromInvoice(
+  { packingNo: "MAR-PK-0001", consignee: "" },
+  { consignee: "Pernix (Fiji) Pte Limited\nSuva", loadingPort: "Sharjah", dischargePort: "Suva" },
+);
+assert.match(synced.consignee, /Suva/);
+assert.equal(synced.loadingPort, "Sharjah");
+const syncedHeader = buildTaxInvoiceHeaderHtml({
+  doc: synced,
+  company: { name: "Marivolt FZE" },
+  invoiceNo: "MAR-PK-0001",
+  invoiceDateStr: "9/17/2026",
+  isMarivolt: true,
+  detailsTitle: "Packing details",
+  numberLabel: "Packing Nr",
+});
+assert.match(syncedHeader, /Pernix \(Fiji\) Pte Limited/);
+assert.match(syncedHeader, /Sharjah/);
+assert.match(syncedHeader, /Suva/);
 
 console.log("packingListPrint.test.mjs: ok");

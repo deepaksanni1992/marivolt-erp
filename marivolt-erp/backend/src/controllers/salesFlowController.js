@@ -110,6 +110,9 @@ import {
   issuedInvoiceForbiddenBodyKey,
   issuedInvoiceLineLockError,
 } from "../utils/salesInvoiceState.js";
+import {
+  packingHeaderSetFromInvoice,
+} from "../utils/packingInvoiceHeaderSync.js";
 
 const { withTransaction } = stockService;
 
@@ -470,6 +473,15 @@ async function recalcPackingInvoiceStatus({ companyId, packingId, session = null
   packing.lastInvoicedAt = invoices.length ? invoices[invoices.length - 1].invoiceDate || new Date() : null;
   await packing.save({ session });
   return packing;
+}
+
+async function syncLinkedPackingHeaderFromInvoice(req, invoice, session = null) {
+  if (!invoice?.linkedStorePackingId) return;
+  const $set = packingHeaderSetFromInvoice(invoice);
+  if (!Object.keys($set).length) return;
+  const q = StorePacking.updateOne(withCompany(req, { _id: invoice.linkedStorePackingId }), { $set });
+  if (session) q.session(session);
+  await q;
 }
 
 async function allocationFulfilmentSnapshot(companyId, allocation, session = null) {
@@ -3677,11 +3689,15 @@ export async function convertPackingToSalesInvoice(req, res) {
               t(req.body?.customerReference) ||
               t(packing.customerReference) ||
               "",
+            loadingPort: t(req.body?.loadingPort) || packing.loadingPort || "",
+            dischargePort: t(req.body?.dischargePort) || packing.dischargePort || "",
+            consignee: t(req.body?.consignee) || packing.consignee || "",
+            customerVatNo: t(req.body?.customerVatNo) || packing.customerVatNo || "",
             currency: packing.currency || allocation.currency || "USD",
-            vertical: allocation.vertical || "",
+            vertical: packing.vertical || allocation.vertical || "",
             engine: packing.engine || allocation.engine || "",
             model: packing.model || allocation.model || "",
-            config: allocation.config || "",
+            config: packing.config || allocation.config || "",
             esn: packing.esn || allocation.esn || "",
             remarks: t(req.body?.remarks),
             termsAndConditions,
@@ -3842,6 +3858,7 @@ export async function updateSalesInvoice(req, res) {
     } else {
       await doc.save();
     }
+    await syncLinkedPackingHeaderFromInvoice(req, doc);
     const afterCanon = canonicalStatus(DOC_TYPES.SALES_INVOICE, doc.status);
     if (beforeCanon === "DRAFT" && ["POSTED", "PARTIAL_PAYMENT", "PAID"].includes(afterCanon)) {
       await postSalesInvoiceReceivable({ req, invoice: doc });

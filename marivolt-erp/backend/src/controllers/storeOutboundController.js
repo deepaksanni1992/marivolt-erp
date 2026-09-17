@@ -22,6 +22,10 @@ import {
   resolveLinkedOaIdFromAllocationLineage,
 } from "../utils/allocationDocumentReferences.js";
 import {
+  PACKING_INVOICE_SHARED_HEADER_FIELDS,
+  mergePackingHeaderFromInvoice,
+} from "../utils/packingInvoiceHeaderSync.js";
+import {
   PACKING_CSV_HEADER,
   buildPackingImportPreview,
   validatePackingPackagesForSave,
@@ -567,6 +571,36 @@ async function overlayPackingMachineFromAllocation(items = []) {
   return rows;
 }
 
+async function overlayPackingHeaderFromLinkedInvoice(companyId, items = []) {
+  const rows = Array.isArray(items) ? items : [];
+  const packingIds = rows.map((p) => p?._id).filter(Boolean);
+  if (!companyId || !packingIds.length) return rows;
+  const invoices = await SalesInvoice.find({
+    companyId,
+    linkedStorePackingId: { $in: packingIds },
+    status: { $ne: "CANCELLED" },
+    documentStatus: { $ne: "CANCELLED" },
+  })
+    .select([...PACKING_INVOICE_SHARED_HEADER_FIELDS, "linkedStorePackingId", "updatedAt"].join(" "))
+    .sort({ updatedAt: -1 })
+    .lean();
+  const byPacking = new Map();
+  for (const inv of invoices) {
+    const key = String(inv.linkedStorePackingId || "");
+    if (!key || byPacking.has(key)) continue;
+    byPacking.set(key, inv);
+  }
+  return rows.map((p) => {
+    const inv = byPacking.get(String(p._id));
+    return inv ? mergePackingHeaderFromInvoice(p, inv) : p;
+  });
+}
+
+async function enrichPackingPrintHeader(companyId, items = []) {
+  const withMachine = await overlayPackingMachineFromAllocation(items);
+  return overlayPackingHeaderFromLinkedInvoice(companyId, withMachine);
+}
+
 export async function listStorePacking(req, res) {
   try {
     const page = Math.max(1, Number(req.query.page || 1));
@@ -606,7 +640,7 @@ export async function listStorePacking(req, res) {
       StorePacking.countDocuments(filter),
     ]);
     res.json({
-      items: await overlayPackingMachineFromAllocation(items),
+      items: await enrichPackingPrintHeader(req.companyId, items),
       total,
       page,
       limit,
@@ -623,7 +657,7 @@ export async function getStorePacking(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const doc = await StorePacking.findOne(withCompany(req, { _id: id })).lean();
     if (!doc) return res.status(404).json({ message: "Not found" });
-    const [enriched] = await overlayPackingMachineFromAllocation([doc]);
+    const [enriched] = await enrichPackingPrintHeader(req.companyId, [doc]);
     res.json(enriched);
   } catch (err) {
     res.status(500).json({ message: err.message });

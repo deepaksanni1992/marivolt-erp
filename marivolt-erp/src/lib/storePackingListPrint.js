@@ -14,6 +14,8 @@ import {
 } from "./packingListTable.js";
 import { getReportBranding } from "./reportBranding.js";
 import { buildTaxInvoiceHeaderHtml } from "./salesInvoicePrint.js";
+import { apiGet } from "./api.js";
+import { mergePackingHeaderFromInvoice } from "./packingInvoiceHeaderSync.js";
 
 function packageTypeLabel(v) {
   return String(v || "")
@@ -65,8 +67,10 @@ function linkedInvoiceNos(packing) {
 
 /**
  * Packing list body — same shipper / customer / consignee header as Tax Invoice.
+ * Linked invoice header fields (consignee, ports, customer) overlay packing snapshots.
  */
 export function buildStorePackingListPrintBody(packing, company = {}) {
+  const headerDoc = mergePackingHeaderFromInvoice(packing, packing?.linkedInvoice);
   const brandingName = company.name || company.companyName || "";
   const branding = getReportBranding(brandingName);
   const packages = normalizeStorePackingPackages(packing);
@@ -88,7 +92,7 @@ export function buildStorePackingListPrintBody(packing, company = {}) {
   });
 
   const cards = buildTaxInvoiceHeaderHtml({
-    doc: packing,
+    doc: headerDoc,
     company,
     invoiceNo: packing.packingNo || "",
     invoiceDateStr: fmtReportDate(packing.packingDate),
@@ -131,12 +135,21 @@ export function buildStorePackingListPrintBody(packing, company = {}) {
  * @param {object} company Active company from auth (optional)
  * @param {boolean} autoPrint
  */
-export function renderStorePackingListPrintWindow(packing, company = {}, autoPrint = false) {
+export async function renderStorePackingListPrintWindow(packing, company = {}, autoPrint = false) {
   if (!packing) return;
+  let payload = packing;
+  if (packing._id && typeof window !== "undefined") {
+    try {
+      const fresh = await apiGet(`/packing/${packing._id}`);
+      if (fresh && typeof fresh === "object") payload = { ...packing, ...fresh };
+    } catch {
+      payload = packing;
+    }
+  }
   const brandingName = company.name || company.companyName || "";
   openCommercialReportPrintWindow({
-    title: `Packing List ${packing.packingNo || ""}`,
-    bodyInnerHtml: buildStorePackingListPrintBody(packing, company),
+    title: `Packing List ${payload.packingNo || ""}`,
+    bodyInnerHtml: buildStorePackingListPrintBody(payload, company),
     brandingName,
     autoPrint,
     extraCss: PACKING_LIST_EXTRA_CSS,
