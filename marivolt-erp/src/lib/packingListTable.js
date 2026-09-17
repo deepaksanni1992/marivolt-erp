@@ -2,16 +2,29 @@
 
 export const PACKING_LIST_PRINT_COLUMNS = [
   { key: "sno", header: "S No.", className: "col-sno" },
-  { key: "packageNo", header: "Package", className: "col-pack" },
-  { key: "packageType", header: "Type", className: "col-pack-type" },
-  { key: "dimensions", header: "Dimensions", className: "col-dim" },
-  { key: "grossWeightKg", header: "Gross Kg", className: "col-weight col-right" },
-  { key: "netWeightKg", header: "Net Kg", className: "col-weight col-right" },
   { key: "partNumber", header: "Part #", className: "col-part" },
   { key: "description", header: "Description", className: "col-desc" },
   { key: "uom", header: "UOM", className: "col-uom col-center" },
   { key: "qty", header: "Qty", className: "col-qty col-center" },
+  { key: "boxDetails", header: "Box Details", className: "col-box" },
 ];
+
+export function formatPackingBoxDetails(pkg, { packageTypeLabel, fmtWeight }) {
+  const lines = [];
+  const no = String(pkg?.packageNo || "-").trim() || "-";
+  const type = packageTypeLabel(pkg?.packageType);
+  lines.push(type ? `${no} · ${type}` : no);
+  if (pkg?.dimensions) lines.push(String(pkg.dimensions).trim());
+  const g = fmtWeight(pkg?.grossWeightKg);
+  const n = fmtWeight(pkg?.netWeightKg);
+  const weights = [];
+  if (g) weights.push(`Gross ${g} Kg`);
+  if (n) weights.push(`Net ${n} Kg`);
+  if (weights.length) lines.push(weights.join(" / "));
+  const remarks = String(pkg?.packageRemarks || pkg?.marksAndNumbers || "").trim();
+  if (remarks) lines.push(remarks);
+  return lines.join("\n");
+}
 
 /**
  * @param {Array} packages Normalized packages with items[]
@@ -21,39 +34,27 @@ export function buildStorePackingListPrintRows(packages, { packageTypeLabel, fmt
   const rows = [];
   let serial = 0;
   for (const pkg of packages || []) {
-    rows.push({
-      isGroupHeader: true,
-      cells: [
-        "",
-        pkg.packageNo || "-",
-        packageTypeLabel(pkg.packageType),
-        pkg.dimensions || "-",
-        fmtWeight(pkg.grossWeightKg),
-        fmtWeight(pkg.netWeightKg),
-        "",
-        pkg.packageRemarks || pkg.marksAndNumbers || "",
-        "",
-        "",
-      ],
-    });
-    for (const item of pkg.items || []) {
-      serial += 1;
+    const items = (pkg.items || []).filter((it) => Number(it.qty ?? it.packQty) > 0);
+    const span = Math.max(1, items.length);
+    const boxDetails = formatPackingBoxDetails(pkg, { packageTypeLabel, fmtWeight });
+    const list = items.length ? items : [{ description: "", qty: "" }];
+    list.forEach((item, idx) => {
+      const isFirst = idx === 0;
+      if (items.length) serial += 1;
       rows.push({
-        className: "package-item-row",
+        className: isFirst ? "package-item-row package-box-start" : "package-item-row",
         cells: [
-          String(serial),
-          "",
-          "",
-          "",
-          "",
-          "",
+          items.length ? String(serial) : "",
           item.spn || item.partNumber || "",
           item.description || "",
-          item.uom || "PCS",
-          String(item.qty ?? item.packQty ?? 0),
+          items.length ? item.uom || "PCS" : "",
+          items.length ? String(item.qty ?? item.packQty ?? 0) : "",
+          isFirst ? boxDetails : "",
         ],
+        skipCells: [false, false, false, false, false, !isFirst],
+        cellAttrs: [{}, {}, {}, {}, {}, isFirst ? { rowspan: span } : {}],
       });
-    }
+    });
   }
   return rows;
 }

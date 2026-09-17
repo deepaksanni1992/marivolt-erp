@@ -252,16 +252,12 @@ export const PO_LINE_COLGROUP_LEGACY = PO_LINE_COLGROUP(false);
 
 export const PACKING_LIST_COLGROUP = `
 <colgroup>
-  <col style="width:5%" />
-  <col style="width:10%" />
-  <col style="width:8%" />
-  <col style="width:11%" />
-  <col style="width:9%" />
-  <col style="width:9%" />
-  <col style="width:15%" />
-  <col style="width:24%" />
-  <col style="width:5%" />
-  <col style="width:4%" />
+  <col style="width:6%" />
+  <col style="width:16%" />
+  <col style="width:32%" />
+  <col style="width:6%" />
+  <col style="width:6%" />
+  <col style="width:34%" />
 </colgroup>`;
 
 export const LOGISTICS_PACKING_COLGROUP = `
@@ -295,6 +291,7 @@ const COL_CLASS_WIDTH_PCT = {
   "col-pack": 8,
   "col-pack-type": 7,
   "col-dim": 10,
+  "col-box": 28,
 };
 
 /** Build colgroup with percentage widths that fit the printable page. */

@@ -114,17 +114,21 @@ export function buildReportTableHtml({ columns, rows }) {
       const cells = row.cells || [];
       const tds = columns
         .map((col, idx) => {
+          if ((row.skipCells || [])[idx]) return "";
           const val = cells[idx] ?? "";
           const extra = (row.cellClasses || [])[idx] || "";
+          const attrs = (row.cellAttrs || [])[idx] || {};
           const cls = [col.className || "", extra].filter(Boolean).join(" ");
-          return `<td class="${escHtml(cls)}">${escHtml(val)}</td>`;
+          const rowspan = Number(attrs.rowspan) > 1 ? ` rowspan="${Number(attrs.rowspan)}"` : "";
+          const inner = attrs.html ? String(val) : escHtml(val).replace(/\n/g, "<br/>");
+          return `<td class="${escHtml(cls)}"${rowspan}>${inner}</td>`;
         })
         .join("");
       return `<tr class="${escHtml(trClass)}">${tds}</tr>`;
     })
     .join("");
   const colgroup =
-    columns.length === 10 && columns[0]?.className === "col-sno"
+    columns.length === 6 && String(columns[5]?.className || "").includes("col-box")
       ? PACKING_LIST_COLGROUP
       : buildColgroupHtml(columns.map((c) => c.className || ""));
   return `
@@ -180,29 +184,20 @@ export function buildBrandedFooterHtml(brandingName = "") {
 
 export const PACKING_LIST_EXTRA_CSS = `
   .report-lines-table { margin-top: 14px; }
-  tr.package-group-header td {
-    background: #eef2f7 !important;
-    font-weight: 700;
-    color: #1f3a5f;
-    border-top: 2px solid #cbd5e1;
-    page-break-inside: avoid;
-    break-inside: avoid;
-  }
-  tr.package-group-header td:nth-child(2) {
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
   tr.package-item-row td { vertical-align: top; }
-  tr.package-group-header + tr.package-item-row,
-  tr.package-item-row + tr.package-group-header {
-    page-break-before: avoid;
+  tr.package-box-start td.col-box {
+    vertical-align: middle;
+    background: #f8fafc !important;
+    font-size: 11px;
+    line-height: 1.4;
+    color: #1f3a5f;
+    border-left: 2px solid #cbd5e1;
+    white-space: normal;
   }
-  tr.package-group-header,
-  tr.package-group-header + tr.package-item-row {
+  tr.package-box-start {
     page-break-inside: avoid;
     break-inside: avoid;
   }
-  tr.package-item-row + tr.package-group-header td { padding-top: 10px; }
 `;
 
 export function buildCommercialReportDocumentHtml({
