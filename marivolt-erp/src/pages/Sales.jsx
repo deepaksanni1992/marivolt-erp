@@ -432,6 +432,7 @@ function quotationDetailToEditableForm(q) {
     model: q.model || "",
     config: q.config || "",
     esn: q.esn || "",
+    vesselPlant: q.vesselPlant || "",
     paymentTerms: q.paymentTerms || "",
     deliveryTerms: q.deliveryTerms || "",
     incoterm: q.incoterm || "",
@@ -1269,11 +1270,13 @@ function renderPrintWindow(data, autoPrint = false) {
             <div><b>Brand:</b> ${q.engine || "-"}</div>
             <div><b>Model:</b> ${q.model || "-"}</div>
             <div><b>Config:</b> ${q.config || "-"}</div>
+            <div><b>Vessel / Plant:</b> ${q.vesselPlant || "-"}</div>
             <div><b>ESN:</b> ${q.esn || "-"}</div>
             <div><b>Currency:</b> ${q.currency || "-"}</div>
             <div><b>Validity Date:</b> ${q.validityDate ? new Date(q.validityDate).toLocaleDateString() : "-"}</div>
           </div>
         </div>
+        ${q.remarks ? `<div class="info-box" style="margin-top:8px"><div class="info-box-title">Remarks</div><div>${q.remarks}</div></div>` : ""}
         <table class="report-table">
           ${SALES_COMMERCIAL_COLGROUP}
           <thead>
@@ -1882,6 +1885,7 @@ export default function Sales() {
     model: "",
     config: "",
     esn: "",
+    vesselPlant: "",
     paymentTerms: "",
     deliveryTerms: "",
     incoterm: "",
@@ -2475,6 +2479,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
         model: "",
         config: "",
         esn: "",
+        vesselPlant: "",
         paymentTerms: "",
         deliveryTerms: "",
         incoterm: "",
@@ -4752,7 +4757,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
                 <h3 className="text-sm font-semibold">Ready for Invoice</h3>
-                <p className="text-xs text-gray-500">Fully packed documents with pending invoice quantity.</p>
+                <p className="text-xs text-gray-500">Posted packing documents with pending invoice quantity, including partial shipments.</p>
               </div>
               <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200">
                 Packing → Sales Invoice
@@ -5369,7 +5374,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
                 <h3 className="text-sm font-semibold">Ready for Invoice</h3>
-                <p className="text-xs text-gray-500">Fully packed documents not yet invoiced.</p>
+                <p className="text-xs text-gray-500">Posted packing documents not yet invoiced, including partial shipments.</p>
               </div>
               <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openPackingInvoiceModal()}>
                 Create from Packing
@@ -5383,14 +5388,15 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     <th className="px-2 py-2">Customer</th>
                     <th className="px-2 py-2">Allocation</th>
                     <th className="px-2 py-2 text-right">Pending</th>
+                    <th className="px-2 py-2">Packing</th>
                     <th className="px-2 py-2 text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {readyPackingInvoiceRows.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="px-2 py-4 text-center text-gray-500">
-                        No fully packed documents ready for invoice.
+                      <td colSpan={6} className="px-2 py-4 text-center text-gray-500">
+                        No packing documents ready for invoice.
                       </td>
                     </tr>
                   ) : (
@@ -5400,6 +5406,11 @@ ${GLOBAL_REPORT_TABLE_CSS}
                         <td className="px-2 py-2">{p.customerName}</td>
                         <td className="px-2 py-2 font-mono">{p.allocationNo}</td>
                         <td className="px-2 py-2 text-right">{p.pendingInvoiceQty}</td>
+                        <td className="px-2 py-2">
+                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${statusBadgeClass(p.status)}`}>
+                            {String(p.status || "").replaceAll("_", " ")}
+                          </span>
+                        </td>
                         <td className="px-2 py-2 text-right">
                           <button type="button" className="rounded-lg border px-2 py-1 text-xs" onClick={() => openPackingInvoiceModal(p._id)}>
                             Create Invoice
@@ -6080,6 +6091,9 @@ ${GLOBAL_REPORT_TABLE_CSS}
               <FormField label="ESN">
                 <TextInput value={detailQuotationDraftForm.esn || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, esn: e.target.value }))} />
               </FormField>
+              <FormField label="Vessel / Plant">
+                <TextInput value={detailQuotationDraftForm.vesselPlant || ""} onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, vesselPlant: e.target.value }))} />
+              </FormField>
               <FormField label="Packing Cost">
                 <TextInput
                   type="number"
@@ -6138,6 +6152,15 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 }))
               }
             />
+
+            <FormField label="Remarks">
+              <textarea
+                className="min-h-[80px] w-full rounded-xl border px-3 py-2 text-sm"
+                rows={3}
+                value={detailQuotationDraftForm.remarks || ""}
+                onChange={(e) => setDetailQuotationDraftForm((f) => ({ ...f, remarks: e.target.value }))}
+              />
+            </FormField>
 
             <FormField label="Terms &amp; Conditions (printed on quotation PDF)">
               <textarea
@@ -6491,14 +6514,20 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <div><span className="font-medium">Brand:</span> {detail.engine || "-"}</div>
                 <div><span className="font-medium">Model:</span> {detail.model || "-"}</div>
                 <div><span className="font-medium">Config:</span> {detail.config || "-"}</div>
+                <div><span className="font-medium">Vessel / Plant:</span> {detail.vesselPlant || "-"}</div>
                 <div><span className="font-medium">ESN:</span> {detail.esn || "-"}</div>
                 <div><span className="font-medium">Currency:</span> {detail.currency || "-"}</div>
-                <div>
-                  <span className="font-medium">Validity Date:</span>{" "}
+                <div><span className="font-medium">Validity Date:</span>{" "}
                   {detail.validityDate ? new Date(detail.validityDate).toLocaleDateString() : "-"}
                 </div>
               </div>
             </div>
+            {detail.remarks ? (
+              <div className="rounded-xl border bg-gray-50 p-3">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Remarks</div>
+                <div className="whitespace-pre-wrap">{detail.remarks}</div>
+              </div>
+            ) : null}
 
             <div className="overflow-x-auto rounded-xl border">
               <table className="min-w-full text-sm">
@@ -9147,6 +9176,9 @@ ${GLOBAL_REPORT_TABLE_CSS}
           </FormField>
           <FormField label="ESN">
             <TextInput value={form.esn} onChange={(e) => setForm((f) => ({ ...f, esn: e.target.value }))} />
+          </FormField>
+          <FormField label="Vessel / Plant">
+            <TextInput value={form.vesselPlant || ""} onChange={(e) => setForm((f) => ({ ...f, vesselPlant: e.target.value }))} />
           </FormField>
           <FormField label="Packing Cost">
             <TextInput

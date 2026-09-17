@@ -87,6 +87,11 @@ function normalizeLines(lines = []) {
       const totalPrice = qty * price;
       const snapshot = {};
       if (line.customerPartNo != null) snapshot.customerPartNo = String(line.customerPartNo || "");
+      if (line.customerEngineModel != null) snapshot.customerEngineModel = String(line.customerEngineModel || "");
+      if (line.engineModel != null) snapshot.engineModel = String(line.engineModel || "");
+      if (line.config != null) snapshot.config = String(line.config || "");
+      if (line.specifications != null) snapshot.specifications = String(line.specifications || "");
+      if (line.modelMatchStatus != null) snapshot.modelMatchStatus = String(line.modelMatchStatus || "").toUpperCase();
       if (line.priceTier != null) snapshot.priceTier = String(line.priceTier || "").toUpperCase();
       if (line.priceListRevision != null) snapshot.priceListRevision = Number(line.priceListRevision) || 0;
       if (line.priceListId) snapshot.priceListId = String(line.priceListId);
@@ -491,6 +496,7 @@ export async function updateQuotation(req, res) {
       "model",
       "config",
       "esn",
+      "vesselPlant",
       "paymentTerms",
       "deliveryTerms",
       "incoterm",
