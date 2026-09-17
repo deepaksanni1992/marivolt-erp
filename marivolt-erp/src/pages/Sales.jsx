@@ -7974,22 +7974,6 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   />
                 </FormField>
               </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <FormField label="Freight / Packing cost">
-                  <TextInput
-                    type="number"
-                    value={detailSalesInvoiceDraftForm.packingCost ?? 0}
-                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, packingCost: Number(e.target.value) || 0 }))}
-                  />
-                </FormField>
-                <FormField label="Clearance cost">
-                  <TextInput
-                    type="number"
-                    value={detailSalesInvoiceDraftForm.clearanceCost ?? 0}
-                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, clearanceCost: Number(e.target.value) || 0 }))}
-                  />
-                </FormField>
-              </div>
               <div className="grid gap-3 sm:grid-cols-3 md:grid-cols-5">
                 <FormField label="Vertical">
                   <TextInput
@@ -8068,7 +8052,25 @@ ${GLOBAL_REPORT_TABLE_CSS}
               {(() => {
                 const t = calcQuotationTotalsView(detailSalesInvoiceDraftForm);
                 return (
-                  <div className="ml-auto w-full max-w-sm rounded-xl border bg-gray-50 p-3 text-sm">
+                  <div className="ml-auto w-full max-w-md space-y-2 rounded-xl border bg-gray-50 p-3 text-sm">
+                    <FormField label="Freight / Packing cost">
+                      <TextInput
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={detailSalesInvoiceDraftForm.packingCost ?? 0}
+                        onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, packingCost: Number(e.target.value) || 0 }))}
+                      />
+                    </FormField>
+                    <FormField label="Clearance cost">
+                      <TextInput
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={detailSalesInvoiceDraftForm.clearanceCost ?? 0}
+                        onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, clearanceCost: Number(e.target.value) || 0 }))}
+                      />
+                    </FormField>
                     <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(t.subTotal)}</span></div>
                     <div className="flex justify-between py-1"><span>Freight / Packing</span><span>{money(t.packingCost)}</span></div>
                     <div className="flex justify-between py-1"><span>Clearance</span><span>{money(t.clearanceCost)}</span></div>
