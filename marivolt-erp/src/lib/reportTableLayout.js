@@ -208,15 +208,13 @@ export const SALES_COMMERCIAL_COLGROUP = `
 
 export const SALES_INVOICE_COLGROUP = `
 <colgroup>
-  <col style="width:5%" />
-  <col style="width:15%" />
-  <col style="width:27%" />
   <col style="width:6%" />
-  <col style="width:5%" />
-  <col style="width:9%" />
-  <col style="width:9%" />
-  <col style="width:9%" />
-  <col style="width:15%" />
+  <col style="width:18%" />
+  <col style="width:38%" />
+  <col style="width:8%" />
+  <col style="width:8%" />
+  <col style="width:11%" />
+  <col style="width:11%" />
 </colgroup>`;
 
 export const ORDER_ALLOCATION_COLGROUP = `
@@ -385,7 +383,7 @@ export const SALES_COMMERCIAL_LINE_TABLE_HEAD = `
   <th class="col-remarks">Remarks</th>
   <th class="col-availability">Availability</th>`;
 
-/** Tax / sales invoice line table */
+/** Tax / sales invoice line table — commercial columns only, no packing weights */
 export const SALES_INVOICE_LINE_TABLE_HEAD = `
   <th class="col-sno">Pos.</th>
   <th class="col-part">Part Number</th>
@@ -393,9 +391,7 @@ export const SALES_INVOICE_LINE_TABLE_HEAD = `
   <th class="col-uom">UOM</th>
   <th class="col-qty">QTY</th>
   <th class="col-price">Unit price</th>
-  <th class="col-total">Total price</th>
-  <th class="col-weight">Unit Wt</th>
-  <th class="col-weight">Total Wt</th>`;
+  <th class="col-total">Total price</th>`;
 
 /** Order allocation line table */
 export const ORDER_ALLOCATION_LINE_TABLE_HEAD = `

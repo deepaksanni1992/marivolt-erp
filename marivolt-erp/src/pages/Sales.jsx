@@ -1467,8 +1467,6 @@ function renderFlowDocPrintWindow({
                 <td class="col-qty">${line.qty || 0}</td>
                 <td class="col-price">${money(line.price)}</td>
                 <td class="col-total">${money(line.totalPrice)}</td>
-                <td class="col-weight">${line.unitWeightKg == null ? "" : money(line.unitWeightKg)}</td>
-                <td class="col-weight">${line.totalWeightKg == null ? "" : money(line.totalWeightKg)}</td>
               </tr>`
         )
         .join("")

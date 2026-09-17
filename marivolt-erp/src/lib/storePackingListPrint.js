@@ -2,7 +2,6 @@ import {
   buildMarivoltTermsHtml,
   buildReportDocNoteHtml,
   buildReportHeaderHtml,
-  buildReportInfoCardsHtml,
   buildReportTableHtml,
   buildReportTotalsHtml,
   fmtReportDate,
@@ -13,7 +12,8 @@ import {
   buildStorePackingListPrintRows,
   PACKING_LIST_PRINT_COLUMNS,
 } from "./packingListTable.js";
-import { buildCustomerAddressInfoRows } from "./customerTransactionFields.js";
+import { getReportBranding } from "./reportBranding.js";
+import { buildTaxInvoiceHeaderHtml } from "./salesInvoicePrint.js";
 
 function packageTypeLabel(v) {
   return String(v || "")
@@ -55,15 +55,20 @@ function normalizeStorePackingPackages(packing) {
   ];
 }
 
+function linkedInvoiceNos(packing) {
+  const list = packing?.linkedSalesInvoiceNos;
+  if (Array.isArray(list) && list.length) {
+    return list.map((n) => String(n || "").trim()).filter(Boolean).join(", ");
+  }
+  return String(packing?.linkedSalesInvoiceNo || "").trim();
+}
+
 /**
- * Store packing list — quotation/proforma layout for Okeanos & Marivolt.
- * @param {object} packing StorePacking document (with packages or legacy lines)
- * @param {object} company Active company from auth (optional)
- * @param {boolean} autoPrint
+ * Packing list body — same shipper / customer / consignee header as Tax Invoice.
  */
-export function renderStorePackingListPrintWindow(packing, company = {}, autoPrint = false) {
-  if (!packing) return;
+export function buildStorePackingListPrintBody(packing, company = {}) {
   const brandingName = company.name || company.companyName || "";
+  const branding = getReportBranding(brandingName);
   const packages = normalizeStorePackingPackages(packing);
   let totalQty = 0;
   for (const pkg of packages) {
@@ -77,30 +82,25 @@ export function renderStorePackingListPrintWindow(packing, company = {}, autoPri
     metaLines: [
       { label: "No", value: packing.packingNo || "-" },
       { label: "Date", value: fmtReportDate(packing.packingDate) },
-      { label: "Allocation", value: packing.allocationNo || "-" },
-      { label: "OA Ref", value: packing.linkedOANo || "-" },
-      { label: "PI Ref", value: packing.linkedProformaNo || "-" },
     ],
     company,
     brandingName,
   });
 
-  const cards = buildReportInfoCardsHtml({
-    left: {
-      title: "Customer & Address Info",
-      rows: buildCustomerAddressInfoRows(packing),
-    },
-    right: {
-      title: "Machine Details",
-      rows: [
-        { label: "Vertical", value: packing.vertical || "-" },
-        { label: "Brand", value: packing.engine || "-" },
-        { label: "Model", value: packing.model || "-" },
-        { label: "Config", value: packing.config || "-" },
-        { label: "ESN", value: packing.esn || "-" },
-        { label: "Currency", value: packing.currency || "USD" },
-      ],
-    },
+  const cards = buildTaxInvoiceHeaderHtml({
+    doc: packing,
+    company,
+    invoiceNo: packing.packingNo || "",
+    invoiceDateStr: fmtReportDate(packing.packingDate),
+    isMarivolt: branding.isMarivolt,
+    detailsTitle: "Packing details",
+    numberLabel: "Packing Nr",
+    extraDetailRows: [
+      { label: "Allocation", value: packing.allocationNo },
+      { label: "OA Ref", value: packing.linkedOANo },
+      { label: "PI Ref", value: packing.linkedProformaNo },
+      { label: "Invoice", value: linkedInvoiceNos(packing) },
+    ],
   });
 
   const table = buildReportTableHtml({
@@ -115,17 +115,28 @@ export function renderStorePackingListPrintWindow(packing, company = {}, autoPri
     { label: "Total Qty", value: String(totalQty), bold: true },
   ]);
 
-  const body =
+  return (
     header +
     cards +
     table +
     totals +
     buildMarivoltTermsHtml(brandingName) +
-    buildReportDocNoteHtml();
+    buildReportDocNoteHtml()
+  );
+}
 
+/**
+ * Store packing list — quotation/proforma layout for Okeanos & Marivolt.
+ * @param {object} packing StorePacking document (with packages or legacy lines)
+ * @param {object} company Active company from auth (optional)
+ * @param {boolean} autoPrint
+ */
+export function renderStorePackingListPrintWindow(packing, company = {}, autoPrint = false) {
+  if (!packing) return;
+  const brandingName = company.name || company.companyName || "";
   openCommercialReportPrintWindow({
     title: `Packing List ${packing.packingNo || ""}`,
-    bodyInnerHtml: body,
+    bodyInnerHtml: buildStorePackingListPrintBody(packing, company),
     brandingName,
     autoPrint,
     extraCss: PACKING_LIST_EXTRA_CSS,

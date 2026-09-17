@@ -231,7 +231,7 @@ export function renderSiBankFooterHtml({ bankDetail, amountInWords, company, doc
 }
 
 /**
- * Tax invoice top section: Shipper | (Invoice details + Customer) | Consignee — matches commercial invoice layout.
+ * Commercial print top section: Shipper | (details + Customer) | Consignee — Tax Invoice and Packing List.
  */
 export function buildTaxInvoiceHeaderHtml({
   doc,
@@ -239,6 +239,9 @@ export function buildTaxInvoiceHeaderHtml({
   invoiceNo,
   invoiceDateStr,
   isMarivolt,
+  detailsTitle = "Invoice details",
+  numberLabel = "Invoice Nr",
+  extraDetailRows = [],
 }) {
   const esc = escapePrintHtml;
   const custRef =
@@ -285,6 +288,14 @@ export function buildTaxInvoiceHeaderHtml({
     ? `<div class="si-customer-vat"><b>VAT NO :</b> ${esc(doc.customerVatNo)}</div>`
     : "";
 
+  const extraDetailsHtml = (extraDetailRows || [])
+    .map((row) => {
+      const value = String(row?.value ?? "").trim();
+      if (!value) return "";
+      return `<div><b>${esc(row.label)}:</b> ${esc(value)}</div>`;
+    })
+    .join("");
+
   const consigneeRaw = String(doc.consignee || "").trim();
   const consigneeHtml = consigneeRaw ? esc(consigneeRaw).replace(/\r?\n/g, "<br/>") : "—";
 
@@ -304,8 +315,8 @@ export function buildTaxInvoiceHeaderHtml({
         </div>
         <div class="si-mid-stack">
           <div class="si-hbox-tax">
-            <div class="si-hbox-title">Invoice details</div>
-            <div><b>Invoice Nr:</b> ${esc(invoiceNo || "")}</div>
+            <div class="si-hbox-title">${esc(detailsTitle || "Invoice details")}</div>
+            <div><b>${esc(numberLabel || "Invoice Nr")}:</b> ${esc(invoiceNo || "")}</div>
             <div><b>Date:</b> ${esc(invoiceDateStr || "—")}</div>
             <div><b>Cust Ref:</b> ${esc(custRef)}</div>
             <div><b>Currency:</b> <span class="${curSpanClass}">${esc(curDisplay)}</span></div>
@@ -316,6 +327,7 @@ export function buildTaxInvoiceHeaderHtml({
                 ? `<div><b>Dispatch ref:</b> ${esc(String(doc.dispatchNo).trim())}</div>`
                 : ""
             }
+            ${extraDetailsHtml}
           </div>
           <div class="si-hbox-tax">
             <div class="si-hbox-title">Customer</div>

@@ -4,6 +4,8 @@ import {
   buildStorePackingListPrintRows,
   formatPackingBoxDetails,
 } from "../src/lib/packingListTable.js";
+import { SALES_INVOICE_LINE_TABLE_HEAD } from "../src/lib/reportTableLayout.js";
+import { buildTaxInvoiceHeaderHtml } from "../src/lib/salesInvoicePrint.js";
 
 function packageTypeLabel(v) {
   return String(v || "")
@@ -58,5 +60,43 @@ assert.equal(rows[2].cellAttrs[5].rowspan, 1);
 const box = formatPackingBoxDetails(packages[0], { packageTypeLabel, fmtWeight });
 assert.match(box, /80x60x77 CMS/);
 assert.match(box, /Net 146.00 Kg/);
+
+assert.doesNotMatch(SALES_INVOICE_LINE_TABLE_HEAD, /Unit Wt/);
+assert.doesNotMatch(SALES_INVOICE_LINE_TABLE_HEAD, /Total Wt/);
+assert.match(SALES_INVOICE_LINE_TABLE_HEAD, /Unit price/);
+assert.match(SALES_INVOICE_LINE_TABLE_HEAD, /Total price/);
+
+const packingHeader = buildTaxInvoiceHeaderHtml({
+  doc: {
+    customerName: "Pernix (Fiji) Pte Limited",
+    customerReference: "PO- 26-01-20304",
+    contactPerson: "Wallace Smith",
+    attention: "Mr. Rao",
+    paymentTerms: "Net 60 days",
+    billingAddress: "Suva",
+    shippingAddress: "Suva",
+    currency: "EUR",
+    engine: "MAK",
+    model: "M32C",
+    esn: "34057",
+    allocationNo: "ALLOC/260908.02",
+    linkedOANo: "MAR-OA-0008",
+  },
+  company: { name: "Marivolt FZE" },
+  invoiceNo: "MAR-PK-0001",
+  invoiceDateStr: "9/17/2026",
+  isMarivolt: true,
+  detailsTitle: "Packing details",
+  numberLabel: "Packing Nr",
+  extraDetailRows: [{ label: "Allocation", value: "ALLOC/260908.02" }],
+});
+assert.match(packingHeader, /Shipper/);
+assert.match(packingHeader, /Consignee/);
+assert.match(packingHeader, /Packing details/);
+assert.match(packingHeader, /Packing Nr/);
+assert.match(packingHeader, /MAR-PK-0001/);
+assert.match(packingHeader, /Customer/);
+assert.match(packingHeader, /Machine Details/);
+assert.doesNotMatch(packingHeader, /Customer & Address Info/);
 
 console.log("packingListPrint.test.mjs: ok");

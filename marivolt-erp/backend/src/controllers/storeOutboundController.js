@@ -547,6 +547,26 @@ function packageTotals(packages = []) {
   };
 }
 
+async function overlayPackingMachineFromAllocation(items = []) {
+  const rows = Array.isArray(items) ? items : [];
+  const need = rows.filter(
+    (p) => p?.allocationId && (!String(p.vertical || "").trim() || !String(p.config || "").trim()),
+  );
+  if (!need.length) return rows;
+  const ids = [...new Set(need.map((p) => p.allocationId))];
+  const allocs = await OrderAllocation.find({ _id: { $in: ids } })
+    .select("vertical config")
+    .lean();
+  const byId = new Map(allocs.map((a) => [String(a._id), a]));
+  for (const p of rows) {
+    const a = byId.get(String(p.allocationId || ""));
+    if (!a) continue;
+    if (!String(p.vertical || "").trim()) p.vertical = a.vertical || "";
+    if (!String(p.config || "").trim()) p.config = a.config || "";
+  }
+  return rows;
+}
+
 export async function listStorePacking(req, res) {
   try {
     const page = Math.max(1, Number(req.query.page || 1));
@@ -585,7 +605,13 @@ export async function listStorePacking(req, res) {
       StorePacking.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       StorePacking.countDocuments(filter),
     ]);
-    res.json({ items, total, page, limit, hasMore: skip + items.length < total });
+    res.json({
+      items: await overlayPackingMachineFromAllocation(items),
+      total,
+      page,
+      limit,
+      hasMore: skip + items.length < total,
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -597,7 +623,8 @@ export async function getStorePacking(req, res) {
     if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid id" });
     const doc = await StorePacking.findOne(withCompany(req, { _id: id })).lean();
     if (!doc) return res.status(404).json({ message: "Not found" });
-    res.json(doc);
+    const [enriched] = await overlayPackingMachineFromAllocation([doc]);
+    res.json(enriched);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -931,8 +958,10 @@ export async function createStorePackingDraft(req, res) {
       billingAddress: customerSnap.billingAddress || "",
       shippingAddress: customerSnap.shippingAddress || "",
       paymentTerms: customerSnap.paymentTerms || "",
+      vertical: allocation.vertical || "",
       engine: allocation.engine || "",
       model: allocation.model || "",
+      config: allocation.config || "",
       esn: allocation.esn || "",
       currency: String(allocation.currency || "USD").toUpperCase(),
       ...totals,
