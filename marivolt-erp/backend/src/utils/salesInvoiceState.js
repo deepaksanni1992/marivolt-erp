@@ -151,3 +151,52 @@ export function rejectProtectedSiStateFields(body = {}) {
   err.fields = hit;
   return err;
 }
+
+/** Header / print fields that remain editable after issue (not payment or dispatch). */
+export const SI_ISSUED_EDITABLE_FIELDS = Object.freeze([
+  "invoiceDate",
+  "customerName",
+  "contactPerson",
+  "attention",
+  "paymentTerms",
+  "dispatchDetails",
+  "shippingAddress",
+  "billingAddress",
+  "customerReference",
+  "loadingPort",
+  "dischargePort",
+  "consignee",
+  "customerVatNo",
+  "currency",
+  "remarks",
+  "termsAndConditions",
+  "packingCost",
+  "clearanceCost",
+  "vertical",
+  "engine",
+  "model",
+  "config",
+  "esn",
+  "lines",
+]);
+
+export function issuedInvoiceForbiddenBodyKey(body = {}) {
+  return Object.keys(body || {}).find((key) => !SI_ISSUED_EDITABLE_FIELDS.includes(key));
+}
+
+export function issuedInvoiceLineLockError(existingLines = [], nextLines = []) {
+  if ((existingLines || []).length !== (nextLines || []).length) {
+    return "Issued invoice line quantities cannot be added or removed. Cancel and re-issue if needed.";
+  }
+  for (let i = 0; i < (existingLines || []).length; i += 1) {
+    const prev = existingLines[i] || {};
+    const next = nextLines[i] || {};
+    const articleChanged = String(prev.article || "").toUpperCase() !== String(next.article || "").toUpperCase();
+    const qtyChanged = Math.abs((Number(prev.qty) || 0) - (Number(next.qty) || 0)) > DEFAULT_QTY_TOLERANCE;
+    const priceChanged = Math.abs((Number(prev.price) || 0) - (Number(next.price) || 0)) > DEFAULT_TOLERANCE;
+    if (articleChanged || qtyChanged || priceChanged) {
+      return `Issued invoice line ${prev.article || i + 1} article, qty, and price are locked.`;
+    }
+  }
+  return null;
+}

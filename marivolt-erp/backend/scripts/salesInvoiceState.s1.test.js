@@ -9,6 +9,8 @@ import {
   classifyInvoiceForMigration,
   isInvoiceDispatchEligible,
   rejectProtectedSiStateFields,
+  issuedInvoiceForbiddenBodyKey,
+  issuedInvoiceLineLockError,
   legacyStatusFromDimensions,
   normalizePaymentStatus,
 } from "../src/utils/salesInvoiceState.js";
@@ -87,6 +89,16 @@ run("15. generic update rejects protected status fields", () => {
   assert.equal(err.code, "SI_PROTECTED_FIELD_REJECTED");
   assert.ok(err.fields.includes("paymentStatus"));
   assert.equal(rejectProtectedSiStateFields({ customerName: "X" }), null);
+});
+
+run("issued invoice allows consignee and freight keys", () => {
+  assert.equal(issuedInvoiceForbiddenBodyKey({ consignee: "A", packingCost: 10 }), undefined);
+  assert.equal(issuedInvoiceForbiddenBodyKey({ stockPostedAt: true }), "stockPostedAt");
+  assert.equal(
+    issuedInvoiceLineLockError([{ article: "A", qty: 1, price: 2 }], [{ article: "A", qty: 1, price: 2, description: "x" }]),
+    null
+  );
+  assert.ok(issuedInvoiceLineLockError([{ article: "A", qty: 1, price: 2 }], [{ article: "A", qty: 2, price: 2 }]));
 });
 
 run("16. cancelled document keeps payment/dispatch evidence readable", () => {

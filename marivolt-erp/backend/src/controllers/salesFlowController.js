@@ -107,6 +107,8 @@ import {
   normalizeDispatchStatus,
   normalizePaymentStatus,
   rejectProtectedSiStateFields,
+  issuedInvoiceForbiddenBodyKey,
+  issuedInvoiceLineLockError,
 } from "../utils/salesInvoiceState.js";
 
 const { withTransaction } = stockService;
@@ -3749,12 +3751,13 @@ export async function updateSalesInvoice(req, res) {
         fields: protectedErr.fields,
       });
     }
-    // S1 — issued/cancelled documents are immutable except remarks + dedicated lifecycle actions.
+    // S1 — cancelled is remarks-only. Issued invoices may still update print/header
+    // fields (consignee, freight/packing, ports) without touching payment/dispatch state.
     const docStatus = normalizeDocumentStatus(
       doc.documentStatus ||
         (["DRAFT", "CANCELLED"].includes(String(doc.status || "").toUpperCase()) ? doc.status : "ISSUED")
     );
-    if (docStatus === "ISSUED" || docStatus === "CANCELLED") {
+    if (docStatus === "CANCELLED") {
       const otherEditedKey = Object.keys(req.body || {}).find((k) => k !== "remarks");
       if (otherEditedKey) {
         blockTransition(
@@ -3764,6 +3767,27 @@ export async function updateSalesInvoice(req, res) {
           `Cannot edit field "${otherEditedKey}" on a ${docStatus} sales invoice (${doc.invoiceNo}). Cancel and re-issue if needed.`,
           { invoiceNo: doc.invoiceNo, attemptedField: otherEditedKey }
         );
+      }
+    }
+    if (docStatus === "ISSUED") {
+      const forbidden = issuedInvoiceForbiddenBodyKey(req.body || {});
+      if (forbidden) {
+        blockTransition(
+          DOC_TYPES.SALES_INVOICE,
+          docStatus,
+          docStatus,
+          `Cannot edit field "${forbidden}" on a ${docStatus} sales invoice (${doc.invoiceNo}).`,
+          { invoiceNo: doc.invoiceNo, attemptedField: forbidden }
+        );
+      }
+      if (req.body.lines !== undefined) {
+        const lineErr = issuedInvoiceLineLockError(doc.lines || [], req.body.lines || []);
+        if (lineErr) {
+          const err = new Error(lineErr);
+          err.statusCode = 409;
+          err.code = "SI_ISSUED_LINE_LOCKED";
+          throw err;
+        }
       }
     }
     const allowed = [
@@ -3794,14 +3818,30 @@ export async function updateSalesInvoice(req, res) {
     ];
     const beforeSnapshot = doc.toObject();
     const beforeCanon = canonicalStatus(DOC_TYPES.SALES_INVOICE, beforeSnapshot.status);
+    const beforeTotal = Number(beforeSnapshot.grandTotal) || 0;
     for (const key of allowed) {
       if (req.body[key] !== undefined) doc[key] = req.body[key];
     }
     Object.assign(doc, pickCustomerTransactionFieldsFromBody(req.body));
     doc.lines = normalizeLines(doc.lines || []);
     Object.assign(doc, computeTotals(doc.lines, doc));
+    const received = Math.max(0, Number(doc.totalReceivedAmount) || 0);
+    doc.balanceAmount = Math.max(0, (Number(doc.grandTotal) || 0) - received);
     doc.updatedBy = req.user?.email || "";
-    await doc.save();
+    const afterTotal = Number(doc.grandTotal) || 0;
+    if (docStatus === "ISSUED" && Math.abs(afterTotal - beforeTotal) > 1e-4) {
+      if (received > 1e-4) {
+        const err = new Error("Cannot change invoice freight or totals after a payment has been received.");
+        err.statusCode = 409;
+        err.code = "SI_TOTAL_LOCKED_AFTER_PAYMENT";
+        throw err;
+      }
+      await reverseSalesInvoiceReceivable({ req, invoice: beforeSnapshot, reason: "Invoice amount amended" });
+      await doc.save();
+      await postSalesInvoiceReceivable({ req, invoice: doc });
+    } else {
+      await doc.save();
+    }
     const afterCanon = canonicalStatus(DOC_TYPES.SALES_INVOICE, doc.status);
     if (beforeCanon === "DRAFT" && ["POSTED", "PARTIAL_PAYMENT", "PAID"].includes(afterCanon)) {
       await postSalesInvoiceReceivable({ req, invoice: doc });
@@ -3828,7 +3868,7 @@ export async function updateSalesInvoice(req, res) {
     });
     res.json(doc);
   } catch (err) {
-    if (err?.code === "INVALID_TRANSITION") {
+    if (err?.code === "INVALID_TRANSITION" || err?.code === "SI_ISSUED_LINE_LOCKED" || err?.code === "SI_TOTAL_LOCKED_AFTER_PAYMENT") {
       return res.status(err.statusCode || 409).json({ message: err.message, code: err.code, details: err.details });
     }
     res.status(400).json({ message: err.message });

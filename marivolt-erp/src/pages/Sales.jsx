@@ -1024,6 +1024,8 @@ function salesInvoiceDetailToEditableForm(inv) {
     status: inv.status || "DRAFT",
     remarks: inv.remarks || "",
     termsAndConditions: inv.termsAndConditions || "",
+    packingCost: Number(inv.packingCost) || 0,
+    clearanceCost: Number(inv.clearanceCost) || 0,
     lines,
   };
 }
@@ -2769,7 +2771,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
       setDetailSalesInvoiceDraftForm(null);
       return;
     }
-    if (!salesInvoiceIsDraft(salesInvoiceDetail)) {
+    if (salesInvoiceDocumentStatus(salesInvoiceDetail) === "CANCELLED") {
       setDetailSalesInvoiceDraftForm(null);
       return;
     }
@@ -6000,13 +6002,15 @@ ${GLOBAL_REPORT_TABLE_CSS}
               : tabContent === "proforma"
                 ? "Proforma View"
                 : tabContent === "sales-invoice"
-                  ? "Sales Invoice View"
+                  ? "Sales Invoice"
                   : "Document view"
         }
         subtitle={
           tabContent === "proforma"
             ? "Full-screen style PI view: draft opens editable form; approved/converted opens read-only document view."
-            : undefined
+            : tabContent === "sales-invoice"
+              ? "Full invoice document — edit consignee, ports, freight/packing, then save."
+              : undefined
         }
         xlarge
       >
@@ -7892,14 +7896,20 @@ ${GLOBAL_REPORT_TABLE_CSS}
         ) : tabContent === "sales-invoice" ? (
           !salesInvoiceDetail ? (
             <p className="text-sm text-gray-500">Loading...</p>
-          ) : salesInvoiceIsDraft(salesInvoiceDetail) && !detailSalesInvoiceDraftForm ? (
+          ) : salesInvoiceDocumentStatus(salesInvoiceDetail) !== "CANCELLED" && !detailSalesInvoiceDraftForm ? (
             <p className="text-sm text-gray-500">Loading...</p>
-          ) : salesInvoiceIsDraft(salesInvoiceDetail) && detailSalesInvoiceDraftForm ? (
+          ) : salesInvoiceDocumentStatus(salesInvoiceDetail) !== "CANCELLED" && detailSalesInvoiceDraftForm ? (
             <div className="space-y-4 text-sm">
-              <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 ring-1 ring-amber-200">
-                Draft sales invoice — edit details and save. Payment and dispatch statuses are system-derived and not editable. Convert to Sales Dispatch after the document is issued.
+              <div className={`rounded-lg px-3 py-2 text-xs ring-1 ${salesInvoiceIsDraft(salesInvoiceDetail) ? "bg-amber-50 text-amber-900 ring-amber-200" : "bg-sky-50 text-sky-900 ring-sky-200"}`}>
+                {salesInvoiceIsDraft(salesInvoiceDetail)
+                  ? "Draft sales invoice — edit details and save. Payment and dispatch statuses are system-derived and not editable."
+                  : "Full invoice document — edit consignee, ports, freight/packing and clearance, then save. Line qty and price stay locked because this invoice was created from packing."}
               </div>
               <div className="grid gap-3 sm:grid-cols-4">
+                <div>
+                  <div className="text-xs text-gray-500">Invoice No</div>
+                  <div className="mt-1 font-mono text-base">{salesInvoiceDetail.invoiceNo}</div>
+                </div>
                 <FormField label="Invoice Date">
                   <TextInput type="date" value={detailSalesInvoiceDraftForm.invoiceDate} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, invoiceDate: e.target.value }))} />
                 </FormField>
@@ -7964,6 +7974,22 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   />
                 </FormField>
               </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <FormField label="Freight / Packing cost">
+                  <TextInput
+                    type="number"
+                    value={detailSalesInvoiceDraftForm.packingCost ?? 0}
+                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, packingCost: Number(e.target.value) || 0 }))}
+                  />
+                </FormField>
+                <FormField label="Clearance cost">
+                  <TextInput
+                    type="number"
+                    value={detailSalesInvoiceDraftForm.clearanceCost ?? 0}
+                    onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, clearanceCost: Number(e.target.value) || 0 }))}
+                  />
+                </FormField>
+              </div>
               <div className="grid gap-3 sm:grid-cols-3 md:grid-cols-5">
                 <FormField label="Vertical">
                   <TextInput
@@ -8006,7 +8032,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <textarea
                   className="min-h-[240px] w-full rounded-xl border px-3 py-2 text-sm leading-relaxed"
                   rows={14}
-                  placeholder="Terms copied from PI/OA/quotation on conversion; edit while draft."
+                  placeholder="Terms copied from PI/OA/quotation; you can still edit after issue."
                   value={detailSalesInvoiceDraftForm.termsAndConditions || ""}
                   onChange={(e) => setDetailSalesInvoiceDraftForm((f) => ({ ...f, termsAndConditions: e.target.value }))}
                 />
@@ -8031,14 +8057,25 @@ ${GLOBAL_REPORT_TABLE_CSS}
                         <td className="px-2 py-1">{line.article}</td>
                         <td className="px-2 py-1"><TextInput value={line.partNumber || ""} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => { const lines = [...f.lines]; lines[idx] = { ...line, partNumber: e.target.value }; return { ...f, lines }; })} /></td>
                         <td className="px-2 py-1"><TextInput value={line.description || ""} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => { const lines = [...f.lines]; lines[idx] = { ...line, description: e.target.value }; return { ...f, lines }; })} /></td>
-                        <td className="px-2 py-1"><TextInput type="number" value={line.qty || 0} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => { const qty = Number(e.target.value || 0); const lines = [...f.lines]; lines[idx] = { ...line, qty, totalPrice: qty * Number(line.price || 0) }; return { ...f, lines }; })} /></td>
-                        <td className="px-2 py-1"><TextInput type="number" value={line.price || 0} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => { const price = Number(e.target.value || 0); const lines = [...f.lines]; lines[idx] = { ...line, price, totalPrice: Number(line.qty || 0) * price }; return { ...f, lines }; })} /></td>
+                        <td className="px-2 py-1"><TextInput type="number" disabled={!salesInvoiceIsDraft(salesInvoiceDetail)} value={line.qty || 0} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => { const qty = Number(e.target.value || 0); const lines = [...f.lines]; lines[idx] = { ...line, qty, totalPrice: qty * Number(line.price || 0) }; return { ...f, lines }; })} /></td>
+                        <td className="px-2 py-1"><TextInput type="number" disabled={!salesInvoiceIsDraft(salesInvoiceDetail)} value={line.price || 0} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => { const price = Number(e.target.value || 0); const lines = [...f.lines]; lines[idx] = { ...line, price, totalPrice: Number(line.qty || 0) * price }; return { ...f, lines }; })} /></td>
                         <td className="px-2 py-1 text-right">{money(line.totalPrice || 0)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+              {(() => {
+                const t = calcQuotationTotalsView(detailSalesInvoiceDraftForm);
+                return (
+                  <div className="ml-auto w-full max-w-sm rounded-xl border bg-gray-50 p-3 text-sm">
+                    <div className="flex justify-between py-1"><span>Subtotal</span><span>{money(t.subTotal)}</span></div>
+                    <div className="flex justify-between py-1"><span>Freight / Packing</span><span>{money(t.packingCost)}</span></div>
+                    <div className="flex justify-between py-1"><span>Clearance</span><span>{money(t.clearanceCost)}</span></div>
+                    <div className="flex justify-between py-1 font-semibold"><span>Grand Total</span><span>{money(t.grandTotal)} {detailSalesInvoiceDraftForm.currency || ""}</span></div>
+                  </div>
+                );
+              })()}
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="rounded-xl border px-2 py-1 text-xs" disabled={putSalesInvoiceMutation.isPending} onClick={async () => {
                   const { status: _legacyStatus, paymentStatus: _ps, documentStatus: _ds, dispatchStatus: _disp, ...body } = detailSalesInvoiceDraftForm;
@@ -8046,7 +8083,64 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 }}>
                   {putSalesInvoiceMutation.isPending ? "Saving..." : "Save changes"}
                 </button>
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-invoice", salesInvoiceDetail._id)}>Print</button>
+                <button type="button" className="rounded-xl border px-2 py-1 text-xs" onClick={() => openFlowDocumentPrint("sales-invoice", salesInvoiceDetail._id, true)}>Export PDF</button>
+                {!salesInvoiceIsDraft(salesInvoiceDetail) ? (
+                  <>
+                    <button
+                      type="button"
+                      className={`rounded-xl border px-2 py-1 text-xs ${!salesInvoiceCanConvertToSalesDispatch(salesInvoiceDetail) ? "opacity-40" : ""}`}
+                      disabled={!salesInvoiceCanConvertToSalesDispatch(salesInvoiceDetail)}
+                      onClick={() => convertToSalesDispatchFromSalesInvoiceMutation.mutate(salesInvoiceDetail._id)}
+                    >
+                      Convert to Sales Dispatch
+                    </button>
+                    <button
+                      type="button"
+                      className={`rounded-xl border px-2 py-1 text-xs ${String(salesInvoiceDetail.documentStatus || salesInvoiceDetail.status || "").toUpperCase() === "CANCELLED" ? "opacity-40" : ""}`}
+                      disabled={
+                        String(salesInvoiceDetail.documentStatus || salesInvoiceDetail.status || "").toUpperCase() === "CANCELLED" ||
+                        convertToCiplFromSalesInvoiceMutation.isPending
+                      }
+                      title="Create CIPL from this Sales Invoice"
+                      onClick={() => convertToCiplFromSalesInvoiceMutation.mutate(salesInvoiceDetail._id)}
+                    >
+                      Convert to CIPL
+                    </button>
+                  </>
+                ) : null}
               </div>
+              {!salesInvoiceIsDraft(salesInvoiceDetail) ? (
+                <>
+                  <SalesCustomsInvoicePanel salesInvoice={salesInvoiceDetail} />
+                  <div className="overflow-x-auto rounded-xl border">
+                    <table className="min-w-full text-sm">
+                      <thead className="bg-gray-100 text-xs uppercase tracking-wide text-gray-600">
+                        <tr><th className="px-3 py-2 text-left">Payment No</th><th className="px-3 py-2 text-left">Date</th><th className="px-3 py-2 text-right">Amount</th><th className="px-3 py-2 text-left">Mode</th><th className="px-3 py-2 text-left">Reference</th><th className="px-3 py-2 text-left">Status</th><th className="px-3 py-2 text-left">Slip</th></tr>
+                      </thead>
+                      <tbody>
+                        {(salesInvoicePaymentsData?.items || []).length === 0 ? (
+                          <tr><td colSpan={7} className="px-3 py-4 text-center text-gray-500">No payment history.</td></tr>
+                        ) : (salesInvoicePaymentsData?.items || []).map((p) => (
+                          <tr key={p._id} className="border-t">
+                            <td className="px-3 py-2 font-mono text-xs">{p.receiptNo || "—"}</td>
+                            <td className="px-3 py-2 text-xs">{p.receiptDate ? new Date(p.receiptDate).toLocaleDateString() : "—"}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{p.currency || "USD"} {money(p.amountReceived || 0)}</td>
+                            <td className="px-3 py-2 text-xs">{String(p.paymentMode || "").replaceAll("_", " ")}</td>
+                            <td className="px-3 py-2 text-xs">{p.paymentReference || "—"}</td>
+                            <td className="px-3 py-2 text-xs">{p.status || "—"}</td>
+                            <td className="px-3 py-2">
+                              <button type="button" className="rounded border px-2 py-1 text-xs" disabled={!p.attachmentKey} onClick={() => openPaymentReceiptAttachment(p._id, true)}>
+                                Preview
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              ) : null}
             </div>
           ) : (
             <div className="space-y-3 text-sm">
