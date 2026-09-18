@@ -1,6 +1,21 @@
+import { useEffect, useRef } from "react";
 import Modal from "../erp/Modal.jsx";
 import { FormField, TextInput } from "../erp/FormField.jsx";
 import { resolvePiPaymentRequest } from "../../lib/piPaymentRequest.js";
+
+const CASH_ACCOUNT_VALUE = "Cash";
+
+function bankAccountLabel(bank) {
+  const name = String(bank?.accountName || bank?.bankName || "").trim();
+  const currency = String(bank?.currency || "USD").trim().toUpperCase();
+  return name ? `${name} (${currency})` : "";
+}
+
+function selectedAccountValue(form) {
+  if (form?.bankAccountId) return String(form.bankAccountId);
+  if (String(form?.bankCashAccountName || "") === CASH_ACCOUNT_VALUE) return CASH_ACCOUNT_VALUE;
+  return "";
+}
 
 export default function ReceivePaymentModal({
   open,
@@ -22,6 +37,61 @@ export default function ReceivePaymentModal({
     document?.balanceAmount ?? Math.max(0, payable - alreadyReceived)
   );
   const canSubmit = !!document?._id && Number(form?.amountReceived || 0) > 0 && !!form?.receiptDate;
+  const didAutoSelectAccountRef = useRef(false);
+
+  useEffect(() => {
+    if (!open) {
+      didAutoSelectAccountRef.current = false;
+      return;
+    }
+    if (didAutoSelectAccountRef.current) return;
+    if (form?.bankAccountId || String(form?.bankCashAccountName || "").trim()) {
+      didAutoSelectAccountRef.current = true;
+      return;
+    }
+    const currency = String(form?.currency || "").trim().toUpperCase();
+    const match = (bankDetails || []).find(
+      (b) => String(b.currency || "").trim().toUpperCase() === currency
+    );
+    if (!match?._id) return;
+    didAutoSelectAccountRef.current = true;
+    setForm((f) => {
+      if (f.bankAccountId || String(f.bankCashAccountName || "").trim()) return f;
+      return {
+        ...f,
+        bankAccountId: String(match._id),
+        cashAccountId: "",
+        bankCashAccountName: bankAccountLabel(match),
+      };
+    });
+  }, [open, bankDetails, form?.currency, form?.bankAccountId, form?.bankCashAccountName, setForm]);
+
+  const handleBankCashAccountChange = (value) => {
+    if (!value) {
+      setForm((f) => ({ ...f, bankCashAccountName: "", bankAccountId: "", cashAccountId: "" }));
+      return;
+    }
+    if (value === CASH_ACCOUNT_VALUE) {
+      setForm((f) => ({
+        ...f,
+        bankCashAccountName: CASH_ACCOUNT_VALUE,
+        bankAccountId: "",
+        cashAccountId: "",
+      }));
+      return;
+    }
+    const bank = (bankDetails || []).find((b) => String(b._id) === String(value));
+    if (!bank) {
+      setForm((f) => ({ ...f, bankCashAccountName: value, bankAccountId: "", cashAccountId: "" }));
+      return;
+    }
+    setForm((f) => ({
+      ...f,
+      bankAccountId: String(bank._id),
+      cashAccountId: "",
+      bankCashAccountName: bankAccountLabel(bank),
+    }));
+  };
   return (
     <Modal open={open} onClose={onClose} title={title} wide>
       <div className="space-y-3">
@@ -86,16 +156,16 @@ export default function ReceivePaymentModal({
           <FormField label="Bank / Cash Account *">
             <select
               className="w-full rounded-xl border px-3 py-2 text-sm"
-              value={form.bankCashAccountName}
-              onChange={(e) => setForm((f) => ({ ...f, bankCashAccountName: e.target.value }))}
+              value={selectedAccountValue(form)}
+              onChange={(e) => handleBankCashAccountChange(e.target.value)}
             >
               <option value="">Select account</option>
               {(bankDetails || []).map((b) => (
-                <option key={b._id} value={b.accountName || b.bankName || ""}>
-                  {b.accountName || b.bankName} ({b.currency || "USD"})
+                <option key={b._id} value={String(b._id)}>
+                  {bankAccountLabel(b)}
                 </option>
               ))}
-              <option value="Cash">Cash</option>
+              <option value={CASH_ACCOUNT_VALUE}>Cash</option>
             </select>
           </FormField>
           <FormField label="Payment Reference / Txn ID">

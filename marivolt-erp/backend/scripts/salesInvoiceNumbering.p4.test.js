@@ -406,6 +406,16 @@ await run("Payment selection uses live SalesInvoice.invoiceNo by document prop",
   assert.ok(modal.includes("document?.invoiceNo"));
 });
 
+await run("Payment bank account options use unique bank ids (same name, different currencies)", () => {
+  const modal = fs.readFileSync(
+    path.join(srcRoot, "..", "..", "src", "components", "accounts", "ReceivePaymentModal.jsx"),
+    "utf8"
+  );
+  assert.ok(modal.includes("value={String(b._id)}"));
+  assert.ok(modal.includes("bankAccountId: String(bank._id)"));
+  assert.equal(modal.includes("value={b.accountName || b.bankName || \"\"}"), false);
+});
+
 await run("Live sources — AR block reason + dedicated endpoint + no ledger cascade", () => {
   const sales = fs.readFileSync(path.join(srcRoot, "controllers", "salesFlowController.js"), "utf8");
   const routes = fs.readFileSync(path.join(srcRoot, "routes", "salesRoutes.js"), "utf8");
