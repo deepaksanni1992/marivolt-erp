@@ -11,7 +11,8 @@ function sendErr(res, err) {
   const payload = { message: err.message, code: err.code };
   if (err.article) payload.article = err.article;
   if (err.priceCurrency) payload.priceCurrency = err.priceCurrency;
-  if (err.quotationCurrency) payload.quotationCurrency = err.quotationCurrency;
+  if (err.sourceCurrency) payload.sourceCurrency = err.sourceCurrency;
+  if (err.targetCurrency) payload.targetCurrency = err.targetCurrency;
   res.status(err.statusCode || 400).json(payload);
 }
 
@@ -27,6 +28,7 @@ export async function match(req, res) {
       headerMode: req.body?.modelMode || req.body?.headerMode || req.body?.header?.modelMode,
       headerModel: req.body?.model || req.body?.headerModel || req.body?.header?.model,
       currency: req.body?.currency || req.body?.header?.currency,
+      fxRates: req.body?.fxRates || req.body?.manRfqFxRates || req.body?.header?.fxRates || req.body?.header?.manRfqFxRates || [],
     });
     res.json(result);
   } catch (err) {

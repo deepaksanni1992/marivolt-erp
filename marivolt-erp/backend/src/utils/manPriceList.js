@@ -31,10 +31,15 @@ export function displayedSupplier1(supplier1 = null, item = {}) {
   };
 }
 
-export function manRfqRequestHash({ customerId = "", currency = "", lines = [] } = {}) {
+export function manRfqRequestHash({ customerId = "", currency = "", lines = [], fxRates = [] } = {}) {
   const payload = {
     customerId: String(customerId || ""),
     currency: String(currency || ""),
+    fxRates: normalizeManFxRateList(fxRates).map((r) => ({
+      sourceCurrency: r.sourceCurrency,
+      targetCurrency: r.targetCurrency,
+      rate: r.rate,
+    })),
     lines: (lines || []).map((l) => ({
       article: String(l.article || "").trim().toUpperCase(),
       qty: Number(l.qty) || 0,
@@ -42,6 +47,8 @@ export function manRfqRequestHash({ customerId = "", currency = "", lines = [] }
       price: Number(l.price) || 0,
       priceTier: String(l.priceTier || "").trim().toUpperCase(),
       customerPartNo: String(l.customerPartNo || "").trim(),
+      sourceCurrency: normalizeManCurrency(l.sourceCurrency),
+      conversionRate: l.conversionRate == null || l.conversionRate === "" ? "" : Number(l.conversionRate),
     })),
   };
   return JSON.stringify(payload);
@@ -58,6 +65,19 @@ export const SALES_FORBIDDEN_PRICE_LIST_KEYS = Object.freeze([
   "importId",
   "lastImportId",
   "itemMasterId",
+]);
+
+/**
+ * Selling-side FX audit Sales may see on match/quotation retrieval.
+ * Customer print must never include these (or enteredBy / internal notes).
+ */
+export const SALES_ALLOWED_FX_AUDIT_KEYS = Object.freeze([
+  "sourceCurrency",
+  "sourceUnitPrice",
+  "conversionRate",
+  "convertedCurrency",
+  "convertedUnitPrice",
+  "manRfqFxRates",
 ]);
 
 function parentIsPrices(path) {
@@ -258,6 +278,15 @@ export const MAN_RFQ_MODEL_ERROR_CODES = Object.freeze({
 });
 
 export const MAN_RFQ_CURRENCY_MISMATCH = "CURRENCY_MISMATCH";
+export const MAN_RFQ_FX_RATE_REQUIRED = "FX_RATE_REQUIRED";
+/** Technical ceiling only — not a commercial band. Override in tests via the exported constant. */
+export const MAN_RFQ_FX_RATE_MAX = 1e8;
+export const MAN_RFQ_FX_RATE_DECIMALS = 8;
+export const MAN_RFQ_FX_NOTE_MAX = 200;
+
+export function clipManFxNote(value) {
+  return String(value || "").trim().slice(0, MAN_RFQ_FX_NOTE_MAX);
+}
 
 export function normalizeManCurrency(value) {
   return String(value || "").trim().toUpperCase();
@@ -275,30 +304,256 @@ export function manRfqCurrencyMismatchMessage(quotationCurrency, priceCurrency) 
   return `Quotation currency is ${q}, but this Article is priced in ${p}.`;
 }
 
-/**
- * Price-list amounts are valid only in the stored row currency.
- * Never relabel or convert into the quotation currency.
- */
-export function applyManRfqCurrencyGate({ quotationCurrency, priceCurrency, unitPrice, status } = {}) {
-  const price = normalizeManCurrency(priceCurrency);
-  if (manCurrenciesMatch(quotationCurrency, price)) {
+export function manRfqFxPairLabel(sourceCurrency, targetCurrency) {
+  const s = normalizeManCurrency(sourceCurrency) || "(blank)";
+  const t = normalizeManCurrency(targetCurrency) || "(blank)";
+  return `1 ${s} = [rate] ${t}`;
+}
+
+export function manRfqFxRateRequiredMessage(sourceCurrency, targetCurrency) {
+  return `A conversion rate is required (${manRfqFxPairLabel(sourceCurrency, targetCurrency)}).`;
+}
+
+export function roundManFxRate(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return NaN;
+  const f = 10 ** MAN_RFQ_FX_RATE_DECIMALS;
+  return Math.round((n + Number.EPSILON) * f) / f;
+}
+
+export function parseManFxRate(value) {
+  if (value == null || value === "") {
+    return { ok: false, code: "MISSING", message: "Conversion rate is required", rate: undefined };
+  }
+  const n = typeof value === "number" ? value : Number(String(value).trim());
+  if (!Number.isFinite(n)) {
+    return { ok: false, code: "INVALID", message: "Conversion rate must be a finite number greater than zero", rate: undefined };
+  }
+  if (!(n > 0)) {
+    return { ok: false, code: "INVALID", message: "Conversion rate must be greater than zero", rate: undefined };
+  }
+  if (n > MAN_RFQ_FX_RATE_MAX) {
     return {
-      ok: true,
-      status: status || "MATCHED",
-      unitPrice,
-      priceCurrency: price,
-      currencyMismatch: false,
-      reason: "",
+      ok: false,
+      code: "INVALID",
+      message: `Conversion rate exceeds the technical maximum of ${MAN_RFQ_FX_RATE_MAX}`,
+      rate: undefined,
+    };
+  }
+  return { ok: true, code: "", message: "", rate: roundManFxRate(n) };
+}
+
+export function convertManSourceUnitPrice(sourceUnitPrice, rate) {
+  const parsed = parseManFxRate(rate);
+  if (!parsed.ok) return undefined;
+  return roundQuotationMoney(roundQuotationMoney(sourceUnitPrice) * parsed.rate);
+}
+
+export function normalizeManFxSnapshot(raw = {}, { requireRate = true } = {}) {
+  const sourceCurrency = normalizeManCurrency(raw.sourceCurrency || raw.fromCurrency);
+  const targetCurrency = normalizeManCurrency(raw.targetCurrency || raw.toCurrency);
+  const parsed = parseManFxRate(raw.rate);
+  if (!sourceCurrency || !targetCurrency) {
+    return {
+      ok: false,
+      code: MAN_RFQ_CURRENCY_MISMATCH,
+      message: "Conversion rate must name source and target currencies",
+    };
+  }
+  if (requireRate && !parsed.ok) {
+    return {
+      ok: false,
+      code: MAN_RFQ_CURRENCY_MISMATCH,
+      message: parsed.message,
+      sourceCurrency,
+      targetCurrency,
     };
   }
   return {
-    ok: false,
-    status: MAN_RFQ_CURRENCY_MISMATCH,
-    unitPrice: undefined,
-    priceCurrency: price,
-    currencyMismatch: true,
-    reason: manRfqCurrencyMismatchMessage(quotationCurrency, priceCurrency),
+    ok: true,
+    snapshot: {
+      sourceCurrency,
+      targetCurrency,
+      rate: parsed.ok ? parsed.rate : undefined,
+      rateDate: raw.rateDate ? String(raw.rateDate).slice(0, 10) : "",
+      note: clipManFxNote(raw.note),
+    },
   };
+}
+
+function fxPairKey(sourceCurrency, targetCurrency) {
+  return `${normalizeManCurrency(sourceCurrency)}->${normalizeManCurrency(targetCurrency)}`;
+}
+
+function sortManFxSnapshots(rows) {
+  return [...rows].sort((a, b) => {
+    const s = String(a.sourceCurrency).localeCompare(String(b.sourceCurrency));
+    return s !== 0 ? s : String(a.targetCurrency).localeCompare(String(b.targetCurrency));
+  });
+}
+
+/**
+ * First-wins for identical pairs. Conflicting rates for the same pair are rejected.
+ */
+export function canonicalizeManFxRates(list = []) {
+  const rows = Array.isArray(list) ? list : [];
+  const byPair = new Map();
+  for (const raw of rows) {
+    const parsed = normalizeManFxSnapshot(raw, { requireRate: true });
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        code: parsed.code || MAN_RFQ_CURRENCY_MISMATCH,
+        message: parsed.message,
+        sourceCurrency: parsed.sourceCurrency,
+        targetCurrency: parsed.targetCurrency,
+        snapshots: [],
+      };
+    }
+    const key = fxPairKey(parsed.snapshot.sourceCurrency, parsed.snapshot.targetCurrency);
+    const existing = byPair.get(key);
+    if (existing && Number(existing.rate) !== Number(parsed.snapshot.rate)) {
+      return {
+        ok: false,
+        code: MAN_RFQ_CURRENCY_MISMATCH,
+        message: `Conflicting conversion rates for ${manRfqFxPairLabel(parsed.snapshot.sourceCurrency, parsed.snapshot.targetCurrency)}.`,
+        sourceCurrency: parsed.snapshot.sourceCurrency,
+        targetCurrency: parsed.snapshot.targetCurrency,
+        snapshots: [],
+      };
+    }
+    if (!existing) byPair.set(key, parsed.snapshot);
+  }
+  return { ok: true, snapshots: sortManFxSnapshots([...byPair.values()]) };
+}
+
+/** First-wins unique pairs, sorted by source then target. Conflicting pairs are ignored here; create rejects them. */
+export function normalizeManFxRateList(list = []) {
+  const rows = Array.isArray(list) ? list : [];
+  const byPair = new Map();
+  for (const raw of rows) {
+    const parsed = normalizeManFxSnapshot(raw, { requireRate: true });
+    if (!parsed.ok) continue;
+    const key = fxPairKey(parsed.snapshot.sourceCurrency, parsed.snapshot.targetCurrency);
+    if (!byPair.has(key)) byPair.set(key, parsed.snapshot);
+  }
+  return sortManFxSnapshots([...byPair.values()]);
+}
+
+export function findManFxSnapshot(list, sourceCurrency, targetCurrency) {
+  const source = normalizeManCurrency(sourceCurrency);
+  const target = normalizeManCurrency(targetCurrency);
+  if (!source || !target) return null;
+  return (
+    normalizeManFxRateList(list).find((r) => r.sourceCurrency === source && r.targetCurrency === target) || null
+  );
+}
+
+/**
+ * Price-list amounts stay in the stored row currency until a header conversion rate is applied.
+ * Never relabel a source amount as another currency, invert a rate, or convert a converted value.
+ */
+export function applyManRfqCurrencyPricing({
+  quotationCurrency,
+  sourceCurrency,
+  priceCurrency,
+  sourceUnitPrice,
+  unitPrice,
+  status,
+  fxRates = [],
+} = {}) {
+  const source = normalizeManCurrency(sourceCurrency || priceCurrency);
+  const target = normalizeManCurrency(quotationCurrency);
+  const original = roundQuotationMoney(sourceUnitPrice != null ? sourceUnitPrice : unitPrice);
+  if (!target) {
+    return {
+      ok: false,
+      status: MAN_RFQ_CURRENCY_MISMATCH,
+      unitPrice: undefined,
+      sourceUnitPrice: original,
+      sourceCurrency: source,
+      convertedCurrency: "",
+      convertedUnitPrice: undefined,
+      conversionRate: undefined,
+      priceCurrency: source,
+      reason: "Quotation currency is required",
+    };
+  }
+  if (!source) {
+    return {
+      ok: false,
+      status: MAN_RFQ_CURRENCY_MISMATCH,
+      unitPrice: undefined,
+      sourceUnitPrice: original,
+      sourceCurrency: "",
+      convertedCurrency: target,
+      convertedUnitPrice: undefined,
+      conversionRate: undefined,
+      priceCurrency: "",
+      reason: "Price-list currency is required",
+    };
+  }
+  if (manCurrenciesMatch(target, source)) {
+    return {
+      ok: true,
+      status: status || "MATCHED",
+      unitPrice: original,
+      sourceUnitPrice: original,
+      sourceCurrency: source,
+      convertedCurrency: target,
+      convertedUnitPrice: original,
+      conversionRate: 1,
+      priceCurrency: source,
+      reason: "",
+    };
+  }
+  const snap = findManFxSnapshot(fxRates, source, target);
+  if (!snap) {
+    return {
+      ok: false,
+      status: MAN_RFQ_FX_RATE_REQUIRED,
+      unitPrice: undefined,
+      sourceUnitPrice: original,
+      sourceCurrency: source,
+      convertedCurrency: target,
+      convertedUnitPrice: undefined,
+      conversionRate: undefined,
+      priceCurrency: source,
+      reason: manRfqFxRateRequiredMessage(source, target),
+    };
+  }
+  const converted = convertManSourceUnitPrice(original, snap.rate);
+  if (converted == null) {
+    return {
+      ok: false,
+      status: MAN_RFQ_CURRENCY_MISMATCH,
+      unitPrice: undefined,
+      sourceUnitPrice: original,
+      sourceCurrency: source,
+      convertedCurrency: target,
+      convertedUnitPrice: undefined,
+      conversionRate: undefined,
+      priceCurrency: source,
+      reason: `Conversion rate for ${manRfqFxPairLabel(source, target)} is invalid.`,
+    };
+  }
+  return {
+    ok: true,
+    status: status || "MATCHED",
+    unitPrice: converted,
+    sourceUnitPrice: original,
+    sourceCurrency: source,
+    convertedCurrency: target,
+    convertedUnitPrice: converted,
+    conversionRate: snap.rate,
+    priceCurrency: source,
+    fxSnapshot: snap,
+    reason: "",
+  };
+}
+
+export function applyManRfqCurrencyGate(args = {}) {
+  return applyManRfqCurrencyPricing(args);
 }
 
 /** Canonical mode or empty. Never defaults unknown values to SELECTED. */
@@ -474,6 +729,8 @@ const QUOTATION_MONEY_FIELD_KEYS = new Set([
   "price",
   "totalPrice",
   "unitPrice",
+  "sourceUnitPrice",
+  "convertedUnitPrice",
   "subTotal",
   "discountTotal",
   "taxTotal",
@@ -843,21 +1100,27 @@ const CUSTOMER_PRINT_LINE_KEYS = [
   "customerPartNo",
 ];
 
+const CUSTOMER_PRINT_STRIP_HEADER_KEYS = [
+  "internalNotes",
+  "manRfqIdempotencyKey",
+  "manRfqRequestHash",
+  "manRfqModelMode",
+  "manRfqFxRates",
+];
+
 /** Customer PDF/export: selected selling price and customer-facing fields only. */
 export function sanitizeCustomerQuotationPrint(row = {}) {
-  const {
-    internalNotes: _notes,
-    manRfqIdempotencyKey: _key,
-    manRfqRequestHash: _hash,
-    manRfqModelMode: _mode,
-    ...header
-  } = row;
+  const header = { ...row };
+  for (const k of CUSTOMER_PRINT_STRIP_HEADER_KEYS) {
+    delete header[k];
+  }
   return roundQuotationMoneyFields({
     ...header,
     internalNotes: "",
     manRfqIdempotencyKey: "",
     manRfqRequestHash: "",
     manRfqModelMode: "",
+    manRfqFxRates: [],
     lines: (row.lines || []).map((line) => {
       const out = {};
       for (const k of CUSTOMER_PRINT_LINE_KEYS) {

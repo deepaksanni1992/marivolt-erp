@@ -25,6 +25,7 @@ const STATUS_BADGE = {
   NON_MAN: { label: "Not found", className: "bg-slate-100 text-slate-700" },
   INVALID: { label: "Not found", className: "bg-slate-100 text-slate-700" },
   CURRENCY_MISMATCH: { label: "Currency mismatch", className: "bg-rose-100 text-rose-800" },
+  FX_RATE_REQUIRED: { label: "Conversion rate required", className: "bg-rose-100 text-rose-800" },
   EXCLUDED: { label: "Excluded", className: "bg-slate-200 text-slate-700" },
   REVIEW: { label: "Multiple matches", className: "bg-amber-50 text-amber-800" },
 };
@@ -83,23 +84,65 @@ function manCurrenciesMatch(quotationCurrency, priceCurrency) {
 
 function linePriceCurrency(ln) {
   const cand = lineCandidate(ln);
-  return normalizeManCurrency(ln.priceCurrency || cand?.priceCurrency || cand?.prices?.currency);
+  return normalizeManCurrency(ln.sourceCurrency || ln.priceCurrency || cand?.priceCurrency || cand?.prices?.currency);
 }
 
-function lineHasCurrencyMismatch(ln, quotationCurrency) {
-  if (ln.exclude) return false;
-  const priceCurrency = linePriceCurrency(ln);
-  if (!priceCurrency) return false;
-  return !manCurrenciesMatch(quotationCurrency, priceCurrency);
+function parseConversionRate(value) {
+  if (value == null || value === "") return { ok: false, rate: undefined };
+  const n = typeof value === "number" ? value : Number(String(value).trim());
+  if (!Number.isFinite(n) || !(n > 0) || n > 1e8) return { ok: false, rate: undefined };
+  const rounded = Math.round((n + Number.EPSILON) * 1e8) / 1e8;
+  return { ok: true, rate: rounded };
 }
 
-function currencyMismatchMessage(quotationCurrency, priceCurrency) {
-  const q = normalizeManCurrency(quotationCurrency) || "(blank)";
-  const p = normalizeManCurrency(priceCurrency) || "(blank)";
-  return `Quotation currency is ${q}, but this Article is priced in ${p}.`;
+function convertSourceUnitPrice(sourceUnitPrice, rate) {
+  const parsed = parseConversionRate(rate);
+  if (!parsed.ok) return undefined;
+  return roundQuotationMoney(roundQuotationMoney(sourceUnitPrice) * parsed.rate);
 }
 
-function lineIsReady(ln, quotationCurrency) {
+function lineSourceUnitPrice(ln) {
+  const cand = lineCandidate(ln);
+  const prices = cand?.prices || {};
+  const fromTier = tierUnit(prices, ln.priceTier || "SELL");
+  if (fromTier != null) return roundQuotationMoney(fromTier);
+  if (ln.sourceUnitPrice != null && ln.sourceUnitPrice !== "") return roundQuotationMoney(ln.sourceUnitPrice);
+  return null;
+}
+
+function lineConversion(ln, quotationCurrency, fxInputs) {
+  const sourceCurrency = linePriceCurrency(ln);
+  const sourceUnitPrice = lineSourceUnitPrice(ln);
+  const target = normalizeManCurrency(quotationCurrency);
+  if (ln.exclude) {
+    return { sourceCurrency, sourceUnitPrice, rate: undefined, quoteUnit: null, required: false };
+  }
+  if (!sourceCurrency || sourceUnitPrice == null) {
+    return { sourceCurrency, sourceUnitPrice, rate: undefined, quoteUnit: null, required: false };
+  }
+  if (manCurrenciesMatch(target, sourceCurrency)) {
+    return { sourceCurrency, sourceUnitPrice, rate: 1, quoteUnit: sourceUnitPrice, required: false };
+  }
+  const parsed = parseConversionRate(fxInputs[sourceCurrency]?.rate);
+  if (!parsed.ok) {
+    return { sourceCurrency, sourceUnitPrice, rate: undefined, quoteUnit: null, required: true };
+  }
+  return {
+    sourceCurrency,
+    sourceUnitPrice,
+    rate: parsed.rate,
+    quoteUnit: convertSourceUnitPrice(sourceUnitPrice, parsed.rate),
+    required: false,
+  };
+}
+
+function fxPairLabel(sourceCurrency, targetCurrency) {
+  const s = normalizeManCurrency(sourceCurrency) || "(blank)";
+  const t = normalizeManCurrency(targetCurrency) || "(blank)";
+  return `1 ${s} = [rate] ${t}`;
+}
+
+function lineIsReady(ln, quotationCurrency, fxInputs = {}) {
   if (ln.exclude) return true;
   if (!ln.selectedArticle) return false;
   if (
@@ -116,18 +159,24 @@ function lineIsReady(ln, quotationCurrency) {
   ) {
     return false;
   }
-  if (lineHasCurrencyMismatch(ln, quotationCurrency)) return false;
+  const conv = lineConversion(ln, quotationCurrency, fxInputs);
+  if (conv.required || conv.quoteUnit == null) return false;
   const cand = (ln.candidates || []).find((c) => c.article === ln.selectedArticle);
   if (cand && (!cand.uomOk || cand.modelConflict || cand.configConflict || !cand.prices)) return false;
   const prices = cand?.prices || {};
   return tierUnit(prices, ln.priceTier || "SELL") != null;
 }
 
-function displayStatus(ln, quotationCurrency) {
+function displayStatus(ln, quotationCurrency, fxInputs = {}) {
   if (ln.exclude) return "EXCLUDED";
-  if (lineHasCurrencyMismatch(ln, quotationCurrency)) return "CURRENCY_MISMATCH";
-  if (lineIsReady(ln, quotationCurrency) && !["NOT_FOUND", "NON_MAN", "INVALID"].includes(ln.status)) return "READY";
-  if (ln.status === "CURRENCY_MISMATCH") return ln.selectedArticle ? "MATCHED" : "REVIEW";
+  const conv = lineConversion(ln, quotationCurrency, fxInputs);
+  if (conv.required) return "FX_RATE_REQUIRED";
+  if (lineIsReady(ln, quotationCurrency, fxInputs) && !["NOT_FOUND", "NON_MAN", "INVALID"].includes(ln.status)) {
+    return "READY";
+  }
+  if (ln.status === "FX_RATE_REQUIRED" || ln.status === "CURRENCY_MISMATCH") {
+    return ln.selectedArticle ? "MATCHED" : "REVIEW";
+  }
   return ln.status || "REVIEW";
 }
 
@@ -245,6 +294,7 @@ export default function ManRfqQuotation() {
   });
   const [customerSearch, setCustomerSearch] = useState("");
   const [lines, setLines] = useState([]);
+  const [fxInputs, setFxInputs] = useState({});
   const [idempotencyKey, setIdempotencyKey] = useState(newKey);
   const [created, setCreated] = useState(null);
   const [bulkTier, setBulkTier] = useState("SELL");
@@ -302,9 +352,10 @@ export default function ManRfqQuotation() {
           ...ln,
           exclude: ["NOT_FOUND", "NON_MAN", "INVALID"].includes(ln.status),
           excludeReason: ln.exclusionReason || "",
-          priceTier: ln.selectedArticle && ln.status !== "CURRENCY_MISMATCH" ? ln.priceTier || "SELL" : "",
-          unitPrice: ln.selectedArticle && ln.status !== "CURRENCY_MISMATCH" ? ln.unitPrice : undefined,
-          priceCurrency: ln.priceCurrency || "",
+          priceTier: ln.selectedArticle ? ln.priceTier || "SELL" : "",
+          sourceCurrency: ln.sourceCurrency || ln.priceCurrency || "",
+          sourceUnitPrice: ln.sourceUnitPrice,
+          priceCurrency: ln.priceCurrency || ln.sourceCurrency || "",
         }))
       );
       notify.info("RFQ matched. Review lines before creating a quotation.");
@@ -360,6 +411,15 @@ export default function ManRfqQuotation() {
         customerId: header.customerId,
         customerName: header.customerName,
         currency: header.currency,
+        fxRates: Object.entries(fxInputs)
+          .map(([sourceCurrency, row]) => ({
+            sourceCurrency,
+            targetCurrency: header.currency,
+            rate: row?.rate,
+            rateDate: row?.rateDate || header.quotationDate,
+            note: row?.note || "",
+          }))
+          .filter((r) => parseConversionRate(r.rate).ok),
         header,
         lines: lines.map((ln) => {
           const cand = (ln.candidates || []).find((c) => c.article === ln.selectedArticle);
@@ -394,8 +454,8 @@ export default function ManRfqQuotation() {
         notify.error(`Prices changed${where}. Refresh or recheck the affected row, then try again.`);
         return;
       }
-      if (e.code === "CURRENCY_MISMATCH") {
-        notify.error(e.message || "Quotation currency does not match the MAN price-list currency.");
+      if (e.code === "CURRENCY_MISMATCH" || e.code === "FX_RATE_REQUIRED") {
+        notify.error(e.message || "A valid header conversion rate is required before creating this quotation.");
         return;
       }
       notify.error(e.message);
@@ -412,29 +472,33 @@ export default function ManRfqQuotation() {
       uom: 0,
       pricing: 0,
       currency: 0,
+      fx: 0,
       notFound: 0,
     };
     for (const l of open) {
       if (["NOT_FOUND", "NON_MAN", "INVALID"].includes(l.status)) counts.notFound += 1;
-      else if (lineHasCurrencyMismatch(l, header.currency)) counts.currency += 1;
+      else if (lineConversion(l, header.currency, fxInputs).required) counts.fx += 1;
       else if (["MODEL_MISMATCH", "MODEL_CONFLICT", "MODEL_REQUIRED"].includes(l.status)) counts.model += 1;
       else if (l.status === "UOM_MISMATCH") counts.uom += 1;
       else if (l.status === "PRICING_REQUIRED") counts.pricing += 1;
       else if (!l.selectedArticle || l.status === "MULTIPLE" || l.status === "REVIEW") counts.multiple += 1;
-      else if (!lineIsReady(l, header.currency)) counts.missingArticle += 1;
+      else if (!lineIsReady(l, header.currency, fxInputs)) counts.missingArticle += 1;
     }
     return counts;
-  }, [lines, header.currency]);
+  }, [lines, header.currency, fxInputs]);
 
-  const ready = Boolean(header.customerId) && included.length > 0 && included.every((l) => lineIsReady(l, header.currency));
+  const ready =
+    Boolean(header.customerId) && included.length > 0 && included.every((l) => lineIsReady(l, header.currency, fxInputs));
   const unresolvedTotal = Object.values(unresolved).reduce((a, b) => a + b, 0);
-  const includedPriceCurrencies = [
+  const includedSourceCurrencies = [
     ...new Set(included.map((l) => linePriceCurrency(l)).filter(Boolean)),
   ];
-  const commonPriceCurrency = includedPriceCurrencies.length === 1 ? includedPriceCurrencies[0] : "";
-  const mixedPriceCurrencies = includedPriceCurrencies.length > 1;
-  const canAlignHeaderCurrency =
-    Boolean(commonPriceCurrency) && commonPriceCurrency !== normalizeManCurrency(header.currency);
+  const conversionSources = includedSourceCurrencies.filter(
+    (c) => !manCurrenciesMatch(c, header.currency)
+  );
+  const needsConversion = conversionSources.length > 0;
+  const conversionRatesReady = conversionSources.every((c) => parseConversionRate(fxInputs[c]?.rate).ok);
+  const singleSourceCurrency = includedSourceCurrencies.length === 1 ? includedSourceCurrencies[0] : "";
 
   const rematchMut = useMutation({
     mutationFn: async (nextCurrency) => {
@@ -444,6 +508,15 @@ export default function ManRfqQuotation() {
         modelMode: header.modelMode,
         model: header.model || "",
         currency,
+        fxRates: Object.entries(fxInputs)
+          .map(([sourceCurrency, row]) => ({
+            sourceCurrency,
+            targetCurrency: currency,
+            rate: row?.rate,
+            rateDate: row?.rateDate || header.quotationDate,
+            note: row?.note || "",
+          }))
+          .filter((r) => parseConversionRate(r.rate).ok && manCurrenciesMatch(r.targetCurrency, currency)),
         lines: lines.map((ln) => ({
           partNo: ln.requestedPartNo,
           uom: ln.uom,
@@ -467,9 +540,10 @@ export default function ManRfqQuotation() {
           ...ln,
           exclude: ["NOT_FOUND", "NON_MAN", "INVALID"].includes(ln.status),
           excludeReason: ln.exclusionReason || "",
-          priceTier: ln.selectedArticle && ln.status !== "CURRENCY_MISMATCH" ? ln.priceTier || "SELL" : "",
-          unitPrice: ln.selectedArticle && ln.status !== "CURRENCY_MISMATCH" ? ln.unitPrice : undefined,
-          priceCurrency: ln.priceCurrency || "",
+          priceTier: ln.selectedArticle ? ln.priceTier || "SELL" : "",
+          sourceCurrency: ln.sourceCurrency || ln.priceCurrency || "",
+          sourceUnitPrice: ln.sourceUnitPrice,
+          priceCurrency: ln.priceCurrency || ln.sourceCurrency || "",
         }))
       );
       notify.info(`Matched using quotation currency ${currency}.`);
@@ -504,17 +578,18 @@ export default function ManRfqQuotation() {
           return { ...r, selectedArticle: article, status: "PRICING_REQUIRED", description: cand.description };
         }
         const priceCurrency = normalizeManCurrency(cand.priceCurrency || cand.prices?.currency);
-        const mismatch = priceCurrency && !manCurrenciesMatch(header.currency, priceCurrency);
+        const sourceUnitPrice = roundQuotationMoney(tierUnit(cand.prices, r.priceTier || "SELL"));
         return {
           ...r,
           selectedArticle: article,
-          status: mismatch ? "CURRENCY_MISMATCH" : "MATCHED",
+          status: "MATCHED",
           description: cand.description,
           matchedEngineModel: cand.model || r.matchedEngineModel,
           availableQty: cand.availableQty,
           leadTime: cand.leadTime,
-          priceTier: mismatch ? "" : r.priceTier || "SELL",
-          unitPrice: mismatch ? undefined : tierUnit(cand.prices, r.priceTier || "SELL"),
+          priceTier: r.priceTier || "SELL",
+          sourceCurrency: priceCurrency,
+          sourceUnitPrice,
           priceCurrency,
           exclude: false,
         };
@@ -583,10 +658,16 @@ export default function ManRfqQuotation() {
             <input
               className="mt-1 w-full rounded-xl border px-3 py-2"
               value={header.currency}
-              onChange={(e) => setHeader((h) => ({ ...h, currency: e.target.value.toUpperCase() }))}
+              onChange={(e) => {
+                const currency = e.target.value.toUpperCase();
+                setHeader((h) => ({ ...h, currency }));
+                setFxInputs({});
+                setIdempotencyKey(newKey());
+                setCreated(null);
+              }}
             />
             <p className="mt-1 text-xs text-slate-500">
-              MAN prices are used only in their stored currency. Changing this field does not convert prices.
+              Changing quotation currency invalidates previous conversion rates. Price-list amounts are never relabelled.
             </p>
           </label>
           <label className="text-sm">
@@ -665,25 +746,119 @@ export default function ManRfqQuotation() {
         {header.modelMode === "MIXED" ? (
           <p className="mt-2 text-xs text-slate-600">Engine Model is required on every RFQ line for mixed-model RFQs.</p>
         ) : null}
-        {lines.length && mixedPriceCurrencies ? (
-          <p className="mt-2 text-sm text-rose-800">
-            Matched Articles are priced in {includedPriceCurrencies.join(" and ")}. Resolve or exclude lines so every
-            included Article uses one currency. Prices are never converted.
-          </p>
-        ) : null}
-        {lines.length && canAlignHeaderCurrency ? (
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <p className="text-sm text-amber-900">
-              Included Articles are priced in {commonPriceCurrency}. The quotation header is {header.currency || "(blank)"}.
+        {lines.length && needsConversion ? (
+          <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-3">
+            <h3 className="text-sm font-semibold text-amber-950">Currency Conversion</h3>
+            <p className="mt-1 text-xs text-amber-900">
+              Enter a header conversion rate for each price-list currency. Direction is always 1 source unit equals the
+              quotation amount. Rates are never taken from a previous quotation or an online service.
             </p>
-            <button
-              type="button"
-              className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-950"
-              disabled={rematchMut.isPending}
-              onClick={() => rematchMut.mutate(commonPriceCurrency)}
-            >
-              Set currency to {commonPriceCurrency} and rematch
-            </button>
+            {conversionSources.length > 1 ? (
+              <p className="mt-2 text-xs font-semibold text-rose-800">
+                Included Articles are priced in {conversionSources.join(" and ")}. Enter a separate rate for each source
+                currency. One rate is never reused across different source currencies.
+              </p>
+            ) : null}
+            <div className="mt-3 space-y-3">
+              {conversionSources.map((sourceCurrency) => {
+                const row = fxInputs[sourceCurrency] || {};
+                return (
+                  <div key={sourceCurrency} className="rounded-lg border border-amber-200 bg-white p-3">
+                    <p className="text-sm font-semibold text-slate-800">
+                      1 {sourceCurrency} = [{row.rate || "rate"}] {header.currency}
+                    </p>
+                    <div className="mt-2 grid gap-2 md:grid-cols-4">
+                      <label className="text-xs md:col-span-2">
+                        Source currency: {sourceCurrency} · Quotation currency: {header.currency}
+                        <div className="mt-1 flex items-center gap-2 text-sm">
+                          <span>1 {sourceCurrency} =</span>
+                          <input
+                            className="w-32 rounded-lg border px-2 py-1"
+                            inputMode="decimal"
+                            value={row.rate ?? ""}
+                            onChange={(e) =>
+                              setFxInputs((prev) => ({
+                                ...prev,
+                                [sourceCurrency]: {
+                                  rate: e.target.value,
+                                  rateDate: prev[sourceCurrency]?.rateDate || header.quotationDate,
+                                  note: prev[sourceCurrency]?.note || "",
+                                },
+                              }))
+                            }
+                            placeholder="rate"
+                          />
+                          <span>{header.currency}</span>
+                        </div>
+                      </label>
+                      <label className="text-xs">
+                        Rate date
+                        <input
+                          type="date"
+                          className="mt-1 w-full rounded-lg border px-2 py-1"
+                          value={row.rateDate || header.quotationDate || ""}
+                          onChange={(e) =>
+                            setFxInputs((prev) => ({
+                              ...prev,
+                              [sourceCurrency]: {
+                                rate: prev[sourceCurrency]?.rate || "",
+                                rateDate: e.target.value,
+                                note: prev[sourceCurrency]?.note || "",
+                              },
+                            }))
+                          }
+                        />
+                      </label>
+                      <label className="text-xs">
+                        Internal conversion note
+                        <input
+                          className="mt-1 w-full rounded-lg border px-2 py-1"
+                          value={row.note || ""}
+                          placeholder="Management approved rate"
+                          onChange={(e) =>
+                            setFxInputs((prev) => ({
+                              ...prev,
+                              [sourceCurrency]: {
+                                rate: prev[sourceCurrency]?.rate || "",
+                                rateDate: prev[sourceCurrency]?.rateDate || header.quotationDate,
+                                note: e.target.value,
+                              },
+                            }))
+                          }
+                        />
+                      </label>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="rounded-xl border border-amber-400 bg-amber-100 px-3 py-1 text-sm font-semibold text-amber-950 disabled:opacity-50"
+                disabled={!conversionRatesReady}
+                onClick={() => {
+                  setIdempotencyKey(newKey());
+                  setCreated(null);
+                  notify.info("Conversion applied. Lines were repriced from original source amounts.");
+                }}
+              >
+                Apply conversion and reprice
+              </button>
+              {singleSourceCurrency ? (
+                <button
+                  type="button"
+                  className="rounded-xl border px-3 py-1 text-sm font-semibold"
+                  disabled={rematchMut.isPending}
+                  onClick={() => {
+                    setFxInputs({});
+                    rematchMut.mutate(singleSourceCurrency);
+                  }}
+                >
+                  Use source currency {singleSourceCurrency} instead
+                </button>
+              ) : null}
+            </div>
           </div>
         ) : null}
       </div>
@@ -758,10 +933,13 @@ export default function ManRfqQuotation() {
                   <th className="px-2 py-2">Available Stock</th>
                   <th className="px-2 py-2">Lead Time / Availability</th>
                   <th className="px-2 py-2">Price Tier</th>
-                  <th className="px-2 py-2">Price currency</th>
-                  <th className="px-2 py-2">Unit Price</th>
+                  <th className="px-2 py-2">Source Price</th>
+                  <th className="px-2 py-2">Source Currency</th>
+                  <th className="px-2 py-2">Conversion Rate</th>
+                  <th className="px-2 py-2">Quotation Unit Price</th>
+                  <th className="px-2 py-2">Quotation Currency</th>
                   <th className="px-2 py-2">Total</th>
-                  <th className="px-2 py-2">Match Status</th>
+                  <th className="px-2 py-2">Status</th>
                   <th className="px-2 py-2">Action / Exclude</th>
                 </tr>
               </thead>
@@ -769,9 +947,8 @@ export default function ManRfqQuotation() {
                 {lines.map((ln, idx) => {
                   const cand = lineCandidate(ln);
                   const prices = cand?.prices || {};
-                  const mismatch = lineHasCurrencyMismatch(ln, header.currency);
-                  const priceCurrency = linePriceCurrency(ln);
-                  const unit = mismatch ? null : tierUnit(prices, ln.priceTier || "SELL");
+                  const conv = lineConversion(ln, header.currency, fxInputs);
+                  const quoteUnit = conv.quoteUnit;
                   return (
                     <tr key={`${ln.requestedPartNo}-${idx}`} className="border-t align-top">
                       <td className="sticky left-0 z-10 bg-white px-2 py-1">{ln.customerLine || "—"}</td>
@@ -821,20 +998,26 @@ export default function ManRfqQuotation() {
                           })}
                         </select>
                       </td>
-                      <td className="px-2 py-1">
-                        {priceCurrency ? `Price currency: ${priceCurrency}` : "—"}
-                        {mismatch ? (
-                          <div className="mt-1 text-[11px] font-semibold text-rose-800">
-                            {currencyMismatchMessage(header.currency, priceCurrency)}
-                          </div>
-                        ) : null}
-                      </td>
-                      <td className="px-2 py-1 text-right tabular-nums">{unit != null ? formatQuotationMoney(unit) : "—"}</td>
                       <td className="px-2 py-1 text-right tabular-nums">
-                        {unit != null ? formatQuotationMoney(quotationLineTotal(unit, ln.qty)) : "—"}
+                        {conv.sourceUnitPrice != null ? formatQuotationMoney(conv.sourceUnitPrice) : "—"}
+                      </td>
+                      <td className="px-2 py-1">{conv.sourceCurrency || "—"}</td>
+                      <td className="px-2 py-1 tabular-nums">
+                        {conv.rate != null
+                          ? `1 ${conv.sourceCurrency} = ${conv.rate} ${header.currency}`
+                          : conv.required
+                            ? fxPairLabel(conv.sourceCurrency, header.currency)
+                            : "—"}
+                      </td>
+                      <td className="px-2 py-1 text-right tabular-nums">
+                        {quoteUnit != null ? formatQuotationMoney(quoteUnit) : "—"}
+                      </td>
+                      <td className="px-2 py-1">{header.currency || "—"}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">
+                        {quoteUnit != null ? formatQuotationMoney(quotationLineTotal(quoteUnit, ln.qty)) : "—"}
                       </td>
                       <td className="px-2 py-1">
-                        <StatusBadge status={displayStatus(ln, header.currency)} />
+                        <StatusBadge status={displayStatus(ln, header.currency, fxInputs)} />
                       </td>
                       <td className="px-2 py-1">
                         <label className="flex items-center gap-1">
@@ -877,15 +1060,16 @@ export default function ManRfqQuotation() {
               {unresolved.model ? ` ${unresolved.model} model issues` : ""}
               {unresolved.uom ? ` ${unresolved.uom} UOM mismatch` : ""}
               {unresolved.pricing ? ` ${unresolved.pricing} pricing required` : ""}
-              {unresolved.currency ? ` ${unresolved.currency} currency mismatch` : ""}
+              {unresolved.fx ? ` ${unresolved.fx} conversion rate required` : ""}
               {unresolved.missingArticle && !unresolvedTotal ? " lines still incomplete" : ""}
               {!header.customerId ? " customer required" : ""}.
             </p>
           ) : null}
         </div>
-        {createMut.error?.code === "CURRENCY_MISMATCH" ? (
+        {createMut.error?.code === "CURRENCY_MISMATCH" || createMut.error?.code === "FX_RATE_REQUIRED" ? (
           <p className="mt-2 text-sm text-rose-800">
-            {createMut.error.message || currencyMismatchMessage(header.currency, createMut.error.priceCurrency)}
+            {createMut.error.message ||
+              `A conversion rate is required (${fxPairLabel(createMut.error.sourceCurrency, header.currency)}).`}
           </p>
         ) : null}
         {createMut.error?.code === "STALE_PRICE" ? (

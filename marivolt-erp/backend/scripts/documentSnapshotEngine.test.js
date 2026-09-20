@@ -184,6 +184,30 @@ run("validateOaLineFields rejects duplicate article", () => {
   assert.ok(errors.some((e) => e.includes("duplicate")));
 });
 
+run("QTN→OA copies converted quotation price and does not convert again", () => {
+  const route = getCopyRoute(DOC_TYPES.QUOTATION, DOC_TYPES.ORDER_ACKNOWLEDGEMENT);
+  const mapped = route.mapLine(
+    {
+      article: "EUR459",
+      qty: 5,
+      price: 537.26,
+      sourceCurrency: "EUR",
+      sourceUnitPrice: 459.2,
+      conversionRate: 1.17,
+      convertedCurrency: "USD",
+      convertedUnitPrice: 537.26,
+    },
+    0,
+    { consumption: { byLineId: new Map() } }
+  );
+  assert.equal(mapped.quotedPrice, 537.26);
+  assert.equal(mapped.orderedPrice, 537.26);
+  assert.equal(mapped.price, 537.26);
+  assert.equal(mapped.sourceUnitPrice, undefined);
+  assert.equal(mapped.conversionRate, undefined);
+  assert.notEqual(mapped.quotedPrice, 459.2);
+});
+
 run("detectStaleConsumption when another OA created", () => {
   const baseline = buildConsumptionBaseline({
     linkedOaCount: 1,

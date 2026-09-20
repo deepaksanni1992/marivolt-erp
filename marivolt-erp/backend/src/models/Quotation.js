@@ -25,6 +25,11 @@ const quotationLineSchema = new mongoose.Schema(
     availabilityCheckedAt: { type: Date, default: null },
     sourceType: { type: String, default: "", trim: true },
     currency: { type: String, default: "", trim: true },
+    sourceCurrency: { type: String, default: "", trim: true, uppercase: true },
+    sourceUnitPrice: { type: Number, default: null },
+    conversionRate: { type: Number, default: null },
+    convertedCurrency: { type: String, default: "", trim: true, uppercase: true },
+    convertedUnitPrice: { type: Number, default: null },
   },
   { _id: true }
 );
@@ -109,6 +114,20 @@ const quotationSchema = new mongoose.Schema(
     manRfqModelMode: { type: String, default: "", trim: true, uppercase: true },
     manRfqIdempotencyKey: { type: String, trim: true },
     manRfqRequestHash: { type: String, default: "", trim: true },
+    manRfqFxRates: {
+      type: [
+        {
+          sourceCurrency: { type: String, default: "", trim: true, uppercase: true },
+          targetCurrency: { type: String, default: "", trim: true, uppercase: true },
+          rate: { type: Number, default: null },
+          rateDate: { type: String, default: "", trim: true },
+          note: { type: String, default: "", trim: true, maxlength: 200 },
+          enteredBy: { type: String, default: "", trim: true },
+          enteredAt: { type: Date, default: null },
+        },
+      ],
+      default: [],
+    },
     convertedTo: [{ type: String, default: "", trim: true }],
     shipmentReference: { type: String, default: "", trim: true },
     cancelledAt: { type: Date, default: null },

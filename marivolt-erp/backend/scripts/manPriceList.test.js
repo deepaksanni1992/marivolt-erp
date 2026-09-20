@@ -20,10 +20,23 @@ import {
   cellIsBlank,
   assertNoForbiddenSalesPriceKeys,
   applyManRfqCurrencyGate,
+  applyManRfqCurrencyPricing,
+  canonicalizeManFxRates,
+  clipManFxNote,
+  convertManSourceUnitPrice,
+  findManFxSnapshot,
   manCurrenciesMatch,
-  manRfqCurrencyMismatchMessage,
+  manRfqRequestHash,
+  manRfqFxRateRequiredMessage,
   MAN_RFQ_CURRENCY_MISMATCH,
+  MAN_RFQ_FX_NOTE_MAX,
+  MAN_RFQ_FX_RATE_DECIMALS,
+  MAN_RFQ_FX_RATE_MAX,
+  MAN_RFQ_FX_RATE_REQUIRED,
   normalizeManCurrency,
+  normalizeManFxRateList,
+  parseManFxRate,
+  SALES_ALLOWED_FX_AUDIT_KEYS,
   classifyManRfqCandidates,
   collectForbiddenSalesPriceKeys,
   displayedItemMasterSpn,
@@ -481,12 +494,19 @@ run("Customer print snapshot omits purchase, tier, price-list revision, and audi
         priceListRevision: 9,
         buy: 4,
         nextBuy: 5,
+        sourceCurrency: "EUR",
+        sourceUnitPrice: 8.55,
+        conversionRate: 1.17,
+        convertedCurrency: "USD",
+        convertedUnitPrice: 10,
       },
     ],
+    manRfqFxRates: [{ sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.17, note: "internal" }],
   });
   assert.equal(printed.internalNotes, "");
   assert.equal(printed.manRfqModelMode, "");
   assert.equal(printed.manRfqRequestHash, "");
+  assert.deepEqual(printed.manRfqFxRates, []);
   assert.equal(printed.vesselPlant, "MV Atlantic");
   assert.equal(printed.esn, "ESN-99");
   assert.equal(printed.lines[0].price, 10);
@@ -495,6 +515,10 @@ run("Customer print snapshot omits purchase, tier, price-list revision, and audi
   assert.equal(printed.lines[0].priceListId, undefined);
   assert.equal(printed.lines[0].buy, undefined);
   assert.equal(printed.lines[0].nextBuy, undefined);
+  assert.equal(printed.lines[0].sourceCurrency, undefined);
+  assert.equal(printed.lines[0].sourceUnitPrice, undefined);
+  assert.equal(printed.lines[0].conversionRate, undefined);
+  assert.equal(printed.lines[0].convertedUnitPrice, undefined);
 });
 
 run("Sales quotation API redaction strips purchase and price-list ids", () => {
@@ -581,36 +605,239 @@ run("Quotation money rounding uses 2 dp; source precision parse preserved", () =
   assert.match(visible, /1317\.12/);
 });
 
-run("MAN RFQ currency gate never relabels a price-list amount into another currency", () => {
+run("Currency codes are trim/uppercase normalized", () => {
   assert.equal(normalizeManCurrency(" eur "), "EUR");
   assert.equal(manCurrenciesMatch("eur", "EUR"), true);
-  assert.equal(manCurrenciesMatch("USD", "EUR"), false);
-  assert.equal(manCurrenciesMatch("USD", ""), false);
-  const ok = applyManRfqCurrencyGate({
-    quotationCurrency: "EUR",
-    priceCurrency: "eur",
-    unitPrice: 459.2,
-    status: "MATCHED",
+  assert.equal(manCurrenciesMatch("EUR", "USD"), false);
+});
+
+run("FX rates reject missing, zero, negative, NaN, Infinity, string garbage and excessive values", () => {
+  assert.equal(parseManFxRate("").ok, false);
+  assert.equal(parseManFxRate(null).ok, false);
+  assert.equal(parseManFxRate(0).ok, false);
+  assert.equal(parseManFxRate(-1).ok, false);
+  assert.equal(parseManFxRate(Number.NaN).ok, false);
+  assert.equal(parseManFxRate(Number.POSITIVE_INFINITY).ok, false);
+  assert.equal(parseManFxRate("nope").ok, false);
+  assert.equal(parseManFxRate(MAN_RFQ_FX_RATE_MAX + 1).ok, false);
+  assert.equal(parseManFxRate("1.1700").rate, 1.17);
+  assert.equal(parseManFxRate(1.123456789).rate, 1.12345679);
+  assert.equal(MAN_RFQ_FX_RATE_DECIMALS, 8);
+});
+
+run("Round converted unit price first then line total: EUR 459.20 × 1.1700 = USD 537.26", () => {
+  assert.equal(convertManSourceUnitPrice(459.2, 1.17), 537.26);
+  const converted = applyManRfqCurrencyPricing({
+    quotationCurrency: "USD",
+    sourceCurrency: "EUR",
+    sourceUnitPrice: 459.2,
+    fxRates: [{ sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.17 }],
   });
-  assert.equal(ok.ok, true);
-  assert.equal(ok.status, "MATCHED");
-  assert.equal(ok.unitPrice, 459.2);
-  assert.equal(ok.priceCurrency, "EUR");
-  const blocked = applyManRfqCurrencyGate({
+  assert.equal(converted.ok, true);
+  assert.equal(converted.convertedUnitPrice, 537.26);
+  assert.equal(converted.unitPrice, 537.26);
+  assert.equal(converted.conversionRate, 1.17);
+  assert.equal(converted.sourceUnitPrice, 459.2);
+});
+
+run("Round converted unit price first then line total: USD 537.26 × qty 5 = USD 2,686.30", () => {
+  assert.equal(quotationLineTotal(537.26, 5), 2686.3);
+  assert.equal(formatQuotationMoney(2686.3), "2,686.30");
+});
+
+run("Round converted unit price first then line total: EUR 109.76 × 1.1700 = USD 128.42", () => {
+  assert.equal(convertManSourceUnitPrice(109.76, 1.17), 128.42);
+});
+
+run("Round converted unit price first then line total: USD 128.42 × qty 12 = USD 1,541.04", () => {
+  assert.equal(quotationLineTotal(128.42, 12), 1541.04);
+  assert.equal(formatQuotationMoney(1541.04), "1,541.04");
+});
+
+run("Multi-line converted subtotal uses rounded unit prices then qty", () => {
+  assert.equal(roundQuotationMoney(quotationLineTotal(537.26, 5) + quotationLineTotal(128.42, 12)), 4227.34);
+});
+
+run("EUR → AED converts from original source using a manually entered rate", () => {
+  const aed = applyManRfqCurrencyPricing({
+    quotationCurrency: "AED",
+    sourceCurrency: "EUR",
+    sourceUnitPrice: 459.2,
+    fxRates: [{ sourceCurrency: "EUR", targetCurrency: "AED", rate: 4.2 }],
+  });
+  assert.equal(aed.convertedUnitPrice, 1928.64);
+  assert.equal(quotationLineTotal(aed.convertedUnitPrice, 5), 9643.2);
+});
+
+run("EUR → EUR uses rate 1 with no conversion input", () => {
+  const same = applyManRfqCurrencyPricing({
+    quotationCurrency: "EUR",
+    sourceCurrency: "eur",
+    sourceUnitPrice: 459.2,
+    fxRates: [{ sourceCurrency: "EUR", targetCurrency: "EUR", rate: 9 }],
+  });
+  assert.equal(same.ok, true);
+  assert.equal(same.unitPrice, 459.2);
+  assert.equal(same.conversionRate, 1);
+  assert.equal(same.convertedUnitPrice, 459.2);
+});
+
+run("Changing the rate reprices from original EUR and never from previously converted USD", () => {
+  const first = applyManRfqCurrencyPricing({
+    quotationCurrency: "USD",
+    sourceCurrency: "EUR",
+    sourceUnitPrice: 459.2,
+    fxRates: [{ sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.17 }],
+  });
+  const second = applyManRfqCurrencyPricing({
+    quotationCurrency: "USD",
+    sourceCurrency: "EUR",
+    sourceUnitPrice: 459.2,
+    unitPrice: first.convertedUnitPrice,
+    fxRates: [{ sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.2 }],
+  });
+  assert.equal(first.convertedUnitPrice, 537.26);
+  assert.equal(second.convertedUnitPrice, 551.04);
+  assert.notEqual(second.convertedUnitPrice, roundQuotationMoney(537.26 * 1.2));
+});
+
+run("Different currency with no rate is FX_RATE_REQUIRED and never relabels the source amount", () => {
+  const needed = applyManRfqCurrencyGate({
     quotationCurrency: "USD",
     priceCurrency: "EUR",
     unitPrice: 459.2,
-    status: "MATCHED",
   });
-  assert.equal(blocked.ok, false);
-  assert.equal(blocked.status, MAN_RFQ_CURRENCY_MISMATCH);
-  assert.equal(blocked.unitPrice, undefined);
-  assert.equal(blocked.priceCurrency, "EUR");
-  assert.equal(blocked.currencyMismatch, true);
-  assert.equal(
-    manRfqCurrencyMismatchMessage("USD", "EUR"),
-    "Quotation currency is USD, but this Article is priced in EUR."
+  assert.equal(needed.ok, false);
+  assert.equal(needed.status, MAN_RFQ_FX_RATE_REQUIRED);
+  assert.equal(needed.unitPrice, undefined);
+  assert.equal(needed.sourceUnitPrice, 459.2);
+  assert.equal(needed.sourceCurrency, "EUR");
+  assert.match(needed.reason, /1 EUR = \[rate\] USD/);
+  assert.equal(manRfqFxRateRequiredMessage("EUR", "USD"), "A conversion rate is required (1 EUR = [rate] USD).");
+});
+
+run("Exact source→target pair is required; inverted USD→EUR is not used", () => {
+  const inverted = findManFxSnapshot(
+    [{ sourceCurrency: "USD", targetCurrency: "EUR", rate: 1.17 }],
+    "EUR",
+    "USD"
   );
+  assert.equal(inverted, null);
+  const priced = applyManRfqCurrencyPricing({
+    quotationCurrency: "USD",
+    sourceCurrency: "EUR",
+    sourceUnitPrice: 459.2,
+    fxRates: [{ sourceCurrency: "USD", targetCurrency: "EUR", rate: 1.17 }],
+  });
+  assert.equal(priced.status, MAN_RFQ_FX_RATE_REQUIRED);
+});
+
+run("Duplicate FX pairs first-win when identical and conflict when rates differ", () => {
+  const same = canonicalizeManFxRates([
+    { sourceCurrency: "eur", targetCurrency: "usd", rate: 1.17 },
+    { sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.17 },
+  ]);
+  assert.equal(same.ok, true);
+  assert.equal(same.snapshots.length, 1);
+  assert.equal(same.snapshots[0].rate, 1.17);
+  const conflict = canonicalizeManFxRates([
+    { sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.17 },
+    { sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.2 },
+  ]);
+  assert.equal(conflict.ok, false);
+  assert.equal(conflict.code, MAN_RFQ_CURRENCY_MISMATCH);
+  const firstWins = normalizeManFxRateList([
+    { sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.17 },
+    { sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.2 },
+  ]);
+  assert.equal(firstWins.length, 1);
+  assert.equal(firstWins[0].rate, 1.17);
+});
+
+run("Idempotency hash includes quotation currency, canonical FX order, articles, qty and tier", () => {
+  const lines = [{ article: "EUR459", qty: 5, uom: "PCS", price: 537.26, priceTier: "SELL", sourceCurrency: "EUR", conversionRate: 1.17 }];
+  const hashA = manRfqRequestHash({
+    customerId: "c1",
+    currency: "USD",
+    lines,
+    fxRates: [
+      { sourceCurrency: "USD", targetCurrency: "AED", rate: 3.67 },
+      { sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.17 },
+    ],
+  });
+  const hashB = manRfqRequestHash({
+    customerId: "c1",
+    currency: "USD",
+    lines,
+    fxRates: [
+      { sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.17 },
+      { sourceCurrency: "USD", targetCurrency: "AED", rate: 3.67 },
+    ],
+  });
+  const hashC = manRfqRequestHash({
+    customerId: "c1",
+    currency: "USD",
+    lines,
+    fxRates: [{ sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.2 }],
+  });
+  const hashD = manRfqRequestHash({
+    customerId: "c1",
+    currency: "EUR",
+    lines,
+    fxRates: [{ sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.17 }],
+  });
+  assert.equal(hashA, hashB);
+  assert.notEqual(hashA, hashC);
+  assert.notEqual(hashA, hashD);
+  assert.match(hashA, /"currency":"USD"/);
+  assert.match(hashA, /"sourceCurrency":"EUR"/);
+  assert.match(hashA, /"targetCurrency":"USD"/);
+  assert.match(hashA, /"article":"EUR459"/);
+  assert.match(hashA, /"priceTier":"SELL"/);
+});
+
+run("FX notes are clipped to 200 characters and customer print never shows them", () => {
+  assert.equal(clipManFxNote("  keep  ").length, 4);
+  assert.equal(clipManFxNote("x".repeat(500)).length, MAN_RFQ_FX_NOTE_MAX);
+  const printed = sanitizeCustomerQuotationPrint({
+    currency: "USD",
+    internalNotes: "desk rate",
+    manRfqFxRates: [{ sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.17, note: "internal", enteredBy: "u1" }],
+    lines: [{ article: "A1", description: "Filter", qty: 1, uom: "PCS", price: 10, totalPrice: 10, sourceUnitPrice: 8 }],
+  });
+  assert.deepEqual(printed.manRfqFxRates, []);
+  assert.equal(printed.internalNotes, "");
+  assert.equal(printed.lines[0].sourceUnitPrice, undefined);
+  assert.equal(printed.lines[0].price, 10);
+});
+
+run("Sales may keep selling-side FX audit and must never leak Buy / price-list ids", () => {
+  assert.ok(SALES_ALLOWED_FX_AUDIT_KEYS.includes("sourceUnitPrice"));
+  assert.ok(SALES_ALLOWED_FX_AUDIT_KEYS.includes("manRfqFxRates"));
+  const sales = redactQuotationForSalesApi({
+    quotationNo: "QT-1",
+    manRfqFxRates: [{ sourceCurrency: "EUR", targetCurrency: "USD", rate: 1.17, note: "desk", enteredBy: "sales@test.local" }],
+    lines: [
+      {
+        article: "A1",
+        price: 537.26,
+        sourceCurrency: "EUR",
+        sourceUnitPrice: 459.2,
+        conversionRate: 1.17,
+        convertedCurrency: "USD",
+        convertedUnitPrice: 537.26,
+        buy: 4,
+        nextBuy: 5,
+        priceListId: "pl1",
+      },
+    ],
+  });
+  assert.equal(sales.lines[0].sourceUnitPrice, 459.2);
+  assert.equal(sales.lines[0].conversionRate, 1.17);
+  assert.equal(sales.manRfqFxRates[0].enteredBy, "sales@test.local");
+  assert.equal(sales.lines[0].buy, undefined);
+  assert.equal(sales.lines[0].priceListId, undefined);
+  assertNoForbiddenSalesPriceKeys(sales, "sales fx audit");
 });
 
 run("Public selling prices do not include Buy", () => {
@@ -686,8 +913,10 @@ run("Server routes enforce PRICE_LIST on management/export and SALES.create on R
   assert.match(rfqService, /redactManRfqMatchResponse/);
   assert.match(rfqService, /CURRENCY_MISMATCH/);
   assert.match(rfqService, /CURRENCY_REQUIRED/);
-  assert.match(rfqService, /applyManRfqCurrencyGate/);
+  assert.match(rfqService, /applyManRfqCurrencyPricing/);
   assert.match(rfqService, /priceCurrency/);
+  assert.match(rfqService, /manRfqFxRates/);
+  assert.match(rfqService, /sourceUnitPrice/);
   assert.doesNotMatch(rfqService, /exchangeRate/);
   assert.match(qModel, /vesselPlant/);
   assert.match(rfqService, /vesselPlant: String\(headerFromBody\.vesselPlant/);
@@ -717,16 +946,33 @@ run("Server routes enforce PRICE_LIST on management/export and SALES.create on R
   assert.match(manUtil, /MAN_RFQ_MODEL_MODE_INVALID/);
   assert.match(manUtil, /MAN_RFQ_CONFIG_CONFLICT/);
   assert.match(manUtil, /MAN_RFQ_SPEC_CONFLICT/);
-  assert.match(manUtil, /applyManRfqCurrencyGate/);
+  assert.match(manUtil, /applyManRfqCurrencyPricing/);
   assert.match(manUtil, /MAN_RFQ_CURRENCY_MISMATCH/);
+  assert.match(manUtil, /MAN_RFQ_FX_RATE_REQUIRED/);
+  assert.match(manUtil, /convertManSourceUnitPrice/);
   assert.doesNotMatch(manUtil, /exchangeRate/);
   assert.doesNotMatch(rfqPage, /exchangeRate/);
   assert.match(rfqPage, /CURRENCY_MISMATCH/);
-  assert.match(rfqPage, /Price currency: \$\{priceCurrency\}/);
-  assert.match(rfqPage, /Currency mismatch/);
-  assert.match(rfqPage, /Set currency to \{commonPriceCurrency\} and rematch/);
-  assert.match(rfqPage, /Prices are never converted/);
-  assert.match(rfqPage, /lineHasCurrencyMismatch/);
+  assert.match(rfqPage, /FX_RATE_REQUIRED/);
+  assert.match(rfqPage, /Currency Conversion/);
+  assert.match(rfqPage, /Apply conversion and reprice/);
+  assert.match(rfqPage, /Use source currency \{singleSourceCurrency\} instead/);
+  assert.match(rfqPage, /1 \{sourceCurrency\} =/);
+  assert.match(rfqPage, /Source currency: \{sourceCurrency\} · Quotation currency: \{header\.currency\}/);
+  assert.match(rfqPage, /needsConversion/);
+  assert.match(rfqPage, /conversionSources/);
+  assert.match(rfqPage, /lineIsReady/);
+  assert.match(rfqPage, /setFxInputs\(\{\}\)/);
+  assert.match(rfqPage, /tierUnit\(prices, ln\.priceTier/);
+  assert.match(rfqPage, /Source Price/);
+  assert.match(rfqPage, /Quotation Unit Price/);
+  assert.match(rfqPage, /lineConversion/);
+  assert.match(rfqPage, /Create Draft Quotation/);
+  assert.match(rfqPage, /included\.every\(\(l\) => lineIsReady/);
+  assert.doesNotMatch(rfqPage, /nextBuy/);
+  assert.doesNotMatch(rfqPage, /priceListId/);
+  assert.doesNotMatch(rfqPage, /\bbuy\b/);
+  assert.doesNotMatch(rfqPage, /enteredBy/);
   assert.match(rfqService, /resolveManRfqRequestMode/);
   assert.match(rfqService, /MAN_RFQ_MODEL_ERROR_CODES\.REQUIRED/);
   assert.match(rfqService, /MAN_RFQ_MODEL_ERROR_CODES\.CONFIG_CONFLICT/);

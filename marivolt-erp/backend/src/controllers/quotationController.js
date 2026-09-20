@@ -103,6 +103,17 @@ function normalizeLines(lines = []) {
       if (line.availabilityCheckedAt) snapshot.availabilityCheckedAt = line.availabilityCheckedAt;
       if (line.sourceType) snapshot.sourceType = String(line.sourceType || "");
       if (line.currency) snapshot.currency = String(line.currency || "");
+      if (line.sourceCurrency) snapshot.sourceCurrency = String(line.sourceCurrency || "").trim().toUpperCase();
+      if (line.sourceUnitPrice != null && line.sourceUnitPrice !== "") {
+        snapshot.sourceUnitPrice = roundQuotationMoney(Number(line.sourceUnitPrice) || 0);
+      }
+      if (line.conversionRate != null && line.conversionRate !== "") {
+        snapshot.conversionRate = Number(line.conversionRate);
+      }
+      if (line.convertedCurrency) snapshot.convertedCurrency = String(line.convertedCurrency || "").trim().toUpperCase();
+      if (line.convertedUnitPrice != null && line.convertedUnitPrice !== "") {
+        snapshot.convertedUnitPrice = roundQuotationMoney(Number(line.convertedUnitPrice) || 0);
+      }
       return {
         serialNo,
         article: String(line.article || line.itemCode || "").trim().toUpperCase(),

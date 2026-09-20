@@ -10,13 +10,19 @@ import { getStockBalance } from "./stockService.js";
 import { hasPermission } from "./roleService.js";
 import { runMongoTransaction } from "../utils/mongoTransaction.js";
 import {
-  applyManRfqCurrencyGate,
+  applyManRfqCurrencyPricing,
+  canonicalizeManFxRates,
+  clipManFxNote,
   classifyManRfqCandidates,
   configOrSpecConflict,
+  findManFxSnapshot,
   manCurrenciesMatch,
-  manRfqCurrencyMismatchMessage,
+  manRfqFxPairLabel,
+  manRfqFxRateRequiredMessage,
   MAN_RFQ_CURRENCY_MISMATCH,
   normalizeManCurrency,
+  normalizeManFxRateList,
+  parseManFxRate,
   DEFAULT_FULFILMENT_WAREHOUSE,
   DEFAULT_MAN_TIER,
   displayedItemMasterSpecs,
@@ -54,6 +60,8 @@ function err(message, statusCode = 400, code = "MAN_RFQ", extra = {}) {
   if (extra.article) e.article = extra.article;
   if (extra.priceCurrency) e.priceCurrency = extra.priceCurrency;
   if (extra.quotationCurrency) e.quotationCurrency = extra.quotationCurrency;
+  if (extra.sourceCurrency) e.sourceCurrency = extra.sourceCurrency;
+  if (extra.targetCurrency) e.targetCurrency = extra.targetCurrency;
   return e;
 }
 
@@ -158,12 +166,13 @@ export async function getManItemSalesSnapshot(req, article) {
 
 export async function matchRfqLines(
   req,
-  { lines = [], defaultTier = DEFAULT_MAN_TIER, headerMode, headerModel, modelMode, currency } = {}
+  { lines = [], defaultTier = DEFAULT_MAN_TIER, headerMode, headerModel, modelMode, currency, fxRates = [] } = {}
 ) {
   const quotationCurrency = normalizeManCurrency(currency);
   if (!quotationCurrency) {
     throw err("Quotation currency is required", 400, "CURRENCY_REQUIRED");
   }
+  const headerFxRates = normalizeManFxRateList(fxRates);
   const { mode, headerModel: header } = await resolveValidatedManRfqMode(req, {
     modelMode: modelMode || headerMode,
     headerModel,
@@ -313,11 +322,13 @@ export async function matchRfqLines(
         leadTime: pick.leadTime,
       });
       const priceCurrency = normalizeManCurrency(pick.prices?.currency || pick.priceCurrency);
-      const gated = applyManRfqCurrencyGate({
+      const sourceUnitPrice = roundQuotationMoney(selectTierUnitPrice(pick.prices, defaultTier));
+      const gated = applyManRfqCurrencyPricing({
         quotationCurrency,
-        priceCurrency,
-        unitPrice: roundQuotationMoney(selectTierUnitPrice(pick.prices, defaultTier)),
+        sourceCurrency: priceCurrency,
+        sourceUnitPrice,
         status: "MATCHED",
+        fxRates: headerFxRates,
       });
       results.push({
         ...withModels,
@@ -330,14 +341,18 @@ export async function matchRfqLines(
         uom: pick.uom,
         availableQty: pick.availableQty,
         leadTime: pick.leadTime,
-        priceTier: gated.ok ? defaultTier : "",
+        priceTier: defaultTier,
+        sourceCurrency: gated.sourceCurrency,
+        sourceUnitPrice: gated.sourceUnitPrice,
+        conversionRate: gated.conversionRate,
+        convertedCurrency: gated.convertedCurrency,
+        convertedUnitPrice: gated.ok ? gated.convertedUnitPrice : undefined,
         unitPrice: gated.ok ? gated.unitPrice : undefined,
         availability,
         availabilityCheckedAt: new Date().toISOString(),
         priceListRevision: pick.prices.revision,
         currency: priceCurrency,
         priceCurrency,
-        currencyMismatch: gated.currencyMismatch,
         exclusionReason: gated.ok ? "" : gated.reason,
         candidates,
       });
@@ -427,17 +442,88 @@ export async function createQuotationFromManRfq(req, body = {}) {
   const quotationCurrency = normalizeManCurrency(body.currency || headerFromBody.currency);
   if (!quotationCurrency) throw err("Quotation currency is required", 400, "CURRENCY_REQUIRED");
 
+  const submittedFx = Array.isArray(body.fxRates)
+    ? body.fxRates
+    : Array.isArray(body.manRfqFxRates)
+      ? body.manRfqFxRates
+      : Array.isArray(headerFromBody.fxRates)
+        ? headerFromBody.fxRates
+        : Array.isArray(headerFromBody.manRfqFxRates)
+          ? headerFromBody.manRfqFxRates
+          : [];
+  for (const raw of submittedFx) {
+    const source = normalizeManCurrency(raw?.sourceCurrency || raw?.fromCurrency);
+    const target = normalizeManCurrency(raw?.targetCurrency || raw?.toCurrency);
+    if (source && target && !manCurrenciesMatch(source, target)) {
+      const parsed = parseManFxRate(raw?.rate);
+      if (!parsed.ok) {
+        throw err(
+          parsed.message || manRfqFxRateRequiredMessage(source, target),
+          409,
+          MAN_RFQ_CURRENCY_MISMATCH,
+          { sourceCurrency: source, targetCurrency: target, quotationCurrency }
+        );
+      }
+      if (target !== quotationCurrency) {
+        throw err(
+          `Conversion rate must be ${manRfqFxPairLabel(source, quotationCurrency)}, not ${manRfqFxPairLabel(source, target)}.`,
+          409,
+          MAN_RFQ_CURRENCY_MISMATCH,
+          { sourceCurrency: source, targetCurrency: target, quotationCurrency }
+        );
+      }
+    }
+  }
+  const canonFx = canonicalizeManFxRates(
+    submittedFx.filter((raw) => {
+      const source = normalizeManCurrency(raw?.sourceCurrency || raw?.fromCurrency);
+      const target = normalizeManCurrency(raw?.targetCurrency || raw?.toCurrency);
+      return source && target && !manCurrenciesMatch(source, target);
+    })
+  );
+  if (!canonFx.ok) {
+    throw err(canonFx.message || "Conversion rates are invalid", 409, MAN_RFQ_CURRENCY_MISMATCH, {
+      sourceCurrency: canonFx.sourceCurrency,
+      targetCurrency: canonFx.targetCurrency,
+      quotationCurrency,
+    });
+  }
+  const headerFxRates = canonFx.snapshots;
+
+  const neededSources = new Set();
   for (const line of included) {
     const article = String(line.selectedArticle || "").trim().toUpperCase();
     if (!article) continue;
     const priceRow = await ManPriceList.findOne({ companyId: req.companyId, article, isActive: true }).lean();
     if (!priceRow) continue;
-    if (!manCurrenciesMatch(quotationCurrency, priceRow.currency)) {
-      throw err(manRfqCurrencyMismatchMessage(quotationCurrency, priceRow.currency), 409, MAN_RFQ_CURRENCY_MISMATCH, {
+    const sourceCurrency = normalizeManCurrency(priceRow.currency);
+    if (sourceCurrency && !manCurrenciesMatch(sourceCurrency, quotationCurrency)) {
+      neededSources.add(sourceCurrency);
+    }
+    const priced = applyManRfqCurrencyPricing({
+      quotationCurrency,
+      sourceCurrency,
+      sourceUnitPrice: selectTierUnitPrice(priceRow, String(line.priceTier || defaultTier).toUpperCase()),
+      fxRates: headerFxRates,
+    });
+    if (!priced.ok) {
+      throw err(priced.reason || manRfqFxRateRequiredMessage(sourceCurrency, quotationCurrency), 409, MAN_RFQ_CURRENCY_MISMATCH, {
         article,
-        priceCurrency: normalizeManCurrency(priceRow.currency),
+        priceCurrency: sourceCurrency,
+        sourceCurrency,
         quotationCurrency,
+        targetCurrency: quotationCurrency,
       });
+    }
+  }
+  for (const snap of headerFxRates) {
+    if (!neededSources.has(snap.sourceCurrency)) {
+      throw err(
+        `Conversion rate source ${snap.sourceCurrency} does not match an included price-list currency.`,
+        409,
+        MAN_RFQ_CURRENCY_MISMATCH,
+        { sourceCurrency: snap.sourceCurrency, targetCurrency: snap.targetCurrency, quotationCurrency }
+      );
     }
   }
 
@@ -521,13 +607,6 @@ export async function createQuotationFromManRfq(req, body = {}) {
 
     const price = await ManPriceList.findOne({ companyId: req.companyId, article, isActive: true });
     if (!price) throw err(`No active MAN price list for ${article}`, 400, "MAN_RFQ", { article });
-    if (!manCurrenciesMatch(quotationCurrency, price.currency)) {
-      throw err(manRfqCurrencyMismatchMessage(quotationCurrency, price.currency), 409, MAN_RFQ_CURRENCY_MISMATCH, {
-        article,
-        priceCurrency: normalizeManCurrency(price.currency),
-        quotationCurrency,
-      });
-    }
     const clientRev = Number(line.priceListRevision);
     if (!Number.isFinite(clientRev) || clientRev !== Number(price.revision)) {
       throw err("Prices changed since review. Refresh or recheck the affected row.", 409, "STALE_PRICE", {
@@ -542,12 +621,24 @@ export async function createQuotationFromManRfq(req, body = {}) {
     if (!tierIsSelectable(price, tier)) {
       throw err(`Tier ${tier} has no price for ${article}`, 400, "MAN_RFQ", { article });
     }
-    const unitPrice = roundQuotationMoney(selectTierUnitPrice(price, tier));
-    if (line.unitPrice != null && roundQuotationMoney(line.unitPrice) !== unitPrice) {
-      throw err("Submitted unit price does not match the current authorised tier price", 409, "STALE_PRICE", {
+    const sourceCurrency = normalizeManCurrency(price.currency);
+    const sourceUnitPrice = roundQuotationMoney(selectTierUnitPrice(price, tier));
+    const priced = applyManRfqCurrencyPricing({
+      quotationCurrency,
+      sourceCurrency,
+      sourceUnitPrice,
+      fxRates: headerFxRates,
+    });
+    if (!priced.ok) {
+      throw err(priced.reason || manRfqFxRateRequiredMessage(sourceCurrency, quotationCurrency), 409, MAN_RFQ_CURRENCY_MISMATCH, {
         article,
+        priceCurrency: sourceCurrency,
+        sourceCurrency,
+        quotationCurrency,
+        targetCurrency: quotationCurrency,
       });
     }
+    const unitPrice = priced.convertedUnitPrice;
 
     const availableQty = await liveAvailable(req.companyId, article);
     const checkedAt = new Date();
@@ -575,6 +666,11 @@ export async function createQuotationFromManRfq(req, body = {}) {
       availabilityCheckedAt: checkedAt,
       sourceType: "MAN_RFQ",
       currency: quotationCurrency,
+      sourceCurrency: priced.sourceCurrency,
+      sourceUnitPrice: priced.sourceUnitPrice,
+      conversionRate: priced.conversionRate,
+      convertedCurrency: priced.convertedCurrency,
+      convertedUnitPrice: priced.convertedUnitPrice,
       customerEngineModel: resolved.originalCustomerModel,
       engineModel: item.model || "",
       config: item.config || "",
@@ -591,7 +687,27 @@ export async function createQuotationFromManRfq(req, body = {}) {
 
   const customerId = body.customerId || headerFromBody.customerId;
   const currency = quotationCurrency;
-  const requestHash = manRfqRequestHash({ customerId, currency, lines: quoteLines });
+  const usedSources = [...new Set(quoteLines.map((l) => normalizeManCurrency(l.sourceCurrency)).filter(Boolean))];
+  const persistedFx = usedSources
+    .filter((source) => !manCurrenciesMatch(source, quotationCurrency))
+    .map((source) => {
+      const snap = findManFxSnapshot(headerFxRates, source, quotationCurrency);
+      return {
+        sourceCurrency: source,
+        targetCurrency: quotationCurrency,
+        rate: snap?.rate,
+        rateDate: snap?.rateDate || String(headerFromBody.quotationDate || body.quotationDate || "").slice(0, 10),
+        note: clipManFxNote(snap?.note || ""),
+        enteredBy: req.user?.email || req.user?.name || "",
+        enteredAt: new Date(),
+      };
+    });
+  const requestHash = manRfqRequestHash({
+    customerId,
+    currency,
+    lines: quoteLines,
+    fxRates: persistedFx,
+  });
 
   const payload = {
     ...headerFromBody,
@@ -607,6 +723,7 @@ export async function createQuotationFromManRfq(req, body = {}) {
     vesselPlant: String(headerFromBody.vesselPlant || "").trim(),
     remarks: headerFromBody.remarks || "",
     manRfqModelMode: headerMode,
+    manRfqFxRates: persistedFx,
     sourceType: "MAN_RFQ",
     manRfqIdempotencyKey: idempotencyKey,
     manRfqRequestHash: requestHash,
