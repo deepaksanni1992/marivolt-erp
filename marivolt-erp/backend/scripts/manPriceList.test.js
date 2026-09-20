@@ -22,6 +22,7 @@ import {
   classifyManRfqCandidates,
   collectForbiddenSalesPriceKeys,
   displayedItemMasterSpn,
+  displayedItemMasterSpecs,
   displayedSupplier1,
   escapeCsvCell,
   formatExportAvailability,
@@ -30,6 +31,8 @@ import {
   isManPriceListAdminRole,
   mapCsvRow,
   mergeBlankPreserving,
+  modelsEquivalent,
+  normalizeEngineModel,
   normalizePartNoForMatch,
   parseOptionalMoney,
   parseRfqCsvRow,
@@ -38,6 +41,10 @@ import {
   publicSellingPrices,
   redactManRfqMatchResponse,
   redactQuotationForSalesApi,
+  resolveManRfqRequestMode,
+  resolveRfqLineModel,
+  selectedManRfqCandidate,
+  uniqueManEngineModels,
   rowHasDuplicateArticle,
   roundQuotationMoney,
   sanitizeCsvFormula,
@@ -278,6 +285,151 @@ run("RFQ match: one, exactly two, none, UOM mismatch, missing price", () => {
   assert.equal(missing.status, "PRICING_REQUIRED");
 });
 
+run("MAN engine models are distinct, display-preserving, and exclude other brands", () => {
+  const models = uniqueManEngineModels([
+    { brand: "MAN", engine: "MAN", model: "21/31" },
+    { brand: "MAN", model: "  21/31  " },
+    { brand: "MAN", model: "32/40" },
+    { brand: "Wärtsilä", model: "6L20" },
+    { brand: "MAK", engine: "MAK", model: "M32C" },
+    { brand: "MAN", model: "" },
+  ]);
+  assert.deepEqual(models, ["21/31", "32/40"]);
+  assert.equal(normalizeEngineModel("  21/31  "), "21/31");
+  assert.equal(modelsEquivalent("21/31", "21 / 31"), false);
+  assert.equal(modelsEquivalent("21/31", "21/31"), true);
+});
+
+run("Header model fills blank RFQ lines; mixed and conflict rules", () => {
+  const filled = resolveRfqLineModel({ headerMode: "SELECTED", headerModel: "21/31", lineModel: "" });
+  assert.equal(filled.resolvedModel, "21/31");
+  assert.equal(filled.originalCustomerModel, "");
+  assert.equal(filled.headerLineConflict, false);
+
+  const conflict = resolveRfqLineModel({ headerMode: "SELECTED", headerModel: "21/31", lineModel: "32/40" });
+  assert.equal(conflict.headerLineConflict, true);
+
+  const mixed = resolveRfqLineModel({ headerMode: "MIXED", headerModel: "21/31", lineModel: "" });
+  assert.equal(mixed.lineModelMissing, true);
+  assert.equal(mixed.resolvedModel, "");
+
+  const unspecified = resolveRfqLineModel({ headerMode: "UNSPECIFIED", headerModel: "", lineModel: "" });
+  assert.equal(unspecified.resolvedModel, "");
+});
+
+run("Shared modelMode parser infers SELECTED only for legacy missing mode + header; rejects unknown values", () => {
+  const inferred = resolveManRfqRequestMode({ headerModel: "21/31" });
+  assert.equal(inferred.ok, true);
+  assert.equal(inferred.mode, "SELECTED");
+  assert.equal(inferred.inferred, true);
+
+  const missing = resolveManRfqRequestMode({});
+  assert.equal(missing.ok, false);
+  assert.equal(missing.code, "MAN_RFQ_MODEL_REQUIRED");
+
+  const invalid = resolveManRfqRequestMode({ modelMode: "ALL_MODELS", headerModel: "21/31" });
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.code, "MAN_RFQ_MODEL_MODE_INVALID");
+
+  const mixed = resolveManRfqRequestMode({ modelMode: "mixed" });
+  assert.equal(mixed.ok, true);
+  assert.equal(mixed.mode, "MIXED");
+  assert.equal(mixed.inferred, false);
+});
+
+run("Multiple candidates never populate selectedArticle, tier, price or total from candidates[0]; order does not matter", () => {
+  const pricedA = { sellPrice: 50, revision: 1 };
+  const pricedB = { sellPrice: 1, revision: 1 };
+  const aFirst = classifyManRfqCandidates(
+    [
+      { article: "A21", model: "21/31", uomOk: true, prices: pricedA, pricingOk: true, modelConflict: false },
+      { article: "A32", model: "21/31", uomOk: true, prices: pricedB, pricingOk: true, modelConflict: false },
+    ],
+    { headerMode: "SELECTED", resolvedModel: "21/31", modelAware: true }
+  );
+  const bFirst = classifyManRfqCandidates(
+    [
+      { article: "A32", model: "21/31", uomOk: true, prices: pricedB, pricingOk: true, modelConflict: false },
+      { article: "A21", model: "21/31", uomOk: true, prices: pricedA, pricingOk: true, modelConflict: false },
+    ],
+    { headerMode: "SELECTED", resolvedModel: "21/31", modelAware: true }
+  );
+  assert.equal(aFirst.status, "MULTIPLE");
+  assert.equal(bFirst.status, "MULTIPLE");
+  assert.equal(aFirst.pick, null);
+  assert.equal(bFirst.pick, null);
+  const line = {
+    status: aFirst.status,
+    selectedArticle: "",
+    candidates: aFirst.compatible,
+    priceTier: "",
+    unitPrice: undefined,
+  };
+  assert.equal(selectedManRfqCandidate(line), null);
+  assert.equal(line.selectedArticle, "");
+  assert.equal(line.priceTier, "");
+  assert.equal(line.unitPrice, undefined);
+});
+
+run("Model-aware classify: mismatch, UOM after model filter, unspecified multiple, mixed required", () => {
+  const priced = { sellPrice: 10, revision: 1 };
+  const mismatch = classifyManRfqCandidates(
+    [
+      {
+        article: "A32",
+        model: "32/40",
+        uomOk: true,
+        prices: priced,
+        pricingOk: true,
+        modelConflict: true,
+      },
+    ],
+    { headerMode: "SELECTED", resolvedModel: "21/31", modelAware: true }
+  );
+  assert.equal(mismatch.status, "MODEL_MISMATCH");
+  assert.deepEqual(mismatch.availableModels, ["32/40"]);
+
+  const uom = classifyManRfqCandidates(
+    [
+      {
+        article: "A21",
+        model: "21/31",
+        uomOk: false,
+        prices: priced,
+        pricingOk: true,
+        modelConflict: false,
+      },
+    ],
+    { headerMode: "SELECTED", resolvedModel: "21/31", modelAware: true }
+  );
+  assert.equal(uom.status, "UOM_MISMATCH");
+
+  const unspecified = classifyManRfqCandidates(
+    [
+      { article: "A21", model: "21/31", uomOk: true, prices: priced, pricingOk: true, modelConflict: false },
+      { article: "A32", model: "32/40", uomOk: true, prices: priced, pricingOk: true, modelConflict: false },
+    ],
+    { headerMode: "UNSPECIFIED", resolvedModel: "", modelAware: true }
+  );
+  assert.equal(unspecified.status, "MULTIPLE");
+
+  const mixed = classifyManRfqCandidates(
+    [{ article: "A21", model: "21/31", uomOk: true, prices: priced, pricingOk: true, modelConflict: false }],
+    { headerMode: "MIXED", lineModelMissing: true, modelAware: true }
+  );
+  assert.equal(mixed.status, "MODEL_REQUIRED");
+
+  const one = classifyManRfqCandidates(
+    [
+      { article: "A21", model: "21/31", uomOk: true, prices: priced, pricingOk: true, modelConflict: false },
+      { article: "A32", model: "32/40", uomOk: true, prices: priced, pricingOk: true, modelConflict: true },
+    ],
+    { headerMode: "SELECTED", resolvedModel: "21/31", modelAware: true }
+  );
+  assert.equal(one.status, "MATCHED");
+  assert.equal(one.pick.article, "A21");
+});
+
 run("Live availability strings: full, partial, zero, missing lead time", () => {
   assert.equal(formatManAvailability({ availableQty: 10, requestedQty: 4, uom: "PCS", leadTime: "8 Weeks" }), "Ex-Stock");
   assert.equal(
@@ -302,6 +454,10 @@ run("Customer print snapshot omits purchase, tier, price-list revision, and audi
     quotationNo: "QT-1",
     internalNotes: "Buy 4 / floor Minm",
     manRfqIdempotencyKey: "abc",
+    manRfqRequestHash: "hash",
+    manRfqModelMode: "SELECTED",
+    vesselPlant: "MV Atlantic",
+    esn: "ESN-99",
     lines: [
       {
         article: "A1",
@@ -322,6 +478,10 @@ run("Customer print snapshot omits purchase, tier, price-list revision, and audi
     ],
   });
   assert.equal(printed.internalNotes, "");
+  assert.equal(printed.manRfqModelMode, "");
+  assert.equal(printed.manRfqRequestHash, "");
+  assert.equal(printed.vesselPlant, "MV Atlantic");
+  assert.equal(printed.esn, "ESN-99");
   assert.equal(printed.lines[0].price, 10);
   assert.equal(printed.lines[0].customerPartNo, "051.001");
   assert.equal(printed.lines[0].priceTier, undefined);
@@ -412,6 +572,25 @@ run("RFQ CSV required fields parse Part no / UOM / Qty", () => {
   assert.equal(row.qty, "10");
 });
 
+run("RFQ CSV optional Engine Model, Configuration, Specifications, Customer Line and Customer Reference", () => {
+  const row = parseRfqCsvRow({
+    "Part no": "051.001",
+    UOM: "PCS",
+    Qty: "2",
+    "Engine Model": "32/40",
+    Configuration: "Std",
+    Specifications: "Coated",
+    "Customer Line": "10",
+    "Customer Reference": "RFQ-1",
+  });
+  assert.equal(row.engineModel, "32/40");
+  assert.equal(row.configuration, "Std");
+  assert.equal(row.specifications, "Coated");
+  assert.equal(row.customerLine, "10");
+  assert.equal(row.customerReference, "RFQ-1");
+  assert.equal(displayedItemMasterSpecs({ technicalSpecifications: [{ specName: "SPECS", specValue: "Coated" }] }), "Coated");
+});
+
 run("Server routes enforce PRICE_LIST on management/export and SALES.create on RFQ", () => {
   const plRoutes = fs.readFileSync(path.join(srcRoot, "routes", "manPriceListRoutes.js"), "utf8");
   const rfqRoutes = fs.readFileSync(path.join(srcRoot, "routes", "manRfqRoutes.js"), "utf8");
@@ -441,6 +620,8 @@ run("Server routes enforce PRICE_LIST on management/export and SALES.create on R
   assert.match(plService, /techSet\.spn = proposed\.spn/);
   assert.match(plService, /ItemSupplier\[0\]\.supplierPartNumber \(Supplier 1 P\/N\)/);
   assert.match(rfqRoutes, /requirePermission\("SALES", "create"\)/);
+  assert.match(rfqRoutes, /\/models/);
+  assert.match(rfqRoutes, /\/items\/:article/);
   assert.doesNotMatch(rfqRoutes, /PRICE_LIST/);
   assert.match(rfqService, /TIER_DENIED/);
   assert.match(rfqService, /STALE_PRICE/);
@@ -449,6 +630,10 @@ run("Server routes enforce PRICE_LIST on management/export and SALES.create on R
   assert.doesNotMatch(rfqService, /findById\(/);
   assert.doesNotMatch(rfqService, /line\.priceListId/);
   assert.match(rfqService, /redactManRfqMatchResponse/);
+  assert.match(qModel, /vesselPlant/);
+  assert.match(rfqService, /vesselPlant: String\(headerFromBody\.vesselPlant/);
+  assert.match(rfqService, /esn: String\(headerFromBody\.esn/);
+  assert.doesNotMatch(rfqService, /esn: headerFromBody\.vesselPlant/);
   const rfqPage = fs.readFileSync(path.join(feRoot, "pages", "ManRfqQuotation.jsx"), "utf8");
   assert.doesNotMatch(rfqPage, /priceListId/);
   assert.doesNotMatch(rfqPage, /return \{\s*\.\.\.ln/);
@@ -456,6 +641,24 @@ run("Server routes enforce PRICE_LIST on management/export and SALES.create on R
   assert.match(rfqPage, /STALE_PRICE/);
   assert.match(rfqPage, /priceListRevision/);
   assert.match(rfqPage, /selectedArticle/);
+  assert.match(rfqPage, /Quotation Details/);
+  assert.match(rfqPage, /Create Draft Quotation/);
+  assert.match(rfqPage, /Refresh Stock & Lead Time/);
+  assert.match(rfqPage, /Apply Price Level/);
+  assert.match(rfqPage, /vesselPlant/);
+  assert.match(rfqPage, /Engine Serial Number \(ESN\)/);
+  assert.doesNotMatch(rfqPage, /ESN \/ vessel \/ plant/);
+  assert.doesNotMatch(rfqPage, /candidates\?\.\[0\]/);
+  assert.doesNotMatch(rfqPage, /r\.candidates\?\.\[0\]/);
+  const manUtil = fs.readFileSync(path.join(srcRoot, "utils", "manPriceList.js"), "utf8");
+  assert.match(manUtil, /MAN_RFQ_MODEL_REQUIRED/);
+  assert.match(manUtil, /MAN_RFQ_MODEL_MODE_INVALID/);
+  assert.match(manUtil, /MAN_RFQ_CONFIG_CONFLICT/);
+  assert.match(manUtil, /MAN_RFQ_SPEC_CONFLICT/);
+  assert.match(rfqService, /resolveManRfqRequestMode/);
+  assert.match(rfqService, /MAN_RFQ_MODEL_ERROR_CODES\.REQUIRED/);
+  assert.match(rfqService, /MAN_RFQ_MODEL_ERROR_CODES\.CONFIG_CONFLICT/);
+  assert.match(rfqService, /MAN_RFQ_MODEL_ERROR_CODES\.SPEC_CONFLICT/);
   assert.match(plService, /companyId: req\.companyId/);
   assert.match(plService, /Unknown Article/);
   assert.match(plService, /STALE_PREVIEW/);
@@ -481,6 +684,13 @@ run("UI routes and Item Master MAN tab exist; stock is not written by this modul
   assert.match(sidebar, /isPriceListAdminRole/);
   assert.match(sidebar, /MAN RFQ \/ Quotation/);
   assert.match(itemMaster, /MAN Price List/);
+  assert.match(itemMaster, /Engine Model/);
+  const priceListPage = fs.readFileSync(path.join(feRoot, "pages", "PriceList.jsx"), "utf8");
+  const salesPage = fs.readFileSync(path.join(feRoot, "pages", "Sales.jsx"), "utf8");
+  assert.match(priceListPage, /Available Stock/);
+  assert.match(priceListPage, /Engine Model/);
+  assert.match(salesPage, /vesselPlant/);
+  assert.match(salesPage, /Vessel \/ Plant/);
   assert.match(plService, /getStockBalance/);
   assert.doesNotMatch(plService, /adjustStock|createStockMovement|postStock/);
   assert.doesNotMatch(rfqService, /allocateStock|createReservation/);
@@ -489,10 +699,12 @@ run("UI routes and Item Master MAN tab exist; stock is not written by this modul
 
 run("Existing manual quotation path remains on persistNewQuotation without MAN gating", () => {
   const quotation = fs.readFileSync(path.join(srcRoot, "controllers", "quotationController.js"), "utf8");
+  const salesFlow = fs.readFileSync(path.join(srcRoot, "controllers", "salesFlowController.js"), "utf8");
   assert.match(quotation, /export async function persistNewQuotation/);
   assert.match(quotation, /skipAutoCreateItems = false/);
   assert.match(quotation, /export async function createQuotation/);
   assert.doesNotMatch(quotation, /isManEligibleItem/);
+  assert.match(salesFlow, /convertQuotationToOA/);
 });
 
 if (failed) {

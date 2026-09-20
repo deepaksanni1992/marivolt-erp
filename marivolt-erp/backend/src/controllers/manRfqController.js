@@ -1,4 +1,11 @@
-import { matchRfqLines, parseRfqFile, refreshAvailability, createQuotationFromManRfq } from "../services/manRfqService.js";
+import {
+  matchRfqLines,
+  parseRfqFile,
+  refreshAvailability,
+  createQuotationFromManRfq,
+  listManEngineModels,
+  getManItemSalesSnapshot,
+} from "../services/manRfqService.js";
 
 function sendErr(res, err) {
   const payload = { message: err.message, code: err.code };
@@ -15,6 +22,8 @@ export async function match(req, res) {
     const result = await matchRfqLines(req, {
       lines: lines || [],
       defaultTier: req.body?.defaultTier,
+      headerMode: req.body?.modelMode || req.body?.headerMode || req.body?.header?.modelMode,
+      headerModel: req.body?.model || req.body?.headerModel || req.body?.header?.model,
     });
     res.json(result);
   } catch (err) {
@@ -35,6 +44,24 @@ export async function createQuotation(req, res) {
   try {
     const result = await createQuotationFromManRfq(req, req.body || {});
     res.status(result.reused ? 200 : 201).json(result);
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function listModels(req, res) {
+  try {
+    const result = await listManEngineModels(req);
+    res.json(result);
+  } catch (err) {
+    sendErr(res, err);
+  }
+}
+
+export async function itemSnapshot(req, res) {
+  try {
+    const result = await getManItemSalesSnapshot(req, req.params.article);
+    res.json(result);
   } catch (err) {
     sendErr(res, err);
   }

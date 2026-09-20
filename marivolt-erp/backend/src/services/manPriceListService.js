@@ -20,6 +20,7 @@ import {
   cellIsBlank,
   contentFingerprint,
   displayedItemMasterSpn,
+  displayedItemMasterSpecs,
   displayedSupplier1,
   formatExportAvailability,
   isManEligibleItem,
@@ -119,6 +120,9 @@ export function toManagementDto(row, extras = {}) {
     description: extras.description || "",
     spn: extras.spn || "",
     brand: extras.brand || "",
+    model: extras.model || "",
+    config: extras.config || "",
+    specs: extras.specs || "",
     supplier: extras.supplier || "",
     supplierPartNumber: extras.supplierPartNumber || "",
     availableQty: extras.availableQty,
@@ -141,7 +145,27 @@ export function toSalesDto(row, extras = {}) {
     description: extras.description || "",
     spn: extras.spn || "",
     brand: extras.brand || "",
+    model: extras.model || "",
+    config: extras.config || "",
+    specs: extras.specs || "",
     availableQty: extras.availableQty,
+  };
+}
+
+function itemMasterDisplayExtras(item, technical, extra = {}) {
+  return {
+    uom: item?.uom || extra.uom || "",
+    description: extra.description || item?.description || item?.itemName || "",
+    spn: displayedItemMasterSpn(item, technical) || extra.spn || "",
+    brand: item?.brand || item?.engine || extra.brand || "",
+    model: item?.model || "",
+    config: item?.config || "",
+    specs: displayedItemMasterSpecs(technical),
+    supplier: extra.supplier ?? item?.supplier ?? "",
+    supplierPartNumber: extra.supplierPartNumber ?? item?.supplierPartNumber ?? "",
+    availableQty: extra.availableQty,
+    canRock: extra.canRock,
+    includeRock: extra.includeRock,
   };
 }
 
@@ -157,21 +181,22 @@ export async function listPriceList(req, { q = "", includeInactive = false } = {
   const rows = await ManPriceList.find(filter).sort({ article: 1 }).lean();
   const articles = rows.map((r) => r.article);
   const items = await ItemMaster.find({ companyId: req.companyId, article: { $in: articles } }).lean();
+  const techs = await ItemTechnical.find({ companyId: req.companyId, article: { $in: articles } }).lean();
   const byArticle = new Map(items.map((i) => [i.article, i]));
+  const techByArticle = new Map(techs.map((t) => [t.article, t]));
   const out = [];
   for (const row of rows) {
     const item = byArticle.get(row.article);
     const availableQty = await availableQtyForArticle(req.companyId, row.article);
     out.push(
-      toManagementDto(row, {
-        uom: item?.uom || "",
-        description: item?.description || item?.itemName || "",
-        spn: item?.spn || "",
-        brand: item?.brand || item?.engine || "",
-        supplier: item?.supplier || "",
-        supplierPartNumber: item?.supplierPartNumber || "",
-        availableQty,
-      })
+      toManagementDto(
+        row,
+        itemMasterDisplayExtras(item, techByArticle.get(row.article), {
+          supplier: item?.supplier || "",
+          supplierPartNumber: item?.supplierPartNumber || "",
+          availableQty,
+        })
+      )
     );
   }
   return out;
@@ -184,17 +209,14 @@ export async function getPriceListByArticle(req, article, { management = false, 
     throw err("MAN price list record not found", 404, "MAN_PRICE_LIST_MISSING");
   }
   const item = await ItemMaster.findOne({ companyId: req.companyId, article: code }).lean();
+  const technical = await ItemTechnical.findOne({ companyId: req.companyId, article: code }).lean();
   const availableQty = await availableQtyForArticle(req.companyId, code);
-  const extras = {
-    uom: item?.uom || "",
-    description: item?.description || item?.itemName || "",
-    spn: item?.spn || "",
-    brand: item?.brand || item?.engine || "",
+  const extras = itemMasterDisplayExtras(item, technical, {
     supplier: item?.supplier || "",
     supplierPartNumber: item?.supplierPartNumber || "",
     availableQty,
     canRock,
-  };
+  });
   return management ? toManagementDto(row, extras) : toSalesDto(row, extras);
 }
 
@@ -285,8 +307,10 @@ export async function upsertManualPrice(req, article, body = {}) {
   doc.updatedBy = actor(req).email;
   const nextHash = priceHash(doc);
   const unchanged = before && before.contentHash === nextHash && priceHash(before) === nextHash;
+  const technical = await ItemTechnical.findOne({ companyId: req.companyId, article: code }).lean();
+  const extras = itemMasterDisplayExtras(item, technical);
   if (unchanged && before) {
-    return toManagementDto(doc, { uom: item.uom, description: item.description, spn: item.spn });
+    return toManagementDto(doc, extras);
   }
   if (before) doc.revision = Number(before.revision || 1) + 1;
   doc.contentHash = nextHash;
@@ -302,7 +326,7 @@ export async function upsertManualPrice(req, article, body = {}) {
     beforeData: before,
     afterData: doc.toObject(),
   });
-  return toManagementDto(doc, { uom: item.uom, description: item.description, spn: item.spn });
+  return toManagementDto(doc, extras);
 }
 
 export function csvTemplate() {

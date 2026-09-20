@@ -193,6 +193,10 @@ const HEADER_ALIASES = new Map([
   ["next buy", "Next Buy"],
   ["sell price", "Sell price"],
   ["lead time", "Lead time"],
+  ["engine model", "Engine model"],
+  ["customer line", "Customer line"],
+  ["customer reference", "Customer reference"],
+  ["specifications", "Specifications"],
 ]);
 
 export function canonicalCsvHeader(name) {
@@ -205,6 +209,184 @@ export function canonicalCsvHeader(name) {
 export function isManEligibleItem(item = {}) {
   const brand = canonicalBrandSpelling(resolveBrandValue(item));
   return brand === MAN_BRAND;
+}
+
+/** SPECS row on ItemTechnical, else concatenated spec values. Never a price-list field. */
+export function displayedItemMasterSpecs(technical = {}) {
+  const list = Array.isArray(technical?.technicalSpecifications) ? technical.technicalSpecifications : [];
+  const specsRow = list.find((s) => foldHeader(s?.specName) === "specs");
+  if (String(specsRow?.specValue || "").trim()) return String(specsRow.specValue).trim();
+  return list
+    .map((s) => String(s?.specValue || "").trim())
+    .filter(Boolean)
+    .join("; ");
+}
+
+/** Compare models after trim / case-fold / collapsed spaces. Keep the stored display value elsewhere. */
+export function normalizeEngineModel(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+}
+
+export function modelsEquivalent(a, b) {
+  const x = normalizeEngineModel(a);
+  const y = normalizeEngineModel(b);
+  return Boolean(x) && x === y;
+}
+
+export function configOrSpecConflict(requested, stored) {
+  const a = normalizeEngineModel(requested);
+  const b = normalizeEngineModel(stored);
+  return Boolean(a && b && a !== b);
+}
+
+export const MAN_RFQ_MODEL_MODES = Object.freeze({
+  SELECTED: "SELECTED",
+  MIXED: "MIXED",
+  UNSPECIFIED: "UNSPECIFIED",
+});
+
+export const MAN_RFQ_MODEL_ERROR_CODES = Object.freeze({
+  MODE_INVALID: "MAN_RFQ_MODEL_MODE_INVALID",
+  REQUIRED: "MAN_RFQ_MODEL_REQUIRED",
+  CONFLICT: "MAN_RFQ_MODEL_CONFLICT",
+  MISMATCH: "MAN_RFQ_MODEL_MISMATCH",
+  CONFIG_CONFLICT: "MAN_RFQ_CONFIG_CONFLICT",
+  SPEC_CONFLICT: "MAN_RFQ_SPEC_CONFLICT",
+});
+
+/** Canonical mode or empty. Never defaults unknown values to SELECTED. */
+export function canonicalManRfqModelMode(value) {
+  const v = String(value ?? "").trim().toUpperCase();
+  if (v === MAN_RFQ_MODEL_MODES.SELECTED) return MAN_RFQ_MODEL_MODES.SELECTED;
+  if (v === MAN_RFQ_MODEL_MODES.MIXED) return MAN_RFQ_MODEL_MODES.MIXED;
+  if (v === MAN_RFQ_MODEL_MODES.UNSPECIFIED) return MAN_RFQ_MODEL_MODES.UNSPECIFIED;
+  return "";
+}
+
+/**
+ * Shared match/create parser.
+ * Legacy: omitted mode + a header model infers SELECTED.
+ * Unknown mode values are rejected — never silently treated as SELECTED.
+ */
+export function resolveManRfqRequestMode({ modelMode, headerModel } = {}) {
+  const header = String(headerModel || "").trim();
+  const raw = modelMode == null ? "" : String(modelMode).trim();
+  if (!raw) {
+    if (header) {
+      return { ok: true, mode: MAN_RFQ_MODEL_MODES.SELECTED, headerModel: header, inferred: true };
+    }
+    return {
+      ok: false,
+      code: MAN_RFQ_MODEL_ERROR_CODES.REQUIRED,
+      message: "Select a MAN engine model, mixed models, or model not specified",
+    };
+  }
+  const mode = canonicalManRfqModelMode(raw);
+  if (!mode) {
+    return {
+      ok: false,
+      code: MAN_RFQ_MODEL_ERROR_CODES.MODE_INVALID,
+      message: "modelMode must be SELECTED, MIXED, or UNSPECIFIED",
+    };
+  }
+  return { ok: true, mode, headerModel: header, inferred: false };
+}
+
+/** @deprecated Use canonicalManRfqModelMode / resolveManRfqRequestMode. Unknown returns "". */
+export function parseManRfqModelMode(value) {
+  return canonicalManRfqModelMode(value);
+}
+
+export function modelIsKnownManEngine(knownModels = [], value) {
+  const needle = normalizeEngineModel(value);
+  if (!needle) return false;
+  return (knownModels || []).some((m) => normalizeEngineModel(m) === needle);
+}
+
+/** Selected Article only — never candidates[0] and never a silent article fallback. */
+export function selectedManRfqCandidate(line = {}) {
+  const article = String(line.selectedArticle || "").trim();
+  if (!article) return null;
+  const found = (line.candidates || []).find((c) => String(c?.article || "").trim() === article);
+  return found || null;
+}
+
+/**
+ * Distinct MAN Item Master model display values, keyed by normalized form.
+ * First stored spelling wins; non-MAN brands are ignored.
+ */
+export function uniqueManEngineModels(items = []) {
+  const byNorm = new Map();
+  for (const item of items) {
+    if (!isManEligibleItem(item)) continue;
+    const display = String(item.model || "").trim();
+    if (!display) continue;
+    const key = normalizeEngineModel(display);
+    if (!key) continue;
+    if (!byNorm.has(key)) byNorm.set(key, display);
+  }
+  return [...byNorm.values()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+}
+
+export function uniqueDisplayModels(records = []) {
+  const byNorm = new Map();
+  for (const row of records) {
+    const display = String(row?.model || "").trim();
+    if (!display) continue;
+    const key = normalizeEngineModel(display);
+    if (!key) continue;
+    if (!byNorm.has(key)) byNorm.set(key, display);
+  }
+  return [...byNorm.values()];
+}
+
+/**
+ * Header model fills blank RFQ line cells. A different line model is a conflict
+ * unless the RFQ is mixed or model-not-specified.
+ */
+export function resolveRfqLineModel({ headerMode = "SELECTED", headerModel = "", lineModel = "" } = {}) {
+  const mode = canonicalManRfqModelMode(headerMode) || (headerMode ? "" : MAN_RFQ_MODEL_MODES.SELECTED);
+  const header = String(headerModel || "").trim();
+  const line = String(lineModel || "").trim();
+  const lineModelMissing = !line;
+
+  if (mode === MAN_RFQ_MODEL_MODES.MIXED) {
+    return {
+      mode,
+      originalCustomerModel: line,
+      resolvedModel: line,
+      lineModelMissing,
+      headerLineConflict: false,
+    };
+  }
+  if (mode === MAN_RFQ_MODEL_MODES.UNSPECIFIED) {
+    return {
+      mode,
+      originalCustomerModel: line,
+      resolvedModel: line,
+      lineModelMissing,
+      headerLineConflict: false,
+    };
+  }
+  if (mode === MAN_RFQ_MODEL_MODES.SELECTED) {
+    return {
+      mode: MAN_RFQ_MODEL_MODES.SELECTED,
+      originalCustomerModel: line,
+      resolvedModel: line || header,
+      lineModelMissing,
+      headerLineConflict: Boolean(header && line && !modelsEquivalent(header, line)),
+    };
+  }
+  return {
+    mode: "",
+    originalCustomerModel: line,
+    resolvedModel: line,
+    lineModelMissing,
+    headerLineConflict: false,
+  };
 }
 
 /** Conservative part-no match: trim, collapse spaces, case-fold. Keep zeros and punctuation. */
@@ -378,27 +560,176 @@ export function shouldSkipUnchangedImport({ creating = false, hasItemChanges = f
   return !creating && !hasItemChanges && beforeHash === nextHash;
 }
 
+function compatibleManCandidates(pool = []) {
+  return pool.filter((c) => c.uomOk && c.prices && c.pricingOk && !c.modelConflict && !c.configConflict);
+}
+
 /**
- * Classify MAN RFQ candidates after SPN matching. Never picks the cheapest Article.
+ * Classify MAN RFQ candidates after exact SPN matching.
+ * Never picks the cheapest Article, never matches by model alone, never auto-picks a similar SPN.
+ * Pass opts for engine-model aware statuses; omit opts to keep the legacy review path.
  */
-export function classifyManRfqCandidates(candidates = []) {
-  const compatible = candidates.filter((c) => c.uomOk && c.prices && c.pricingOk && !c.modelConflict);
+export function classifyManRfqCandidates(candidates = [], opts = {}) {
+  const hasOpts = Boolean(
+    opts &&
+      (opts.headerMode ||
+        opts.resolvedModel ||
+        opts.headerLineConflict ||
+        opts.lineModelMissing ||
+        opts.modelAware)
+  );
+  if (!hasOpts) {
+    const compatible = compatibleManCandidates(candidates);
+    if (!candidates.length) {
+      return { status: "NOT_FOUND", reason: "Not found", pick: null, compatible, availableModels: [] };
+    }
+    if (candidates.some((c) => !c.uomOk || c.modelConflict) && compatible.length !== 1) {
+      return {
+        status: "REVIEW",
+        reason: "UOM or model/configuration requires review",
+        pick: null,
+        compatible,
+        availableModels: uniqueDisplayModels(candidates),
+      };
+    }
+    if (candidates.every((c) => !c.prices || !c.pricingOk)) {
+      return {
+        status: "PRICING_REQUIRED",
+        reason: "Pricing required",
+        pick: null,
+        compatible,
+        availableModels: uniqueDisplayModels(candidates),
+      };
+    }
+    if (compatible.length > 1) {
+      return {
+        status: "MULTIPLE",
+        reason: "Multiple eligible Articles — select one",
+        pick: null,
+        compatible,
+        availableModels: uniqueDisplayModels(candidates),
+      };
+    }
+    if (compatible.length === 1) {
+      return {
+        status: "MATCHED",
+        reason: "",
+        pick: compatible[0],
+        compatible,
+        availableModels: uniqueDisplayModels(candidates),
+      };
+    }
+    return {
+      status: "REVIEW",
+      reason: "Requires review",
+      pick: null,
+      compatible,
+      availableModels: uniqueDisplayModels(candidates),
+    };
+  }
+
+  const headerMode = canonicalManRfqModelMode(opts.headerMode);
+  const resolvedModel = String(opts.resolvedModel || "").trim();
+  const availableModels = uniqueDisplayModels(candidates);
+
+  if (opts.headerLineConflict) {
+    return {
+      status: "MODEL_CONFLICT",
+      reason: "Line Engine Model differs from the header Engine Model",
+      pick: null,
+      compatible: [],
+      availableModels,
+    };
+  }
+  if (headerMode === MAN_RFQ_MODEL_MODES.MIXED && opts.lineModelMissing) {
+    return {
+      status: "MODEL_REQUIRED",
+      reason: "Engine Model is required on each line for mixed-model RFQs",
+      pick: null,
+      compatible: [],
+      availableModels,
+    };
+  }
   if (!candidates.length) {
-    return { status: "NOT_FOUND", reason: "Not found", pick: null, compatible };
+    return { status: "NOT_FOUND", reason: "Not found", pick: null, compatible: [], availableModels: [] };
   }
-  if (candidates.some((c) => !c.uomOk || c.modelConflict) && compatible.length !== 1) {
-    return { status: "REVIEW", reason: "UOM or model/configuration requires review", pick: null, compatible };
+
+  const inResolvedModel = resolvedModel
+    ? candidates.filter((c) => modelsEquivalent(c.model, resolvedModel))
+    : candidates;
+  const otherModels = uniqueDisplayModels(
+    candidates.filter((c) => resolvedModel && !modelsEquivalent(c.model, resolvedModel))
+  );
+
+  if (resolvedModel && !inResolvedModel.length && otherModels.length) {
+    return {
+      status: "MODEL_MISMATCH",
+      reason: "SPN exists under other MAN models",
+      pick: null,
+      compatible: [],
+      availableModels: otherModels,
+    };
   }
-  if (candidates.every((c) => !c.prices || !c.pricingOk)) {
-    return { status: "PRICING_REQUIRED", reason: "Pricing required", pick: null, compatible };
+
+  const pool = resolvedModel ? inResolvedModel : candidates;
+  const compatible = compatibleManCandidates(pool);
+  const poolModels = uniqueDisplayModels(pool);
+
+  if (headerMode === MAN_RFQ_MODEL_MODES.UNSPECIFIED && !resolvedModel && poolModels.length > 1) {
+    return {
+      status: "MULTIPLE",
+      reason: "SPN exists across multiple MAN models — select one Article",
+      pick: null,
+      compatible: [],
+      availableModels: poolModels,
+    };
   }
+
+  if (pool.length && pool.every((c) => !c.uomOk) && !compatible.length) {
+    return {
+      status: "UOM_MISMATCH",
+      reason: "UOM is incompatible with the matched Article",
+      pick: null,
+      compatible: [],
+      availableModels: poolModels,
+    };
+  }
+
+  if (pool.length && pool.every((c) => !c.prices || !c.pricingOk) && pool.some((c) => c.uomOk)) {
+    return {
+      status: "PRICING_REQUIRED",
+      reason: "Pricing required",
+      pick: null,
+      compatible,
+      availableModels: poolModels,
+    };
+  }
+
   if (compatible.length > 1) {
-    return { status: "MULTIPLE", reason: "Multiple eligible Articles — select one", pick: null, compatible };
+    return {
+      status: "MULTIPLE",
+      reason: "Multiple eligible Articles — select one",
+      pick: null,
+      compatible,
+      availableModels: poolModels,
+    };
   }
   if (compatible.length === 1) {
-    return { status: "MATCHED", reason: "", pick: compatible[0], compatible };
+    return {
+      status: "MATCHED",
+      reason: "",
+      pick: compatible[0],
+      compatible,
+      availableModels: poolModels,
+    };
   }
-  return { status: "REVIEW", reason: "Requires review", pick: null, compatible };
+  return {
+    status: "REVIEW",
+    reason: "Requires review",
+    pick: null,
+    compatible,
+    availableModels: poolModels,
+  };
 }
 
 const CUSTOMER_PRINT_LINE_KEYS = [
@@ -421,12 +752,16 @@ export function sanitizeCustomerQuotationPrint(row = {}) {
   const {
     internalNotes: _notes,
     manRfqIdempotencyKey: _key,
+    manRfqRequestHash: _hash,
+    manRfqModelMode: _mode,
     ...header
   } = row;
   return {
     ...header,
     internalNotes: "",
     manRfqIdempotencyKey: "",
+    manRfqRequestHash: "",
+    manRfqModelMode: "",
     lines: (row.lines || []).map((line) => {
       const out = {};
       for (const k of CUSTOMER_PRINT_LINE_KEYS) {
@@ -461,9 +796,11 @@ export function parseRfqCsvRow(data = {}) {
     partNo: mapped["Part no"] ?? mapped["Part No"] ?? "",
     uom: mapped.UOM ?? mapped.Uom ?? "",
     qty: mapped.Qty ?? mapped.QTY ?? mapped.Quantity ?? "",
-    customerLine: mapped["Customer line"] ?? mapped.Reference ?? mapped["Customer reference"] ?? "",
+    customerLine: mapped["Customer line"] ?? mapped.Reference ?? mapped["Customer Line"] ?? "",
+    customerReference: mapped["Customer reference"] ?? mapped["Customer Reference"] ?? "",
     description: mapped.Description ?? "",
-    engineModel: mapped["Engine model"] ?? mapped.Model ?? "",
-    configuration: mapped.Configuration ?? mapped.Specs ?? mapped.Specifications ?? "",
+    engineModel: mapped["Engine model"] ?? mapped.Model ?? mapped["Engine Model"] ?? "",
+    configuration: mapped.Configuration ?? "",
+    specifications: mapped.Specifications ?? mapped.Specs ?? mapped["Ext. Remarks"] ?? "",
   };
 }

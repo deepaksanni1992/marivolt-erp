@@ -10,6 +10,8 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 router.use(...requireErpAccess);
 const salesCreate = requirePermission("SALES", "create");
 
+router.get("/models", salesCreate, c.listModels);
+router.get("/items/:article", salesCreate, c.itemSnapshot);
 router.post("/match", salesCreate, upload.single("file"), c.match);
 router.post("/availability", salesCreate, c.availability);
 router.post("/quotations", salesCreate, c.createQuotation);

@@ -11,21 +11,32 @@ import { hasPermission } from "./roleService.js";
 import { runMongoTransaction } from "../utils/mongoTransaction.js";
 import {
   classifyManRfqCandidates,
+  configOrSpecConflict,
   DEFAULT_FULFILMENT_WAREHOUSE,
   DEFAULT_MAN_TIER,
+  displayedItemMasterSpecs,
+  displayedItemMasterSpn,
   formatManAvailability,
   isManEligibleItem,
+  MAN_RFQ_MODEL_ERROR_CODES,
+  MAN_RFQ_MODEL_MODES,
+  modelIsKnownManEngine,
+  modelsEquivalent,
   normalizePartNoForMatch,
   normalizeRfqUom,
   parseRfqCsvRow,
   manRfqRequestHash,
+  preserveArticleCode,
   redactManRfqMatchResponse,
   redactQuotationForSalesApi,
+  resolveManRfqRequestMode,
+  resolveRfqLineModel,
   roundQuotationMoney,
   selectTierUnitPrice,
   TIER_PERMISSION_ACTION,
   tierIsSelectable,
   toSalesMatchPrices,
+  uniqueManEngineModels,
   uomsCompatible,
 } from "../utils/manPriceList.js";
 import { parseExcelBufferToRows } from "../utils/excelParser.js";
@@ -57,7 +68,94 @@ function sellingCandidate(price, { canRock }) {
   return toSalesMatchPrices(price, { canRock });
 }
 
-export async function matchRfqLines(req, { lines = [], defaultTier = DEFAULT_MAN_TIER } = {}) {
+async function knownManModelsForCompany(req) {
+  const items = await ItemMaster.find({
+    companyId: req.companyId,
+    status: "Active",
+  })
+    .select("brand engine model")
+    .lean();
+  return uniqueManEngineModels(items);
+}
+
+async function resolveValidatedManRfqMode(req, { modelMode, headerModel } = {}) {
+  const parsed = resolveManRfqRequestMode({ modelMode, headerModel });
+  if (!parsed.ok) throw err(parsed.message, 400, parsed.code);
+  const knownModels = await knownManModelsForCompany(req);
+  if (parsed.mode === MAN_RFQ_MODEL_MODES.SELECTED) {
+    if (!parsed.headerModel) {
+      throw err(
+        "Select a MAN engine model before matching, or choose mixed models / model not specified",
+        400,
+        MAN_RFQ_MODEL_ERROR_CODES.REQUIRED
+      );
+    }
+    if (!modelIsKnownManEngine(knownModels, parsed.headerModel)) {
+      throw err(
+        "Engine Model must be an active MAN Item Master model for this company",
+        400,
+        MAN_RFQ_MODEL_ERROR_CODES.MISMATCH
+      );
+    }
+  }
+  return { ...parsed, knownModels };
+}
+
+function lineCustomerModel(line = {}) {
+  return String(line.customerEngineModel || line.requestedModel || line.engineModel || line.model || "").trim();
+}
+
+function lineRequestedConfiguration(line = {}) {
+  return String(line.requestedConfiguration || line.configuration || "").trim();
+}
+
+function lineRequestedSpecifications(line = {}) {
+  return String(line.requestedSpecifications || line.specifications || line.specs || "").trim();
+}
+
+export async function listManEngineModels(req) {
+  const items = await ItemMaster.find({
+    companyId: req.companyId,
+    status: "Active",
+  })
+    .select("brand engine model")
+    .lean();
+  return { models: uniqueManEngineModels(items) };
+}
+
+export async function getManItemSalesSnapshot(req, article) {
+  const code = preserveArticleCode(article);
+  const item = await ItemMaster.findOne({ companyId: req.companyId, article: code, status: "Active" }).lean();
+  if (!item || !isManEligibleItem(item)) {
+    throw err("MAN Item Master record not found", 404, "NOT_FOUND");
+  }
+  const tech = await ItemTechnical.findOne({ companyId: req.companyId, article: code }).lean();
+  const price = await ManPriceList.findOne({ companyId: req.companyId, article: code, isActive: true }).lean();
+  const canRock = await userCanTier(req, "ROCK");
+  const availableQty = await liveAvailable(req.companyId, code);
+  return redactManRfqMatchResponse({
+    article: item.article,
+    spn: displayedItemMasterSpn(item, tech),
+    engineModel: item.model || "",
+    configuration: item.config || "",
+    specifications: displayedItemMasterSpecs(tech),
+    uom: item.uom || "",
+    availableQty,
+    leadTime: price?.leadTime || "",
+    currency: price?.currency || "",
+    prices: price ? sellingCandidate(price, { canRock }) : null,
+  });
+}
+
+export async function matchRfqLines(
+  req,
+  { lines = [], defaultTier = DEFAULT_MAN_TIER, headerMode, headerModel, modelMode } = {}
+) {
+  const { mode, headerModel: header } = await resolveValidatedManRfqMode(req, {
+    modelMode: modelMode || headerMode,
+    headerModel,
+  });
+
   const canRock = await userCanTier(req, "ROCK");
   const results = [];
   for (const raw of lines) {
@@ -65,24 +163,35 @@ export async function matchRfqLines(req, { lines = [], defaultTier = DEFAULT_MAN
     const uom = normalizeRfqUom(raw.uom);
     const qty = Number(raw.qty);
     const customerLine = String(raw.customerLine || raw.reference || "").trim();
+    const customerReference = String(raw.customerReference || "").trim();
     const requestedDescription = String(raw.description || "").trim();
-    const engineModel = String(raw.engineModel || raw.model || "").trim();
-    const configuration = String(raw.configuration || raw.specs || "").trim();
+    const lineEngineModel = String(raw.engineModel || raw.model || "").trim();
+    const configuration = String(raw.configuration || "").trim();
+    const specifications = String(raw.specifications || raw.specs || "").trim();
+    const resolved = resolveRfqLineModel({
+      headerMode: mode,
+      headerModel: header,
+      lineModel: lineEngineModel,
+    });
     const needle = normalizePartNoForMatch(partNoOriginal);
     const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const spnExact = needle ? new RegExp(`^${escaped}$`, "i") : null;
 
     const base = {
       customerLine,
+      customerReference,
       requestedPartNo: partNoOriginal,
       requestedDescription,
-      engineModel,
+      requestedModel: resolved.originalCustomerModel,
+      engineModel: resolved.resolvedModel,
       configuration,
+      specifications,
       uom,
       qty,
       status: "",
       selectedArticle: "",
       candidates: [],
+      availableModels: [],
       exclusionReason: "",
     };
 
@@ -127,6 +236,12 @@ export async function matchRfqLines(req, { lines = [], defaultTier = DEFAULT_MAN
       continue;
     }
 
+    const techs = await ItemTechnical.find({
+      companyId: req.companyId,
+      article: { $in: manItems.map((i) => i.article) },
+    }).lean();
+    const techByArticle = new Map(techs.map((t) => [t.article, t]));
+
     const candidates = [];
     for (const item of manItems) {
       const price = await ManPriceList.findOne({
@@ -135,53 +250,46 @@ export async function matchRfqLines(req, { lines = [], defaultTier = DEFAULT_MAN
         isActive: true,
       }).lean();
       const availableQty = await liveAvailable(req.companyId, item.article);
+      const tech = techByArticle.get(item.article) || {};
+      const itemSpecs = displayedItemMasterSpecs(tech);
       const uomOk = uomsCompatible(item.uom, uom);
-      const modelConflict =
-        engineModel && item.model && String(item.model).trim().toUpperCase() !== engineModel.toUpperCase();
+      const modelConflict = Boolean(
+        resolved.resolvedModel && item.model && !modelsEquivalent(item.model, resolved.resolvedModel)
+      );
+      const cfgConflict = configOrSpecConflict(configuration, item.config);
+      const specConflict = configOrSpecConflict(specifications, itemSpecs);
       candidates.push({
         article: item.article,
-        spn: item.spn || "",
+        spn: displayedItemMasterSpn(item, tech),
         description: item.description || item.itemName || "",
         model: item.model || "",
         config: item.config || "",
+        specifications: itemSpecs,
         uom: item.uom,
         availableQty,
         leadTime: price?.leadTime || "",
         prices: price ? sellingCandidate(price, { canRock }) : null,
         uomOk,
-        modelConflict: Boolean(modelConflict),
+        modelConflict,
+        configConflict: Boolean(cfgConflict || specConflict),
+        exactModelMatch: Boolean(resolved.resolvedModel && modelsEquivalent(item.model, resolved.resolvedModel)),
+        exactConfigMatch: Boolean(configuration && item.config && modelsEquivalent(configuration, item.config)),
         pricingOk: Boolean(price && tierIsSelectable(price, defaultTier)),
       });
     }
 
-    const classified = classifyManRfqCandidates(candidates);
-    if (classified.status === "REVIEW") {
-      results.push({
-        ...base,
-        status: "REVIEW",
-        candidates,
-        exclusionReason: classified.reason,
-      });
-      continue;
-    }
-    if (classified.status === "PRICING_REQUIRED") {
-      results.push({
-        ...base,
-        status: "PRICING_REQUIRED",
-        candidates,
-        exclusionReason: classified.reason,
-      });
-      continue;
-    }
-    if (classified.status === "MULTIPLE") {
-      results.push({
-        ...base,
-        status: "MULTIPLE",
-        candidates,
-        exclusionReason: classified.reason,
-      });
-      continue;
-    }
+    const classified = classifyManRfqCandidates(candidates, {
+      headerMode: mode,
+      resolvedModel: resolved.resolvedModel,
+      lineModelMissing: resolved.lineModelMissing,
+      headerLineConflict: resolved.headerLineConflict,
+      modelAware: true,
+    });
+    const withModels = {
+      ...base,
+      availableModels: classified.availableModels || [],
+      matchedEngineModel: classified.pick?.model || "",
+    };
     if (classified.status === "MATCHED") {
       const pick = classified.pick;
       const availability = formatManAvailability({
@@ -191,11 +299,16 @@ export async function matchRfqLines(req, { lines = [], defaultTier = DEFAULT_MAN
         leadTime: pick.leadTime,
       });
       results.push({
-        ...base,
+        ...withModels,
         status: "MATCHED",
         selectedArticle: pick.article,
         description: pick.description,
+        matchedEngineModel: pick.model || "",
+        configuration,
+        specifications,
         uom: pick.uom,
+        availableQty: pick.availableQty,
+        leadTime: pick.leadTime,
         priceTier: defaultTier,
         unitPrice: selectTierUnitPrice(pick.prices, defaultTier),
         availability,
@@ -206,14 +319,19 @@ export async function matchRfqLines(req, { lines = [], defaultTier = DEFAULT_MAN
       });
       continue;
     }
-    results.push({ ...base, status: "REVIEW", candidates, exclusionReason: classified.reason || "Requires review" });
+    results.push({
+      ...withModels,
+      status: classified.status || "REVIEW",
+      candidates,
+      exclusionReason: classified.reason || "Requires review",
+    });
   }
   return redactManRfqMatchResponse({ lines: results });
 }
 
 export async function parseRfqFile(buffer) {
   const rows = parseExcelBufferToRows(buffer, {
-    preserveFormattedTextColumns: ["Part no", "Part No", "UOM", "Qty"],
+    preserveFormattedTextColumns: ["Part no", "Part No", "UOM", "Qty", "Engine Model", "Engine model"],
   });
   return rows.map((r) => parseRfqCsvRow(r.data));
 }
@@ -271,17 +389,84 @@ export async function createQuotationFromManRfq(req, body = {}) {
   if (!idempotencyKey) throw err("idempotencyKey is required", 400, "MAN_RFQ_KEY_REQUIRED");
 
   const defaultTier = String(body.defaultTier || DEFAULT_MAN_TIER).toUpperCase();
+  const headerFromBody = body.header || {};
+  const { mode: headerMode, headerModel, knownModels } = await resolveValidatedManRfqMode(req, {
+    modelMode: headerFromBody.modelMode || body.modelMode,
+    headerModel: headerFromBody.model || body.model,
+  });
   const inputLines = Array.isArray(body.lines) ? body.lines : [];
   const included = inputLines.filter((l) => l.exclude !== true);
   if (!included.length) throw err("Resolve or exclude every RFQ line before creating a quotation");
 
   const quoteLines = [];
   for (const line of included) {
-    const article = String(line.selectedArticle || line.article || "").trim().toUpperCase();
+    const article = String(line.selectedArticle || "").trim().toUpperCase();
+    if (!article) {
+      throw err("Select an Article on every included RFQ line", 400, MAN_RFQ_MODEL_ERROR_CODES.REQUIRED);
+    }
     const item = await ItemMaster.findOne({ companyId: req.companyId, article, status: "Active" });
     if (!item) throw err(`Article ${article || "(blank)"} was not found`, 400, "MAN_RFQ", { article });
     if (!isManEligibleItem(item)) {
       throw err(`Article ${article} is not MAN-eligible`, 400, "MAN_RFQ", { article });
+    }
+    const customerModel = lineCustomerModel(line);
+    const requestedConfiguration = lineRequestedConfiguration(line);
+    const requestedSpecifications = lineRequestedSpecifications(line);
+    const resolved = resolveRfqLineModel({
+      headerMode,
+      headerModel,
+      lineModel: customerModel,
+    });
+    if (resolved.headerLineConflict) {
+      throw err(
+        "Line Engine Model differs from the header Engine Model",
+        400,
+        MAN_RFQ_MODEL_ERROR_CODES.CONFLICT,
+        { article }
+      );
+    }
+    if (headerMode === MAN_RFQ_MODEL_MODES.MIXED && resolved.lineModelMissing) {
+      throw err(
+        "Engine Model is required on each line for mixed-model RFQs",
+        400,
+        MAN_RFQ_MODEL_ERROR_CODES.REQUIRED,
+        { article }
+      );
+    }
+    if (
+      (headerMode === MAN_RFQ_MODEL_MODES.SELECTED || headerMode === MAN_RFQ_MODEL_MODES.MIXED) &&
+      resolved.resolvedModel &&
+      !modelIsKnownManEngine(knownModels, resolved.resolvedModel)
+    ) {
+      throw err(
+        `Engine Model ${resolved.resolvedModel} is not an active MAN Item Master model`,
+        400,
+        MAN_RFQ_MODEL_ERROR_CODES.MISMATCH,
+        { article }
+      );
+    }
+    if (headerMode === MAN_RFQ_MODEL_MODES.SELECTED) {
+      if (!modelsEquivalent(item.model, headerModel)) {
+        throw err(`Article ${article} is not for Engine Model ${headerModel}`, 400, MAN_RFQ_MODEL_ERROR_CODES.MISMATCH, {
+          article,
+        });
+      }
+    } else if (resolved.resolvedModel && !modelsEquivalent(item.model, resolved.resolvedModel)) {
+      throw err(`Article ${article} is not for Engine Model ${resolved.resolvedModel}`, 400, MAN_RFQ_MODEL_ERROR_CODES.MISMATCH, {
+        article,
+      });
+    }
+    const tech = await ItemTechnical.findOne({ companyId: req.companyId, article }).lean();
+    const itemSpecs = displayedItemMasterSpecs(tech || {});
+    if (configOrSpecConflict(requestedConfiguration, item.config)) {
+      throw err(`Configuration is incompatible for ${article}`, 400, MAN_RFQ_MODEL_ERROR_CODES.CONFIG_CONFLICT, {
+        article,
+      });
+    }
+    if (configOrSpecConflict(requestedSpecifications, itemSpecs)) {
+      throw err(`Specifications are incompatible for ${article}`, 400, MAN_RFQ_MODEL_ERROR_CODES.SPEC_CONFLICT, {
+        article,
+      });
     }
     const uom = String(line.uom || item.uom || "").trim().toUpperCase();
     if (!uomsCompatible(item.uom, uom)) {
@@ -325,7 +510,7 @@ export async function createQuotationFromManRfq(req, body = {}) {
 
     quoteLines.push({
       article,
-      partNumber: item.spn || "",
+      partNumber: displayedItemMasterSpn(item, tech || {}),
       customerPartNo: String(line.requestedPartNo || line.customerPartNo || "").trim(),
       description: item.description || item.itemName || article,
       uom: item.uom,
@@ -340,25 +525,45 @@ export async function createQuotationFromManRfq(req, body = {}) {
       availabilityCheckedAt: checkedAt,
       sourceType: "MAN_RFQ",
       currency: price.currency || body.currency || "USD",
+      customerEngineModel: resolved.originalCustomerModel,
+      engineModel: item.model || "",
+      config: item.config || "",
+      specifications: itemSpecs,
+      modelMatchStatus: resolved.resolvedModel && modelsEquivalent(item.model, resolved.resolvedModel)
+        ? "MATCHED"
+        : resolved.resolvedModel
+          ? "MODEL_MISMATCH"
+          : headerMode === MAN_RFQ_MODEL_MODES.UNSPECIFIED
+            ? "UNSPECIFIED"
+            : "MATCHED",
     });
   }
 
-  const customerId = body.customerId || body.header?.customerId;
-  const currency = body.currency || body.header?.currency || "USD";
+  const customerId = body.customerId || headerFromBody.customerId;
+  const currency = body.currency || headerFromBody.currency || "USD";
   const requestHash = manRfqRequestHash({ customerId, currency, lines: quoteLines });
 
   const payload = {
-    ...body.header,
+    ...headerFromBody,
     customerId,
-    customerName: body.customerName || body.header?.customerName,
+    customerName: body.customerName || headerFromBody.customerName,
+    customerReference: headerFromBody.customerReference || body.customerReference || "",
+    quotationDate: headerFromBody.quotationDate || body.quotationDate,
+    validityDate: headerFromBody.validityDate || body.validityDate,
     currency,
     engine: "MAN",
+    model: headerMode === MAN_RFQ_MODEL_MODES.SELECTED ? headerModel : "",
+    esn: String(headerFromBody.esn || "").trim(),
+    vesselPlant: String(headerFromBody.vesselPlant || "").trim(),
+    remarks: headerFromBody.remarks || "",
+    manRfqModelMode: headerMode,
     sourceType: "MAN_RFQ",
     manRfqIdempotencyKey: idempotencyKey,
     manRfqRequestHash: requestHash,
     lines: quoteLines,
     internalNotes: [
-      body.header?.internalNotes || "",
+      headerFromBody.internalNotes || "",
+      `MAN RFQ model mode: ${headerMode}`,
       ...(inputLines
         .filter((l) => l.exclude)
         .map((l) => `Excluded ${l.requestedPartNo || l.article}: ${l.exclusionReason || l.excludeReason || "excluded"}`)),

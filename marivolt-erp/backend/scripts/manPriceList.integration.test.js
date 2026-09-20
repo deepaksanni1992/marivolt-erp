@@ -17,7 +17,7 @@ import ManPriceList from "../src/models/ManPriceList.js";
 import ManPriceListImport from "../src/models/ManPriceListImport.js";
 import { previewImport, applyImport, getPriceListByArticle } from "../src/services/manPriceListService.js";
 import { persistNewQuotation } from "../src/controllers/quotationController.js";
-import { createQuotationFromManRfq, matchRfqLines } from "../src/services/manRfqService.js";
+import { createQuotationFromManRfq, listManEngineModels, matchRfqLines } from "../src/services/manRfqService.js";
 import { getDefaultPermissionsForRole } from "../src/services/roleService.js";
 import {
   assertNoForbiddenSalesPriceKeys,
@@ -69,16 +69,21 @@ async function seedArticle(companyId, article, extras = {}) {
     article,
     itemName: extras.itemName || article,
     description: extras.description || "desc",
-    brand: "MAN",
-    engine: "MAN",
-    uom: "PCS",
-    status: "Active",
+    brand: extras.brand || "MAN",
+    engine: extras.engine || extras.brand || "MAN",
+    model: extras.model || (extras.brand && extras.brand !== "MAN" ? "" : "21/31"),
+    config: extras.config || "",
+    uom: extras.uom || "PCS",
+    status: extras.status || "Active",
     spn: extras.spn || "",
   });
   await ItemTechnical.create({
     companyId,
     article,
     spn: extras.techSpn || extras.spn || "",
+    technicalSpecifications: extras.specs
+      ? [{ specName: "SPECS", specValue: extras.specs }]
+      : [],
   });
   return item;
 }
@@ -104,6 +109,7 @@ const req = {
   user: { role: "admin", email: "admin@test.local", name: "Admin" },
 };
 const reqB = { ...req, companyId: companyB._id, companyCode: companyB.code };
+const selected21 = { modelMode: "SELECTED", model: "21/31" };
 
 await seedArticle(company._id, "A001", { spn: "OLD1", techSpn: "OLD1", description: "Filter" });
 await seedArticle(company._id, "A002", { spn: "OLD2", techSpn: "OLD2", description: "Gasket" });
@@ -257,6 +263,8 @@ await run("Multiple ordinary quotations for the same company succeed and omit MA
       customerId: customer._id,
       customerName: customer.name,
       sourceType: "MANUAL",
+      esn: "ESN-EXISTING-1",
+      vesselPlant: "",
       lines: [{ article: "A001", description: "Filter-ok", uom: "PCS", qty: 1, price: 1 }],
     },
     { skipAutoCreateItems: true }
@@ -276,6 +284,9 @@ await run("Multiple ordinary quotations for the same company succeed and omit MA
   assert.notEqual(String(d1._id), String(d2._id));
   assert.equal(d1.manRfqIdempotencyKey, undefined);
   assert.equal(d2.sourceType, "MANUAL");
+  assert.equal(d1.esn, "ESN-EXISTING-1");
+  assert.equal(d1.vesselPlant || "", "");
+  assert.notEqual(d1.esn, d1.vesselPlant);
   const indexed = await Quotation.collection.indexes();
   const manIdx = indexed.find((i) => i.name === "uniq_company_manRfqIdempotencyKey_manRfq");
   assert.ok(manIdx);
@@ -302,6 +313,7 @@ await run("Duplicate MAN requests reuse the same quotation; different payload is
     customerId: customer._id,
     customerName: customer.name,
     currency: "USD",
+    header: selected21,
     lines: [line],
   });
   const second = await createQuotationFromManRfq(req, {
@@ -309,6 +321,7 @@ await run("Duplicate MAN requests reuse the same quotation; different payload is
     customerId: customer._id,
     customerName: customer.name,
     currency: "USD",
+    header: selected21,
     lines: [line],
   });
   assert.equal(second.reused, true);
@@ -323,6 +336,7 @@ await run("Duplicate MAN requests reuse the same quotation; different payload is
       customerId: customer._id,
       customerName: customer.name,
       currency: "USD",
+      header: selected21,
       lines: [{ ...line, qty: 9 }],
     });
   } catch (e) {
@@ -346,6 +360,7 @@ await run("Duplicate MAN requests reuse the same quotation; different payload is
     customerId: customerB._id,
     customerName: customerB.name,
     currency: "USD",
+    header: selected21,
     lines: [{ ...line, priceListRevision: otherPrice.revision, priceListUpdatedAt: otherPrice.updatedAt }],
   });
   assert.notEqual(String(otherCo.quotation._id), String(first.quotation._id));
@@ -370,6 +385,7 @@ await run("Concurrent duplicate MAN requests do not create two quotations", asyn
       customerId: customer._id,
       customerName: customer.name,
       currency: "USD",
+      header: selected21,
       lines: [line],
     }),
     createQuotationFromManRfq(req, {
@@ -377,6 +393,7 @@ await run("Concurrent duplicate MAN requests do not create two quotations", asyn
       customerId: customer._id,
       customerName: customer.name,
       currency: "USD",
+      header: selected21,
       lines: [line],
     }),
   ]);
@@ -432,6 +449,8 @@ await run("Admin Price List management still returns management ids; Sales match
   const matched = await matchRfqLines(salesReq, {
     lines: [{ partNo: "051.001", uom: "PCS", qty: 1 }],
     defaultTier: "SELL",
+    headerMode: "SELECTED",
+    headerModel: "21/31",
   });
   assert.equal(matched.lines[0].status, "MATCHED");
   assert.equal(matched.lines[0].selectedArticle, "A001");
@@ -450,6 +469,7 @@ await run("Admin Price List management still returns management ids; Sales match
     customerId: customer._id,
     customerName: customer.name,
     currency: "USD",
+    header: selected21,
     lines: [
       {
         selectedArticle: "A001",
@@ -477,6 +497,7 @@ await run("Fabricated priceListId is ignored; client unit price and stale revisi
     customerId: customer._id,
     customerName: customer.name,
     currency: "USD",
+    header: selected21,
   };
   const line = {
     selectedArticle: "A001",
@@ -527,6 +548,8 @@ await run("Cross-company, non-MAN, and Rock remain unavailable to Sales", async 
     customerId: customer._id,
     customerName: customer.name,
     currency: "USD",
+    modelMode: "SELECTED",
+    model: "21/31",
   };
 
   let cross = "";
@@ -588,6 +611,530 @@ await run("Cross-company, non-MAN, and Rock remain unavailable to Sales", async 
   });
   assert.equal(sellIi.quotation.lines[0].price, 14);
   assertNoForbiddenSalesPriceKeys(sellIi.quotation, "sell ii quotation");
+});
+
+await run("Distinct MAN models are company-scoped and exclude non-MAN brands", async () => {
+  await seedArticle(company._id, "WART1", { brand: "Wärtsilä", engine: "Wärtsilä", model: "6L20", spn: "W-1", techSpn: "W-1" });
+  await seedArticle(company._id, "MAKMOD", { brand: "MAK", engine: "MAK", model: "M32C", spn: "MK-1", techSpn: "MK-1" });
+  await seedArticle(company._id, "M3240", { model: "32/40", spn: "M3240", techSpn: "M3240" });
+  await ItemMaster.updateOne({ companyId: company._id, article: "M3240" }, { $set: { model: "  32/40  " } });
+  const listed = await listManEngineModels(req);
+  assert.ok(listed.models.includes("21/31"));
+  assert.ok(listed.models.includes("32/40"));
+  assert.equal(listed.models.includes("6L20"), false);
+  assert.equal(listed.models.includes("M32C"), false);
+  const otherCo = await listManEngineModels(reqB);
+  assert.equal(otherCo.models.includes("32/40"), false);
+});
+
+async function seedPricedMan(article, extras = {}) {
+  const item = await seedArticle(company._id, article, extras);
+  await ManPriceList.create({
+    companyId: company._id,
+    itemMasterId: item._id,
+    article,
+    sellPrice: extras.sellPrice ?? 10,
+    currency: "USD",
+    revision: 1,
+    isActive: true,
+    leadTime: extras.leadTime || "8 Weeks",
+  });
+  return item;
+}
+
+await seedPricedMan("SP21", { spn: "SHARED-SPN", techSpn: "SHARED-SPN", model: "21/31", config: "Std", description: "Valve 21" });
+await seedPricedMan("SP32", { spn: "SHARED-SPN", techSpn: "SHARED-SPN", model: "32/40", config: "DF", description: "Valve 32" });
+await seedPricedMan("SP21B", { spn: "MULTI-ART", techSpn: "MULTI-ART", model: "21/31", description: "Alt A" });
+await seedPricedMan("SP21C", { spn: "MULTI-ART", techSpn: "MULTI-ART", model: "21/31", description: "Alt B" });
+await seedPricedMan("UOM21", { spn: "UOM-SPN", techSpn: "UOM-SPN", model: "21/31", uom: "SET", description: "Set item" });
+await seedPricedMan("SPEC21", {
+  spn: "SPEC-SPN",
+  techSpn: "SPEC-SPN",
+  model: "21/31",
+  config: "Std",
+  specs: "NBR",
+  description: "Spec item",
+});
+await seedPricedMan("M4860", { spn: "ONLY-4860", techSpn: "ONLY-4860", model: "48/60", description: "48/60 only" });
+
+await run("Header model fills blank RFQ lines; existing CSV without Engine Model still matches", async () => {
+  const matched = await matchRfqLines(salesReq, {
+    lines: [{ partNo: "SHARED-SPN", uom: "PCS", qty: 1 }],
+    headerMode: "SELECTED",
+    headerModel: "21/31",
+  });
+  assert.equal(matched.lines[0].status, "MATCHED");
+  assert.equal(matched.lines[0].selectedArticle, "SP21");
+  assert.equal(matched.lines[0].requestedModel, "");
+  assert.equal(matched.lines[0].engineModel, "21/31");
+  assert.equal(matched.lines[0].matchedEngineModel, "21/31");
+});
+
+await run("Header/line model conflict and mixed-model RFQ behaviour", async () => {
+  const conflict = await matchRfqLines(salesReq, {
+    lines: [{ partNo: "SHARED-SPN", uom: "PCS", qty: 1, engineModel: "32/40" }],
+    headerMode: "SELECTED",
+    headerModel: "21/31",
+  });
+  assert.equal(conflict.lines[0].status, "MODEL_CONFLICT");
+
+  const mixedMissing = await matchRfqLines(salesReq, {
+    lines: [{ partNo: "SHARED-SPN", uom: "PCS", qty: 1 }],
+    headerMode: "MIXED",
+  });
+  assert.equal(mixedMissing.lines[0].status, "MODEL_REQUIRED");
+
+  const mixedOk = await matchRfqLines(salesReq, {
+    lines: [{ partNo: "SHARED-SPN", uom: "PCS", qty: 2, engineModel: "32/40" }],
+    headerMode: "MIXED",
+  });
+  assert.equal(mixedOk.lines[0].status, "MATCHED");
+  assert.equal(mixedOk.lines[0].selectedArticle, "SP32");
+  assert.equal(mixedOk.lines[0].requestedModel, "32/40");
+});
+
+await run("Same SPN under different models; multiple Articles under one model; unspecified requires selection", async () => {
+  let unknownHeader = "";
+  try {
+    await matchRfqLines(salesReq, {
+      lines: [{ partNo: "SHARED-SPN", uom: "PCS", qty: 1 }],
+      headerMode: "SELECTED",
+      headerModel: "27/38",
+    });
+  } catch (e) {
+    unknownHeader = e.code;
+  }
+  assert.equal(unknownHeader, "MAN_RFQ_MODEL_MISMATCH");
+
+  const otherModel = await matchRfqLines(salesReq, {
+    lines: [{ partNo: "SHARED-SPN", uom: "PCS", qty: 1 }],
+    headerMode: "SELECTED",
+    headerModel: "48/60",
+  });
+  assert.equal(otherModel.lines[0].status, "MODEL_MISMATCH");
+  assert.ok(otherModel.lines[0].availableModels.includes("21/31"));
+  assert.ok(otherModel.lines[0].availableModels.includes("32/40"));
+
+  const multi = await matchRfqLines(salesReq, {
+    lines: [{ partNo: "MULTI-ART", uom: "PCS", qty: 1 }],
+    headerMode: "SELECTED",
+    headerModel: "21/31",
+  });
+  assert.equal(multi.status || multi.lines[0].status, "MULTIPLE");
+  assert.equal(multi.lines[0].selectedArticle, "");
+  assert.equal(multi.lines[0].priceTier, undefined);
+  assert.equal(multi.lines[0].unitPrice, undefined);
+  assert.equal(multi.lines[0].candidates.length, 2);
+
+  const unspecified = await matchRfqLines(salesReq, {
+    lines: [{ partNo: "SHARED-SPN", uom: "PCS", qty: 1 }],
+    headerMode: "UNSPECIFIED",
+  });
+  assert.equal(unspecified.lines[0].status, "MULTIPLE");
+  assert.ok(unspecified.lines[0].availableModels.length >= 2);
+});
+
+await run("UOM conflict remains after model filtering", async () => {
+  const uom = await matchRfqLines(salesReq, {
+    lines: [{ partNo: "UOM-SPN", uom: "PCS", qty: 1 }],
+    headerMode: "SELECTED",
+    headerModel: "21/31",
+  });
+  assert.equal(uom.lines[0].status, "UOM_MISMATCH");
+});
+
+await run("Create revalidates model; snapshot survives later Item Master edits; sales snapshot has no purchase keys", async () => {
+  let mismatch = "";
+  try {
+    await createQuotationFromManRfq(salesReq, {
+      idempotencyKey: "key-model-revalidate",
+      customerId: customer._id,
+      customerName: customer.name,
+      currency: "USD",
+      header: { modelMode: "SELECTED", model: "21/31" },
+      lines: [
+        {
+          selectedArticle: "SP32",
+          requestedPartNo: "SHARED-SPN",
+          requestedModel: "",
+          qty: 1,
+          uom: "PCS",
+          priceTier: "SELL",
+          priceListRevision: 1,
+        },
+      ],
+    });
+  } catch (e) {
+    mismatch = e.code;
+  }
+  assert.equal(mismatch, "MAN_RFQ_MODEL_MISMATCH");
+
+  const created = await createQuotationFromManRfq(salesReq, {
+    idempotencyKey: "key-model-snapshot",
+    customerId: customer._id,
+    customerName: customer.name,
+    currency: "USD",
+    header: {
+      modelMode: "SELECTED",
+      model: "21/31",
+      customerReference: "RFQ-99",
+      vesselPlant: "MV Atlantic",
+      esn: "ESN-7788",
+      remarks: "Please quote",
+    },
+    lines: [
+      {
+        selectedArticle: "SP21",
+        requestedPartNo: "SHARED-SPN",
+        requestedModel: "21/31",
+        customerEngineModel: "21/31",
+        qty: 1,
+        uom: "PCS",
+        priceTier: "SELL",
+        priceListRevision: 1,
+      },
+    ],
+  });
+  assert.equal(created.quotation.engine, "MAN");
+  assert.equal(created.quotation.model, "21/31");
+  assert.equal(created.quotation.vesselPlant, "MV Atlantic");
+  assert.equal(created.quotation.esn, "ESN-7788");
+  assert.notEqual(created.quotation.esn, created.quotation.vesselPlant);
+  assert.equal(created.quotation.remarks, "Please quote");
+  assert.equal(created.quotation.customerReference, "RFQ-99");
+  assert.equal(created.quotation.lines[0].engineModel, "21/31");
+  assert.equal(created.quotation.lines[0].customerEngineModel, "21/31");
+  assert.equal(created.quotation.lines[0].config, "Std");
+  assert.equal(created.quotation.lines[0].modelMatchStatus, "MATCHED");
+  assertNoForbiddenSalesPriceKeys(created.quotation, "model snapshot quotation");
+
+  await ItemMaster.updateOne({ companyId: company._id, article: "SP21" }, { $set: { model: "48/60", config: "Changed" } });
+  const stored = await Quotation.findById(created.quotation._id).lean();
+  assert.equal(stored.model, "21/31");
+  assert.equal(stored.vesselPlant, "MV Atlantic");
+  assert.equal(stored.esn, "ESN-7788");
+  assert.notEqual(stored.esn, stored.vesselPlant);
+  assert.equal(stored.lines[0].engineModel, "21/31");
+  assert.equal(stored.lines[0].config, "Std");
+  assert.equal(stored.lines[0].customerEngineModel, "21/31");
+});
+
+await run("SELECTED blank header is rejected on match and create; invalid mode is not defaulted", async () => {
+  await ItemMaster.updateOne({ companyId: company._id, article: "SP21" }, { $set: { model: "21/31", config: "Std" } });
+  let matchBlank = "";
+  try {
+    await matchRfqLines(salesReq, {
+      lines: [{ partNo: "SHARED-SPN", uom: "PCS", qty: 1 }],
+      headerMode: "SELECTED",
+      headerModel: "",
+    });
+  } catch (e) {
+    matchBlank = e.code;
+  }
+  assert.equal(matchBlank, "MAN_RFQ_MODEL_REQUIRED");
+
+  let createBlank = "";
+  try {
+    await createQuotationFromManRfq(salesReq, {
+      idempotencyKey: "key-selected-blank",
+      customerId: customer._id,
+      customerName: customer.name,
+      currency: "USD",
+      header: { modelMode: "SELECTED", model: "" },
+      lines: [
+        {
+          selectedArticle: "SP21",
+          requestedPartNo: "SHARED-SPN",
+          qty: 1,
+          uom: "PCS",
+          priceTier: "SELL",
+          priceListRevision: 1,
+        },
+      ],
+    });
+  } catch (e) {
+    createBlank = e.code;
+  }
+  assert.equal(createBlank, "MAN_RFQ_MODEL_REQUIRED");
+
+  let invalidMode = "";
+  try {
+    await matchRfqLines(salesReq, {
+      lines: [{ partNo: "SHARED-SPN", uom: "PCS", qty: 1 }],
+      headerMode: "ALL_MODELS",
+      headerModel: "21/31",
+    });
+  } catch (e) {
+    invalidMode = e.code;
+  }
+  assert.equal(invalidMode, "MAN_RFQ_MODEL_MODE_INVALID");
+
+  let invalidCreate = "";
+  try {
+    await createQuotationFromManRfq(salesReq, {
+      idempotencyKey: "key-invalid-mode",
+      customerId: customer._id,
+      customerName: customer.name,
+      currency: "USD",
+      header: { modelMode: "ALL_MODELS", model: "21/31" },
+      lines: [
+        {
+          selectedArticle: "SP21",
+          qty: 1,
+          uom: "PCS",
+          priceTier: "SELL",
+          priceListRevision: 1,
+        },
+      ],
+    });
+  } catch (e) {
+    invalidCreate = e.code;
+  }
+  assert.equal(invalidCreate, "MAN_RFQ_MODEL_MODE_INVALID");
+
+  let missingBoth = "";
+  try {
+    await createQuotationFromManRfq(salesReq, {
+      idempotencyKey: "key-missing-mode",
+      customerId: customer._id,
+      customerName: customer.name,
+      currency: "USD",
+      lines: [
+        {
+          selectedArticle: "SP21",
+          qty: 1,
+          uom: "PCS",
+          priceTier: "SELL",
+          priceListRevision: 1,
+        },
+      ],
+    });
+  } catch (e) {
+    missingBoth = e.code;
+  }
+  assert.equal(missingBoth, "MAN_RFQ_MODEL_REQUIRED");
+
+  const inferred = await matchRfqLines(salesReq, {
+    lines: [{ partNo: "SHARED-SPN", uom: "PCS", qty: 1 }],
+    headerModel: "21/31",
+  });
+  assert.equal(inferred.lines[0].status, "MATCHED");
+  assert.equal(inferred.lines[0].selectedArticle, "SP21");
+});
+
+await run("SELECTED header/line and Article conflicts; MIXED and UNSPECIFIED create rules", async () => {
+  let headerLine = "";
+  try {
+    await createQuotationFromManRfq(salesReq, {
+      idempotencyKey: "key-header-line-conflict",
+      customerId: customer._id,
+      customerName: customer.name,
+      currency: "USD",
+      header: selected21,
+      lines: [
+        {
+          selectedArticle: "SP21",
+          requestedModel: "32/40",
+          qty: 1,
+          uom: "PCS",
+          priceTier: "SELL",
+          priceListRevision: 1,
+        },
+      ],
+    });
+  } catch (e) {
+    headerLine = e.code;
+  }
+  assert.equal(headerLine, "MAN_RFQ_MODEL_CONFLICT");
+
+  let mixedBlank = "";
+  try {
+    await createQuotationFromManRfq(salesReq, {
+      idempotencyKey: "key-mixed-blank",
+      customerId: customer._id,
+      customerName: customer.name,
+      currency: "USD",
+      header: { modelMode: "MIXED", model: "" },
+      lines: [
+        {
+          selectedArticle: "SP32",
+          requestedModel: "",
+          qty: 1,
+          uom: "PCS",
+          priceTier: "SELL",
+          priceListRevision: 1,
+        },
+      ],
+    });
+  } catch (e) {
+    mixedBlank = e.code;
+  }
+  assert.equal(mixedBlank, "MAN_RFQ_MODEL_REQUIRED");
+
+  let mixedMismatch = "";
+  try {
+    await createQuotationFromManRfq(salesReq, {
+      idempotencyKey: "key-mixed-mismatch",
+      customerId: customer._id,
+      customerName: customer.name,
+      currency: "USD",
+      header: { modelMode: "MIXED" },
+      lines: [
+        {
+          selectedArticle: "SP21",
+          requestedModel: "32/40",
+          qty: 1,
+          uom: "PCS",
+          priceTier: "SELL",
+          priceListRevision: 1,
+        },
+      ],
+    });
+  } catch (e) {
+    mixedMismatch = e.code;
+  }
+  assert.equal(mixedMismatch, "MAN_RFQ_MODEL_MISMATCH");
+
+  let unspecifiedNoArticle = "";
+  try {
+    await createQuotationFromManRfq(salesReq, {
+      idempotencyKey: "key-unspecified-blank-article",
+      customerId: customer._id,
+      customerName: customer.name,
+      currency: "USD",
+      header: { modelMode: "UNSPECIFIED" },
+      lines: [
+        {
+          selectedArticle: "",
+          requestedPartNo: "SHARED-SPN",
+          qty: 1,
+          uom: "PCS",
+          priceTier: "SELL",
+          priceListRevision: 1,
+        },
+      ],
+    });
+  } catch (e) {
+    unspecifiedNoArticle = e.code;
+  }
+  assert.equal(unspecifiedNoArticle, "MAN_RFQ_MODEL_REQUIRED");
+
+  const mixedOk = await createQuotationFromManRfq(salesReq, {
+    idempotencyKey: "key-mixed-ok",
+    customerId: customer._id,
+    customerName: customer.name,
+    currency: "USD",
+    header: { modelMode: "MIXED" },
+    lines: [
+      {
+        selectedArticle: "SP32",
+        requestedModel: "32/40",
+        qty: 1,
+        uom: "PCS",
+        priceTier: "SELL",
+        priceListRevision: 1,
+      },
+    ],
+  });
+  assert.equal(mixedOk.quotation.status, "DRAFT");
+  assert.equal(mixedOk.quotation.model, "");
+  assert.equal(mixedOk.quotation.manRfqModelMode, "MIXED");
+  assert.equal(mixedOk.quotation.lines[0].engineModel, "32/40");
+  assert.equal(mixedOk.quotation.sourceType, "MAN_RFQ");
+
+  const unspecifiedOk = await createQuotationFromManRfq(salesReq, {
+    idempotencyKey: "key-unspecified-ok",
+    customerId: customer._id,
+    customerName: customer.name,
+    currency: "USD",
+    header: { modelMode: "UNSPECIFIED" },
+    lines: [
+      {
+        selectedArticle: "SP21",
+        requestedPartNo: "SHARED-SPN",
+        qty: 1,
+        uom: "PCS",
+        priceTier: "SELL",
+        priceListRevision: 1,
+      },
+    ],
+  });
+  assert.equal(unspecifiedOk.quotation.status, "DRAFT");
+  assert.equal(unspecifiedOk.quotation.model, "");
+  assert.equal(unspecifiedOk.quotation.manRfqModelMode, "UNSPECIFIED");
+  assert.equal(unspecifiedOk.quotation.lines[0].engineModel, "21/31");
+  assert.equal(unspecifiedOk.quotation.lines[0].modelMatchStatus, "UNSPECIFIED");
+});
+
+await run("Create revalidates requested Configuration and Specifications independently", async () => {
+  let cfg = "";
+  try {
+    await createQuotationFromManRfq(salesReq, {
+      idempotencyKey: "key-config-conflict",
+      customerId: customer._id,
+      customerName: customer.name,
+      currency: "USD",
+      header: selected21,
+      lines: [
+        {
+          selectedArticle: "SPEC21",
+          configuration: "DF",
+          qty: 1,
+          uom: "PCS",
+          priceTier: "SELL",
+          priceListRevision: 1,
+        },
+      ],
+    });
+  } catch (e) {
+    cfg = e.code;
+  }
+  assert.equal(cfg, "MAN_RFQ_CONFIG_CONFLICT");
+
+  let spec = "";
+  try {
+    await createQuotationFromManRfq(salesReq, {
+      idempotencyKey: "key-spec-conflict",
+      customerId: customer._id,
+      customerName: customer.name,
+      currency: "USD",
+      header: selected21,
+      lines: [
+        {
+          selectedArticle: "SPEC21",
+          specifications: "SS",
+          qty: 1,
+          uom: "PCS",
+          priceTier: "SELL",
+          priceListRevision: 1,
+        },
+      ],
+    });
+  } catch (e) {
+    spec = e.code;
+  }
+  assert.equal(spec, "MAN_RFQ_SPEC_CONFLICT");
+
+  const optionalOk = await createQuotationFromManRfq(salesReq, {
+    idempotencyKey: "key-optional-cfg-spec",
+    customerId: customer._id,
+    customerName: customer.name,
+    currency: "USD",
+    header: selected21,
+    lines: [
+      {
+        selectedArticle: "SPEC21",
+        qty: 1,
+        uom: "PCS",
+        priceTier: "SELL",
+        priceListRevision: 1,
+      },
+    ],
+  });
+  assert.equal(optionalOk.quotation.status, "DRAFT");
+  assert.equal(optionalOk.quotation.lines[0].config, "Std");
+  assert.equal(optionalOk.quotation.lines[0].specifications, "NBR");
+  assert.equal(optionalOk.quotation.lines[0].engineModel, "21/31");
 });
 
 await mongoose.disconnect();

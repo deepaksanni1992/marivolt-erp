@@ -184,7 +184,7 @@ export default function PriceList() {
         <table className="min-w-full text-sm">
           <thead className="bg-slate-50 text-left">
             <tr>
-              {["Article", "Description", "UOM", "SPN", "Sell", "Sell II", "Minm", "Rock", "Buy", "Next Buy", "Cur", "Lead", "Stock", ""].map(
+              {["Article", "Description", "UOM", "SPN", "Engine Model", "Configuration", "Specs", "Sell", "Sell II", "Minm", "Rock", "Buy", "Next Buy", "Cur", "Lead", "Available Stock", ""].map(
                 (h) => (
                   <th key={h} className="px-2 py-2">
                     {h}
@@ -200,6 +200,9 @@ export default function PriceList() {
                 <td className="px-2 py-1">{row.description}</td>
                 <td className="px-2 py-1">{row.uom}</td>
                 <td className="px-2 py-1 font-mono">{row.spn}</td>
+                <td className="px-2 py-1">{row.model || "—"}</td>
+                <td className="px-2 py-1">{row.config || "—"}</td>
+                <td className="px-2 py-1">{row.specs || "—"}</td>
                 <td className="px-2 py-1">{money(row.sellPrice)}</td>
                 <td className="px-2 py-1">{money(row.sellIi)}</td>
                 <td className="px-2 py-1">{money(row.minm)}</td>

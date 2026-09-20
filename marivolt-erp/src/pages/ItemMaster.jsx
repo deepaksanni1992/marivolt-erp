@@ -266,6 +266,15 @@ export default function ItemMaster() {
     queryFn: () => apiGet(`/price-list/${encodeURIComponent(selectedArticle)}`),
     retry: false,
   });
+  const manSalesSnapshotEnabled = Boolean(
+    selectedArticle && isManBrandItem(item) && !canManageManPrice && can("SALES", "create")
+  );
+  const { data: manSalesSnapshot } = useQuery({
+    queryKey: ["man-rfq-item-snapshot", selectedArticle],
+    enabled: manSalesSnapshotEnabled,
+    queryFn: () => apiGet(`/man-rfq/items/${encodeURIComponent(selectedArticle)}`),
+    retry: false,
+  });
 
   const saveItem = useMutation({
     mutationFn: () => {
@@ -989,9 +998,18 @@ export default function ItemMaster() {
               <div className="space-y-3 text-sm">
                 <p className="text-slate-600">
                   MAN selling prices are managed on the Price List. Item Master remains one row per Article; SPN is not unique.
+                  Engine Model, Configuration and specs come from this Item Master record.
                 </p>
                 {canManageManPrice ? (
                   <>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <div>Article: {item.article || selectedArticle || "—"}</div>
+                      <div>SPN: {item.spn || manPrice?.spn || "—"}</div>
+                      <div>Engine Model: {item.model || "—"}</div>
+                      <div>Configuration: {item.config || "—"}</div>
+                      <div>UOM: {manPrice?.uom || item.uom || "—"}</div>
+                      <div>Available stock: {manPrice?.availableQty ?? "—"}</div>
+                    </div>
                     {manPrice ? (
                       <div className="grid gap-2 md:grid-cols-2">
                         <div>Sell price: {manPrice.sellPrice ?? "—"}</div>
@@ -1003,7 +1021,6 @@ export default function ItemMaster() {
                         <div>Currency: {manPrice.currency || "—"}</div>
                         <div>Lead time: {manPrice.leadTime || "—"}</div>
                         <div>Revision: {manPrice.revision}</div>
-                        <div>UOM: {manPrice.uom || item.uom || "—"}</div>
                       </div>
                     ) : (
                       <p className="text-slate-500">No current MAN price-list record for this Article yet.</p>
@@ -1012,6 +1029,20 @@ export default function ItemMaster() {
                       Open MAN Price List
                     </Link>
                   </>
+                ) : manSalesSnapshot ? (
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <div>Article: {manSalesSnapshot.article || item.article || "—"}</div>
+                    <div>SPN: {manSalesSnapshot.spn || item.spn || "—"}</div>
+                    <div>Engine Model: {manSalesSnapshot.engineModel || item.model || "—"}</div>
+                    <div>Configuration: {manSalesSnapshot.configuration || item.config || "—"}</div>
+                    <div>UOM: {manSalesSnapshot.uom || item.uom || "—"}</div>
+                    <div>Sell price: {manSalesSnapshot.prices?.sellPrice ?? "—"}</div>
+                    <div>Sell II: {manSalesSnapshot.prices?.sellIi ?? "—"}</div>
+                    <div>Minm: {manSalesSnapshot.prices?.minm ?? "—"}</div>
+                    <div>Rock: {manSalesSnapshot.prices?.rock ?? "—"}</div>
+                    <div>Available stock: {manSalesSnapshot.availableQty ?? "—"}</div>
+                    <div>Lead time: {manSalesSnapshot.leadTime || "—"}</div>
+                  </div>
                 ) : (
                   <p className="rounded-lg border bg-slate-50 p-3 text-slate-600">
                     Purchase prices and price-list management are Admin / Super Admin only. Use Sales → MAN RFQ / Quotation for permitted selling tiers.
