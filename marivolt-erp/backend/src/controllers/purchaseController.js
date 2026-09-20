@@ -17,7 +17,7 @@ import { nextGrnNo } from "../services/grnNumberService.js";
 import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js";
 import { listAsnsForPurchaseOrder, getActiveAsnQtyByPoLine, assertPoHasNoActiveAsns } from "../services/asnService.js";
 import { AsnError, validatePoLinesAgainstActiveAsn } from "../utils/asnRules.js";
-import { escapeRegex } from "../utils/documentSearch.js";
+import { buildPurchaseOrderListFilter } from "../utils/purchaseOrderListFilter.js";
 import {
   calcPoDiscountTotal,
   calcPoGrandTotal,
@@ -215,31 +215,15 @@ export async function listPurchaseOrders(req, res) {
     const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50));
     const skip = (page - 1) * limit;
-    const filter = withCompany(req);
-    if (req.query.status) filter.status = req.query.status;
-    if (req.query.approvalStatus) filter.approvalStatus = String(req.query.approvalStatus).trim().toUpperCase();
-    if (req.query.supplierName) {
-      filter.supplierName = new RegExp(String(req.query.supplierName).trim(), "i");
-    }
-    const q = String(req.query.q || req.query.search || "").trim().slice(0, 80);
-    if (q) {
-      const re = new RegExp(escapeRegex(q), "i");
-      filter.$or = [
-        { poNo: re },
-        { poNumber: re },
-        { supplierName: re },
-        { "lines.article": re },
-        { "lines.itemCode": re },
-        { "lines.partNumber": re },
-      ];
-    }
+    const filter = buildPurchaseOrderListFilter(req.companyId, req.query);
     const [rows, total] = await Promise.all([
       PurchaseOrder.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       PurchaseOrder.countDocuments(filter),
     ]);
     res.json({ items: rows, total, page, limit });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    const status = Number(err.statusCode) || 500;
+    res.status(status).json({ message: err.message, code: err.code });
   }
 }
 

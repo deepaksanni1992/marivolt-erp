@@ -141,6 +141,7 @@ const files = [
   "src/utils/authAdminPolicy.js",
   "src/utils/corsAllowlist.js",
   "src/utils/documentSearch.js",
+  "src/utils/purchaseOrderListFilter.js",
   "src/utils/eligibleDocumentSearch.js",
   "src/utils/customsGrnFieldModel.js",
   "src/utils/customsBoeAverage.js",

@@ -1025,6 +1025,8 @@ export default function Purchase({ procurementEmbed = false } = {}) {
 
   const [poFilterSupplier, setPoFilterSupplier] = useState("");
   const [poFilterStatus, setPoFilterStatus] = useState("");
+  const [poFilterPoNumber, setPoFilterPoNumber] = useState("");
+  const [poFilterArticle, setPoFilterArticle] = useState("");
   const [supSearch, setSupSearch] = useState("");
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -1092,11 +1094,21 @@ export default function Purchase({ procurementEmbed = false } = {}) {
   }
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["purchaseOrders", page, poFilterSupplier, poFilterStatus, auth?.company?.id],
+    queryKey: [
+      "purchaseOrders",
+      page,
+      poFilterSupplier,
+      poFilterStatus,
+      poFilterPoNumber,
+      poFilterArticle,
+      auth?.company?.id,
+    ],
     queryFn: () =>
       apiGetWithQuery("/purchase-orders", {
         page,
         limit,
+        poNumber: poFilterPoNumber.trim() || undefined,
+        article: poFilterArticle.trim() || undefined,
         supplierName: poFilterSupplier.trim() || undefined,
         status: poFilterStatus || undefined,
       }),
@@ -1459,6 +1471,29 @@ export default function Purchase({ procurementEmbed = false } = {}) {
   const rows = data?.items ?? [];
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / limit));
+  const poFiltersActive = Boolean(
+    poFilterPoNumber.trim() || poFilterArticle.trim() || poFilterSupplier.trim() || poFilterStatus
+  );
+
+  function applyPoRegisterFilters() {
+    setPage(1);
+    qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
+  }
+
+  function clearPoRegisterFilters() {
+    setPoFilterPoNumber("");
+    setPoFilterArticle("");
+    setPoFilterSupplier("");
+    setPoFilterStatus("");
+    setPage(1);
+  }
+
+  function onPoFilterKeyDown(e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      applyPoRegisterFilters();
+    }
+  }
 
   const supplierCount = suppliersAll?.items?.length ?? "—";
   const showOrdersSection = procurementEmbed || tab === "orders";
@@ -1774,16 +1809,18 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                 className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
                 onClick={exportPoCsv}
                 disabled={!rows.length}
+                title="Exports the current page of filtered results"
               >
-                Export CSV
+                Export CSV (this page)
               </button>
               <button
                 type="button"
                 className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 hover:bg-gray-50"
                 onClick={exportPoPdf}
                 disabled={!rows.length}
+                title="Exports the current page of filtered results"
               >
-                Export PDF
+                Export PDF (this page)
               </button>
               <button
                 type="button"
@@ -1803,11 +1840,28 @@ export default function Purchase({ procurementEmbed = false } = {}) {
             </div>
           </div>
 
-          <div className="grid gap-3 border-b border-gray-100 px-4 py-3 sm:grid-cols-3">
-            <FormField label="Filter supplier">
+          <div className="grid gap-3 border-b border-gray-100 px-4 py-3 sm:grid-cols-2 lg:grid-cols-6">
+            <FormField label="PO Number">
+              <TextInput
+                value={poFilterPoNumber}
+                onChange={(e) => setPoFilterPoNumber(e.target.value)}
+                onKeyDown={onPoFilterKeyDown}
+                placeholder="Full or partial PO number…"
+              />
+            </FormField>
+            <FormField label="Article">
+              <TextInput
+                value={poFilterArticle}
+                onChange={(e) => setPoFilterArticle(e.target.value)}
+                onKeyDown={onPoFilterKeyDown}
+                placeholder="Exact Article code…"
+              />
+            </FormField>
+            <FormField label="Supplier">
               <TextInput
                 value={poFilterSupplier}
                 onChange={(e) => setPoFilterSupplier(e.target.value)}
+                onKeyDown={onPoFilterKeyDown}
                 placeholder="Name contains…"
               />
             </FormField>
@@ -1826,16 +1880,20 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                 <option value="CANCELLED">CANCELLED</option>
               </select>
             </FormField>
-            <div className="flex items-end">
+            <div className="flex items-end gap-2 sm:col-span-2">
               <button
                 type="button"
                 className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-medium"
-                onClick={async () => {
-                  setPage(1);
-                  qc.invalidateQueries({ queryKey: ["purchaseOrders"] });
-                }}
+                onClick={applyPoRegisterFilters}
               >
                 Apply filters
+              </button>
+              <button
+                type="button"
+                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium"
+                onClick={clearPoRegisterFilters}
+              >
+                Clear filters
               </button>
             </div>
           </div>
@@ -1862,7 +1920,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                 ) : rows.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-4 py-10 text-center text-gray-500">
-                      No purchase orders.
+                      No purchase orders found for the selected filters.
                     </td>
                   </tr>
                 ) : (
@@ -1968,6 +2026,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
           <div className="flex items-center justify-between border-t border-gray-100 px-4 py-2 text-xs text-gray-600">
             <span>
               Page {page}/{totalPages} · {total} POs
+              {poFiltersActive ? " matching filters" : ""}
             </span>
             <div className="flex gap-2">
               <button
