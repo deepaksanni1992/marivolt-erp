@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
 import User from "../models/User.js";
 import Company from "../models/Company.js";
+import Role from "../models/Role.js";
 import { requireAuth, requireCompanyContext, requireRole } from "../middleware/auth.js";
 import { recordActivity } from "../services/userActivityService.js";
 import { authRateLimitersFromEnv } from "../middleware/rateLimit.js";
@@ -12,6 +13,7 @@ import {
   assertAssignableRole,
   assignableRolesForActor,
   pickUserCreateBody,
+  requestedCustomRoleIds,
   ROLE_DISPLAY_LABELS,
   resolveCreatePassword,
 } from "../utils/authAdminPolicy.js";
@@ -306,6 +308,38 @@ router.post(
         defaultCompany = new mongoose.Types.ObjectId(companyIds[0]);
       }
 
+      let customRoleIds = [];
+      try {
+        customRoleIds = requestedCustomRoleIds(picked.roleIds);
+      } catch (policyErr) {
+        return res.status(policyErr.statusCode || 400).json({
+          message: policyErr.message,
+          code: policyErr.code || "INVALID_ROLE",
+        });
+      }
+      if (customRoleIds.length) {
+        const invalidId = customRoleIds.find((id) => !mongoose.Types.ObjectId.isValid(id));
+        if (invalidId) {
+          return res.status(400).json({ message: "Custom role is invalid", code: "INVALID_ROLE" });
+        }
+        const docs = await Role.find({
+          _id: { $in: customRoleIds },
+          companyId: req.companyId,
+          isSystem: false,
+          isActive: true,
+        })
+          .select("_id")
+          .lean();
+        if (docs.length !== customRoleIds.length) {
+          return res.status(400).json({
+            message: "Custom role was not found for this company",
+            code: "INVALID_ROLE",
+          });
+        }
+        customRoleIds = docs.map((d) => d._id);
+        role = "view_only";
+      }
+
       const passwordHash = await bcrypt.hash(password, 10);
       const isActive = picked.isActive === undefined ? true : Boolean(picked.isActive);
 
@@ -321,7 +355,7 @@ router.post(
         // Server-controlled: never accept TOTP / hashes / overrides from client.
         twoFactorEnabled: false,
         permissionOverrides: [],
-        roleIds: [],
+        roleIds: customRoleIds,
       });
 
       await recordActivity(req, {
@@ -337,6 +371,7 @@ router.post(
           role: user.role,
           companyIds,
           isActive: user.isActive,
+          roleIds: customRoleIds.map(String),
         },
       });
 
@@ -346,6 +381,7 @@ router.post(
         email: user.email,
         username: user.username || "",
         role: user.role,
+        roleIds: customRoleIds.map(String),
         allowedCompanies: companyIds,
         defaultCompany: defaultCompany ? String(defaultCompany) : null,
         isActive: user.isActive,
@@ -724,10 +760,11 @@ router.get("/users", requireAuth, requireCompanyContext, requireRole("super_admi
         : { allowedCompanies: req.companyId };
     const users = await User.find(filter)
       .select(
-        "name email username role allowedCompanies defaultCompany isActive lastLoginAt createdAt twoFactorEnabled twoFactorEnabledAt"
+        "name email username role roleIds allowedCompanies defaultCompany isActive lastLoginAt createdAt twoFactorEnabled twoFactorEnabledAt"
       )
       .populate("allowedCompanies", "name code")
       .populate("defaultCompany", "name code")
+      .populate("roleIds", "code name isActive")
       .sort({ createdAt: -1 });
     res.json(users);
   } catch (err) {

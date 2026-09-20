@@ -46,6 +46,7 @@ export const USER_CREATE_ALLOWED_BODY_FIELDS = Object.freeze([
   "allowedCompanies",
   "defaultCompanyId",
   "isActive",
+  "roleIds",
 ]);
 
 export const USER_CREATE_PROHIBITED_BODY_FIELDS = Object.freeze([
@@ -55,7 +56,6 @@ export const USER_CREATE_PROHIBITED_BODY_FIELDS = Object.freeze([
   "twoFactorEnabledAt",
   "twoFactorLastVerifiedAt",
   "permissionOverrides",
-  "roleIds",
   "allowedBranches",
   "allowedWarehouses",
   "createdBy",
@@ -226,6 +226,23 @@ export function pickUserCreateBody(body = {}) {
     if (key in raw) out[key] = raw[key];
   }
   return out;
+}
+
+/** Custom Role document ids from Create User. Empty means built-in role only. */
+export function requestedCustomRoleIds(raw) {
+  if (raw == null || raw === "") return [];
+  const arr = Array.isArray(raw) ? raw : [raw];
+  const ids = [];
+  for (const v of arr) {
+    const s = String(v || "").trim();
+    if (!s) continue;
+    if (ids.includes(s)) continue;
+    ids.push(s);
+  }
+  if (ids.length > 5) {
+    throw authPolicyError("INVALID_ROLE", "Too many custom roles", 400);
+  }
+  return ids;
 }
 
 export function resolveCreatePassword(picked) {

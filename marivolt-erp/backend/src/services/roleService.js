@@ -203,8 +203,12 @@ export async function resolvePermissions(req) {
         })
           .select("permissions code")
           .lean();
-        for (const doc of docs) {
-          merged = mergeMatrix(merged, permissionsFromRoleDoc(doc));
+        if (docs.length) {
+          // Assigned custom roles are the access list, not extras on top of Staff/View Only.
+          merged = buildMatrix({});
+          for (const doc of docs) {
+            merged = mergeMatrix(merged, permissionsFromRoleDoc(doc));
+          }
         }
       }
       if (user?.permissionOverrides?.length) {

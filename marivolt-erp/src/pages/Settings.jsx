@@ -1702,6 +1702,12 @@ function UsersTab() {
     enabled: showCreate,
   });
 
+  const { data: permissionRolesData } = useQuery({
+    queryKey: ["adminRoles", "createUser"],
+    queryFn: () => apiGet("/admin/roles"),
+    enabled: showCreate,
+  });
+
   const roleOptions = useMemo(() => {
     const roles = Array.isArray(rolesMeta?.roles) ? rolesMeta.roles : [];
     const labels = rolesMeta?.labels || {};
@@ -1716,6 +1722,11 @@ function UsersTab() {
     return items.filter((c) => c?.isActive !== false);
   }, [companiesData]);
 
+  const customPermissionRoles = useMemo(() => {
+    const items = permissionRolesData?.items || [];
+    return items.filter((r) => r && r.isSystem !== true && r.isActive !== false);
+  }, [permissionRolesData]);
+
   const reset2fa = useMutation({
     mutationFn: (userId) => apiPost(`/auth/users/${userId}/reset-2fa`),
     onSuccess: () => {
@@ -1729,6 +1740,22 @@ function UsersTab() {
       qc.invalidateQueries({ queryKey: ["authUsers"] });
     },
   });
+
+  const deleteUser = useMutation({
+    mutationFn: (userId) => apiDelete(`/auth/users/${userId}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["authUsers"] });
+    },
+  });
+
+  function userRoleLabel(u) {
+    const custom = (u.roleIds || [])
+      .map((r) => (typeof r === "object" ? r.name || r.code : ""))
+      .map((s) => String(s || "").trim())
+      .filter(Boolean);
+    if (custom.length) return custom.join(", ");
+    return roleDisplayLabel(u.role);
+  }
 
   function userLabel(u) {
     const name = String(u.name || "").trim();
@@ -1808,11 +1835,27 @@ function UsersTab() {
     });
   }
 
+  async function onDeleteUser(user) {
+    const label = userLabel(user);
+    if (
+      !(await confirmDialog(
+        `Delete login access for ${label}? This removes the account. They will not be able to sign in.`
+      ))
+    ) {
+      return;
+    }
+    deleteUser.mutate(user._id, {
+      onError: (err) => notify.error(err.message || "Delete failed"),
+      onSuccess: () => notify.success(`Deleted login for ${label}`),
+    });
+  }
+
   return (
     <div>
       <p className="mb-3 text-sm text-slate-600">
-        Create users for authorized admin roles, view company assignment and 2FA status, and reset Authenticator if
-        someone loses their phone. Secrets and QR codes are never shown here.
+        Create users for authorized admin roles. Choose a standard template, or a custom role from
+        Roles & Permissions (tick only the modules that user should have). Secrets and QR codes are
+        never shown here.
       </p>
       <div className="mb-3 flex flex-wrap justify-end gap-2">
         {showCreate ? (
@@ -1865,7 +1908,7 @@ function UsersTab() {
                     <div className="font-medium text-slate-800">{u.name || "—"}</div>
                     <div className="text-xs text-slate-500">{u.email || "—"}</div>
                   </Td>
-                  <Td>{roleDisplayLabel(u.role)}</Td>
+                  <Td>{userRoleLabel(u)}</Td>
                   <Td>{companyLabel(u.defaultCompany)}</Td>
                   <Td className="max-w-[220px] truncate" title={formatCompanies(u.allowedCompanies)}>
                     {formatCompanies(u.allowedCompanies)}
@@ -1878,23 +1921,36 @@ function UsersTab() {
                   </Td>
                   <Td>{fmtDate(u.lastLoginAt)}</Td>
                   <Td>
-                    {u.twoFactorEnabled ? (
-                      <button
-                        type="button"
-                        className="text-xs font-medium text-rose-700 underline disabled:opacity-50"
-                        disabled={reset2fa.isPending || String(u._id) === String(auth?.user?.id)}
-                        title={
-                          String(u._id) === String(auth?.user?.id)
-                            ? "Use Security in your profile menu to manage your own 2FA"
-                            : "Reset this user's 2FA"
-                        }
-                        onClick={() => onReset2fa(u)}
-                      >
-                        Reset 2FA
-                      </button>
-                    ) : (
-                      <span className="text-xs text-slate-400">—</span>
-                    )}
+                    <div className="flex flex-col items-start gap-1">
+                      {u.twoFactorEnabled ? (
+                        <button
+                          type="button"
+                          className="text-xs font-medium text-rose-700 underline disabled:opacity-50"
+                          disabled={reset2fa.isPending || String(u._id) === String(auth?.user?.id)}
+                          title={
+                            String(u._id) === String(auth?.user?.id)
+                              ? "Use Security in your profile menu to manage your own 2FA"
+                              : "Reset this user's 2FA"
+                          }
+                          onClick={() => onReset2fa(u)}
+                        >
+                          Reset 2FA
+                        </button>
+                      ) : null}
+                      {String(u._id) === String(auth?.user?.id) ? (
+                        <span className="text-xs text-slate-400">—</span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="text-xs font-medium text-rose-700 underline disabled:opacity-50"
+                          disabled={deleteUser.isPending}
+                          title="Remove this user's login"
+                          onClick={() => onDeleteUser(u)}
+                        >
+                          Delete login
+                        </button>
+                      )}
+                    </div>
                   </Td>
                 </tr>
               ))
@@ -1937,12 +1993,28 @@ function UsersTab() {
                 onChange={(e) => setForm((p) => ({ ...p, role: e.target.value }))}
                 data-testid="create-user-role"
               >
-                {roleOptions.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
+                <optgroup label="Standard templates">
+                  {roleOptions.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </optgroup>
+                {customPermissionRoles.length ? (
+                  <optgroup label="Custom roles (Roles & Permissions)">
+                    {customPermissionRoles.map((r) => (
+                      <option key={String(r._id)} value={`custom:${r._id}`}>
+                        {r.code} — {r.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
               </SelectInput>
+              <p className="mt-1 text-xs text-slate-500">
+                {customPermissionRoles.length
+                  ? "A custom role uses only the modules and actions you ticked under Roles & Permissions."
+                  : "To define limited access, open Roles & Permissions, click New Role, tick only the modules this user needs, then create the user and pick that role here."}
+              </p>
             </FormField>
           </div>
 

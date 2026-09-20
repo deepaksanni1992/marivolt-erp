@@ -11,6 +11,8 @@ import {
   assertAssignableCompanies,
   assertAssignableRole,
   assignableRolesForActor,
+  pickUserCreateBody,
+  requestedCustomRoleIds,
   ROLE_DISPLAY_LABELS,
   resolveCreatePassword,
 } from "../src/utils/authAdminPolicy.js";
@@ -115,6 +117,26 @@ run("allowedCompanies required; defaultCompany must belong to allowed set (UI)",
   assert.equal(payload.defaultCompanyId, "c1");
   assert.equal(payload.temporaryPassword, "abcdefghij");
   assert.ok(!("passwordHash" in payload));
+  assert.ok(!("roleIds" in payload));
+});
+
+run("Create User can attach a custom Roles & Permissions role", () => {
+  const custom = validateCreateUserForm({
+    email: "deepa@example.com",
+    temporaryPassword: "abcdefghij",
+    role: "custom:64aaaaaaaaaaaaaaaaaaaaaa",
+    allowedCompanies: ["c1"],
+    defaultCompanyId: "c1",
+  });
+  assert.equal(custom.ok, true);
+  assert.equal(custom.role, "view_only");
+  assert.equal(custom.customRoleId, "64aaaaaaaaaaaaaaaaaaaaaa");
+  const payload = buildCreateUserPayload({ name: "Deepa", username: "deepa", isActive: true }, custom);
+  assert.equal(payload.role, "view_only");
+  assert.deepEqual(payload.roleIds, ["64aaaaaaaaaaaaaaaaaaaaaa"]);
+  const picked = pickUserCreateBody(payload);
+  assert.deepEqual(picked.roleIds, ["64aaaaaaaaaaaaaaaaaaaaaa"]);
+  assert.deepEqual(requestedCustomRoleIds(picked.roleIds), ["64aaaaaaaaaaaaaaaaaaaaaa"]);
 });
 
 run("Password min length enforced", () => {
@@ -154,6 +176,11 @@ run("Create User UI visible to Admin; hidden from store_operator", () => {
   assert.match(settings, /DeploymentTab/);
   assert.match(settings, /apiGet\("\/version"\)/);
   assert.match(settings, /Store Operator|roleDisplayLabel|assignable-roles/);
+  assert.match(settings, /Custom roles \(Roles & Permissions\)/);
+  assert.match(settings, /custom:\$\{r\._id\}/);
+  const authSrc = fs.readFileSync(path.join(backendRoot, "src/routes/authRoutes.js"), "utf8");
+  assert.match(authSrc, /requestedCustomRoleIds/);
+  assert.match(authSrc, /roleIds: customRoleIds/);
 });
 
 run("GET /api/version returns non-secret deployment metadata", () => {

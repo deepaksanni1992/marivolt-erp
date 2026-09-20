@@ -40,9 +40,15 @@ export function validateCreateUserForm(form) {
   const password = String(form?.temporaryPassword || form?.password || "");
   if (password.length < 10) errors.push("Temporary password must be at least 10 characters");
 
-  const role = String(form?.role || "")
-    .toLowerCase()
+  const roleRaw = String(form?.role || "")
     .trim();
+  let role = roleRaw.toLowerCase();
+  let customRoleId = "";
+  if (roleRaw.startsWith("custom:")) {
+    customRoleId = roleRaw.slice("custom:".length).trim();
+    role = "view_only";
+    if (!customRoleId) errors.push("Select a custom role");
+  }
   if (!role) errors.push("Role is required");
 
   const allowed = Array.isArray(form?.allowedCompanies)
@@ -59,15 +65,15 @@ export function validateCreateUserForm(form) {
     errors.push("Default company is required");
   }
 
-  return { ok: errors.length === 0, errors, allowed, email, role, password, defaultCompany };
+  return { ok: errors.length === 0, errors, allowed, email, role, password, defaultCompany, customRoleId };
 }
 
-export function buildCreateUserPayload(form, { allowed, email, role, password, defaultCompany }) {
+export function buildCreateUserPayload(form, { allowed, email, role, password, defaultCompany, customRoleId }) {
   const username = String(form?.username || "")
     .toLowerCase()
     .trim();
   const name = String(form?.name || "").trim();
-  return {
+  const payload = {
     name,
     email,
     ...(username ? { username } : {}),
@@ -78,6 +84,8 @@ export function buildCreateUserPayload(form, { allowed, email, role, password, d
     defaultCompanyId: defaultCompany,
     isActive: form?.isActive !== false,
   };
+  if (customRoleId) payload.roleIds = [customRoleId];
+  return payload;
 }
 
 /** Whether Settings → Users Create User controls should render. */
