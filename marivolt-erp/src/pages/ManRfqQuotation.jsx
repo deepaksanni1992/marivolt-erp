@@ -32,6 +32,27 @@ function newKey() {
   return `man-rfq-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function roundQuotationMoney(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+function quotationLineTotal(unitPrice, qty) {
+  return roundQuotationMoney(roundQuotationMoney(unitPrice) * (Number(qty) || 0));
+}
+
+function formatQuotationMoney(value) {
+  if (value == null || value === "") return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  const rounded = roundQuotationMoney(n);
+  const negative = rounded < 0;
+  const [whole, frac] = Math.abs(rounded).toFixed(2).split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${negative ? "-" : ""}${grouped}.${frac}`;
+}
+
 function todayIsoDate() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -670,8 +691,10 @@ export default function ManRfqQuotation() {
                           })}
                         </select>
                       </td>
-                      <td className="px-2 py-1">{unit ?? "—"}</td>
-                      <td className="px-2 py-1">{unit != null ? Number(unit) * Number(ln.qty || 0) : "—"}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">{unit != null ? formatQuotationMoney(unit) : "—"}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">
+                        {unit != null ? formatQuotationMoney(quotationLineTotal(unit, ln.qty)) : "—"}
+                      </td>
                       <td className="px-2 py-1">
                         <StatusBadge status={displayStatus(ln)} />
                       </td>

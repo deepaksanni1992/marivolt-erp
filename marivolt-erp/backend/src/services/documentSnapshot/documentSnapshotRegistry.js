@@ -12,6 +12,7 @@ import {
   computeQuotationConsumption,
 } from "./quotationConsumptionService.js";
 import { buildConsumptionBaseline } from "./oaCreateValidation.js";
+import { quotationLineTotal, roundQuotationMoney } from "../../utils/manPriceList.js";
 
 /** Statuses excluded from quotation search when no explicit status filter is provided. */
 const SEARCH_EXCLUDED_STATUSES = ["CANCELLED", "REJECTED", "EXPIRED"];
@@ -110,11 +111,11 @@ export const COPY_ROUTE_REGISTRY = {
         alreadyOrderedQty,
         remainingQty,
         orderedQty: remainingQty,
-        quotedPrice: price,
-        orderedPrice: price,
+        quotedPrice: roundQuotationMoney(price),
+        orderedPrice: roundQuotationMoney(price),
         qty,
-        price,
-        totalPrice: remainingQty * price,
+        price: roundQuotationMoney(price),
+        totalPrice: quotationLineTotal(price, remainingQty),
         discount: 0,
         tax: 0,
         remarks: sourceLine.remarks || "",

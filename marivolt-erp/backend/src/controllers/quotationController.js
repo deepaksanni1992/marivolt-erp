@@ -19,7 +19,12 @@ import {
   quotationCanBeDeleted,
   quotationDeleteBlockReason,
 } from "../utils/salesAdminAccess.js";
-import { sanitizeCustomerQuotationPrint, redactQuotationForSalesApi } from "../utils/manPriceList.js";
+import {
+  quotationLineTotal,
+  redactQuotationForSalesApi,
+  roundQuotationMoney,
+  sanitizeCustomerQuotationPrint,
+} from "../utils/manPriceList.js";
 import {
   buildOaWorkingCopyFromQuotation,
   buildQuotationSearchFilterForOA,
@@ -83,8 +88,8 @@ function normalizeLines(lines = []) {
     .map((line) => {
       const serialNo = Number(line.serialNo) || 0;
       const qty = Number(line.qty) || 0;
-      const price = Number(line.price ?? line.salePrice ?? line.unitPrice) || 0;
-      const totalPrice = qty * price;
+      const price = roundQuotationMoney(Number(line.price ?? line.salePrice ?? line.unitPrice) || 0);
+      const totalPrice = quotationLineTotal(price, qty);
       const snapshot = {};
       if (line.customerPartNo != null) snapshot.customerPartNo = String(line.customerPartNo || "");
       if (line.customerEngineModel != null) snapshot.customerEngineModel = String(line.customerEngineModel || "");
@@ -122,22 +127,27 @@ function normalizeLines(lines = []) {
 
 function recalcQuotationTotals(doc) {
   doc.lines = normalizeLines(doc.lines);
-  doc.subTotal = doc.lines.reduce((acc, line) => acc + (Number(line.totalPrice) || 0), 0);
+  const subTotal = roundQuotationMoney(
+    doc.lines.reduce((acc, line) => acc + (Number(line.totalPrice) || 0), 0)
+  );
+  doc.subTotal = subTotal;
   const discountType = String(doc.discountType || "NONE").toUpperCase();
   const discountValue = Math.max(0, Number(doc.discountValue) || 0);
   doc.discountType = ["PERCENT", "FLAT"].includes(discountType) ? discountType : "NONE";
   doc.discountValue = discountValue;
   if (doc.discountType === "PERCENT") {
-    doc.discountTotal = Math.min(doc.subTotal, (doc.subTotal * discountValue) / 100);
+    doc.discountTotal = roundQuotationMoney(Math.min(subTotal, (subTotal * discountValue) / 100));
   } else if (doc.discountType === "FLAT") {
-    doc.discountTotal = Math.min(doc.subTotal, discountValue);
+    doc.discountTotal = roundQuotationMoney(Math.min(subTotal, discountValue));
   } else {
     doc.discountTotal = 0;
   }
   doc.taxTotal = 0;
-  doc.packingCost = Math.max(0, Number(doc.packingCost) || 0);
-  doc.clearanceCost = Math.max(0, Number(doc.clearanceCost) || 0);
-  doc.grandTotal = doc.subTotal - doc.discountTotal + doc.packingCost + doc.clearanceCost;
+  doc.packingCost = roundQuotationMoney(Math.max(0, Number(doc.packingCost) || 0));
+  doc.clearanceCost = roundQuotationMoney(Math.max(0, Number(doc.clearanceCost) || 0));
+  doc.grandTotal = roundQuotationMoney(
+    subTotal - doc.discountTotal + doc.taxTotal + doc.packingCost + doc.clearanceCost
+  );
 }
 
 async function resolveCustomerFromMaster(req, payload = {}) {

@@ -122,20 +122,20 @@ export function toSalesMatchPrices(price, { canRock = false } = {}) {
     revision: Number(price.revision) || 0,
     currency: price.currency || "",
     leadTime: price.leadTime || "",
-    sellPrice: price.sellPrice ?? null,
-    sellIi: price.sellIi ?? null,
-    minm: price.minm ?? null,
-    rock: canRock ? price.rock ?? null : null,
+    sellPrice: roundNullableMoney(price.sellPrice),
+    sellIi: roundNullableMoney(price.sellIi),
+    minm: roundNullableMoney(price.minm),
+    rock: canRock ? roundNullableMoney(price.rock) : null,
   };
 }
 
 export function redactManRfqMatchResponse(payload = {}) {
-  return stripForbiddenSalesKeys(payload, { keepPriceListRevision: true });
+  return roundQuotationMoneyFields(stripForbiddenSalesKeys(payload, { keepPriceListRevision: true }));
 }
 
 export function redactQuotationForSalesApi(row = {}) {
   if (!row || typeof row !== "object") return row;
-  return stripForbiddenSalesKeys(row, { keepPriceListRevision: false });
+  return roundQuotationMoneyFields(stripForbiddenSalesKeys(row, { keepPriceListRevision: false }));
 }
 
 export const MAN_PRICE_LIST_HEADERS = Object.freeze([
@@ -426,10 +426,62 @@ export function parseOptionalMoney(raw) {
   return { present: true, value, error: "" };
 }
 
+const QUOTATION_MONEY_FIELD_KEYS = new Set([
+  "price",
+  "totalPrice",
+  "unitPrice",
+  "subTotal",
+  "discountTotal",
+  "taxTotal",
+  "packingCost",
+  "clearanceCost",
+  "grandTotal",
+  "sellPrice",
+  "sellIi",
+  "minm",
+  "rock",
+]);
+
 export function roundQuotationMoney(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
-  return Math.round(n * 100) / 100;
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+export function quotationLineTotal(unitPrice, qty) {
+  const unit = roundQuotationMoney(unitPrice);
+  const q = Number(qty);
+  if (!Number.isFinite(q)) return 0;
+  return roundQuotationMoney(unit * q);
+}
+
+export function formatQuotationMoney(value) {
+  const rounded = roundQuotationMoney(value);
+  const negative = rounded < 0;
+  const [whole, frac] = Math.abs(rounded).toFixed(2).split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${negative ? "-" : ""}${grouped}.${frac}`;
+}
+
+function roundNullableMoney(value) {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return roundQuotationMoney(n);
+}
+
+export function roundQuotationMoneyFields(value) {
+  if (Array.isArray(value)) return value.map(roundQuotationMoneyFields);
+  if (!isRedactableObject(value)) return value;
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (QUOTATION_MONEY_FIELD_KEYS.has(k)) {
+      out[k] = v == null || v === "" ? v : roundQuotationMoney(v);
+    } else {
+      out[k] = roundQuotationMoneyFields(v);
+    }
+  }
+  return out;
 }
 
 export function sanitizeCsvFormula(value) {
@@ -756,7 +808,7 @@ export function sanitizeCustomerQuotationPrint(row = {}) {
     manRfqModelMode: _mode,
     ...header
   } = row;
-  return {
+  return roundQuotationMoneyFields({
     ...header,
     internalNotes: "",
     manRfqIdempotencyKey: "",
@@ -769,7 +821,7 @@ export function sanitizeCustomerQuotationPrint(row = {}) {
       }
       return out;
     }),
-  };
+  });
 }
 
 export function selectTierUnitPrice(record, tier) {

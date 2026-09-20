@@ -15,6 +15,7 @@ import {
   buildConsumptionBaseline,
   detectStaleConsumption,
 } from "./oaCreateValidation.js";
+import { quotationLineTotal, roundQuotationMoney } from "../../utils/manPriceList.js";
 
 export { copyDocument, getCopyRoute, loadSourceDocument };
 export {
@@ -60,12 +61,12 @@ export function normalizeOALinesFromWorkingCopy(lines = []) {
       description,
       uom,
       qty: orderedQty,
-      price: orderedPrice,
+      price: roundQuotationMoney(orderedPrice),
       quotedQty,
       orderedQty,
-      quotedPrice,
-      orderedPrice,
-      totalPrice: orderedQty * orderedPrice,
+      quotedPrice: quotedPrice == null ? quotedPrice : roundQuotationMoney(quotedPrice),
+      orderedPrice: roundQuotationMoney(orderedPrice),
+      totalPrice: quotationLineTotal(orderedPrice, orderedQty),
       lineDiscount: Math.max(0, Number(line.discount ?? line.discountPct ?? line.lineDiscount) || 0),
       lineTax: Math.max(0, Number(line.tax ?? line.taxPct ?? line.lineTax) || 0),
       remarks: String(line.remarks || ""),
@@ -79,7 +80,7 @@ export function normalizeOALinesFromWorkingCopy(lines = []) {
   return included.map((line, idx) => ({
     ...line,
     serialNo: idx + 1,
-    totalPrice: line.qty * line.price,
+    totalPrice: quotationLineTotal(line.price, line.qty),
   }));
 }
 

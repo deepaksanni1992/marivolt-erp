@@ -46,7 +46,9 @@ import {
   selectedManRfqCandidate,
   uniqueManEngineModels,
   rowHasDuplicateArticle,
+  quotationLineTotal,
   roundQuotationMoney,
+  formatQuotationMoney,
   sanitizeCsvFormula,
   sanitizeCustomerQuotationPrint,
   shouldSkipUnchangedImport,
@@ -557,6 +559,21 @@ run("Sales match payloads keep numeric revision and drop nested price-list ids",
 run("Quotation money rounding uses 2 dp; source precision parse preserved", () => {
   assert.equal(roundQuotationMoney(10.126), 10.13);
   assert.equal(parseOptionalMoney("10.125").value, 10.125);
+  assert.equal(quotationLineTotal(109.76, 12), 1317.12);
+  assert.equal(quotationLineTotal(459.2, 5), 2296);
+  assert.equal(roundQuotationMoney(quotationLineTotal(109.76, 12) + quotationLineTotal(459.2, 5)), 3613.12);
+  assert.equal(formatQuotationMoney(109.76 * 12), "1,317.12");
+  assert.equal(formatQuotationMoney(459.2), "459.20");
+  assert.equal(formatQuotationMoney(2296), "2,296.00");
+  assert.equal(formatQuotationMoney(109.76), "109.76");
+  const visible = JSON.stringify({
+    price: roundQuotationMoney(109.76),
+    totalPrice: quotationLineTotal(109.76, 12),
+    subTotal: 3613.12,
+    grandTotal: quotationLineTotal(109.76, 12),
+  });
+  assert.doesNotMatch(visible, /1317\.1200000000001/);
+  assert.match(visible, /1317\.12/);
 });
 
 run("Public selling prices do not include Buy", () => {
@@ -650,6 +667,9 @@ run("Server routes enforce PRICE_LIST on management/export and SALES.create on R
   assert.doesNotMatch(rfqPage, /ESN \/ vessel \/ plant/);
   assert.doesNotMatch(rfqPage, /candidates\?\.\[0\]/);
   assert.doesNotMatch(rfqPage, /r\.candidates\?\.\[0\]/);
+  assert.match(rfqPage, /formatQuotationMoney/);
+  assert.match(rfqPage, /quotationLineTotal/);
+  assert.doesNotMatch(rfqPage, /Number\(unit\) \* Number\(ln\.qty/);
   const manUtil = fs.readFileSync(path.join(srcRoot, "utils", "manPriceList.js"), "utf8");
   assert.match(manUtil, /MAN_RFQ_MODEL_REQUIRED/);
   assert.match(manUtil, /MAN_RFQ_MODEL_MODE_INVALID/);
@@ -666,6 +686,9 @@ run("Server routes enforce PRICE_LIST on management/export and SALES.create on R
   assert.match(quotation, /persistNewQuotation/);
   assert.match(quotation, /sanitizeCustomerQuotationPrint/);
   assert.match(quotation, /redactQuotationForSalesApi/);
+  assert.match(quotation, /quotationLineTotal/);
+  assert.match(quotation, /roundQuotationMoney/);
+  assert.doesNotMatch(quotation, /const totalPrice = qty \* price/);
   assert.match(quotation, /delete body\.manRfqIdempotencyKey/);
   assert.match(itemModel, /partNumber/);
   assert.match(plService, /spn: cellIsBlank\(data\["Part no"\]\)/);

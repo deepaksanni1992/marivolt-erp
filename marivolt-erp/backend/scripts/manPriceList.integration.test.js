@@ -24,6 +24,8 @@ import {
   displayedItemMasterSpn,
   displayedSupplier1,
   MAN_PRICE_LIST_HEADERS,
+  redactQuotationForSalesApi,
+  sanitizeCustomerQuotationPrint,
 } from "../src/utils/manPriceList.js";
 import { deriveAvailableQty } from "../src/services/stockExpectedBuckets.js";
 import { getStockBalance } from "../src/services/stockService.js";
@@ -1135,6 +1137,116 @@ await run("Create revalidates requested Configuration and Specifications indepen
   assert.equal(optionalOk.quotation.lines[0].config, "Std");
   assert.equal(optionalOk.quotation.lines[0].specifications, "NBR");
   assert.equal(optionalOk.quotation.lines[0].engineModel, "21/31");
+});
+
+await seedPricedMan("MONEY76", {
+  spn: "MONEY-76",
+  techSpn: "MONEY-76",
+  model: "21/31",
+  description: "Float A",
+  sellPrice: 109.76,
+});
+await seedPricedMan("MONEY20", {
+  spn: "MONEY-20",
+  techSpn: "MONEY-20",
+  model: "21/31",
+  description: "Float B",
+  sellPrice: 459.2,
+});
+
+await run("RFQ and draft quotation money rounds 109.76×12 and 459.20×5 without float tails", async () => {
+  const matched = await matchRfqLines(salesReq, {
+    lines: [
+      { partNo: "MONEY-76", uom: "PCS", qty: 12 },
+      { partNo: "MONEY-20", uom: "PCS", qty: 5 },
+    ],
+    headerMode: "SELECTED",
+    headerModel: "21/31",
+  });
+  assert.equal(matched.lines[0].unitPrice, 109.76);
+  assert.equal(matched.lines[1].unitPrice, 459.2);
+  assert.doesNotMatch(JSON.stringify(matched), /1317\.1200000000001/);
+
+  const created = await createQuotationFromManRfq(salesReq, {
+    idempotencyKey: "key-money-round",
+    customerId: customer._id,
+    customerName: customer.name,
+    currency: "USD",
+    header: selected21,
+    lines: [
+      {
+        selectedArticle: "MONEY76",
+        qty: 12,
+        uom: "PCS",
+        priceTier: "SELL",
+        priceListRevision: 1,
+        unitPrice: 109.76,
+        totalPrice: 99999,
+      },
+      {
+        selectedArticle: "MONEY20",
+        qty: 5,
+        uom: "PCS",
+        priceTier: "SELL",
+        priceListRevision: 1,
+        unitPrice: 459.2,
+        totalPrice: 1317.1200000000001,
+      },
+    ],
+  });
+  const quote = created.quotation;
+  assert.equal(quote.status, "DRAFT");
+  assert.equal(quote.lines[0].price, 109.76);
+  assert.equal(quote.lines[0].totalPrice, 1317.12);
+  assert.equal(quote.lines[1].price, 459.2);
+  assert.equal(quote.lines[1].totalPrice, 2296);
+  assert.equal(quote.subTotal, 3613.12);
+  assert.equal(quote.discountTotal, 0);
+  assert.equal(quote.taxTotal, 0);
+  assert.equal(quote.grandTotal, 3613.12);
+  assert.doesNotMatch(JSON.stringify(quote), /1317\.1200000000001/);
+
+  const stored = await Quotation.findById(quote._id).lean();
+  assert.equal(stored.status, "DRAFT");
+  assert.equal(stored.lines[0].totalPrice, 1317.12);
+  assert.equal(stored.lines[1].totalPrice, 2296);
+  assert.equal(stored.subTotal, 3613.12);
+  assert.equal(stored.grandTotal, 3613.12);
+  assert.doesNotMatch(JSON.stringify(stored.lines.map((l) => l.totalPrice)), /1317\.1200000000001/);
+
+  const retrieved = redactQuotationForSalesApi(stored);
+  assert.equal(retrieved.lines[0].totalPrice, 1317.12);
+  assert.equal(retrieved.grandTotal, 3613.12);
+  assert.doesNotMatch(JSON.stringify(retrieved), /1317\.1200000000001/);
+
+  const printed = sanitizeCustomerQuotationPrint(stored);
+  assert.equal(printed.lines[0].totalPrice, 1317.12);
+  assert.equal(printed.grandTotal, 3613.12);
+  assert.doesNotMatch(JSON.stringify(printed), /1317\.1200000000001/);
+
+  const ignoredClientTotal = await persistNewQuotation(
+    req,
+    {
+      customerId: customer._id,
+      customerName: customer.name,
+      currency: "USD",
+      engine: "MAN",
+      lines: [
+        {
+          article: "MONEY76",
+          description: "Float A",
+          uom: "PCS",
+          qty: 12,
+          price: 109.76,
+          totalPrice: 99999,
+        },
+      ],
+    },
+    { skipAutoCreateItems: true }
+  );
+  assert.equal(ignoredClientTotal.totalPrice ?? ignoredClientTotal.lines[0].totalPrice, 1317.12);
+  assert.equal(ignoredClientTotal.subTotal, 1317.12);
+  assert.equal(ignoredClientTotal.grandTotal, 1317.12);
 });
 
 await mongoose.disconnect();
