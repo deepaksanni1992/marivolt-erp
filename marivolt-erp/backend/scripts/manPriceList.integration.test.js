@@ -17,7 +17,11 @@ import ManPriceList from "../src/models/ManPriceList.js";
 import ManPriceListImport from "../src/models/ManPriceListImport.js";
 import { previewImport, applyImport, getPriceListByArticle } from "../src/services/manPriceListService.js";
 import { persistNewQuotation } from "../src/controllers/quotationController.js";
-import { createQuotationFromManRfq, listManEngineModels, matchRfqLines } from "../src/services/manRfqService.js";
+import {
+  createQuotationFromManRfq,
+  listManEngineModels,
+  matchRfqLines as matchRfqLinesRaw,
+} from "../src/services/manRfqService.js";
 import { getDefaultPermissionsForRole } from "../src/services/roleService.js";
 import {
   assertNoForbiddenSalesPriceKeys,
@@ -29,6 +33,10 @@ import {
 } from "../src/utils/manPriceList.js";
 import { deriveAvailableQty } from "../src/services/stockExpectedBuckets.js";
 import { getStockBalance } from "../src/services/stockService.js";
+
+async function matchRfqLines(req, opts = {}) {
+  return matchRfqLinesRaw(req, { currency: "USD", ...opts });
+}
 
 let passed = 0;
 let failed = 0;
@@ -636,7 +644,7 @@ async function seedPricedMan(article, extras = {}) {
     itemMasterId: item._id,
     article,
     sellPrice: extras.sellPrice ?? 10,
-    currency: "USD",
+    currency: extras.currency || "USD",
     revision: 1,
     isActive: true,
     leadTime: extras.leadTime || "8 Weeks",
@@ -1247,6 +1255,150 @@ await run("RFQ and draft quotation money rounds 109.76×12 and 459.20×5 without
   assert.equal(ignoredClientTotal.totalPrice ?? ignoredClientTotal.lines[0].totalPrice, 1317.12);
   assert.equal(ignoredClientTotal.subTotal, 1317.12);
   assert.equal(ignoredClientTotal.grandTotal, 1317.12);
+});
+
+await seedPricedMan("EUR459", {
+  spn: "EUR-459",
+  techSpn: "EUR-459",
+  model: "21/31",
+  description: "EUR priced A",
+  sellPrice: 459.2,
+  currency: "EUR",
+});
+await seedPricedMan("EUR109", {
+  spn: "EUR-109",
+  techSpn: "EUR-109",
+  model: "21/31",
+  description: "EUR priced B",
+  sellPrice: 109.76,
+  currency: "EUR",
+});
+
+await run("EUR price list + EUR quotation succeeds; USD quotation is CURRENCY_MISMATCH and creates nothing", async () => {
+  const usdMatch = await matchRfqLines(salesReq, {
+    lines: [{ partNo: "EUR-459", uom: "PCS", qty: 5 }],
+    headerMode: "SELECTED",
+    headerModel: "21/31",
+    currency: "USD",
+  });
+  assert.equal(usdMatch.lines[0].status, "CURRENCY_MISMATCH");
+  assert.equal(usdMatch.lines[0].unitPrice, undefined);
+  assert.equal(usdMatch.lines[0].priceCurrency, "EUR");
+  assert.equal(usdMatch.lines[0].currencyMismatch, true);
+  assert.notEqual(usdMatch.lines[0].unitPrice, 459.2);
+  assert.match(usdMatch.lines[0].exclusionReason, /Quotation currency is USD, but this Article is priced in EUR/);
+  assertNoForbiddenSalesPriceKeys(usdMatch, "usd mismatch match");
+
+  const before = await Quotation.countDocuments({ companyId: company._id, sourceType: "MAN_RFQ" });
+  let usdCreate = "";
+  try {
+    await createQuotationFromManRfq(salesReq, {
+      idempotencyKey: "key-eur-as-usd",
+      customerId: customer._id,
+      customerName: customer.name,
+      currency: "USD",
+      header: selected21,
+      lines: [
+        {
+          selectedArticle: "EUR459",
+          qty: 5,
+          uom: "PCS",
+          priceTier: "SELL",
+          priceListRevision: 1,
+          unitPrice: 459.2,
+          priceCurrency: "USD",
+        },
+      ],
+    });
+  } catch (e) {
+    usdCreate = e.code;
+    assert.equal(e.statusCode, 409);
+    assert.equal(e.priceCurrency, "EUR");
+    assert.equal(e.quotationCurrency, "USD");
+  }
+  assert.equal(usdCreate, "CURRENCY_MISMATCH");
+  assert.equal(await Quotation.countDocuments({ companyId: company._id, sourceType: "MAN_RFQ" }), before);
+
+  const rematch = await matchRfqLines(salesReq, {
+    lines: [{ partNo: "EUR-459", uom: "PCS", qty: 5 }],
+    headerMode: "SELECTED",
+    headerModel: "21/31",
+    currency: "EUR",
+  });
+  assert.equal(rematch.lines[0].status, "MATCHED");
+  assert.equal(rematch.lines[0].unitPrice, 459.2);
+  assert.equal(rematch.lines[0].priceCurrency, "EUR");
+
+  const created = await createQuotationFromManRfq(salesReq, {
+    idempotencyKey: "key-eur-ok",
+    customerId: customer._id,
+    customerName: customer.name,
+    currency: "EUR",
+    header: selected21,
+    lines: [
+      {
+        selectedArticle: "EUR459",
+        qty: 5,
+        uom: "PCS",
+        priceTier: "SELL",
+        priceListRevision: 1,
+      },
+    ],
+  });
+  assert.equal(created.quotation.status, "DRAFT");
+  assert.equal(created.quotation.currency, "EUR");
+  assert.equal(created.quotation.lines[0].price, 459.2);
+  assert.equal(created.quotation.lines[0].totalPrice, 2296);
+  assert.equal(created.quotation.grandTotal, 2296);
+  assertNoForbiddenSalesPriceKeys(created.quotation, "eur quotation");
+});
+
+await run("Mixed EUR/USD matched lines block creation; missing currency cannot bypass", async () => {
+  const mixedMatch = await matchRfqLines(salesReq, {
+    lines: [
+      { partNo: "EUR-109", uom: "PCS", qty: 12 },
+      { partNo: "051.001", uom: "PCS", qty: 1 },
+    ],
+    headerMode: "SELECTED",
+    headerModel: "21/31",
+    currency: "USD",
+  });
+  assert.equal(mixedMatch.lines[0].status, "CURRENCY_MISMATCH");
+  assert.equal(mixedMatch.lines[0].priceCurrency, "EUR");
+  assert.equal(mixedMatch.lines[1].status, "MATCHED");
+  assert.equal(mixedMatch.lines[1].priceCurrency, "USD");
+
+  const before = await Quotation.countDocuments({ companyId: company._id, sourceType: "MAN_RFQ" });
+  let mixedCreate = "";
+  try {
+    await createQuotationFromManRfq(salesReq, {
+      idempotencyKey: "key-mixed-currency",
+      customerId: customer._id,
+      customerName: customer.name,
+      currency: "USD",
+      header: selected21,
+      lines: [
+        { selectedArticle: "EUR109", qty: 12, uom: "PCS", priceTier: "SELL", priceListRevision: 1 },
+        { selectedArticle: "A001", qty: 1, uom: "PCS", priceTier: "SELL", priceListRevision: 1 },
+      ],
+    });
+  } catch (e) {
+    mixedCreate = e.code;
+  }
+  assert.equal(mixedCreate, "CURRENCY_MISMATCH");
+  assert.equal(await Quotation.countDocuments({ companyId: company._id, sourceType: "MAN_RFQ" }), before);
+
+  let missing = "";
+  try {
+    await matchRfqLinesRaw(salesReq, {
+      lines: [{ partNo: "EUR-459", uom: "PCS", qty: 1 }],
+      headerMode: "SELECTED",
+      headerModel: "21/31",
+    });
+  } catch (e) {
+    missing = e.code;
+  }
+  assert.equal(missing, "CURRENCY_REQUIRED");
 });
 
 await mongoose.disconnect();

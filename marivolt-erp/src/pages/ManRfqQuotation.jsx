@@ -24,6 +24,7 @@ const STATUS_BADGE = {
   NOT_FOUND: { label: "Not found", className: "bg-slate-100 text-slate-700" },
   NON_MAN: { label: "Not found", className: "bg-slate-100 text-slate-700" },
   INVALID: { label: "Not found", className: "bg-slate-100 text-slate-700" },
+  CURRENCY_MISMATCH: { label: "Currency mismatch", className: "bg-rose-100 text-rose-800" },
   EXCLUDED: { label: "Excluded", className: "bg-slate-200 text-slate-700" },
   REVIEW: { label: "Multiple matches", className: "bg-amber-50 text-amber-800" },
 };
@@ -70,21 +71,63 @@ function lineCandidate(ln) {
   return (ln.candidates || []).find((c) => c.article === article) || null;
 }
 
-function lineIsReady(ln) {
+function normalizeManCurrency(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function manCurrenciesMatch(quotationCurrency, priceCurrency) {
+  const q = normalizeManCurrency(quotationCurrency);
+  const p = normalizeManCurrency(priceCurrency);
+  return Boolean(q) && Boolean(p) && q === p;
+}
+
+function linePriceCurrency(ln) {
+  const cand = lineCandidate(ln);
+  return normalizeManCurrency(ln.priceCurrency || cand?.priceCurrency || cand?.prices?.currency);
+}
+
+function lineHasCurrencyMismatch(ln, quotationCurrency) {
+  if (ln.exclude) return false;
+  const priceCurrency = linePriceCurrency(ln);
+  if (!priceCurrency) return false;
+  return !manCurrenciesMatch(quotationCurrency, priceCurrency);
+}
+
+function currencyMismatchMessage(quotationCurrency, priceCurrency) {
+  const q = normalizeManCurrency(quotationCurrency) || "(blank)";
+  const p = normalizeManCurrency(priceCurrency) || "(blank)";
+  return `Quotation currency is ${q}, but this Article is priced in ${p}.`;
+}
+
+function lineIsReady(ln, quotationCurrency) {
   if (ln.exclude) return true;
   if (!ln.selectedArticle) return false;
-  if (["NOT_FOUND", "NON_MAN", "INVALID", "PRICING_REQUIRED", "MODEL_MISMATCH", "MODEL_CONFLICT", "MODEL_REQUIRED", "UOM_MISMATCH"].includes(ln.status)) {
+  if (
+    [
+      "NOT_FOUND",
+      "NON_MAN",
+      "INVALID",
+      "PRICING_REQUIRED",
+      "MODEL_MISMATCH",
+      "MODEL_CONFLICT",
+      "MODEL_REQUIRED",
+      "UOM_MISMATCH",
+    ].includes(ln.status)
+  ) {
     return false;
   }
+  if (lineHasCurrencyMismatch(ln, quotationCurrency)) return false;
   const cand = (ln.candidates || []).find((c) => c.article === ln.selectedArticle);
   if (cand && (!cand.uomOk || cand.modelConflict || cand.configConflict || !cand.prices)) return false;
   const prices = cand?.prices || {};
   return tierUnit(prices, ln.priceTier || "SELL") != null;
 }
 
-function displayStatus(ln) {
+function displayStatus(ln, quotationCurrency) {
   if (ln.exclude) return "EXCLUDED";
-  if (lineIsReady(ln) && !["NOT_FOUND", "NON_MAN", "INVALID"].includes(ln.status)) return "READY";
+  if (lineHasCurrencyMismatch(ln, quotationCurrency)) return "CURRENCY_MISMATCH";
+  if (lineIsReady(ln, quotationCurrency) && !["NOT_FOUND", "NON_MAN", "INVALID"].includes(ln.status)) return "READY";
+  if (ln.status === "CURRENCY_MISMATCH") return ln.selectedArticle ? "MATCHED" : "REVIEW";
   return ln.status || "REVIEW";
 }
 
@@ -248,6 +291,7 @@ export default function ManRfqQuotation() {
       fd.append("defaultTier", "SELL");
       fd.append("modelMode", header.modelMode);
       fd.append("model", header.model || "");
+      fd.append("currency", header.currency || "");
       return apiPostFormData("/man-rfq/match", fd);
     },
     onSuccess: (data) => {
@@ -258,8 +302,9 @@ export default function ManRfqQuotation() {
           ...ln,
           exclude: ["NOT_FOUND", "NON_MAN", "INVALID"].includes(ln.status),
           excludeReason: ln.exclusionReason || "",
-          priceTier: ln.selectedArticle ? ln.priceTier || "SELL" : "",
-          unitPrice: ln.selectedArticle ? ln.unitPrice : undefined,
+          priceTier: ln.selectedArticle && ln.status !== "CURRENCY_MISMATCH" ? ln.priceTier || "SELL" : "",
+          unitPrice: ln.selectedArticle && ln.status !== "CURRENCY_MISMATCH" ? ln.unitPrice : undefined,
+          priceCurrency: ln.priceCurrency || "",
         }))
       );
       notify.info("RFQ matched. Review lines before creating a quotation.");
@@ -349,6 +394,10 @@ export default function ManRfqQuotation() {
         notify.error(`Prices changed${where}. Refresh or recheck the affected row, then try again.`);
         return;
       }
+      if (e.code === "CURRENCY_MISMATCH") {
+        notify.error(e.message || "Quotation currency does not match the MAN price-list currency.");
+        return;
+      }
       notify.error(e.message);
     },
   });
@@ -362,21 +411,71 @@ export default function ManRfqQuotation() {
       model: 0,
       uom: 0,
       pricing: 0,
+      currency: 0,
       notFound: 0,
     };
     for (const l of open) {
       if (["NOT_FOUND", "NON_MAN", "INVALID"].includes(l.status)) counts.notFound += 1;
+      else if (lineHasCurrencyMismatch(l, header.currency)) counts.currency += 1;
       else if (["MODEL_MISMATCH", "MODEL_CONFLICT", "MODEL_REQUIRED"].includes(l.status)) counts.model += 1;
       else if (l.status === "UOM_MISMATCH") counts.uom += 1;
       else if (l.status === "PRICING_REQUIRED") counts.pricing += 1;
       else if (!l.selectedArticle || l.status === "MULTIPLE" || l.status === "REVIEW") counts.multiple += 1;
-      else if (!lineIsReady(l)) counts.missingArticle += 1;
+      else if (!lineIsReady(l, header.currency)) counts.missingArticle += 1;
     }
     return counts;
-  }, [lines]);
+  }, [lines, header.currency]);
 
-  const ready = Boolean(header.customerId) && included.length > 0 && included.every(lineIsReady);
+  const ready = Boolean(header.customerId) && included.length > 0 && included.every((l) => lineIsReady(l, header.currency));
   const unresolvedTotal = Object.values(unresolved).reduce((a, b) => a + b, 0);
+  const includedPriceCurrencies = [
+    ...new Set(included.map((l) => linePriceCurrency(l)).filter(Boolean)),
+  ];
+  const commonPriceCurrency = includedPriceCurrencies.length === 1 ? includedPriceCurrencies[0] : "";
+  const mixedPriceCurrencies = includedPriceCurrencies.length > 1;
+  const canAlignHeaderCurrency =
+    Boolean(commonPriceCurrency) && commonPriceCurrency !== normalizeManCurrency(header.currency);
+
+  const rematchMut = useMutation({
+    mutationFn: async (nextCurrency) => {
+      const currency = normalizeManCurrency(nextCurrency || header.currency);
+      const payload = {
+        defaultTier: "SELL",
+        modelMode: header.modelMode,
+        model: header.model || "",
+        currency,
+        lines: lines.map((ln) => ({
+          partNo: ln.requestedPartNo,
+          uom: ln.uom,
+          qty: ln.qty,
+          engineModel: ln.requestedModel || "",
+          configuration: ln.configuration || "",
+          specifications: ln.specifications || "",
+          customerLine: ln.customerLine,
+          description: ln.requestedDescription || ln.description || "",
+        })),
+      };
+      const data = await apiPost("/man-rfq/match", payload);
+      return { data, currency };
+    },
+    onSuccess: ({ data, currency }) => {
+      setHeader((h) => ({ ...h, currency }));
+      setIdempotencyKey(newKey());
+      setCreated(null);
+      setLines(
+        (data.lines || []).map((ln) => ({
+          ...ln,
+          exclude: ["NOT_FOUND", "NON_MAN", "INVALID"].includes(ln.status),
+          excludeReason: ln.exclusionReason || "",
+          priceTier: ln.selectedArticle && ln.status !== "CURRENCY_MISMATCH" ? ln.priceTier || "SELL" : "",
+          unitPrice: ln.selectedArticle && ln.status !== "CURRENCY_MISMATCH" ? ln.unitPrice : undefined,
+          priceCurrency: ln.priceCurrency || "",
+        }))
+      );
+      notify.info(`Matched using quotation currency ${currency}.`);
+    },
+    onError: (e) => notify.error(e.message),
+  });
 
   function applyBulkTier() {
     setLines((rows) =>
@@ -404,15 +503,19 @@ export default function ManRfqQuotation() {
         if (!cand.prices || !cand.pricingOk) {
           return { ...r, selectedArticle: article, status: "PRICING_REQUIRED", description: cand.description };
         }
+        const priceCurrency = normalizeManCurrency(cand.priceCurrency || cand.prices?.currency);
+        const mismatch = priceCurrency && !manCurrenciesMatch(header.currency, priceCurrency);
         return {
           ...r,
           selectedArticle: article,
-          status: "MATCHED",
+          status: mismatch ? "CURRENCY_MISMATCH" : "MATCHED",
           description: cand.description,
           matchedEngineModel: cand.model || r.matchedEngineModel,
           availableQty: cand.availableQty,
           leadTime: cand.leadTime,
-          priceTier: r.priceTier || "SELL",
+          priceTier: mismatch ? "" : r.priceTier || "SELL",
+          unitPrice: mismatch ? undefined : tierUnit(cand.prices, r.priceTier || "SELL"),
+          priceCurrency,
           exclude: false,
         };
       })
@@ -482,6 +585,9 @@ export default function ManRfqQuotation() {
               value={header.currency}
               onChange={(e) => setHeader((h) => ({ ...h, currency: e.target.value.toUpperCase() }))}
             />
+            <p className="mt-1 text-xs text-slate-500">
+              MAN prices are used only in their stored currency. Changing this field does not convert prices.
+            </p>
           </label>
           <label className="text-sm">
             Engine Model
@@ -559,6 +665,27 @@ export default function ManRfqQuotation() {
         {header.modelMode === "MIXED" ? (
           <p className="mt-2 text-xs text-slate-600">Engine Model is required on every RFQ line for mixed-model RFQs.</p>
         ) : null}
+        {lines.length && mixedPriceCurrencies ? (
+          <p className="mt-2 text-sm text-rose-800">
+            Matched Articles are priced in {includedPriceCurrencies.join(" and ")}. Resolve or exclude lines so every
+            included Article uses one currency. Prices are never converted.
+          </p>
+        ) : null}
+        {lines.length && canAlignHeaderCurrency ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <p className="text-sm text-amber-900">
+              Included Articles are priced in {commonPriceCurrency}. The quotation header is {header.currency || "(blank)"}.
+            </p>
+            <button
+              type="button"
+              className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-950"
+              disabled={rematchMut.isPending}
+              onClick={() => rematchMut.mutate(commonPriceCurrency)}
+            >
+              Set currency to {commonPriceCurrency} and rematch
+            </button>
+          </div>
+        ) : null}
       </div>
 
       <div className="rounded-2xl border bg-white p-4">
@@ -631,6 +758,7 @@ export default function ManRfqQuotation() {
                   <th className="px-2 py-2">Available Stock</th>
                   <th className="px-2 py-2">Lead Time / Availability</th>
                   <th className="px-2 py-2">Price Tier</th>
+                  <th className="px-2 py-2">Price currency</th>
                   <th className="px-2 py-2">Unit Price</th>
                   <th className="px-2 py-2">Total</th>
                   <th className="px-2 py-2">Match Status</th>
@@ -641,7 +769,9 @@ export default function ManRfqQuotation() {
                 {lines.map((ln, idx) => {
                   const cand = lineCandidate(ln);
                   const prices = cand?.prices || {};
-                  const unit = tierUnit(prices, ln.priceTier || "SELL");
+                  const mismatch = lineHasCurrencyMismatch(ln, header.currency);
+                  const priceCurrency = linePriceCurrency(ln);
+                  const unit = mismatch ? null : tierUnit(prices, ln.priceTier || "SELL");
                   return (
                     <tr key={`${ln.requestedPartNo}-${idx}`} className="border-t align-top">
                       <td className="sticky left-0 z-10 bg-white px-2 py-1">{ln.customerLine || "—"}</td>
@@ -691,12 +821,20 @@ export default function ManRfqQuotation() {
                           })}
                         </select>
                       </td>
+                      <td className="px-2 py-1">
+                        {priceCurrency ? `Price currency: ${priceCurrency}` : "—"}
+                        {mismatch ? (
+                          <div className="mt-1 text-[11px] font-semibold text-rose-800">
+                            {currencyMismatchMessage(header.currency, priceCurrency)}
+                          </div>
+                        ) : null}
+                      </td>
                       <td className="px-2 py-1 text-right tabular-nums">{unit != null ? formatQuotationMoney(unit) : "—"}</td>
                       <td className="px-2 py-1 text-right tabular-nums">
                         {unit != null ? formatQuotationMoney(quotationLineTotal(unit, ln.qty)) : "—"}
                       </td>
                       <td className="px-2 py-1">
-                        <StatusBadge status={displayStatus(ln)} />
+                        <StatusBadge status={displayStatus(ln, header.currency)} />
                       </td>
                       <td className="px-2 py-1">
                         <label className="flex items-center gap-1">
@@ -739,11 +877,17 @@ export default function ManRfqQuotation() {
               {unresolved.model ? ` ${unresolved.model} model issues` : ""}
               {unresolved.uom ? ` ${unresolved.uom} UOM mismatch` : ""}
               {unresolved.pricing ? ` ${unresolved.pricing} pricing required` : ""}
+              {unresolved.currency ? ` ${unresolved.currency} currency mismatch` : ""}
               {unresolved.missingArticle && !unresolvedTotal ? " lines still incomplete" : ""}
               {!header.customerId ? " customer required" : ""}.
             </p>
           ) : null}
         </div>
+        {createMut.error?.code === "CURRENCY_MISMATCH" ? (
+          <p className="mt-2 text-sm text-rose-800">
+            {createMut.error.message || currencyMismatchMessage(header.currency, createMut.error.priceCurrency)}
+          </p>
+        ) : null}
         {createMut.error?.code === "STALE_PRICE" ? (
           <p className="mt-2 text-sm text-amber-800">
             Prices changed

@@ -10,8 +10,13 @@ import { getStockBalance } from "./stockService.js";
 import { hasPermission } from "./roleService.js";
 import { runMongoTransaction } from "../utils/mongoTransaction.js";
 import {
+  applyManRfqCurrencyGate,
   classifyManRfqCandidates,
   configOrSpecConflict,
+  manCurrenciesMatch,
+  manRfqCurrencyMismatchMessage,
+  MAN_RFQ_CURRENCY_MISMATCH,
+  normalizeManCurrency,
   DEFAULT_FULFILMENT_WAREHOUSE,
   DEFAULT_MAN_TIER,
   displayedItemMasterSpecs,
@@ -47,6 +52,8 @@ function err(message, statusCode = 400, code = "MAN_RFQ", extra = {}) {
   e.statusCode = statusCode;
   e.code = code;
   if (extra.article) e.article = extra.article;
+  if (extra.priceCurrency) e.priceCurrency = extra.priceCurrency;
+  if (extra.quotationCurrency) e.quotationCurrency = extra.quotationCurrency;
   return e;
 }
 
@@ -144,14 +151,19 @@ export async function getManItemSalesSnapshot(req, article) {
     availableQty,
     leadTime: price?.leadTime || "",
     currency: price?.currency || "",
+    priceCurrency: normalizeManCurrency(price?.currency),
     prices: price ? sellingCandidate(price, { canRock }) : null,
   });
 }
 
 export async function matchRfqLines(
   req,
-  { lines = [], defaultTier = DEFAULT_MAN_TIER, headerMode, headerModel, modelMode } = {}
+  { lines = [], defaultTier = DEFAULT_MAN_TIER, headerMode, headerModel, modelMode, currency } = {}
 ) {
+  const quotationCurrency = normalizeManCurrency(currency);
+  if (!quotationCurrency) {
+    throw err("Quotation currency is required", 400, "CURRENCY_REQUIRED");
+  }
   const { mode, headerModel: header } = await resolveValidatedManRfqMode(req, {
     modelMode: modelMode || headerMode,
     headerModel,
@@ -270,6 +282,7 @@ export async function matchRfqLines(
         availableQty,
         leadTime: price?.leadTime || "",
         prices: price ? sellingCandidate(price, { canRock }) : null,
+        priceCurrency: normalizeManCurrency(price?.currency),
         uomOk,
         modelConflict,
         configConflict: Boolean(cfgConflict || specConflict),
@@ -299,9 +312,16 @@ export async function matchRfqLines(
         uom: pick.uom,
         leadTime: pick.leadTime,
       });
+      const priceCurrency = normalizeManCurrency(pick.prices?.currency || pick.priceCurrency);
+      const gated = applyManRfqCurrencyGate({
+        quotationCurrency,
+        priceCurrency,
+        unitPrice: roundQuotationMoney(selectTierUnitPrice(pick.prices, defaultTier)),
+        status: "MATCHED",
+      });
       results.push({
         ...withModels,
-        status: "MATCHED",
+        status: gated.status,
         selectedArticle: pick.article,
         description: pick.description,
         matchedEngineModel: pick.model || "",
@@ -310,12 +330,15 @@ export async function matchRfqLines(
         uom: pick.uom,
         availableQty: pick.availableQty,
         leadTime: pick.leadTime,
-        priceTier: defaultTier,
-        unitPrice: roundQuotationMoney(selectTierUnitPrice(pick.prices, defaultTier)),
+        priceTier: gated.ok ? defaultTier : "",
+        unitPrice: gated.ok ? gated.unitPrice : undefined,
         availability,
         availabilityCheckedAt: new Date().toISOString(),
         priceListRevision: pick.prices.revision,
-        currency: pick.prices.currency,
+        currency: priceCurrency,
+        priceCurrency,
+        currencyMismatch: gated.currencyMismatch,
+        exclusionReason: gated.ok ? "" : gated.reason,
         candidates,
       });
       continue;
@@ -323,6 +346,7 @@ export async function matchRfqLines(
     results.push({
       ...withModels,
       status: classified.status || "REVIEW",
+      priceCurrency: normalizeManCurrency(classified.pick?.prices?.currency || classified.pick?.priceCurrency),
       candidates,
       exclusionReason: classified.reason || "Requires review",
     });
@@ -370,6 +394,7 @@ export async function refreshAvailability(req, lines = []) {
       }),
       availabilityCheckedAt: new Date().toISOString(),
       priceListRevision: price ? Number(price.revision) || 0 : undefined,
+      priceCurrency: normalizeManCurrency(price?.currency),
       prices: price ? toSalesMatchPrices(price, { canRock }) : null,
     });
   }
@@ -398,6 +423,23 @@ export async function createQuotationFromManRfq(req, body = {}) {
   const inputLines = Array.isArray(body.lines) ? body.lines : [];
   const included = inputLines.filter((l) => l.exclude !== true);
   if (!included.length) throw err("Resolve or exclude every RFQ line before creating a quotation");
+
+  const quotationCurrency = normalizeManCurrency(body.currency || headerFromBody.currency);
+  if (!quotationCurrency) throw err("Quotation currency is required", 400, "CURRENCY_REQUIRED");
+
+  for (const line of included) {
+    const article = String(line.selectedArticle || "").trim().toUpperCase();
+    if (!article) continue;
+    const priceRow = await ManPriceList.findOne({ companyId: req.companyId, article, isActive: true }).lean();
+    if (!priceRow) continue;
+    if (!manCurrenciesMatch(quotationCurrency, priceRow.currency)) {
+      throw err(manRfqCurrencyMismatchMessage(quotationCurrency, priceRow.currency), 409, MAN_RFQ_CURRENCY_MISMATCH, {
+        article,
+        priceCurrency: normalizeManCurrency(priceRow.currency),
+        quotationCurrency,
+      });
+    }
+  }
 
   const quoteLines = [];
   for (const line of included) {
@@ -479,6 +521,13 @@ export async function createQuotationFromManRfq(req, body = {}) {
 
     const price = await ManPriceList.findOne({ companyId: req.companyId, article, isActive: true });
     if (!price) throw err(`No active MAN price list for ${article}`, 400, "MAN_RFQ", { article });
+    if (!manCurrenciesMatch(quotationCurrency, price.currency)) {
+      throw err(manRfqCurrencyMismatchMessage(quotationCurrency, price.currency), 409, MAN_RFQ_CURRENCY_MISMATCH, {
+        article,
+        priceCurrency: normalizeManCurrency(price.currency),
+        quotationCurrency,
+      });
+    }
     const clientRev = Number(line.priceListRevision);
     if (!Number.isFinite(clientRev) || clientRev !== Number(price.revision)) {
       throw err("Prices changed since review. Refresh or recheck the affected row.", 409, "STALE_PRICE", {
@@ -525,7 +574,7 @@ export async function createQuotationFromManRfq(req, body = {}) {
       priceListRevision: price.revision,
       availabilityCheckedAt: checkedAt,
       sourceType: "MAN_RFQ",
-      currency: price.currency || body.currency || "USD",
+      currency: quotationCurrency,
       customerEngineModel: resolved.originalCustomerModel,
       engineModel: item.model || "",
       config: item.config || "",
@@ -541,7 +590,7 @@ export async function createQuotationFromManRfq(req, body = {}) {
   }
 
   const customerId = body.customerId || headerFromBody.customerId;
-  const currency = body.currency || headerFromBody.currency || "USD";
+  const currency = quotationCurrency;
   const requestHash = manRfqRequestHash({ customerId, currency, lines: quoteLines });
 
   const payload = {

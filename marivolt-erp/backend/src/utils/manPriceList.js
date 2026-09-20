@@ -257,6 +257,50 @@ export const MAN_RFQ_MODEL_ERROR_CODES = Object.freeze({
   SPEC_CONFLICT: "MAN_RFQ_SPEC_CONFLICT",
 });
 
+export const MAN_RFQ_CURRENCY_MISMATCH = "CURRENCY_MISMATCH";
+
+export function normalizeManCurrency(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+export function manCurrenciesMatch(quotationCurrency, priceCurrency) {
+  const q = normalizeManCurrency(quotationCurrency);
+  const p = normalizeManCurrency(priceCurrency);
+  return Boolean(q) && Boolean(p) && q === p;
+}
+
+export function manRfqCurrencyMismatchMessage(quotationCurrency, priceCurrency) {
+  const q = normalizeManCurrency(quotationCurrency) || "(blank)";
+  const p = normalizeManCurrency(priceCurrency) || "(blank)";
+  return `Quotation currency is ${q}, but this Article is priced in ${p}.`;
+}
+
+/**
+ * Price-list amounts are valid only in the stored row currency.
+ * Never relabel or convert into the quotation currency.
+ */
+export function applyManRfqCurrencyGate({ quotationCurrency, priceCurrency, unitPrice, status } = {}) {
+  const price = normalizeManCurrency(priceCurrency);
+  if (manCurrenciesMatch(quotationCurrency, price)) {
+    return {
+      ok: true,
+      status: status || "MATCHED",
+      unitPrice,
+      priceCurrency: price,
+      currencyMismatch: false,
+      reason: "",
+    };
+  }
+  return {
+    ok: false,
+    status: MAN_RFQ_CURRENCY_MISMATCH,
+    unitPrice: undefined,
+    priceCurrency: price,
+    currencyMismatch: true,
+    reason: manRfqCurrencyMismatchMessage(quotationCurrency, priceCurrency),
+  };
+}
+
 /** Canonical mode or empty. Never defaults unknown values to SELECTED. */
 export function canonicalManRfqModelMode(value) {
   const v = String(value ?? "").trim().toUpperCase();

@@ -19,6 +19,11 @@ import {
   canonicalCsvHeader,
   cellIsBlank,
   assertNoForbiddenSalesPriceKeys,
+  applyManRfqCurrencyGate,
+  manCurrenciesMatch,
+  manRfqCurrencyMismatchMessage,
+  MAN_RFQ_CURRENCY_MISMATCH,
+  normalizeManCurrency,
   classifyManRfqCandidates,
   collectForbiddenSalesPriceKeys,
   displayedItemMasterSpn,
@@ -576,6 +581,38 @@ run("Quotation money rounding uses 2 dp; source precision parse preserved", () =
   assert.match(visible, /1317\.12/);
 });
 
+run("MAN RFQ currency gate never relabels a price-list amount into another currency", () => {
+  assert.equal(normalizeManCurrency(" eur "), "EUR");
+  assert.equal(manCurrenciesMatch("eur", "EUR"), true);
+  assert.equal(manCurrenciesMatch("USD", "EUR"), false);
+  assert.equal(manCurrenciesMatch("USD", ""), false);
+  const ok = applyManRfqCurrencyGate({
+    quotationCurrency: "EUR",
+    priceCurrency: "eur",
+    unitPrice: 459.2,
+    status: "MATCHED",
+  });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.status, "MATCHED");
+  assert.equal(ok.unitPrice, 459.2);
+  assert.equal(ok.priceCurrency, "EUR");
+  const blocked = applyManRfqCurrencyGate({
+    quotationCurrency: "USD",
+    priceCurrency: "EUR",
+    unitPrice: 459.2,
+    status: "MATCHED",
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.status, MAN_RFQ_CURRENCY_MISMATCH);
+  assert.equal(blocked.unitPrice, undefined);
+  assert.equal(blocked.priceCurrency, "EUR");
+  assert.equal(blocked.currencyMismatch, true);
+  assert.equal(
+    manRfqCurrencyMismatchMessage("USD", "EUR"),
+    "Quotation currency is USD, but this Article is priced in EUR."
+  );
+});
+
 run("Public selling prices do not include Buy", () => {
   const pub = publicSellingPrices({ sellPrice: 1, buy: 9, nextBuy: 8 });
   assert.equal(pub.buy, undefined);
@@ -647,6 +684,11 @@ run("Server routes enforce PRICE_LIST on management/export and SALES.create on R
   assert.doesNotMatch(rfqService, /findById\(/);
   assert.doesNotMatch(rfqService, /line\.priceListId/);
   assert.match(rfqService, /redactManRfqMatchResponse/);
+  assert.match(rfqService, /CURRENCY_MISMATCH/);
+  assert.match(rfqService, /CURRENCY_REQUIRED/);
+  assert.match(rfqService, /applyManRfqCurrencyGate/);
+  assert.match(rfqService, /priceCurrency/);
+  assert.doesNotMatch(rfqService, /exchangeRate/);
   assert.match(qModel, /vesselPlant/);
   assert.match(rfqService, /vesselPlant: String\(headerFromBody\.vesselPlant/);
   assert.match(rfqService, /esn: String\(headerFromBody\.esn/);
@@ -675,6 +717,16 @@ run("Server routes enforce PRICE_LIST on management/export and SALES.create on R
   assert.match(manUtil, /MAN_RFQ_MODEL_MODE_INVALID/);
   assert.match(manUtil, /MAN_RFQ_CONFIG_CONFLICT/);
   assert.match(manUtil, /MAN_RFQ_SPEC_CONFLICT/);
+  assert.match(manUtil, /applyManRfqCurrencyGate/);
+  assert.match(manUtil, /MAN_RFQ_CURRENCY_MISMATCH/);
+  assert.doesNotMatch(manUtil, /exchangeRate/);
+  assert.doesNotMatch(rfqPage, /exchangeRate/);
+  assert.match(rfqPage, /CURRENCY_MISMATCH/);
+  assert.match(rfqPage, /Price currency: \$\{priceCurrency\}/);
+  assert.match(rfqPage, /Currency mismatch/);
+  assert.match(rfqPage, /Set currency to \{commonPriceCurrency\} and rematch/);
+  assert.match(rfqPage, /Prices are never converted/);
+  assert.match(rfqPage, /lineHasCurrencyMismatch/);
   assert.match(rfqService, /resolveManRfqRequestMode/);
   assert.match(rfqService, /MAN_RFQ_MODEL_ERROR_CODES\.REQUIRED/);
   assert.match(rfqService, /MAN_RFQ_MODEL_ERROR_CODES\.CONFIG_CONFLICT/);
