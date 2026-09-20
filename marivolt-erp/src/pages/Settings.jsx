@@ -22,6 +22,11 @@ import {
   validateCreateUserForm,
 } from "../lib/userAdmin.js";
 import { isFullAdminRole } from "../lib/rbac.js";
+import {
+  allowedActionsForModule,
+  hasDangerousRoleActions,
+  selectedPermissionSummary,
+} from "../lib/rbacAccess.js";
 
 const TABS = [
   { id: "companies", label: "Companies" },
@@ -906,6 +911,7 @@ function RoleForm({ initial, modules, actions, onSave, onCancel, saving, error }
     permissions: initial.permissions || [],
   });
   function toggle(module, action) {
+    if (!allowedActionsForModule(module).includes(action)) return;
     setForm((f) => {
       const perms = f.permissions.map((p) => {
         if (p.module !== module) return p;
@@ -918,18 +924,32 @@ function RoleForm({ initial, modules, actions, onSave, onCancel, saving, error }
     });
   }
   function toggleRow(module, fill) {
+    const moduleActions = allowedActionsForModule(module);
     setForm((f) => ({
       ...f,
       permissions: f.permissions.map((p) =>
-        p.module === module ? { ...p, actions: fill ? [...actions] : [] } : p
+        p.module === module ? { ...p, actions: fill ? [...moduleActions] : [] } : p
       ),
     }));
   }
 
+  const permissionSummary = selectedPermissionSummary(form.permissions);
+  const dangerous = hasDangerousRoleActions(form.permissions);
+
   return (
     <form
-      onSubmit={(e) => {
+      onSubmit={async (e) => {
         e.preventDefault();
+        if (dangerous) {
+          const ok = await confirmDialog({
+            title: "Confirm dangerous permissions",
+            message:
+              "This role includes delete, admin, override, post, or reverse. Those actions can change or destroy operational data. Save anyway?",
+            confirmLabel: "Save role",
+            danger: true,
+          });
+          if (!ok) return;
+        }
         onSave(form);
       }}
     >
@@ -982,25 +1002,37 @@ function RoleForm({ initial, modules, actions, onSave, onCancel, saving, error }
             {modules.map((m) => {
               const perm = form.permissions.find((p) => p.module === m);
               const enabled = new Set(perm?.actions || []);
+              const moduleActions = allowedActionsForModule(m);
+              const allOn = moduleActions.length > 0 && moduleActions.every((a) => enabled.has(a));
               return (
                 <tr key={m} className="border-t border-slate-100">
                   <Td className="font-medium">{m}</Td>
-                  {actions.map((a) => (
-                    <Td key={a}>
-                      <input
-                        type="checkbox"
-                        checked={enabled.has(a)}
-                        onChange={() => toggle(m, a)}
-                      />
-                    </Td>
-                  ))}
+                  {actions.map((a) => {
+                    const supported = moduleActions.includes(a);
+                    return (
+                      <Td key={a}>
+                        {supported ? (
+                          <input
+                            type="checkbox"
+                            checked={enabled.has(a)}
+                            onChange={() => toggle(m, a)}
+                            aria-label={`${m} ${a}`}
+                          />
+                        ) : (
+                          <span className="text-slate-300" title="Not used by this module">
+                            —
+                          </span>
+                        )}
+                      </Td>
+                    );
+                  })}
                   <Td>
                     <button
                       type="button"
                       className="text-xs underline"
-                      onClick={() => toggleRow(m, enabled.size !== actions.length)}
+                      onClick={() => toggleRow(m, !allOn)}
                     >
-                      {enabled.size === actions.length ? "clear" : "all"}
+                      {allOn ? "clear" : "all"}
                     </button>
                   </Td>
                 </tr>
@@ -1008,6 +1040,25 @@ function RoleForm({ initial, modules, actions, onSave, onCancel, saving, error }
             })}
           </tbody>
         </table>
+      </div>
+
+      <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+        <p className="font-medium">Selected permissions</p>
+        {permissionSummary.length ? (
+          <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs">
+            {permissionSummary.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-1 text-xs text-slate-500">None — this role will not grant module access.</p>
+        )}
+        {dangerous ? (
+          <p className="mt-2 text-xs font-medium text-rose-700">
+            Includes dangerous actions (delete / admin / override / post / reverse). Saving requires
+            confirmation.
+          </p>
+        ) : null}
       </div>
 
       {error ? (

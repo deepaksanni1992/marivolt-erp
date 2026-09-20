@@ -1,91 +1,33 @@
 import { NavLink } from "react-router-dom";
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext.jsx";
-import { isStoreOperatorRole, isPriceListAdminRole } from "../lib/rbac.js";
-
-const dashboardGroup = {
-  label: "Dashboard",
-  items: [
-    { to: "/dashboard", label: "ERP BI Dashboard" },
-    { to: "/customs/dashboard", label: "Customs Dashboard" },
-    { to: "/dashboard/data-health", label: "Data Health Dashboard" },
-    { to: "/dashboard/stock-bucket-integrity", label: "Stock Bucket Integrity" },
-  ],
-};
-
-const inventoryGroup = {
-  label: "Inventory",
-  items: [
-    { to: "/inventory", label: "Stock Balances" },
-    { to: "/inventory/integrity/reservation", label: "Reservation Integrity" },
-  ],
-};
-
-const masterDataGroup = {
-  label: "Master data",
-  items: [
-    { to: "/items", label: "Item Master" },
-    { to: "/price-list", label: "Price List" },
-  ],
-};
-
-const salesGroup = {
-  label: "Sales",
-  items: [
-    { to: "/sales", label: "Quotations & OA" },
-    { to: "/sales/man-rfq", label: "MAN RFQ / Quotation" },
-  ],
-};
-
-const flatLinks = [
-  { to: "/purchase", label: "Purchase" },
-  { to: "/asn", label: "ASN" },
-  { to: "/store", label: "Store" },
-  { to: "/logistics", label: "Logistics" },
-  { to: "/accounts", label: "Accounts" },
-  { to: "/bom", label: "BOM" },
-  { to: "/kitting", label: "Kitting" },
-  { to: "/dekitting", label: "De-Kitting" },
-  { to: "/audit", label: "Audit Trail" },
-  { to: "/settings", label: "Settings" },
-];
-
-const customsGroup = {
-  label: "Customs",
-  items: [
-    { to: "/customs/stock", label: "Customs Stock" },
-    { to: "/customs/ledger", label: "Customs Stock Ledger" },
-    { to: "/customs/invoices", label: "Customs Invoice" },
-    { to: "/customs/allocation-reports", label: "Customs Allocation Reports" },
-    { to: "/customs/reconciliation", label: "Customs Reconciliation" },
-  ],
-};
-
-const documentsGroup = {
-  label: "Documents",
-  items: [
-    { to: "/documents", label: "Documents" },
-    { to: "/traceability/article", label: "Article Traceability" },
-  ],
-};
+import { isStoreOperatorRole } from "../lib/rbac.js";
+import { SIDEBAR_NAV, filterSidebarNav } from "../lib/rbacAccess.js";
 
 function linkClass(isActive) {
   return ["erp-sidebar__link", isActive ? "erp-sidebar__link--active" : ""].filter(Boolean).join(" ");
 }
 
 export default function Sidebar({ open, onClose }) {
-  const { role, can } = useAuth();
-  const storeOnly = isStoreOperatorRole(role);
-  const [dashboardOpen, setDashboardOpen] = useState(true);
-  const [inventoryOpen, setInventoryOpen] = useState(true);
-  const [masterOpen, setMasterOpen] = useState(true);
-  const [salesOpen, setSalesOpen] = useState(true);
-  const [customsOpen, setCustomsOpen] = useState(true);
-  const [documentsOpen, setDocumentsOpen] = useState(true);
-  const masterItems = masterDataGroup.items.filter(
-    (item) => item.to !== "/price-list" || (isPriceListAdminRole(role) && can("PRICE_LIST", "view"))
-  );
-  const salesItems = salesGroup.items.filter((item) => item.to !== "/sales/man-rfq" || can("SALES", "create"));
+  const { role, can, permissionsReady, permissionFailed } = useAuth();
+  const storeOnly = permissionsReady && isStoreOperatorRole(role);
+  const [openGroups, setOpenGroups] = useState(() => ({
+    dashboard: true,
+    inventory: true,
+    master: true,
+    sales: true,
+    customs: true,
+    documents: true,
+  }));
+
+  const nav =
+    permissionsReady && !permissionFailed
+      ? filterSidebarNav(SIDEBAR_NAV, { role, can, permissionsReady: true })
+      : [];
+
+  function toggleGroup(id) {
+    setOpenGroups((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
 
   return (
     <aside
@@ -116,138 +58,61 @@ export default function Sidebar({ open, onClose }) {
       <nav className="max-h-[calc(100vh-4rem)] overflow-y-auto p-3">
         <div className="erp-sidebar__section-header mb-2 px-2 text-xs">Menu</div>
         <ul className="erp-sidebar__menu">
-          {storeOnly ? (
+          {permissionFailed ? (
+            <li className="px-2 py-2 text-xs text-slate-500" data-testid="sidebar-permissions-failed">
+              Permissions unavailable
+            </li>
+          ) : !permissionsReady ? (
+            <li className="px-2 py-2 text-xs text-slate-500" data-testid="sidebar-permissions-loading">
+              Loading permissions…
+            </li>
+          ) : storeOnly ? (
             <li>
               <NavLink to="/store" className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
                 Store
               </NavLink>
             </li>
           ) : (
-            <>
-              <li>
-                <button type="button" className="erp-sidebar__group-btn" onClick={() => setDashboardOpen((v) => !v)}>
-                  <span>{dashboardGroup.label}</span>
-                  <span className="erp-sidebar__chevron">{dashboardOpen ? "▾" : "▸"}</span>
-                </button>
-                {dashboardOpen ? (
-                  <ul className="erp-sidebar__submenu">
-                    {dashboardGroup.items.map(({ to, label }) => (
-                      <li key={to}>
-                        <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/dashboard"}>
-                          {label}
-                        </NavLink>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </li>
-
-              <li>
-                <button type="button" className="erp-sidebar__group-btn" onClick={() => setInventoryOpen((v) => !v)}>
-                  <span>{inventoryGroup.label}</span>
-                  <span className="erp-sidebar__chevron">{inventoryOpen ? "▾" : "▸"}</span>
-                </button>
-                {inventoryOpen ? (
-                  <ul className="erp-sidebar__submenu">
-                    {inventoryGroup.items.map(({ to, label }) => (
-                      <li key={to}>
-                        <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/inventory"}>
-                          {label}
-                        </NavLink>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </li>
-
-              <li>
-                <button type="button" className="erp-sidebar__group-btn" onClick={() => setMasterOpen((v) => !v)}>
-                  <span>{masterDataGroup.label}</span>
-                  <span className="erp-sidebar__chevron">{masterOpen ? "▾" : "▸"}</span>
-                </button>
-                {masterOpen ? (
-                  <ul className="erp-sidebar__submenu">
-                    {masterItems.map(({ to, label }) => (
-                      <li key={to}>
-                        <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
-                          {label}
-                        </NavLink>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </li>
-
-              <li>
-                <button type="button" className="erp-sidebar__group-btn" onClick={() => setSalesOpen((v) => !v)}>
-                  <span>{salesGroup.label}</span>
-                  <span className="erp-sidebar__chevron">{salesOpen ? "▾" : "▸"}</span>
-                </button>
-                {salesOpen ? (
-                  <ul className="erp-sidebar__submenu">
-                    {salesItems.map(({ to, label }) => (
-                      <li key={to}>
-                        <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/sales"}>
-                          {label}
-                        </NavLink>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </li>
-
-              {flatLinks.slice(0, 5).map(({ to, label }) => (
-                <li key={to}>
-                  <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
-                    {label}
+            nav.map((entry) => {
+              if (entry.type === "group") {
+                const expanded = openGroups[entry.id] !== false;
+                return (
+                  <li key={entry.id}>
+                    <button
+                      type="button"
+                      className="erp-sidebar__group-btn"
+                      onClick={() => toggleGroup(entry.id)}
+                    >
+                      <span>{entry.label}</span>
+                      <span className="erp-sidebar__chevron">{expanded ? "▾" : "▸"}</span>
+                    </button>
+                    {expanded ? (
+                      <ul className="erp-sidebar__submenu">
+                        {entry.items.map(({ to, label }) => (
+                          <li key={to}>
+                            <NavLink
+                              to={to}
+                              className={({ isActive }) => linkClass(isActive)}
+                              onClick={onClose}
+                              end={to === "/dashboard" || to === "/inventory" || to === "/sales" || to === "/documents"}
+                            >
+                              {label}
+                            </NavLink>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </li>
+                );
+              }
+              return (
+                <li key={entry.to}>
+                  <NavLink to={entry.to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
+                    {entry.label}
                   </NavLink>
                 </li>
-              ))}
-
-              <li>
-                <button type="button" className="erp-sidebar__group-btn" onClick={() => setCustomsOpen((v) => !v)}>
-                  <span>{customsGroup.label}</span>
-                  <span className="erp-sidebar__chevron">{customsOpen ? "▾" : "▸"}</span>
-                </button>
-                {customsOpen ? (
-                  <ul className="erp-sidebar__submenu">
-                    {customsGroup.items.map(({ to, label }) => (
-                      <li key={to}>
-                        <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
-                          {label}
-                        </NavLink>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </li>
-
-              <li>
-                <button type="button" className="erp-sidebar__group-btn" onClick={() => setDocumentsOpen((v) => !v)}>
-                  <span>{documentsGroup.label}</span>
-                  <span className="erp-sidebar__chevron">{documentsOpen ? "▾" : "▸"}</span>
-                </button>
-                {documentsOpen ? (
-                  <ul className="erp-sidebar__submenu">
-                    {documentsGroup.items.map(({ to, label }) => (
-                      <li key={to}>
-                        <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose} end={to === "/documents"}>
-                          {label}
-                        </NavLink>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </li>
-
-              {flatLinks.slice(5).map(({ to, label }) => (
-                <li key={to}>
-                  <NavLink to={to} className={({ isActive }) => linkClass(isActive)} onClick={onClose}>
-                    {label}
-                  </NavLink>
-                </li>
-              ))}
-            </>
+              );
+            })
           )}
         </ul>
       </nav>

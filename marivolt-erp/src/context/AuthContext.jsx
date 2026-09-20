@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, loadStoredAuth, persistStoredAuth } from "../lib/api.js";
-import { canFromMatrix, isFullAdminRole, normalizeUserRole } from "../lib/rbac.js";
+import { canPerform } from "../lib/rbacAccess.js";
 
 const AuthContext = createContext(null);
 
@@ -14,6 +14,8 @@ export function AuthProvider({ children }) {
   const [auth, setAuth] = useState(() => loadAuth());
   const [authReady, setAuthReady] = useState(() => !loadAuth()?.token);
   const [permissionMatrix, setPermissionMatrix] = useState(null);
+  const [liveRole, setLiveRole] = useState("");
+  const [permissionStatus, setPermissionStatus] = useState("idle");
 
   const persist = useCallback((next) => {
     persistStoredAuth(next);
@@ -57,21 +59,41 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     if (!auth?.token) {
       setPermissionMatrix(null);
+      setLiveRole("");
+      setPermissionStatus("idle");
       return;
     }
     let cancelled = false;
+    setPermissionStatus("loading");
+    setPermissionMatrix(null);
+    setLiveRole("");
     api
       .get("/admin/me/permissions")
       .then(({ data }) => {
-        if (!cancelled) setPermissionMatrix(data?.matrix || {});
+        if (cancelled) return;
+        setPermissionMatrix(data?.matrix && typeof data.matrix === "object" ? data.matrix : {});
+        setLiveRole(String(data?.role || ""));
+        setPermissionStatus("ready");
       })
-      .catch(() => {
-        if (!cancelled) setPermissionMatrix({});
+      .catch((err) => {
+        if (cancelled) return;
+        const status = err?.status ?? err?.response?.status ?? 0;
+        if (status === 401 || status === 403) {
+          queryClient.clear();
+          persist(null);
+          setPermissionMatrix(null);
+          setLiveRole("");
+          setPermissionStatus("idle");
+          return;
+        }
+        setPermissionMatrix({});
+        setLiveRole("");
+        setPermissionStatus("failed");
       });
     return () => {
       cancelled = true;
     };
-  }, [auth?.token, auth?.user?.role]);
+  }, [auth?.token, queryClient, persist]);
 
   async function login(identifier, password) {
     const { data } = await api.post("/auth/login", { email: identifier, password });
@@ -131,18 +153,27 @@ export function AuthProvider({ children }) {
     queryClient.clear();
     persist(null);
     setPermissionMatrix(null);
+    setLiveRole("");
+    setPermissionStatus("idle");
   }
 
-  const role = auth?.user?.role || "";
+  const permissionsReady = permissionStatus === "ready";
+  const permissionFailed = permissionStatus === "failed";
+  const role = permissionsReady ? liveRole : "";
 
   const can = useCallback(
-    (moduleName, action) => {
-      const normalised = normalizeUserRole(role);
-      if (normalised === "super_admin") return true;
-      if (isFullAdminRole(role) && !permissionMatrix) return true;
-      return canFromMatrix(permissionMatrix, moduleName, action);
-    },
-    [role, permissionMatrix]
+    (moduleName, action) =>
+      canPerform(
+        {
+          permissionsReady,
+          permissionFailed,
+          liveRole,
+          matrix: permissionMatrix,
+        },
+        moduleName,
+        action
+      ),
+    [permissionsReady, permissionFailed, liveRole, permissionMatrix]
   );
 
   const value = {
@@ -152,6 +183,8 @@ export function AuthProvider({ children }) {
     requiresCompanySelection: !!auth?.requiresCompanySelection && !auth?.token,
     requires2FA: !!auth?.requires2FA && !auth?.token,
     permissionMatrix,
+    permissionsReady,
+    permissionFailed,
     role,
     can,
     login,

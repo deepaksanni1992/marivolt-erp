@@ -17,11 +17,15 @@ function withCompany(req, extra = {}) {
 }
 
 async function resolveActorAllowedCompanyIds(req) {
-  const user = await User.findById(req.user?.id).select("role allowedCompanies").lean();
+  const user = req.authUser || (await User.findById(req.user?.id).select("role allowedCompanies").lean());
   if (!user) return { user: null, allowedIds: [] };
+  const allowedIds =
+    Array.isArray(req.user?.allowedCompanyIds) && req.user.allowedCompanyIds.length
+      ? req.user.allowedCompanyIds.map(String)
+      : (user.allowedCompanies || []).map((x) => String(x));
   return {
-    user,
-    allowedIds: (user.allowedCompanies || []).map((x) => String(x)),
+    user: { ...user, role: req.user?.role || user.role },
+    allowedIds,
   };
 }
 

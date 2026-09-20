@@ -33,10 +33,10 @@ const adminRoles = ["super_admin", "company_admin", "admin"];
 
 const router = express.Router();
 
-// /admin/companies — S0: membership-scoped list/get; admin-only update; super-only create.
-// No requireCompanyContext so company switch / settings still work with token company.
-router.get("/companies", requireAuth, masters.listCompanies);
-router.get("/companies/:id", requireAuth, masters.getCompany);
+// /admin/companies — administrative directory: admin roles only.
+// Company switch for every user stays on GET /auth/companies (membership only).
+router.get("/companies", requireAuth, requireRole(...adminRoles), masters.listCompanies);
+router.get("/companies/:id", requireAuth, requireRole(...adminRoles), masters.getCompany);
 router.post(
   "/companies",
   requireAuth,
@@ -59,10 +59,10 @@ const settingsApprove = requirePermission("SETTINGS", "approve");
 const settingsDelete = requirePermission("SETTINGS", "delete");
 const auditView = requirePermission("AUDIT", "view");
 
-// Roles + permissions — `me/permissions` open to all, mutations to admins.
+// Live identity/matrix for the signed-in user. requireAuth reloads the DB user.
 router.get("/me/permissions", roles.getMyPermissions);
-router.get("/roles", settingsView, roles.listRoles);
-router.get("/roles/:id", settingsView, roles.getRole);
+router.get("/roles", settingsView, requireRole(...adminRoles), roles.listRoles);
+router.get("/roles/:id", settingsView, requireRole(...adminRoles), roles.getRole);
 router.post("/roles", settingsCreate, requireRole(...adminRoles), roles.createRole);
 router.put("/roles/:id", settingsEdit, requireRole(...adminRoles), roles.updateRole);
 router.delete("/roles/:id", settingsDelete, requireRole(...adminRoles), roles.deleteRole);

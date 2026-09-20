@@ -2,7 +2,8 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import AppLayout from "./components/AppLayout.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
-import { defaultHomePathForRole } from "./lib/rbac.js";
+import { defaultHomePathForRole, isStoreOperatorRole } from "./lib/rbac.js";
+import { firstAuthorizedPath } from "./lib/rbacAccess.js";
 
 import Login from "./pages/Login.jsx";
 import TwoFactorVerify from "./pages/TwoFactorVerify.jsx";
@@ -39,22 +40,53 @@ import MyProfile from "./pages/MyProfile.jsx";
 import ProfileSecurity from "./pages/ProfileSecurity.jsx";
 
 function HomeRedirect() {
-  const { role } = useAuth();
-  return <Navigate to={defaultHomePathForRole(role)} replace />;
+  const { role, can, permissionsReady, permissionFailed } = useAuth();
+  if (permissionFailed) {
+    return (
+      <div className="py-10 text-center text-sm text-slate-600" data-testid="permissions-failed">
+        Permissions unavailable
+      </div>
+    );
+  }
+  if (!permissionsReady) {
+    return (
+      <div className="py-10 text-center text-sm text-slate-600" data-testid="permissions-loading">
+        Checking permissions…
+      </div>
+    );
+  }
+  if (isStoreOperatorRole(role)) {
+    return <Navigate to={defaultHomePathForRole(role)} replace />;
+  }
+  return <Navigate to={firstAuthorizedPath({ role, can, permissionsReady: true })} replace />;
 }
 
 function CatchAllRedirect() {
-  const { isLoggedIn, requiresCompanySelection, requires2FA, authReady, role } = useAuth();
+  const { isLoggedIn, requiresCompanySelection, requires2FA, authReady, role, can, permissionsReady, permissionFailed } =
+    useAuth();
   if (!authReady) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50 text-sm text-gray-600">
+      <div className="flex min-h-screen items-center justify-center bg-gray-50 text-sm text-slate-600">
         Checking session…
       </div>
     );
   }
   if (requiresCompanySelection) return <Navigate to="/select-company" replace />;
   if (requires2FA) return <Navigate to="/verify-2fa" replace />;
-  if (isLoggedIn) return <Navigate to={defaultHomePathForRole(role)} replace />;
+  if (isLoggedIn) {
+    if (permissionFailed) return <Navigate to="/profile" replace />;
+    if (!permissionsReady) {
+      return (
+        <div className="flex min-h-screen items-center justify-center bg-gray-50 text-sm text-slate-600">
+          Checking permissions…
+        </div>
+      );
+    }
+    if (isStoreOperatorRole(role)) {
+      return <Navigate to={defaultHomePathForRole(role)} replace />;
+    }
+    return <Navigate to={firstAuthorizedPath({ role, can, permissionsReady: true })} replace />;
+  }
   return <Navigate to="/login" replace />;
 }
 

@@ -3,7 +3,7 @@ import { useAuth } from "../context/AuthContext.jsx";
 import PageHeader from "../components/erp/PageHeader.jsx";
 
 export default function MyProfile() {
-  const { auth } = useAuth();
+  const { auth, role, permissionsReady } = useAuth();
   const user = auth?.user || {};
   const loginId = user.email || user.username || "—";
 
@@ -29,7 +29,9 @@ export default function MyProfile() {
           ) : null}
           <div>
             <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Role</dt>
-            <dd className="mt-1 text-slate-800">{user.role || "—"}</dd>
+            <dd className="mt-1 text-slate-800">
+              {permissionsReady ? role || "—" : "Checking…"}
+            </dd>
           </div>
           <div>
             <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Company</dt>

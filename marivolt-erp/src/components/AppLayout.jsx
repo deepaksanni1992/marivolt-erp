@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Outlet } from "react-router-dom";
 import Sidebar from "./Sidebar.jsx";
 import Topbar from "./Topbar.jsx";
+import ModulePermissionGuard from "./ModulePermissionGuard.jsx";
 
 export default function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -26,7 +27,9 @@ export default function AppLayout() {
 
           <main className="p-4 md:p-6">
             <div className="mx-auto max-w-7xl">
-              <Outlet />
+              <ModulePermissionGuard>
+                <Outlet />
+              </ModulePermissionGuard>
             </div>
           </main>
         </div>

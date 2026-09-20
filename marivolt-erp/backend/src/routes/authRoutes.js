@@ -671,8 +671,10 @@ router.post("/switch-company", requireAuth, async (req, res) => {
   try {
     const companyId = String(req.body?.companyId || "").trim();
     if (!companyId) return res.status(400).json({ message: "companyId required" });
-    const user = await User.findById(req.user.id).lean();
-    if (!user) return res.status(401).json({ message: "User not found" });
+    const user =
+      req.authUser ||
+      (await User.findById(req.user.id).select("allowedCompanies isActive name email username role").lean());
+    if (!user || user.isActive === false) return res.status(401).json({ message: "User not found" });
     const allowedIds = Array.isArray(user.allowedCompanies)
       ? user.allowedCompanies.map((x) => String(x))
       : [];
@@ -717,8 +719,10 @@ router.post("/logout", requireAuth, async (req, res) => {
 
 router.get("/companies", requireAuth, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).lean();
-    if (!user) return res.status(401).json({ message: "User not found" });
+    const user =
+      req.authUser ||
+      (await User.findById(req.user.id).select("allowedCompanies isActive").lean());
+    if (!user || user.isActive === false) return res.status(401).json({ message: "User not found" });
     const allowedIds = Array.isArray(user.allowedCompanies)
       ? user.allowedCompanies.map((x) => String(x))
       : [];

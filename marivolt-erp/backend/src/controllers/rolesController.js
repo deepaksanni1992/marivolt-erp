@@ -8,6 +8,7 @@ import Role, {
   PERMISSION_ACTIONS,
   PERMISSION_MODULES,
   SYSTEM_ROLE_CODES,
+  allowedActionsForModule,
 } from "../models/Role.js";
 import {
   ROLE_DEFAULTS,
@@ -138,10 +139,15 @@ export async function getMyPermissions(req, res) {
       actions: PERMISSION_ACTIONS,
       matrix,
       role: req.user?.role || "",
+      roleIds: Array.isArray(req.user?.roleIds) ? req.user.roleIds.map(String) : [],
     });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
+}
+
+export function sanitiseRolePayload(body) {
+  return sanitisePayload(body);
 }
 
 function sanitisePayload(body) {
@@ -153,14 +159,18 @@ function sanitisePayload(body) {
   if (Array.isArray(out.permissions)) {
     out.permissions = out.permissions
       .filter((p) => p?.module)
-      .map((p) => ({
-        module: String(p.module).toUpperCase(),
-        actions: Array.isArray(p.actions)
-          ? p.actions
-              .map((a) => String(a).toLowerCase())
-              .filter((a) => PERMISSION_ACTIONS.includes(a))
-          : [],
-      }));
+      .map((p) => {
+        const moduleName = String(p.module).toUpperCase();
+        const allowed = new Set(allowedActionsForModule(moduleName));
+        return {
+          module: moduleName,
+          actions: Array.isArray(p.actions)
+            ? p.actions
+                .map((a) => String(a).toLowerCase())
+                .filter((a) => PERMISSION_ACTIONS.includes(a) && allowed.has(a))
+            : [],
+        };
+      });
   }
   return out;
 }

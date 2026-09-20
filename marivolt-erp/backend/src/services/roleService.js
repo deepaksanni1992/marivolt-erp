@@ -113,7 +113,10 @@ const SYSTEM_DEFAULTS = {
   }),
   VIEW_ONLY: buildMatrix({
     ...Object.fromEntries(
-      PERMISSION_MODULES.map((m) => [m, m === "PRICE_LIST" ? [] : READ_ONLY_ACTIONS])
+      PERMISSION_MODULES.map((m) => [
+        m,
+        m === "PRICE_LIST" || m === "SETTINGS" ? [] : READ_ONLY_ACTIONS,
+      ])
     ),
     TRACEABILITY: ["article_view"],
   }),
@@ -181,46 +184,101 @@ function permissionsFromOverrides(overrides) {
 
 /**
  * Compute and memoise the permission matrix for the current request.
- * Uses req.user.id when present, otherwise falls back to the request's
- * declared role enum.
+ * Uses the live database role on req.user (requireAuth reloads it).
+ * Assigned custom roleIds replace the enum matrix. Unresolved or failed
+ * custom-role lookups fail closed (empty matrix), never View Only / JWT defaults.
  */
-export async function resolvePermissions(req) {
+export function emptyPermissionMatrix() {
+  return buildMatrix({});
+}
+
+export function computeEffectivePermissions({
+  role,
+  roleIds = [],
+  permissionOverrides = [],
+  customRoleDocs = null,
+  customRoleLookupFailed = false,
+} = {}) {
+  if (customRoleLookupFailed) {
+    return emptyPermissionMatrix();
+  }
+
+  const uniqueRoleIds = [...new Set((roleIds || []).map((x) => String(x || "").trim()).filter(Boolean))];
+  if (uniqueRoleIds.length) {
+    if (!Array.isArray(customRoleDocs)) {
+      return emptyPermissionMatrix();
+    }
+    const foundIds = new Set(customRoleDocs.map((d) => String(d?._id || "")).filter(Boolean));
+    const allResolved = uniqueRoleIds.every((id) => foundIds.has(id));
+    if (!allResolved || customRoleDocs.length === 0) {
+      return emptyPermissionMatrix();
+    }
+    let merged = emptyPermissionMatrix();
+    for (const doc of customRoleDocs) {
+      merged = mergeMatrix(merged, permissionsFromRoleDoc(doc));
+    }
+    if (permissionOverrides?.length) {
+      merged = mergeMatrix(merged, permissionsFromOverrides(permissionOverrides));
+    }
+    return merged;
+  }
+
+  let merged = getDefaultPermissionsForRole(role);
+  if (permissionOverrides?.length) {
+    merged = mergeMatrix(merged, permissionsFromOverrides(permissionOverrides));
+  }
+  return merged;
+}
+
+export async function resolvePermissions(req, deps = {}) {
   if (req?._permissions) return req._permissions;
 
   const roleCode = req?.user?.role || "";
-  const base = getDefaultPermissionsForRole(roleCode);
-  let merged = base;
+  let user = req.authUser || null;
 
-  if (req?.user?.id) {
-    try {
-      const user = await User.findById(req.user.id)
-        .select("roleIds permissionOverrides role")
-        .lean();
-      if (user?.roleIds?.length) {
-        const docs = await Role.find({
-          _id: { $in: user.roleIds },
-          isActive: true,
-        })
-          .select("permissions code")
-          .lean();
-        if (docs.length) {
-          // Assigned custom roles are the access list, not extras on top of Staff/View Only.
-          merged = buildMatrix({});
-          for (const doc of docs) {
-            merged = mergeMatrix(merged, permissionsFromRoleDoc(doc));
-          }
-        }
-      }
-      if (user?.permissionOverrides?.length) {
-        merged = mergeMatrix(merged, permissionsFromOverrides(user.permissionOverrides));
-      }
-    } catch {
-      // Soft fall-through: legacy role defaults remain.
+  try {
+    if (!user && req?.user?.id) {
+      const findUser = deps.findUser || ((id) => User.findById(id).select("roleIds permissionOverrides role").lean());
+      user = await findUser(req.user.id);
     }
-  }
 
-  req._permissions = merged;
-  return merged;
+    const roleIds = user?.roleIds || req.user?.roleIds || [];
+    const uniqueRoleIds = [...new Set((roleIds || []).map((x) => String(x || "").trim()).filter(Boolean))];
+    let customRoleDocs = null;
+    if (uniqueRoleIds.length) {
+      const findRoles =
+        deps.findRoles ||
+        ((ids) =>
+          Role.find({
+            _id: { $in: ids },
+            isActive: true,
+          })
+            .select("permissions code")
+            .lean());
+      customRoleDocs = await findRoles(uniqueRoleIds);
+      if (!Array.isArray(customRoleDocs) || customRoleDocs.length !== uniqueRoleIds.length) {
+        console.warn("[rbac] unresolved custom roles; failing closed", {
+          userId: String(req.user?.id || ""),
+          expected: uniqueRoleIds.length,
+          found: Array.isArray(customRoleDocs) ? customRoleDocs.length : 0,
+        });
+        req._permissions = emptyPermissionMatrix();
+        return req._permissions;
+      }
+    }
+
+    req._permissions = computeEffectivePermissions({
+      role: user?.role || roleCode,
+      roleIds: uniqueRoleIds,
+      permissionOverrides: user?.permissionOverrides || [],
+      customRoleDocs,
+    });
+    return req._permissions;
+  } catch (err) {
+    console.warn("[rbac] permission resolve failed; failing closed", err?.message || "unknown error");
+    req._permissions = emptyPermissionMatrix();
+    return req._permissions;
+  }
 }
 
 export async function hasPermission(req, moduleName, action) {

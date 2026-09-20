@@ -62,6 +62,66 @@ export const PERMISSION_ACTIONS = [
   "price_tier_rock",
 ];
 
+/**
+ * Actions that may be assigned to a module. Role Form "All" and API
+ * sanitisation must use this list — never the global PERMISSION_ACTIONS set.
+ */
+export const MODULE_ALLOWED_ACTIONS = {
+  SALES: [
+    "view",
+    "create",
+    "edit",
+    "approve",
+    "cancel",
+    "export",
+    "delete",
+    "price_tier_sell",
+    "price_tier_sell_ii",
+    "price_tier_minm",
+    "price_tier_rock",
+  ],
+  STORE: ["view", "create", "edit", "approve", "cancel", "export", "delete", "post"],
+  ACCOUNTS: ["view", "create", "edit", "approve", "cancel", "export", "delete"],
+  LOGISTICS: ["view", "create", "edit", "approve", "cancel", "export"],
+  REPORTS: ["view", "create", "edit", "approve", "export", "delete"],
+  ITEM_MASTER: ["view", "create", "edit", "approve", "cancel", "export", "delete"],
+  PURCHASE: [
+    "view",
+    "create",
+    "edit",
+    "approve",
+    "cancel",
+    "export",
+    "delete",
+    "createFromAllocation",
+  ],
+  SETTINGS: ["view", "create", "edit", "approve", "delete"],
+  AUDIT: ["view", "export"],
+  CUSTOMS: [
+    "view",
+    "create",
+    "edit",
+    "approve",
+    "cancel",
+    "export",
+    "delete",
+    "override",
+    "reconcile",
+    "reconciliation_view",
+    "reconciliation_export",
+  ],
+  TRACEABILITY: ["article_view", "article_export"],
+  LABELS: ["view", "create", "edit", "print", "reprint", "admin"],
+  ARTICLE_CONVERSION: ["view", "create", "post", "delete", "reverse", "approve", "admin"],
+  ASN: ["view", "create", "edit", "post", "cancel"],
+  PRICE_LIST: ["view", "create", "edit", "export", "delete"],
+};
+
+export function allowedActionsForModule(moduleName) {
+  const m = String(moduleName || "").toUpperCase();
+  return Array.isArray(MODULE_ALLOWED_ACTIONS[m]) ? [...MODULE_ALLOWED_ACTIONS[m]] : [];
+}
+
 export const SYSTEM_ROLE_CODES = [
   "SUPER_ADMIN",
   "ADMIN",
