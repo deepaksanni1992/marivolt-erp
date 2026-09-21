@@ -900,7 +900,7 @@ run("Server routes enforce PRICE_LIST on management/export and SALES.create on R
   assert.match(plService, /injectFailureAfter/);
   assert.match(plService, /techSet\.spn = proposed\.spn/);
   assert.match(plService, /ItemSupplier\[0\]\.supplierPartNumber \(Supplier 1 P\/N\)/);
-  assert.match(rfqRoutes, /requirePermission\("SALES", "create"\)/);
+  assert.match(rfqRoutes, /requireAllPermissions\(\["SALES", "create"\], \["MAN_ENGINE", "create"\]\)/);
   assert.match(rfqRoutes, /\/models/);
   assert.match(rfqRoutes, /\/items\/:article/);
   assert.doesNotMatch(rfqRoutes, /PRICE_LIST/);

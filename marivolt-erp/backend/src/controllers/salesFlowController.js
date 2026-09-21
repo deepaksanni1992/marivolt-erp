@@ -14,6 +14,7 @@ import PaymentReceipt from "../models/PaymentReceipt.js";
 import Customer from "../models/Customer.js";
 import Company from "../models/Company.js";
 import Item from "../models/Item.js";
+import { assertManEngineWriteAccess } from "../utils/manEngineAccess.js";
 import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
 import {
   applyManualSalesDocumentNumber,
@@ -2405,7 +2406,7 @@ export async function createOA(req, res) {
       return res.status(422).json({ message: SALES_FLOW_ERRORS.OA_MUST_FROM_QTN });
     }
     const quotation = await Quotation.findOne(withCompany(req, { _id: linkedQtnId }))
-      .select("_id quotationNo customerId customerName status")
+      .select("_id quotationNo customerId customerName status sourceType engine brand model")
       .lean();
     if (!quotation) {
       return res.status(422).json({ message: SALES_FLOW_ERRORS.OA_MUST_FROM_QTN });
@@ -2447,6 +2448,12 @@ export async function createOA(req, res) {
         code: "VALIDATION",
       });
     }
+    await assertManEngineWriteAccess(req, {
+      lines,
+      header: body,
+      extraHeaders: [quotation],
+      sourceType: quotation.sourceType || body.sourceType,
+    });
     let oaNo;
     if (String(body.oaNo || "").trim()) {
       const prepared = await applyManualSalesDocumentNumber({
@@ -2526,7 +2533,7 @@ export async function createOA(req, res) {
       number: req.body?.oaNo,
     });
     if (dup) return res.status(dup.statusCode).json({ message: dup.message });
-    res.status(err.statusCode || 400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
 
@@ -2649,6 +2656,11 @@ export async function updateOA(req, res) {
       doc.status = req.body.status;
     }
     doc.lines = normalizeLines(doc.lines || []);
+    await assertManEngineWriteAccess(req, {
+      lines: doc.lines,
+      header: doc,
+      sourceType: doc.sourceType,
+    });
     Object.assign(doc, computeTotals(doc.lines, doc));
     const previousCommercial = roundMoney(Math.max(0, Number(beforeSnapshot.grandTotal) || 0));
     const revisedCommercial = roundMoney(Math.max(0, Number(doc.grandTotal) || 0));
@@ -2761,7 +2773,7 @@ export async function updateOA(req, res) {
       number: req.body?.oaNo,
     });
     if (dup) return res.status(dup.statusCode).json({ message: dup.message });
-    res.status(err.statusCode || 400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
 

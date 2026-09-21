@@ -3,6 +3,7 @@ import PurchaseRequisition from "../models/PurchaseRequisition.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
 import { writeAudit, writeStatusChange } from "../services/auditService.js";
+import { assertManEngineWriteAccess } from "../utils/manEngineAccess.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -59,6 +60,7 @@ export async function createPurchaseRequisition(req, res) {
     const body = { ...req.body };
     const lines = normalizeLines(body.lines);
     if (!lines.length) return res.status(400).json({ message: "At least one line is required" });
+    await assertManEngineWriteAccess(req, { lines, header: body });
     const prNo =
       String(body.prNo || "").trim() ||
       (await nextSequentialNumber(PurchaseRequisition, "prNo", "PR", {
@@ -93,7 +95,7 @@ export async function createPurchaseRequisition(req, res) {
     });
     res.status(201).json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
 
@@ -109,6 +111,7 @@ export async function updatePurchaseRequisition(req, res) {
     const body = { ...req.body };
     const lines = body.lines ? normalizeLines(body.lines) : doc.lines;
     if (!lines.length) return res.status(400).json({ message: "At least one line is required" });
+    await assertManEngineWriteAccess(req, { lines, header: doc });
     doc.branchId = body.branchId ?? doc.branchId;
     doc.warehouseId = body.warehouseId ?? doc.warehouseId;
     doc.requester = body.requester !== undefined ? String(body.requester || "").trim() : doc.requester;
@@ -128,7 +131,7 @@ export async function updatePurchaseRequisition(req, res) {
     });
     res.json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
 

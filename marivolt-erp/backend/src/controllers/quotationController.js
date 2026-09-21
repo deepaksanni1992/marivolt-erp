@@ -25,6 +25,7 @@ import {
   roundQuotationMoney,
   sanitizeCustomerQuotationPrint,
 } from "../utils/manPriceList.js";
+import { assertManEngineWriteAccess } from "../utils/manEngineAccess.js";
 import {
   buildOaWorkingCopyFromQuotation,
   buildQuotationSearchFilterForOA,
@@ -374,6 +375,11 @@ export async function persistNewQuotation(req, rawBody = {}, { skipAutoCreateIte
     e.statusCode = 400;
     throw e;
   }
+  await assertManEngineWriteAccess(req, {
+    lines: body.lines,
+    header: body,
+    sourceType: body.sourceType,
+  });
   const customer = await resolveCustomerFromMaster(req, body);
   body.customerId = customer._id;
   body.customerName = customer.name;
@@ -456,7 +462,7 @@ export async function createQuotation(req, res) {
       number: req.body?.quotationNo,
     });
     if (dup) return res.status(dup.statusCode).json({ message: dup.message });
-    res.status(err.statusCode || 400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
 
@@ -585,6 +591,11 @@ export async function updateQuotation(req, res) {
     if (!doc.lines.length) {
       return res.status(400).json({ message: "Each line must contain article, description, uom, qty and price" });
     }
+    await assertManEngineWriteAccess(req, {
+      lines: doc.lines,
+      header: doc,
+      sourceType: doc.sourceType,
+    });
     await doc.save();
     await autoCreateItemsFromQuotation({ req, quotation: doc });
     const customerFieldChanges = diffCustomerTransactionFields(beforeSnapshot, doc);
@@ -622,7 +633,7 @@ export async function updateQuotation(req, res) {
       number: req.body?.quotationNo,
     });
     if (dup) return res.status(dup.statusCode).json({ message: dup.message });
-    res.status(err.statusCode || 400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
 
@@ -750,6 +761,11 @@ export async function duplicateQuotation(req, res) {
     if (src.status === "CANCELLED") {
       return res.status(400).json({ message: "Cannot duplicate cancelled quotation" });
     }
+    await assertManEngineWriteAccess(req, {
+      lines: src.lines,
+      header: src,
+      sourceType: src.sourceType,
+    });
     const nextNo = await nextUniqueSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
@@ -773,7 +789,7 @@ export async function duplicateQuotation(req, res) {
     });
     res.status(201).json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
 

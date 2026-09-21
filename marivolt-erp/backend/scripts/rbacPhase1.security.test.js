@@ -261,6 +261,8 @@ run("View Only / Staff defaults omit SETTINGS", () => {
   const staff = getDefaultPermissionsForRole("staff");
   assert.deepEqual(viewOnly.SETTINGS, []);
   assert.deepEqual(staff.SETTINGS, []);
+  assert.deepEqual(viewOnly.MAN_ENGINE, []);
+  assert.deepEqual(staff.MAN_ENGINE, []);
   assert.ok(viewOnly.SALES.includes("view"));
   assert.ok(staff.SALES.includes("view"));
 });
@@ -664,6 +666,7 @@ run("Frontend/backend module action catalogues match", () => {
   assert.ok(FE_MODULE_ACTIONS.ARTICLE_CONVERSION.includes("admin"));
   assert.ok(FE_MODULE_ACTIONS.ITEM_MASTER.includes("approve"));
   assert.ok(FE_MODULE_ACTIONS.ITEM_MASTER.includes("cancel"));
+  assert.deepEqual(FE_MODULE_ACTIONS.MAN_ENGINE, ["view", "create"]);
   const storeOp = getDefaultPermissionsForRole("store_operator");
   assert.ok(storeOp.STORE.includes("post"));
 });
@@ -744,6 +747,40 @@ run("Fail-closed resolver does not keep View Only defaults", () => {
   const src = fs.readFileSync(path.join(backendRoot, "src/services/roleService.js"), "utf8");
   assert.match(src, /failing closed/);
   assert.doesNotMatch(src, /Soft fall-through: legacy role defaults remain/);
+});
+
+run("Purchase & Sales cannot open MAN RFQ; Sales can", () => {
+  const himanshu = getDefaultPermissionsForRole("purchase_sales");
+  const sales = getDefaultPermissionsForRole("sales");
+  const purchase = getDefaultPermissionsForRole("purchase");
+  assert.deepEqual(himanshu.MAN_ENGINE, []);
+  assert.ok(himanshu.SALES.includes("create"));
+  assert.ok(himanshu.PURCHASE.includes("create"));
+  assert.ok(!himanshu.ASN.includes("create"));
+  assert.ok(sales.MAN_ENGINE.includes("create"));
+  assert.ok(purchase.MAN_ENGINE.includes("create"));
+  const himanshuCtx = {
+    role: "purchase_sales",
+    can: canFromStaticMatrix(himanshu),
+    permissionsReady: true,
+  };
+  const salesCtx = { role: "sales", can: canFromStaticMatrix(sales), permissionsReady: true };
+  assert.equal(canAccessPath("/sales/man-rfq", himanshuCtx), false);
+  assert.equal(canAccessPath("/sales", himanshuCtx), true);
+  assert.equal(canAccessPath("/purchase", himanshuCtx), true);
+  assert.equal(canAccessPath("/asn", himanshuCtx), false);
+  assert.equal(canAccessPath("/sales/man-rfq", salesCtx), true);
+  const hrefs = filterSidebarNav(SIDEBAR_NAV, himanshuCtx).flatMap((e) =>
+    e.items ? e.items.map((i) => i.to) : [e.to]
+  );
+  assert.ok(!hrefs.includes("/sales/man-rfq"));
+  assert.ok(hrefs.includes("/sales"));
+  assert.ok(hrefs.includes("/purchase"));
+});
+
+run("MAN RFQ API requires SALES.create and MAN_ENGINE.create", () => {
+  const src = fs.readFileSync(path.join(backendRoot, "src/routes/manRfqRoutes.js"), "utf8");
+  assert.match(src, /requireAllPermissions\(\["SALES", "create"\], \["MAN_ENGINE", "create"\]\)/);
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

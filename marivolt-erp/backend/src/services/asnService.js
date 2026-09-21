@@ -10,6 +10,7 @@ import PurchaseOrder from "../models/PurchaseOrder.js";
 import Document from "../models/Document.js";
 import { writeAudit, writeStatusChange } from "./auditService.js";
 import { nextAsnNo } from "./asnNumberService.js";
+import { assertManEngineWriteAccess } from "../utils/manEngineAccess.js";
 import { ensureLineCounterFloor } from "../utils/quantitySerialization.js";
 import {
   ASN_ACTIVE_STATUSES,
@@ -706,6 +707,7 @@ export async function createAsn(req, body = {}) {
   if (body.supplierId && po.supplierId && !sameCompanyId(body.supplierId, po.supplierId)) {
     throw new AsnError("Supplier does not match the source purchase order", 400, "ASN_SUPPLIER_MISMATCH");
   }
+  await assertManEngineWriteAccess(req, { lines: po.lines, header: po });
 
   let saved;
   const session = await mongoose.startSession();
@@ -777,6 +779,7 @@ export async function updateAsn(req, id, body = {}) {
 
   if (wantsLines) {
     const po = await loadPoForCompany(companyId, doc.sourcePoId);
+    await assertManEngineWriteAccess(req, { lines: po.lines, header: po });
     const session = await mongoose.startSession();
     try {
       await session.withTransaction(async () => {

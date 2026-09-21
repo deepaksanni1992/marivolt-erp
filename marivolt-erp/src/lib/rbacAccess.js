@@ -62,6 +62,7 @@ export const MODULE_ALLOWED_ACTIONS = Object.freeze({
   ARTICLE_CONVERSION: Object.freeze(["view", "create", "post", "delete", "reverse", "approve", "admin"]),
   ASN: Object.freeze(["view", "create", "edit", "post", "cancel"]),
   PRICE_LIST: Object.freeze(["view", "create", "edit", "export", "delete"]),
+  MAN_ENGINE: Object.freeze(["view", "create"]),
 });
 
 export const DANGEROUS_ROLE_ACTIONS = Object.freeze(["delete", "admin", "override", "post", "reverse"]);
@@ -84,7 +85,13 @@ export const ROUTE_ACCESS_RULES = Object.freeze([
   { prefix: "/price-list", module: "PRICE_LIST", action: "view", requirePriceListAdmin: true },
   { prefix: "/purchase", module: "PURCHASE", action: "view" },
   { prefix: "/asn", module: "ASN", action: "view" },
-  { prefix: "/sales/man-rfq", module: "SALES", action: "create" },
+  {
+    prefix: "/sales/man-rfq",
+    all: [
+      ["SALES", "create"],
+      ["MAN_ENGINE", "create"],
+    ],
+  },
   { prefix: "/sales", module: "SALES", action: "view" },
   { prefix: "/store", module: "STORE", action: "view" },
   {
@@ -217,6 +224,9 @@ function ruleAllows(rule, { role, can }) {
   if (rule.requireAdmin && !isFullAdminRole(role)) return false;
   if (Array.isArray(rule.any) && rule.any.length) {
     return rule.any.some(([moduleName, action]) => can(moduleName, action));
+  }
+  if (Array.isArray(rule.all) && rule.all.length) {
+    return rule.all.every(([moduleName, action]) => can(moduleName, action));
   }
   if (rule.module) return can(rule.module, rule.action || "view");
   return Boolean(rule.requireAdmin || rule.requirePriceListAdmin);

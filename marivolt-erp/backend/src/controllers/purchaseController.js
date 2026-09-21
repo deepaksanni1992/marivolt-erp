@@ -18,6 +18,7 @@ import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js"
 import { listAsnsForPurchaseOrder, getActiveAsnQtyByPoLine, assertPoHasNoActiveAsns } from "../services/asnService.js";
 import { AsnError, validatePoLinesAgainstActiveAsn } from "../utils/asnRules.js";
 import { buildPurchaseOrderListFilter } from "../utils/purchaseOrderListFilter.js";
+import { assertManEngineWriteAccess } from "../utils/manEngineAccess.js";
 import {
   calcPoDiscountTotal,
   calcPoGrandTotal,
@@ -302,6 +303,7 @@ export async function createPurchaseOrder(req, res) {
         message: "At least one line with Article Nr. (or item / part code) and quantity is required",
       });
     }
+    await assertManEngineWriteAccess(req, { lines: body.lines, header: body });
     const company = await Company.findById(req.companyId).lean();
     Object.assign(body, buyerSnapshotFromCompany(company));
     // Capture client payment fields before commercial defaults fill empty payment.
@@ -410,7 +412,7 @@ export async function createPurchaseOrder(req, res) {
     }
     throw lastErr || new Error("Could not create purchase order");
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
 
@@ -454,6 +456,7 @@ export async function duplicatePurchaseOrder(req, res) {
     if (!lines.length) {
       return res.status(400).json({ message: "Source purchase order has no lines to duplicate" });
     }
+    await assertManEngineWriteAccess(req, { lines, header: src });
 
     const company = await Company.findById(req.companyId).lean();
     const {
@@ -548,7 +551,7 @@ export async function duplicatePurchaseOrder(req, res) {
     }
     throw lastErr || new Error("Could not duplicate purchase order");
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
 
@@ -647,6 +650,7 @@ export async function updatePurchaseOrder(req, res) {
       }
     }
     doc.lines = normalizePoLines(doc.lines);
+    await assertManEngineWriteAccess(req, { lines: doc.lines, header: doc });
     if (doc.sourceOrderAllocationId) {
       const allocation = await OrderAllocation.findOne(withCompany(req, { _id: doc.sourceOrderAllocationId })).lean();
       if (!allocation) {
@@ -718,7 +722,7 @@ export async function updatePurchaseOrder(req, res) {
     });
     res.json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
 
@@ -1230,6 +1234,7 @@ export async function importPurchaseOrders(req, res) {
           lines: normalizePoLines(row.lines),
         });
         if (!payload.lines.length) throw new Error("no valid lines after normalize");
+        await assertManEngineWriteAccess(req, { lines: payload.lines, header: payload });
         let saved = null;
         for (let attempt = 0; attempt < MAX_PO_NUMBER_SAVE_RETRIES; attempt += 1) {
           try {

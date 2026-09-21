@@ -35,6 +35,31 @@ const FULL_ACCESS = buildMatrix(
   Object.fromEntries(PERMISSION_MODULES.map((m) => [m, [...ALL_ACTIONS]]))
 );
 
+const MAN_ENGINE_WRITE = ["view", "create"];
+
+/** Shared commercial matrix for Sales and Purchase & Sales, before MAN_ENGINE. */
+const SALES_COMMERCIAL = {
+  SALES: [
+    "view",
+    "create",
+    "edit",
+    "approve",
+    "cancel",
+    "export",
+    "price_tier_sell",
+    "price_tier_sell_ii",
+    "price_tier_minm",
+  ],
+  PURCHASE: ["view", "create", "createFromAllocation"],
+  CUSTOMS: ["view", "create", "cancel"],
+  TRACEABILITY: ["article_view"],
+  REPORTS: READ_ONLY_ACTIONS,
+  ITEM_MASTER: ["view", "export"],
+  ACCOUNTS: ["view"],
+  LOGISTICS: ["view"],
+  STORE: ["view"],
+};
+
 const SYSTEM_DEFAULTS = {
   SUPER_ADMIN: FULL_ACCESS,
   ADMIN: FULL_ACCESS,
@@ -43,26 +68,11 @@ const SYSTEM_DEFAULTS = {
     PRICE_LIST: [],
   },
   SALES: buildMatrix({
-    SALES: [
-      "view",
-      "create",
-      "edit",
-      "approve",
-      "cancel",
-      "export",
-      "price_tier_sell",
-      "price_tier_sell_ii",
-      "price_tier_minm",
-    ],
-    PURCHASE: ["view", "create", "createFromAllocation"],
-    CUSTOMS: ["view", "create", "cancel"],
-    TRACEABILITY: ["article_view"],
-    REPORTS: READ_ONLY_ACTIONS,
-    ITEM_MASTER: ["view", "export"],
-    ACCOUNTS: ["view"],
-    LOGISTICS: ["view"],
-    STORE: ["view"],
+    ...SALES_COMMERCIAL,
+    MAN_ENGINE: MAN_ENGINE_WRITE,
   }),
+  /** Purchase & Sales (Himanshu): same commercial access as Sales, without MAN engine. */
+  PURCHASE_SALES: buildMatrix(SALES_COMMERCIAL),
   PURCHASE: buildMatrix({
     PURCHASE: ["view", "create", "edit", "approve", "cancel", "export", "createFromAllocation"],
     ITEM_MASTER: ["view", "create", "edit", "export"],
@@ -70,6 +80,7 @@ const SYSTEM_DEFAULTS = {
     REPORTS: READ_ONLY_ACTIONS,
     STORE: ["view"],
     ASN: ["view", "create", "edit", "post", "cancel"],
+    MAN_ENGINE: MAN_ENGINE_WRITE,
   }),
   STORE: buildMatrix({
     STORE: ["view", "create", "edit", "approve", "cancel", "export"],
@@ -103,6 +114,7 @@ const SYSTEM_DEFAULTS = {
     SALES: ["view"],
     STORE: ["view"],
     ASN: ["view", "edit", "post"],
+    MAN_ENGINE: MAN_ENGINE_WRITE,
   }),
   ACCOUNTS: buildMatrix({
     ACCOUNTS: ["view", "create", "edit", "approve", "cancel", "export"],
@@ -115,7 +127,7 @@ const SYSTEM_DEFAULTS = {
     ...Object.fromEntries(
       PERMISSION_MODULES.map((m) => [
         m,
-        m === "PRICE_LIST" || m === "SETTINGS" ? [] : READ_ONLY_ACTIONS,
+        m === "PRICE_LIST" || m === "SETTINGS" || m === "MAN_ENGINE" ? [] : READ_ONLY_ACTIONS,
       ])
     ),
     TRACEABILITY: ["article_view"],
@@ -128,7 +140,7 @@ const LEGACY_ROLE_MAP = {
   company_admin: "COMPANY_ADMIN",
   admin: "ADMIN",
   staff: "VIEW_ONLY",
-  purchase_sales: "SALES",
+  purchase_sales: "PURCHASE_SALES",
   accounts_logistics: "ACCOUNTS",
   sales: "SALES",
   purchase: "PURCHASE",

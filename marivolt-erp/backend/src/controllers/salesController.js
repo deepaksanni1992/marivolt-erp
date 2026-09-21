@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import SalesDoc from "../models/SalesDoc.js";
 import { nextSequentialNumber } from "../utils/docNumbers.js";
+import { assertManEngineWriteAccess } from "../utils/manEngineAccess.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -28,6 +29,7 @@ export async function listSalesOrders(req, res) {
 export async function createSalesOrder(req, res) {
   try {
     const body = { ...req.body };
+    await assertManEngineWriteAccess(req, { lines: body.lines || [], header: body });
     const prefix = `${req.companyCode || "CMP"}-SO`;
     const docNo =
       body.docNo ||
@@ -42,7 +44,7 @@ export async function createSalesOrder(req, res) {
     });
     res.status(201).json(doc);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
 

@@ -34,6 +34,7 @@ export const PERMISSION_MODULES = [
   "ARTICLE_CONVERSION",
   "ASN",
   "PRICE_LIST",
+  "MAN_ENGINE",
 ];
 
 export const PERMISSION_ACTIONS = [
@@ -115,6 +116,7 @@ export const MODULE_ALLOWED_ACTIONS = {
   ARTICLE_CONVERSION: ["view", "create", "post", "delete", "reverse", "approve", "admin"],
   ASN: ["view", "create", "edit", "post", "cancel"],
   PRICE_LIST: ["view", "create", "edit", "export", "delete"],
+  MAN_ENGINE: ["view", "create"],
 };
 
 export function allowedActionsForModule(moduleName) {
