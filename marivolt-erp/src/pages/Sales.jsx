@@ -27,6 +27,7 @@ import CreateInvoiceFromPackingModal from "../components/sales/CreateInvoiceFrom
 import OrderAllocationDetailModal from "../components/sales/OrderAllocationDetailModal.jsx";
 import ConvertAllocationToPoModal from "../components/sales/ConvertAllocationToPoModal.jsx";
 import OaCreateModal from "../components/sales/OaCreateModal.jsx";
+import ItemMasterArticleSelect from "../components/items/ItemMasterArticleSelect.jsx";
 import CustomerTransactionDetailsFields from "../components/sales/CustomerTransactionDetailsFields.jsx";
 import ProformaPaymentRequestPanel from "../components/sales/ProformaPaymentRequestPanel.jsx";
 import {
@@ -6240,11 +6241,22 @@ ${GLOBAL_REPORT_TABLE_CSS}
                         <tr key={idx} className="border-t">
                           <td className="px-2 py-1">{idx + 1}</td>
                           <td className="px-2 py-1">
-                            <TextInput
+                            <ItemMasterArticleSelect
                               value={line.article || ""}
-                              onChange={(e) => {
+                              onSelect={(item) => {
                                 const lines = [...detailQuotationDraftForm.lines];
-                                lines[idx] = { ...line, article: e.target.value.toUpperCase(), serialNo: idx + 1, totalPrice };
+                                lines[idx] = item
+                                  ? {
+                                      ...line,
+                                      article: item.article,
+                                      description: item.description || item.itemName || "",
+                                      partNumber: item.partNumber || item.spn || "",
+                                      uom: item.uom || "PCS",
+                                      materialCode: item.materialCode || "",
+                                      serialNo: idx + 1,
+                                      totalPrice,
+                                    }
+                                  : { ...line, article: "", serialNo: idx + 1, totalPrice };
                                 setDetailQuotationDraftForm((f) => ({ ...f, lines }));
                               }}
                             />
@@ -9396,11 +9408,22 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     <tr key={idx} className="border-t">
                       <td className="px-2 py-1">{idx + 1}</td>
                       <td className="px-2 py-1">
-                        <TextInput
+                        <ItemMasterArticleSelect
                           value={line.article || ""}
-                          onChange={(e) => {
+                          onSelect={(item) => {
                             const lines = [...form.lines];
-                            lines[idx] = { ...line, article: e.target.value.toUpperCase(), serialNo: idx + 1, totalPrice };
+                            lines[idx] = item
+                              ? {
+                                  ...line,
+                                  article: item.article,
+                                  description: item.description || item.itemName || "",
+                                  partNumber: item.partNumber || item.spn || "",
+                                  uom: item.uom || "PCS",
+                                  materialCode: item.materialCode || "",
+                                  serialNo: idx + 1,
+                                  totalPrice,
+                                }
+                              : { ...line, article: "", serialNo: idx + 1, totalPrice };
                             setForm((f) => ({ ...f, lines }));
                           }}
                         />

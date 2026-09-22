@@ -7,7 +7,6 @@ import PurchaseOrder from "../models/PurchaseOrder.js";
 import StockLocation from "../models/StockLocation.js";
 import StockLedger from "../models/StockLedger.js";
 import * as stockService from "./stockService.js";
-import { syncPoLinesToItemMaster } from "./poItemMasterSyncService.js";
 import {
   claimPoLineReceivedQty,
   derivePoReceiptStatus,
@@ -112,15 +111,6 @@ export async function receiveGrnItemIntoStock({
   provenance = {},
 } = {}) {
   const article = upper(line.article);
-  await syncPoLinesToItemMaster({
-    companyId: grn.companyId || req.companyId,
-    companyCode: req.companyCode,
-    poNo: sourcePo?.poNo || sourcePo?.poNumber || grn.poNo,
-    supplierName: grn.supplierName,
-    header: sourcePo || {},
-    lines: [line],
-    session,
-  });
   const wh = resolveGrnWarehouseCode(line.warehouse);
   const putaway = t(line.location) || wh;
   if (!putaway) throw new Error("Location is required for selected GRN line.");

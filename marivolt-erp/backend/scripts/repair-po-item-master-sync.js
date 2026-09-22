@@ -1,3 +1,12 @@
+/**
+ * Repair-only: historical PO → Item Master fill.
+ *
+ * Default is dry-run. No Item Master writes unless `--apply` is passed.
+ * Do not run against production without an explicit operator decision.
+ *
+ *   node scripts/repair-po-item-master-sync.js
+ *   node scripts/repair-po-item-master-sync.js --apply
+ */
 import mongoose from "mongoose";
 import dotenv from "dotenv";
 import path from "path";
@@ -26,12 +35,17 @@ function companyLabel(company, companyId) {
 }
 
 async function main() {
+  const apply = process.argv.includes("--apply");
   if (!process.env.MONGO_URI) {
     throw new Error("MONGO_URI missing in .env");
   }
 
   await mongoose.connect(process.env.MONGO_URI);
-  console.log("Connected. Repairing PO -> Item Master sync company-wise...");
+  console.log(
+    apply
+      ? "Connected. APPLY mode: PO → Item Master repair will write."
+      : "Connected. Dry-run only. Pass --apply to write Item Master records."
+  );
 
   const [companies, poCompanyIds] = await Promise.all([
     Company.find({}).sort({ name: 1 }).lean(),
@@ -50,6 +64,10 @@ async function main() {
     const subtotal = { scanned: 0, created: 0, updated: 0, unchanged: 0, skipped: 0 };
 
     for (const po of pos) {
+      if (!apply) {
+        subtotal.scanned += (po.lines || []).length;
+        continue;
+      }
       const result = await syncPoLinesToItemMaster({
         companyId: po.companyId,
         companyCode: company?.code || "",
@@ -57,6 +75,7 @@ async function main() {
         supplierName: po.supplierName || "",
         header: po,
         lines: po.lines || [],
+        allowRepairWrite: true,
       });
       addSummary(subtotal, result);
     }
@@ -69,14 +88,18 @@ async function main() {
     );
   }
 
-  console.log("Repair summary:");
+  console.log(apply ? "Repair summary:" : "Dry-run summary (no Item Master writes):");
   console.log(`Companies: ${grand.companies}`);
   console.log(`Purchase orders scanned: ${grand.purchaseOrders}`);
   console.log(`PO lines scanned: ${grand.scanned}`);
-  console.log(`Item Master records created: ${grand.created}`);
-  console.log(`Item Master records filled: ${grand.updated}`);
-  console.log(`Existing complete/unchanged lines: ${grand.unchanged}`);
-  console.log(`Skipped lines without identifiers: ${grand.skipped}`);
+  if (apply) {
+    console.log(`Item Master records created: ${grand.created}`);
+    console.log(`Item Master records filled: ${grand.updated}`);
+    console.log(`Existing complete/unchanged lines: ${grand.unchanged}`);
+    console.log(`Skipped lines without identifiers: ${grand.skipped}`);
+  } else {
+    console.log("No writes performed. Re-run with --apply to mutate Item Master.");
+  }
   await mongoose.disconnect();
 }
 

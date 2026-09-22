@@ -898,7 +898,8 @@ run("Server routes enforce PRICE_LIST on management/export and SALES.create on R
   assert.match(migrate, /sourceType: "MAN_RFQ"/);
   assert.match(plService, /runMongoTransaction/);
   assert.match(plService, /injectFailureAfter/);
-  assert.match(plService, /techSet\.spn = proposed\.spn/);
+  assert.match(plService, /Price List import never writes Item Master/);
+  assert.doesNotMatch(plService, /techSet\.spn = proposed\.spn/);
   assert.match(plService, /ItemSupplier\[0\]\.supplierPartNumber \(Supplier 1 P\/N\)/);
   assert.match(rfqRoutes, /requireAllPermissions\(\["SALES", "create"\], \["MAN_ENGINE", "create"\]\)/);
   assert.match(rfqRoutes, /\/models/);
@@ -995,15 +996,16 @@ run("Server routes enforce PRICE_LIST on management/export and SALES.create on R
 run("UI routes and Item Master MAN tab exist; stock is not written by this module", () => {
   const app = fs.readFileSync(path.join(feRoot, "App.jsx"), "utf8");
   const sidebar = fs.readFileSync(path.join(feRoot, "components", "Sidebar.jsx"), "utf8");
+  const rbacAccess = fs.readFileSync(path.join(feRoot, "lib", "rbacAccess.js"), "utf8");
   const itemMaster = fs.readFileSync(path.join(feRoot, "pages", "ItemMaster.jsx"), "utf8");
   const plService = fs.readFileSync(path.join(srcRoot, "services", "manPriceListService.js"), "utf8");
   const rfqService = fs.readFileSync(path.join(srcRoot, "services", "manRfqService.js"), "utf8");
   const stockService = fs.readFileSync(path.join(srcRoot, "services", "manRfqService.js"), "utf8");
   assert.match(app, /path="price-list"/);
   assert.match(app, /path="sales\/man-rfq"/);
-  assert.match(sidebar, /Price List/);
-  assert.match(sidebar, /isPriceListAdminRole/);
-  assert.match(sidebar, /MAN RFQ \/ Quotation/);
+  assert.match(rbacAccess, /Price List/);
+  assert.match(rbacAccess, /MAN RFQ \/ Quotation/);
+  assert.match(sidebar, /filterSidebarNav/);
   assert.match(itemMaster, /MAN Price List/);
   assert.match(itemMaster, /Engine Model/);
   const priceListPage = fs.readFileSync(path.join(feRoot, "pages", "PriceList.jsx"), "utf8");

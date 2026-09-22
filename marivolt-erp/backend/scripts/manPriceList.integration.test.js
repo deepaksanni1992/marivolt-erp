@@ -237,19 +237,30 @@ if (!okPreview.canApply) {
   throw new Error(`ok preview not applyable: ${JSON.stringify(okPreview.errors)}`);
 }
 
-await run("Successful apply writes ItemTechnical.spn and ItemSupplier Supplier 1 P/N", async () => {
+await run("Successful apply writes prices only and does not overwrite Item Master", async () => {
   const result = await applyImport(req, okPreview.previewId);
   assert.equal(result.alreadyApplied, false);
   const item = await ItemMaster.findOne({ companyId: company._id, article: "A001" }).lean();
   const tech = await ItemTechnical.findOne({ companyId: company._id, article: "A001" }).lean();
   const suppliers = await ItemSupplier.find({ companyId: company._id, article: "A001" }).sort({ supplierName: 1 }).lean();
-  assert.equal(displayedItemMasterSpn(item, tech), "051.001");
-  assert.equal(tech.spn, "051.001");
-  assert.equal(item.spn, "051.001");
-  assert.equal(displayedSupplier1(suppliers[0], item).partNumber, "SP-9");
-  assert.equal(displayedSupplier1(suppliers[0], item).name, "Acme");
-  assert.equal(suppliers[0].supplierPartNumber, "SP-9");
+  const price = await ManPriceList.findOne({ companyId: company._id, article: "A001" }).lean();
+  assert.equal(displayedItemMasterSpn(item, tech), "OLD1");
+  assert.equal(tech.spn, "OLD1");
+  assert.equal(item.spn, "OLD1");
+  assert.equal(item.description, "Filter");
+  assert.equal(suppliers.length, 0);
+  assert.equal(Number(price.sellPrice), 15.5);
+  assert.equal(price.leadTime, "8 Weeks");
 });
+
+await ItemMaster.updateOne(
+  { companyId: company._id, article: "A001" },
+  { $set: { spn: "051.001" } }
+);
+await ItemTechnical.updateOne(
+  { companyId: company._id, article: "A001" },
+  { $set: { spn: "051.001" } }
+);
 
 await run("Concurrent apply of the same preview does not apply twice", async () => {
   const [a, b] = await Promise.allSettled([

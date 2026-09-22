@@ -66,6 +66,7 @@ const SYSTEM_DEFAULTS = {
   COMPANY_ADMIN: {
     ...FULL_ACCESS,
     PRICE_LIST: [],
+    ITEM_MASTER: ["view", "export"],
   },
   SALES: buildMatrix({
     ...SALES_COMMERCIAL,
@@ -75,7 +76,7 @@ const SYSTEM_DEFAULTS = {
   PURCHASE_SALES: buildMatrix(SALES_COMMERCIAL),
   PURCHASE: buildMatrix({
     PURCHASE: ["view", "create", "edit", "approve", "cancel", "export", "createFromAllocation"],
-    ITEM_MASTER: ["view", "create", "edit", "export"],
+    ITEM_MASTER: ["view", "export"],
     TRACEABILITY: ["article_view"],
     REPORTS: READ_ONLY_ACTIONS,
     STORE: ["view"],

@@ -273,6 +273,13 @@ export async function upsertManualPrice(req, article, body = {}) {
   const code = preserveArticleCode(article || body.article);
   const item = await ItemMaster.findOne({ companyId: req.companyId, article: code });
   if (!item) throw err("Item Master record not found", 404, "ITEM_MISSING");
+  if (String(item.status || "Active") !== "Active") {
+    throw err(
+      `Article ${code} is inactive in Item Master and cannot be used on a new transaction.`,
+      409,
+      "ARTICLE_INACTIVE"
+    );
+  }
   if (!isManEligibleItem(item)) {
     throw err("Price list is MAN-only; this Article is not MAN-eligible", 400, "NOT_MAN");
   }
@@ -514,6 +521,16 @@ export async function previewImport(req, { buffer, filename }) {
     if (proposedPrices.rock != null && proposedPrices.sellPrice != null && proposedPrices.rock > proposedPrices.sellPrice) {
       rowWarnings.push("Rock is higher than Sell price — flagged for review (tiers are independent; not auto-corrected)");
     }
+    if (Object.keys(itemChanges).length) {
+      rowWarnings.push(
+        "Item Master / supplier master columns are not applied from Price List import. Ask an authorized administrator to update Item Master separately."
+      );
+      warnings.push({
+        rowNumber,
+        article,
+        message: "Price List import does not overwrite Item Master",
+      });
+    }
 
     fingerprints[article] = {
       itemUpdatedAt: isoTimestamp(item.updatedAt),
@@ -604,38 +621,6 @@ function findOneS(model, filter, session) {
   return q;
 }
 
-async function applySupplier1(req, { article, proposed, supplier1, session }) {
-  const name = String(proposed.supplierName || supplier1?.supplierName || "").trim();
-  const pn = proposed.supplierPartNumber;
-  if (pn == null && !proposed.supplierName) return supplier1;
-  if (!name && pn != null && !supplier1) return null;
-  const $set = {};
-  if (proposed.supplierName) $set.supplierName = proposed.supplierName;
-  if (pn != null) $set.supplierPartNumber = pn;
-  if (supplier1) {
-    const updated = await ItemSupplier.findOneAndUpdate(
-      { _id: supplier1._id, companyId: req.companyId, article, updatedAt: supplier1.updatedAt },
-      { $set },
-      { session, new: true, runValidators: true }
-    );
-    if (!updated) throw err(`Article ${article} supplier 1 changed since preview. Upload and preview again.`, 409, "STALE_PREVIEW");
-    return updated;
-  }
-  const created = await ItemSupplier.create(
-    [
-      {
-        companyId: req.companyId,
-        article,
-        supplierName: name,
-        supplierPartNumber: pn || "",
-        currency: proposed.currency || "USD",
-      },
-    ],
-    { session }
-  );
-  return created[0];
-}
-
 async function applyImportWithSession(req, previewId, session, { injectFailureAfter } = {}) {
   const preview = await findOneS(
     ManPriceListImport,
@@ -706,60 +691,12 @@ async function applyImportWithSession(req, previewId, session, { injectFailureAf
     if (proposed.leadTime != null) nextPrice.leadTime = proposed.leadTime;
     const beforeHash = priceHash(priceProbe);
     const nextHash = priceHash(nextPrice);
-    if (shouldSkipUnchangedImport({ creating, hasItemChanges, beforeHash, nextHash })) {
+    if (shouldSkipUnchangedImport({ creating, hasItemChanges: false, beforeHash, nextHash })) {
       skippedUnchanged.push(row.article);
       continue;
     }
 
-    if (hasItemChanges) {
-      const itemSet = {};
-      if (proposed.description != null) {
-        itemSet.description = proposed.description;
-        if (!item.itemName) itemSet.itemName = proposed.description;
-      }
-      if (proposed.spn != null) itemSet.spn = proposed.spn;
-      if (proposed.supplierPartNumber != null) itemSet.supplierPartNumber = proposed.supplierPartNumber;
-      if (proposed.supplierName != null) itemSet.supplier = proposed.supplierName;
-      if (Object.keys(itemSet).length) {
-        const updatedItem = await ItemMaster.findOneAndUpdate(
-          { _id: item._id, companyId: req.companyId, article: row.article, updatedAt: item.updatedAt },
-          { $set: itemSet },
-          { session, new: true, runValidators: true }
-        );
-        if (!updatedItem) {
-          throw err(`Article ${row.article} changed since preview. Upload and preview again.`, 409, "STALE_PREVIEW");
-        }
-      }
-
-      const techSet = {};
-      if (proposed.spn != null) techSet.spn = proposed.spn;
-      if (proposed.specWeight != null) techSet.specWeight = proposed.specWeight;
-      if (proposed.extRemarks != null) techSet.extRemarks = proposed.extRemarks;
-      if (proposed.specs != null) {
-        techSet.technicalSpecifications = upsertSpecs(technical || {}, proposed.specs);
-      }
-      if (Object.keys(techSet).length) {
-        if (technical) {
-          const updatedTech = await ItemTechnical.findOneAndUpdate(
-            { _id: technical._id, companyId: req.companyId, article: row.article, updatedAt: technical.updatedAt },
-            { $set: techSet },
-            { session, new: true, runValidators: true }
-          );
-          if (!updatedTech) {
-            throw err(`Article ${row.article} changed since preview. Upload and preview again.`, 409, "STALE_PREVIEW");
-          }
-        } else {
-          await ItemTechnical.create(
-            [{ companyId: req.companyId, article: row.article, ...techSet }],
-            { session }
-          );
-        }
-      }
-
-      if (proposed.supplierName || proposed.supplierPartNumber != null) {
-        await applySupplier1(req, { article: row.article, proposed, supplier1, session });
-      }
-    }
+    // Price List import never writes Item Master / technical / supplier master data.
 
     let savedPrice = price;
     if (creating || beforeHash !== nextHash) {

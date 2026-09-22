@@ -119,9 +119,18 @@ export const MODULE_ALLOWED_ACTIONS = {
   MAN_ENGINE: ["view", "create"],
 };
 
+export const ITEM_MASTER_PROTECTED_WRITE_ACTIONS = ["create", "edit", "approve", "cancel", "delete"];
+
 export function allowedActionsForModule(moduleName) {
   const m = String(moduleName || "").toUpperCase();
   return Array.isArray(MODULE_ALLOWED_ACTIONS[m]) ? [...MODULE_ALLOWED_ACTIONS[m]] : [];
+}
+
+/** Custom Role Form / API: Item Master write actions cannot be granted. */
+export function allowedActionsForCustomRole(moduleName) {
+  const actions = allowedActionsForModule(moduleName);
+  if (String(moduleName || "").toUpperCase() !== "ITEM_MASTER") return actions;
+  return actions.filter((a) => !ITEM_MASTER_PROTECTED_WRITE_ACTIONS.includes(a));
 }
 
 export const SYSTEM_ROLE_CODES = [

@@ -8,7 +8,7 @@ import Role, {
   PERMISSION_ACTIONS,
   PERMISSION_MODULES,
   SYSTEM_ROLE_CODES,
-  allowedActionsForModule,
+  allowedActionsForCustomRole,
 } from "../models/Role.js";
 import {
   ROLE_DEFAULTS,
@@ -161,7 +161,7 @@ function sanitisePayload(body) {
       .filter((p) => p?.module)
       .map((p) => {
         const moduleName = String(p.module).toUpperCase();
-        const allowed = new Set(allowedActionsForModule(moduleName));
+        const allowed = new Set(allowedActionsForCustomRole(moduleName));
         return {
           module: moduleName,
           actions: Array.isArray(p.actions)

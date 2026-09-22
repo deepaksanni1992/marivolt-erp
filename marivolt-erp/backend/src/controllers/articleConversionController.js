@@ -20,6 +20,7 @@ import {
   selectCustomsLayersForConversion,
 } from "../services/articleConversionCustomsService.js";
 import { writeAudit } from "../services/auditService.js";
+import { assertActiveArticles, isArticleValidationError } from "../services/articleTransactionValidator.js";
 import { nextUniqueSalesDocNumber } from "../utils/salesDocNumber.js";
 import { hasPermission } from "../services/roleService.js";
 import {
@@ -145,10 +146,19 @@ export async function getConversionArticleContext(req, res) {
     const article = up(req.query.article);
     const warehouse = up(req.query.warehouse) || "MAIN";
     if (!article) return res.status(400).json({ message: "article required" });
-    const item = await ItemMaster.findOne(
-      withCompany(req, { $or: [{ article: article }, { itemCode: article }, { articleNumber: article }] })
-    ).lean();
-    if (!item) return res.status(404).json({ message: `Article ${article} not found` });
+    let item;
+    try {
+      const items = await assertActiveArticles({
+        companyId: req.companyId,
+        lines: [{ article }],
+      });
+      item = items.get(article);
+    } catch (err) {
+      if (isArticleValidationError(err)) {
+        return res.status(err.statusCode).json(err.toJSON());
+      }
+      throw err;
+    }
     const resolved = item;
     const stock = await stockService.getStockBalance({
       companyId: req.companyId,
@@ -302,23 +312,12 @@ export async function createArticleConversionDraft(req, res) {
       return res.status(400).json({ message: "Invalid reason code", allowed: ARTICLE_CONVERSION_REASON_CODES });
     }
 
-    const [sourceItem, targetItem] = await Promise.all([
-      ItemMaster.findOne(
-        withCompany(req, {
-          $or: [{ article: sourceArticle }, { itemCode: sourceArticle }],
-        })
-      ).lean(),
-      ItemMaster.findOne(
-        withCompany(req, {
-          $or: [{ article: targetArticle }, { itemCode: targetArticle }],
-        })
-      ).lean(),
-    ]);
-    if (!sourceItem) return res.status(400).json({ message: `Source Article ${sourceArticle} not found` });
-    if (!targetItem) return res.status(400).json({ message: `Target Article ${targetArticle} not found` });
-    if (String(sourceItem.status) === "Inactive" || String(targetItem.status) === "Inactive") {
-      return res.status(400).json({ message: "Source and Target articles must be active" });
-    }
+    const items = await assertActiveArticles({
+      companyId: req.companyId,
+      lines: [{ article: sourceArticle }, { article: targetArticle }],
+    });
+    const sourceItem = items.get(sourceArticle);
+    const targetItem = items.get(targetArticle);
 
     const sourceUom = up(req.body.sourceUom || sourceItem.uom || sourceItem.unit || "PCS");
     const targetUom = up(req.body.targetUom || targetItem.uom || targetItem.unit || "PCS");
@@ -429,6 +428,7 @@ export async function createArticleConversionDraft(req, res) {
     if (err.code === 11000) {
       return res.status(409).json({ message: "Conversion number already exists", code: "DUPLICATE_CONVERSION_NO" });
     }
+    if (isArticleValidationError(err)) return res.status(err.statusCode).json(err.toJSON());
     res.status(400).json({ message: err.message });
   }
 }

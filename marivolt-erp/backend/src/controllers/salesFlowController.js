@@ -15,6 +15,7 @@ import Customer from "../models/Customer.js";
 import Company from "../models/Company.js";
 import Item from "../models/Item.js";
 import { assertManEngineWriteAccess } from "../utils/manEngineAccess.js";
+import { assertActiveArticles, assertActiveArticlesForChangedLines, isArticleValidationError } from "../services/articleTransactionValidator.js";
 import CustomerLedgerEntry from "../models/CustomerLedgerEntry.js";
 import {
   applyManualSalesDocumentNumber,
@@ -2454,6 +2455,7 @@ export async function createOA(req, res) {
       extraHeaders: [quotation],
       sourceType: quotation.sourceType || body.sourceType,
     });
+    await assertActiveArticles({ companyId: req.companyId, lines });
     let oaNo;
     if (String(body.oaNo || "").trim()) {
       const prepared = await applyManualSalesDocumentNumber({
@@ -2533,6 +2535,7 @@ export async function createOA(req, res) {
       number: req.body?.oaNo,
     });
     if (dup) return res.status(dup.statusCode).json({ message: dup.message });
+    if (isArticleValidationError(err)) return res.status(err.statusCode).json(err.toJSON());
     res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
@@ -2656,6 +2659,13 @@ export async function updateOA(req, res) {
       doc.status = req.body.status;
     }
     doc.lines = normalizeLines(doc.lines || []);
+    if (Array.isArray(req.body.lines)) {
+      await assertActiveArticlesForChangedLines({
+        companyId: req.companyId,
+        previousLines: beforeSnapshot.lines || [],
+        nextLines: doc.lines,
+      });
+    }
     await assertManEngineWriteAccess(req, {
       lines: doc.lines,
       header: doc,
@@ -2773,6 +2783,7 @@ export async function updateOA(req, res) {
       number: req.body?.oaNo,
     });
     if (dup) return res.status(dup.statusCode).json({ message: dup.message });
+    if (isArticleValidationError(err)) return res.status(err.statusCode).json(err.toJSON());
     res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
@@ -3226,6 +3237,7 @@ export async function convertQuotationToOA(req, res) {
       field: "oaNo",
     });
     const lines = normalizeLines(quotation.lines.map((line) => line.toObject?.() || line));
+    await assertActiveArticles({ companyId: req.companyId, lines });
     const totals = computeTotals(lines, quotation);
     const customerFields = copyCustomerTransactionFields(quotation);
     const paymentType = await resolveWorkflowPaymentTypeDefault(req, {
@@ -3264,6 +3276,7 @@ export async function convertQuotationToOA(req, res) {
     await quotation.save();
     res.status(201).json(doc);
   } catch (err) {
+    if (isArticleValidationError(err)) return res.status(err.statusCode).json(err.toJSON());
     res.status(err.statusCode || 400).json({ message: err.message });
   }
 }

@@ -14,11 +14,19 @@ import { approvalRequiredPayload, ensureApproval } from "../services/approvalSer
 import { writeAudit, writeStatusChange } from "../services/auditService.js";
 import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentController.js";
 import { nextGrnNo } from "../services/grnNumberService.js";
-import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js";
 import { listAsnsForPurchaseOrder, getActiveAsnQtyByPoLine, assertPoHasNoActiveAsns } from "../services/asnService.js";
 import { AsnError, validatePoLinesAgainstActiveAsn } from "../utils/asnRules.js";
 import { buildPurchaseOrderListFilter } from "../utils/purchaseOrderListFilter.js";
 import { assertManEngineWriteAccess } from "../utils/manEngineAccess.js";
+import {
+  applyItemMasterSnapshotsToLines,
+  articleFromLine,
+  assertActiveArticles,
+  assertActiveArticlesForChangedLines,
+  isArticleValidationError,
+  linesRequiringArticleValidation,
+  snapshotPoLineFromItem,
+} from "../services/articleTransactionValidator.js";
 import {
   calcPoDiscountTotal,
   calcPoGrandTotal,
@@ -304,6 +312,11 @@ export async function createPurchaseOrder(req, res) {
       });
     }
     await assertManEngineWriteAccess(req, { lines: body.lines, header: body });
+    const itemsByArticle = await assertActiveArticles({
+      companyId: req.companyId,
+      lines: body.lines,
+    });
+    body.lines = applyItemMasterSnapshotsToLines(body.lines, itemsByArticle, "po");
     const company = await Company.findById(req.companyId).lean();
     Object.assign(body, buyerSnapshotFromCompany(company));
     // Capture client payment fields before commercial defaults fill empty payment.
@@ -368,14 +381,6 @@ export async function createPurchaseOrder(req, res) {
     for (let attempt = 0; attempt < MAX_PO_NUMBER_SAVE_RETRIES; attempt += 1) {
       try {
         await assignNewPurchaseOrderNumbers(body, req, company);
-        await syncPoLinesToItemMaster({
-          companyId: req.companyId,
-          companyCode: req.companyCode || company?.code || "",
-          poNo: body.poNo,
-          supplierName: body.supplierName,
-          header: body,
-          lines: body.lines,
-        });
         const doc = new PurchaseOrder(body);
         recalcPoTotals(doc);
         await doc.save();
@@ -412,6 +417,7 @@ export async function createPurchaseOrder(req, res) {
     }
     throw lastErr || new Error("Could not create purchase order");
   } catch (err) {
+    if (isArticleValidationError(err)) return res.status(err.statusCode).json(err.toJSON());
     res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
@@ -457,6 +463,11 @@ export async function duplicatePurchaseOrder(req, res) {
       return res.status(400).json({ message: "Source purchase order has no lines to duplicate" });
     }
     await assertManEngineWriteAccess(req, { lines, header: src });
+    const itemsByArticle = await assertActiveArticles({
+      companyId: req.companyId,
+      lines,
+    });
+    const snapshotLines = applyItemMasterSnapshotsToLines(lines, itemsByArticle, "po");
 
     const company = await Company.findById(req.companyId).lean();
     const {
@@ -489,7 +500,7 @@ export async function duplicatePurchaseOrder(req, res) {
     const body = {
       ...header,
       companyId: req.companyId,
-      lines,
+      lines: snapshotLines,
       status: "DRAFT",
       approvalStatus: "NOT_REQUIRED",
       orderDate: new Date(),
@@ -551,6 +562,7 @@ export async function duplicatePurchaseOrder(req, res) {
     }
     throw lastErr || new Error("Could not duplicate purchase order");
   } catch (err) {
+    if (isArticleValidationError(err)) return res.status(err.statusCode).json(err.toJSON());
     res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
@@ -566,6 +578,7 @@ export async function updatePurchaseOrder(req, res) {
     if (!["DRAFT", "SAVED", "REJECTED"].includes(doc.status)) {
       return res.status(400).json({ message: "Only draft or saved purchase orders can be modified." });
     }
+    const previousLines = (doc.lines || []).map(poLineToPlain);
     const company = await Company.findById(req.companyId).lean();
     const previousSupplierId = String(doc.supplierId || "");
     const previousSupplierName = String(doc.supplierName || "").trim();
@@ -651,6 +664,19 @@ export async function updatePurchaseOrder(req, res) {
     }
     doc.lines = normalizePoLines(doc.lines);
     await assertManEngineWriteAccess(req, { lines: doc.lines, header: doc });
+    const itemsByArticle = await assertActiveArticlesForChangedLines({
+      companyId: req.companyId,
+      previousLines,
+      nextLines: doc.lines,
+    });
+    const changed = new Set(
+      linesRequiringArticleValidation(previousLines, doc.lines).map((row) => row.index)
+    );
+    doc.lines = doc.lines.map((line, index) => {
+      if (!changed.has(index)) return line;
+      const item = itemsByArticle.get(articleFromLine(line));
+      return item ? snapshotPoLineFromItem(poLineToPlain(line), item) : line;
+    });
     if (doc.sourceOrderAllocationId) {
       const allocation = await OrderAllocation.findOne(withCompany(req, { _id: doc.sourceOrderAllocationId })).lean();
       if (!allocation) {
@@ -702,14 +728,6 @@ export async function updatePurchaseOrder(req, res) {
     fillBlankBuyerSnapshot(doc, company);
     if (doc.poNo && !doc.poNumber) doc.poNumber = doc.poNo;
     if (doc.poNumber && !doc.poNo) doc.poNo = doc.poNumber;
-    await syncPoLinesToItemMaster({
-      companyId: req.companyId,
-      companyCode: req.companyCode || "",
-      poNo: doc.poNo,
-      supplierName: doc.supplierName,
-      header: doc,
-      lines: doc.lines,
-    });
     recalcPoTotals(doc);
     await doc.save();
     await writeAudit(req, {
@@ -722,6 +740,7 @@ export async function updatePurchaseOrder(req, res) {
     });
     res.json(doc);
   } catch (err) {
+    if (isArticleValidationError(err)) return res.status(err.statusCode).json(err.toJSON());
     res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
   }
 }
@@ -1212,7 +1231,7 @@ export async function importPurchaseOrders(req, res) {
     if (orders.length > 100) {
       return res.status(400).json({ message: "Maximum 100 purchase orders per import" });
     }
-    const created = [];
+    const prepared = [];
     const errors = [];
     const userEmail = req.user?.email || "";
     const company = await Company.findById(req.companyId).lean();
@@ -1234,7 +1253,34 @@ export async function importPurchaseOrders(req, res) {
           lines: normalizePoLines(row.lines),
         });
         if (!payload.lines.length) throw new Error("no valid lines after normalize");
+        const itemsByArticle = await assertActiveArticles({
+          companyId: req.companyId,
+          lines: payload.lines,
+        });
+        payload.lines = applyItemMasterSnapshotsToLines(payload.lines, itemsByArticle, "po");
         await assertManEngineWriteAccess(req, { lines: payload.lines, header: payload });
+        prepared.push(payload);
+      } catch (e) {
+        errors.push(
+          isArticleValidationError(e)
+            ? { index: i, message: e.message, code: e.code, articles: e.articles, lines: e.lines }
+            : { index: i, message: e.message }
+        );
+      }
+    }
+    if (errors.length) {
+      return res.status(409).json({
+        createdCount: 0,
+        errors,
+        errorCount: errors.length,
+        code: errors.find((row) => row.code)?.code || "IMPORT_VALIDATION",
+      });
+    }
+
+    const created = [];
+    for (let i = 0; i < prepared.length; i++) {
+      const payload = prepared[i];
+      try {
         let saved = null;
         for (let attempt = 0; attempt < MAX_PO_NUMBER_SAVE_RETRIES; attempt += 1) {
           try {

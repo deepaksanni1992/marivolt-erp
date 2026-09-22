@@ -51,16 +51,17 @@ run("falls back article from part number when article missing", () => {
   assert.equal(id.partNumber, "433598 AA");
 });
 
-run("create/update PO controller imports syncPoLinesToItemMaster", () => {
+run("create/update PO controller validates Item Master and does not auto-sync", () => {
   const src = fs.readFileSync(path.join(srcRoot, "controllers", "purchaseController.js"), "utf8");
-  assert.match(src, /import \{ syncPoLinesToItemMaster \} from "\.\.\/services\/poItemMasterSyncService\.js"/);
+  assert.match(src, /assertActiveArticles/);
+  assert.doesNotMatch(src, /syncPoLinesToItemMaster/);
   const createStart = src.indexOf("export async function createPurchaseOrder");
   const updateStart = src.indexOf("export async function updatePurchaseOrder");
   const create = src.slice(createStart, updateStart);
   const update = src.slice(updateStart);
-  assert.match(create, /await syncPoLinesToItemMaster\(/);
+  assert.match(create, /await assertActiveArticles\(/);
   assert.match(create, /asnActiveQty: 0/);
-  assert.match(update, /await syncPoLinesToItemMaster\(/);
+  assert.match(update, /assertActiveArticlesForChangedLines/);
   assert.doesNotMatch(src, /from "\.\.\/services\/asnReceivingPostService/);
 });
 

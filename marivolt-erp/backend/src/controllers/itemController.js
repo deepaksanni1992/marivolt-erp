@@ -1,17 +1,38 @@
 import mongoose from "mongoose";
-import XLSX from "xlsx";
 import ItemMaster, { UOM_VALUES } from "../models/itemMasterModel.js";
 import ItemTechnical from "../models/itemTechnicalModel.js";
 import ItemSupplier from "../models/itemSupplierModel.js";
 import StockBalance from "../models/StockBalance.js";
+import Quotation from "../models/Quotation.js";
+import PurchaseOrder from "../models/PurchaseOrder.js";
+import GRN from "../models/GRN.js";
+import OrderAcknowledgement from "../models/OrderAcknowledgement.js";
+import ManPriceList from "../models/ManPriceList.js";
 import { writeAudit } from "../services/auditService.js";
+import { hasPermission } from "../services/roleService.js";
 import { resolveLookup, resolveLookupBatch } from "../services/itemResolutionService.js";
+import {
+  applyItemMasterImport,
+  itemMasterImportTemplateCsv,
+  previewItemMasterImport,
+} from "../services/itemMasterImportService.js";
 import {
   assertValidTaxonomy,
   buildCascadingFacets,
-  mapImportTaxonomyColumns,
   resolveBrandValue,
 } from "../utils/itemMasterTaxonomy.js";
+
+async function canSeeSupplierPurchasePrices(req) {
+  return (await hasPermission(req, "ITEM_MASTER", "edit")) || (await hasPermission(req, "PURCHASE", "edit"));
+}
+
+function redactSuppliers(suppliers = [], allowPrice) {
+  if (allowPrice) return suppliers;
+  return (suppliers || []).map((row) => {
+    const { price, ...rest } = row;
+    return rest;
+  });
+}
 
 function withCompany(req, filter = {}) {
   return { companyId: req.companyId, ...filter };
@@ -412,7 +433,8 @@ export async function getItem(req, res) {
       ItemTechnical.findOne(withCompany(req, { article })).lean(),
       ItemSupplier.find(withCompany(req, { article })).sort({ supplierName: 1 }).lean(),
     ]);
-    res.json(mapMerged(item, technical, suppliers));
+    const allowPrice = await canSeeSupplierPurchasePrices(req);
+    res.json(mapMerged(item, technical, redactSuppliers(suppliers, allowPrice)));
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -461,6 +483,18 @@ export async function updateItem(req, res) {
       uom: normalizeUom(req.body.uom),
       status: trim(req.body.status) === "Inactive" ? "Inactive" : "Active",
     };
+    const existing = await ItemMaster.findOne(withCompany(req, { article })).lean();
+    if (!existing) return res.status(404).json({ message: "Not found" });
+    if (payload.status === "Inactive" && existing.status !== "Inactive") {
+      if (!(await hasPermission(req, "ITEM_MASTER", "cancel"))) {
+        return res.status(403).json({ message: "Permission denied: ITEM_MASTER.cancel", code: "PERMISSION_DENIED" });
+      }
+    }
+    if (payload.status === "Active" && existing.status === "Inactive") {
+      if (!(await hasPermission(req, "ITEM_MASTER", "approve"))) {
+        return res.status(403).json({ message: "Permission denied: ITEM_MASTER.approve", code: "PERMISSION_DENIED" });
+      }
+    }
     const row = await ItemMaster.findOneAndUpdate(withCompany(req, { article }), payload, {
       new: true,
       runValidators: true,
@@ -475,6 +509,28 @@ export async function updateItem(req, res) {
 export async function deleteItem(req, res) {
   try {
     const article = trim(req.params.article).toUpperCase();
+    const refs = [];
+    const [qt, po, grn, oa, stock, price] = await Promise.all([
+      Quotation.countDocuments(withCompany(req, { "lines.article": article })),
+      PurchaseOrder.countDocuments(withCompany(req, { "lines.article": article })),
+      GRN.countDocuments(withCompany(req, { "items.article": article })),
+      OrderAcknowledgement.countDocuments(withCompany(req, { "lines.article": article })),
+      StockBalance.countDocuments(withCompany(req, { $or: [{ article }, { itemCode: article }] })),
+      ManPriceList.countDocuments(withCompany(req, { article })),
+    ]);
+    if (qt) refs.push(`${qt} quotation(s)`);
+    if (po) refs.push(`${po} purchase order(s)`);
+    if (grn) refs.push(`${grn} GRN(s)`);
+    if (oa) refs.push(`${oa} order acknowledgement(s)`);
+    if (stock) refs.push(`${stock} stock balance row(s)`);
+    if (price) refs.push(`${price} price list row(s)`);
+    if (refs.length) {
+      return res.status(409).json({
+        message: `Cannot delete Article ${article} because it is referenced by ${refs.join(", ")}. Deactivate it instead.`,
+        code: "ARTICLE_IN_USE",
+        article,
+      });
+    }
     const deleted = await ItemMaster.findOneAndDelete(withCompany(req, { article }));
     if (!deleted) return res.status(404).json({ message: "Not found" });
     await Promise.all([
@@ -567,7 +623,8 @@ export async function listItemSuppliers(req, res) {
     const article = trim(req.params.article).toUpperCase();
     await ensureItemExists(req, article);
     const rows = await ItemSupplier.find(withCompany(req, { article })).sort({ supplierName: 1 }).lean();
-    res.json(rows);
+    const allowPrice = await canSeeSupplierPurchasePrices(req);
+    res.json(redactSuppliers(rows, allowPrice));
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -615,170 +672,49 @@ export async function deleteItemSupplier(req, res) {
   }
 }
 
-export async function importItems(req, res) {
-  const result = { total: 0, upsertedItems: 0, upsertedTechnicals: 0, upsertedSuppliers: 0, errors: [] };
+export async function downloadItemImportTemplate(req, res) {
+  const csv = itemMasterImportTemplateCsv();
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="item-master-import-template.csv"');
+  res.send(csv);
+}
+
+export async function previewItemImport(req, res) {
   try {
     if (!req.file?.buffer) return res.status(400).json({ message: "Upload CSV/Excel with file field" });
-
-    const workbook = XLSX.read(req.file.buffer, { type: "buffer", raw: false });
-    const ws = workbook.Sheets[workbook.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
-    result.total = rows.length;
-
-    const seenArticles = new Set();
-    for (let index = 0; index < rows.length; index += 1) {
-      const raw = rows[index];
-      try {
-        const row = Object.fromEntries(
-          Object.entries(raw).map(([k, v]) => [trim(k), trim(v)])
-        );
-        const article = pick(row, "Article", "ARTICLE").toUpperCase();
-        if (!article) {
-          throw new Error("Article missing");
-        }
-        if (seenArticles.has(article)) {
-          throw new Error("Duplicate article in import file");
-        }
-        seenArticles.add(article);
-
-        const uom = normalizeUom(pick(row, "UOM", "Uom", "uom"));
-        const dimension = normalizeDimension(pick(row, "Dimension", "DIMENSION"));
-
-        const taxonomy = assertValidTaxonomy(mapImportTaxonomyColumns(row));
-
-        await ItemMaster.findOneAndUpdate(
-          withCompany(req, { article }),
-          {
-            companyId: req.companyId,
-            article,
-            itemName: pick(row, "ITEM NAME", "Item Name", "itemName"),
-            description: pick(row, "Description", "DESCRIPTION"),
-            ...taxonomy,
-            uom,
-            status: "Active",
-          },
-          { upsert: true, new: true, runValidators: true }
-        );
-        result.upsertedItems += 1;
-
-        const importedTechnicalPayload = normalizeTechnicalPayload({
-          spn: pick(row, "SPN"),
-          esn: pick(row, "ESN"),
-          materialCode: pick(row, "Material Code", "Material code"),
-          drawingNumber: pick(row, "Drawing Number", "Drawing number"),
-          extRemarks: pick(row, "Ext Remarks", "Ext remarks"),
-          internalRemarks: pick(row, "Internal Remarks", "Internal remarks"),
-          oeMarkings: pick(row, "OE Markings", "OE Markings"),
-          dimension,
-          cylinderCount: pick(row, "Cylinder Count", "CYLINDER COUNT"),
-          revisionNo: pick(row, "Revision No", "Revision"),
-          modelMappings: parseImportList(
-            pick(row, "Model Mappings", "Model Mapping"),
-            ([modelCode = "", modelName = "", variant = "", notes = ""]) => ({ modelCode, modelName, variant, notes }),
-            "Model Mappings"
-          ),
-          configurationMappings: parseImportList(
-            pick(row, "Configuration Mappings", "Config Mappings"),
-            ([configurationCode = "", configurationName = "", applicability = "", notes = ""]) => ({
-              configurationCode,
-              configurationName,
-              applicability,
-              notes,
-            }),
-            "Configuration Mappings"
-          ),
-          oemCrossReferences: parseImportList(
-            pick(row, "OEM Cross References", "OEM Refs"),
-            ([oemName = "", oemPartNumber = "", oemDescription = "", notes = ""]) => ({
-              oemName,
-              oemPartNumber,
-              oemDescription,
-              notes,
-            }),
-            "OEM Cross References"
-          ),
-          supplierReferences: parseImportList(
-            pick(row, "Supplier References", "Supplier Refs"),
-            ([supplierName = "", supplierPartNumber = "", preferred = "", notes = ""]) => ({
-              supplierName,
-              supplierPartNumber,
-              preferred: String(preferred).toLowerCase() === "true",
-              notes,
-            }),
-            "Supplier References"
-          ),
-          interchangeableParts: parseImportList(
-            pick(row, "Interchangeable References", "Interchangeable Refs"),
-            ([itArticle = "", partNumber = "", description = "", interchangeType = "", replacementPriority = "", replacementNotes = "", notes = ""]) => ({
-              article: itArticle,
-              partNumber,
-              description,
-              interchangeType,
-              replacementPriority: Number(replacementPriority) || 0,
-              replacementNotes,
-              notes,
-            }),
-            "Interchangeable References"
-          ),
-        });
-        await validateNoCircularInterchange({
-          req,
-          article,
-          interchangeableParts: importedTechnicalPayload.interchangeableParts,
-        });
-        await ItemTechnical.findOneAndUpdate(
-          withCompany(req, { article }),
-          {
-            companyId: req.companyId,
-            article,
-            ...importedTechnicalPayload,
-          },
-          { upsert: true, new: true, runValidators: true }
-        );
-        result.upsertedTechnicals += 1;
-
-        const suppliersFromLegacyCols = [
-          {
-            supplierName: pick(row, "Supplier 1"),
-            supplierPartNumber: pick(row, "Supplier 1 P/N", "Supplier 1 P/N "),
-          },
-          {
-            supplierName: pick(row, "Supplier 2"),
-            supplierPartNumber: pick(row, "Supplier 2 P/N", "Supplier 2 P/N "),
-          },
-        ].filter((sup) => sup.supplierName);
-
-        for (const supplier of suppliersFromLegacyCols) {
-          await ItemSupplier.findOneAndUpdate(
-            withCompany(req, {
-              article,
-              supplierName: supplier.supplierName,
-              supplierPartNumber: supplier.supplierPartNumber,
-            }),
-            {
-              companyId: req.companyId,
-              article,
-              supplierName: supplier.supplierName,
-              supplierPartNumber: supplier.supplierPartNumber,
-              currency: "USD",
-              price: 0,
-              leadTime: "",
-              remarks: "",
-            },
-            { upsert: true, new: true, runValidators: true }
-          );
-          result.upsertedSuppliers += 1;
-        }
-      } catch (rowErr) {
-        result.errors.push({ row: index + 2, reason: rowErr.message });
-      }
-    }
-
-    res.json(result);
+    const preview = await previewItemMasterImport({ companyId: req.companyId, buffer: req.file.buffer });
+    res.json(preview);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code, preview: err.preview });
   }
 }
+
+export async function applyItemImport(req, res) {
+  try {
+    if (!req.file?.buffer) return res.status(400).json({ message: "Upload CSV/Excel with file field" });
+    const result = await applyItemMasterImport({
+      companyId: req.companyId,
+      buffer: req.file.buffer,
+      userEmail: req.user?.email || "",
+    });
+    await writeAudit(req, {
+      action: "IMPORT",
+      module: "ITEM_MASTER",
+      entityType: "ITEM_MASTER",
+      documentNo: "",
+      description: `Item Master import applied created=${result.apply?.created || 0} updated=${result.apply?.updated || 0}`,
+      metadata: result.apply || {},
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(err.statusCode || 400).json({ message: err.message, code: err.code, preview: err.preview });
+  }
+}
+
+export async function importItems(req, res) {
+  return applyItemImport(req, res);
+}
+
 
 export async function exportItems(req, res) {
   try {

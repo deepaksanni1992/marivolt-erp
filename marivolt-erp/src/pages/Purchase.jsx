@@ -29,6 +29,7 @@ import {
   clearPoFromAllocationSession,
   readPoFromAllocationSession,
 } from "../lib/allocationPoSession.js";
+import ItemMasterArticleSelect from "../components/items/ItemMasterArticleSelect.jsx";
 import {
   COMMERCIAL_DEFAULTS,
   DEFAULT_CLOSING_NOTE,
@@ -3327,29 +3328,57 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                       <tr key={idx} className="border-b border-gray-100 align-top">
                         <td className="px-1.5 py-1.5 text-gray-500">{idx + 1}</td>
                         <td className="px-1.5 py-1.5">
-                          <TextInput
-                            className="py-1.5 text-[11px]"
-                            placeholder="Article"
+                          <ItemMasterArticleSelect
                             value={line.articleNo}
-                            onChange={(e) => setLine({ articleNo: e.target.value })}
+                            onSelect={(item) => {
+                              if (!item) {
+                                setLine({
+                                  articleNo: "",
+                                  article: "",
+                                  itemCode: "",
+                                  description: "",
+                                  partNo: "",
+                                  partNumber: "",
+                                  materialCode: "",
+                                  spn: "",
+                                  uom: "PCS",
+                                });
+                                return;
+                              }
+                              setLine({
+                                articleNo: item.article,
+                                article: item.article,
+                                itemCode: item.article,
+                                description: item.description || item.itemName || "",
+                                partNo: item.partNumber || item.spn || "",
+                                partNumber: item.partNumber || item.spn || "",
+                                materialCode: item.materialCode || "",
+                                spn: item.spn || "",
+                                drawingNo: item.drawingNo || "",
+                                vertical: item.vertical || "",
+                                brand: item.brand || item.engine || "",
+                                engine: item.engine || item.brand || "",
+                                model: item.model || "",
+                                config: item.config || "",
+                                uom: item.uom || "PCS",
+                              });
+                            }}
                           />
                         </td>
                         <td className="px-1.5 py-1.5">
                           <TextInput
-                            className="py-1.5 text-[11px]"
-                            placeholder="Description"
+                            className="py-1.5 text-[11px] bg-slate-50"
+                            placeholder="Description (from Item Master)"
                             value={line.description}
-                            onChange={(e) => setLine({ description: e.target.value })}
+                            readOnly
                           />
                         </td>
                         <td className="px-1.5 py-1.5">
                           <TextInput
-                            className="py-1.5 text-[11px]"
+                            className="py-1.5 text-[11px] bg-slate-50"
                             placeholder="Internal part / SPN"
                             value={line.partNo}
-                            onChange={(e) =>
-                              setLine({ partNo: e.target.value, partNumber: e.target.value.toUpperCase() })
-                            }
+                            readOnly
                           />
                         </td>
                         <td className="px-1.5 py-1.5">
@@ -3362,10 +3391,10 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                         </td>
                         <td className="px-1.5 py-1.5">
                           <TextInput
-                            className="py-1.5 text-[11px] font-mono"
+                            className="py-1.5 text-[11px] font-mono bg-slate-50"
                             placeholder="Material code"
                             value={line.materialCode ?? ""}
-                            onChange={(e) => setLine({ materialCode: e.target.value.toUpperCase() })}
+                            readOnly
                           />
                         </td>
                         <td className="px-1.5 py-1.5">
@@ -3383,9 +3412,9 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                         </td>
                         <td className="px-1.5 py-1.5">
                           <TextInput
-                            className="py-1.5 text-[11px]"
+                            className="py-1.5 text-[11px] bg-slate-50"
                             value={line.uom}
-                            onChange={(e) => setLine({ uom: e.target.value })}
+                            readOnly
                           />
                         </td>
                         <td className="px-1.5 py-1.5">

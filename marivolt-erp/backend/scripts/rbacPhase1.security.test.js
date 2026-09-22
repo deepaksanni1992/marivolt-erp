@@ -679,6 +679,13 @@ run("Role Form All does not copy global-only actions", () => {
   });
   const sales = cleaned.permissions.find((p) => p.module === "SALES");
   assert.deepEqual(sales.actions.sort(), ["create", "view"]);
+  const itemMaster = sanitiseRolePayload({
+    code: "FORGED",
+    name: "Forged",
+    permissions: [{ module: "ITEM_MASTER", actions: ["view", "create", "edit", "approve", "cancel", "delete", "export"] }],
+  });
+  const im = itemMaster.permissions.find((p) => p.module === "ITEM_MASTER");
+  assert.deepEqual(im.actions.sort(), ["export", "view"]);
   assert.ok(hasDangerousRoleActions([{ module: "STORE", actions: ["view", "post"] }]));
   assert.ok(!hasDangerousRoleActions([{ module: "SALES", actions: ["view", "create"] }]));
   assert.deepEqual(selectedPermissionSummary([{ module: "SALES", actions: ["view"] }]), ["SALES: view"]);
@@ -727,7 +734,7 @@ run("Frontend source uses the shared permission map", () => {
   assert.match(denied, /Access denied/);
   assert.match(layout, /ModulePermissionGuard/);
   assert.match(protectedRoute, /storeOperatorAllowedPath/);
-  assert.match(settings, /allowedActionsForModule/);
+  assert.match(settings, /allowedActionsForCustomRole/);
   assert.match(settings, /confirmDialog/);
   assert.match(settings, /Selected permissions/);
   assert.match(authCtx, /canPerform/);

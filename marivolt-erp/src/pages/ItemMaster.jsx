@@ -2,11 +2,11 @@ import { useRef, useState, useEffect } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FileUp, Pencil, Plus, Search, Trash2 } from "lucide-react";
-import { apiDelete, apiGet, apiGetWithQuery, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
+import { api, apiDelete, apiGet, apiGetWithQuery, apiPost, apiPostFormData, apiPut } from "../lib/api.js";
 import { downloadCsv, downloadPdfTable } from "../lib/purchaseExport.js";
 import { notify, confirmDialog } from "../lib/notifications.js";
 import { useAuth } from "../context/AuthContext.jsx";
-import { isPriceListAdminRole } from "../lib/rbac.js";
+import { isItemMasterAdminRole, isPriceListAdminRole } from "../lib/rbac.js";
 import LoadingButton from "../components/erp/LoadingButton.jsx";
 
 const emptyItem = {
@@ -164,9 +164,17 @@ function isManBrandItem(row = {}) {
 export default function ItemMaster() {
   const { can, role } = useAuth();
   const canManageManPrice = isPriceListAdminRole(role) && can("PRICE_LIST", "view");
+  const canMaintainItemMaster = isItemMasterAdminRole(role);
+  const canCreateItem = canMaintainItemMaster && can("ITEM_MASTER", "create");
+  const canEditItem = canMaintainItemMaster && can("ITEM_MASTER", "edit");
+  const canImportItem = canCreateItem && canEditItem;
+  const canExportItem = can("ITEM_MASTER", "export");
+  const canDeleteItem = canMaintainItemMaster && can("ITEM_MASTER", "delete");
   const qc = useQueryClient();
   const importRef = useRef(null);
   const lookupImportRef = useRef(null);
+  const [importPreview, setImportPreview] = useState(null);
+  const [importFile, setImportFile] = useState(null);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [searchParams] = useSearchParams();
@@ -398,21 +406,52 @@ export default function ItemMaster() {
     },
   });
 
-  const importMutation = useMutation({
+  const importPreviewMutation = useMutation({
     mutationFn: (file) => {
       const fd = new FormData();
       fd.append("file", file);
-      return apiPostFormData("/items/import", fd);
+      return apiPostFormData("/items/import/preview", fd);
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["items"] });
-      notify.success("Items imported.");
+    onSuccess: (data, file) => {
+      setImportPreview(data);
+      setImportFile(file);
+      notify.success("Preview ready. Review the result, then Apply.");
     },
     onError: (e) => {
       setError(e.message);
-      notify.error(e.message || "Import failed.");
+      notify.error(e.message || "Preview failed.");
     },
   });
+
+  const importApplyMutation = useMutation({
+    mutationFn: (file) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      return apiPostFormData("/items/import/apply", fd);
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["items"] });
+      setImportPreview(null);
+      setImportFile(null);
+      notify.success(
+        `Import applied. Created ${data.apply?.created || 0}, updated ${data.apply?.updated || 0}, unchanged ${data.apply?.unchanged || 0}.`
+      );
+    },
+    onError: (e) => {
+      setError(e.message);
+      notify.error(e.message || "Apply failed.");
+    },
+  });
+
+  async function downloadImportTemplate() {
+    const res = await api.get("/items/import/template", { responseType: "blob" });
+    const url = URL.createObjectURL(res.data);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "item-master-import-template.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   const list = listData?.items || [];
   const total = listData?.total || 0;
@@ -528,20 +567,60 @@ export default function ItemMaster() {
             <p className="text-sm text-slate-600">Marine spare parts ERP item registry</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <input ref={importRef} type="file" className="hidden" accept=".csv,.xlsx,.xls" onChange={(e) => e.target.files?.[0] && importMutation.mutate(e.target.files[0])} />
-            <button onClick={() => importRef.current?.click()} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm"><FileUp size={16} />Import</button>
-            <button onClick={() => runExport("csv")} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm"><Download size={16} />Export CSV</button>
-            <button onClick={() => runExport("pdf")} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm"><Download size={16} />Export PDF</button>
-            <button onClick={openCreate} className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><Plus size={16} />New Item</button>
+            {canExportItem ? (
+              <>
+                <button onClick={() => runExport("csv")} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm"><Download size={16} />Export CSV</button>
+                <button onClick={() => runExport("pdf")} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm"><Download size={16} />Export PDF</button>
+              </>
+            ) : null}
+            {canImportItem ? (
+              <>
+                <button onClick={downloadImportTemplate} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm"><Download size={16} />Template</button>
+                <input ref={importRef} type="file" className="hidden" accept=".csv,.xlsx,.xls" onChange={(e) => e.target.files?.[0] && importPreviewMutation.mutate(e.target.files[0])} />
+                <button onClick={() => importRef.current?.click()} className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm"><FileUp size={16} />Preview import</button>
+                <button
+                  disabled={!importFile || !importPreview?.canApply || importApplyMutation.isPending}
+                  onClick={() => importFile && importApplyMutation.mutate(importFile)}
+                  className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm disabled:opacity-50"
+                >
+                  Apply import
+                </button>
+              </>
+            ) : null}
+            {canCreateItem ? (
+              <button onClick={openCreate} className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><Plus size={16} />New Item</button>
+            ) : null}
           </div>
         </div>
+        {importPreview ? (
+          <div className="mt-3 rounded-xl border bg-slate-50 p-3 text-sm">
+            <div className="font-semibold">Import preview</div>
+            <div>
+              New {importPreview.newArticles?.length || 0} · Changing {importPreview.existingWillChange?.length || 0} ·
+              Unchanged {importPreview.unchanged?.length || 0} · Invalid {importPreview.invalid?.length || 0}
+            </div>
+            {importPreview.invalid?.length ? (
+              <ul className="mt-2 list-disc pl-5 text-rose-700">
+                {importPreview.invalid.slice(0, 8).map((row) => (
+                  <li key={`${row.row}-${row.article}`}>
+                    Row {row.row} {row.article || "(blank)"}: {(row.errors || []).join("; ")}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-1 text-slate-600">No database writes yet. Click Apply import to save.</p>
+            )}
+          </div>
+        ) : null}
       </div>
 
       <div className="rounded-2xl border bg-white p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-lg font-semibold">Technical Lookup Import</h2>
-            <p className="text-sm text-slate-600">Upload ESN/SPN/material/drawing/OEM sheet to resolve matched articles automatically.</p>
+            <p className="text-sm text-slate-600">
+              Lookup only: matches existing Item Master Articles. This upload does not create or update Item Master, technical, or supplier records.
+            </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <input
@@ -786,7 +865,8 @@ export default function ItemMaster() {
                   <td className="px-3 py-2">
                     <div className="flex justify-end gap-2">
                       <button onClick={() => setCompatibilityArticle(row.article)} className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs">Compatibility</button>
-                      <button onClick={() => openEdit(row)} className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs"><Pencil size={14} />View / Edit</button>
+                      <button onClick={() => openEdit(row)} className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs"><Pencil size={14} />{canEditItem ? "View / Edit" : "View"}</button>
+                      {canDeleteItem ? (
                       <button
                         onClick={async () => {
                           const ok = await confirmDialog({
@@ -803,6 +883,7 @@ export default function ItemMaster() {
                         <Trash2 size={14} />
                         Delete
                       </button>
+                      ) : null}
                     </div>
                   </td>
                 </tr>
@@ -986,7 +1067,9 @@ export default function ItemMaster() {
                   <Field label="Supplier Name"><input className="rounded-lg border px-3 py-2" value={supplierDraft.supplierName} onChange={(e) => setSupplierDraft((v) => ({ ...v, supplierName: e.target.value }))} /></Field>
                   <Field label="Supplier Part Number"><input className="rounded-lg border px-3 py-2" value={supplierDraft.supplierPartNumber} onChange={(e) => setSupplierDraft((v) => ({ ...v, supplierPartNumber: e.target.value }))} /></Field>
                   <Field label="Currency"><input className="rounded-lg border px-3 py-2" value={supplierDraft.currency} onChange={(e) => setSupplierDraft((v) => ({ ...v, currency: e.target.value }))} /></Field>
+                  {canEditItem ? (
                   <Field label="Price"><input type="number" className="rounded-lg border px-3 py-2" value={supplierDraft.price} onChange={(e) => setSupplierDraft((v) => ({ ...v, price: Number(e.target.value) }))} /></Field>
+                  ) : null}
                   <Field label="Lead Time"><input className="rounded-lg border px-3 py-2" value={supplierDraft.leadTime} onChange={(e) => setSupplierDraft((v) => ({ ...v, leadTime: e.target.value }))} /></Field>
                   <Field label="Remarks"><input className="rounded-lg border px-3 py-2" value={supplierDraft.remarks} onChange={(e) => setSupplierDraft((v) => ({ ...v, remarks: e.target.value }))} /></Field>
                 </div>

@@ -23,7 +23,7 @@ import {
 } from "../lib/userAdmin.js";
 import { isFullAdminRole } from "../lib/rbac.js";
 import {
-  allowedActionsForModule,
+  allowedActionsForCustomRole,
   hasDangerousRoleActions,
   selectedPermissionSummary,
 } from "../lib/rbacAccess.js";
@@ -911,7 +911,7 @@ function RoleForm({ initial, modules, actions, onSave, onCancel, saving, error }
     permissions: initial.permissions || [],
   });
   function toggle(module, action) {
-    if (!allowedActionsForModule(module).includes(action)) return;
+    if (!allowedActionsForCustomRole(module).includes(action)) return;
     setForm((f) => {
       const perms = f.permissions.map((p) => {
         if (p.module !== module) return p;
@@ -924,7 +924,7 @@ function RoleForm({ initial, modules, actions, onSave, onCancel, saving, error }
     });
   }
   function toggleRow(module, fill) {
-    const moduleActions = allowedActionsForModule(module);
+    const moduleActions = allowedActionsForCustomRole(module);
     setForm((f) => ({
       ...f,
       permissions: f.permissions.map((p) =>
@@ -1002,7 +1002,7 @@ function RoleForm({ initial, modules, actions, onSave, onCancel, saving, error }
             {modules.map((m) => {
               const perm = form.permissions.find((p) => p.module === m);
               const enabled = new Set(perm?.actions || []);
-              const moduleActions = allowedActionsForModule(m);
+              const moduleActions = allowedActionsForCustomRole(m);
               const allOn = moduleActions.length > 0 && moduleActions.every((a) => enabled.has(a));
               return (
                 <tr key={m} className="border-t border-slate-100">

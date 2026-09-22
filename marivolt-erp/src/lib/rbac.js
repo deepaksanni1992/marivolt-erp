@@ -20,6 +20,11 @@ export function isPriceListAdminRole(role) {
   return r === "super_admin" || r === "admin";
 }
 
+/** Item Master create/edit/import/deactivate/delete: live Admin or Super Admin only. */
+export function isItemMasterAdminRole(role) {
+  return isPriceListAdminRole(role);
+}
+
 /** Post-login landing — Store operators go straight to Store. */
 export function defaultHomePathForRole(role) {
   if (isStoreOperatorRole(role)) return "/store";

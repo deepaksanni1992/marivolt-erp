@@ -9,7 +9,10 @@ import { writeAudit, writeStatusChange } from "../services/auditService.js";
 import { syncPurchaseOrderApExtensionFields } from "./purchasePoDocumentController.js";
 import { nextGrnNo } from "../services/grnNumberService.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
-import { syncPoLinesToItemMaster } from "../services/poItemMasterSyncService.js";
+import {
+  assertActiveArticles,
+  isArticleValidationError,
+} from "../services/articleTransactionValidator.js";
 import {
   createCustomsLotFromGrn,
   assertGrnCancelAllowed,
@@ -164,22 +167,12 @@ function resolveGrnWarehouseCode(warehouseRaw) {
   return w || DEFAULT_GRN_WAREHOUSE_CODE;
 }
 
-async function ensureGrnItemMaster({ session, companyId, companyCode = "", poNo = "", supplierName = "", header = {}, line }) {
-  const article = upper(line?.article);
-  if (!article) throw new Error("GRN line article is required.");
-  console.info(`[GRN item lookup] companyId=${companyId} article=${article}`);
-  const summary = await syncPoLinesToItemMaster({
+async function ensureGrnArticlesActive({ companyId, line, session = null }) {
+  await assertActiveArticles({
     companyId,
-    companyCode,
-    poNo,
-    supplierName,
-    header,
     lines: [line],
     session,
   });
-  console.info(
-    `[GRN item lookup] companyId=${companyId} article=${article} created=${summary.created} updated=${summary.updated}`
-  );
 }
 
 /**
@@ -993,14 +986,10 @@ export async function postGrnFromPo(req, res) {
 
           for (const line of grn.items) {
             const article = upper(line.article);
-            await ensureGrnItemMaster({
-              session,
+            await ensureGrnArticlesActive({
               companyId: poLean.companyId || req.companyId,
-              companyCode: req.companyCode,
-              poNo: poLean.poNo || poLean.poNumber || grn.poNo,
-              supplierName: grn.supplierName,
-              header: poLean,
               line,
+              session,
             });
             const wh = resolveGrnWarehouseCode(line.warehouse);
             const putaway = t(line.location);
@@ -1096,6 +1085,7 @@ export async function postGrnFromPo(req, res) {
     res.status(201).json({ success: true, grnNo: savedGrnNo });
   } catch (err) {
     if (err?._approval) return res.status(202).json(err._approval);
+    if (isArticleValidationError(err)) return res.status(err.statusCode).json(err.toJSON());
     res.status(400).json({ message: err.message });
   } finally {
     await session.endSession();
@@ -1207,14 +1197,10 @@ export async function postGrn(req, res) {
 
       for (const line of grn.items) {
         const article = upper(line.article);
-        await ensureGrnItemMaster({
-          session,
+        await ensureGrnArticlesActive({
           companyId: grn.companyId || req.companyId,
-          companyCode: req.companyCode,
-          poNo: sourcePo?.poNo || sourcePo?.poNumber || grn.poNo,
-          supplierName: grn.supplierName,
-          header: sourcePo || {},
           line,
+          session,
         });
         const wh = resolveGrnWarehouseCode(line.warehouse);
         const putaway = t(line.location);
@@ -1315,6 +1301,7 @@ export async function postGrn(req, res) {
     res.json({ success: true });
   } catch (err) {
     if (err?._approval) return res.status(202).json(err._approval);
+    if (isArticleValidationError(err)) return res.status(err.statusCode).json(err.toJSON());
     if (err instanceof ReceivingDraftGrnError) {
       return res.status(err.status || 409).json({ message: err.message, code: err.code });
     }

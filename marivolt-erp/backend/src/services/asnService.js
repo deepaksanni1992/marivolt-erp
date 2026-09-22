@@ -11,6 +11,7 @@ import Document from "../models/Document.js";
 import { writeAudit, writeStatusChange } from "./auditService.js";
 import { nextAsnNo } from "./asnNumberService.js";
 import { assertManEngineWriteAccess } from "../utils/manEngineAccess.js";
+import { assertActiveArticles } from "./articleTransactionValidator.js";
 import { ensureLineCounterFloor } from "../utils/quantitySerialization.js";
 import {
   ASN_ACTIVE_STATUSES,
@@ -708,6 +709,7 @@ export async function createAsn(req, body = {}) {
     throw new AsnError("Supplier does not match the source purchase order", 400, "ASN_SUPPLIER_MISMATCH");
   }
   await assertManEngineWriteAccess(req, { lines: po.lines, header: po });
+  await assertActiveArticles({ companyId, lines: po.lines });
 
   let saved;
   const session = await mongoose.startSession();

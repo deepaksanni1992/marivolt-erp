@@ -1,3 +1,10 @@
+/**
+ * PO line identity helpers plus a REPAIR-ONLY Item Master writer.
+ *
+ * Live quotation / PO / GRN controllers must not import syncPoLinesToItemMaster.
+ * That function throws unless allowRepairWrite is true, which only the
+ * repair script passes after an explicit --apply flag.
+ */
 import ItemMaster, { UOM_VALUES } from "../models/itemMasterModel.js";
 import { sanitizeIncomingTaxonomy } from "../utils/itemMasterTaxonomy.js";
 
@@ -266,7 +273,13 @@ export async function syncPoLinesToItemMaster({
   header = {},
   lines = [],
   session = null,
+  allowRepairWrite = false,
 } = {}) {
+  if (allowRepairWrite !== true) {
+    throw new Error(
+      "PO Item Master sync is repair-only and disabled in application runtime. Use scripts/repair-po-item-master-sync.js --apply."
+    );
+  }
   if (!companyId) throw new Error("companyId is required for PO Item Master sync");
   const now = new Date();
   const summary = { scanned: 0, created: 0, updated: 0, unchanged: 0, skipped: 0 };

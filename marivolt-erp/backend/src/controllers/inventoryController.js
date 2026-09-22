@@ -4,6 +4,7 @@ import InventoryLedger from "../models/InventoryLedger.js";
 import * as stockService from "../services/stockService.js";
 import { deriveStockBuckets } from "../services/stockExpectedBuckets.js";
 import { approvalRequiredPayload, ensureApproval } from "../services/approvalService.js";
+import { assertActiveArticles, isArticleValidationError } from "../services/articleTransactionValidator.js";
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -186,8 +187,9 @@ export async function postAdjustment(req, res) {
       description: `Post inventory adjustment for ${itemCode || "item"}`,
     });
     if (!gate.approved) return res.status(202).json(approvalRequiredPayload(gate.request));
+    const code = String(itemCode || "").trim().toUpperCase();
+    await assertActiveArticles({ companyId: req.companyId, lines: [{ article: code }] });
     await session.withTransaction(async () => {
-      const code = String(itemCode || "").trim().toUpperCase();
       const w = String(warehouse || "MAIN").trim().toUpperCase() || "MAIN";
       const ref = String(req.body?.referenceNo || "").trim();
       await stockService.stockAdjustment({
@@ -211,10 +213,10 @@ export async function postAdjustment(req, res) {
       });
     });
     const w = String(warehouse || "MAIN").trim().toUpperCase() || "MAIN";
-    const code = String(itemCode || "").trim().toUpperCase();
     const bal = await StockBalance.findOne(withCompany(req, { itemCode: code, warehouse: w })).lean();
     res.status(201).json(bal);
   } catch (err) {
+    if (isArticleValidationError(err)) return res.status(err.statusCode).json(err.toJSON());
     res.status(400).json({ message: err.message });
   } finally {
     await session.endSession();
@@ -236,6 +238,7 @@ export async function postOpening(req, res) {
     if (existing && (Number(existing.onHandQty || existing.quantity || 0) !== 0)) {
       return res.status(400).json({ message: "Balance already exists; use adjustment instead" });
     }
+    await assertActiveArticles({ companyId: req.companyId, lines: [{ article: code }] });
 
     await session.withTransaction(async () => {
       if (q > 0) {
@@ -282,6 +285,7 @@ export async function postOpening(req, res) {
     const bal = await StockBalance.findOne(withCompany(req, { itemCode: code, warehouse: w })).lean();
     res.status(201).json(bal);
   } catch (err) {
+    if (isArticleValidationError(err)) return res.status(err.statusCode).json(err.toJSON());
     res.status(400).json({ message: err.message });
   } finally {
     await session.endSession();

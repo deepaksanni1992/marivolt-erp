@@ -190,9 +190,23 @@ export const SIDEBAR_NAV = Object.freeze([
   { type: "link", to: "/settings", label: "Settings" },
 ]);
 
+export const ITEM_MASTER_PROTECTED_WRITE_ACTIONS = Object.freeze([
+  "create",
+  "edit",
+  "approve",
+  "cancel",
+  "delete",
+]);
+
 export function allowedActionsForModule(moduleName) {
   const m = String(moduleName || "").toUpperCase();
   return MODULE_ALLOWED_ACTIONS[m] ? [...MODULE_ALLOWED_ACTIONS[m]] : [];
+}
+
+export function allowedActionsForCustomRole(moduleName) {
+  const actions = allowedActionsForModule(moduleName);
+  if (String(moduleName || "").toUpperCase() !== "ITEM_MASTER") return actions;
+  return actions.filter((a) => !ITEM_MASTER_PROTECTED_WRITE_ACTIONS.includes(a));
 }
 
 export function actionAllowedForModule(moduleName, action) {

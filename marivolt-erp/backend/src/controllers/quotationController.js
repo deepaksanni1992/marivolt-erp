@@ -2,8 +2,6 @@ import mongoose from "mongoose";
 import Quotation from "../models/Quotation.js";
 import Company from "../models/Company.js";
 import Customer from "../models/Customer.js";
-import Item from "../models/itemModel.js";
-import ItemTechnical from "../models/itemTechnicalModel.js";
 import OrderAcknowledgement from "../models/OrderAcknowledgement.js";
 import * as stockService from "../services/stockService.js";
 import {
@@ -43,6 +41,20 @@ import {
 } from "../utils/customerTransactionFields.js";
 import { writeAudit } from "../services/auditService.js";
 import { normalizeOaPaymentType } from "../utils/salesFlowSequential.js";
+import {
+  applyItemMasterSnapshotsToLines,
+  articleFromLine,
+  assertActiveArticles,
+  assertActiveArticlesForChangedLines,
+  isArticleValidationError,
+  linesRequiringArticleValidation,
+  snapshotQuotationLineFromItem,
+} from "../services/articleTransactionValidator.js";
+
+function jsonQuotationError(res, err) {
+  if (isArticleValidationError(err)) return res.status(err.statusCode).json(err.toJSON());
+  return res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
+}
 
 function withCompany(req, filter = {}) {
   return { ...filter, companyId: req.companyId };
@@ -176,86 +188,6 @@ async function resolveCustomerFromMaster(req, payload = {}) {
     throw new Error("Customer must be selected from Customer Master");
   }
   return customer;
-}
-
-async function autoCreateItemsFromQuotation({ req, quotation }) {
-  const UOM_ALLOWED = ["PCS", "SET", "KG", "NOS", "MTR"];
-  const clean = (v) => String(v ?? "").trim();
-  const normalizeUom = (v) => {
-    const u = clean(v).toUpperCase();
-    return UOM_ALLOWED.includes(u) ? u : "PCS";
-  };
-  const mergeSet = (base, next) => {
-    const a = clean(base);
-    const b = clean(next);
-    if (!a && !b) return "";
-    const set = new Set([
-      ...a.split("|").map((x) => x.trim()).filter(Boolean),
-      ...b.split("|").map((x) => x.trim()).filter(Boolean),
-    ]);
-    return [...set].join(" | ");
-  };
-
-  for (const line of quotation.lines || []) {
-    const article = clean(line.article).toUpperCase();
-    if (!article) continue;
-    const existing = await Item.findOne({ companyId: req.companyId, article });
-    try {
-      const payload = {
-        companyId: req.companyId,
-        article,
-        itemName: clean(line.description) || article,
-        description: clean(line.description),
-        vertical: clean(quotation.vertical),
-        engine: clean(quotation.engine),
-        model: clean(quotation.model),
-        config: clean(quotation.config),
-        uom: normalizeUom(line.uom),
-        status: "Active",
-      };
-
-      if (!existing) {
-        await Item.create(payload);
-      } else {
-        existing.itemName = existing.itemName || payload.itemName;
-        existing.description = mergeSet(existing.description, payload.description);
-        existing.vertical = mergeSet(existing.vertical, payload.vertical);
-        existing.engine = mergeSet(existing.engine, payload.engine);
-        existing.model = mergeSet(existing.model, payload.model);
-        existing.config = mergeSet(existing.config, payload.config);
-        existing.uom = normalizeUom(existing.uom || payload.uom);
-        existing.status = "Active";
-        await existing.save();
-      }
-
-      const technical = await ItemTechnical.findOne({ companyId: req.companyId, article });
-      const nextSpn = clean(line.partNumber);
-      const nextMaterialCode = clean(line.materialCode);
-      const nextEsn = clean(quotation.esn);
-      if (!technical) {
-        await ItemTechnical.create({
-          companyId: req.companyId,
-          article,
-          spn: nextSpn,
-          esn: nextEsn,
-          materialCode: nextMaterialCode,
-        });
-      } else {
-        technical.spn = mergeSet(technical.spn, nextSpn);
-        technical.esn = mergeSet(technical.esn, nextEsn);
-        technical.materialCode = mergeSet(technical.materialCode, nextMaterialCode);
-        await technical.save();
-      }
-    } catch (err) {
-      const isDuplicateKey = err?.code === 11000;
-      const duplicateArticle = Boolean(err?.keyPattern?.companyId && err?.keyPattern?.article);
-      if (isDuplicateKey && duplicateArticle) {
-        // Concurrent save of same article is safe to ignore.
-        continue;
-      }
-      throw err;
-    }
-  }
 }
 
 export async function listQuotations(req, res) {
@@ -445,10 +377,15 @@ export async function persistNewQuotation(req, rawBody = {}, { skipAutoCreateIte
     e.statusCode = 400;
     throw e;
   }
+  const itemsByArticle = await assertActiveArticles({
+    companyId: req.companyId,
+    lines: doc.lines,
+    session,
+  });
+  doc.lines = applyItemMasterSnapshotsToLines(doc.lines, itemsByArticle, "quotation");
+  recalcQuotationTotals(doc);
   await doc.save(session ? { session } : undefined);
-  if (!skipAutoCreateItems) {
-    await autoCreateItemsFromQuotation({ req, quotation: doc });
-  }
+  void skipAutoCreateItems;
   return doc;
 }
 
@@ -462,7 +399,7 @@ export async function createQuotation(req, res) {
       number: req.body?.quotationNo,
     });
     if (dup) return res.status(dup.statusCode).json({ message: dup.message });
-    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
+    return jsonQuotationError(res, err);
   }
 }
 
@@ -596,8 +533,24 @@ export async function updateQuotation(req, res) {
       header: doc,
       sourceType: doc.sourceType,
     });
+    if (Array.isArray(req.body.lines)) {
+      const previousLines = beforeSnapshot.lines || [];
+      const itemsByArticle = await assertActiveArticlesForChangedLines({
+        companyId: req.companyId,
+        previousLines,
+        nextLines: doc.lines,
+      });
+      const changed = new Set(
+        linesRequiringArticleValidation(previousLines, doc.lines).map((row) => row.index)
+      );
+      doc.lines = doc.lines.map((line, index) => {
+        if (!changed.has(index)) return line;
+        const item = itemsByArticle.get(articleFromLine(line));
+        return item ? snapshotQuotationLineFromItem(line, item) : line;
+      });
+      recalcQuotationTotals(doc);
+    }
     await doc.save();
-    await autoCreateItemsFromQuotation({ req, quotation: doc });
     const customerFieldChanges = diffCustomerTransactionFields(beforeSnapshot, doc);
     await writeAudit(req, {
       action: "UPDATE",
@@ -633,7 +586,7 @@ export async function updateQuotation(req, res) {
       number: req.body?.quotationNo,
     });
     if (dup) return res.status(dup.statusCode).json({ message: dup.message });
-    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
+    return jsonQuotationError(res, err);
   }
 }
 
@@ -766,6 +719,11 @@ export async function duplicateQuotation(req, res) {
       header: src,
       sourceType: src.sourceType,
     });
+    const itemsByArticle = await assertActiveArticles({
+      companyId: req.companyId,
+      lines: src.lines,
+    });
+    const lines = applyItemMasterSnapshotsToLines(src.lines, itemsByArticle, "quotation");
     const nextNo = await nextUniqueSalesDocNumber({
       companyId: req.companyId,
       companyCode: req.companyCode,
@@ -775,6 +733,7 @@ export async function duplicateQuotation(req, res) {
     });
     const doc = await Quotation.create({
       ...src,
+      lines,
       _id: undefined,
       quotationNo: nextNo,
       quotationNumber: nextNo,
@@ -789,7 +748,7 @@ export async function duplicateQuotation(req, res) {
     });
     res.status(201).json(doc);
   } catch (err) {
-    res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
+    return jsonQuotationError(res, err);
   }
 }
 
