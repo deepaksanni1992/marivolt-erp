@@ -144,7 +144,7 @@ function layoutStandardGrnFace(line = {}, opts = {}) {
   const receivedDate = t(line.receivedDate || "") || "-";
   const location = t(line.location || "") || "-";
   for (const [name, val] of [
-    ["SPN", spn],
+    ["Part No.", spn],
     ["Material", materialCode],
     ["UOM", uom],
     ["PO", poNo],
@@ -192,7 +192,7 @@ function layoutStandardGrnFace(line = {}, opts = {}) {
   }
 
   const rows = [
-    `SPN: ${spn}`,
+    `Part No.: ${spn}`,
     `Mat: ${materialCode}`,
     `Qty: ${qtyDisplay} ${uom}`,
     `PO: ${poNo}  GRN: ${grnNo}`,

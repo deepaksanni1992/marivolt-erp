@@ -284,7 +284,7 @@ export default function OrderAllocationDetailModal({
                       <th className="px-2 py-2 text-left">S/N</th>
                       <th className="px-2 py-2 text-left">Article</th>
                       <th className="px-2 py-2 text-left">Description</th>
-                      <th className="px-2 py-2 text-left">Part No</th>
+                      <th className="px-2 py-2 text-left">Part No.</th>
                       <th className="px-2 py-2 text-right">Ordered</th>
                       <th className="px-2 py-2 text-right">Physical</th>
                       <th className="px-2 py-2 text-right">Reserved Here</th>

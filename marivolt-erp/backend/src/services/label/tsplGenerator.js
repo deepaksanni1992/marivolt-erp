@@ -205,7 +205,7 @@ export function buildSingleLabelTspl(line = {}, opts = {}) {
   }
   y = Math.max(y, scale(130));
   const row = scale(20);
-  cmds.push(`TEXT ${scale(20)},${y},"0",0,1,1,"SPN: ${spn}"`);
+  cmds.push(`TEXT ${scale(20)},${y},"0",0,1,1,"Part No.: ${spn}"`);
   y += row;
   cmds.push(`TEXT ${scale(20)},${y},"0",0,1,1,"Mat: ${materialCode}"`);
   y += row;

@@ -3,10 +3,20 @@
  * Item Master is the only identity source. Lookups are exact { companyId, article }.
  */
 import ItemMaster from "../models/itemMasterModel.js";
+import ItemTechnical from "../models/itemTechnicalModel.js";
+import {
+  PART_NUMBER_MISMATCH,
+  canonicalItemMasterPartNumber,
+  incomingDocumentPartNumber,
+  normalizePartNumberValue,
+  partNumberMismatchMessage,
+  snapshotPartNumberFields,
+} from "../utils/partNumberTerminology.js";
 
 export const ARTICLE_NOT_IN_ITEM_MASTER = "ARTICLE_NOT_IN_ITEM_MASTER";
 export const ARTICLE_INACTIVE = "ARTICLE_INACTIVE";
 export const ARTICLE_COMPANY_REQUIRED = "ARTICLE_COMPANY_REQUIRED";
+export { PART_NUMBER_MISMATCH };
 
 const NOT_FOUND_MESSAGE =
   "Article {article} is not available in the active Item Master. Ask an authorized administrator to create or activate it first.";
@@ -106,7 +116,17 @@ export async function loadActiveArticlesByCode({ companyId, articles = [], sessi
   const query = ItemMaster.find({ companyId, article: { $in: unique } });
   if (session) query.session(session);
   const rows = await query.lean();
-  return new Map((rows || []).map((row) => [normalizeArticle(row.article), row]));
+  const techQuery = ItemTechnical.find({ companyId, article: { $in: unique } }).select("article spn");
+  if (session) techQuery.session(session);
+  const techRows = await techQuery.lean();
+  const techByArticle = new Map((techRows || []).map((row) => [normalizeArticle(row.article), row]));
+  return new Map(
+    (rows || []).map((row) => {
+      const article = normalizeArticle(row.article);
+      const tech = techByArticle.get(article);
+      return [article, { ...row, spn: canonicalItemMasterPartNumber(row, tech) }];
+    })
+  );
 }
 
 export function classifyArticleIssues({ articles = [], itemsByArticle, lineNumbersByArticle } = {}) {
@@ -214,11 +234,12 @@ export async function assertActiveArticlesForChangedLines({
 
 export function snapshotQuotationLineFromItem(line = {}, item) {
   if (!item) return line;
+  const partNumber = canonicalItemMasterPartNumber(item);
   return {
     ...line,
     article: item.article,
     description: item.description || item.itemName || line.description || "",
-    partNumber: item.partNumber || item.spn || line.partNumber || "",
+    partNumber,
     uom: item.uom || line.uom || "PCS",
     materialCode: item.materialCode || line.materialCode || "",
     engineModel: line.engineModel || item.model || "",
@@ -228,16 +249,15 @@ export function snapshotQuotationLineFromItem(line = {}, item) {
 
 export function snapshotPoLineFromItem(line = {}, item) {
   if (!item) return line;
+  const partFields = snapshotPartNumberFields(canonicalItemMasterPartNumber(item));
   return {
     ...line,
     article: item.article,
     articleNo: item.article,
     itemCode: item.article,
     description: item.description || item.itemName || line.description || "",
-    partNo: item.partNumber || item.spn || line.partNo || "",
-    partNumber: item.partNumber || item.spn || line.partNumber || "",
+    ...partFields,
     materialCode: item.materialCode || line.materialCode || "",
-    spn: item.spn || line.spn || "",
     drawingNo: item.drawingNo || line.drawingNo || "",
     vertical: item.vertical || line.vertical || "",
     brand: item.brand || item.engine || line.brand || "",
@@ -246,6 +266,7 @@ export function snapshotPoLineFromItem(line = {}, item) {
     config: item.config || line.config || "",
     esn: item.esn || line.esn || "",
     uom: item.uom || line.uom || "PCS",
+    supplierPartNumber: line.supplierPartNumber || "",
   };
 }
 
@@ -255,5 +276,34 @@ export function applyItemMasterSnapshotsToLines(lines = [], itemsByArticle, kind
     const article = articleFromLine(line);
     const item = itemsByArticle.get(article);
     return item ? apply(line, item) : line;
+  });
+}
+
+/** Reject document Part Number values that do not match the canonical Item Master value. */
+export function assertPoLinesPartNumberMatchesMaster(lines = [], itemsByArticle) {
+  const mismatches = [];
+  (lines || []).forEach((line, index) => {
+    const incoming = incomingDocumentPartNumber(line);
+    if (!incoming) return;
+    const article = articleFromLine(line);
+    const item = itemsByArticle.get(article);
+    if (!item) return;
+    const master = canonicalItemMasterPartNumber(item);
+    if (normalizePartNumberValue(incoming) !== normalizePartNumberValue(master)) {
+      mismatches.push({
+        article,
+        lineNumbers: [index + 1],
+        code: PART_NUMBER_MISMATCH,
+        message: partNumberMismatchMessage(article, incoming, master),
+      });
+    }
+  });
+  if (!mismatches.length) return;
+  throw new ArticleValidationError({
+    code: PART_NUMBER_MISMATCH,
+    message: mismatches[0].message,
+    statusCode: 409,
+    articles: mismatches.map((row) => row.article),
+    lines: mismatches,
   });
 }

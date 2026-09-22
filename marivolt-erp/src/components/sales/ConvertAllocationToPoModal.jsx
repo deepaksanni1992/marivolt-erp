@@ -171,7 +171,7 @@ export default function ConvertAllocationToPoModal({
 
           <div className="flex flex-wrap items-center gap-2">
             <TextInput
-              placeholder="Search article, description, SPN or part number"
+              placeholder="Search article, description or Part Number"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="min-w-[280px] flex-1"
@@ -191,7 +191,7 @@ export default function ConvertAllocationToPoModal({
                   <th className="px-2 py-2">Select</th>
                   <th className="px-2 py-2">Article</th>
                   <th className="px-2 py-2">Description</th>
-                  <th className="px-2 py-2">SPN / Part</th>
+                  <th className="px-2 py-2">Part No.</th>
                   <th className="px-2 py-2 text-right">Ordered Qty</th>
                   <th className="px-2 py-2 text-right">Reserved Here</th>
                   <th className="px-2 py-2 text-right">Free Stock</th>

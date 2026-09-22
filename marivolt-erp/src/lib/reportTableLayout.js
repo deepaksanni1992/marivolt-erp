@@ -374,7 +374,7 @@ export function logReportTableOverflowCheck(doc = typeof document !== "undefined
 /** Quotation / OA / Proforma / standard sales line table header */
 export const SALES_COMMERCIAL_LINE_TABLE_HEAD = `
   <th class="col-sno">Serial number</th>
-  <th class="col-part">Part number</th>
+  <th class="col-part">Part No.</th>
   <th class="col-desc">Description</th>
   <th class="col-uom">UOM</th>
   <th class="col-qty">QTY</th>
@@ -386,7 +386,7 @@ export const SALES_COMMERCIAL_LINE_TABLE_HEAD = `
 /** Tax / sales invoice line table — commercial columns only, no packing weights */
 export const SALES_INVOICE_LINE_TABLE_HEAD = `
   <th class="col-sno">Pos.</th>
-  <th class="col-part">Part Number</th>
+  <th class="col-part">Part No.</th>
   <th class="col-desc">Description</th>
   <th class="col-uom">UOM</th>
   <th class="col-qty">QTY</th>
@@ -397,7 +397,7 @@ export const SALES_INVOICE_LINE_TABLE_HEAD = `
 export const ORDER_ALLOCATION_LINE_TABLE_HEAD = `
   <th class="col-sno">S/N</th>
   <th class="col-article">Article</th>
-  <th class="col-part">Part no</th>
+  <th class="col-part">Part No.</th>
   <th class="col-desc">Description</th>
   <th class="col-uom">UOM</th>
   <th class="col-qty">Qty</th>

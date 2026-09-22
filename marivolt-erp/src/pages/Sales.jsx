@@ -155,7 +155,7 @@ const emptyLine = () => ({
 });
 
 /** Sample CSV aligned with quotation line columns (Article, Description, and positive QTY required per row). */
-const QUOTATION_LINES_CSV_TEMPLATE = `Article,Part number,Description,UOM,QTY,Price,Remarks,Material code,Availability
+const QUOTATION_LINES_CSV_TEMPLATE = `Article,Part Number,Description,UOM,QTY,Price,Remarks,Material code,Availability
 51228,034.02.112,Sample spare part,PCS,1,25.00,Optional note,ABC123,In stock`;
 
 function normCsvHeader(s) {
@@ -228,7 +228,7 @@ function quotationLinesFromCsvRows(csvRows) {
   return out;
 }
 
-/** Same Article + same Part number = one logical line (trimmed, case-insensitive part). */
+/** Same Article + same Part Number = one logical line (trimmed, case-insensitive part). */
 function quotationLineDuplicateKey(line) {
   const art = String(line?.article ?? "")
     .trim()
@@ -276,7 +276,7 @@ function renumberQuotationSerialLines(lines) {
 }
 
 const SALES_LINES_CSV_HEADER =
-  "Article,Part number,Description,UOM,QTY,Price,Remarks,Material code,Availability";
+  "Article,Part Number,Description,UOM,QTY,Price,Remarks,Material code,Availability";
 
 function exportSalesDocumentLinesCsv(lines, fileBase) {
   const body = (lines || [])
@@ -311,7 +311,7 @@ function processSalesLinesCsvImport(file, baseLines, onLinesMerged, { onError, o
       const importedRaw = quotationLinesFromCsvRows(results.data || []);
       if (!importedRaw.length) {
         onError(
-          "No valid CSV rows. Each row needs Article (or Item/SKU), Description, and a positive QTY. Optional: Part number, UOM, Price, Remarks, Material code, Availability."
+          "No valid CSV rows. Each row needs Article (or Item/SKU), Description, and a positive QTY. Optional: Part Number, UOM, Price, Remarks, Material code, Availability."
         );
         return;
       }
@@ -6220,7 +6220,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     <tr>
                       <th className="px-2 py-2 text-left">S/N</th>
                       <th className="px-2 py-2 text-left">Article</th>
-                      <th className="px-2 py-2 text-left">Part number</th>
+                      <th className="px-2 py-2 text-left">Part Number</th>
                       <th className="px-2 py-2 text-left">Description</th>
                       <th className="px-2 py-2 text-left">UOM</th>
                       <th className="px-2 py-2 text-right">QTY</th>
@@ -6250,7 +6250,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                                       ...line,
                                       article: item.article,
                                       description: item.description || item.itemName || "",
-                                      partNumber: item.partNumber || item.spn || "",
+                                      partNumber: item.spn || "",
                                       uom: item.uom || "PCS",
                                       materialCode: item.materialCode || "",
                                       serialNo: idx + 1,
@@ -6549,7 +6549,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   <tr>
                     <th className="px-3 py-2 text-left">S/N</th>
                     <th className="px-3 py-2 text-left">Article</th>
-                    <th className="px-3 py-2 text-left">Part no</th>
+                    <th className="px-3 py-2 text-left">Part No.</th>
                     <th className="px-3 py-2 text-left">Description</th>
                     <th className="px-3 py-2 text-left">UOM</th>
                     <th className="px-3 py-2 text-right">Qty</th>
@@ -6921,7 +6921,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                       <tr>
                         <th className="px-2 py-2 text-left">S/N</th>
                         <th className="px-2 py-2 text-left">Article</th>
-                        <th className="px-2 py-2 text-left">Part number</th>
+                        <th className="px-2 py-2 text-left">Part Number</th>
                         <th className="px-2 py-2 text-left">Description</th>
                         <th className="px-2 py-2 text-left">UOM</th>
                         <th className="px-2 py-2 text-right">QTY</th>
@@ -7263,7 +7263,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     <tr>
                       <th className="px-3 py-2 text-left">S/N</th>
                       <th className="px-3 py-2 text-left">Article</th>
-                      <th className="px-3 py-2 text-left">Part no</th>
+                      <th className="px-3 py-2 text-left">Part No.</th>
                       <th className="px-3 py-2 text-left">Description</th>
                       <th className="px-3 py-2 text-left">UOM</th>
                       <th className="px-3 py-2 text-right">Qty</th>
@@ -7570,7 +7570,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                       <tr>
                         <th className="px-2 py-2 text-left">S/N</th>
                         <th className="px-2 py-2 text-left">Article</th>
-                        <th className="px-2 py-2 text-left">Part number</th>
+                        <th className="px-2 py-2 text-left">Part Number</th>
                         <th className="px-2 py-2 text-left">Description</th>
                         <th className="px-2 py-2 text-left">UOM</th>
                         <th className="px-2 py-2 text-right">QTY</th>
@@ -7814,7 +7814,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     <tr>
                       <th className="px-3 py-2 text-left">S/N</th>
                       <th className="px-3 py-2 text-left">Article</th>
-                      <th className="px-3 py-2 text-left">Part no</th>
+                      <th className="px-3 py-2 text-left">Part No.</th>
                       <th className="px-3 py-2 text-left">Description</th>
                       <th className="px-3 py-2 text-left">UOM</th>
                       <th className="px-3 py-2 text-right">Qty</th>
@@ -8037,7 +8037,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                     <tr>
                       <th className="px-2 py-2 text-left">S/N</th>
                       <th className="px-2 py-2 text-left">Article</th>
-                      <th className="px-2 py-2 text-left">Part no</th>
+                      <th className="px-2 py-2 text-left">Part No.</th>
                       <th className="px-2 py-2 text-left">Description</th>
                       <th className="px-2 py-2 text-right">Qty</th>
                       <th className="px-2 py-2 text-right">Price</th>
@@ -8358,7 +8358,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
             <div className="overflow-x-auto rounded-xl border">
               <table className="min-w-full text-sm">
                 <thead className="bg-gray-100">
-                  <tr><th className="px-3 py-2 text-left">S/N</th><th className="px-3 py-2 text-left">Part no</th><th className="px-3 py-2 text-left">Description</th><th className="px-3 py-2 text-left">UOM</th><th className="px-3 py-2 text-right">Qty</th><th className="px-3 py-2 text-right">Price</th><th className="px-3 py-2 text-right">Total</th></tr>
+                  <tr><th className="px-3 py-2 text-left">S/N</th><th className="px-3 py-2 text-left">Part No.</th><th className="px-3 py-2 text-left">Description</th><th className="px-3 py-2 text-left">UOM</th><th className="px-3 py-2 text-right">Qty</th><th className="px-3 py-2 text-right">Price</th><th className="px-3 py-2 text-right">Total</th></tr>
                 </thead>
                 <tbody>
                   {salesDispatchDetail.lines?.map((line) => (
@@ -8852,7 +8852,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-2 py-2 text-left">Article *</th>
-                <th className="px-2 py-2 text-left">Part no</th>
+                <th className="px-2 py-2 text-left">Part No.</th>
                 <th className="px-2 py-2 text-left">Description</th>
                 <th className="px-2 py-2 text-left">UOM</th>
                 <th className="px-2 py-2 text-right">Qty</th>
@@ -9185,7 +9185,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
           setQuotationCsvDupModal(null);
         }}
         title="New Quotation"
-        subtitle="Enter header details, add lines manually or import from CSV. Required per line: Article, Description, quantity. CSV import matches Article + Part number (in-file duplicates use the last row; grid conflicts prompt to replace or skip)."
+        subtitle="Enter header details, add lines manually or import from CSV. Required per line: Article, Description, quantity. CSV import matches Article + Part Number (in-file duplicates use the last row; grid conflicts prompt to replace or skip)."
         xlarge
       >
         <div className="grid gap-3 sm:grid-cols-4">
@@ -9387,7 +9387,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <tr>
                   <th className="px-2 py-2 text-left">Serial number</th>
                   <th className="px-2 py-2 text-left">Article</th>
-                  <th className="px-2 py-2 text-left">Part number</th>
+                        <th className="px-2 py-2 text-left">Part Number</th>
                   <th className="px-2 py-2 text-left">Description</th>
                   <th className="px-2 py-2 text-left">UOM</th>
                   <th className="px-2 py-2 text-right">QTY</th>
@@ -9417,7 +9417,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                                   ...line,
                                   article: item.article,
                                   description: item.description || item.itemName || "",
-                                  partNumber: item.partNumber || item.spn || "",
+                                  partNumber: item.spn || "",
                                   uom: item.uom || "PCS",
                                   materialCode: item.materialCode || "",
                                   serialNo: idx + 1,
@@ -9592,7 +9592,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
         open={!!quotationCsvDupModal}
         onClose={() => setQuotationCsvDupModal(null)}
         title="Line conflicts in CSV import"
-        subtitle="Rows match on Article and Part number (case-insensitive). Choose how to apply imported QTY, Price, Description, and other fields when a line already exists."
+        subtitle="Rows match on Article and Part Number (case-insensitive). Choose how to apply imported QTY, Price, Description, and other fields when a line already exists."
         wide
       >
         {quotationCsvDupModal ? (
@@ -9600,7 +9600,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
             {quotationCsvDupModal.internalDupRemoved > 0 ? (
               <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
                 Your file had {quotationCsvDupModal.internalDupRemoved} extra row
-                {quotationCsvDupModal.internalDupRemoved === 1 ? "" : "s"} with the same Article and Part number as another row in
+                {quotationCsvDupModal.internalDupRemoved === 1 ? "" : "s"} with the same Article and Part Number as another row in
                 the file. Only the <strong>last</strong> occurrence of each pair was kept.
               </p>
             ) : null}
@@ -9608,7 +9608,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               {quotationCsvDupModal.conflicts.length === 1
                 ? "One imported line conflicts"
                 : `${quotationCsvDupModal.conflicts.length} imported lines conflict`}{" "}
-              with the {quotationCsvDupModal.contextLabel || "document"} grid (same Article and Part number). Review changes below
+              with the {quotationCsvDupModal.contextLabel || "document"} grid (same Article and Part Number). Review changes below
               before confirming.
             </p>
             <div className="max-h-56 overflow-auto rounded-lg border border-slate-200">
@@ -9616,7 +9616,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 <thead className="sticky top-0 bg-slate-100 text-left text-slate-600">
                   <tr>
                     <th className="px-2 py-2">Article</th>
-                    <th className="px-2 py-2">Part number</th>
+                    <th className="px-2 py-2">Part Number</th>
                     <th className="px-2 py-2">Description</th>
                     <th className="px-2 py-2 text-right">QTY (grid → import)</th>
                     <th className="px-2 py-2 text-right">Price (grid → import)</th>

@@ -12,7 +12,7 @@ function labelFor(item) {
     item.model,
     item.config,
     item.uom,
-    item.partNumber || item.spn,
+    item.spn,
   ].filter(Boolean);
   return bits.join(" · ");
 }

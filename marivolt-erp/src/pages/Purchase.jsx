@@ -194,7 +194,7 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
       const articleNo = String(l.articleNo || "").trim();
       const partNo = String(l.partNo || "").trim();
       const article = String(l.article || articleNo || l.itemCode || "").trim().toUpperCase();
-      const itemCode = String(l.itemCode || article || articleNo || l.materialCode || l.partNumber || partNo)
+      const itemCode = String(l.itemCode || article || articleNo)
         .trim()
         .toUpperCase();
       const qty = poLineQty(l);
@@ -206,7 +206,7 @@ function buildPoPayload(form, { includeIncompleteLines = false } = {}) {
         partNo,
         partNumber: String(l.partNumber || partNo).trim().toUpperCase(),
         supplierPartNumber: String(l.supplierPartNumber || "").trim(),
-        materialCode: String(l.materialCode || itemCode).trim().toUpperCase(),
+        materialCode: String(l.materialCode || "").trim().toUpperCase(),
         spn: String(l.spn || l.partNumber || partNo).trim().toUpperCase(),
         drawingNo: String(l.drawingNo || "").trim(),
         vertical: String(l.vertical || form.vertical || "").trim(),
@@ -502,9 +502,9 @@ function mapCsvRowToPurchaseOrderLine(raw) {
 }
 
 function lineIsImportable(l) {
-  const code = String(l.articleNo || l.partNo || "").trim();
+  const article = String(l.articleNo || l.article || l.itemCode || "").trim();
   const qty = Number(l.qty) || 0;
-  return !!code && qty > 0;
+  return !!article && qty > 0;
 }
 
 function poDocLineExportRows(lines) {
@@ -532,7 +532,7 @@ const PO_LINE_EXPORT_COLS_BASE = [
   { key: "pos", header: "Pos" },
   { key: "articleNo", header: "Article Nr." },
   { key: "description", header: "Description" },
-  { key: "partNo", header: "Part Nr." },
+  { key: "partNo", header: "Part No." },
   { key: "supplierPartNumber", header: "Supplier Part Number" },
 ];
 
@@ -854,7 +854,7 @@ function PurchaseOrderPreviewPanel({ doc, unsaved, supplierFacing = true }) {
                   </>
                 ) : (
                   <>
-                    <th className={thCell}>Part Nr.</th>
+                    <th className={thCell}>Part No.</th>
                     <th className={thCell}>Supplier Part No.</th>
                     <th className={thCell}>Material Code</th>
                     <th className={thCell}>Description</th>
@@ -978,10 +978,10 @@ function csvRowsToPurchaseOrders(rows) {
   const byKey = new Map();
   for (const r of rows) {
     const supplierName = String(r.supplierName || r.Supplier || "").trim();
-    const articleNo = String(r.articleNo || r.ArticleNr || r.ArticleNo || "").trim();
-    const partNo = String(r.partNo || r.PartNr || r.PartNo || "").trim();
-    const itemCode = String(r.itemCode || r.ItemCode || articleNo || partNo || "").trim();
-    if (!supplierName || !itemCode) continue;
+    const articleNo = String(r.articleNo || r.ArticleNr || r.ArticleNo || r.Article || "").trim();
+    const partNo = String(r.partNo || r.PartNr || r.PartNo || r["Part Number"] || r.SPN || "").trim();
+    const itemCode = String(r.itemCode || r.ItemCode || articleNo || "").trim();
+    if (!supplierName || !articleNo) continue;
 
     const poNumber = String(r.poNumber || r.PONumber || "").trim();
     const key = poNumber || `__SUP__${supplierName.toUpperCase()}`;
@@ -1593,7 +1593,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
         const imported = (res.data || []).map(mapCsvRowToPurchaseOrderLine).filter(lineIsImportable);
         if (!imported.length) {
           setErr(
-            "No valid lines in CSV. Use headers: Article Nr., Description, Part Nr., Supplier Part Number, Material Code, Qty, UOM, Unit rate, Remarks, Lead time (Article or Part Nr. and Qty required per row)."
+            "No valid lines in CSV. Use headers: Article Nr., Description, Part No., Supplier Part Number, Material Code, Qty, UOM, Unit rate, Remarks, Lead time. Article Nr. and Qty are required per row. Part No. must match Item Master when supplied."
           );
           return;
         }
@@ -2629,7 +2629,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                     <th className="px-2 py-2 font-bold text-gray-700">Pos</th>
                     <th className="px-2 py-2 font-bold text-gray-700">Article Nr.</th>
                     <th className="px-2 py-2 font-bold text-gray-700">Description</th>
-                    <th className="px-2 py-2 font-bold text-gray-700">Part Nr.</th>
+                    <th className="px-2 py-2 font-bold text-gray-700">Part No.</th>
                     <th className="px-2 py-2 font-bold text-gray-700">Supplier Part No.</th>
                     <th className="px-2 py-2 font-bold text-gray-700">Material Code</th>
                     <th className="px-2 py-2 text-right font-bold text-gray-700">Qty</th>
@@ -3294,7 +3294,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               </div>
             </div>
             <p className="mb-2 text-[10px] text-gray-500">
-              CSV columns (first row headers): Article Nr., Description, Part Nr., Supplier Part Number, Material Code,
+              CSV columns (first row headers): Article Nr., Description, Part No., Supplier Part Number, Material Code,
               Qty, UOM, Unit rate, Remarks, Lead time. Rows append to the grid; a blank first line is replaced when importing.
             </p>
             <div className="overflow-x-auto rounded-lg border border-gray-200">
@@ -3304,7 +3304,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                     <th className="px-1.5 py-2 font-bold text-gray-700">Pos</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">Article Nr.</th>
                     <th className="min-w-[120px] px-1.5 py-2 font-bold text-gray-700">Description</th>
-                    <th className="px-1.5 py-2 font-bold text-gray-700">Part Nr.</th>
+                    <th className="px-1.5 py-2 font-bold text-gray-700">Part No.</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">Supplier Part No.</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">Material Code</th>
                     <th className="px-1.5 py-2 font-bold text-gray-700">Qty</th>
@@ -3350,8 +3350,8 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                                 article: item.article,
                                 itemCode: item.article,
                                 description: item.description || item.itemName || "",
-                                partNo: item.partNumber || item.spn || "",
-                                partNumber: item.partNumber || item.spn || "",
+                                partNo: item.spn || "",
+                                partNumber: item.spn || "",
                                 materialCode: item.materialCode || "",
                                 spn: item.spn || "",
                                 drawingNo: item.drawingNo || "",
@@ -3376,9 +3376,10 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                         <td className="px-1.5 py-1.5">
                           <TextInput
                             className="py-1.5 text-[11px] bg-slate-50"
-                            placeholder="Internal part / SPN"
+                            placeholder={line.articleNo ? "—" : "Part No. from Item Master"}
                             value={line.partNo}
                             readOnly
+                            title={!line.partNo && line.articleNo ? "No Part Number on Item Master. An Admin or Super Admin must update Item Master." : "Part Number is copied from Item Master and cannot be overwritten here."}
                           />
                         </td>
                         <td className="px-1.5 py-1.5">
@@ -3468,7 +3469,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               </table>
             </div>
             <p className="mt-1 text-[10px] text-gray-500">
-              Inventory uses Article Nr., internal code, or Part Nr. (at least one required per line).
+              Select an Active Item Master Article. Part No. is copied from Item Master and is read-only. If it is blank, ask an Admin or Super Admin to update Item Master. Supplier Part No. stays separate.
             </p>
           </div>
 
@@ -3584,7 +3585,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
               }
               const validFinalLines = body.lines.filter((line) => line.itemCode && Number(line.qty) > 0);
               if (!validFinalLines.length) {
-                setErr("Add at least one line with Article Nr., code, or Part Nr. and quantity.");
+                setErr("Add at least one line with an Item Master Article and quantity.");
                 return;
               }
               if (editPoId) {

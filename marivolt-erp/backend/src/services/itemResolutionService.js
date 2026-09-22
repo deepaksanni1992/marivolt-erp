@@ -29,7 +29,7 @@ function normalizeInput(input = {}) {
   return {
     article: trim(input.article).toUpperCase(),
     esn: trim(input.esn),
-    spn: trim(input.spn),
+    spn: trim(input.spn || input.partNumber),
     materialCode: trim(input.materialCode),
     drawingNumber: trim(input.drawingNumber),
     oemReference: trim(input.oemReference),
@@ -57,7 +57,7 @@ function scoreCandidate({ input, item, technical, allTechnicals }) {
   }
   if (input.spn && technical.spn && reEq(input.spn).test(technical.spn)) {
     score += SCORE_WEIGHTS.SPN_EXACT;
-    reasons.push("Exact SPN");
+    reasons.push("Exact Part Number");
     breakdown.push({ key: "SPN_EXACT", points: SCORE_WEIGHTS.SPN_EXACT });
   }
   if (input.materialCode && technical.materialCode && reEq(input.materialCode).test(technical.materialCode)) {
@@ -114,10 +114,10 @@ function scoreCandidate({ input, item, technical, allTechnicals }) {
     }
   }
   // Priority rule bumpers
-  if (input.esn && input.spn && reasons.includes("Exact ESN") && reasons.includes("Exact SPN")) score += 200;
+  if (input.esn && input.spn && reasons.includes("Exact ESN") && reasons.includes("Exact Part Number")) score += 200;
   else if (input.esn && input.materialCode && reasons.includes("Exact ESN") && reasons.includes("Exact Material Code")) score += 170;
   else if (input.esn && input.oemReference && reasons.includes("Exact ESN") && reasons.includes("Exact OEM reference")) score += 160;
-  else if (input.engineModel && input.configuration && input.spn && reasons.includes("Exact model") && reasons.includes("Exact config") && reasons.includes("Exact SPN")) score += 130;
+  else if (input.engineModel && input.configuration && input.spn && reasons.includes("Exact model") && reasons.includes("Exact config") && reasons.includes("Exact Part Number")) score += 130;
   else if (input.engineModel && input.configuration && input.materialCode && reasons.includes("Exact model") && reasons.includes("Exact config") && reasons.includes("Exact Material Code")) score += 115;
   return { score, reasons, breakdown };
 }

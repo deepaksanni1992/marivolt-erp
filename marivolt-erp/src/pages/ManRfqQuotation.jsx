@@ -613,7 +613,7 @@ export default function ManRfqQuotation() {
       <div className="rounded-2xl border bg-white p-4">
         <h1 className="text-2xl font-semibold">MAN RFQ / Quotation</h1>
         <p className="text-sm text-slate-600">
-          Match customer Part no to MAN Item Master SPN for the selected engine model, pick a permitted selling tier, then
+          Match customer Part Number to MAN Item Master Part Number for the selected engine model, pick a permitted selling tier, then
           generate a standard draft quotation. Creating a quotation does not reserve stock. Manual quotations remain
           available on Sales.
         </p>
@@ -739,7 +739,7 @@ export default function ManRfqQuotation() {
         </div>
         {header.modelMode === "UNSPECIFIED" ? (
           <p className="mt-2 text-xs text-amber-800">
-            Model not specified searches across MAN models. Article selection is required whenever the same SPN exists on
+            Model not specified searches across MAN models. Article selection is required whenever the same Part Number exists on
             more than one model.
           </p>
         ) : null}
@@ -865,7 +865,7 @@ export default function ManRfqQuotation() {
 
       <div className="rounded-2xl border bg-white p-4">
         <h2 className="text-lg font-semibold">Upload Customer RFQ</h2>
-        <p className="text-sm text-slate-500">Required columns: Part no, UOM, Qty. Engine Model and configuration are optional.</p>
+        <p className="text-sm text-slate-500">Required columns: Part Number, UOM, Qty. Legacy header SPN is still accepted. Engine Model and configuration are optional.</p>
         <div className="mt-3 flex flex-wrap gap-2">
           <input
             ref={fileRef}
@@ -1095,7 +1095,7 @@ export default function ManRfqQuotation() {
               <div>
                 <h2 className="text-lg font-semibold">Select Article</h2>
                 <p className="text-sm text-slate-600">
-                  Part no {pickerLine.requestedPartNo}
+                  Part Number {pickerLine.requestedPartNo}
                   {pickerLine.requestedModel ? ` · requested model ${pickerLine.requestedModel}` : ""}
                 </p>
               </div>
@@ -1107,7 +1107,7 @@ export default function ManRfqQuotation() {
               <table className="min-w-full text-xs">
                 <thead className="bg-slate-50 text-left">
                   <tr>
-                    {["Select", "Article", "SPN", "Engine Model", "Configuration", "Description", "Specifications", "UOM", "Available qty", "Lead time", "Permitted selling tiers"].map(
+                    {["Select", "Article", "Part Number", "Engine Model", "Configuration", "Description", "Specifications", "UOM", "Available qty", "Lead time", "Permitted selling tiers"].map(
                       (h) => (
                         <th key={h} className="px-2 py-2">
                           {h}

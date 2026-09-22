@@ -184,7 +184,7 @@ export default function PriceList() {
         <table className="min-w-full text-sm">
           <thead className="bg-slate-50 text-left">
             <tr>
-              {["Article", "Description", "UOM", "SPN", "Engine Model", "Configuration", "Specs", "Sell", "Sell II", "Minm", "Rock", "Buy", "Next Buy", "Cur", "Lead", "Available Stock", ""].map(
+              {["Article", "Description", "UOM", "Part Number", "Engine Model", "Configuration", "Specs", "Sell", "Sell II", "Minm", "Rock", "Buy", "Next Buy", "Cur", "Lead", "Available Stock", ""].map(
                 (h) => (
                   <th key={h} className="px-2 py-2">
                     {h}

@@ -167,7 +167,7 @@ export function orderAllocationCsvHeaders() {
     "Status",
     "Line S/N",
     "Article",
-    "Part no",
+    "Part No.",
     "Description",
     "UOM",
     "Qty",

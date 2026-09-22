@@ -275,7 +275,7 @@ export default function GlobalSearch() {
           <table className="min-w-full text-left text-xs">
             <thead className="bg-slate-100 text-[11px] uppercase tracking-wide text-slate-600">
               <tr>
-                {["Type", "Document No", "Company", "Date", "Customer/Supplier", "Article", "Part No", "Description", "Status", "Amount/Qty", "Open"].map(
+                {["Type", "Document No", "Company", "Date", "Customer/Supplier", "Article", "Part No.", "Description", "Status", "Amount/Qty", "Open"].map(
                   (h) => (
                     <th key={h} className="px-2 py-2 whitespace-nowrap">
                       {h}

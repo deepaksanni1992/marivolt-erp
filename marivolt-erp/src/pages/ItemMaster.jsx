@@ -56,7 +56,7 @@ const EXPORT_COLUMNS = [
   { key: "Brand", header: "Brand" },
   { key: "Model", header: "Model" },
   { key: "Config", header: "Config" },
-  { key: "SPN", header: "SPN" },
+  { key: "Part Number", header: "Part Number" },
   { key: "ESN", header: "ESN" },
   { key: "Material Code", header: "Material Code" },
   { key: "Drawing Number", header: "Drawing Number" },
@@ -540,7 +540,7 @@ export default function ItemMaster() {
     const rows = lookupRows.map((r) => ({
       Row: r.row,
       ESN: r.input?.ESN || r.input?.esn || "",
-      SPN: r.input?.SPN || r.input?.spn || "",
+      "Part Number": r.input?.["Part Number"] || r.input?.SPN || r.input?.spn || r.input?.partNumber || "",
       "Material Code": r.input?.["Material Code"] || r.input?.materialCode || "",
       "Drawing No": r.input?.["Drawing Number"] || r.input?.drawingNumber || "",
       "OEM Ref": r.input?.["OEM Ref"] || r.input?.oemReference || "",
@@ -645,7 +645,7 @@ export default function ItemMaster() {
           <table className="min-w-[1300px] w-full text-sm">
             <thead className="bg-slate-100">
               <tr>
-                {["Row", "ESN", "SPN", "Material", "Drawing", "OEM Ref", "Matched Article", "Confidence", "Reason", "Alternatives", "Actions"].map((h) => (
+                {["Row", "ESN", "Part Number", "Material", "Drawing", "OEM Ref", "Matched Article", "Confidence", "Reason", "Alternatives", "Actions"].map((h) => (
                   <th key={h} className="px-2 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">{h}</th>
                 ))}
               </tr>
@@ -667,7 +667,7 @@ export default function ItemMaster() {
                     <tr key={r.row} className={`border-t ${tone}`}>
                       <td className="px-2 py-1">{r.row}</td>
                       <td className="px-2 py-1">{r.input?.ESN || r.input?.esn || "-"}</td>
-                      <td className="px-2 py-1">{r.input?.SPN || r.input?.spn || "-"}</td>
+                      <td className="px-2 py-1">{r.input?.["Part Number"] || r.input?.SPN || r.input?.spn || r.input?.partNumber || "-"}</td>
                       <td className="px-2 py-1">{r.input?.["Material Code"] || r.input?.materialCode || "-"}</td>
                       <td className="px-2 py-1">{r.input?.["Drawing Number"] || r.input?.drawingNumber || "-"}</td>
                       <td className="px-2 py-1">{r.input?.["OEM Ref"] || r.input?.oemReference || "-"}</td>
@@ -772,7 +772,7 @@ export default function ItemMaster() {
           <Field label="Global Search">
             <div className="flex items-center rounded-lg border px-3">
               <Search size={16} className="text-slate-400" />
-              <input className="w-full px-2 py-2 outline-none" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Article, SPN, Material, Supplier..." />
+              <input className="w-full px-2 py-2 outline-none" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Article, Part Number, Material Code…" />
             </div>
           </Field>
           <Field label="ESN">
@@ -789,7 +789,7 @@ export default function ItemMaster() {
         </div>
         {advancedSearchOpen ? (
           <div className="mt-3 grid gap-3 rounded-xl border bg-slate-50 p-3 md:grid-cols-5">
-            <Field label="SPN"><input className="rounded-lg border px-3 py-2" value={spnFilter} onChange={(e) => setSpnFilter(e.target.value)} /></Field>
+            <Field label="Part Number"><input className="rounded-lg border px-3 py-2" value={spnFilter} onChange={(e) => setSpnFilter(e.target.value)} /></Field>
             <Field label="Cylinder Count"><input className="rounded-lg border px-3 py-2" type="number" value={cylinderCount} onChange={(e) => setCylinderCount(e.target.value)} /></Field>
             <Field label="OEM Reference"><input className="rounded-lg border px-3 py-2" value={oemReference} onChange={(e) => setOemReference(e.target.value)} /></Field>
             <Field label="Supplier Reference"><input className="rounded-lg border px-3 py-2" value={supplierReference} onChange={(e) => setSupplierReference(e.target.value)} /></Field>
@@ -813,7 +813,7 @@ export default function ItemMaster() {
                 <th className="px-3 py-3">Article</th>
                 <th className="px-3 py-3">Description</th>
                 <th className="px-3 py-3">ITEM NAME</th>
-                <th className="px-3 py-3">SPN</th>
+                <th className="px-3 py-3">Part Number</th>
                 <th className="px-3 py-3">ESN</th>
                 <th className="px-3 py-3">Material Code</th>
                 <th className="px-3 py-3">Drawing Number</th>
@@ -827,9 +827,9 @@ export default function ItemMaster() {
                 <th className="px-3 py-3">OEM XRef</th>
                 <th className="px-3 py-3">Interchange</th>
                 <th className="px-3 py-3">Supplier 1</th>
-                <th className="px-3 py-3">Supplier 1 P/N</th>
+                <th className="px-3 py-3">Supplier 1 Part No.</th>
                 <th className="px-3 py-3">Supplier 2</th>
-                <th className="px-3 py-3">Supplier 2 P/N</th>
+                <th className="px-3 py-3">Supplier 2 Part No.</th>
                 <th className="px-3 py-3">Status</th>
                 <th className="px-3 py-3 text-right">Actions</th>
               </tr>
@@ -994,7 +994,7 @@ export default function ItemMaster() {
                 <details open className="rounded-xl border p-3">
                   <summary className="cursor-pointer text-sm font-semibold">Core Technical Fields</summary>
                   <div className="mt-3 grid gap-3 md:grid-cols-2">
-                    <Field label="SPN"><input className="rounded-lg border px-3 py-2" value={technical.spn} onChange={(e) => setTechnical((v) => ({ ...v, spn: e.target.value }))} /></Field>
+                    <Field label="Part Number"><input className="rounded-lg border px-3 py-2" value={technical.spn} onChange={(e) => setTechnical((v) => ({ ...v, spn: e.target.value }))} /></Field>
                     <Field label="ESN"><input className="rounded-lg border px-3 py-2" value={technical.esn} onChange={(e) => setTechnical((v) => ({ ...v, esn: e.target.value }))} /></Field>
                     <Field label="Material Code"><input className="rounded-lg border px-3 py-2" value={technical.materialCode} onChange={(e) => setTechnical((v) => ({ ...v, materialCode: e.target.value }))} /></Field>
                     <Field label="Drawing Number"><input className="rounded-lg border px-3 py-2" value={technical.drawingNumber} onChange={(e) => setTechnical((v) => ({ ...v, drawingNumber: e.target.value }))} /></Field>
@@ -1052,7 +1052,7 @@ export default function ItemMaster() {
               <div className="space-y-4">
                 <div className="overflow-auto rounded-xl border">
                   <table className="w-full text-sm">
-                    <thead className="bg-slate-100"><tr><th className="px-3 py-2 text-left">Supplier Name</th><th className="px-3 py-2 text-left">Supplier Part Number</th><th className="px-3 py-2 text-left">Currency</th><th className="px-3 py-2 text-right">Price</th><th className="px-3 py-2 text-left">Lead Time</th><th className="px-3 py-2 text-left">Remarks</th><th className="px-3 py-2 text-right">Actions</th></tr></thead>
+                    <thead className="bg-slate-100"><tr><th className="px-3 py-2 text-left">Supplier Name</th><th className="px-3 py-2 text-left">Supplier Part No.</th><th className="px-3 py-2 text-left">Currency</th><th className="px-3 py-2 text-right">Price</th><th className="px-3 py-2 text-left">Lead Time</th><th className="px-3 py-2 text-left">Remarks</th><th className="px-3 py-2 text-right">Actions</th></tr></thead>
                     <tbody>
                       {suppliers.map((s) => (
                         <tr key={s._id} className="border-t">
@@ -1065,7 +1065,7 @@ export default function ItemMaster() {
                 </div>
                 <div className="grid gap-3 md:grid-cols-3">
                   <Field label="Supplier Name"><input className="rounded-lg border px-3 py-2" value={supplierDraft.supplierName} onChange={(e) => setSupplierDraft((v) => ({ ...v, supplierName: e.target.value }))} /></Field>
-                  <Field label="Supplier Part Number"><input className="rounded-lg border px-3 py-2" value={supplierDraft.supplierPartNumber} onChange={(e) => setSupplierDraft((v) => ({ ...v, supplierPartNumber: e.target.value }))} /></Field>
+                  <Field label="Supplier Part No."><input className="rounded-lg border px-3 py-2" value={supplierDraft.supplierPartNumber} onChange={(e) => setSupplierDraft((v) => ({ ...v, supplierPartNumber: e.target.value }))} /></Field>
                   <Field label="Currency"><input className="rounded-lg border px-3 py-2" value={supplierDraft.currency} onChange={(e) => setSupplierDraft((v) => ({ ...v, currency: e.target.value }))} /></Field>
                   {canEditItem ? (
                   <Field label="Price"><input type="number" className="rounded-lg border px-3 py-2" value={supplierDraft.price} onChange={(e) => setSupplierDraft((v) => ({ ...v, price: Number(e.target.value) }))} /></Field>
@@ -1080,14 +1080,14 @@ export default function ItemMaster() {
             {tab === "manPrice" ? (
               <div className="space-y-3 text-sm">
                 <p className="text-slate-600">
-                  MAN selling prices are managed on the Price List. Item Master remains one row per Article; SPN is not unique.
+                  MAN selling prices are managed on the Price List. Item Master remains one row per Article; Part Number is not unique.
                   Engine Model, Configuration and specs come from this Item Master record.
                 </p>
                 {canManageManPrice ? (
                   <>
                     <div className="grid gap-2 md:grid-cols-2">
                       <div>Article: {item.article || selectedArticle || "—"}</div>
-                      <div>SPN: {item.spn || manPrice?.spn || "—"}</div>
+                      <div>Part Number: {item.spn || manPrice?.spn || "—"}</div>
                       <div>Engine Model: {item.model || "—"}</div>
                       <div>Configuration: {item.config || "—"}</div>
                       <div>UOM: {manPrice?.uom || item.uom || "—"}</div>
@@ -1115,7 +1115,7 @@ export default function ItemMaster() {
                 ) : manSalesSnapshot ? (
                   <div className="grid gap-2 md:grid-cols-2">
                     <div>Article: {manSalesSnapshot.article || item.article || "—"}</div>
-                    <div>SPN: {manSalesSnapshot.spn || item.spn || "—"}</div>
+                    <div>Part Number: {manSalesSnapshot.spn || item.spn || "—"}</div>
                     <div>Engine Model: {manSalesSnapshot.engineModel || item.model || "—"}</div>
                     <div>Configuration: {manSalesSnapshot.configuration || item.config || "—"}</div>
                     <div>UOM: {manSalesSnapshot.uom || item.uom || "—"}</div>

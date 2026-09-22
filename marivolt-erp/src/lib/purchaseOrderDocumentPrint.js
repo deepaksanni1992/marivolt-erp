@@ -6,7 +6,7 @@ import { SALES_QUOTATION_STYLE_PRINT_CSS } from "./salesQuotationPrintCss.js";
 import { notify } from "./notifications.js";
 import { resolvePoPaymentTerms } from "../constants/purchaseOrderDefaults.js";
 
-/** Supplier-facing part reference only (no internal article / SPN). */
+/** Supplier-facing part reference only (no internal article / Part Number). */
 export function supplierPartNumberForPrint(line) {
   const v = String(line?.supplierPartNumber ?? "").trim();
   return v || "—";

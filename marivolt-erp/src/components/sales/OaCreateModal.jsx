@@ -710,7 +710,7 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
                 <tr>
                   <th className="px-2 py-2">Incl</th>
                   <th className="px-2 py-2 text-left">Article</th>
-                  <th className="px-2 py-2 text-left">Part No</th>
+                  <th className="px-2 py-2 text-left">Part No.</th>
                   <th className="px-2 py-2 text-left">Description</th>
                   <th className="px-2 py-2">UOM</th>
                   {fromQuotation ? (

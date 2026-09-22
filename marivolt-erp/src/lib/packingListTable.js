@@ -2,7 +2,7 @@
 
 export const PACKING_LIST_PRINT_COLUMNS = [
   { key: "sno", header: "S No.", className: "col-sno" },
-  { key: "partNumber", header: "Part #", className: "col-part" },
+  { key: "partNumber", header: "Part No.", className: "col-part" },
   { key: "description", header: "Description", className: "col-desc" },
   { key: "uom", header: "UOM", className: "col-uom col-center" },
   { key: "qty", header: "Qty", className: "col-qty col-center" },

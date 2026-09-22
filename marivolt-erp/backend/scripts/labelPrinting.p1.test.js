@@ -92,6 +92,8 @@ run("TSPL contains SIZE 100 mm,50 mm and Code128 BARCODE", () => {
   assert.ok(tspl.includes('BARCODE'));
   assert.ok(tspl.includes('"128"'));
   assert.ok(tspl.includes("ART1"));
+  assert.ok(tspl.includes("Part No.:"));
+  assert.ok(!/\bSPN:/.test(tspl));
   assert.ok(tspl.includes("PRINT 1,1"));
 });
 

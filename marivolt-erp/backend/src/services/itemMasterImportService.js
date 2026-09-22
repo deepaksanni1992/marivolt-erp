@@ -9,6 +9,7 @@ import ItemTechnical from "../models/itemTechnicalModel.js";
 import ItemSupplier from "../models/itemSupplierModel.js";
 import Supplier from "../models/Supplier.js";
 import { assertValidTaxonomy, mapImportTaxonomyColumns } from "../utils/itemMasterTaxonomy.js";
+import { resolveImportedPartNumber } from "../utils/partNumberTerminology.js";
 
 export const ITEM_MASTER_CLEAR_MARKER = "__CLEAR__";
 
@@ -22,7 +23,7 @@ export const ITEM_MASTER_TEMPLATE_HEADERS = [
   "Description",
   "Item Name",
   "UOM",
-  "SPN",
+  "Part Number",
   "Material Code",
   "Drawing Number",
   "OEM Reference/Markings",
@@ -104,7 +105,10 @@ function mapIncomingItem(row) {
     itemName: pick(row, "ITEM NAME", "Item Name", "itemName"),
     description: pick(row, "Description", "DESCRIPTION"),
     taxonomyInput,
-    spn: pick(row, "SPN"),
+    ...(() => {
+      const resolved = resolveImportedPartNumber(row);
+      return { spn: resolved.value, partNumberError: resolved.error, partNumberCode: resolved.code || "" };
+    })(),
     materialCode: pick(row, "Material Code", "Material code"),
     drawingNumber: pick(row, "Drawing Number", "Drawing number"),
     oeMarkings: pick(row, "OEM Reference/Markings", "OE Markings", "OEM Reference"),
@@ -149,7 +153,7 @@ function buildTemplateCsv() {
     "Demo liner",
     "Cylinder liner",
     "PCS",
-    "SPN-1",
+    "PN-1",
     "",
     "",
     "",
@@ -243,6 +247,7 @@ export async function previewItemMasterImport({ companyId, buffer }) {
     } catch (err) {
       errors.push(err.message);
     }
+    if (incoming.partNumberError) errors.push(incoming.partNumberError);
     for (const sup of incoming.suppliers) {
       if (!knownSuppliers.has(trim(sup.supplierName).toLowerCase())) {
         errors.push(`Unknown supplier reference: ${sup.supplierName}`);
@@ -276,6 +281,7 @@ export async function previewItemMasterImport({ companyId, buffer }) {
     const existing = existingByArticle.get(article);
     let action = existing ? "UPDATE" : "CREATE";
     const taxonomy = row.incoming.taxonomyInput;
+    const existingPartNumber = techByArticle.get(article)?.spn || "";
     const proposedItem = existing
       ? {
           itemName: mergeScalar(existing.itemName, row.incoming.itemName),
@@ -286,6 +292,7 @@ export async function previewItemMasterImport({ companyId, buffer }) {
           config: mergeScalar(existing.config, taxonomy.config),
           uom: row.incoming.uom || existing.uom || "PCS",
           status: row.incoming.status || existing.status || "Active",
+          partNumber: mergeScalar(existingPartNumber, row.incoming.spn),
         }
       : {
           itemName: row.incoming.itemName || row.incoming.description || article,
@@ -296,6 +303,7 @@ export async function previewItemMasterImport({ companyId, buffer }) {
           config: taxonomy.config || "",
           uom: row.incoming.uom || "PCS",
           status: row.incoming.status === "Inactive" ? "Inactive" : "Active",
+          partNumber: isClear(row.incoming.spn) ? "" : (row.incoming.spn || ""),
         };
     if (!existing && !row.incoming.itemName && !row.incoming.description && article) {
       row.errors.push("Item Name or Description is required for a new Article");
@@ -310,6 +318,7 @@ export async function previewItemMasterImport({ companyId, buffer }) {
           config: existing.config || "",
           uom: existing.uom || "",
           status: existing.status || "",
+          partNumber: existingPartNumber,
         }
       : {};
     const changes = existing ? fieldDiffs(existingSlice, proposedItem) : proposedItem;
@@ -340,9 +349,11 @@ export async function previewItemMasterImport({ companyId, buffer }) {
       suppliers: row.incoming.suppliers,
       technical: {
         spn: row.incoming.spn,
+        partNumber: row.incoming.spn,
         materialCode: row.incoming.materialCode,
         drawingNumber: row.incoming.drawingNumber,
         existingSpn: techByArticle.get(article)?.spn || "",
+        existingPartNumber: techByArticle.get(article)?.spn || "",
       },
     });
   }

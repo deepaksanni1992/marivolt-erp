@@ -180,7 +180,7 @@ export function renderAllocationPickingSheetPrintWindow(
           <th style="width:28px">S/N</th>
           <th style="width:90px">Article</th>
           <th>Description</th>
-          <th style="width:80px">Part No</th>
+          <th style="width:80px">Part No.</th>
           <th style="width:52px">Allocated</th>
           <th style="width:52px">Prev Packed</th>
           <th style="width:48px">Pick Qty</th>

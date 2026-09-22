@@ -6,6 +6,7 @@ import {
   resolveBrandValue,
 } from "./itemMasterTaxonomy.js";
 import { UOM_VALUES } from "../models/itemMasterModel.js";
+import { canonicalItemMasterPartNumber } from "./partNumberTerminology.js";
 
 export const MAN_PRICE_LIST_ADMIN_ROLES = Object.freeze(["super_admin", "admin"]);
 export const MAN_BRAND = "MAN";
@@ -15,9 +16,9 @@ export function isManPriceListAdminRole(role) {
   return MAN_PRICE_LIST_ADMIN_ROLES.includes(r);
 }
 
-/** Item Master list SPN column is ItemTechnical.spn (falls back to ItemMaster.spn). */
+/** Item Master Part Number column is ItemTechnical.spn (falls back to ItemMaster.spn). */
 export function displayedItemMasterSpn(item = {}, technical = {}) {
-  return String(technical?.spn || item?.spn || "");
+  return canonicalItemMasterPartNumber(item, technical);
 }
 
 /**
@@ -205,6 +206,8 @@ const HEADER_ALIASES = new Map([
   ["sell ii", "Sell II"],
   ["part no", "Part no"],
   ["part no.", "Part no"],
+  ["part number", "Part no"],
+  ["spn", "Part no"],
   ["supplier part no.", "Supplier part No."],
   ["supplier part no", "Supplier part No."],
   ["uwt (kg)", "UWT (kg)"],
@@ -918,8 +921,8 @@ function compatibleManCandidates(pool = []) {
 }
 
 /**
- * Classify MAN RFQ candidates after exact SPN matching.
- * Never picks the cheapest Article, never matches by model alone, never auto-picks a similar SPN.
+ * Classify MAN RFQ candidates after exact Part Number matching.
+ * Never picks the cheapest Article, never matches by model alone, never auto-picks a similar Part Number.
  * Pass opts for engine-model aware statuses; omit opts to keep the legacy review path.
  */
 export function classifyManRfqCandidates(candidates = [], opts = {}) {
@@ -1017,7 +1020,7 @@ export function classifyManRfqCandidates(candidates = [], opts = {}) {
   if (resolvedModel && !inResolvedModel.length && otherModels.length) {
     return {
       status: "MODEL_MISMATCH",
-      reason: "SPN exists under other MAN models",
+      reason: "Part Number exists under other MAN models",
       pick: null,
       compatible: [],
       availableModels: otherModels,
@@ -1031,7 +1034,7 @@ export function classifyManRfqCandidates(candidates = [], opts = {}) {
   if (headerMode === MAN_RFQ_MODEL_MODES.UNSPECIFIED && !resolvedModel && poolModels.length > 1) {
     return {
       status: "MULTIPLE",
-      reason: "SPN exists across multiple MAN models — select one Article",
+      reason: "Part Number exists across multiple MAN models — select one Article",
       pick: null,
       compatible: [],
       availableModels: poolModels,
@@ -1152,7 +1155,7 @@ export function contentFingerprint(payload) {
 export function parseRfqCsvRow(data = {}) {
   const mapped = mapCsvRow(data);
   return {
-    partNo: mapped["Part no"] ?? mapped["Part No"] ?? "",
+    partNo: mapped["Part no"] ?? mapped["Part No"] ?? mapped["Part Number"] ?? mapped.SPN ?? "",
     uom: mapped.UOM ?? mapped.Uom ?? "",
     qty: mapped.Qty ?? mapped.QTY ?? mapped.Quantity ?? "",
     customerLine: mapped["Customer line"] ?? mapped.Reference ?? mapped["Customer Line"] ?? "",

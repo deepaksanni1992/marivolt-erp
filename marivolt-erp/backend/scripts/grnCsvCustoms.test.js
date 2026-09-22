@@ -64,7 +64,7 @@ function sampleValues(over = {}) {
     "PO Line ID": SAMPLE_LINE_ID,
     Article: "ART-1",
     Description: "Widget",
-    SPN: "SPN1",
+    "Part No.": "SPN1",
     UOM: "PCS",
     "GRN Qty": "10",
     Location: "BIN-A",
@@ -103,7 +103,7 @@ run("template columns and order", () => {
     "PO Line ID",
     "Article",
     "Description",
-    "SPN",
+    "Part No.",
     "UOM",
     "GRN Qty",
     "Location",
@@ -172,6 +172,15 @@ run("unknown column rejected", () => {
   const r = validateGrnCsvHeaders(headers);
   assert.strictEqual(r.ok, false);
   assert.ok(r.details.some((d) => /Not A Real Column/.test(d)));
+});
+
+run("legacy SPN header is accepted as Part No. alias", () => {
+  const headers = [...GRN_CSV_HEADERS];
+  const idx = headers.indexOf("Part No.");
+  assert.ok(idx >= 0);
+  headers[idx] = "SPN";
+  const r = validateGrnCsvHeaders(headers);
+  assert.strictEqual(r.ok, true);
 });
 
 run("auto calculations when Weight blank; BOE fields mapped", () => {

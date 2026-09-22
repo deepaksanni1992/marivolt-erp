@@ -181,7 +181,7 @@ export async function matchRfqLines(
   const canRock = await userCanTier(req, "ROCK");
   const results = [];
   for (const raw of lines) {
-    const partNoOriginal = String(raw.partNo ?? raw.partNumber ?? "").trim();
+    const partNoOriginal = String(raw.partNo ?? raw.partNumber ?? raw.spn ?? "").trim();
     const uom = normalizeRfqUom(raw.uom);
     const qty = Number(raw.qty);
     const customerLine = String(raw.customerLine || raw.reference || "").trim();
@@ -371,7 +371,7 @@ export async function matchRfqLines(
 
 export async function parseRfqFile(buffer) {
   const rows = parseExcelBufferToRows(buffer, {
-    preserveFormattedTextColumns: ["Part no", "Part No", "UOM", "Qty", "Engine Model", "Engine model"],
+    preserveFormattedTextColumns: ["Part no", "Part No", "Part Number", "SPN", "UOM", "Qty", "Engine Model", "Engine model"],
   });
   return rows.map((r) => parseRfqCsvRow(r.data));
 }

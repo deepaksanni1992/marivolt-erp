@@ -21,6 +21,10 @@ import {
   buildCascadingFacets,
   resolveBrandValue,
 } from "../utils/itemMasterTaxonomy.js";
+import {
+  canonicalItemMasterPartNumber,
+  resolveImportedPartNumber,
+} from "../utils/partNumberTerminology.js";
 
 async function canSeeSupplierPurchasePrices(req) {
   return (await hasPermission(req, "ITEM_MASTER", "edit")) || (await hasPermission(req, "PURCHASE", "edit"));
@@ -147,8 +151,17 @@ function normalizeTechnicalPayload(body = {}) {
   if (esn && !modelMappings.length && !trim(body.model)) {
     throw new Error("Invalid ESN/model combination: model mapping is required when ESN is provided");
   }
+  const partNumberResolved = resolveImportedPartNumber({
+    "Part Number": body.partNumber,
+    SPN: body.spn,
+  });
+  if (partNumberResolved.error) {
+    const err = new Error(partNumberResolved.error);
+    err.code = partNumberResolved.code;
+    throw err;
+  }
   return {
-    spn: trim(body.spn),
+    spn: partNumberResolved.value || trim(body.spn),
     esn,
     materialCode: trim(body.materialCode),
     drawingNumber: trim(body.drawingNumber),
@@ -219,6 +232,7 @@ function mapMerged(item, technical, suppliers) {
     technical: technical || null,
     suppliers: suppliers || [],
     dimension: technical?.dimension || "",
+    spn: canonicalItemMasterPartNumber(item, technical),
   };
 }
 
@@ -265,7 +279,7 @@ export async function listItems(req, res) {
     if (model) filter.model = new RegExp(`^${escRe(model)}$`, "i");
     const config = trim(req.query.configuration || req.query.config);
     if (config) filter.config = new RegExp(`^${escRe(config)}$`, "i");
-    const spn = trim(req.query.spn);
+    const spn = trim(req.query.spn || req.query.partNumber);
     const esn = trim(req.query.esn);
     const cylinderCount = trim(req.query.cylinderCount);
     const oemReference = trim(req.query.oemReference);
@@ -398,7 +412,7 @@ export async function listItems(req, res) {
         ...row,
         technical,
         dimension: technical?.dimension || "",
-        spn: technical?.spn || "",
+        spn: canonicalItemMasterPartNumber(row, technical),
         esn: technical?.esn || "",
         materialCode: technical?.materialCode || "",
         drawingNumber: technical?.drawingNumber || "",
@@ -742,7 +756,7 @@ export async function exportItems(req, res) {
         Brand: resolveBrandValue(item),
         Model: item.model,
         Config: item.config,
-        SPN: tech?.spn || "",
+        "Part Number": tech?.spn || "",
         ESN: tech?.esn || "",
         "Material Code": tech?.materialCode || "",
         "Drawing Number": tech?.drawingNumber || "",
@@ -866,7 +880,7 @@ export async function bulkResolveItemLookup(req, res) {
         _raw: row,
         article: pick(row, "Article", "ARTICLE"),
         esn: pick(row, "ESN"),
-        spn: pick(row, "SPN"),
+        spn: pick(row, "Part Number", "Part No.", "Part No", "SPN"),
         materialCode: pick(row, "Material Code", "MaterialCode", "MATERIAL CODE"),
         drawingNumber: pick(row, "Drawing Number", "DRAWING NUMBER"),
         oemReference: pick(row, "OEM Ref", "OEM Reference", "OEM"),

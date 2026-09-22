@@ -2282,7 +2282,7 @@ export default function StoreModule() {
                         <th className="px-2 py-2">Sel</th>
                         <th className="px-2 py-2">Article</th>
                         <th className="px-2 py-2">Description</th>
-                        <th className="px-2 py-2">SPN</th>
+                        <th className="px-2 py-2">Part No.</th>
                         <th className="px-2 py-2">Material code</th>
                         <th className="px-2 py-2">UOM</th>
                         <th className="px-2 py-2 text-right">Ordered</th>

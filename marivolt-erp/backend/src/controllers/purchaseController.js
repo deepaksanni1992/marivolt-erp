@@ -23,6 +23,7 @@ import {
   articleFromLine,
   assertActiveArticles,
   assertActiveArticlesForChangedLines,
+  assertPoLinesPartNumberMatchesMaster,
   isArticleValidationError,
   linesRequiringArticleValidation,
   snapshotPoLineFromItem,
@@ -72,7 +73,7 @@ function normalizePoLines(lines = []) {
       // Spreading a Mongoose subdocument yields internal keys only, so always work on a plain copy.
       const l = poLineToPlain(raw);
       const orderedQty = resolveOrderedQty(l);
-      const itemCode = String(l.itemCode || l.article || l.articleNo || l.materialCode || l.partNumber || l.partNo || "")
+      const itemCode = String(l.itemCode || l.article || l.articleNo || "")
         .trim()
         .toUpperCase();
       const articleNo =
@@ -316,6 +317,7 @@ export async function createPurchaseOrder(req, res) {
       companyId: req.companyId,
       lines: body.lines,
     });
+    assertPoLinesPartNumberMatchesMaster(body.lines, itemsByArticle);
     body.lines = applyItemMasterSnapshotsToLines(body.lines, itemsByArticle, "po");
     const company = await Company.findById(req.companyId).lean();
     Object.assign(body, buyerSnapshotFromCompany(company));
@@ -672,8 +674,27 @@ export async function updatePurchaseOrder(req, res) {
     const changed = new Set(
       linesRequiringArticleValidation(previousLines, doc.lines).map((row) => row.index)
     );
+    const previousById = new Map(
+      previousLines
+        .filter((line) => line?._id)
+        .map((line) => [String(line._id), line])
+    );
+    assertPoLinesPartNumberMatchesMaster(
+      doc.lines.filter((_, index) => changed.has(index)),
+      itemsByArticle
+    );
     doc.lines = doc.lines.map((line, index) => {
-      if (!changed.has(index)) return line;
+      if (!changed.has(index)) {
+        const prev = previousById.get(String(line?._id || "")) || previousLines[index];
+        if (!prev) return line;
+        const plain = poLineToPlain(line);
+        return {
+          ...plain,
+          partNo: prev.partNo,
+          partNumber: prev.partNumber,
+          spn: prev.spn,
+        };
+      }
       const item = itemsByArticle.get(articleFromLine(line));
       return item ? snapshotPoLineFromItem(poLineToPlain(line), item) : line;
     });
@@ -1257,6 +1278,7 @@ export async function importPurchaseOrders(req, res) {
           companyId: req.companyId,
           lines: payload.lines,
         });
+        assertPoLinesPartNumberMatchesMaster(payload.lines, itemsByArticle);
         payload.lines = applyItemMasterSnapshotsToLines(payload.lines, itemsByArticle, "po");
         await assertManEngineWriteAccess(req, { lines: payload.lines, header: payload });
         prepared.push(payload);
