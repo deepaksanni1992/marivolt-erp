@@ -41,6 +41,41 @@ function err(message, statusCode = 400, code = "MAN_PRICE_LIST") {
   return e;
 }
 
+function priceListInactiveMessage(article) {
+  return `Article ${article} is inactive in Item Master and cannot be used in Price List.`;
+}
+
+function isActiveItemMaster(item) {
+  return Boolean(item) && String(item.status || "Active") === "Active";
+}
+
+function classifyPriceListItemMaster(item, article) {
+  if (!item) {
+    return {
+      code: "ARTICLE_NOT_IN_ITEM_MASTER",
+      message: "Unknown Article — create it in Item Master, then re-import",
+    };
+  }
+  if (!isActiveItemMaster(item)) {
+    return {
+      code: "ARTICLE_INACTIVE",
+      message: priceListInactiveMessage(article),
+    };
+  }
+  return null;
+}
+
+function throwPriceListArticleIssues(issues) {
+  if (!issues.length) return;
+  const missing = issues.filter((row) => row.code === "ARTICLE_NOT_IN_ITEM_MASTER");
+  const primary = missing[0] || issues[0];
+  const e = err(primary.message, 409, primary.code);
+  e.articles = [...new Set(issues.map((row) => row.article))];
+  e.lines = issues;
+  e.errors = issues;
+  throw e;
+}
+
 function actor(req) {
   return {
     name: req.user?.name || req.user?.email || "",
@@ -396,15 +431,24 @@ export async function previewImport(req, { buffer, filename }) {
       continue;
     }
     const item = await ItemMaster.findOne({ companyId: req.companyId, article }).lean();
-    if (!item) {
-      rowErrors.push("Unknown Article — create it in Item Master, then re-import");
-      errors.push({ rowNumber, article, message: "Unknown Article — create it in Item Master, then re-import" });
+    const identityIssue = classifyPriceListItemMaster(item, article);
+    if (identityIssue) {
+      rowErrors.push(identityIssue.message);
+      errors.push({
+        rowNumber,
+        article,
+        message: identityIssue.message,
+        code: identityIssue.code,
+      });
       previewRows.push({
         rowNumber,
         article,
-        unknownArticle: true,
+        itemMasterId: item?._id ? String(item._id) : "",
+        unknownArticle: identityIssue.code === "ARTICLE_NOT_IN_ITEM_MASTER",
+        inactiveArticle: identityIssue.code === "ARTICLE_INACTIVE",
         errors: rowErrors,
         warnings: rowWarnings,
+        code: identityIssue.code,
         proposed: data,
       });
       continue;
@@ -588,7 +632,11 @@ export async function previewImport(req, { buffer, filename }) {
     });
   }
 
-  const canApply = errors.length === 0 && previewRows.some((r) => !r.unknownArticle && !(r.errors || []).length);
+  const canApply =
+    errors.length === 0 &&
+    previewRows.some(
+      (r) => !r.unknownArticle && !r.inactiveArticle && !(r.errors || []).length
+    );
   const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
   const preview = await ManPriceListImport.create({
     companyId: req.companyId,
@@ -644,14 +692,32 @@ async function applyImportWithSession(req, previewId, session, { injectFailureAf
     throw err("Import has errors and cannot be applied", 400, "PREVIEW_INVALID");
   }
 
+  const includedRows = (preview.rows || []).filter((row) => preserveArticleCode(row.article));
+  const identityIssues = [];
+  for (const row of includedRows) {
+    const liveItem = await findOneS(ItemMaster, { companyId: req.companyId, article: row.article }, session);
+    const identityIssue = classifyPriceListItemMaster(liveItem, row.article);
+    if (identityIssue) {
+      identityIssues.push({
+        article: row.article,
+        rowNumber: row.rowNumber,
+        code: identityIssue.code,
+        message: identityIssue.message,
+      });
+    }
+  }
+  throwPriceListArticleIssues(identityIssues);
+
   const applied = [];
   const skippedUnchanged = [];
   let writes = 0;
 
   for (const row of preview.rows) {
-    if (row.unknownArticle || (row.errors || []).length) continue;
+    if (row.unknownArticle || row.inactiveArticle || (row.errors || []).length) continue;
     const item = await findOneS(ItemMaster, { companyId: req.companyId, article: row.article }, session);
     if (!item) throw err(`Article ${row.article} disappeared since preview — refresh required`, 409, "STALE_PREVIEW");
+    const applyIdentity = classifyPriceListItemMaster(item, row.article);
+    if (applyIdentity) throwPriceListArticleIssues([{ article: row.article, rowNumber: row.rowNumber, ...applyIdentity }]);
     if (!isManEligibleItem(item)) throw err(`Article ${row.article} is not MAN-eligible`, 400, "NOT_MAN");
     const technical = await findOneS(ItemTechnical, { companyId: req.companyId, article: row.article }, session);
     const price = await findOneS(ManPriceList, { companyId: req.companyId, article: row.article }, session);

@@ -15,7 +15,13 @@ import Supplier from "../src/models/Supplier.js";
 import Quotation from "../src/models/Quotation.js";
 import ManPriceList from "../src/models/ManPriceList.js";
 import ManPriceListImport from "../src/models/ManPriceListImport.js";
-import { previewImport, applyImport, getPriceListByArticle } from "../src/services/manPriceListService.js";
+import {
+  previewImport,
+  applyImport,
+  getPriceListByArticle,
+  listPriceList,
+  upsertManualPrice,
+} from "../src/services/manPriceListService.js";
 import { persistNewQuotation } from "../src/controllers/quotationController.js";
 import {
   createQuotationFromManRfq,
@@ -1859,6 +1865,255 @@ await run("Tier change reprices from the original tier source price and current 
   assert.equal(created.quotation.lines[0].price, 468);
   assert.equal(created.quotation.lines[0].totalPrice, 2340);
   await ManPriceList.updateOne({ companyId: company._id, article: "EUR459" }, { $unset: { sellIi: 1 } });
+});
+
+await seedArticle(company._id, "PL-ACT", { spn: "PL-ACT-SPN", techSpn: "PL-ACT-SPN", description: "Active import part" });
+await seedArticle(company._id, "PL-DEAD", {
+  spn: "PL-DEAD-SPN",
+  techSpn: "PL-DEAD-SPN",
+  description: "Inactive import part",
+  status: "Inactive",
+});
+const histItem = await seedArticle(company._id, "PL-HIST", {
+  spn: "PL-HIST-SPN",
+  techSpn: "PL-HIST-SPN",
+  description: "Historical inactive priced part",
+  status: "Inactive",
+});
+await seedArticle(company._id, "PL-RACE", { spn: "PL-RACE-SPN", techSpn: "PL-RACE-SPN", description: "Race part" });
+await seedArticle(companyB._id, "PL-OTHER", { spn: "PL-OTH-SPN", techSpn: "PL-OTH-SPN", description: "Other company" });
+const historicalPrice = await ManPriceList.create({
+  companyId: company._id,
+  itemMasterId: histItem._id,
+  article: "PL-HIST",
+  sellPrice: 77,
+  currency: "USD",
+  source: "MANUAL",
+  revision: 1,
+  isActive: true,
+});
+
+async function masterSnapshot(article, companyId = company._id) {
+  return {
+    item: await ItemMaster.findOne({ companyId, article }).lean(),
+    tech: await ItemTechnical.findOne({ companyId, article }).lean(),
+    suppliers: await ItemSupplier.countDocuments({ companyId, article }),
+    price: await ManPriceList.findOne({ companyId, article }).lean(),
+  };
+}
+
+await run("Active Item Master Article passes Price List CSV preview", async () => {
+  const before = await masterSnapshot("PL-ACT");
+  const preview = await previewImport(req, {
+    buffer: xlsxFor([{ Article: "pl-act", "Sell price": "12.5", Cur: "USD" }]),
+    filename: "pl-active.xlsx",
+  });
+  assert.equal(preview.canApply, true);
+  assert.equal((preview.errors || []).length, 0);
+  assert.equal(preview.rows[0].article, "PL-ACT");
+  assert.equal(preview.rows[0].inactiveArticle || false, false);
+  const after = await masterSnapshot("PL-ACT");
+  assert.equal(String(after.item.updatedAt), String(before.item.updatedAt));
+  assert.equal(after.price, null);
+});
+
+await run("Inactive Article fails Price List preview with ARTICLE_INACTIVE and canApply false", async () => {
+  const before = await masterSnapshot("PL-DEAD");
+  const preview = await previewImport(req, {
+    buffer: xlsxFor([{ Article: "PL-DEAD", "Sell price": "9", Cur: "USD" }]),
+    filename: "pl-inactive.xlsx",
+  });
+  assert.equal(preview.canApply, false);
+  const rowErr = (preview.errors || []).find((e) => e.article === "PL-DEAD");
+  assert.equal(rowErr?.code, "ARTICLE_INACTIVE");
+  assert.equal(rowErr?.message, "Article PL-DEAD is inactive in Item Master and cannot be used in Price List.");
+  assert.equal(preview.rows[0].inactiveArticle, true);
+  assert.equal(preview.rows[0].code, "ARTICLE_INACTIVE");
+  const after = await masterSnapshot("PL-DEAD");
+  assert.equal(after.price, null);
+  assert.equal(String(after.item.status), "Inactive");
+  assert.equal(after.suppliers, before.suppliers);
+});
+
+await run("Unknown Article still fails Price List preview", async () => {
+  const preview = await previewImport(req, {
+    buffer: xlsxFor([{ Article: "PL-MISSING", "Sell price": "3", Cur: "USD" }]),
+    filename: "pl-missing.xlsx",
+  });
+  assert.equal(preview.canApply, false);
+  assert.equal(preview.rows[0].unknownArticle, true);
+  assert.equal(preview.errors[0].code, "ARTICLE_NOT_IN_ITEM_MASTER");
+  assert.equal(await ManPriceList.countDocuments({ companyId: company._id, article: "PL-MISSING" }), 0);
+  assert.equal(await ItemMaster.countDocuments({ companyId: company._id, article: "PL-MISSING" }), 0);
+});
+
+await run("Price List preview performs zero master and price writes", async () => {
+  const before = {
+    items: await ItemMaster.countDocuments({ companyId: company._id }),
+    tech: await ItemTechnical.countDocuments({ companyId: company._id }),
+    suppliers: await ItemSupplier.countDocuments({ companyId: company._id }),
+    prices: await ManPriceList.countDocuments({ companyId: company._id }),
+  };
+  await previewImport(req, {
+    buffer: xlsxFor([
+      { Article: "PL-ACT", "Sell price": "100", Cur: "USD" },
+      { Article: "PL-DEAD", "Sell price": "100", Cur: "USD" },
+      { Article: "PL-MISSING", "Sell price": "100", Cur: "USD" },
+    ]),
+    filename: "pl-zero-writes.xlsx",
+  });
+  assert.equal(await ItemMaster.countDocuments({ companyId: company._id }), before.items);
+  assert.equal(await ItemTechnical.countDocuments({ companyId: company._id }), before.tech);
+  assert.equal(await ItemSupplier.countDocuments({ companyId: company._id }), before.suppliers);
+  assert.equal(await ManPriceList.countDocuments({ companyId: company._id }), before.prices);
+});
+
+await run("Direct Apply cannot bypass preview for an inactive Article", async () => {
+  const forged = await ManPriceListImport.create({
+    companyId: company._id,
+    filename: "forged-inactive.xlsx",
+    status: "PREVIEW",
+    canApply: true,
+    importErrors: [],
+    rows: [
+      {
+        rowNumber: 2,
+        article: "PL-DEAD",
+        proposedPrices: { sellPrice: 88 },
+        proposedItem: {},
+        itemChanges: {},
+        priceChanges: { sellPrice: { from: null, to: 88 } },
+      },
+    ],
+    itemFingerprints: {},
+  });
+  const beforePrice = await ManPriceList.countDocuments({ companyId: company._id, article: "PL-DEAD" });
+  const beforeItem = await ItemMaster.findOne({ companyId: company._id, article: "PL-DEAD" }).lean();
+  let caught;
+  try {
+    await applyImport(req, String(forged._id));
+  } catch (e) {
+    caught = e;
+  }
+  assert.equal(caught?.code, "ARTICLE_INACTIVE");
+  assert.deepEqual(caught.articles, ["PL-DEAD"]);
+  assert.equal(await ManPriceList.countDocuments({ companyId: company._id, article: "PL-DEAD" }), beforePrice);
+  const afterItem = await ItemMaster.findOne({ companyId: company._id, article: "PL-DEAD" }).lean();
+  assert.equal(String(afterItem.status), "Inactive");
+  assert.equal(String(afterItem.updatedAt), String(beforeItem.updatedAt));
+});
+
+await run("Article active at preview but inactive before Apply is rejected with zero writes", async () => {
+  const preview = await previewImport(req, {
+    buffer: xlsxFor([{ Article: "PL-RACE", "Sell price": "41", Cur: "USD" }]),
+    filename: "pl-race.xlsx",
+  });
+  assert.equal(preview.canApply, true);
+  await ItemMaster.updateOne({ companyId: company._id, article: "PL-RACE" }, { $set: { status: "Inactive" } });
+  let caught;
+  try {
+    await applyImport(req, preview.previewId);
+  } catch (e) {
+    caught = e;
+  }
+  assert.equal(caught?.code, "ARTICLE_INACTIVE");
+  assert.ok(caught.articles.includes("PL-RACE"));
+  assert.equal(await ManPriceList.countDocuments({ companyId: company._id, article: "PL-RACE" }), 0);
+  const item = await ItemMaster.findOne({ companyId: company._id, article: "PL-RACE" }).lean();
+  assert.equal(item.status, "Inactive");
+  await ItemMaster.updateOne({ companyId: company._id, article: "PL-RACE" }, { $set: { status: "Active" } });
+});
+
+await run("Mixed active and inactive CSV applies zero Price List rows", async () => {
+  const beforePrices = await ManPriceList.countDocuments({ companyId: company._id });
+  const beforeAct = await masterSnapshot("PL-ACT");
+  const preview = await previewImport(req, {
+    buffer: xlsxFor([
+      { Article: "PL-ACT", "Sell price": "55", Cur: "USD" },
+      { Article: "PL-DEAD", "Sell price": "56", Cur: "USD" },
+    ]),
+    filename: "pl-mixed.xlsx",
+  });
+  assert.equal(preview.canApply, false);
+  assert.ok((preview.errors || []).some((e) => e.code === "ARTICLE_INACTIVE" && e.article === "PL-DEAD"));
+  let code = "";
+  try {
+    await applyImport(req, preview.previewId);
+  } catch (e) {
+    code = e.code;
+  }
+  assert.equal(code, "PREVIEW_INVALID");
+  assert.equal(await ManPriceList.countDocuments({ companyId: company._id }), beforePrices);
+  assert.equal(await ManPriceList.countDocuments({ companyId: company._id, article: "PL-ACT" }), beforeAct.price ? 1 : 0);
+});
+
+await run("Failed inactive apply does not write ItemMaster, ItemTechnical or ItemSupplier", async () => {
+  const before = {
+    items: await ItemMaster.countDocuments({ companyId: company._id }),
+    tech: await ItemTechnical.countDocuments({ companyId: company._id }),
+    suppliers: await ItemSupplier.countDocuments({ companyId: company._id }),
+  };
+  const preview = await previewImport(req, {
+    buffer: xlsxFor([{ Article: "PL-DEAD", "Sell price": "19", Cur: "USD", "Part no": "SHOULD-NOT-WRITE" }]),
+    filename: "pl-no-master-write.xlsx",
+  });
+  try {
+    await applyImport(req, preview.previewId);
+  } catch (e) {
+    assert.ok(e.code === "PREVIEW_INVALID" || e.code === "ARTICLE_INACTIVE");
+  }
+  assert.equal(await ItemMaster.countDocuments({ companyId: company._id }), before.items);
+  assert.equal(await ItemTechnical.countDocuments({ companyId: company._id }), before.tech);
+  assert.equal(await ItemSupplier.countDocuments({ companyId: company._id }), before.suppliers);
+  const tech = await ItemTechnical.findOne({ companyId: company._id, article: "PL-DEAD" }).lean();
+  assert.equal(tech.spn, "PL-DEAD-SPN");
+});
+
+await run("Company isolation remains enforced on Price List CSV preview", async () => {
+  const preview = await previewImport(req, {
+    buffer: xlsxFor([{ Article: "PL-OTHER", "Sell price": "8", Cur: "USD" }]),
+    filename: "pl-otherco.xlsx",
+  });
+  assert.equal(preview.canApply, false);
+  assert.equal(preview.rows[0].unknownArticle, true);
+  assert.equal(preview.errors[0].code, "ARTICLE_NOT_IN_ITEM_MASTER");
+  assert.equal(await ManPriceList.countDocuments({ companyId: company._id, article: "PL-OTHER" }), 0);
+  const other = await ItemMaster.findOne({ companyId: companyB._id, article: "PL-OTHER" }).lean();
+  assert.equal(other.itemName, "PL-OTHER");
+});
+
+await run("Manual upsert still rejects inactive Article and does not delete historical Price List rows", async () => {
+  let caught;
+  try {
+    await upsertManualPrice(req, "PL-DEAD", { sellPrice: 12 });
+  } catch (e) {
+    caught = e;
+  }
+  assert.equal(caught?.code, "ARTICLE_INACTIVE");
+  assert.match(caught.message, /cannot be used on a new transaction/);
+  const listed = await listPriceList(req, { includeInactive: true });
+  const hist = listed.find((row) => row.article === "PL-HIST");
+  assert.ok(hist);
+  assert.equal(Number(hist.sellPrice), 77);
+  const fetched = await getPriceListByArticle(req, "PL-HIST", { management: true });
+  assert.equal(Number(fetched.sellPrice), 77);
+  const unchanged = await ManPriceList.findById(historicalPrice._id).lean();
+  assert.equal(Number(unchanged.sellPrice), 77);
+  assert.equal(unchanged.revision, 1);
+  const deadPreview = await previewImport(req, {
+    buffer: xlsxFor([{ Article: "PL-HIST", "Sell price": "999", Cur: "USD" }]),
+    filename: "pl-hist.xlsx",
+  });
+  assert.equal(deadPreview.canApply, false);
+  try {
+    await applyImport(req, deadPreview.previewId);
+  } catch {
+    /* expected */
+  }
+  const still = await ManPriceList.findById(historicalPrice._id).lean();
+  assert.equal(Number(still.sellPrice), 77);
+  assert.equal(still.revision, 1);
+  assert.equal(String(still.updatedAt), String(unchanged.updatedAt));
 });
 
 await mongoose.disconnect();

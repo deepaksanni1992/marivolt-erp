@@ -305,6 +305,9 @@ await run("transaction paths validate Active Articles server-side", () => {
   assert.match(read("controllers/grnController.js"), /assertActiveArticles/);
   const manPrice = read("services/manPriceListService.js");
   assert.match(manPrice, /ITEM_MISSING|ARTICLE_INACTIVE/);
+  assert.match(manPrice, /cannot be used in Price List/);
+  assert.match(manPrice, /classifyPriceListItemMaster/);
+  assert.match(manPrice, /throwPriceListArticleIssues/);
 });
 
 await run("UI selector exists and Item Master hides unauthorized create", () => {

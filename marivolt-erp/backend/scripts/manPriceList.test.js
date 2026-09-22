@@ -899,6 +899,11 @@ run("Server routes enforce PRICE_LIST on management/export and SALES.create on R
   assert.match(plService, /runMongoTransaction/);
   assert.match(plService, /injectFailureAfter/);
   assert.match(plService, /Price List import never writes Item Master/);
+  assert.match(plService, /cannot be used in Price List/);
+  assert.match(plService, /classifyPriceListItemMaster/);
+  assert.match(plService, /throwPriceListArticleIssues/);
+  assert.match(plService, /inactiveArticle/);
+  assert.match(plService, /cannot be used on a new transaction/);
   assert.doesNotMatch(plService, /techSet\.spn = proposed\.spn/);
   assert.match(plService, /ItemSupplier\[0\]\.supplierPartNumber \(Supplier 1 P\/N\)/);
   assert.match(rfqRoutes, /requireAllPermissions\(\["SALES", "create"\], \["MAN_ENGINE", "create"\]\)/);

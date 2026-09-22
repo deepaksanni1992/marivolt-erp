@@ -9,7 +9,11 @@ import {
 } from "../services/manPriceListService.js";
 
 function sendErr(res, err) {
-  res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
+  const body = { message: err.message, code: err.code };
+  if (Array.isArray(err.articles)) body.articles = err.articles;
+  if (Array.isArray(err.lines)) body.lines = err.lines;
+  if (Array.isArray(err.errors)) body.errors = err.errors;
+  res.status(err.statusCode || 400).json(body);
 }
 
 export async function list(req, res) {
