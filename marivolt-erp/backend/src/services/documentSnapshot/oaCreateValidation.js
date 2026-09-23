@@ -1,13 +1,11 @@
-import { lineArticlePartKey } from "./quotationConsumptionService.js";
-
 const MAX_OA_LINES = 500;
 
 /**
  * Server-side line validation — never trust frontend payloads.
+ * Repeated Articles are valid independent lines; do not unique-by-Article.
  */
 export function validateOaLineFields(lines = [], { fromWorkingCopy = false } = {}) {
   const errors = [];
-  const dupKeys = new Set();
   let includedCount = 0;
 
   if (!Array.isArray(lines)) {
@@ -53,13 +51,6 @@ export function validateOaLineFields(lines = [], { fromWorkingCopy = false } = {
     if (!article) errors.push(`Row ${row}: article is required`);
     if (!description) errors.push(`Row ${row}: description is required`);
     if (!uom) errors.push(`Row ${row}: UOM is required`);
-
-    const key = lineArticlePartKey(article, line?.partNumber);
-    if (article && dupKeys.has(key)) {
-      errors.push(`Row ${row}: duplicate article/part (${article})`);
-    } else if (article) {
-      dupKeys.add(key);
-    }
 
     includedCount += 1;
   }

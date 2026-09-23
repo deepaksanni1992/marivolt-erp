@@ -146,9 +146,12 @@ export function parseOaWorkingLinesFromCsvRows(csvRows) {
     const includeRaw = pickCsv(row, ["includeinoa", "include in oa", "include"]);
     out.push({
       serialNo: out.length + 1,
-      sourceQuotationLineId: "",
+      sourceQuotationLineId: pickCsv(row, ["sourcequotationlineid", "source quotation line id"]) || "",
+      clientLineId: `oa-${rowNum}-${out.length + 1}`,
+      sourceRowNumber: rowNum,
       article: article.toUpperCase(),
       partNumber,
+      customerPartNo: partNumber,
       description,
       uom,
       quotedQty: Number.isFinite(quotedQty) ? Math.max(0, quotedQty) : null,
@@ -166,48 +169,24 @@ export function parseOaWorkingLinesFromCsvRows(csvRows) {
     });
   }
 
-  const deduped = [];
-  const seen = new Set();
-  for (const line of out) {
-    const key = oaLineDuplicateKey(line);
-    if (seen.has(key)) {
-      errors.push(`Duplicate article/part in CSV: ${line.article}`);
-      const idx = deduped.findIndex((l) => oaLineDuplicateKey(l) === key);
-      if (idx >= 0) deduped[idx] = line;
-    } else {
-      seen.add(key);
-      deduped.push(line);
-    }
-  }
-
-  return { lines: deduped, errors };
+  return { lines: out, errors };
 }
 
 export function buildOaWorkingCsvPreview(currentLines, importedLines) {
-  const currentByKey = new Map();
-  for (const line of currentLines || []) {
-    const k = oaLineDuplicateKey(line);
-    if (!k.startsWith("||") && k !== "||") currentByKey.set(k, line);
-  }
-  const importedByKey = new Map();
-  for (const line of importedLines || []) {
-    importedByKey.set(oaLineDuplicateKey(line), line);
-  }
+  const current = Array.isArray(currentLines) ? currentLines : [];
+  const imported = Array.isArray(importedLines) ? importedLines : [];
 
   let updated = 0;
-  let added = 0;
-  let removed = 0;
+  let added = Math.max(0, imported.length - current.length);
+  let removed = Math.max(0, current.length - imported.length);
   let qtyChanges = 0;
   let priceChanges = 0;
   const details = [];
 
-  for (const [key, imp] of importedByKey) {
-    const cur = currentByKey.get(key);
-    if (!cur) {
-      added += 1;
-      details.push({ type: "added", key, article: imp.article });
-      continue;
-    }
+  const shared = Math.min(current.length, imported.length);
+  for (let i = 0; i < shared; i++) {
+    const cur = current[i];
+    const imp = imported[i];
     updated += 1;
     const oq = Number(cur.orderedQty) || 0;
     const nq = Number(imp.orderedQty) || 0;
@@ -215,30 +194,29 @@ export function buildOaWorkingCsvPreview(currentLines, importedLines) {
     const np = Number(imp.orderedPrice) || 0;
     if (oq !== nq) {
       qtyChanges += 1;
-      details.push({ type: "qty", key, from: oq, to: nq });
+      details.push({ type: "qty", index: i, article: imp.article, from: oq, to: nq });
     }
     if (op !== np) {
       priceChanges += 1;
-      details.push({ type: "price", key, from: op, to: np });
+      details.push({ type: "price", index: i, article: imp.article, from: op, to: np });
     }
   }
-
-  for (const [key] of currentByKey) {
-    if (!importedByKey.has(key)) {
-      removed += 1;
-      details.push({ type: "removed", key });
-    }
+  for (let i = shared; i < imported.length; i++) {
+    details.push({ type: "added", index: i, article: imported[i].article });
+  }
+  for (let i = shared; i < current.length; i++) {
+    details.push({ type: "removed", index: i, article: current[i].article });
   }
 
   return {
-    totalLines: importedLines.length,
+    totalLines: imported.length,
     updated,
     added,
     removed,
     qtyChanges,
     priceChanges,
     details,
-    mergedLines: importedLines.map((l, i) => ({ ...l, serialNo: i + 1 })),
+    mergedLines: imported.map((l, i) => ({ ...l, serialNo: i + 1 })),
   };
 }
 

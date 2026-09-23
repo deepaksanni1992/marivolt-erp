@@ -27,6 +27,10 @@ import CreateInvoiceFromPackingModal from "../components/sales/CreateInvoiceFrom
 import OrderAllocationDetailModal from "../components/sales/OrderAllocationDetailModal.jsx";
 import ConvertAllocationToPoModal from "../components/sales/ConvertAllocationToPoModal.jsx";
 import OaCreateModal from "../components/sales/OaCreateModal.jsx";
+import DuplicateArticlesModal, {
+  DuplicateArticleBadge,
+  DuplicateArticleHintText,
+} from "../components/sales/DuplicateArticlesModal.jsx";
 import ItemMasterArticleSelect from "../components/items/ItemMasterArticleSelect.jsx";
 import CustomerTransactionDetailsFields from "../components/sales/CustomerTransactionDetailsFields.jsx";
 import ProformaPaymentRequestPanel from "../components/sales/ProformaPaymentRequestPanel.jsx";
@@ -37,6 +41,14 @@ import {
 } from "../lib/customerTransactionFields.js";
 import { defaultPiPaymentRequestFields, resolvePiPaymentRequest } from "../lib/piPaymentRequest.js";
 import { formatOaProgressLabel, resolveOaProgressStatus } from "../lib/oaLifecycle.js";
+import {
+  appendImportedQuotationLines,
+  detectDuplicateArticleGroups,
+  needsDuplicateArticleAcknowledgement,
+  newQuotationClientLineId,
+  parseQuotationCsvDataRows,
+  salesDocumentLineKey,
+} from "../lib/quotationDuplicateLines.js";
 import { savePoFromAllocationSession } from "../lib/allocationPoSession.js";
 import { deliverReportHtml, downloadSearchableReportPdf } from "../lib/reportPdfClient.js";
 import {
@@ -144,6 +156,7 @@ const emptyLine = () => ({
   serialNo: 0,
   article: "",
   partNumber: "",
+  customerPartNo: "",
   description: "",
   qty: 1,
   uom: "PCS",
@@ -152,118 +165,16 @@ const emptyLine = () => ({
   remarks: "",
   materialCode: "",
   availability: "",
+  clientLineId: newQuotationClientLineId(),
+  sourceRowNumber: null,
 });
 
 /** Sample CSV aligned with quotation line columns (Article, Description, and positive QTY required per row). */
 const QUOTATION_LINES_CSV_TEMPLATE = `Article,Part Number,Description,UOM,QTY,Price,Remarks,Material code,Availability
 51228,034.02.112,Sample spare part,PCS,1,25.00,Optional note,ABC123,In stock`;
 
-function normCsvHeader(s) {
-  return String(s ?? "")
-    .replace(/^\uFEFF/, "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .replace(/_/g, " ");
-}
-
-function compactHeader(s) {
-  return normCsvHeader(s).replace(/\s/g, "");
-}
-
-/** First matching non-empty header among aliases (compares normalized compact keys). */
-function pickCsv(row, aliases) {
-  if (!row || typeof row !== "object") return "";
-  const keyMap = Object.keys(row).map((k) => ({ raw: k, c: compactHeader(k) }));
-  for (const a of aliases) {
-    const want = compactHeader(a);
-    const hit = keyMap.find((x) => x.c === want);
-    if (!hit) continue;
-    const v = row[hit.raw];
-    if (v === undefined || v === null || String(v).trim() === "") continue;
-    return String(v).trim();
-  }
-  return "";
-}
-
-function parseMoneyOrQty(raw) {
-  const s = String(raw ?? "").trim().replace(/,/g, "");
-  const n = Number.parseFloat(s);
-  return Number.isFinite(n) ? n : NaN;
-}
-
 function quotationLinesFromCsvRows(csvRows) {
-  const out = [];
-  if (!Array.isArray(csvRows)) return out;
-  for (const row of csvRows) {
-    if (!row || typeof row !== "object") continue;
-    const hasAnyCell = Object.keys(row).some((k) => String(row[k] ?? "").trim() !== "");
-    if (!hasAnyCell) continue;
-    const article = pickCsv(row, ["article", "item", "item code", "itemcode", "sku"]);
-    const description = pickCsv(row, ["description", "desc", "item description"]);
-    const qtyRaw = pickCsv(row, ["qty", "quantity", "q"]);
-    const qty = qtyRaw === "" ? NaN : parseMoneyOrQty(qtyRaw);
-    if (!article || !description || !(qty > 0)) continue;
-    const partNumber = pickCsv(row, ["part number", "part no", "partno", "maker part"]);
-    const uom = pickCsv(row, ["uom", "unit", "unit of measure"]) || "PCS";
-    const priceRaw = pickCsv(row, ["price", "unit price", "sale price", "unitprice", "rate"]);
-    const price = Number.isFinite(parseMoneyOrQty(priceRaw)) ? Math.max(0, parseMoneyOrQty(priceRaw)) : 0;
-    const remarks = pickCsv(row, ["remarks", "notes", "note"]);
-    const materialCode = pickCsv(row, ["material code", "material", "materialcode"]);
-    const availability = pickCsv(row, ["availability", "stock", "avail"]);
-    out.push({
-      serialNo: out.length + 1,
-      article: article.toUpperCase(),
-      partNumber,
-      description,
-      uom,
-      qty,
-      price,
-      totalPrice: qty * price,
-      remarks,
-      materialCode,
-      availability,
-    });
-  }
-  return out;
-}
-
-/** Same Article + same Part Number = one logical line (trimmed, case-insensitive part). */
-function quotationLineDuplicateKey(line) {
-  const art = String(line?.article ?? "")
-    .trim()
-    .toUpperCase();
-  const part = String(line?.partNumber ?? "")
-    .trim()
-    .toUpperCase();
-  return `${art}||${part}`;
-}
-
-/** Repeated Article+Part in the CSV: keep the last row for each key (spreadsheet-style). */
-function dedupeQuotationCsvRowsByArticlePartLastWins(rows) {
-  const map = new Map();
-  for (const row of rows) {
-    map.set(quotationLineDuplicateKey(row), row);
-  }
-  return Array.from(map.values());
-}
-
-function findQuotationImportConflicts(baseLines, dedupedImported) {
-  const keyToIndex = new Map();
-  for (let i = 0; i < (baseLines || []).length; i++) {
-    const l = baseLines[i];
-    if (String(l?.article ?? "").trim() === "") continue;
-    const k = quotationLineDuplicateKey(l);
-    if (!keyToIndex.has(k)) keyToIndex.set(k, i);
-  }
-  const conflicts = [];
-  for (const row of dedupedImported) {
-    const k = quotationLineDuplicateKey(row);
-    if (keyToIndex.has(k)) {
-      conflicts.push({ key: k, existingIndex: keyToIndex.get(k), importedRow: row });
-    }
-  }
-  return conflicts;
+  return parseQuotationCsvDataRows(csvRows);
 }
 
 function renumberQuotationSerialLines(lines) {
@@ -305,7 +216,7 @@ function exportSalesDocumentLinesCsv(lines, fileBase) {
 function processSalesLinesCsvImport(file, baseLines, onLinesMerged, { onError, onDupModal, contextLabel = "document" }) {
   Papa.parse(file, {
     header: true,
-    skipEmptyLines: "greedy",
+    skipEmptyLines: false,
     dynamicTyping: false,
     complete: (results) => {
       const importedRaw = quotationLinesFromCsvRows(results.data || []);
@@ -316,26 +227,20 @@ function processSalesLinesCsvImport(file, baseLines, onLinesMerged, { onError, o
         return;
       }
       onError("");
-      const prev = baseLines || [];
-      const hasRealLine = prev.some(
-        (l) => String(l.article || "").trim() !== "" || String(l.description || "").trim() !== ""
-      );
-      const base = hasRealLine ? prev.map((l) => ({ ...l })) : [];
-      const dedupedImported = dedupeQuotationCsvRowsByArticlePartLastWins(importedRaw);
-      const internalDupRemoved = importedRaw.length - dedupedImported.length;
-      const conflicts = findQuotationImportConflicts(base, dedupedImported);
-      if (conflicts.length > 0) {
+      const nextLines = appendImportedQuotationLines(baseLines, importedRaw);
+      const numbered = renumberQuotationSerialLines(nextLines.length ? nextLines : [emptyLine()]);
+      const check = needsDuplicateArticleAcknowledgement(numbered, "");
+      if (check.required) {
         onDupModal({
-          base,
-          dedupedImported,
-          conflicts,
-          internalDupRemoved,
+          groups: check.groups,
+          fingerprint: check.fingerprint,
+          nextLines: numbered,
           contextLabel,
-          applyMerge: (mode) => onLinesMerged(mergeQuotationCsvLinesIntoBase(base, dedupedImported, mode)),
+          applyKeepAll: () => onLinesMerged(numbered),
         });
         return;
       }
-      onLinesMerged(mergeQuotationCsvLinesIntoBase(base, dedupedImported, "skip"));
+      onLinesMerged(numbered);
     },
     error: (parseErr) => onError(parseErr.message || "Could not read CSV file"),
   });
@@ -352,47 +257,6 @@ function salesLinesCsvFileHandler(fileInputEvent, getBaseLines, onLinesMerged, c
   });
 }
 
-/**
- * @param {"override"|"skip"} mode — override replaces matching rows; skip only appends rows whose Article+Part are new.
- */
-function mergeQuotationCsvLinesIntoBase(baseIn, dedupedImported, mode) {
-  const base = (baseIn || []).map((l) => ({ ...l }));
-  const keyToIndex = new Map();
-  for (let i = 0; i < base.length; i++) {
-    if (String(base[i]?.article ?? "").trim() === "") continue;
-    const k = quotationLineDuplicateKey(base[i]);
-    if (!keyToIndex.has(k)) keyToIndex.set(k, i);
-  }
-
-  if (mode === "skip") {
-    const out = [...base];
-    for (const row of dedupedImported) {
-      const k = quotationLineDuplicateKey(row);
-      if (keyToIndex.has(k)) continue;
-      const qty = Number(row.qty) || 0;
-      const price = Number(row.price) || 0;
-      out.push({ ...row, serialNo: out.length + 1, totalPrice: qty * price });
-      keyToIndex.set(k, out.length - 1);
-    }
-    return renumberQuotationSerialLines(out.length ? out : [emptyLine()]);
-  }
-
-  for (const row of dedupedImported) {
-    const k = quotationLineDuplicateKey(row);
-    const qty = Number(row.qty) || 0;
-    const price = Number(row.price) || 0;
-    const totalPrice = qty * price;
-    const idx = keyToIndex.get(k);
-    if (idx !== undefined) {
-      base[idx] = { ...row, serialNo: idx + 1, totalPrice };
-    } else {
-      base.push({ ...row, serialNo: base.length + 1, totalPrice });
-      keyToIndex.set(k, base.length - 1);
-    }
-  }
-  return renumberQuotationSerialLines(base.length ? base : [emptyLine()]);
-}
-
 function quotationDetailToEditableForm(q) {
   if (!q) return null;
   const linesSrc = Array.isArray(q.lines) && q.lines.length ? q.lines : [];
@@ -403,9 +267,12 @@ function quotationDetailToEditableForm(q) {
           const price = Number(l.price) || 0;
           const totalPrice = Number(l.totalPrice) || qty * price;
           return {
+            _id: l._id,
+            clientLineId: l._id ? String(l._id) : l.clientLineId || newQuotationClientLineId(),
             serialNo: l.serialNo ?? idx + 1,
             article: l.article || "",
             partNumber: l.partNumber || "",
+            customerPartNo: l.customerPartNo || "",
             description: l.description || "",
             qty,
             uom: l.uom || "PCS",
@@ -414,6 +281,7 @@ function quotationDetailToEditableForm(q) {
             remarks: l.remarks || "",
             materialCode: l.materialCode || "",
             availability: l.availability || "",
+            sourceRowNumber: l.sourceRowNumber ?? null,
           };
         })
       : [emptyLine()];
@@ -791,9 +659,13 @@ function oaDetailToEditableForm(oa) {
           const price = Number(l.price) || 0;
           const totalPrice = Number(l.totalPrice) || qty * price;
           return {
+            _id: l._id,
+            clientLineId: l._id ? String(l._id) : l.clientLineId || newQuotationClientLineId(),
+            sourceQuotationLineId: l.sourceQuotationLineId || "",
             serialNo: l.serialNo ?? idx + 1,
             article: l.article || "",
             partNumber: l.partNumber || "",
+            customerPartNo: l.customerPartNo || "",
             description: l.description || "",
             qty,
             uom: l.uom || "PCS",
@@ -870,6 +742,8 @@ function proformaDetailToEditableForm(p) {
           const price = Number(l.price) || 0;
           const totalPrice = Number(l.totalPrice) || qty * price;
           return {
+            _id: l._id,
+            clientLineId: l._id ? String(l._id) : l.clientLineId || newQuotationClientLineId(),
             serialNo: l.serialNo ?? idx + 1,
             article: l.article || "",
             partNumber: l.partNumber || "",
@@ -987,6 +861,8 @@ function salesInvoiceDetailToEditableForm(inv) {
           const price = Number(l.price) || 0;
           const totalPrice = Number(l.totalPrice) || qty * price;
           return {
+            _id: l._id,
+            clientLineId: l._id ? String(l._id) : l.clientLineId || newQuotationClientLineId(),
             serialNo: l.serialNo ?? idx + 1,
             article: l.article || "",
             partNumber: l.partNumber || "",
@@ -1758,8 +1634,9 @@ export default function Sales() {
   const detailQuotationFormLinesRef = useRef([]);
   const detailOAFormLinesRef = useRef([]);
   const detailProformaFormLinesRef = useRef([]);
-  /** { base, dedupedImported, conflicts, internalDupRemoved, contextLabel, applyMerge } */
+  /** { groups, fingerprint, applyKeepAll, continueCreate, contextLabel } */
   const [quotationCsvDupModal, setQuotationCsvDupModal] = useState(null);
+  const [quotationDupAckFingerprint, setQuotationDupAckFingerprint] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [isQuotationNoEdited, setIsQuotationNoEdited] = useState(false);
   const [customerCreateOpen, setCustomerCreateOpen] = useState(false);
@@ -1928,6 +1805,15 @@ export default function Sales() {
   useEffect(() => {
     detailProformaFormLinesRef.current = detailProformaDraftForm?.lines || [];
   }, [detailProformaDraftForm?.lines]);
+
+  const quotationCreateDupGroups = useMemo(
+    () => detectDuplicateArticleGroups(form.lines || []),
+    [form.lines]
+  );
+  const detailQuotationDupGroups = useMemo(
+    () => detectDuplicateArticleGroups(detailQuotationDraftForm?.lines || []),
+    [detailQuotationDraftForm?.lines]
+  );
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["sales-quotations", page, search, status, brandFilter, verticalFilter],
@@ -2592,6 +2478,24 @@ ${GLOBAL_REPORT_TABLE_CSS}
     },
     onError: (e) => setErr(e.message),
   });
+
+  function persistQuotationAfterDuplicateCheck(kind) {
+    const lines = kind === "create" ? form.lines : detailQuotationDraftForm?.lines || [];
+    const check = needsDuplicateArticleAcknowledgement(lines, quotationDupAckFingerprint);
+    if (check.required) {
+      setQuotationCsvDupModal({
+        groups: check.groups,
+        fingerprint: check.fingerprint,
+        continueCreate: () => {
+          if (kind === "create") createMutation.mutate();
+          else updateQuotationDetailMutation.mutate();
+        },
+      });
+      return;
+    }
+    if (kind === "create") createMutation.mutate();
+    else updateQuotationDetailMutation.mutate();
+  }
 
   const deleteQuotationMutation = useMutation({
     mutationFn: (id) => apiDelete(`/quotations/${id}`),
@@ -3524,6 +3428,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
               if (activeTab === "Customer Master") setCustomerCreateOpen(true);
               else if (activeTab === "Quotation") {
                 setIsQuotationNoEdited(false);
+                setQuotationDupAckFingerprint("");
                 setCreateOpen(true);
               }
               else if (activeTab === "Sales Invoice") openPackingInvoiceModal();
@@ -6238,7 +6143,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                       const price = Number(line.price || 0);
                       const totalPrice = qty * price;
                       return (
-                        <tr key={idx} className="border-t">
+                        <tr key={salesDocumentLineKey(line, idx)} className="border-t">
                           <td className="px-2 py-1">{idx + 1}</td>
                           <td className="px-2 py-1">
                             <ItemMasterArticleSelect
@@ -6260,6 +6165,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
                                 setDetailQuotationDraftForm((f) => ({ ...f, lines }));
                               }}
                             />
+                            <DuplicateArticleBadge line={line} groups={detailQuotationDupGroups} />
+                            <DuplicateArticleHintText line={line} groups={detailQuotationDupGroups} />
                           </td>
                           <td className="px-2 py-1">
                             <TextInput
@@ -6394,7 +6301,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 type="button"
                 className="rounded-xl bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
                 disabled={updateQuotationDetailMutation.isPending || !detailId}
-                onClick={() => updateQuotationDetailMutation.mutate()}
+                onClick={() => persistQuotationAfterDuplicateCheck("update")}
               >
                 {updateQuotationDetailMutation.isPending ? "Saving…" : "Save changes"}
               </button>
@@ -6939,7 +6846,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                         const price = Number(line.price || 0);
                         const totalPrice = qty * price;
                         return (
-                          <tr key={idx} className="border-t">
+                          <tr key={salesDocumentLineKey(line, idx)} className="border-t">
                             <td className="px-2 py-1">{idx + 1}</td>
                             <td className="px-2 py-1">
                               <TextInput
@@ -7586,7 +7493,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                         const price = Number(line.price || 0);
                         const totalPrice = qty * price;
                         return (
-                          <tr key={idx} className="border-t">
+                          <tr key={salesDocumentLineKey(line, idx)} className="border-t">
                             <td className="px-2 py-1">{idx + 1}</td>
                             <td className="px-2 py-1">
                               <TextInput
@@ -8046,7 +7953,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   </thead>
                   <tbody>
                     {detailSalesInvoiceDraftForm.lines.map((line, idx) => (
-                      <tr key={idx} className="border-t">
+                      <tr key={salesDocumentLineKey(line, idx)} className="border-t">
                         <td className="px-2 py-1">{idx + 1}</td>
                         <td className="px-2 py-1">{line.article}</td>
                         <td className="px-2 py-1"><TextInput value={line.partNumber || ""} onChange={(e) => setDetailSalesInvoiceDraftForm((f) => { const lines = [...f.lines]; lines[idx] = { ...line, partNumber: e.target.value }; return { ...f, lines }; })} /></td>
@@ -8863,7 +8770,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
             </thead>
             <tbody>
               {srForm.lines.map((line, idx) => (
-                <tr key={idx} className="border-t">
+                <tr key={salesDocumentLineKey(line, idx)} className="border-t">
                   <td className="px-2 py-1">
                     <TextInput
                       value={line.article}
@@ -9185,7 +9092,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
           setQuotationCsvDupModal(null);
         }}
         title="New Quotation"
-        subtitle="Enter header details, add lines manually or import from CSV. Required per line: Article, Description, quantity. CSV import matches Article + Part Number (in-file duplicates use the last row; grid conflicts prompt to replace or skip)."
+        subtitle="Enter header details, add lines manually or import from CSV. Required per line: Article, Description, quantity. Repeated Articles stay as separate lines."
         xlarge
       >
         <div className="grid gap-3 sm:grid-cols-4">
@@ -9405,7 +9312,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                   const price = Number(line.price || 0);
                   const totalPrice = qty * price;
                   return (
-                    <tr key={idx} className="border-t">
+                    <tr key={salesDocumentLineKey(line, idx)} className="border-t">
                       <td className="px-2 py-1">{idx + 1}</td>
                       <td className="px-2 py-1">
                         <ItemMasterArticleSelect
@@ -9427,6 +9334,8 @@ ${GLOBAL_REPORT_TABLE_CSS}
                             setForm((f) => ({ ...f, lines }));
                           }}
                         />
+                        <DuplicateArticleBadge line={line} groups={quotationCreateDupGroups} />
+                        <DuplicateArticleHintText line={line} groups={quotationCreateDupGroups} />
                       </td>
                       <td className="px-2 py-1">
                         <TextInput
@@ -9580,7 +9489,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
                 setErr("Please select customer from Customer Master");
                 return;
               }
-              createMutation.mutate();
+              persistQuotationAfterDuplicateCheck("create");
             }}
           >
             {createMutation.isPending ? "Saving..." : "Create Quotation"}
@@ -9588,115 +9497,19 @@ ${GLOBAL_REPORT_TABLE_CSS}
         </div>
       </Modal>
 
-      <Modal
+      <DuplicateArticlesModal
         open={!!quotationCsvDupModal}
-        onClose={() => setQuotationCsvDupModal(null)}
-        title="Line conflicts in CSV import"
-        subtitle="Rows match on Article and Part Number (case-insensitive). Choose how to apply imported QTY, Price, Description, and other fields when a line already exists."
-        wide
-      >
-        {quotationCsvDupModal ? (
-          <div className="space-y-4 text-sm text-slate-800">
-            {quotationCsvDupModal.internalDupRemoved > 0 ? (
-              <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
-                Your file had {quotationCsvDupModal.internalDupRemoved} extra row
-                {quotationCsvDupModal.internalDupRemoved === 1 ? "" : "s"} with the same Article and Part Number as another row in
-                the file. Only the <strong>last</strong> occurrence of each pair was kept.
-              </p>
-            ) : null}
-            <p>
-              {quotationCsvDupModal.conflicts.length === 1
-                ? "One imported line conflicts"
-                : `${quotationCsvDupModal.conflicts.length} imported lines conflict`}{" "}
-              with the {quotationCsvDupModal.contextLabel || "document"} grid (same Article and Part Number). Review changes below
-              before confirming.
-            </p>
-            <div className="max-h-56 overflow-auto rounded-lg border border-slate-200">
-              <table className="w-full text-xs">
-                <thead className="sticky top-0 bg-slate-100 text-left text-slate-600">
-                  <tr>
-                    <th className="px-2 py-2">Article</th>
-                    <th className="px-2 py-2">Part Number</th>
-                    <th className="px-2 py-2">Description</th>
-                    <th className="px-2 py-2 text-right">QTY (grid → import)</th>
-                    <th className="px-2 py-2 text-right">Price (grid → import)</th>
-                    <th className="px-2 py-2 text-right">Row</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {quotationCsvDupModal.conflicts.slice(0, 40).map((c, i) => {
-                    const existing = quotationCsvDupModal.base[c.existingIndex] || {};
-                    return (
-                      <tr key={`${c.key}-${i}`} className="border-t border-slate-100">
-                        <td className="px-2 py-1.5 font-mono">{c.importedRow.article}</td>
-                        <td className="px-2 py-1.5 font-mono">{c.importedRow.partNumber || "—"}</td>
-                        <td className="px-2 py-1.5">{c.importedRow.description}</td>
-                        <td className="px-2 py-1.5 text-right tabular-nums">
-                          {existing.qty ?? "—"} → {c.importedRow.qty ?? "—"}
-                        </td>
-                        <td className="px-2 py-1.5 text-right tabular-nums">
-                          {existing.price ?? "—"} → {c.importedRow.price ?? "—"}
-                        </td>
-                        <td className="px-2 py-1.5 text-right tabular-nums">{c.existingIndex + 1}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            {quotationCsvDupModal.conflicts.length > 40 ? (
-              <p className="text-xs text-slate-500">Showing first 40 conflicts.</p>
-            ) : null}
-            <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-3">
-              <button
-                type="button"
-                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
-                onClick={() => setQuotationCsvDupModal(null)}
-              >
-                Cancel import
-              </button>
-              <button
-                type="button"
-                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm hover:bg-slate-50"
-                onClick={async () => {
-                  const { applyMerge } = quotationCsvDupModal;
-                  setQuotationCsvDupModal(null);
-                  if (applyMerge) {
-                    applyMerge("skip");
-                    return;
-                  }
-                  const { base, dedupedImported } = quotationCsvDupModal;
-                  setForm((f) => ({
-                    ...f,
-                    lines: mergeQuotationCsvLinesIntoBase(base, dedupedImported, "skip"),
-                  }));
-                }}
-              >
-                Skip duplicates
-              </button>
-              <button
-                type="button"
-                className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
-                onClick={async () => {
-                  const { applyMerge } = quotationCsvDupModal;
-                  setQuotationCsvDupModal(null);
-                  if (applyMerge) {
-                    applyMerge("override");
-                    return;
-                  }
-                  const { base, dedupedImported } = quotationCsvDupModal;
-                  setForm((f) => ({
-                    ...f,
-                    lines: mergeQuotationCsvLinesIntoBase(base, dedupedImported, "override"),
-                  }));
-                }}
-              >
-                Replace matching rows
-              </button>
-            </div>
-          </div>
-        ) : null}
-      </Modal>
+        groups={quotationCsvDupModal?.groups || []}
+        onCancel={() => setQuotationCsvDupModal(null)}
+        onKeepAll={() => {
+          const modal = quotationCsvDupModal;
+          if (!modal) return;
+          if (modal.fingerprint) setQuotationDupAckFingerprint(modal.fingerprint);
+          setQuotationCsvDupModal(null);
+          if (typeof modal.applyKeepAll === "function") modal.applyKeepAll();
+          if (typeof modal.continueCreate === "function") modal.continueCreate();
+        }}
+      />
 
       <OaCreateModal
         open={oaCreateOpen}
@@ -9862,7 +9675,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
           </div>
           <div className="space-y-2">
             {proformaForm.lines.map((line, idx) => (
-              <div key={idx} className="grid gap-2 rounded-xl border p-2 sm:grid-cols-8">
+              <div key={salesDocumentLineKey(line, idx)} className="grid gap-2 rounded-xl border p-2 sm:grid-cols-8">
                 <TextInput
                   placeholder="Item code"
                   value={line.itemCode}
@@ -10055,7 +9868,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
           </div>
           <div className="space-y-2">
             {salesInvoiceForm.lines.map((line, idx) => (
-              <div key={idx} className="grid gap-2 rounded-xl border p-2 sm:grid-cols-8">
+              <div key={salesDocumentLineKey(line, idx)} className="grid gap-2 rounded-xl border p-2 sm:grid-cols-8">
                 <TextInput
                   placeholder="Item code"
                   value={line.itemCode}
@@ -10179,7 +9992,7 @@ ${GLOBAL_REPORT_TABLE_CSS}
           </div>
           <div className="space-y-2">
             {ciplForm.lines.map((line, idx) => (
-              <div key={idx} className="grid gap-2 rounded-xl border p-2 sm:grid-cols-8">
+              <div key={salesDocumentLineKey(line, idx)} className="grid gap-2 rounded-xl border p-2 sm:grid-cols-8">
                 <TextInput
                   placeholder="Item code"
                   value={line.itemCode}

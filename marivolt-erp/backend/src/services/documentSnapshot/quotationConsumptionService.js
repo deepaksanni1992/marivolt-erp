@@ -12,6 +12,21 @@ export function lineArticlePartKey(article, partNumber) {
 }
 
 /**
+ * Prefer sourceQuotationLineId. Article+part fallback is used only when that
+ * pair maps to a single quotation line. Repeated Articles are independent.
+ */
+export function lookupQuotationConsumptionEntry(line, consumption) {
+  const byLineId = consumption?.byLineId || new Map();
+  const byArticlePart = consumption?.byArticlePart || new Map();
+  const srcId = line?.sourceQuotationLineId
+    ? String(line.sourceQuotationLineId)
+    : String(line?.sourceLineId || "");
+  if (srcId && byLineId.has(srcId)) return byLineId.get(srcId);
+  const fallback = byArticlePart.get(lineArticlePartKey(line?.article, line?.partNumber));
+  return fallback || null;
+}
+
+/**
  * Non-destructive quotation consumption: sums ordered qty from linked, non-cancelled OAs.
  * Quotation lines are never modified.
  */
@@ -32,7 +47,12 @@ export async function computeQuotationConsumption(companyId, quotation) {
       remainingQty: quotedQty,
     };
     if (lineId) byLineId.set(lineId, entry);
-    byArticlePart.set(lineArticlePartKey(qLine.article, qLine.partNumber), entry);
+    const artKey = lineArticlePartKey(qLine.article, qLine.partNumber);
+    if (byArticlePart.has(artKey)) {
+      byArticlePart.set(artKey, null);
+    } else {
+      byArticlePart.set(artKey, entry);
+    }
   }
 
   const oas = await OrderAcknowledgement.find({
@@ -81,11 +101,7 @@ export function applyConsumptionToWorkingLines(lines, consumption) {
   const byArticlePart = consumption?.byArticlePart || new Map();
 
   return (lines || []).map((line, idx) => {
-    const srcId = line.sourceQuotationLineId ? String(line.sourceQuotationLineId) : "";
-    let c = srcId && byLineId.has(srcId) ? byLineId.get(srcId) : null;
-    if (!c) {
-      c = byArticlePart.get(lineArticlePartKey(line.article, line.partNumber));
-    }
+    const c = lookupQuotationConsumptionEntry(line, { byLineId, byArticlePart });
     const quotedQty = line.quotedQty != null ? Number(line.quotedQty) : c?.quotedQty ?? 0;
     const alreadyOrderedQty = c?.alreadyOrderedQty ?? 0;
     const remainingQty = c?.remainingQty ?? Math.max(0, quotedQty - alreadyOrderedQty);
@@ -121,11 +137,7 @@ export function findOverOrderViolations(lines, consumption, { allowOverOrder = f
     const orderedQty = Number(line.orderedQty ?? line.qty) || 0;
     if (orderedQty <= 0) continue;
 
-    const srcId = line.sourceQuotationLineId ? String(line.sourceQuotationLineId) : "";
-    let c = srcId && byLineId.has(srcId) ? byLineId.get(srcId) : null;
-    if (!c) {
-      c = byArticlePart.get(lineArticlePartKey(line.article, line.partNumber));
-    }
+    const c = lookupQuotationConsumptionEntry(line, { byLineId, byArticlePart });
     if (!c) continue;
 
     const remaining = c.remainingQty ?? 0;

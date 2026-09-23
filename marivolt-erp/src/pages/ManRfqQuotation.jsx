@@ -4,6 +4,13 @@ import { apiGet, apiGetWithQuery, apiPost, apiPostFormData } from "../lib/api.js
 import { notify } from "../lib/notifications.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import LoadingButton from "../components/erp/LoadingButton.jsx";
+import DuplicateArticlesModal, { DuplicateArticleBadge } from "../components/sales/DuplicateArticlesModal.jsx";
+import {
+  detectDuplicateArticleGroups,
+  needsDuplicateArticleAcknowledgement,
+  newQuotationClientLineId,
+  salesDocumentLineKey,
+} from "../lib/quotationDuplicateLines.js";
 
 const TIERS = [
   { id: "SELL", label: "Sell price" },
@@ -299,6 +306,13 @@ export default function ManRfqQuotation() {
   const [created, setCreated] = useState(null);
   const [bulkTier, setBulkTier] = useState("SELL");
   const [pickerIdx, setPickerIdx] = useState(null);
+  const [dupModal, setDupModal] = useState(null);
+  const [dupAckFingerprint, setDupAckFingerprint] = useState("");
+  const manRfqDupOpts = {
+    articleOf: (l) => l.selectedArticle || l.article,
+    requestedPartNumberOf: (l) => l.requestedPartNo || l.customerPartNo,
+    includeExcluded: false,
+  };
 
   const { data: customerLookup } = useQuery({
     queryKey: ["sales-customers-lookup", customerSearch],
@@ -348,8 +362,10 @@ export default function ManRfqQuotation() {
       setIdempotencyKey(newKey());
       setCreated(null);
       setLines(
-        (data.lines || []).map((ln) => ({
+        (data.lines || []).map((ln, idx) => ({
           ...ln,
+          clientLineId: ln.clientLineId || newQuotationClientLineId(),
+          sourceRowNumber: ln.sourceRowNumber ?? idx + 2,
           exclude: ["NOT_FOUND", "NON_MAN", "INVALID"].includes(ln.status),
           excludeReason: ln.exclusionReason || "",
           priceTier: ln.selectedArticle ? ln.priceTier || "SELL" : "",
@@ -358,6 +374,20 @@ export default function ManRfqQuotation() {
           priceCurrency: ln.priceCurrency || ln.sourceCurrency || "",
         }))
       );
+      const matched = (data.lines || []).map((ln, idx) => ({
+        ...ln,
+        sourceRowNumber: ln.sourceRowNumber ?? idx + 2,
+        exclude: ["NOT_FOUND", "NON_MAN", "INVALID"].includes(ln.status),
+      }));
+      const review = detectDuplicateArticleGroups(matched, { ...manRfqDupOpts, includeExcluded: true });
+      if (review.length) {
+        setDupModal({
+          groups: review,
+          fingerprint: needsDuplicateArticleAcknowledgement(matched, "", { ...manRfqDupOpts, includeExcluded: true })
+            .fingerprint,
+          continueCreate: null,
+        });
+      }
       notify.info("RFQ matched. Review lines before creating a quotation.");
     },
     onError: (e) => notify.error(e.message),
@@ -433,6 +463,7 @@ export default function ManRfqQuotation() {
             uom: ln.uom,
             exclude: ln.exclude,
             requestedPartNo: ln.requestedPartNo,
+            sourceRowNumber: ln.sourceRowNumber,
             requestedModel: ln.requestedModel || "",
             customerEngineModel: ln.requestedModel || "",
             engineModel: ln.engineModel || "",
@@ -463,6 +494,14 @@ export default function ManRfqQuotation() {
   });
 
   const included = lines.filter((l) => !l.exclude);
+  const includedDupGroups = useMemo(
+    () =>
+      detectDuplicateArticleGroups(
+        lines.filter((l) => !l.exclude),
+        manRfqDupOpts
+      ),
+    [lines]
+  );
   const unresolved = useMemo(() => {
     const open = lines.filter((l) => !l.exclude);
     const counts = {
@@ -950,12 +989,17 @@ export default function ManRfqQuotation() {
                   const conv = lineConversion(ln, header.currency, fxInputs);
                   const quoteUnit = conv.quoteUnit;
                   return (
-                    <tr key={`${ln.requestedPartNo}-${idx}`} className="border-t align-top">
+                    <tr key={salesDocumentLineKey(ln, idx)} className="border-t align-top">
                       <td className="sticky left-0 z-10 bg-white px-2 py-1">{ln.customerLine || "—"}</td>
                       <td className="sticky left-[7rem] z-10 bg-white px-2 py-1 font-mono">{ln.requestedPartNo}</td>
                       <td className="px-2 py-1">{ln.requestedModel || "—"}</td>
                       <td className="sticky left-[16rem] z-10 bg-white px-2 py-1">
                         <div className="font-mono">{ln.selectedArticle || "—"}</div>
+                        <DuplicateArticleBadge
+                          line={ln}
+                          groups={includedDupGroups}
+                          opts={manRfqDupOpts}
+                        />
                         {(ln.candidates || []).length > 1 || ["MULTIPLE", "REVIEW", "MODEL_REQUIRED"].includes(ln.status) ? (
                           <button
                             type="button"
@@ -1049,7 +1093,22 @@ export default function ManRfqQuotation() {
       <div className="rounded-2xl border bg-white p-4">
         <h2 className="text-lg font-semibold">Create Draft Quotation</h2>
         <div className="mt-3 flex flex-wrap items-center gap-3">
-          <LoadingButton loading={createMut.isPending} disabled={!ready || createMut.isPending} onClick={() => createMut.mutate()}>
+          <LoadingButton
+            loading={createMut.isPending}
+            disabled={!ready || createMut.isPending}
+            onClick={() => {
+              const check = needsDuplicateArticleAcknowledgement(included, dupAckFingerprint, manRfqDupOpts);
+              if (check.required) {
+                setDupModal({
+                  groups: check.groups,
+                  fingerprint: check.fingerprint,
+                  continueCreate: () => createMut.mutate(),
+                });
+                return;
+              }
+              createMut.mutate();
+            }}
+          >
             Create Draft Quotation
           </LoadingButton>
           {!ready && lines.length ? (
@@ -1125,7 +1184,7 @@ export default function ManRfqQuotation() {
                     if (!c.prices) highlights.push("Missing price");
                     const blocked = Boolean(c.modelConflict);
                     return (
-                      <tr key={c.article} className="border-t align-top">
+                      <tr key={`${c.article}-${idx}`} className="border-t align-top">
                         <td className="px-2 py-2">
                           <button
                             type="button"
@@ -1166,6 +1225,20 @@ export default function ManRfqQuotation() {
           </div>
         </div>
       ) : null}
+      <DuplicateArticlesModal
+        open={!!dupModal}
+        groups={dupModal?.groups || []}
+        onCancel={() => {
+          if (!dupModal?.continueCreate) setLines([]);
+          setDupModal(null);
+        }}
+        onKeepAll={() => {
+          if (dupModal?.fingerprint) setDupAckFingerprint(dupModal.fingerprint);
+          const resume = dupModal?.continueCreate;
+          setDupModal(null);
+          if (typeof resume === "function") resume();
+        }}
+      />
     </div>
   );
 }

@@ -200,6 +200,8 @@ export async function matchRfqLines(
     const spnExact = needle ? new RegExp(`^${escaped}$`, "i") : null;
 
     const base = {
+      sourceRowNumber:
+        raw.sourceRowNumber != null && raw.sourceRowNumber !== "" ? Number(raw.sourceRowNumber) : null,
       customerLine,
       customerReference,
       requestedPartNo: partNoOriginal,
@@ -373,7 +375,10 @@ export async function parseRfqFile(buffer) {
   const rows = parseExcelBufferToRows(buffer, {
     preserveFormattedTextColumns: ["Part no", "Part No", "Part Number", "SPN", "UOM", "Qty", "Engine Model", "Engine model"],
   });
-  return rows.map((r) => parseRfqCsvRow(r.data));
+  return rows.map((r) => ({
+    ...parseRfqCsvRow(r.data),
+    sourceRowNumber: r.rowNumber,
+  }));
 }
 
 export async function refreshAvailability(req, lines = []) {
@@ -650,6 +655,8 @@ export async function createQuotationFromManRfq(req, body = {}) {
     });
 
     quoteLines.push({
+      sourceRowNumber:
+        line.sourceRowNumber != null && line.sourceRowNumber !== "" ? Number(line.sourceRowNumber) : null,
       article,
       partNumber: displayedItemMasterSpn(item, tech || {}),
       customerPartNo: String(line.requestedPartNo || line.customerPartNo || "").trim(),

@@ -41,13 +41,16 @@ export function manRfqRequestHash({ customerId = "", currency = "", lines = [], 
       targetCurrency: r.targetCurrency,
       rate: r.rate,
     })),
-    lines: (lines || []).map((l) => ({
+    lines: (lines || []).map((l, idx) => ({
+      sourceIndex: idx,
+      sourceRowNumber:
+        l.sourceRowNumber == null || l.sourceRowNumber === "" ? "" : Number(l.sourceRowNumber),
       article: String(l.article || "").trim().toUpperCase(),
       qty: Number(l.qty) || 0,
       uom: String(l.uom || "").trim().toUpperCase(),
       price: Number(l.price) || 0,
       priceTier: String(l.priceTier || "").trim().toUpperCase(),
-      customerPartNo: String(l.customerPartNo || "").trim(),
+      customerPartNo: String(l.customerPartNo || l.requestedPartNo || "").trim(),
       sourceCurrency: normalizeManCurrency(l.sourceCurrency),
       conversionRate: l.conversionRate == null || l.conversionRate === "" ? "" : Number(l.conversionRate),
     })),

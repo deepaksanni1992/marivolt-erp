@@ -235,11 +235,14 @@ export async function assertActiveArticlesForChangedLines({
 export function snapshotQuotationLineFromItem(line = {}, item) {
   if (!item) return line;
   const partNumber = canonicalItemMasterPartNumber(item);
+  const requestedPartNo =
+    String(line.customerPartNo || "").trim() || String(line.partNumber || line.partNo || "").trim();
   return {
     ...line,
     article: item.article,
     description: item.description || item.itemName || line.description || "",
     partNumber,
+    customerPartNo: requestedPartNo,
     uom: item.uom || line.uom || "PCS",
     materialCode: item.materialCode || line.materialCode || "",
     engineModel: line.engineModel || item.model || "",

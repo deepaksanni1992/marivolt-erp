@@ -41,6 +41,7 @@ import {
 } from "../utils/customerTransactionFields.js";
 import { writeAudit } from "../services/auditService.js";
 import { normalizeOaPaymentType } from "../utils/salesFlowSequential.js";
+import { preserveQuotationLinesInOrder } from "../utils/quotationDuplicateLines.js";
 import {
   applyItemMasterSnapshotsToLines,
   articleFromLine,
@@ -105,6 +106,9 @@ function normalizeLines(lines = []) {
       const totalPrice = quotationLineTotal(price, qty);
       const snapshot = {};
       if (line.customerPartNo != null) snapshot.customerPartNo = String(line.customerPartNo || "");
+      if (line.sourceRowNumber != null && line.sourceRowNumber !== "") {
+        snapshot.sourceRowNumber = Number(line.sourceRowNumber) || null;
+      }
       if (line.customerEngineModel != null) snapshot.customerEngineModel = String(line.customerEngineModel || "");
       if (line.engineModel != null) snapshot.engineModel = String(line.engineModel || "");
       if (line.config != null) snapshot.config = String(line.config || "");
@@ -307,6 +311,7 @@ export async function persistNewQuotation(req, rawBody = {}, { skipAutoCreateIte
     e.statusCode = 400;
     throw e;
   }
+  body.lines = preserveQuotationLinesInOrder(body.lines);
   await assertManEngineWriteAccess(req, {
     lines: body.lines,
     header: body,

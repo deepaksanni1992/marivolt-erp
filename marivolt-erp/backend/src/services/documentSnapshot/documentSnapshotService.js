@@ -58,6 +58,7 @@ export function normalizeOALinesFromWorkingCopy(lines = []) {
         : null,
       article,
       partNumber: String(line.partNumber || line.partNo || "").trim(),
+      customerPartNo: String(line.customerPartNo || "").trim(),
       description,
       uom,
       qty: orderedQty,

@@ -367,8 +367,12 @@ function normalizeLines(lines = []) {
       allocationLineId: mongoose.Types.ObjectId.isValid(String(line.allocationLineId || ""))
         ? new mongoose.Types.ObjectId(String(line.allocationLineId))
         : null,
+      sourceQuotationLineId: mongoose.Types.ObjectId.isValid(String(line.sourceQuotationLineId || ""))
+        ? new mongoose.Types.ObjectId(String(line.sourceQuotationLineId))
+        : null,
       article: String(line.article || line.itemCode || "").trim().toUpperCase(),
       partNumber: String(line.partNumber || line.partNo || "").trim(),
+      customerPartNo: String(line.customerPartNo || "").trim(),
       description: String(line.description || ""),
       uom: String(line.uom || line.unit || "PCS").trim() || "PCS",
       qty,
@@ -3236,7 +3240,12 @@ export async function convertQuotationToOA(req, res) {
       model: OrderAcknowledgement,
       field: "oaNo",
     });
-    const lines = normalizeLines(quotation.lines.map((line) => line.toObject?.() || line));
+    const lines = normalizeLines(
+      quotation.lines.map((line) => {
+        const obj = line.toObject?.() || line;
+        return { ...obj, sourceQuotationLineId: obj._id || obj.sourceQuotationLineId || null };
+      })
+    );
     await assertActiveArticles({ companyId: req.companyId, lines });
     const totals = computeTotals(lines, quotation);
     const customerFields = copyCustomerTransactionFields(quotation);

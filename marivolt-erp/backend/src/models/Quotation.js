@@ -3,6 +3,8 @@ import mongoose from "mongoose";
 const quotationLineSchema = new mongoose.Schema(
   {
     serialNo: { type: Number, default: 0, min: 0 },
+    /** 1-based source CSV/RFQ row when imported. Not a unique identity; Article is never unique. */
+    sourceRowNumber: { type: Number, default: null, min: 0 },
     description: { type: String, default: "" },
     partNumber: { type: String, default: "", trim: true },
     article: { type: String, required: true, trim: true, uppercase: true, index: true },

@@ -173,7 +173,7 @@ run("resolvePersistedSourceMetadata from working copy", () => {
   assert.equal(meta.copiedBy, "copier@test.com");
 });
 
-run("validateOaLineFields rejects duplicate article", () => {
+run("validateOaLineFields allows duplicate articles as independent lines", () => {
   const errors = validateOaLineFields(
     [
       { article: "A1", description: "One", uom: "PCS", orderedQty: 1, orderedPrice: 10 },
@@ -181,7 +181,7 @@ run("validateOaLineFields rejects duplicate article", () => {
     ],
     { fromWorkingCopy: true }
   );
-  assert.ok(errors.some((e) => e.includes("duplicate")));
+  assert.equal(errors.length, 0);
 });
 
 run("QTN→OA copies converted quotation price and does not convert again", () => {
@@ -226,6 +226,54 @@ run("detectStaleConsumption when another OA created", () => {
   );
   assert.equal(stale, true);
   assert.ok(reasons.length >= 1);
+});
+
+run("QTN→OA mapLine copies every duplicate Article as its own source line id", () => {
+  const route = getCopyRoute(DOC_TYPES.QUOTATION, DOC_TYPES.ORDER_ACKNOWLEDGEMENT);
+  const a = route.mapLine(
+    { _id: "507f1f77bcf86cd799439011", article: "800076", partNumber: "51401-01H-212", qty: 6, price: 1 },
+    0,
+    { consumption: { byLineId: new Map() } }
+  );
+  const b = route.mapLine(
+    { _id: "507f1f77bcf86cd799439012", article: "800076", partNumber: "51401-01H-212", qty: 6, price: 1 },
+    1,
+    { consumption: { byLineId: new Map() } }
+  );
+  assert.equal(a.article, "800076");
+  assert.equal(b.article, "800076");
+  assert.equal(a.sourceQuotationLineId, "507f1f77bcf86cd799439011");
+  assert.equal(b.sourceQuotationLineId, "507f1f77bcf86cd799439012");
+  assert.notEqual(a.sourceQuotationLineId, b.sourceQuotationLineId);
+  assert.equal(a.orderedQty, 6);
+  assert.equal(b.orderedQty, 6);
+});
+
+run("normalizeOALinesFromWorkingCopy keeps two same-article lines", () => {
+  const out = normalizeOALinesFromWorkingCopy([
+    {
+      includeInOA: true,
+      sourceQuotationLineId: "507f1f77bcf86cd799439011",
+      article: "800076",
+      description: "Delivery valve spring",
+      uom: "PCS",
+      orderedQty: 6,
+      orderedPrice: 10,
+    },
+    {
+      includeInOA: true,
+      sourceQuotationLineId: "507f1f77bcf86cd799439012",
+      article: "800076",
+      description: "Delivery valve spring",
+      uom: "PCS",
+      orderedQty: 6,
+      orderedPrice: 10,
+    },
+  ]);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].qty, 6);
+  assert.equal(out[1].qty, 6);
+  assert.notEqual(String(out[0].sourceQuotationLineId), String(out[1].sourceQuotationLineId));
 });
 
 console.log(`\nResults: ${passed} passed, ${failed} failed\n`);

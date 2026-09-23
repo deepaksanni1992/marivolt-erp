@@ -8,12 +8,20 @@ import {
   exportOaWorkingLinesCsv,
   parseOaWorkingCsvFile,
 } from "../../lib/oaWorkingCopyCsv.js";
+import {
+  detectDuplicateArticleGroups,
+  needsDuplicateArticleAcknowledgement,
+  newQuotationClientLineId,
+  salesDocumentLineKey,
+} from "../../lib/quotationDuplicateLines.js";
+import DuplicateArticlesModal, { DuplicateArticleBadge } from "./DuplicateArticlesModal.jsx";
 import CustomerTransactionDetailsFields from "./CustomerTransactionDetailsFields.jsx";
 
 export function emptyOaWorkingLine() {
   return {
     serialNo: 1,
     sourceQuotationLineId: "",
+    clientLineId: newQuotationClientLineId(),
     article: "",
     partNumber: "",
     description: "",
@@ -178,6 +186,8 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchAttempted, setSearchAttempted] = useState(false);
   const [csvPreview, setCsvPreview] = useState(null);
+  const [dupModal, setDupModal] = useState(null);
+  const [dupAckFingerprint, setDupAckFingerprint] = useState("");
   const [overOrderConfirm, setOverOrderConfirm] = useState(null);
   const [staleConsumptionConfirm, setStaleConsumptionConfirm] = useState(null);
   const [selectingQuotation, setSelectingQuotation] = useState(false);
@@ -228,6 +238,7 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
   );
   const workingSubtotal = useMemo(() => computeWorkingSubtotal(form.lines), [form.lines]);
   const workingGrandTotal = useMemo(() => computeWorkingGrandTotal(form), [form]);
+  const oaDupGroups = useMemo(() => detectDuplicateArticleGroups(form.lines), [form.lines]);
 
   const createMutation = useMutation({
     mutationFn: (payload) => apiPost("/sales/order-acknowledgements", payload),
@@ -252,8 +263,19 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
     },
   });
 
-  const submitOa = (allowOverOrder = false, allowStaleConsumption = false) => {
+  const submitOa = (allowOverOrder = false, allowStaleConsumption = false, { skipDupCheck } = {}) => {
     if (createMutation.isPending) return;
+    if (!skipDupCheck) {
+      const check = needsDuplicateArticleAcknowledgement(form.lines, dupAckFingerprint);
+      if (check.required) {
+        setDupModal({
+          groups: check.groups,
+          fingerprint: check.fingerprint,
+          continueCreate: () => submitOa(allowOverOrder, allowStaleConsumption, { skipDupCheck: true }),
+        });
+        return;
+      }
+    }
     const violations = fromQuotation ? findClientOverOrderViolations(form.lines) : [];
     if (violations.length && !allowOverOrder) {
       setOverOrderConfirm({ violations, fromServer: false });
@@ -273,11 +295,10 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
         consumptionSummary: working.consumptionSummary,
         consumptionBaseline: working.consumptionBaseline,
         lines: (f.lines || []).map((line, idx) => {
-          const src = (working.lines || []).find(
-            (wl) =>
-              String(wl.sourceQuotationLineId || "") === String(line.sourceQuotationLineId || "") ||
-              (wl.article === line.article && wl.partNumber === line.partNumber)
-          );
+          const srcId = String(line.sourceQuotationLineId || "");
+          const src = srcId
+            ? (working.lines || []).find((wl) => String(wl.sourceQuotationLineId || "") === srcId)
+            : null;
           if (!src) return line;
           return {
             ...line,
@@ -364,7 +385,20 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
 
   const confirmCsvImport = () => {
     if (!csvPreview?.mergedLines) return;
-    setForm((f) => ({ ...f, lines: csvPreview.mergedLines }));
+    const next = csvPreview.mergedLines;
+    const check = needsDuplicateArticleAcknowledgement(next, "");
+    if (check.required) {
+      setDupModal({
+        groups: check.groups,
+        fingerprint: check.fingerprint,
+        continueCreate: () => {
+          setForm((f) => ({ ...f, lines: next }));
+          setCsvPreview(null);
+        },
+      });
+      return;
+    }
+    setForm((f) => ({ ...f, lines: next }));
     setCsvPreview(null);
   };
 
@@ -749,7 +783,7 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
                   const rowTotal = included ? oq * op : 0;
                   const dim = !included ? "opacity-50" : "";
                   return (
-                    <tr key={idx} className={`border-t ${dim}`}>
+                    <tr key={salesDocumentLineKey(line, idx)} className={`border-t ${dim}`}>
                       <td className="px-2 py-1 text-center">
                         <input
                           type="checkbox"
@@ -763,6 +797,7 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
                           value={line.article}
                           onChange={(e) => updateLine(idx, { article: e.target.value.toUpperCase() })}
                         />
+                        <DuplicateArticleBadge line={line} groups={oaDupGroups} />
                       </td>
                       <td className="px-2 py-1">
                         <TextInput className="min-w-[70px] text-xs" value={line.partNumber} onChange={(e) => updateLine(idx, { partNumber: e.target.value })} />
@@ -998,6 +1033,17 @@ export default function OaCreateModal({ open, onClose, initialForm, onSuccess, o
           </div>
         ) : null}
       </Modal>
+      <DuplicateArticlesModal
+        open={!!dupModal}
+        groups={dupModal?.groups || []}
+        onCancel={() => setDupModal(null)}
+        onKeepAll={() => {
+          if (dupModal?.fingerprint) setDupAckFingerprint(dupModal.fingerprint);
+          const resume = dupModal?.continueCreate;
+          setDupModal(null);
+          if (typeof resume === "function") resume();
+        }}
+      />
     </>
   );
 }

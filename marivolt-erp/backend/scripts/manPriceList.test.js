@@ -796,6 +796,52 @@ run("Idempotency hash includes quotation currency, canonical FX order, articles,
   assert.match(hashA, /"priceTier":"SELL"/);
 });
 
+run("Idempotency hash keeps ordered duplicate Articles and does not unique-collapse", () => {
+  const one = manRfqRequestHash({
+    customerId: "c1",
+    currency: "USD",
+    lines: [{ article: "800076", qty: 12, uom: "PCS", price: 1, priceTier: "SELL", customerPartNo: "51401-01H-212" }],
+  });
+  const two = manRfqRequestHash({
+    customerId: "c1",
+    currency: "USD",
+    lines: [
+      { article: "800076", qty: 6, uom: "PCS", price: 1, priceTier: "SELL", customerPartNo: "51401-01H-212", sourceRowNumber: 52 },
+      { article: "800076", qty: 6, uom: "PCS", price: 1, priceTier: "SELL", customerPartNo: "51401-01H-212", sourceRowNumber: 72 },
+    ],
+  });
+  const swapped = manRfqRequestHash({
+    customerId: "c1",
+    currency: "USD",
+    lines: [
+      { article: "800076", qty: 6, uom: "PCS", price: 1, priceTier: "SELL", customerPartNo: "51401-01H-212", sourceRowNumber: 72 },
+      { article: "800076", qty: 6, uom: "PCS", price: 1, priceTier: "SELL", customerPartNo: "51401-01H-212", sourceRowNumber: 52 },
+    ],
+  });
+  const qtyChanged = manRfqRequestHash({
+    customerId: "c1",
+    currency: "USD",
+    lines: [
+      { article: "800076", qty: 7, uom: "PCS", price: 1, priceTier: "SELL", customerPartNo: "51401-01H-212", sourceRowNumber: 52 },
+      { article: "800076", qty: 6, uom: "PCS", price: 1, priceTier: "SELL", customerPartNo: "51401-01H-212", sourceRowNumber: 72 },
+    ],
+  });
+  const pnChanged = manRfqRequestHash({
+    customerId: "c1",
+    currency: "USD",
+    lines: [
+      { article: "800076", qty: 6, uom: "PCS", price: 1, priceTier: "SELL", customerPartNo: "51401-01H-999", sourceRowNumber: 52 },
+      { article: "800076", qty: 6, uom: "PCS", price: 1, priceTier: "SELL", customerPartNo: "51401-01H-212", sourceRowNumber: 72 },
+    ],
+  });
+  assert.notEqual(one, two);
+  assert.notEqual(two, swapped);
+  assert.notEqual(two, qtyChanged);
+  assert.notEqual(two, pnChanged);
+  assert.match(two, /"sourceIndex":0/);
+  assert.match(two, /"sourceIndex":1/);
+});
+
 run("FX notes are clipped to 200 characters and customer print never shows them", () => {
   assert.equal(clipManFxNote("  keep  ").length, 4);
   assert.equal(clipManFxNote("x".repeat(500)).length, MAN_RFQ_FX_NOTE_MAX);

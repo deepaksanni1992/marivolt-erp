@@ -55,6 +55,7 @@ const files = [
   "src/controllers/purchaseReturnController.js",
   "src/controllers/salesReturnController.js",
   "src/controllers/quotationController.js",
+  "src/utils/quotationDuplicateLines.js",
   "src/controllers/accountsController.js",
   "src/controllers/paymentReceiptController.js",
   "src/controllers/logisticsController.js",
