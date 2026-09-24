@@ -416,6 +416,18 @@ await run("Payment bank account options use unique bank ids (same name, differen
   assert.equal(modal.includes("value={b.accountName || b.bankName || \"\"}"), false);
 });
 
+await run("Sales users can list AED/EUR/USD bank rows and print PI bank details without ACCOUNTS.view", () => {
+  const accounts = fs.readFileSync(path.join(srcRoot, "routes", "accountsRoutes.js"), "utf8");
+  const receipts = fs.readFileSync(path.join(srcRoot, "routes", "paymentReceiptRoutes.js"), "utf8");
+  const sales = fs.readFileSync(path.join(srcRoot, "controllers", "salesFlowController.js"), "utf8");
+  const ui = fs.readFileSync(path.join(srcRoot, "..", "..", "src", "pages", "Sales.jsx"), "utf8");
+  assert.ok(accounts.includes('requireAnyPermission(["ACCOUNTS", "view"], ["SALES", "view"])'));
+  assert.ok(receipts.includes('requireAnyPermission(["ACCOUNTS", "create"], ["SALES", "create"])'));
+  assert.ok(sales.includes("findBankDetailForCurrency(withCompany(req), proforma.currency)"));
+  assert.ok(sales.includes("bankDetail: bankDetail || null"));
+  assert.ok(ui.includes("let bankDetail = payload?.bankDetail"));
+});
+
 await run("Live sources — AR block reason + dedicated endpoint + no ledger cascade", () => {
   const sales = fs.readFileSync(path.join(srcRoot, "controllers", "salesFlowController.js"), "utf8");
   const routes = fs.readFileSync(path.join(srcRoot, "routes", "salesRoutes.js"), "utf8");

@@ -2229,7 +2229,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
       if (type === "proforma") {
         const payload = await apiGet(`/sales/proforma-invoices/${id}/print`);
         const doc = payload?.proforma;
-        const bankDetail = await fetchBankDetailForCurrency(doc?.currency);
+        let bankDetail = payload?.bankDetail;
+        if (bankDetail === undefined) {
+          bankDetail = await fetchBankDetailForCurrency(doc?.currency);
+        }
         const payReq = resolvePiPaymentRequest(doc || {});
         const amountInWords = formatInvoiceAmountInWords(payReq.requestedAmount, doc?.currency);
         renderFlowDocPrintWindow({
@@ -2252,7 +2255,10 @@ ${GLOBAL_REPORT_TABLE_CSS}
       if (type === "sales-invoice") {
         const payload = await apiGet(`/sales/sales-invoices/${id}/print`);
         const doc = payload?.salesInvoice;
-        const bankDetail = await fetchBankDetailForCurrency(doc?.currency);
+        let bankDetail = payload?.bankDetail;
+        if (bankDetail === undefined) {
+          bankDetail = await fetchBankDetailForCurrency(doc?.currency);
+        }
         const amountInWords = formatInvoiceAmountInWords(doc?.grandTotal, doc?.currency);
         renderFlowDocPrintWindow({
           title: "Tax invoice",

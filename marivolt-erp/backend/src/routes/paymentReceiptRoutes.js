@@ -1,7 +1,7 @@
 import express from "express";
 import multer from "multer";
 import { requireErpAccess } from "../middleware/erpAccess.js";
-import { requirePermission } from "../middleware/permissions.js";
+import { requireAnyPermission, requirePermission } from "../middleware/permissions.js";
 import * as c from "../controllers/paymentReceiptController.js";
 
 const router = express.Router();
@@ -26,14 +26,15 @@ function uploadPaymentSlip(req, res, next) {
 
 router.use(...requireErpAccess);
 const accountsView = requirePermission("ACCOUNTS", "view");
-const accountsCreate = requirePermission("ACCOUNTS", "create");
 const accountsCancel = requirePermission("ACCOUNTS", "cancel");
 const accountsExport = requirePermission("ACCOUNTS", "export");
+const receiveCustomerPayment = requireAnyPermission(["ACCOUNTS", "create"], ["SALES", "create"]);
+const paymentDocLookup = requireAnyPermission(["ACCOUNTS", "view"], ["SALES", "view"]);
 
-router.post("/", accountsCreate, uploadPaymentSlip, c.createPaymentReceipt);
+router.post("/", receiveCustomerPayment, uploadPaymentSlip, c.createPaymentReceipt);
 router.get("/", accountsView, c.listPaymentReceipts);
-router.get("/by-proforma/:proformaInvoiceId", accountsView, c.listPaymentReceiptsByProforma);
-router.get("/by-sales-invoice/:salesInvoiceId", accountsView, c.listPaymentReceiptsBySalesInvoice);
+router.get("/by-proforma/:proformaInvoiceId", paymentDocLookup, c.listPaymentReceiptsByProforma);
+router.get("/by-sales-invoice/:salesInvoiceId", paymentDocLookup, c.listPaymentReceiptsBySalesInvoice);
 router.get("/:id/print", accountsExport, c.getPaymentReceiptPrintData);
 router.get("/:id/attachment-url", accountsExport, c.getPaymentReceiptAttachmentUrl);
 router.patch("/:id/cancel", accountsCancel, c.cancelPaymentReceipt);

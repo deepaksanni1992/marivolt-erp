@@ -13,7 +13,7 @@ import {
   requireAuth,
   requireCompanyContext,
 } from "../src/middleware/auth.js";
-import { requirePermission } from "../src/middleware/permissions.js";
+import { requireAnyPermission, requirePermission } from "../src/middleware/permissions.js";
 import {
   computeEffectivePermissions,
   emptyPermissionMatrix,
@@ -137,6 +137,15 @@ async function invokeRequirePermission(moduleName, action, req) {
   const { res, out } = mockRes();
   let nextCalled = false;
   await requirePermission(moduleName, action)(req, res, () => {
+    nextCalled = true;
+  });
+  return { out, nextCalled };
+}
+
+async function invokeRequireAnyPermission(checks, req) {
+  const { res, out } = mockRes();
+  let nextCalled = false;
+  await requireAnyPermission(...checks)(req, res, () => {
     nextCalled = true;
   });
   return { out, nextCalled };
@@ -373,6 +382,22 @@ await runAsync("Deepa-equivalent Sales Coordinator APIs", async () => {
     denied.push(out.body.code);
   }
   assert.ok(denied.every((c) => c === "PERMISSION_DENIED"));
+  const bankRead = await invokeRequireAnyPermission(
+    [
+      ["ACCOUNTS", "view"],
+      ["SALES", "view"],
+    ],
+    { user: { role: "view_only" }, _permissions: deepaMatrix() }
+  );
+  assert.equal(bankRead.nextCalled, true);
+  const receivePay = await invokeRequireAnyPermission(
+    [
+      ["ACCOUNTS", "create"],
+      ["SALES", "create"],
+    ],
+    { user: { role: "view_only" }, _permissions: deepaMatrix() }
+  );
+  assert.equal(receivePay.nextCalled, true);
 });
 
 await runAsync("Purchase user APIs", async () => {
@@ -788,6 +813,26 @@ run("Purchase & Sales cannot open MAN RFQ; Sales can", () => {
 run("MAN RFQ API requires SALES.create and MAN_ENGINE.create", () => {
   const src = fs.readFileSync(path.join(backendRoot, "src/routes/manRfqRoutes.js"), "utf8");
   assert.match(src, /requireAllPermissions\(\["SALES", "create"\], \["MAN_ENGINE", "create"\]\)/);
+});
+
+run("Sales Coordinator can read company bank details and post PI payments without Accounts module", () => {
+  const accounts = fs.readFileSync(path.join(backendRoot, "src/routes/accountsRoutes.js"), "utf8");
+  const receipts = fs.readFileSync(path.join(backendRoot, "src/routes/paymentReceiptRoutes.js"), "utf8");
+  const salesFlow = fs.readFileSync(path.join(backendRoot, "src/controllers/salesFlowController.js"), "utf8");
+  const salesUi = fs.readFileSync(path.join(feRoot, "pages/Sales.jsx"), "utf8");
+  assert.match(
+    accounts,
+    /bankDetailsRead = requireAnyPermission\(\["ACCOUNTS", "view"\], \["SALES", "view"\]\)/
+  );
+  assert.match(accounts, /bank-details\/for-currency\/:currency", bankDetailsRead/);
+  assert.match(accounts, /"\/bank-details", bankDetailsRead/);
+  assert.match(
+    receipts,
+    /receiveCustomerPayment = requireAnyPermission\(\["ACCOUNTS", "create"\], \["SALES", "create"\]\)/
+  );
+  assert.match(salesFlow, /res\.json\(\{ proforma, bankDetail: bankDetail \|\| null \}\)/);
+  assert.match(salesFlow, /res\.json\(\{ salesInvoice, bankDetail: bankDetail \|\| null \}\)/);
+  assert.match(salesUi, /let bankDetail = payload\?\.bankDetail/);
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

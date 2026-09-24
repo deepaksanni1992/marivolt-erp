@@ -54,7 +54,10 @@ import {
   buildOaSourceMetadataForPersist,
 } from "../services/documentSnapshot/documentSnapshotService.js";
 import { validateOaLineFields } from "../services/documentSnapshot/oaCreateValidation.js";
-import { resolveBankDetailsTextForCurrency } from "../services/bankDetailResolveService.js";
+import {
+  findBankDetailForCurrency,
+  resolveBankDetailsTextForCurrency,
+} from "../services/bankDetailResolveService.js";
 import {
   copyCustomerTransactionFields,
   CUSTOMER_FIELD_LIMITS,
@@ -2377,7 +2380,8 @@ export async function getProformaPrintData(req, res) {
     const [withPricing] = await applyLinkedQuotationDiscountFallback(req, [docRaw], { persistModel: ProformaInvoice });
     const [enriched] = await enrichProformasWithPaymentState(req, [withPricing || docRaw]);
     const proforma = await withResolvedTermsForPrint(req, enriched || withPricing || docRaw, "PROFORMA");
-    res.json({ proforma });
+    const bankDetail = await findBankDetailForCurrency(withCompany(req), proforma.currency);
+    res.json({ proforma, bankDetail: bankDetail || null });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -2391,7 +2395,8 @@ export async function getSalesInvoicePrintData(req, res) {
     if (!docRaw) return res.status(404).json({ message: "Not found" });
     const [enriched] = await enrichSalesInvoicesWithPaymentState(req, [docRaw]);
     const salesInvoice = await withResolvedTermsForPrint(req, enriched || docRaw, "SALES_INVOICE");
-    res.json({ salesInvoice });
+    const bankDetail = await findBankDetailForCurrency(withCompany(req), salesInvoice.currency);
+    res.json({ salesInvoice, bankDetail: bankDetail || null });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

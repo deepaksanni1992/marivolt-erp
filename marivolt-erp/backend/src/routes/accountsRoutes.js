@@ -1,7 +1,7 @@
 import express from "express";
 import { requireRole } from "../middleware/auth.js";
 import { requireErpAccess } from "../middleware/erpAccess.js";
-import { requirePermission } from "../middleware/permissions.js";
+import { requireAnyPermission, requirePermission } from "../middleware/permissions.js";
 import * as c from "../controllers/accountsController.js";
 
 const bankDetailAdminRoles = ["super_admin", "company_admin", "admin"];
@@ -16,6 +16,8 @@ const accountsEdit = requirePermission("ACCOUNTS", "edit");
 const accountsExport = requirePermission("ACCOUNTS", "export");
 const accountsDelete = requirePermission("ACCOUNTS", "delete");
 const reportsView = requirePermission("REPORTS", "view");
+/** Sales needs AED/EUR/USD rows for PI PDFs and Receive Payment; manage stays Accounts-admin. */
+const bankDetailsRead = requireAnyPermission(["ACCOUNTS", "view"], ["SALES", "view"]);
 
 router.get("/sales-dispatches", accountsView, c.listSalesDispatchesAccounts);
 router.get("/sales-invoices", accountsView, c.listSalesInvoices);
@@ -75,8 +77,8 @@ router.get("/supplier-ledger-summary", reportsView, c.supplierLedgerSummaryRepor
 router.get("/journal-entries", accountsView, requireRole(...journalViewRoles), c.listJournalEntries);
 router.get("/journal-entries/:id", accountsView, requireRole(...journalViewRoles), c.getJournalEntry);
 
-router.get("/bank-details/for-currency/:currency", accountsView, c.getBankDetailForCurrency);
-router.get("/bank-details", accountsView, c.listBankDetails);
+router.get("/bank-details/for-currency/:currency", bankDetailsRead, c.getBankDetailForCurrency);
+router.get("/bank-details", bankDetailsRead, c.listBankDetails);
 router.post("/bank-details", accountsCreate, requireRole(...bankDetailAdminRoles), c.createBankDetail);
 router.put("/bank-details/:id", accountsEdit, requireRole(...bankDetailAdminRoles), c.updateBankDetail);
 router.delete("/bank-details/:id", accountsDelete, requireRole(...bankDetailAdminRoles), c.deleteBankDetail);
