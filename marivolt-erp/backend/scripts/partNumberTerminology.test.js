@@ -12,7 +12,7 @@ import XLSX from "xlsx";
 import { MongoMemoryReplSet, MongoMemoryServer } from "mongodb-memory-server";
 import {
   PART_NUMBER_CONFLICT,
-  PART_NUMBER_MISMATCH,
+  PART_NUMBER_NOT_LINKED_TO_ARTICLE,
   canonicalItemMasterPartNumber,
   incomingDocumentPartNumber,
   normalizePartNumberValue,
@@ -151,19 +151,20 @@ await run("Item Master template/export prefer Part Number and still mention SPN 
 
 await run("Item Master UI labels Part Number and keeps internal spn", () => {
   const im = readFe("pages/ItemMaster.jsx");
-  assert.match(im, /placeholder="Article, Part Number, Material Code/);
-  assert.match(im, /<th className="px-3 py-3">Part Number<\/th>/);
-  assert.match(im, /Field label="Part Number"/);
+  assert.match(im, /placeholder="Article, Primary or Alternate Part Number, Material Code/);
+  assert.match(im, /<th className="px-3 py-3">Primary Part Number<\/th>/);
+  assert.match(im, /Field label="Primary Part Number"/);
   assert.match(im, /value=\{technical\.spn\}/);
   assert.doesNotMatch(im, />SPN</);
   assert.match(im, /Supplier Part No\./);
+  assert.match(im, /Alternate Part Numbers/);
 });
 
 await run("Purchase compact column is Part No. and remains read-only", () => {
   const purchase = readFe("pages/Purchase.jsx");
   assert.match(purchase, /Part No\./);
   assert.doesNotMatch(purchase, /Internal part \/ SPN/);
-  assert.match(purchase, /partNo: item\.spn/);
+  assert.match(purchase, /selectOwnedManufacturerPartNumber/);
   assert.match(purchase, /readOnly/);
   assert.match(purchase, /placeholder=\{line\.articleNo \? "—" : "Part No\. from Item Master"\}/);
   assert.match(purchase, /Admin or Super Admin must update Item Master/);
@@ -200,7 +201,7 @@ await run("PO mismatching Part Number is rejected and blank incoming is allowed"
     assertPoLinesPartNumberMatchesMaster([{ article: "ART-1", partNo: "OTHER" }], items);
     assert.fail("expected mismatch");
   } catch (err) {
-    assert.equal(err.code, PART_NUMBER_MISMATCH);
+    assert.equal(err.code, PART_NUMBER_NOT_LINKED_TO_ARTICLE);
   }
 });
 
@@ -357,8 +358,9 @@ await run("import preview writes nothing and new Part Number header is classifie
   assert.equal(await ItemTechnical.countDocuments({}), before.tech);
   assert.equal(preview.canApply, true);
   assert.ok(preview.existingWillChange.includes("ART-ACTIVE"));
-  assert.equal(preview.rows[0].technical.partNumber, "NEW-PN");
-  assert.equal(preview.rows[0].technical.spn, "NEW-PN");
+  assert.equal(preview.rows[0].technical.existingSpn, "OLD-SPN");
+  assert.equal(preview.rows[0].primaryPartNumber, "OLD-SPN");
+  assert.ok((preview.rows[0].alternatePartNumbers || []).includes("NEW-PN"));
 });
 
 await run("preview rejects conflicting Part Number and SPN", async () => {
@@ -376,7 +378,8 @@ await run("preview accepts both headers when normalized values match", async () 
     buffer: xlsxBuffer([{ Article: "ART-ACTIVE", "Part Number": "aa-1", SPN: "AA-1" }]),
   });
   assert.equal(preview.canApply, true);
-  assert.equal(preview.rows[0].technical.spn, "aa-1");
+  assert.equal(preview.rows[0].primaryPartNumber, "OLD-SPN");
+  assert.ok((preview.rows[0].alternatePartNumbers || []).some((pn) => normalizePartNumberValue(pn) === "AA-1"));
 });
 
 await mongoose.disconnect();
@@ -424,7 +427,8 @@ await run("apply Part Number header updates existing Article and does not create
   assert.ok(result.apply.updated >= 1);
   assert.equal(await ItemMaster.countDocuments({ companyId: applyCompany, article: "ART-ACTIVE" }), before);
   const tech = await ItemTechnical.findOne({ companyId: applyCompany, article: "ART-ACTIVE" }).lean();
-  assert.equal(tech.spn, "051.001");
+  assert.equal(tech.spn, "OLD-SPN");
+  assert.ok((tech.alternatePartNumbers || []).some((x) => x.partNumber === "051.001"));
   const master = await ItemMaster.findOne({ companyId: applyCompany, article: "ART-ACTIVE" }).lean();
   assert.equal(master.partNumber, "LEGACY-ID");
   assert.notEqual(master.partNumber, "051.001");
@@ -436,7 +440,8 @@ await run("legacy SPN header still applies to the same canonical field", async (
     buffer: xlsxBuffer([{ Article: "ART-ACTIVE", SPN: "LEGACY-1" }]),
   });
   const tech = await ItemTechnical.findOne({ companyId: applyCompany, article: "ART-ACTIVE" }).lean();
-  assert.equal(tech.spn, "LEGACY-1");
+  assert.equal(tech.spn, "OLD-SPN");
+  assert.ok((tech.alternatePartNumbers || []).some((x) => x.partNumber === "LEGACY-1"));
 });
 
 await run("identical Part Number and SPN headers apply once to the canonical field", async () => {
@@ -445,7 +450,8 @@ await run("identical Part Number and SPN headers apply once to the canonical fie
     buffer: xlsxBuffer([{ Article: "ART-ACTIVE", "Part Number": "dual-1", SPN: "DUAL-1" }]),
   });
   const tech = await ItemTechnical.findOne({ companyId: applyCompany, article: "ART-ACTIVE" }).lean();
-  assert.equal(normalizePartNumberValue(tech.spn), "DUAL-1");
+  assert.equal(tech.spn, "OLD-SPN");
+  assert.ok((tech.alternatePartNumbers || []).some((x) => normalizePartNumberValue(x.partNumber) === "DUAL-1"));
 });
 
 await run("blank update cells preserve the current Part Number", async () => {
@@ -454,7 +460,7 @@ await run("blank update cells preserve the current Part Number", async () => {
     buffer: xlsxBuffer([{ Article: "ART-ACTIVE", "Part Number": "", Description: "" }]),
   });
   const tech = await ItemTechnical.findOne({ companyId: applyCompany, article: "ART-ACTIVE" }).lean();
-  assert.equal(normalizePartNumberValue(tech.spn), "DUAL-1");
+  assert.equal(tech.spn, "OLD-SPN");
   const row = await ItemMaster.findOne({ companyId: applyCompany, article: "ART-ACTIVE" }).lean();
   assert.equal(row.description, "Keep me");
 });
@@ -468,7 +474,8 @@ await run("apply uses authenticated companyId, not a client company value", asyn
   });
   const mine = await ItemTechnical.findOne({ companyId: applyCompany, article: "ART-ACTIVE" }).lean();
   const other = await ItemTechnical.findOne({ companyId: otherCompany, article: "ART-ACTIVE" }).lean();
-  assert.equal(mine.spn, "AUTH-PN");
+  assert.equal(mine.spn, "OLD-SPN");
+  assert.ok((mine.alternatePartNumbers || []).some((x) => x.partNumber === "AUTH-PN"));
   assert.equal(other.spn, "OTHER-CO");
 });
 
@@ -599,7 +606,7 @@ await run("PO create snapshots canonical master Part Number and never updates It
     forged
   );
   assert.equal(forged.statusCode, 409);
-  assert.equal(forged.body.code, PART_NUMBER_MISMATCH);
+  assert.equal(forged.body.code, PART_NUMBER_NOT_LINKED_TO_ARTICLE);
   assert.equal(await PurchaseOrder.countDocuments({ companyId: poCompany._id }), beforePos);
 
   const res = mockRes();
@@ -665,7 +672,7 @@ await run("PO update keeps historical Part No. and snapshots only new/changed li
             article: "ART-PO",
             qty: 4,
             unitPrice: 5,
-            partNo: "CLIENT-FORGED-HISTORICAL",
+            partNo: "OEM-CANON",
             supplierPartNumber: "SUP-99",
           },
         ],
@@ -700,7 +707,7 @@ await run("PO update keeps historical Part No. and snapshots only new/changed li
     forgedNew
   );
   assert.equal(forgedNew.statusCode, 409);
-  assert.equal(forgedNew.body.code, PART_NUMBER_MISMATCH);
+  assert.equal(forgedNew.body.code, PART_NUMBER_NOT_LINKED_TO_ARTICLE);
 
   const added = mockRes();
   await updatePurchaseOrder(
@@ -799,8 +806,8 @@ await run("PO CSV import validates Article, snapshots or rejects Part Number, an
   );
   assert.equal(mismatch.statusCode, 409);
   assert.equal(mismatch.body.createdCount, 0);
-  assert.equal(mismatch.body.code, PART_NUMBER_MISMATCH);
-  assert.ok(mismatch.body.errors.some((row) => row.code === PART_NUMBER_MISMATCH));
+  assert.equal(mismatch.body.code, PART_NUMBER_NOT_LINKED_TO_ARTICLE);
+  assert.ok(mismatch.body.errors.some((row) => row.code === PART_NUMBER_NOT_LINKED_TO_ARTICLE));
   assert.equal(await PurchaseOrder.countDocuments({ companyId: poCompany._id }), afterOk);
 });
 

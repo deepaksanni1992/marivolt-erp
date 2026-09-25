@@ -68,6 +68,23 @@ const interchangeablePartSchema = new mongoose.Schema(
   { _id: true }
 );
 
+const alternatePartNumberSchema = new mongoose.Schema(
+  {
+    partNumber: { type: String, default: "", trim: true },
+    normalized: { type: String, default: "", trim: true, uppercase: true },
+    status: {
+      type: String,
+      default: "ACTIVE",
+      trim: true,
+      uppercase: true,
+      enum: ["ACTIVE", "INACTIVE"],
+    },
+    createdBy: { type: String, default: "" },
+    updatedBy: { type: String, default: "" },
+  },
+  { _id: false }
+);
+
 const itemTechnicalSchema = new mongoose.Schema(
   {
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true, index: true },
@@ -104,6 +121,16 @@ const itemTechnicalSchema = new mongoose.Schema(
     supplierReferences: { type: [supplierReferenceSchema], default: [] },
     technicalSpecifications: { type: [technicalSpecificationSchema], default: [] },
     interchangeableParts: { type: [interchangeablePartSchema], default: [] },
+    /**
+     * Additional manufacturer/OEM Part Numbers for this Article.
+     * Canonical primary remains `spn`. Same normalized PN may exist on other Articles.
+     * `_id: false` — aliases are keyed by normalized Part Number, not Mongo subdocument IDs.
+     * No unique index: uniqueness is enforced per Article in application code.
+     */
+    alternatePartNumbers: {
+      type: [alternatePartNumberSchema],
+      default: [],
+    },
   },
   { timestamps: true }
 );

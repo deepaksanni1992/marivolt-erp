@@ -376,6 +376,7 @@ function normalizeLines(lines = []) {
       article: String(line.article || line.itemCode || "").trim().toUpperCase(),
       partNumber: String(line.partNumber || line.partNo || "").trim(),
       customerPartNo: String(line.customerPartNo || "").trim(),
+      matchedPartNumber: String(line.matchedPartNumber || "").trim(),
       description: String(line.description || ""),
       uom: String(line.uom || line.unit || "PCS").trim() || "PCS",
       qty,

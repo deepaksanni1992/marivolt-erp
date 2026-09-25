@@ -5,18 +5,24 @@
 import ItemMaster from "../models/itemMasterModel.js";
 import ItemTechnical from "../models/itemTechnicalModel.js";
 import {
+  PART_NUMBER_INACTIVE,
   PART_NUMBER_MISMATCH,
+  PART_NUMBER_NOT_LINKED_TO_ARTICLE,
+  articleOwnsManufacturerPartNumber,
   canonicalItemMasterPartNumber,
   incomingDocumentPartNumber,
-  normalizePartNumberValue,
-  partNumberMismatchMessage,
+  incomingPoManufacturerPartNumber,
+  partNumberInactiveMessage,
+  partNumberNotLinkedMessage,
   snapshotPartNumberFields,
+  snapshotSalesLinePartNumberFields,
+  matchedManufacturerPartNumber,
 } from "../utils/partNumberTerminology.js";
 
 export const ARTICLE_NOT_IN_ITEM_MASTER = "ARTICLE_NOT_IN_ITEM_MASTER";
 export const ARTICLE_INACTIVE = "ARTICLE_INACTIVE";
 export const ARTICLE_COMPANY_REQUIRED = "ARTICLE_COMPANY_REQUIRED";
-export { PART_NUMBER_MISMATCH };
+export { PART_NUMBER_MISMATCH, PART_NUMBER_NOT_LINKED_TO_ARTICLE, PART_NUMBER_INACTIVE };
 
 const NOT_FOUND_MESSAGE =
   "Article {article} is not available in the active Item Master. Ask an authorized administrator to create or activate it first.";
@@ -103,6 +109,36 @@ export function linesRequiringArticleValidation(previousLines = [], nextLines = 
   return out;
 }
 
+export function linesRequiringManufacturerPartNumberValidation(previousLines = [], nextLines = []) {
+  const prevById = new Map();
+  (previousLines || []).forEach((line, index) => {
+    const id = line?._id || line?.id;
+    const snapshot = {
+      article: normalizeArticle(articleFromLine(line)),
+      partNo: incomingPoManufacturerPartNumber(line),
+    };
+    if (id) prevById.set(String(id), snapshot);
+    prevById.set(`idx:${index}`, snapshot);
+  });
+  const out = [];
+  (nextLines || []).forEach((line, index) => {
+    const article = articleFromLine(line);
+    const partNo = incomingPoManufacturerPartNumber(line);
+    const id = line?._id || line?.id;
+    const prev = (id && prevById.get(String(id))) || prevById.get(`idx:${index}`) || {};
+    const articleChanged = !prev.article || prev.article !== article;
+    const pnChanged = incomingPoManufacturerPartNumber({ partNo: prev.partNo }) !== partNo;
+    if (!articleChanged && !pnChanged && prev.article) return;
+    out.push({
+      line,
+      index,
+      article,
+      reason: !prev.article ? "NEW" : articleChanged ? "CHANGED" : "PART_NUMBER_CHANGED",
+    });
+  });
+  return out;
+}
+
 export async function loadActiveArticlesByCode({ companyId, articles = [], session = null } = {}) {
   if (companyId == null || companyId === "") {
     throw new ArticleValidationError({
@@ -116,7 +152,9 @@ export async function loadActiveArticlesByCode({ companyId, articles = [], sessi
   const query = ItemMaster.find({ companyId, article: { $in: unique } });
   if (session) query.session(session);
   const rows = await query.lean();
-  const techQuery = ItemTechnical.find({ companyId, article: { $in: unique } }).select("article spn");
+  const techQuery = ItemTechnical.find({ companyId, article: { $in: unique } }).select(
+    "article spn alternatePartNumbers"
+  );
   if (session) techQuery.session(session);
   const techRows = await techQuery.lean();
   const techByArticle = new Map((techRows || []).map((row) => [normalizeArticle(row.article), row]));
@@ -124,7 +162,14 @@ export async function loadActiveArticlesByCode({ companyId, articles = [], sessi
     (rows || []).map((row) => {
       const article = normalizeArticle(row.article);
       const tech = techByArticle.get(article);
-      return [article, { ...row, spn: canonicalItemMasterPartNumber(row, tech) }];
+      return [
+        article,
+        {
+          ...row,
+          spn: canonicalItemMasterPartNumber(row, tech),
+          alternatePartNumbers: tech?.alternatePartNumbers || [],
+        },
+      ];
     })
   );
 }
@@ -234,15 +279,20 @@ export async function assertActiveArticlesForChangedLines({
 
 export function snapshotQuotationLineFromItem(line = {}, item) {
   if (!item) return line;
-  const partNumber = canonicalItemMasterPartNumber(item);
   const requestedPartNo =
-    String(line.customerPartNo || "").trim() || String(line.partNumber || line.partNo || "").trim();
+    String(line.customerPartNo || "").trim() || incomingDocumentPartNumber(line);
+  const matched =
+    matchedManufacturerPartNumber(item, item, requestedPartNo, { requireActive: true }) ||
+    canonicalItemMasterPartNumber(item);
+  const salesFields = snapshotSalesLinePartNumberFields({
+    customerPartNo: requestedPartNo,
+    matchedPartNumber: matched,
+  });
   return {
     ...line,
     article: item.article,
     description: item.description || item.itemName || line.description || "",
-    partNumber,
-    customerPartNo: requestedPartNo,
+    ...salesFields,
     uom: item.uom || line.uom || "PCS",
     materialCode: item.materialCode || line.materialCode || "",
     engineModel: line.engineModel || item.model || "",
@@ -252,7 +302,14 @@ export function snapshotQuotationLineFromItem(line = {}, item) {
 
 export function snapshotPoLineFromItem(line = {}, item) {
   if (!item) return line;
-  const partFields = snapshotPartNumberFields(canonicalItemMasterPartNumber(item));
+  const incoming = incomingPoManufacturerPartNumber(line);
+    const owned = articleOwnsManufacturerPartNumber(item, item, incoming, { requireActive: true });
+  const snapshotValue = !incoming
+    ? canonicalItemMasterPartNumber(item)
+    : owned.owned
+      ? owned.matchedPartNumber || incoming
+      : canonicalItemMasterPartNumber(item);
+  const partFields = snapshotPartNumberFields(snapshotValue);
   return {
     ...line,
     article: item.article,
@@ -282,28 +339,37 @@ export function applyItemMasterSnapshotsToLines(lines = [], itemsByArticle, kind
   });
 }
 
-/** Reject document Part Number values that do not match the canonical Item Master value. */
+/** Reject PO Part Number values that are not the current Primary or an Active Alternate. */
 export function assertPoLinesPartNumberMatchesMaster(lines = [], itemsByArticle) {
   const mismatches = [];
   (lines || []).forEach((line, index) => {
-    const incoming = incomingDocumentPartNumber(line);
+    const incoming = incomingPoManufacturerPartNumber(line);
     if (!incoming) return;
     const article = articleFromLine(line);
     const item = itemsByArticle.get(article);
     if (!item) return;
-    const master = canonicalItemMasterPartNumber(item);
-    if (normalizePartNumberValue(incoming) !== normalizePartNumberValue(master)) {
+    const owned = articleOwnsManufacturerPartNumber(item, item, incoming, { requireActive: true });
+    if (owned.inactive) {
       mismatches.push({
         article,
         lineNumbers: [index + 1],
-        code: PART_NUMBER_MISMATCH,
-        message: partNumberMismatchMessage(article, incoming, master),
+        code: PART_NUMBER_INACTIVE,
+        message: partNumberInactiveMessage(article, incoming),
+      });
+      return;
+    }
+    if (!owned.owned) {
+      mismatches.push({
+        article,
+        lineNumbers: [index + 1],
+        code: PART_NUMBER_NOT_LINKED_TO_ARTICLE,
+        message: partNumberNotLinkedMessage(article, incoming),
       });
     }
   });
   if (!mismatches.length) return;
   throw new ArticleValidationError({
-    code: PART_NUMBER_MISMATCH,
+    code: mismatches[0].code,
     message: mismatches[0].message,
     statusCode: 409,
     articles: mismatches.map((row) => row.article),

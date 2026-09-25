@@ -29,7 +29,10 @@ import {
   clearPoFromAllocationSession,
   readPoFromAllocationSession,
 } from "../lib/allocationPoSession.js";
-import ItemMasterArticleSelect from "../components/items/ItemMasterArticleSelect.jsx";
+import ItemMasterArticleSelect, {
+  manufacturerPartNumberChoices,
+  selectOwnedManufacturerPartNumber,
+} from "../components/items/ItemMasterArticleSelect.jsx";
 import {
   COMMERCIAL_DEFAULTS,
   DEFAULT_CLOSING_NOTE,
@@ -3342,18 +3345,20 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                                   materialCode: "",
                                   spn: "",
                                   uom: "PCS",
+                                  _manufacturerPartNumbers: [],
                                 });
                                 return;
                               }
+                              const selectedPn = selectOwnedManufacturerPartNumber(item, line.partNo || line.partNumber);
                               setLine({
                                 articleNo: item.article,
                                 article: item.article,
                                 itemCode: item.article,
                                 description: item.description || item.itemName || "",
-                                partNo: item.spn || "",
-                                partNumber: item.spn || "",
+                                partNo: selectedPn,
+                                partNumber: selectedPn,
                                 materialCode: item.materialCode || "",
-                                spn: item.spn || "",
+                                spn: item.primaryPartNumber || item.spn || "",
                                 drawingNo: item.drawingNo || "",
                                 vertical: item.vertical || "",
                                 brand: item.brand || item.engine || "",
@@ -3361,6 +3366,7 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                                 model: item.model || "",
                                 config: item.config || "",
                                 uom: item.uom || "PCS",
+                                _manufacturerPartNumbers: manufacturerPartNumberChoices(item),
                               });
                             }}
                           />
@@ -3374,13 +3380,38 @@ export default function Purchase({ procurementEmbed = false } = {}) {
                           />
                         </td>
                         <td className="px-1.5 py-1.5">
-                          <TextInput
-                            className="py-1.5 text-[11px] bg-slate-50"
-                            placeholder={line.articleNo ? "—" : "Part No. from Item Master"}
-                            value={line.partNo}
-                            readOnly
-                            title={!line.partNo && line.articleNo ? "No Part Number on Item Master. An Admin or Super Admin must update Item Master." : "Part Number is copied from Item Master and cannot be overwritten here."}
-                          />
+                          {(line._manufacturerPartNumbers || []).length > 1 ? (
+                            <select
+                              className="w-full rounded-xl border border-gray-200 bg-white px-2 py-1.5 text-[11px] font-mono"
+                              value={line.partNo || ""}
+                              title="Select a manufacturer Part Number that belongs to this Article."
+                              onChange={(e) =>
+                                setLine({
+                                  partNo: e.target.value,
+                                  partNumber: e.target.value,
+                                })
+                              }
+                            >
+                              {(line._manufacturerPartNumbers || []).map((choice) => (
+                                <option key={choice.partNumber} value={choice.partNumber}>
+                                  {choice.partNumber}
+                                  {choice.role === "PRIMARY" ? " (Primary)" : ""}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <TextInput
+                              className="py-1.5 text-[11px] bg-slate-50"
+                              placeholder={line.articleNo ? "—" : "Part No. from Item Master"}
+                              value={line.partNo}
+                              readOnly
+                              title={
+                                !line.partNo && line.articleNo
+                                  ? "No Part Number on Item Master. An Admin or Super Admin must update Item Master."
+                                  : "Part Number is copied from Item Master and cannot be overwritten here."
+                              }
+                            />
+                          )}
                         </td>
                         <td className="px-1.5 py-1.5">
                           <TextInput

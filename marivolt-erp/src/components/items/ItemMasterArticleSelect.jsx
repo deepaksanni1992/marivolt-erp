@@ -4,6 +4,48 @@ import { apiGetWithQuery } from "../../lib/api.js";
 const NOT_FOUND =
   "Article not found in Item Master. Ask an authorized Admin/Super Admin to create or import it before continuing.";
 
+function normalizePn(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+}
+
+export function manufacturerPartNumberChoices(item = {}) {
+  const primary = String(item.primaryPartNumber || item.spn || "").trim();
+  const alts = (item.alternatePartNumbers || [])
+    .map((row) => String(row?.partNumber || row || "").trim())
+    .filter(Boolean);
+  const seen = new Set();
+  const out = [];
+  for (const value of [primary, ...alts]) {
+    const n = normalizePn(value);
+    if (!value || seen.has(n)) continue;
+    seen.add(n);
+    out.push({
+      partNumber: value,
+      role: n === normalizePn(primary) ? "PRIMARY" : "ALTERNATE",
+    });
+  }
+  return out;
+}
+
+/** Prefer an already-typed owned PN, else the search match, else Primary. */
+export function selectOwnedManufacturerPartNumber(item, preferred) {
+  const choices = manufacturerPartNumberChoices(item);
+  const preferredN = normalizePn(preferred);
+  if (preferredN) {
+    const hit = choices.find((c) => normalizePn(c.partNumber) === preferredN);
+    if (hit) return hit.partNumber;
+  }
+  const matchedN = normalizePn(item?.matchedPartNumber);
+  if (matchedN) {
+    const hit = choices.find((c) => normalizePn(c.partNumber) === matchedN);
+    if (hit) return hit.partNumber;
+  }
+  return choices[0]?.partNumber || "";
+}
+
 function labelFor(item) {
   const bits = [
     item.article,
@@ -12,7 +54,7 @@ function labelFor(item) {
     item.model,
     item.config,
     item.uom,
-    item.spn,
+    item.primaryPartNumber || item.spn,
   ].filter(Boolean);
   return bits.join(" · ");
 }
@@ -113,6 +155,12 @@ export default function ItemMasterArticleSelect({
             >
               <div className="font-mono font-semibold">{item.article}</div>
               <div className="text-[11px] text-slate-600">{labelFor(item)}</div>
+              {item.matchedPartNumber ? (
+                <div className="text-[10px] text-slate-500">Matched Part Number: {item.matchedPartNumber}</div>
+              ) : null}
+              {Number(item.alternateCount || 0) > 0 ? (
+                <div className="text-[10px] text-slate-500">+{item.alternateCount} alternates</div>
+              ) : null}
             </button>
           ))}
         </div>

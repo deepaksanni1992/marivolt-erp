@@ -19,11 +19,16 @@ import CustomsLot from "../models/CustomsLot.js";
 import CustomsLotItem from "../models/CustomsLotItem.js";
 import CustomsMovement from "../models/CustomsMovement.js";
 import ItemMaster from "../models/itemMasterModel.js";
+import ItemTechnical from "../models/itemTechnicalModel.js";
 import PurchaseInvoice from "../models/PurchaseInvoice.js";
 import Document from "../models/Document.js";
 import ArticleStockConversion from "../models/ArticleStockConversion.js";
 import { isCustomsEnabled } from "../config/customsConfig.js";
 import { hasPermission } from "./roleService.js";
+import {
+  canonicalItemMasterPartNumber,
+  matchedManufacturerPartNumber,
+} from "../utils/partNumberTerminology.js";
 
 const PER_SOURCE_LIMIT = 25;
 const MERGE_CAP = 500;
@@ -658,17 +663,58 @@ async function searchArticleConversions(companyId, companyCode, re, filters) {
   );
 }
 
-async function searchItems(companyId, companyCode, re) {
-  const rows = await ItemMaster.find(
-    withCompany(companyId, {
-      $or: [{ article: re }, { partNumber: re }, { itemName: re }, { description: re }, { materialCode: re }, { spn: re }],
-    }),
-  )
-    .sort({ article: 1 })
-    .limit(PER_SOURCE_LIMIT)
-    .lean();
-  return rows.map((r) =>
-    baseHit({
+export async function searchItems(companyId, companyCode, re) {
+  const queryText = String(re?.source || "").replace(/\\/g, "");
+  const [masterRows, techRows] = await Promise.all([
+    ItemMaster.find(
+      withCompany(companyId, {
+        $or: [{ article: re }, { partNumber: re }, { itemName: re }, { description: re }, { materialCode: re }, { spn: re }],
+      }),
+    )
+      .sort({ article: 1 })
+      .limit(PER_SOURCE_LIMIT)
+      .lean(),
+    ItemTechnical.find(
+      withCompany(companyId, {
+        $or: [
+          { spn: re },
+          {
+            alternatePartNumbers: {
+              $elemMatch: {
+                $or: [{ partNumber: re }, { normalized: re }],
+                status: { $nin: ["INACTIVE"] },
+              },
+            },
+          },
+        ],
+      }),
+    )
+      .select("article spn alternatePartNumbers")
+      .limit(PER_SOURCE_LIMIT)
+      .lean(),
+  ]);
+  const byArticle = new Map(masterRows.map((r) => [r.article, r]));
+  const extraArticles = techRows.map((t) => t.article).filter((a) => a && !byArticle.has(a));
+  if (extraArticles.length) {
+    const extra = await ItemMaster.find(withCompany(companyId, { article: { $in: extraArticles } }))
+      .limit(PER_SOURCE_LIMIT)
+      .lean();
+    extra.forEach((r) => byArticle.set(r.article, r));
+  }
+  const techByArticle = new Map(techRows.map((t) => [t.article, t]));
+  const missingTech = [...byArticle.keys()].filter((article) => !techByArticle.has(article));
+  if (missingTech.length) {
+    const moreTech = await ItemTechnical.find(withCompany(companyId, { article: { $in: missingTech } }))
+      .select("article spn alternatePartNumbers")
+      .lean();
+    moreTech.forEach((t) => techByArticle.set(t.article, t));
+  }
+  return [...byArticle.values()].slice(0, PER_SOURCE_LIMIT).map((r) => {
+    const tech = techByArticle.get(r.article) || {};
+    const matched =
+      matchedManufacturerPartNumber(r, tech, queryText, { requireActive: true }) ||
+      canonicalItemMasterPartNumber(r, tech);
+    return baseHit({
       type: "Article",
       category: CATEGORIES.INVENTORY,
       module: "ITEM_MASTER",
@@ -677,13 +723,13 @@ async function searchItems(companyId, companyCode, re) {
       date: r.updatedAt,
       party: "",
       article: r.article,
-      partNumber: r.partNumber,
+      partNumber: matched || r.partNumber,
       description: r.itemName || r.description,
       status: r.status,
       entityId: r._id,
       openPath: `/items?q=${encodeURIComponent(r.article)}`,
-    }),
-  );
+    });
+  });
 }
 
 async function searchPurchaseInvoices(companyId, companyCode, re, filters) {

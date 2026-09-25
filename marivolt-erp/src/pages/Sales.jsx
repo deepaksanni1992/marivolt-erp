@@ -31,7 +31,9 @@ import DuplicateArticlesModal, {
   DuplicateArticleBadge,
   DuplicateArticleHintText,
 } from "../components/sales/DuplicateArticlesModal.jsx";
-import ItemMasterArticleSelect from "../components/items/ItemMasterArticleSelect.jsx";
+import ItemMasterArticleSelect, {
+  selectOwnedManufacturerPartNumber,
+} from "../components/items/ItemMasterArticleSelect.jsx";
 import CustomerTransactionDetailsFields from "../components/sales/CustomerTransactionDetailsFields.jsx";
 import ProformaPaymentRequestPanel from "../components/sales/ProformaPaymentRequestPanel.jsx";
 import {
@@ -6156,12 +6158,16 @@ ${GLOBAL_REPORT_TABLE_CSS}
                               value={line.article || ""}
                               onSelect={(item) => {
                                 const lines = [...detailQuotationDraftForm.lines];
+                                const requested = String(line.customerPartNo || line.partNumber || "").trim();
+                                const matched = selectOwnedManufacturerPartNumber(item, requested);
                                 lines[idx] = item
                                   ? {
                                       ...line,
                                       article: item.article,
                                       description: item.description || item.itemName || "",
-                                      partNumber: item.spn || "",
+                                      partNumber: requested || matched,
+                                      customerPartNo: requested,
+                                      matchedPartNumber: matched,
                                       uom: item.uom || "PCS",
                                       materialCode: item.materialCode || "",
                                       serialNo: idx + 1,
@@ -9325,12 +9331,16 @@ ${GLOBAL_REPORT_TABLE_CSS}
                           value={line.article || ""}
                           onSelect={(item) => {
                             const lines = [...form.lines];
+                            const requested = String(line.customerPartNo || line.partNumber || "").trim();
+                            const matched = selectOwnedManufacturerPartNumber(item, requested);
                             lines[idx] = item
                               ? {
                                   ...line,
                                   article: item.article,
                                   description: item.description || item.itemName || "",
-                                  partNumber: item.spn || "",
+                                  partNumber: requested || matched,
+                                  customerPartNo: requested,
+                                  matchedPartNumber: matched,
                                   uom: item.uom || "PCS",
                                   materialCode: item.materialCode || "",
                                   serialNo: idx + 1,

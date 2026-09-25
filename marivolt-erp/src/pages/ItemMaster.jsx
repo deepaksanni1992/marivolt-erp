@@ -37,6 +37,7 @@ const emptyTechnical = {
   supplierReferencesText: "",
   technicalSpecificationsText: "",
   interchangeablePartsText: "",
+  alternatePartNumbers: [],
 };
 
 const emptySupplier = {
@@ -56,7 +57,8 @@ const EXPORT_COLUMNS = [
   { key: "Brand", header: "Brand" },
   { key: "Model", header: "Model" },
   { key: "Config", header: "Config" },
-  { key: "Part Number", header: "Part Number" },
+  { key: "Part Number", header: "Primary Part Number" },
+  { key: "Alternate Part Numbers", header: "Alternate Part Numbers" },
   { key: "ESN", header: "ESN" },
   { key: "Material Code", header: "Material Code" },
   { key: "Drawing Number", header: "Drawing Number" },
@@ -157,6 +159,15 @@ function Field({ label, children }) {
   );
 }
 
+function aliasesFromTechnical(row = {}) {
+  return (row.alternatePartNumbers || []).map((alt) => ({
+    partNumber: String(alt?.partNumber || alt || "").trim(),
+    status: String(alt?.status || "ACTIVE").trim().toUpperCase() || "ACTIVE",
+    createdBy: alt?.createdBy || "",
+    updatedBy: alt?.updatedBy || "",
+  }));
+}
+
 function isManBrandItem(row = {}) {
   return String(row.brand || row.engine || "").trim().toUpperCase() === "MAN";
 }
@@ -192,6 +203,7 @@ export default function ItemMaster() {
   const [configuration, setConfiguration] = useState("");
   const [esn, setEsn] = useState("");
   const [spnFilter, setSpnFilter] = useState("");
+  const [altDraft, setAltDraft] = useState("");
   const [cylinderCount, setCylinderCount] = useState("");
   const [oemReference, setOemReference] = useState("");
   const [supplierReference, setSupplierReference] = useState("");
@@ -318,6 +330,48 @@ export default function ItemMaster() {
     onError: (e) => {
       setError(e.message);
       notify.error(e.message || "Technical save failed.");
+    },
+  });
+
+  const mutateAlias = useMutation({
+    mutationFn: ({ action, partNumber, status }) => {
+      const article = encodeURIComponent(selectedArticle);
+      const expectedUpdatedAt = technical.updatedAt || undefined;
+      if (action === "add") {
+        return apiPost(`/items/${article}/technical/alternates`, { partNumber, expectedUpdatedAt });
+      }
+      if (action === "remove") {
+        return apiPost(`/items/${article}/technical/alternates/remove`, { partNumber, expectedUpdatedAt });
+      }
+      if (action === "promote") {
+        return apiPost(`/items/${article}/technical/alternates/promote`, { partNumber, expectedUpdatedAt });
+      }
+      return apiPost(`/items/${article}/technical/alternates/status`, { partNumber, status, expectedUpdatedAt });
+    },
+    onSuccess: async (row, vars) => {
+      setTechnical((v) => ({
+        ...v,
+        spn: row?.spn ?? v.spn,
+        updatedAt: row?.updatedAt,
+        alternatePartNumbers: aliasesFromTechnical(row),
+      }));
+      setAltDraft("");
+      await qc.invalidateQueries({ queryKey: ["items"] });
+      await qc.invalidateQueries({ queryKey: ["item-details", selectedArticle] });
+      setError("");
+      notify.success(
+        vars.action === "add"
+          ? "Alternate Part Number added."
+          : vars.action === "remove"
+            ? "Alternate Part Number removed."
+            : vars.action === "promote"
+              ? "Primary Part Number updated."
+              : "Alias status updated."
+      );
+    },
+    onError: (e) => {
+      setError(e.message);
+      notify.error(e.message || "Alias update failed.");
     },
   });
 
@@ -462,6 +516,7 @@ export default function ItemMaster() {
     setSelectedArticle("");
     setItem(emptyItem);
     setTechnical(emptyTechnical);
+    setAltDraft("");
     setSupplierDraft(emptySupplier);
     setEditingSupplierId("");
     setTab("basic");
@@ -488,6 +543,10 @@ export default function ItemMaster() {
     setTechnical({
       ...emptyTechnical,
       ...t,
+      updatedAt: t.updatedAt,
+      alternatePartNumbers: aliasesFromTechnical({
+        alternatePartNumbers: t.alternatePartNumbers || full.alternatePartNumbers || [],
+      }),
       modelMappingsText: formatTextRows(t.modelMappings, ["modelCode", "modelName", "variant", "notes"]),
       configurationMappingsText: formatTextRows(t.configurationMappings, [
         "configurationCode",
@@ -597,8 +656,22 @@ export default function ItemMaster() {
             <div className="font-semibold">Import preview</div>
             <div>
               New {importPreview.newArticles?.length || 0} · Changing {importPreview.existingWillChange?.length || 0} ·
-              Unchanged {importPreview.unchanged?.length || 0} · Invalid {importPreview.invalid?.length || 0}
+              Unchanged {importPreview.unchanged?.length || 0} · Aliases {importPreview.partNumberAliasesAdded || 0} ·
+              Redundant {importPreview.redundantRepeatedRows?.length || 0} · Conflicting groups{" "}
+              {importPreview.conflictingArticleGroups?.length || 0} · Invalid {importPreview.invalid?.length || 0}
             </div>
+            {(importPreview.groups || [])
+              .filter((g) => g.message)
+              .slice(0, 8)
+              .map((g) => (
+                <p key={g.article} className="mt-1 text-slate-600">
+                  {g.message}
+                  {g.primaryPartNumber ? ` Primary: ${g.primaryPartNumber}.` : ""}
+                  {(g.alternates || []).length
+                    ? ` Alternates: ${g.alternates.map((a) => a.partNumber).join(", ")}.`
+                    : ""}
+                </p>
+              ))}
             {importPreview.invalid?.length ? (
               <ul className="mt-2 list-disc pl-5 text-rose-700">
                 {importPreview.invalid.slice(0, 8).map((row) => (
@@ -772,7 +845,7 @@ export default function ItemMaster() {
           <Field label="Global Search">
             <div className="flex items-center rounded-lg border px-3">
               <Search size={16} className="text-slate-400" />
-              <input className="w-full px-2 py-2 outline-none" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Article, Part Number, Material Code…" />
+              <input className="w-full px-2 py-2 outline-none" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Article, Primary or Alternate Part Number, Material Code…" />
             </div>
           </Field>
           <Field label="ESN">
@@ -789,7 +862,7 @@ export default function ItemMaster() {
         </div>
         {advancedSearchOpen ? (
           <div className="mt-3 grid gap-3 rounded-xl border bg-slate-50 p-3 md:grid-cols-5">
-            <Field label="Part Number"><input className="rounded-lg border px-3 py-2" value={spnFilter} onChange={(e) => setSpnFilter(e.target.value)} /></Field>
+            <Field label="Primary Part Number"><input className="rounded-lg border px-3 py-2" value={spnFilter} onChange={(e) => setSpnFilter(e.target.value)} /></Field>
             <Field label="Cylinder Count"><input className="rounded-lg border px-3 py-2" type="number" value={cylinderCount} onChange={(e) => setCylinderCount(e.target.value)} /></Field>
             <Field label="OEM Reference"><input className="rounded-lg border px-3 py-2" value={oemReference} onChange={(e) => setOemReference(e.target.value)} /></Field>
             <Field label="Supplier Reference"><input className="rounded-lg border px-3 py-2" value={supplierReference} onChange={(e) => setSupplierReference(e.target.value)} /></Field>
@@ -813,7 +886,7 @@ export default function ItemMaster() {
                 <th className="px-3 py-3">Article</th>
                 <th className="px-3 py-3">Description</th>
                 <th className="px-3 py-3">ITEM NAME</th>
-                <th className="px-3 py-3">Part Number</th>
+                <th className="px-3 py-3">Primary Part Number</th>
                 <th className="px-3 py-3">ESN</th>
                 <th className="px-3 py-3">Material Code</th>
                 <th className="px-3 py-3">Drawing Number</th>
@@ -844,7 +917,15 @@ export default function ItemMaster() {
                   <td className="px-3 py-2 font-mono">{row.article}</td>
                   <td className="px-3 py-2">{row.description || "-"}</td>
                   <td className="px-3 py-2">{row.itemName || "-"}</td>
-                  <td className="px-3 py-2">{row.spn || "-"}</td>
+                  <td className="px-3 py-2">
+                    <div>{row.primaryPartNumber || row.spn || "-"}</div>
+                    {Number(row.alternateCount || 0) > 0 ? (
+                      <div className="text-[10px] text-slate-500">+{row.alternateCount} alternates</div>
+                    ) : null}
+                    {row.matchedPartNumber && search ? (
+                      <div className="text-[10px] text-slate-500">Matched: {row.matchedPartNumber}</div>
+                    ) : null}
+                  </td>
                   <td className="px-3 py-2">{row.esn || "-"}</td>
                   <td className="px-3 py-2">{row.materialCode || "-"}</td>
                   <td className="px-3 py-2">{row.drawingNumber || "-"}</td>
@@ -994,7 +1075,7 @@ export default function ItemMaster() {
                 <details open className="rounded-xl border p-3">
                   <summary className="cursor-pointer text-sm font-semibold">Core Technical Fields</summary>
                   <div className="mt-3 grid gap-3 md:grid-cols-2">
-                    <Field label="Part Number"><input className="rounded-lg border px-3 py-2" value={technical.spn} onChange={(e) => setTechnical((v) => ({ ...v, spn: e.target.value }))} /></Field>
+                    <Field label="Primary Part Number"><input className="rounded-lg border px-3 py-2" value={technical.spn} onChange={(e) => setTechnical((v) => ({ ...v, spn: e.target.value }))} /></Field>
                     <Field label="ESN"><input className="rounded-lg border px-3 py-2" value={technical.esn} onChange={(e) => setTechnical((v) => ({ ...v, esn: e.target.value }))} /></Field>
                     <Field label="Material Code"><input className="rounded-lg border px-3 py-2" value={technical.materialCode} onChange={(e) => setTechnical((v) => ({ ...v, materialCode: e.target.value }))} /></Field>
                     <Field label="Drawing Number"><input className="rounded-lg border px-3 py-2" value={technical.drawingNumber} onChange={(e) => setTechnical((v) => ({ ...v, drawingNumber: e.target.value }))} /></Field>
@@ -1008,6 +1089,79 @@ export default function ItemMaster() {
                     <Field label="OE Markings"><input className="rounded-lg border px-3 py-2" value={technical.oeMarkings} onChange={(e) => setTechnical((v) => ({ ...v, oeMarkings: e.target.value }))} /></Field>
                     <Field label="Ext Remarks"><input className="rounded-lg border px-3 py-2" value={technical.extRemarks} onChange={(e) => setTechnical((v) => ({ ...v, extRemarks: e.target.value }))} /></Field>
                     <Field label="Internal Remarks"><input className="rounded-lg border px-3 py-2" value={technical.internalRemarks} onChange={(e) => setTechnical((v) => ({ ...v, internalRemarks: e.target.value }))} /></Field>
+                  </div>
+                </details>
+                <details open className="rounded-xl border p-3">
+                  <summary className="cursor-pointer text-sm font-semibold">Alternate Part Numbers</summary>
+                  <p className="mt-2 text-xs text-slate-600">
+                    Manufacturer/OEM numbers for this Article only. Supplier Part Numbers stay on the Suppliers tab.
+                    Removing Primary requires promoting another number or explicitly clearing it.
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    {(technical.alternatePartNumbers || []).length ? (
+                      (technical.alternatePartNumbers || []).map((row, idx) => (
+                        <div key={`${row.partNumber}-${idx}`} className="flex flex-wrap items-center gap-2 rounded-lg border bg-white px-2 py-2 text-sm">
+                          <span className="min-w-[12rem] flex-1 font-mono">{row.partNumber}</span>
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] ${row.status === "INACTIVE" ? "bg-rose-100 text-rose-800" : "bg-emerald-100 text-emerald-800"}`}>
+                            {row.status || "ACTIVE"}
+                          </span>
+                          {canEditItem ? (
+                            <>
+                              <button
+                                type="button"
+                                disabled={mutateAlias.isPending || row.status === "INACTIVE"}
+                                className="rounded border px-2 py-1 text-xs disabled:opacity-50"
+                                onClick={() => mutateAlias.mutate({ action: "promote", partNumber: row.partNumber })}
+                              >
+                                Promote to Primary
+                              </button>
+                              <button
+                                type="button"
+                                disabled={mutateAlias.isPending}
+                                className="rounded border px-2 py-1 text-xs disabled:opacity-50"
+                                onClick={() =>
+                                  mutateAlias.mutate({
+                                    action: "status",
+                                    partNumber: row.partNumber,
+                                    status: row.status === "INACTIVE" ? "ACTIVE" : "INACTIVE",
+                                  })
+                                }
+                              >
+                                {row.status === "INACTIVE" ? "Reactivate" : "Deactivate"}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={mutateAlias.isPending}
+                                className="rounded border border-rose-200 px-2 py-1 text-xs text-rose-700 disabled:opacity-50"
+                                onClick={() => mutateAlias.mutate({ action: "remove", partNumber: row.partNumber })}
+                              >
+                                Remove
+                              </button>
+                            </>
+                          ) : null}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-xs text-slate-500">No alternate manufacturer Part Numbers.</div>
+                    )}
+                    {canEditItem ? (
+                      <div className="flex flex-wrap gap-2">
+                        <input
+                          className="min-w-[12rem] flex-1 rounded-lg border px-3 py-2 font-mono text-sm"
+                          placeholder="Add alternate Part Number"
+                          value={altDraft}
+                          onChange={(e) => setAltDraft(e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          disabled={mutateAlias.isPending || !altDraft.trim() || !selectedArticle}
+                          className="rounded-lg border px-3 py-2 text-sm disabled:opacity-50"
+                          onClick={() => mutateAlias.mutate({ action: "add", partNumber: altDraft.trim() })}
+                        >
+                          Add alternate
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 </details>
                 <div className="rounded-xl border bg-slate-50 p-3 text-xs text-slate-600">
@@ -1087,7 +1241,7 @@ export default function ItemMaster() {
                   <>
                     <div className="grid gap-2 md:grid-cols-2">
                       <div>Article: {item.article || selectedArticle || "—"}</div>
-                      <div>Part Number: {item.spn || manPrice?.spn || "—"}</div>
+                      <div>Primary Part Number: {item.spn || manPrice?.spn || "—"}</div>
                       <div>Engine Model: {item.model || "—"}</div>
                       <div>Configuration: {item.config || "—"}</div>
                       <div>UOM: {manPrice?.uom || item.uom || "—"}</div>
@@ -1115,7 +1269,7 @@ export default function ItemMaster() {
                 ) : manSalesSnapshot ? (
                   <div className="grid gap-2 md:grid-cols-2">
                     <div>Article: {manSalesSnapshot.article || item.article || "—"}</div>
-                    <div>Part Number: {manSalesSnapshot.spn || item.spn || "—"}</div>
+                    <div>Primary Part Number: {manSalesSnapshot.spn || item.spn || "—"}</div>
                     <div>Engine Model: {manSalesSnapshot.engineModel || item.model || "—"}</div>
                     <div>Configuration: {manSalesSnapshot.configuration || item.config || "—"}</div>
                     <div>UOM: {manSalesSnapshot.uom || item.uom || "—"}</div>

@@ -8,6 +8,10 @@ const oaLineSchema = new mongoose.Schema(
     sourceQuotationLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
     article: { type: String, required: true, trim: true, uppercase: true },
     partNumber: { type: String, default: "", trim: true },
+    /** Original customer-requested Part Number snapshot. */
+    customerPartNo: { type: String, default: "", trim: true },
+    /** Exact Item Master Primary or Alternate that matched or was selected. */
+    matchedPartNumber: { type: String, default: "", trim: true },
     description: { type: String, default: "" },
     /** Ordered quantity (persisted as qty for downstream compatibility). */
     qty: { type: Number, required: true, min: 0.0001 },

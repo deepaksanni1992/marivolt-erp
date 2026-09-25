@@ -187,6 +187,7 @@ await run("mutation routes require live super_admin or admin", () => {
   assert.match(routes, /itemMasterAdmin, itemDelete, c\.deleteItem/);
   assert.match(routes, /itemMasterAdmin, itemCreate, c\.createItemTechnical/);
   assert.match(routes, /itemMasterAdmin, itemEdit, c\.updateItemTechnical/);
+  assert.match(routes, /itemMasterAdmin, itemEdit, c\.addItemAlternate/);
   assert.match(routes, /itemMasterAdmin, itemCreate, c\.createItemSupplier/);
   assert.match(routes, /router\.get\("\/", itemView, c\.listItems\)/);
   assert.match(routes, /router\.post\("\/resolve\/bulk-import", itemView/);
@@ -239,6 +240,7 @@ await run("only Item Master maintenance and import write ItemMaster/ItemTechnica
   const allowed = new Set([
     path.join(srcRoot, "controllers", "itemController.js"),
     path.join(srcRoot, "services", "itemMasterImportService.js"),
+    path.join(srcRoot, "services", "itemTechnicalAliasService.js"),
     path.join(srcRoot, "services", "poItemMasterSyncService.js"),
   ]);
   const writeRe =

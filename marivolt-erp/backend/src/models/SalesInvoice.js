@@ -7,6 +7,8 @@ const salesInvoiceLineSchema = new mongoose.Schema(
     allocationLineId: { type: mongoose.Schema.Types.ObjectId, default: null },
     article: { type: String, required: true, trim: true, uppercase: true },
     partNumber: { type: String, default: "", trim: true },
+    customerPartNo: { type: String, default: "", trim: true },
+    matchedPartNumber: { type: String, default: "", trim: true },
     description: { type: String, default: "" },
     qty: { type: Number, required: true, min: 0.0001 },
     uom: { type: String, default: "PCS", trim: true },

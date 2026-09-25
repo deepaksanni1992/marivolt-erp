@@ -106,6 +106,7 @@ export const COPY_ROUTE_REGISTRY = {
         article: sourceLine.article || "",
         partNumber: sourceLine.partNumber || "",
         customerPartNo: sourceLine.customerPartNo || "",
+        matchedPartNumber: sourceLine.matchedPartNumber || "",
         description: sourceLine.description || "",
         uom: sourceLine.uom || "PCS",
         quotedQty: qty,

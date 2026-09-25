@@ -1,5 +1,6 @@
 import ItemMaster from "../models/itemMasterModel.js";
 import ItemTechnical from "../models/itemTechnicalModel.js";
+import { matchedManufacturerPartNumber, articleOwnsManufacturerPartNumber } from "../utils/partNumberTerminology.js";
 
 function trim(value) {
   return String(value ?? "").trim();
@@ -40,6 +41,13 @@ function normalizeInput(input = {}) {
   };
 }
 
+function manufacturerPartNumberMatches(needle, technical = {}, { requireActive = true } = {}) {
+  if (!needle) return false;
+  return Boolean(
+    articleOwnsManufacturerPartNumber({ article: technical.article }, technical, needle, { requireActive }).owned
+  );
+}
+
 function scoreCandidate({ input, item, technical, allTechnicals }) {
   let score = 0;
   const reasons = [];
@@ -55,7 +63,7 @@ function scoreCandidate({ input, item, technical, allTechnicals }) {
     reasons.push("Exact ESN");
     breakdown.push({ key: "ESN_EXACT", points: SCORE_WEIGHTS.ESN_EXACT });
   }
-  if (input.spn && technical.spn && reEq(input.spn).test(technical.spn)) {
+  if (input.spn && manufacturerPartNumberMatches(input.spn, technical)) {
     score += SCORE_WEIGHTS.SPN_EXACT;
     reasons.push("Exact Part Number");
     breakdown.push({ key: "SPN_EXACT", points: SCORE_WEIGHTS.SPN_EXACT });
@@ -102,7 +110,7 @@ function scoreCandidate({ input, item, technical, allTechnicals }) {
     const matchedInterchange = allTechnicals.some((row) => {
       if (!interchangeArticles.has(trim(row.article).toUpperCase())) return false;
       return (
-        (input.spn && row.spn && reEq(input.spn).test(row.spn)) ||
+        (input.spn && manufacturerPartNumberMatches(input.spn, row)) ||
         (input.esn && row.esn && reEq(input.esn).test(row.esn)) ||
         (input.materialCode && row.materialCode && reEq(input.materialCode).test(row.materialCode))
       );
@@ -136,7 +144,18 @@ export async function resolveLookup({ companyId, input }) {
   const technicalFilter = withCompany(companyId, {});
   const or = [];
   if (normalized.esn) or.push({ esn: new RegExp(escRe(normalized.esn), "i") });
-  if (normalized.spn) or.push({ spn: new RegExp(escRe(normalized.spn), "i") });
+  if (normalized.spn) {
+    const spnRe = new RegExp(escRe(normalized.spn), "i");
+    or.push({ spn: spnRe });
+    or.push({
+      alternatePartNumbers: {
+        $elemMatch: {
+          $or: [{ partNumber: spnRe }, { normalized: new RegExp(`^${escRe(normalized.spn)}$`, "i") }],
+          status: { $nin: ["INACTIVE"] },
+        },
+      },
+    });
+  }
   if (normalized.materialCode) or.push({ materialCode: new RegExp(escRe(normalized.materialCode), "i") });
   if (normalized.drawingNumber) or.push({ drawingNumber: new RegExp(escRe(normalized.drawingNumber), "i") });
   if (normalized.oemReference) or.push({ "oemCrossReferences.oemPartNumber": new RegExp(escRe(normalized.oemReference), "i") });
@@ -170,6 +189,7 @@ export async function resolveLookup({ companyId, input }) {
     .map((article) => {
       const item = itemByArticle.get(article);
       if (!item) return null;
+      if (String(item.status || "Active") !== "Active") return null;
       const technical = technicalByArticle.get(article) || {};
       const scoreResult = scoreCandidate({ input: normalized, item, technical, allTechnicals: technicals });
       return {
@@ -178,23 +198,41 @@ export async function resolveLookup({ companyId, input }) {
         score: scoreResult.score,
         reasons: scoreResult.reasons,
         breakdown: scoreResult.breakdown,
+        matchedPartNumber: matchedManufacturerPartNumber(item, technical, normalized.spn, { requireActive: true }),
       };
     })
     .filter(Boolean)
     .sort((a, b) => b.score - a.score || a.article.localeCompare(b.article));
   const best = scored[0] || null;
   const second = scored[1] || null;
-  const duplicateWarning = Boolean(best && second && Math.abs(best.score - second.score) <= 10);
+  const exactPn = scored.filter((x) => (x.reasons || []).includes("Exact Part Number"));
+  const multipleExact = exactPn.length > 1 && !normalized.article;
+  const duplicateWarning = Boolean(
+    multipleExact || (best && second && Math.abs(best.score - second.score) <= 10)
+  );
   const confidence = confidenceFromScore(best?.score || 0);
+  const eligible = (multipleExact ? [...exactPn].sort((a, b) => a.article.localeCompare(b.article)) : scored).map((x) => ({
+    article: x.article,
+    itemName: x.itemName || "",
+    matchedPartNumber: x.matchedPartNumber || "",
+    score: x.score,
+    confidence: confidenceFromScore(x.score),
+    reason: x.reasons?.slice(0, 2).join(" + ") || "Partial match",
+  }));
   const response = {
-    matchedArticle: best?.article || "",
-    confidence,
-    matchedReason: best?.reasons?.slice(0, 3).join(" + ") || "No high-confidence matching signals",
-    alternativeCandidates: scored.slice(1, 6).map((x) => ({
+    matchedArticle: multipleExact ? "" : best?.article || "",
+    confidence: multipleExact ? "MEDIUM" : confidence,
+    matchedReason: multipleExact
+      ? "Exact Part Number maps to multiple Articles"
+      : best?.reasons?.slice(0, 3).join(" + ") || "No high-confidence matching signals",
+    matchedPartNumber: multipleExact ? exactPn[0]?.matchedPartNumber || "" : best?.matchedPartNumber || "",
+    eligibleArticles: eligible,
+    alternativeCandidates: (multipleExact ? [...exactPn].sort((a, b) => a.article.localeCompare(b.article)) : scored.slice(1, 6)).map((x) => ({
       article: x.article,
       confidence: confidenceFromScore(x.score),
       score: x.score,
       reason: x.reasons?.slice(0, 2).join(" + ") || "Partial match",
+      matchedPartNumber: x.matchedPartNumber || "",
     })),
     duplicateWarning,
   };

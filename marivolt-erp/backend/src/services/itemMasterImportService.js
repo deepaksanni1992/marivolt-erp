@@ -1,6 +1,13 @@
 /**
  * Company-scoped Item Master CSV/Excel preview + apply.
  * Preview never writes. Apply never overwrites a populated field with a blank cell.
+ *
+ * Import format (backward compatible):
+ * - Preferred: `Part Number` = Primary, optional `Alternate Part Number` (comma/semicolon),
+ *   and/or repeated Article rows each carrying another manufacturer Part Number.
+ * - Optional `Part Number Role` (`Primary` / `Alternate`). Multiple Primary declarations block the group.
+ * - Legacy `SPN` header is still accepted as Primary Part Number.
+ * - `Supplier 1/2 Part Number` never become manufacturer aliases.
  */
 import mongoose from "mongoose";
 import XLSX from "xlsx";
@@ -9,7 +16,13 @@ import ItemTechnical from "../models/itemTechnicalModel.js";
 import ItemSupplier from "../models/itemSupplierModel.js";
 import Supplier from "../models/Supplier.js";
 import { assertValidTaxonomy, mapImportTaxonomyColumns } from "../utils/itemMasterTaxonomy.js";
-import { resolveImportedPartNumber } from "../utils/partNumberTerminology.js";
+import { resolveImportedPartNumber, sanitizeAlternatePartNumberList } from "../utils/partNumberTerminology.js";
+import {
+  analyzeItemMasterArticleGroup,
+  groupParsedItemMasterRows,
+  parsePartNumberRole,
+  splitAlternatePartNumberCell,
+} from "../utils/itemMasterImportGrouping.js";
 
 export const ITEM_MASTER_CLEAR_MARKER = "__CLEAR__";
 
@@ -24,6 +37,8 @@ export const ITEM_MASTER_TEMPLATE_HEADERS = [
   "Item Name",
   "UOM",
   "Part Number",
+  "Alternate Part Number",
+  "Part Number Role",
   "Material Code",
   "Drawing Number",
   "OEM Reference/Markings",
@@ -109,6 +124,10 @@ function mapIncomingItem(row) {
       const resolved = resolveImportedPartNumber(row);
       return { spn: resolved.value, partNumberError: resolved.error, partNumberCode: resolved.code || "" };
     })(),
+    partNumberRole: parsePartNumberRole(pick(row, "Part Number Role", "PN Role")),
+    extraAlternatePartNumbers: splitAlternatePartNumberCell(
+      pick(row, "Alternate Part Number", "Alternate Part Numbers")
+    ),
     materialCode: pick(row, "Material Code", "Material code"),
     drawingNumber: pick(row, "Drawing Number", "Drawing number"),
     oeMarkings: pick(row, "OEM Reference/Markings", "OE Markings", "OEM Reference"),
@@ -154,6 +173,8 @@ function buildTemplateCsv() {
     "Cylinder liner",
     "PCS",
     "PN-1",
+    "",
+    "",
     "",
     "",
     "",
@@ -220,8 +241,6 @@ export async function previewItemMasterImport({ companyId, buffer }) {
   }
   const rows = parseWorkbookRows(buffer);
   const knownSuppliers = await knownSupplierNames(companyId);
-  const seen = new Map();
-  const articles = [];
   const parsed = [];
 
   for (let index = 0; index < rows.length; index += 1) {
@@ -230,14 +249,6 @@ export async function previewItemMasterImport({ companyId, buffer }) {
     const excelRow = index + 2;
     const errors = [];
     if (!incoming.article) errors.push("Article is required");
-    if (incoming.article) {
-      if (seen.has(incoming.article)) {
-        errors.push(`Duplicate article in import file (also row ${seen.get(incoming.article)})`);
-      } else {
-        seen.set(incoming.article, excelRow);
-        articles.push(incoming.article);
-      }
-    }
     if (incoming.status === "__INVALID_STATUS__") errors.push("Status must be Active or Inactive");
     if (incoming.uomRaw && incoming.uom == null) errors.push(`UOM must be one of ${UOM_VALUES.join(", ")}`);
     try {
@@ -256,6 +267,7 @@ export async function previewItemMasterImport({ companyId, buffer }) {
     parsed.push({ excelRow, incoming, errors });
   }
 
+  const articles = [...new Set(parsed.map((p) => p.incoming.article).filter(Boolean))];
   const existingRows = articles.length
     ? await ItemMaster.find({ companyId, article: { $in: articles } }).lean()
     : [];
@@ -265,6 +277,7 @@ export async function previewItemMasterImport({ companyId, buffer }) {
   const existingByArticle = new Map(existingRows.map((r) => [r.article, r]));
   const techByArticle = new Map(existingTech.map((r) => [r.article, r]));
 
+  const grouped = groupParsedItemMasterRows(parsed);
   const result = {
     total: rows.length,
     newArticles: [],
@@ -272,42 +285,61 @@ export async function previewItemMasterImport({ companyId, buffer }) {
     unchanged: [],
     invalid: [],
     duplicateArticles: [],
+    partNumberAliasesAdded: 0,
+    redundantRepeatedRows: [],
+    conflictingArticleGroups: [],
+    groups: [],
     ignoredStockColumns: [...new Set(parsed.flatMap((p) => p.incoming.ignoredStockHeaders))],
     rows: [],
   };
 
-  for (const row of parsed) {
-    const article = row.incoming.article;
-    const existing = existingByArticle.get(article);
-    let action = existing ? "UPDATE" : "CREATE";
-    const taxonomy = row.incoming.taxonomyInput;
-    const existingPartNumber = techByArticle.get(article)?.spn || "";
+  for (const bucket of grouped) {
+    if (bucket.orphan || !bucket.article) {
+      const row = bucket.parsedRows[0];
+      result.invalid.push({ row: row.excelRow, article: "", errors: row.errors });
+      result.rows.push({
+        row: row.excelRow,
+        article: "",
+        action: "INVALID",
+        errors: row.errors,
+        changes: {},
+        before: {},
+        after: {},
+        normalizedArticle: "",
+        ignoredStockHeaders: row.incoming.ignoredStockHeaders,
+        suppliers: row.incoming.suppliers,
+        technical: { spn: row.incoming.spn, partNumber: row.incoming.spn },
+      });
+      continue;
+    }
+    const existing = existingByArticle.get(bucket.article) || null;
+    const tech = techByArticle.get(bucket.article) || null;
+    const analysis = analyzeItemMasterArticleGroup(bucket.parsedRows, existing, tech);
+    const taxonomy = analysis.mergedIncoming.taxonomyInput;
+    const existingPartNumber = tech?.spn || "";
     const proposedItem = existing
       ? {
-          itemName: mergeScalar(existing.itemName, row.incoming.itemName),
-          description: mergeScalar(existing.description, row.incoming.description),
+          itemName: mergeScalar(existing.itemName, analysis.mergedIncoming.itemName),
+          description: mergeScalar(existing.description, analysis.mergedIncoming.description),
           vertical: mergeScalar(existing.vertical, taxonomy.vertical),
           brand: mergeScalar(existing.brand || existing.engine, taxonomy.brand || taxonomy.engine),
           model: mergeScalar(existing.model, taxonomy.model),
           config: mergeScalar(existing.config, taxonomy.config),
-          uom: row.incoming.uom || existing.uom || "PCS",
-          status: row.incoming.status || existing.status || "Active",
-          partNumber: mergeScalar(existingPartNumber, row.incoming.spn),
+          uom: analysis.mergedIncoming.uom || existing.uom || "PCS",
+          status: analysis.mergedIncoming.status || existing.status || "Active",
+          partNumber: analysis.primaryClear ? "" : (analysis.primaryPartNumber || existingPartNumber),
         }
       : {
-          itemName: row.incoming.itemName || row.incoming.description || article,
-          description: row.incoming.description,
+          itemName: analysis.mergedIncoming.itemName || analysis.mergedIncoming.description || bucket.article,
+          description: analysis.mergedIncoming.description,
           vertical: taxonomy.vertical || "",
           brand: taxonomy.brand || taxonomy.engine || "",
           model: taxonomy.model || "",
           config: taxonomy.config || "",
-          uom: row.incoming.uom || "PCS",
-          status: row.incoming.status === "Inactive" ? "Inactive" : "Active",
-          partNumber: isClear(row.incoming.spn) ? "" : (row.incoming.spn || ""),
+          uom: analysis.mergedIncoming.uom || "PCS",
+          status: analysis.mergedIncoming.status === "Inactive" ? "Inactive" : "Active",
+          partNumber: analysis.primaryClear ? "" : analysis.primaryPartNumber || "",
         };
-    if (!existing && !row.incoming.itemName && !row.incoming.description && article) {
-      row.errors.push("Item Name or Description is required for a new Article");
-    }
     const existingSlice = existing
       ? {
           itemName: existing.itemName || "",
@@ -322,56 +354,90 @@ export async function previewItemMasterImport({ companyId, buffer }) {
         }
       : {};
     const changes = existing ? fieldDiffs(existingSlice, proposedItem) : proposedItem;
-    if (row.errors.length) {
+    const aliasChanges = analysis.aliasesAdded > 0;
+    let action = existing ? "UPDATE" : "CREATE";
+    if (analysis.blocked) {
       action = "INVALID";
-      result.invalid.push({ row: row.excelRow, article, errors: row.errors });
-      if (row.errors.some((e) => e.startsWith("Duplicate article"))) {
-        result.duplicateArticles.push(article);
-      }
+      result.conflictingArticleGroups.push({
+        article: bucket.article,
+        sourceRows: analysis.sourceRows,
+        errors: analysis.errors,
+        conflicts: analysis.conflicts,
+      });
+      result.invalid.push({
+        row: analysis.sourceRows[0],
+        article: bucket.article,
+        errors: analysis.errors,
+        sourceRows: analysis.sourceRows,
+      });
     } else if (!existing) {
-      result.newArticles.push(article);
-    } else if (Object.keys(changes).length) {
-      result.existingWillChange.push(article);
+      result.newArticles.push(bucket.article);
+    } else if (Object.keys(changes).length || aliasChanges) {
+      result.existingWillChange.push(bucket.article);
     } else {
       action = "UNCHANGED";
-      result.unchanged.push(article);
+      result.unchanged.push(bucket.article);
     }
-    result.rows.push({
-      row: row.excelRow,
-      article,
+    result.partNumberAliasesAdded += analysis.aliasesAdded;
+    result.redundantRepeatedRows.push(...analysis.redundantRows);
+    result.groups.push({
+      article: bucket.article,
+      sourceRows: analysis.sourceRows,
+      message: analysis.groupMessage,
+      primaryPartNumber: analysis.primaryPartNumber,
+      primaryClear: analysis.primaryClear,
+      primaryProposed: analysis.primaryProposed,
+      alternates: analysis.alternates,
+      aliasesAdded: analysis.aliasesAdded,
+      redundantRows: analysis.redundantRows,
+      distinctPartNumberCount: analysis.distinctPartNumberCount,
       action,
-      errors: row.errors,
-      changes: existing ? changes : proposedItem,
-      before: existingSlice,
-      after: proposedItem,
-      normalizedArticle: article,
-      ignoredStockHeaders: row.incoming.ignoredStockHeaders,
-      suppliers: row.incoming.suppliers,
-      technical: {
-        spn: row.incoming.spn,
-        partNumber: row.incoming.spn,
-        materialCode: row.incoming.materialCode,
-        drawingNumber: row.incoming.drawingNumber,
-        existingSpn: techByArticle.get(article)?.spn || "",
-        existingPartNumber: techByArticle.get(article)?.spn || "",
-      },
+      errors: analysis.errors,
+      mergedIncoming: analysis.mergedIncoming,
     });
+    for (const row of bucket.parsedRows) {
+      result.rows.push({
+        row: row.excelRow,
+        article: bucket.article,
+        action,
+        errors: analysis.blocked ? analysis.errors : row.errors,
+        changes: existing ? changes : proposedItem,
+        before: existingSlice,
+        after: proposedItem,
+        normalizedArticle: bucket.article,
+        ignoredStockHeaders: row.incoming.ignoredStockHeaders,
+        suppliers: row.incoming.suppliers,
+        groupMessage: analysis.groupMessage,
+        primaryPartNumber: analysis.primaryPartNumber,
+        alternatePartNumbers: analysis.alternates.map((a) => a.partNumber),
+        technical: {
+          spn: analysis.primaryPartNumber,
+          partNumber: analysis.primaryPartNumber,
+          materialCode: analysis.mergedIncoming.materialCode,
+          drawingNumber: analysis.mergedIncoming.drawingNumber,
+          existingSpn: existingPartNumber,
+          existingPartNumber: existingPartNumber,
+          alternatePartNumbers: analysis.alternates.map((a) => a.partNumber),
+        },
+      });
+    }
   }
 
   result.canApply = result.invalid.length === 0 && result.total > 0;
   return result;
 }
 
-async function applyInSession({ companyId, userEmail, parsed, existingByArticle, session }) {
-  const counts = { created: 0, updated: 0, unchanged: 0, errors: 0 };
-  for (const row of parsed) {
-    if (row.errors.length) {
+async function applyInSession({ companyId, userEmail, groups = [], existingByArticle, techByArticle, session }) {
+  const counts = { created: 0, updated: 0, unchanged: 0, errors: 0, aliasesAdded: 0 };
+  for (const group of groups) {
+    if (!group?.article || group.action === "INVALID" || (group.errors || []).length) {
       counts.errors += 1;
       continue;
     }
-    const incoming = row.incoming;
-    const existing = existingByArticle.get(incoming.article);
-    const taxonomy = incoming.taxonomyInput.vertical || incoming.taxonomyInput.brand
+    const incoming = group.mergedIncoming || {};
+    const existing = existingByArticle.get(group.article);
+    const existingTech = techByArticle.get(group.article) || null;
+    const taxonomy = incoming.taxonomyInput?.vertical || incoming.taxonomyInput?.brand
       ? assertValidTaxonomy(incoming.taxonomyInput)
       : {
           vertical: existing?.vertical || "",
@@ -394,20 +460,31 @@ async function applyInSession({ companyId, userEmail, parsed, existingByArticle,
         }
       : {
           companyId,
-          article: incoming.article,
-          itemName: incoming.itemName || incoming.description || incoming.article,
+          article: group.article,
+          itemName: incoming.itemName || incoming.description || group.article,
           description: incoming.description || "",
           ...assertValidTaxonomy({
-            vertical: incoming.taxonomyInput.vertical,
-            brand: incoming.taxonomyInput.brand || incoming.taxonomyInput.engine,
-            engine: incoming.taxonomyInput.engine || incoming.taxonomyInput.brand,
-            model: incoming.taxonomyInput.model,
-            config: incoming.taxonomyInput.config,
+            vertical: incoming.taxonomyInput?.vertical,
+            brand: incoming.taxonomyInput?.brand || incoming.taxonomyInput?.engine,
+            engine: incoming.taxonomyInput?.engine || incoming.taxonomyInput?.brand,
+            model: incoming.taxonomyInput?.model,
+            config: incoming.taxonomyInput?.config,
           }),
           uom: incoming.uom || "PCS",
           status: incoming.status === "Inactive" ? "Inactive" : "Active",
         };
 
+    const hasTechOrAlias =
+      group.primaryPartNumber ||
+      group.primaryClear ||
+      (group.alternates || []).length ||
+      incoming.materialCode ||
+      incoming.drawingNumber ||
+      incoming.oeMarkings ||
+      incoming.specifications ||
+      incoming.dimension ||
+      incoming.extRemarks ||
+      incoming.internalRemarks;
     if (existing) {
       const same =
         existing.itemName === payload.itemName &&
@@ -418,19 +495,24 @@ async function applyInSession({ companyId, userEmail, parsed, existingByArticle,
         existing.config === payload.config &&
         existing.uom === payload.uom &&
         existing.status === payload.status;
-      if (same && !incoming.spn && !incoming.materialCode && !incoming.suppliers.length) {
+      if (same && !hasTechOrAlias && !(incoming.suppliers || []).length) {
         counts.unchanged += 1;
       } else {
         await ItemMaster.updateOne({ _id: existing._id, companyId }, { $set: payload }, { session, runValidators: true });
         counts.updated += 1;
       }
     } else {
-      await ItemMaster.create([{ ...payload, companyId, article: incoming.article }], { session });
+      await ItemMaster.create([{ ...payload, companyId, article: group.article }], { session });
       counts.created += 1;
     }
 
     const techSet = {};
-    assignImported(techSet, "spn", incoming.spn);
+    if (group.primaryClear) techSet.spn = "";
+    else if (trim(group.primaryPartNumber) && !trim(existingTech?.spn || "")) {
+      techSet.spn = group.primaryPartNumber;
+    } else if (trim(group.primaryPartNumber) && !existing) {
+      techSet.spn = group.primaryPartNumber;
+    }
     assignImported(techSet, "materialCode", incoming.materialCode);
     assignImported(techSet, "drawingNumber", incoming.drawingNumber);
     assignImported(techSet, "oeMarkings", incoming.oeMarkings);
@@ -442,17 +524,31 @@ async function applyInSession({ companyId, userEmail, parsed, existingByArticle,
     assignImported(techSet, "dimension", incoming.dimension);
     assignImported(techSet, "extRemarks", incoming.extRemarks);
     assignImported(techSet, "internalRemarks", incoming.internalRemarks);
+    const mergedAlts = sanitizeAlternatePartNumberList(
+      [...(existingTech?.alternatePartNumbers || []), ...(group.alternates || [])],
+      group.primaryClear ? "" : (group.primaryPartNumber || existingTech?.spn || ""),
+      { createdBy: userEmail, updatedBy: userEmail }
+    );
+    const existingAltKey = JSON.stringify(
+      sanitizeAlternatePartNumberList(existingTech?.alternatePartNumbers || [], existingTech?.spn || "")
+    );
+    const nextAltKey = JSON.stringify(mergedAlts);
+    if (existingAltKey !== nextAltKey) {
+      techSet.alternatePartNumbers = mergedAlts;
+      counts.aliasesAdded += group.aliasesAdded || 0;
+    }
     if (Object.keys(techSet).length) {
       await ItemTechnical.findOneAndUpdate(
-        { companyId, article: incoming.article },
-        { $set: techSet, $setOnInsert: { companyId, article: incoming.article } },
+        { companyId, article: group.article },
+        { $set: techSet, $setOnInsert: { companyId, article: group.article } },
         { upsert: true, new: true, session, runValidators: true }
       );
     }
 
-    for (const supplier of incoming.suppliers) {
+    for (const supplier of incoming.suppliers || []) {
+      if (!supplier.supplierName) continue;
       await ItemSupplier.findOneAndUpdate(
-        { companyId, article: incoming.article, supplierName: supplier.supplierName, supplierPartNumber: supplier.supplierPartNumber },
+        { companyId, article: group.article, supplierName: supplier.supplierName, supplierPartNumber: supplier.supplierPartNumber },
         {
           $set: {
             supplierPartNumber: supplier.supplierPartNumber,
@@ -461,7 +557,7 @@ async function applyInSession({ companyId, userEmail, parsed, existingByArticle,
           },
           $setOnInsert: {
             companyId,
-            article: incoming.article,
+            article: group.article,
             supplierName: supplier.supplierName,
             currency: "USD",
             price: 0,
@@ -483,28 +579,35 @@ export async function applyItemMasterImport({ companyId, buffer, userEmail = "" 
     e.preview = preview;
     throw e;
   }
-  const rows = parseWorkbookRows(buffer);
-  const parsed = [];
-  const seen = new Map();
-  for (let index = 0; index < rows.length; index += 1) {
-    const incoming = mapIncomingItem(normalizeHeaderRow(rows[index]));
-    const errors = [];
-    if (seen.has(incoming.article)) errors.push("Duplicate article in import file");
-    else seen.set(incoming.article, index + 2);
-    parsed.push({ excelRow: index + 2, incoming, errors });
+  const fresh = await previewItemMasterImport({ companyId, buffer });
+  if (!fresh.canApply) {
+    const e = new Error("Import has validation errors; fix them before apply");
+    e.statusCode = 409;
+    e.code = "ITEM_MASTER_IMPORT_INVALID";
+    e.preview = fresh;
+    throw e;
   }
-  const articles = parsed.map((p) => p.incoming.article).filter(Boolean);
+  const articles = (fresh.groups || []).map((g) => g.article).filter(Boolean);
   const existingRows = await ItemMaster.find({ companyId, article: { $in: articles } }).lean();
+  const existingTech = await ItemTechnical.find({ companyId, article: { $in: articles } }).lean();
   const existingByArticle = new Map(existingRows.map((r) => [r.article, r]));
+  const techByArticle = new Map(existingTech.map((r) => [r.article, r]));
 
   assertItemMasterImportAtomicityAvailable();
   const session = await mongoose.startSession();
   try {
     let counts;
     await session.withTransaction(async () => {
-      counts = await applyInSession({ companyId, userEmail, parsed, existingByArticle, session });
+      counts = await applyInSession({
+        companyId,
+        userEmail,
+        groups: fresh.groups || [],
+        existingByArticle,
+        techByArticle,
+        session,
+      });
     });
-    return { ...preview, apply: counts };
+    return { ...fresh, apply: counts };
   } catch (txErr) {
     const msg = String(txErr?.message || "");
     if (/transaction|replica set|not supported/i.test(msg) || txErr?.code === "ITEM_MASTER_IMPORT_ATOMICITY_UNAVAILABLE") {

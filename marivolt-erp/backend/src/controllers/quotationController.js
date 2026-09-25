@@ -51,6 +51,7 @@ import {
   linesRequiringArticleValidation,
   snapshotQuotationLineFromItem,
 } from "../services/articleTransactionValidator.js";
+import { snapshotSalesLinePartNumberFields } from "../utils/partNumberTerminology.js";
 
 function jsonQuotationError(res, err) {
   if (isArticleValidationError(err)) return res.status(err.statusCode).json(err.toJSON());
@@ -105,7 +106,12 @@ function normalizeLines(lines = []) {
       const price = roundQuotationMoney(Number(line.price ?? line.salePrice ?? line.unitPrice) || 0);
       const totalPrice = quotationLineTotal(price, qty);
       const snapshot = {};
-      if (line.customerPartNo != null) snapshot.customerPartNo = String(line.customerPartNo || "");
+      const salesPn = snapshotSalesLinePartNumberFields({
+        customerPartNo: line.customerPartNo != null ? String(line.customerPartNo || "") : String(line.partNumber || line.partNo || ""),
+        matchedPartNumber: line.matchedPartNumber != null ? String(line.matchedPartNumber || "") : "",
+      });
+      snapshot.customerPartNo = salesPn.customerPartNo;
+      snapshot.matchedPartNumber = salesPn.matchedPartNumber;
       if (line.sourceRowNumber != null && line.sourceRowNumber !== "") {
         snapshot.sourceRowNumber = Number(line.sourceRowNumber) || null;
       }
@@ -134,7 +140,7 @@ function normalizeLines(lines = []) {
       return {
         serialNo,
         article: String(line.article || line.itemCode || "").trim().toUpperCase(),
-        partNumber: String(line.partNumber || line.partNo || "").trim(),
+        partNumber: salesPn.partNumber,
         description: String(line.description || ""),
         uom: String(line.uom || line.unit || "PCS").trim() || "PCS",
         qty,

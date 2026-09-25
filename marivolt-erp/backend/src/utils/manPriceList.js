@@ -1104,6 +1104,7 @@ const CUSTOMER_PRINT_LINE_KEYS = [
   "materialCode",
   "availability",
   "customerPartNo",
+  "matchedPartNumber",
 ];
 
 const CUSTOMER_PRINT_STRIP_HEADER_KEYS = [

@@ -858,6 +858,8 @@ export async function getPackingFromAllocation(req, res) {
         article: ln.article,
         description: ln.description || "",
         partNumber: ln.partNumber || "",
+        customerPartNo: ln.customerPartNo || "",
+        matchedPartNumber: ln.matchedPartNumber || "",
         materialCode: ln.materialCode || "",
         location: wh,
         warehouse: wh,

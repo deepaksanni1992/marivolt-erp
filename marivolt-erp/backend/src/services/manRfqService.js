@@ -52,6 +52,12 @@ import {
   uomsCompatible,
 } from "../utils/manPriceList.js";
 import { parseExcelBufferToRows } from "../utils/excelParser.js";
+import {
+  manufacturerPartNumberFindFilter,
+  matchedManufacturerPartNumber,
+  publicManufacturerPartNumberDto,
+  snapshotSalesLinePartNumberFields,
+} from "../utils/partNumberTerminology.js";
 
 function err(message, statusCode = 400, code = "MAN_RFQ", extra = {}) {
   const e = new Error(message);
@@ -149,9 +155,12 @@ export async function getManItemSalesSnapshot(req, article) {
   const price = await ManPriceList.findOne({ companyId: req.companyId, article: code, isActive: true }).lean();
   const canRock = await userCanTier(req, "ROCK");
   const availableQty = await liveAvailable(req.companyId, code);
+  const pn = publicManufacturerPartNumberDto(item, tech);
   return redactManRfqMatchResponse({
     article: item.article,
     spn: displayedItemMasterSpn(item, tech),
+    primaryPartNumber: pn.primaryPartNumber,
+    alternatePartNumbers: pn.alternatePartNumbers,
     engineModel: item.model || "",
     configuration: item.config || "",
     specifications: displayedItemMasterSpecs(tech),
@@ -224,6 +233,7 @@ export async function matchRfqLines(
       continue;
     }
 
+    const techFilter = needle ? manufacturerPartNumberFindFilter(req.companyId, partNoOriginal) : null;
     const byMaster = needle
       ? await ItemMaster.find({
           companyId: req.companyId,
@@ -231,8 +241,8 @@ export async function matchRfqLines(
           spn: spnExact,
         }).lean()
       : [];
-    const techHits = needle
-      ? await ItemTechnical.find({ companyId: req.companyId, spn: spnExact }).select("article").lean()
+    const techHits = techFilter
+      ? await ItemTechnical.find(techFilter).select("article").lean()
       : [];
     const known = new Set(byMaster.map((i) => i.article));
     const extraCodes = techHits.map((t) => t.article).filter((a) => a && !known.has(a));
@@ -276,6 +286,7 @@ export async function matchRfqLines(
       const availableQty = await liveAvailable(req.companyId, item.article);
       const tech = techByArticle.get(item.article) || {};
       const itemSpecs = displayedItemMasterSpecs(tech);
+      const pn = publicManufacturerPartNumberDto(item, tech, partNoOriginal);
       const uomOk = uomsCompatible(item.uom, uom);
       const modelConflict = Boolean(
         resolved.resolvedModel && item.model && !modelsEquivalent(item.model, resolved.resolvedModel)
@@ -285,6 +296,9 @@ export async function matchRfqLines(
       candidates.push({
         article: item.article,
         spn: displayedItemMasterSpn(item, tech),
+        primaryPartNumber: pn.primaryPartNumber,
+        alternatePartNumbers: pn.alternatePartNumbers,
+        matchedPartNumber: pn.matchedPartNumber,
         description: item.description || item.itemName || "",
         model: item.model || "",
         config: item.config || "",
@@ -654,12 +668,21 @@ export async function createQuotationFromManRfq(req, body = {}) {
       leadTime: price.leadTime || "",
     });
 
+    const requested = String(line.requestedPartNo || line.customerPartNo || "").trim();
+    const matched =
+      matchedManufacturerPartNumber(item, tech || {}, requested, { requireActive: true }) ||
+      displayedItemMasterSpn(item, tech || {});
+    const salesPn = snapshotSalesLinePartNumberFields({
+      customerPartNo: requested,
+      matchedPartNumber: matched,
+    });
     quoteLines.push({
       sourceRowNumber:
         line.sourceRowNumber != null && line.sourceRowNumber !== "" ? Number(line.sourceRowNumber) : null,
       article,
-      partNumber: displayedItemMasterSpn(item, tech || {}),
-      customerPartNo: String(line.requestedPartNo || line.customerPartNo || "").trim(),
+      partNumber: salesPn.partNumber,
+      customerPartNo: salesPn.customerPartNo,
+      matchedPartNumber: salesPn.matchedPartNumber,
       description: item.description || item.itemName || article,
       uom: item.uom,
       qty,

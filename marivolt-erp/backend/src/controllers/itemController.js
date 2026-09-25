@@ -23,8 +23,38 @@ import {
 } from "../utils/itemMasterTaxonomy.js";
 import {
   canonicalItemMasterPartNumber,
+  isActiveAliasStatus,
+  publicManufacturerPartNumberDto,
   resolveImportedPartNumber,
 } from "../utils/partNumberTerminology.js";
+import {
+  addAlternatePartNumber,
+  promoteAlternatePartNumber,
+  removeAlternatePartNumber,
+  setAlternatePartNumberStatus,
+} from "../services/itemTechnicalAliasService.js";
+
+function isLiveItemMasterAdmin(req) {
+  const role = String(req.user?.role || "").trim().toLowerCase();
+  return role === "super_admin" || role === "admin";
+}
+
+function dtoOpts(req) {
+  const admin = isLiveItemMasterAdmin(req);
+  return { includeInactive: admin, includeAudit: false };
+}
+
+function scrubTechnicalAliases(technical, req) {
+  if (!technical) return null;
+  const admin = isLiveItemMasterAdmin(req);
+  const pn = publicManufacturerPartNumberDto({}, technical, "", {
+    includeInactive: admin,
+    includeAudit: admin,
+  });
+  const copy = { ...technical };
+  copy.alternatePartNumbers = pn.alternatePartNumbers;
+  return copy;
+}
 
 async function canSeeSupplierPurchasePrices(req) {
   return (await hasPermission(req, "ITEM_MASTER", "edit")) || (await hasPermission(req, "PURCHASE", "edit"));
@@ -139,7 +169,7 @@ async function validateNoCircularInterchange({ req, article, interchangeablePart
   }
 }
 
-function normalizeTechnicalPayload(body = {}) {
+function normalizeTechnicalPayload(body = {}, audit = {}) {
   const cylinderCount = body.cylinderCount == null || body.cylinderCount === "" ? null : Number(body.cylinderCount);
   const modelMappings = normalizeTechnicalArrayRows(body.modelMappings, (row) => ({
     modelCode: trim(row.modelCode),
@@ -218,6 +248,7 @@ function normalizeTechnicalPayload(body = {}) {
       replacementNotes: trim(row.replacementNotes),
       notes: trim(row.notes),
     })),
+    // Client alternatePartNumbers / normalized / _id are ignored. Use dedicated alias routes.
   };
 }
 
@@ -226,13 +257,18 @@ async function ensureItemExists(req, article) {
   if (!item) throw new Error("Article not found in ItemMaster");
 }
 
-function mapMerged(item, technical, suppliers) {
+function mapMerged(item, technical, suppliers, searchQuery = "", req = null) {
+  const pn = publicManufacturerPartNumberDto(item, technical, searchQuery, dtoOpts(req || {}));
   return {
     ...item,
-    technical: technical || null,
+    technical: scrubTechnicalAliases(technical, req || {}),
     suppliers: suppliers || [],
     dimension: technical?.dimension || "",
     spn: canonicalItemMasterPartNumber(item, technical),
+    primaryPartNumber: pn.primaryPartNumber,
+    alternatePartNumbers: pn.alternatePartNumbers,
+    alternateCount: pn.alternateCount,
+    matchedPartNumber: pn.matchedPartNumber,
   };
 }
 
@@ -308,6 +344,16 @@ export async function listItems(req, res) {
               { "interchangeableParts.article": re },
               { "interchangeableParts.partNumber": re },
               { "interchangeableParts.replacementNotes": re },
+              isLiveItemMasterAdmin(req)
+                ? { "alternatePartNumbers.partNumber": re }
+                : {
+                    alternatePartNumbers: {
+                      $elemMatch: {
+                        $or: [{ partNumber: re }, { normalized: re }],
+                        status: { $nin: ["INACTIVE"] },
+                      },
+                    },
+                  },
             ],
           })
         )
@@ -335,7 +381,20 @@ export async function listItems(req, res) {
     const technicalFilter = withCompany(req, {});
     let hasTechnicalFilter = false;
     if (spn) {
-      technicalFilter.spn = new RegExp(escRe(spn), "i");
+      const spnRe = new RegExp(escRe(spn), "i");
+      technicalFilter.$or = isLiveItemMasterAdmin(req)
+        ? [{ spn: spnRe }, { "alternatePartNumbers.partNumber": spnRe }, { "alternatePartNumbers.normalized": spn.toUpperCase() }]
+        : [
+            { spn: spnRe },
+            {
+              alternatePartNumbers: {
+                $elemMatch: {
+                  $or: [{ partNumber: spnRe }, { normalized: spn.toUpperCase() }],
+                  status: { $nin: ["INACTIVE"] },
+                },
+              },
+            },
+          ];
       hasTechnicalFilter = true;
     }
     if (esn) {
@@ -408,11 +467,16 @@ export async function listItems(req, res) {
     const merged = items.map((row) => {
       const technical = technicalByArticle.get(row.article) || null;
       const supplierList = suppliersByArticle.get(row.article) || [];
+      const pn = publicManufacturerPartNumberDto(row, technical, search, dtoOpts(req));
       return {
         ...row,
-        technical,
+        technical: scrubTechnicalAliases(technical, req),
         dimension: technical?.dimension || "",
         spn: canonicalItemMasterPartNumber(row, technical),
+        primaryPartNumber: pn.primaryPartNumber,
+        alternatePartNumbers: pn.alternatePartNumbers,
+        alternateCount: pn.alternateCount,
+        matchedPartNumber: pn.matchedPartNumber,
         esn: technical?.esn || "",
         materialCode: technical?.materialCode || "",
         drawingNumber: technical?.drawingNumber || "",
@@ -448,7 +512,7 @@ export async function getItem(req, res) {
       ItemSupplier.find(withCompany(req, { article })).sort({ supplierName: 1 }).lean(),
     ]);
     const allowPrice = await canSeeSupplierPurchasePrices(req);
-    res.json(mapMerged(item, technical, redactSuppliers(suppliers, allowPrice)));
+    res.json(mapMerged(item, technical, redactSuppliers(suppliers, allowPrice), "", req));
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -564,7 +628,7 @@ export async function createItemTechnical(req, res) {
     const payload = {
       companyId: req.companyId,
       article,
-      ...normalizeTechnicalPayload(req.body),
+      ...normalizeTechnicalPayload(req.body, { createdBy: req.user?.email, updatedBy: req.user?.email }),
     };
     await validateNoCircularInterchange({ req, article, interchangeableParts: payload.interchangeableParts });
     const row = await ItemTechnical.findOneAndUpdate(withCompany(req, { article }), payload, {
@@ -583,7 +647,7 @@ export async function getItemTechnical(req, res) {
     const article = trim(req.params.article).toUpperCase();
     await ensureItemExists(req, article);
     const row = await ItemTechnical.findOne(withCompany(req, { article })).lean();
-    res.json(row || null);
+    res.json(row ? scrubTechnicalAliases(row, req) : null);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -593,7 +657,10 @@ export async function updateItemTechnical(req, res) {
   try {
     const article = trim(req.params.article).toUpperCase();
     await ensureItemExists(req, article);
-    const payload = normalizeTechnicalPayload(req.body);
+    const payload = normalizeTechnicalPayload(req.body, {
+      createdBy: req.user?.email,
+      updatedBy: req.user?.email,
+    });
     const existing = await ItemTechnical.findOne(withCompany(req, { article })).select("_id").lean();
     await validateNoCircularInterchange({
       req,
@@ -757,6 +824,11 @@ export async function exportItems(req, res) {
         Model: item.model,
         Config: item.config,
         "Part Number": tech?.spn || "",
+        "Alternate Part Numbers": (tech?.alternatePartNumbers || [])
+          .filter((x) => isLiveItemMasterAdmin(req) || isActiveAliasStatus(x.status))
+          .map((x) => x.partNumber)
+          .filter(Boolean)
+          .join("; "),
         ESN: tech?.esn || "",
         "Material Code": tech?.materialCode || "",
         "Drawing Number": tech?.drawingNumber || "",
@@ -807,8 +879,10 @@ export async function getItemCompatibility(req, res) {
         oemRefs: [],
         supplierRefs: [],
         interchangeableParts: [],
+        manufacturerPartNumbers: { primaryPartNumber: "", alternatePartNumbers: [] },
       });
     }
+    const pn = publicManufacturerPartNumberDto({ article }, technical, "", dtoOpts(req));
     res.json({
       article,
       compatibleEngineModels: (technical.modelMappings || []).map((x) => ({
@@ -838,6 +912,10 @@ export async function getItemCompatibility(req, res) {
         replacementPriority: x.replacementPriority,
         replacementNotes: x.replacementNotes,
       })),
+      manufacturerPartNumbers: {
+        primaryPartNumber: pn.primaryPartNumber,
+        alternatePartNumbers: pn.alternatePartNumbers,
+      },
     });
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -954,5 +1032,92 @@ export async function recordResolutionOverride(req, res) {
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ message: err.message });
+  }
+}
+
+function aliasHttp(res, err) {
+  return res.status(err.statusCode || 400).json({ message: err.message, code: err.code });
+}
+
+function aliasAudit(req, action, article, partNumber, extra = {}) {
+  return writeAudit(req, {
+    action,
+    module: "ITEM_MASTER",
+    entityType: "ITEM_TECHNICAL_ALIAS",
+    entityId: article,
+    documentNo: article,
+    description: `${action} manufacturer Part Number "${partNumber}" on ${article}`,
+    metadata: { article, partNumber, ...extra },
+  });
+}
+
+export async function addItemAlternate(req, res) {
+  try {
+    const article = trim(req.params.article).toUpperCase();
+    const row = await addAlternatePartNumber({
+      companyId: req.companyId,
+      article,
+      partNumber: req.body?.partNumber,
+      userEmail: req.user?.email,
+      expectedUpdatedAt: req.body?.expectedUpdatedAt || null,
+    });
+    await aliasAudit(req, "CREATE", article, req.body?.partNumber);
+    res.json(scrubTechnicalAliases(row, req));
+  } catch (err) {
+    aliasHttp(res, err);
+  }
+}
+
+export async function removeItemAlternate(req, res) {
+  try {
+    const article = trim(req.params.article).toUpperCase();
+    const partNumber = req.body?.partNumber;
+    const row = await removeAlternatePartNumber({
+      companyId: req.companyId,
+      article,
+      partNumber,
+      expectedUpdatedAt: req.body?.expectedUpdatedAt || null,
+    });
+    await aliasAudit(req, "DELETE", article, partNumber);
+    res.json(scrubTechnicalAliases(row, req));
+  } catch (err) {
+    aliasHttp(res, err);
+  }
+}
+
+export async function promoteItemAlternate(req, res) {
+  try {
+    const article = trim(req.params.article).toUpperCase();
+    const partNumber = req.body?.partNumber;
+    const row = await promoteAlternatePartNumber({
+      companyId: req.companyId,
+      article,
+      partNumber,
+      userEmail: req.user?.email,
+      expectedUpdatedAt: req.body?.expectedUpdatedAt || null,
+    });
+    await aliasAudit(req, "UPDATE", article, partNumber, { operation: "PROMOTE" });
+    res.json(scrubTechnicalAliases(row, req));
+  } catch (err) {
+    aliasHttp(res, err);
+  }
+}
+
+export async function setItemAlternateStatus(req, res) {
+  try {
+    const article = trim(req.params.article).toUpperCase();
+    const partNumber = req.body?.partNumber;
+    const row = await setAlternatePartNumberStatus({
+      companyId: req.companyId,
+      article,
+      partNumber,
+      status: req.body?.status,
+      userEmail: req.user?.email,
+      expectedUpdatedAt: req.body?.expectedUpdatedAt || null,
+    });
+    await aliasAudit(req, "UPDATE", article, partNumber, { operation: "STATUS", status: req.body?.status });
+    res.json(scrubTechnicalAliases(row, req));
+  } catch (err) {
+    aliasHttp(res, err);
   }
 }

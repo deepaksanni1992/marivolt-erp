@@ -38,6 +38,10 @@ router.delete("/:article", itemMasterAdmin, itemDelete, c.deleteItem);
 router.post("/:article/technical", itemMasterAdmin, itemCreate, c.createItemTechnical);
 router.get("/:article/technical", itemView, c.getItemTechnical);
 router.put("/:article/technical", itemMasterAdmin, itemEdit, c.updateItemTechnical);
+router.post("/:article/technical/alternates", itemMasterAdmin, itemEdit, c.addItemAlternate);
+router.post("/:article/technical/alternates/remove", itemMasterAdmin, itemEdit, c.removeItemAlternate);
+router.post("/:article/technical/alternates/promote", itemMasterAdmin, itemEdit, c.promoteItemAlternate);
+router.post("/:article/technical/alternates/status", itemMasterAdmin, itemEdit, c.setItemAlternateStatus);
 
 router.post("/:article/suppliers", itemMasterAdmin, itemCreate, c.createItemSupplier);
 router.get("/:article/suppliers", itemView, c.listItemSuppliers);

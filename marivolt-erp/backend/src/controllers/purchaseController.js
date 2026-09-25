@@ -26,6 +26,7 @@ import {
   assertPoLinesPartNumberMatchesMaster,
   isArticleValidationError,
   linesRequiringArticleValidation,
+  linesRequiringManufacturerPartNumberValidation,
   snapshotPoLineFromItem,
 } from "../services/articleTransactionValidator.js";
 import {
@@ -72,6 +73,7 @@ function normalizePoLines(lines = []) {
     .map((raw) => {
       // Spreading a Mongoose subdocument yields internal keys only, so always work on a plain copy.
       const l = poLineToPlain(raw);
+      delete l._manufacturerPartNumbers;
       const orderedQty = resolveOrderedQty(l);
       const itemCode = String(l.itemCode || l.article || l.articleNo || "")
         .trim()
@@ -470,6 +472,7 @@ export async function duplicatePurchaseOrder(req, res) {
       lines,
     });
     const snapshotLines = applyItemMasterSnapshotsToLines(lines, itemsByArticle, "po");
+    assertPoLinesPartNumberMatchesMaster(snapshotLines, itemsByArticle);
 
     const company = await Company.findById(req.companyId).lean();
     const {
@@ -671,9 +674,17 @@ export async function updatePurchaseOrder(req, res) {
       previousLines,
       nextLines: doc.lines,
     });
-    const changed = new Set(
-      linesRequiringArticleValidation(previousLines, doc.lines).map((row) => row.index)
-    );
+    const pnChanged = linesRequiringManufacturerPartNumberValidation(previousLines, doc.lines);
+    const pnArticles = [...new Set(pnChanged.map((row) => articleFromLine(row.line)).filter(Boolean))];
+    const missingPnArticles = pnArticles.filter((article) => !itemsByArticle.has(article));
+    if (missingPnArticles.length) {
+      const extra = await assertActiveArticles({
+        companyId: req.companyId,
+        lines: missingPnArticles.map((article) => ({ article })),
+      });
+      extra.forEach((item, article) => itemsByArticle.set(article, item));
+    }
+    const changed = new Set(pnChanged.map((row) => row.index));
     const previousById = new Map(
       previousLines
         .filter((line) => line?._id)

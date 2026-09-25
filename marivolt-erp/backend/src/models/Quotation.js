@@ -16,6 +16,8 @@ const quotationLineSchema = new mongoose.Schema(
     materialCode: { type: String, default: "", trim: true },
     availability: { type: String, default: "", trim: true },
     customerPartNo: { type: String, default: "", trim: true },
+    /** Exact Item Master Primary or Active Alternate that matched or was selected. */
+    matchedPartNumber: { type: String, default: "", trim: true },
     customerEngineModel: { type: String, default: "", trim: true },
     engineModel: { type: String, default: "", trim: true },
     config: { type: String, default: "", trim: true },
